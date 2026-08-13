@@ -736,7 +736,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
       "optionGroups.layers.default", "optionGroups.contour_cutting.default", "optionGroups.weeding_and_taping.default",
     ]));
 
-    const failed = await service.applySemanticOperations({
+    const partiallyResolved = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
       request: "Add another option, then select a value that does not exist.",
       operations: [
@@ -744,11 +744,13 @@ describe("CanonicalProductIntentService compiler failures", () => {
         { op: "set_option_default", optionGroup: "Weeding and Taping", value: "Missing" },
       ],
     });
-    expect(failed).toMatchObject({ ok: false, code: "PRODUCT_SEMANTIC_OPERATION_REJECTED" });
-    const afterFailure = await service.inspect({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId });
-    expect(afterFailure.session.specification.session.currentRevision).toBe(2);
-    expect(afterFailure.session.specification.session.revisions).toHaveLength(3);
-    expect(afterFailure.session.specification.session.revisions.at(-1)!.intent.optionGroups.find((group) => group.label === "Weeding and Taping")?.values.map((value) => value.label)).toEqual(["Yes", "No"]);
+    expect(partiallyResolved).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 3 } } } });
+    if (!partiallyResolved.ok) throw new Error("Expected the independent option value to persist.");
+    expect(partiallyResolved.session.specification.session.revisions).toHaveLength(4);
+    expect(partiallyResolved.session.specification.session.revisions.at(-1)!.intent.optionGroups.find((group) => group.label === "Weeding and Taping")?.values.map((value) => value.label)).toEqual(["Yes", "No", "Maybe"]);
+    expect(partiallyResolved.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "semanticOperations.set_option_default" }),
+    ]));
   });
 
   test("accepts new groups, values, rates, defaults, and prerequisites in one ordered revision", async () => {

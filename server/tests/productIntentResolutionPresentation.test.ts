@@ -73,4 +73,13 @@ describe("canonical Product Intent issue aggregation and presentation", () => {
     ];
     expect(aggregateProductIntentIssues(intent, issues)).toHaveLength(2);
   });
+
+  test("keeps unsupported customer-specific availability visible without inventing an executable operation", () => {
+    const intent = resolveProductDraftIntentReferences(yardSignsIntent({
+      fieldMetadata: { ...yardSignsIntent().fieldMetadata, "unsupportedDetails.customer_specific_availability": { source: "explicit_user" } },
+    }), candidates);
+    const card = presentProductDraftIntent(intent as any, []);
+    expect(card.fields["Deferred requirements"]).toEqual([expect.stringContaining("Customer-specific availability")]);
+    expect(card.readiness.ready).toBe(false);
+  });
 });

@@ -38,7 +38,7 @@ function service(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function app(executionService: any, options: { authenticated?: boolean; tenant?: boolean; orgId?: string; userId?: string } = {}) {
+function app(executionService: any, options: { authenticated?: boolean; tenant?: boolean; orgId?: string; userId?: string; conversationRepository?: any } = {}) {
   const instance = express(); instance.use(express.json());
   const isAuthenticated = (req: any, res: any, next: any) => {
     if (options.authenticated === false) return res.sendStatus(401);
@@ -54,7 +54,7 @@ function app(executionService: any, options: { authenticated?: boolean; tenant?:
     getPlan: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
     confirmAndExecute: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
   };
-  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService, compositeService: compositeService as any });
+  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService, compositeService: compositeService as any, ...(options.conversationRepository ? { conversationRepository: options.conversationRepository } : {}) });
   return instance;
 }
 
@@ -87,6 +87,28 @@ describe("assistant execution-plan routes", () => {
   test("normal runtime requires a server-created assistant turn rather than a browser command", async () => {
     const response = await request(app(service())).post("/api/assistant/conversations/conversation_1/plans").send({ context }).expect(409);
     expect(response.body.error.message).toMatch(/proposed assistant turn/i);
+  });
+
+  test("rehydrates an existing-Product lifecycle proposal into one reusable protected plan", async () => {
+    const lifecyclePlan = { ...plan, commandName: "products.update_existing_product", normalizedAction: "products.update_existing_product", status: "preview_ready", version: 1 };
+    const confirmedPlan = { ...lifecyclePlan, status: "awaiting_confirmation", version: 2 };
+    const fake = service({
+      createPlan: jest.fn(async () => lifecyclePlan),
+      issueConfirmation: jest.fn(async () => ({ plan: confirmedPlan, token: "confirmation_token", expiresAt: confirmedPlan.expiresAt })),
+    });
+    const fingerprint = "a".repeat(64);
+    const conversationRepository = { getConversation: jest.fn(async () => ({ messages: [
+      { turnId: "turn_lifecycle", role: "user", content: "Make it inactive" },
+      { turnId: "turn_lifecycle", role: "assistant", content: "Prepared", structuredCards: [{ kind: "action_proposal", plan: { action: "products.update_existing_product", productId: "product_1", operations: [{ op: "update_product_lifecycle", isActive: false }], proposalFingerprint: fingerprint } }] },
+    ] })) };
+    const response = await request(app(fake, { conversationRepository })).post("/api/assistant/conversations/conversation_1/plans").send({ turnId: "turn_lifecycle", context }).expect(201);
+    expect(response.body.data).toMatchObject({ plan: { action: "products.update_existing_product", status: "awaiting_confirmation" }, confirmationToken: "confirmation_token" });
+    expect(fake.createPlan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      commandName: "products.update_existing_product",
+      reuseAwaitingPlan: true,
+      supersedeAwaitingProposal: { proposalId: "product_1", fingerprint },
+    }));
+    expect(fake.issueConfirmation).toHaveBeenCalledTimes(1);
   });
 
   test("uses the same safe not-found response for other user and organization plans", async () => {

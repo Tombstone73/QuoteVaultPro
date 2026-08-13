@@ -101,6 +101,7 @@ export type ActiveSemanticProductDraftContext = {
   pricing: { model: string; basis: string | null; optionGroup: string | null; rates: Array<{ option: string; priceCents: number }> };
   optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multiple"; defaultValue: string | null; values: Array<{ label: string; priceImpactPercent: number | null; totalPercentWhenEnabled: { percent: number; prerequisite: { optionGroup: string; value: string } } | null }>; availableWhen: { optionGroup: string; value: string } | null }>;
   outstandingDecisions: Array<{ path: string; question: string; choices: string[] }>;
+  unsupportedDetails: string[];
   /** Server-derived labels of the business fields most recently established
    * in this draft. This is reflection context, never a patch/revision API. */
   recentBusinessOperations: string[];
@@ -253,6 +254,10 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
       path: question.path, question: question.question,
       choices: question.answer?.allowedChoices.map((choice) => choice.displayLabel) ?? [],
     })),
+    unsupportedDetails: [
+      ...(intent.fieldMetadata["unsupportedDetails.customer_specific_availability"] ? ["customer_specific_availability"] : []),
+      ...(intent.fieldMetadata["unsupportedDetails.grommet_quantity"] ? ["grommet_quantity"] : []),
+    ],
     recentBusinessOperations: Object.entries(intent.fieldMetadata)
       .filter(([, metadata]) => metadata.source !== "unresolved")
       .map(([path]) => path)

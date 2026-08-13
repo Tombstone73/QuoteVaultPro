@@ -245,7 +245,65 @@ export function compileSemanticProductOperations(
     // Multi-operation dependency attribution remains with the canonical
     // batch diagnostics rather than assigning the wrong operation.
     if (semantic.operations.length === 1) throw new SemanticProductOperationError(0, semantic.operations[0]!.op, error);
-    throw error;
+    // Repeated singleton assignments are a conflict within the same business
+    // field, not independent work. Preserve the strict atomic rejection for
+    // those batches instead of selecting an arbitrary winner.
+    if (["set_product_name", "set_category", "set_material", "clear_material", "set_measurement_mode", "set_scalar_price", "set_pricing_basis"].some((name) => semantic.operations.filter((operation) => operation.op === name).length > 1)) throw error;
+
+    // Canonical fragments that do not depend on one another must survive a
+    // bad sibling operation. Re-plan the failed mixed batch in dependency
+    // order against an in-memory draft, then persist the combined difference
+    // as one revision. This keeps atomic persistence while isolating actual
+    // semantic dependencies (group -> choice -> default/rate).
+    const rank = (operation: SemanticProductOperationsResult["operations"][number]) => operation.op === "add_option_group" ? 0
+      : operation.op === "rename_option_group" ? 1
+        : operation.op === "add_option_value" ? 2
+          : operation.op === "add_text_input" ? 3
+            : operation.op === "set_option_default" || operation.op === "set_option_group_availability" || operation.op === "set_option_rate" || operation.op === "set_matrix_rate" || operation.op === "set_option_quantity_tiers" || operation.op === "set_option_price_impact" ? 4
+              : operation.op === "remove_option_value" ? 5
+                : operation.op === "remove_option_group" ? 6
+                  : 0;
+    const ordered = semantic.operations.map((operation, index) => ({ operation, index })).sort((left, right) => rank(left.operation) - rank(right.operation) || left.index - right.index);
+    let working = current;
+    const rejected: Array<{ operation: SemanticProductOperationsResult["operations"][number]; index: number; error: unknown }> = [];
+    for (const item of ordered) {
+      try {
+        const patch = compileSemanticProductOperations(working, { kind: "semantic_operations", operations: [item.operation] }, working.revision, request, options);
+        working = applyProductDraftIntentPatch(working, patch, { parentRevision: working.revision });
+      } catch (operationError) {
+        rejected.push({ ...item, error: operationError });
+      }
+    }
+    if (working === current) throw error;
+    const failedByOperation = new Map(rejected.map((item) => [item.operation.op, item]));
+    const successfulOperationNames = new Set(semantic.operations.map((operation) => operation.op).filter((name) => !failedByOperation.has(name)));
+    const unresolved = working.unresolvedFields.filter((field) => ![...successfulOperationNames].some((name) => field.path === `semanticOperations.${name}`));
+    for (const item of failedByOperation.values()) {
+      const code = item.error instanceof Error ? item.error.message : "PRODUCT_INTENT_SEMANTIC_OPERATION_REJECTED";
+      const path = `semanticOperations.${item.operation.op}`;
+      if (!unresolved.some((field) => field.path === path)) unresolved.push({
+        path,
+        code,
+        question: code.includes("OPTION_VALUE")
+          ? "Which Product option value should this change use?"
+          : code.includes("OPTION_GROUP") || code.includes("DEPENDENCY")
+            ? "Which Product option group should this change use?"
+            : `Please clarify the unresolved ${item.operation.op.replace(/_/g, " ")} detail.`,
+      });
+    }
+    const operations: ProductDraftIntentPatch["operations"] = [];
+    const changed = <T>(before: T, after: T) => JSON.stringify(before) !== JSON.stringify(after);
+    if (changed(current.identity, working.identity)) operations.push({ op: "set_identity", value: working.identity });
+    if (changed(current.measurement, working.measurement)) operations.push({ op: "set_measurement", value: working.measurement });
+    if (changed(current.pricing, working.pricing)) operations.push({ op: "set_pricing", value: working.pricing });
+    if (changed(current.material, working.material)) operations.push({ op: "set_material", value: working.material });
+    if (changed(current.optionGroups, working.optionGroups)) operations.push({ op: "replace_option_groups", value: working.optionGroups });
+    if (changed(current.workflow, working.workflow)) operations.push({ op: "set_workflow", value: working.workflow });
+    if (changed(current.unresolvedFields, unresolved)) operations.push({ op: "set_unresolved_fields", value: unresolved });
+    const metadata = Object.fromEntries(Object.entries(working.fieldMetadata).filter(([path, value]) => JSON.stringify(current.fieldMetadata[path]) !== JSON.stringify(value)));
+    if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
+    if (!operations.length) throw error;
+    return { contractVersion: 1, baseRevision, preserveUnchanged: true, operations };
   }
   const canonicalPatch = applyCanonicalProductIntentProposal(current, proposal, baseRevision);
   const compatibilityIndexes = new Set(proposal.compatibilityOperations.map((operation) => operation.index));

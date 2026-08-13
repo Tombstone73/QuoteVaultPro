@@ -452,9 +452,12 @@ function operatorBusinessContext(input: {
       ? `Product draft \"${product.name}\" is ${product.readyForReview ? "ready for review" : "still collecting business decisions"}.`
       : input.existingProduct ? `Existing persisted product \"${input.existingProduct.name}\" is ${input.existingProduct.lifecycle}; its current pricing configuration is PBV2 ${input.existingProduct.pricingLifecycle}.`
         : input.workingSummary,
-    recentCompletedTurn: retainedCompletedOperatorTurn(input.semanticChanges),
+    // A fresh tenant-scoped Product read is authoritative. Older prose may
+    // describe a proposal that never reached GO, so it must not compete with
+    // persisted lifecycle/configuration facts on existing-Product turns.
+    recentCompletedTurn: input.existingProduct ? null : retainedCompletedOperatorTurn(input.semanticChanges),
     unresolvedDecisions,
-    recentOperations: product?.recentBusinessOperations ?? persistedRecentOperatorOperations(input.semanticChanges),
+    recentOperations: product?.recentBusinessOperations ?? persistedRecentOperatorOperations(input.semanticChanges).filter((operation) => operation !== "products.apply_existing_operations"),
     trustedSelections: product?.trustedSelections ?? [],
     readiness: product ? (product.readyForReview ? "ready" : product.outstandingDecisions.length ? "needs_input" : "in_progress") : unresolvedDecisions.length ? "needs_input" : "unknown",
     constraints: input.existingProduct
@@ -478,6 +481,7 @@ function mergeTrustedOperatorObservations(
   semanticChanges: Record<string, unknown>,
   observations: readonly AssistantOperatorObservation[],
   recentCompletedTurn: RetainedCompletedOperatorTurn | null,
+  clearCompletedTurn = false,
 ): Record<string, unknown> {
   const hasCurrentProductEvidence = observations.some(isProductResolutionObservation);
   const retained = persistedTrustedObservations(semanticChanges).filter((item) => !hasCurrentProductEvidence || (item.toolName !== "products.get_summary" && item.toolName !== "products.get_pricing" && item.toolName !== "search.global"));
@@ -493,13 +497,14 @@ function mergeTrustedOperatorObservations(
   });
   const recent = [...persistedRecentOperatorOperations(semanticChanges), ...observations
     .filter((observation) => observation.status === "succeeded" || observation.status === "partial")
+    .filter((observation) => observation.toolName !== "products.apply_existing_operations")
     .map((observation) => observation.toolName)]
     .slice(-MAX_RECENT_OPERATOR_OPERATIONS);
   return {
     ...semanticChanges,
     [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS),
     [recentOperationStorageKey]: recent,
-    ...(recentCompletedTurn ? { [completedTurnStorageKey]: recentCompletedTurn } : {}),
+    ...(recentCompletedTurn ? { [completedTurnStorageKey]: recentCompletedTurn } : clearCompletedTurn ? { [completedTurnStorageKey]: null } : {}),
   };
 }
 
@@ -864,10 +869,11 @@ export class AssistantService {
           ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
           : null;
         const resumed = product.draftState === "resumed";
+        const failedInitialOperations = product.cards.some((card) => card.kind === "product_validation_errors");
         return {
-          status: resumed ? "partial" as const : "succeeded" as const,
-          ...(resumed ? { failureCode: "draft_already_active", warning: "An unfinished product draft is already active. Continue that draft with products.apply_operations; do not begin another draft." } : {}),
-          result: { status: resumed ? "partial" : "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { draftAlreadyActive: resumed, draftEstablished: Boolean(proposalId) && !resumed, mayApplyBusinessOperations: Boolean(proposalId) } } } as any,
+          status: resumed || failedInitialOperations ? "partial" as const : "succeeded" as const,
+          ...(resumed ? { failureCode: "draft_already_active", warning: "An unfinished product draft is already active. Continue that draft with products.apply_operations; do not begin another draft." } : failedInitialOperations ? { failureCode: "initial_operations_partially_applied", warning: product.response } : {}),
+          result: { status: resumed || failedInitialOperations ? "partial" : "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { draftAlreadyActive: resumed, draftEstablished: Boolean(proposalId) && !resumed, mayApplyBusinessOperations: Boolean(proposalId) } } } as any,
           presentation: { cards: product.cards as AssistantStructuredCard[] },
         };
       },
@@ -892,7 +898,8 @@ export class AssistantService {
         const draftContext = this.productIntentDispatcher.getActiveSemanticProductDraftContext
           ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
           : null;
-        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { mayApplyBusinessOperations: true } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
+        const rejected = product.cards.some((card) => card.kind === "product_validation_errors");
+        return { status: rejected ? "rejected" as const : "succeeded" as const, ...(rejected ? { failureCode: "product_operations_rejected", warning: product.response } : {}), result: { status: rejected ? "failed" : "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { mayApplyBusinessOperations: true } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
       },
       }] : [];
     const previewProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
@@ -966,7 +973,7 @@ export class AssistantService {
     const run = await runtime.run({
       goal: request.message,
       taskId: task.id,
-      initialWorkingSummary: task.workingSummary,
+      initialWorkingSummary: existingProduct ? null : task.workingSummary,
       trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
@@ -987,15 +994,16 @@ export class AssistantService {
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
-    const recentCompletedTurn = run.status === "completed" ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
+    const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.toolName === "products.apply_existing_operations" && observation.presentation?.cards.some((card) => card.kind === "action_proposal"));
+    const recentCompletedTurn = run.status === "completed" && !hasPendingProtectedProductProposal ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
     const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
       ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
-      workingSummary: run.safeWorkingSummary,
+      workingSummary: hasPendingProtectedProductProposal ? null : run.safeWorkingSummary,
       entityReferences,
-      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn),
+      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn, hasPendingProtectedProductProposal),
       missingInformation: run.missingInformation,
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,

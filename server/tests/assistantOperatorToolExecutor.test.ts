@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { normalizeTrustedPricingReadArguments } from "../services/assistant/operatorPricingArguments";
+import { normalizeTrustedPricingReadArguments, normalizeTrustedProductReadArguments } from "../services/assistant/operatorPricingArguments";
 
 const currentProductContext = {
   context: { entityType: "product", entityId: "product_translucent" },
@@ -24,5 +24,16 @@ describe("trusted Operator pricing argument projection", () => {
   test("keeps an explicit product reference and native tool fields unchanged", () => {
     expect(normalizeTrustedPricingReadArguments({ productId: "product_other", quantity: 2, width: 2, height: 3, unit: "ft" }, currentProductContext))
       .toEqual({ productId: "product_other", quantity: 2, width: 2, height: 3, unit: "ft" });
+  });
+
+  test("gives an explicit current-turn Product query precedence over retained identity", () => {
+    expect(normalizeTrustedProductReadArguments({ productId: "product_translucent", query: "Rigid Product" }, currentProductContext))
+      .toEqual({ query: "Rigid Product" });
+    expect(normalizeTrustedPricingReadArguments({ productId: "product_translucent", query: "Rigid Product", quantity: 2 }, currentProductContext))
+      .toEqual({ query: "Rigid Product", quantity: 2 });
+  });
+
+  test("binds retained Product identity only when the current turn supplies none", () => {
+    expect(normalizeTrustedProductReadArguments({}, currentProductContext)).toEqual({ productId: "product_translucent" });
   });
 });

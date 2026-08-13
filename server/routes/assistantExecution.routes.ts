@@ -141,7 +141,9 @@ function safeError(res: Response, error: unknown) {
     const notFound = error.code === "PLAN_NOT_FOUND";
     const code = notFound ? "plan_not_found" : error.code === "PLAN_EXPIRED" ? "confirmation_expired"
       : error.code === "PERMISSION_CHANGED" ? "plan_permission_changed"
-        : error.code === "CONTEXT_CHANGED" ? "plan_stale" : "plan_transition_invalid";
+        : error.code === "CONTEXT_CHANGED" || error.code === "PLAN_STALE" ? "plan_stale"
+          : error.code === "PLAN_NO_CHANGES" ? "plan_no_changes"
+            : error.code === "PLAN_PREPARATION_FAILED" ? "plan_preparation_failed" : "plan_transition_invalid";
     return res.status(notFound ? 404 : 409).json({ error: { code, message: notFound ? "Plan not found." : error.message, retryable: false } });
   }
   if (error instanceof z.ZodError) return res.status(400).json({ error: { code: "context_invalid", message: error.errors.map((issue) => issue.message).join("; "), retryable: false } });
@@ -152,6 +154,7 @@ function safeError(res: Response, error: unknown) {
 export interface AssistantExecutionRouteDependencies {
   service?: ExecutionPlanningService;
   compositeService?: CompositeExecutionPlanningService;
+  conversationRepository?: Pick<DrizzleAssistantRepository, "getConversation">;
 }
 
 function compositePlanDto(plan: any) {
@@ -248,6 +251,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
 export function registerAssistantExecutionRoutes(app: Express, middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler }, dependencies: AssistantExecutionRouteDependencies = {}): void {
   const service = dependencies.service ?? createProductionExecutionService();
   const compositeService = dependencies.compositeService ?? createQuoteInternalNoteCompositeExecutionService();
+  const conversationRepository = dependencies.conversationRepository ?? new DrizzleAssistantRepository();
   const guarded = [middleware.isAuthenticated, middleware.tenantContext];
 
   app.post("/api/assistant/conversations/:conversationId/plans", ...guarded, async (req, res) => {
@@ -258,7 +262,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       // The proposal must come from a tenant/user-owned stored turn. The
       // browser supplies context only; it cannot provide a command, note text,
       // record selector, identity, permission, or confirmation token.
-      const conversation = await new DrizzleAssistantRepository().getConversation({
+      const conversation = await conversationRepository.getConversation({
         organizationId: actor.organizationId,
         userId: actor.userId,
         conversationId: req.params.conversationId,
@@ -376,7 +380,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
       if (existingProductEditProposal && typeof existingProductEditProposal.productId === "string" && Array.isArray(existingProductEditProposal.operations) && typeof existingProductEditProposal.proposalFingerprint === "string") {
-        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: existingProductEditCommandName, arguments: { productId: existingProductEditProposal.productId, operations: existingProductEditProposal.operations, proposalFingerprint: existingProductEditProposal.proposalFingerprint }, context: input.context });
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: existingProductEditCommandName, arguments: { productId: existingProductEditProposal.productId, operations: existingProductEditProposal.operations, proposalFingerprint: existingProductEditProposal.proposalFingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: existingProductEditProposal.productId, fingerprint: existingProductEditProposal.proposalFingerprint } });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }

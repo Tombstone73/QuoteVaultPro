@@ -222,7 +222,10 @@ export function buildCanonicalProductIntentProposal(
   if (suppliedName) productConfiguration.name = suppliedName;
   else if (nameOperations[0]) {
     const name = String(nameOperations[0].name);
-    if (request && !containsWholePhrase(request, name)) throw new Error("PRODUCT_INTENT_SEMANTIC_PRODUCT_NAME_UNRESOLVED");
+    // A continuation provider may repeat already-established draft context
+    // while applying an unrelated change. Treat that exact value as a no-op;
+    // only a genuinely new name must be grounded in the current user turn.
+    if (request && name !== current.identity.name && !containsWholePhrase(request, name)) throw new Error("PRODUCT_INTENT_SEMANTIC_PRODUCT_NAME_UNRESOLVED");
     productConfiguration.name = name;
   }
   const categoryOperations = operations.filter((operation) => operation.op === "set_category");

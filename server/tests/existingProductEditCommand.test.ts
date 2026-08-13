@@ -31,7 +31,7 @@ describe("existing product edit execution command", () => {
   test("fails closed when the current PBV2 DRAFT no longer matches the preview", async () => {
     const service = { revalidateProposal: jest.fn(async () => ({ valid: false as const, code: "EXISTING_PRODUCT_EDIT_STALE", summary: "Changed" })), execute: jest.fn() } as any;
     const command = createExistingProductEditExecutionCommand(service);
-    await expect(command.buildPreview({ scope, arguments: input, context: {} as any })).rejects.toThrow("EXISTING_PRODUCT_EDIT_STALE");
+    await expect(command.buildPreview({ scope, arguments: input, context: {} as any })).rejects.toMatchObject({ code: "PLAN_STALE", message: "Changed" });
     expect(service.execute).not.toHaveBeenCalled();
   });
 

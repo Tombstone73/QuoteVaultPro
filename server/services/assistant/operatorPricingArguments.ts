@@ -2,6 +2,28 @@ import type { AssistantOperatorTrustedContext } from "./operatorRuntime";
 
 const pricingReadArgumentKeys = new Set(["productId", "query", "quantity", "widthIn", "heightIn", "width", "height", "unit", "optionSelections"]);
 
+/** Product identity is a mutually exclusive choice at the execution boundary.
+ * A name supplied for the current turn is fresh discovery evidence and must
+ * not be shadowed by a retained Product id that the provider also echoed.
+ * When neither identity is supplied, binding the trusted focused Product is
+ * still safe and preserves referential follow-ups. */
+export function normalizeTrustedProductReadArguments(argumentsValue: Record<string, unknown>, context: AssistantOperatorTrustedContext): Record<string, unknown> {
+  const normalized = Object.fromEntries(Object.entries(argumentsValue).filter(([key]) => key === "productId" || key === "query"));
+  if (typeof normalized.query === "string" && normalized.query.trim()) {
+    delete normalized.productId;
+    return normalized;
+  }
+  if (typeof normalized.productId === "string") return normalized;
+  const trustedProductId = context.context.entityType === "product" && typeof context.context.entityId === "string"
+    ? context.context.entityId
+    : (() => {
+      const productIds = Array.from(new Set((context.task?.entityReferences ?? []).filter((reference) => reference.type === "product" && typeof reference.id === "string").map((reference) => reference.id)));
+      return productIds.length === 1 ? productIds[0] : null;
+    })();
+  if (trustedProductId) normalized.productId = trustedProductId;
+  return normalized;
+}
+
 /**
  * DeepSeek sometimes expresses a current-product square-foot lookup using its
  * natural business shape (`squareFeet` and a selection array), while the
@@ -13,15 +35,10 @@ const pricingReadArgumentKeys = new Set(["productId", "query", "quantity", "widt
  */
 export function normalizeTrustedPricingReadArguments(argumentsValue: Record<string, unknown>, context: AssistantOperatorTrustedContext): Record<string, unknown> {
   const normalized = Object.fromEntries(Object.entries(argumentsValue).filter(([key]) => pricingReadArgumentKeys.has(key)));
-  if (typeof normalized.productId !== "string" && typeof normalized.query !== "string") {
-    const trustedProductId = context.context.entityType === "product" && typeof context.context.entityId === "string"
-      ? context.context.entityId
-      : (() => {
-        const productIds = Array.from(new Set((context.task?.entityReferences ?? []).filter((reference) => reference.type === "product" && typeof reference.id === "string").map((reference) => reference.id)));
-        return productIds.length === 1 ? productIds[0] : null;
-      })();
-    if (trustedProductId) normalized.productId = trustedProductId;
-  }
+  const identity = normalizeTrustedProductReadArguments(normalized, context);
+  delete normalized.productId;
+  delete normalized.query;
+  Object.assign(normalized, identity);
   const squareFeet = argumentsValue.squareFeet;
   if (typeof squareFeet === "number" && Number.isFinite(squareFeet) && squareFeet > 0
     && normalized.width === undefined && normalized.height === undefined && normalized.widthIn === undefined && normalized.heightIn === undefined) {

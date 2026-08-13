@@ -2,7 +2,7 @@ import type { AssistantToolExecutionAudit } from "./orchestration";
 import { AssistantOrchestrationService } from "./orchestration";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import type { AssistantOperatorObservation, AssistantOperatorToolExecutor, AssistantOperatorTrustedContext } from "./operatorRuntime";
-import { normalizeTrustedPricingReadArguments } from "./operatorPricingArguments";
+import { normalizeTrustedPricingReadArguments, normalizeTrustedProductReadArguments } from "./operatorPricingArguments";
 
 export type AssistantOperatorSemanticTool = {
   name: string;
@@ -27,7 +27,11 @@ export function createAssistantOperatorToolExecutor(
     async execute({ toolName, arguments: args, context }) {
       const semanticTool = semantic.get(toolName);
       if (semanticTool) return { toolName, ...(await semanticTool.execute({ arguments: args, context })) };
-      const input = toolName === "products.get_pricing" ? normalizeTrustedPricingReadArguments(args, context) : args;
+      const input = toolName === "products.get_pricing"
+        ? normalizeTrustedPricingReadArguments(args, context)
+        : toolName === "products.get_summary"
+          ? normalizeTrustedProductReadArguments(args, context)
+          : args;
       const execution = await orchestration.executeTool(toolName, input, context);
       return {
         toolName: execution.toolName,

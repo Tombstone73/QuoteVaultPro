@@ -50,6 +50,10 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
     const values = group.values.map((value) => `${value.label}${value.isDefault ? " (default)" : ""}`).join(", ");
     return group.selectionMode === "single" ? `${group.label}: ${values}; Default: ${selectedDefault?.label ?? "Not selected"}` : `${group.label}: ${values}`;
   });
+  const deferredRequirements = [
+    ...(intent.fieldMetadata["unsupportedDetails.customer_specific_availability"] ? ["Customer-specific availability (customer not yet resolved; no canonical Product operation is available)"] : []),
+    ...(intent.fieldMetadata["unsupportedDetails.grommet_quantity"] ? ["Counted grommet quantity (not represented by the current Product option contract)"] : []),
+  ];
   return {
     kind: "canonical_product_intent_proposal", revision: intent.revision, fingerprint: productDraftIntentFingerprint(intent), title: `Create inactive draft: ${intent.identity.name}`,
     readiness: { ready: blockers.length === 0 && questions.length === 0 && intent.state === "ready_for_review", blockers, questions },
@@ -63,6 +67,7 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
       Measurement: intent.fieldMetadata["measurement.mode"]?.source === "unresolved" ? "Not selected" : intent.measurement.mode === "fixed_size" ? `Fixed size: ${intent.measurement.dimensions.widthIn} × ${intent.measurement.dimensions.heightIn} in` : intent.measurement.mode === "dimensions_required" ? "Width and height required" : "Quantity only",
       Quantity: intent.quantity.behavior === "customer_entered" ? "Customer enters quantity" : intent.quantity.behavior === "fixed" ? `Fixed quantity: ${intent.quantity.quantity}` : "Not applicable",
       Pricing: pricing(intent), Material: reference(intent.material), Options: optionGroups,
+      ...(deferredRequirements.length ? { "Deferred requirements": deferredRequirements } : {}),
       Proof: intent.workflow.requiresProofApproval ? "Required" : "Not required", "Production job": intent.workflow.requiresProductionJob ? "Required" : "Not required",
       "Category provenance": provenance(intent, "identity.category"),
       "Proof provenance": provenance(intent, "workflow.requiresProofApproval"),

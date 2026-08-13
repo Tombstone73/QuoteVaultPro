@@ -164,6 +164,50 @@ describe("semantic product operations", () => {
     expect(next.optionGroups[0]?.values.find((value) => value.isDefault)?.label).toBe("Single Sided");
   });
 
+  test("retains independent name and per-piece pricing when one option reference is unresolved", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Unfinished product draft" },
+      measurement: { mode: "quantity_only" }, pricing: { model: "unresolved" }, optionGroups: [],
+      unresolvedFields: [{ path: "identity.name", code: "PRODUCT_NAME_UNRESOLVED", question: "What should this product be called?" }, { path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED", question: "Dimensions or quantity only?" }],
+      fieldMetadata: { "identity.name": { source: "unresolved" }, "measurement.mode": { source: "unresolved" } },
+    });
+    const request = 'Add a product for "Reflective Directional Sign". It is $9 each, with a Finish option, and only a certain customer may use it.';
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_product_name", name: "Reflective Directional Sign" },
+      { op: "set_scalar_price", priceCents: 900, basis: "per_piece" },
+      { op: "add_option_group", optionGroup: "Finish", required: true, selectionMode: "single" },
+      { op: "set_option_default", optionGroup: "Finish", value: "Unspecified Choice" },
+      { op: "record_unsupported_detail", detail: "customer_specific_availability" },
+    ] }, current.revision, request);
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.name).toBe("Reflective Directional Sign");
+    expect(next.pricing).toEqual({ model: "scalar", unit: "per_piece", priceCents: 900 });
+    expect(next.unresolvedFields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED" }),
+      expect.objectContaining({ path: "semanticOperations.set_option_default", code: expect.stringContaining("OPTION_VALUE_UNRESOLVED") }),
+    ]));
+    expect(next.fieldMetadata["unsupportedDetails.customer_specific_availability"]).toEqual({ source: "explicit_user" });
+  });
+
+  test("treats an already-established repeated name as a no-op during a pricing clarification", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Established Product" },
+      measurement: { mode: "quantity_only" }, pricing: { model: "unresolved" }, optionGroups: [],
+      unresolvedFields: [{ path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED", question: "Dimensions or quantity only?" }],
+      fieldMetadata: { "identity.name": { source: "explicit_user" }, "measurement.mode": { source: "unresolved" } },
+    });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_product_name", name: "Established Product" },
+      { op: "set_scalar_price", priceCents: 900, basis: "per_piece" },
+    ] }, current.revision, "Pricing is $9 each.");
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.name).toBe("Established Product");
+    expect(next.pricing).toEqual({ model: "scalar", unit: "per_piece", priceCents: 900 });
+    expect(next.unresolvedFields).toEqual([expect.objectContaining({ path: "measurement.mode" })]);
+  });
+
   test("preserves the literal product-for name over a conflicting model paraphrase", () => {
     const current = productDraftIntentSchema.parse({ ...translucentIntent, identity: { ...translucentIntent.identity, name: "Unfinished product draft" } });
     const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_product_name", name: "Reflective Pole Signs" }] }, 4, 'Add a product for "Relective Pole Signs".');

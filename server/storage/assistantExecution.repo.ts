@@ -117,7 +117,9 @@ export class DrizzleAssistantExecutionRepository implements ExecutionPlanReposit
     let superseded = 0;
     for (const row of rows) {
       const argumentsRecord = row.sanitizedArguments as Record<string, unknown>;
-      if (argumentsRecord.proposalId !== input.proposalId || argumentsRecord.fingerprint === input.fingerprint) continue;
+      const proposalId = argumentsRecord.proposalId ?? argumentsRecord.productId;
+      const fingerprint = argumentsRecord.fingerprint ?? argumentsRecord.proposalFingerprint;
+      if (proposalId !== input.proposalId || fingerprint === input.fingerprint) continue;
       const updated = await db.update(aiExecutionPlans).set({
         status: "invalidated",
         planVersion: row.planVersion + 1,

@@ -434,6 +434,7 @@ export function ResultCards({
   ])) as typeof globalThis.fetch;
   const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
   const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
+  const genericCreationsInFlight = React.useRef(new Map<string, Promise<unknown>>());
   const genericConfirmationsInFlight = React.useRef(new Map<string, Promise<unknown>>());
   const presentation = responsePresentationForCards(serverPresentation);
   // Defense in depth for turns persisted before the response-contract fix.
@@ -449,12 +450,22 @@ export function ResultCards({
   const diagnosticCards = visibleCards.filter((card: any) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind)
     || (card.kind === "product_validation_errors" && Array.isArray(card.details?.errors) && card.details.errors.some((value: unknown) => typeof value === "string" && /\b(?:pic|pso)-[0-9a-f-]{36}\b/i.test(value))));
   const createGenericPlan = async (turnId: string) => {
-    try {
-      await onCreatePlan(turnId);
-      setGenericCreateErrors((current) => { const { [turnId]: _removed, ...remaining } = current; return remaining; });
-    } catch (error) {
-      setGenericCreateErrors((current) => ({ ...current, [turnId]: actionErrorMessage(error, "The server could not prepare this plan.") }));
-    }
+    const existing = genericCreationsInFlight.current.get(turnId);
+    if (existing) return existing;
+    const creation = (async () => {
+      try {
+        const result = await onCreatePlan(turnId);
+        setGenericCreateErrors((current) => { const { [turnId]: _removed, ...remaining } = current; return remaining; });
+        return result;
+      } catch (error) {
+        setGenericCreateErrors((current) => ({ ...current, [turnId]: actionErrorMessage(error, "The server could not prepare this plan.") }));
+        return undefined;
+      } finally {
+        genericCreationsInFlight.current.delete(turnId);
+      }
+    })();
+    genericCreationsInFlight.current.set(turnId, creation);
+    return creation;
   };
   const confirmGenericPlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
     const existing = genericConfirmationsInFlight.current.get(input.planId);

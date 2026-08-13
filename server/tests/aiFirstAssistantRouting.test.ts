@@ -98,21 +98,28 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     const operations = [{ op: "update_product_pricing_engine_configuration", changes: { allowRotation: true } }];
     const contextSpy = jest.spyOn(existingProductEditService, "trustedContext").mockResolvedValue({ name: "Coroplast", lifecycle: "active", pricingLifecycle: "ACTIVE", primaryMaterial: null, availableMaterials: [], optionGroups: [] });
     const proposalSpy = jest.spyOn(existingProductEditService, "buildProposal").mockResolvedValue({ productId: "product_1", productName: "Coroplast", productActive: true, sourceLifecycle: "PRODUCT", canonicalOperationReference: "products.update_pricing_engine_configuration.v1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Allow Rotation / Mixed Sheet Layout", before: "off", after: "on" }], fingerprint: "a".repeat(64) });
-    const provider = { decide: jest.fn(async ({ observations, toolCatalog, task }: any) => {
-      expect(task.businessContext.existingProduct).toMatchObject({ name: "Coroplast", pricingLifecycle: "ACTIVE" });
+    const taskStore = tasks();
+    const provider = { decide: jest.fn(async ({ goal, observations, toolCatalog, task, safeWorkingSummary }: any) => {
+      expect(task.businessContext.existingProduct).toMatchObject({ name: "Coroplast", lifecycle: "active", pricingLifecycle: "ACTIVE" });
+      expect(task.businessContext.recentCompletedTurn).toBeNull();
+      expect(safeWorkingSummary).toBeNull();
       expect(toolCatalog.map((tool: any) => tool.name)).toContain("products.apply_existing_operations");
+      if (goal === "Make it active again") return { kind: "complete", response: "The persisted Product is already active." };
       const inputSchema = toolCatalog.find((tool: any) => tool.name === "products.apply_existing_operations")?.inputSchema;
       expect(JSON.stringify(inputSchema)).toContain("update_product_pricing_engine_configuration");
       if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations } }] };
       return { kind: "complete", response: "Prepared the protected edit.", workingSummary: "Existing product edit prepared." };
     }) };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, taskStore, undefined, undefined, operatorProviderResolver() as any);
 
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft", "assistant.products.update_existing_product"] }, { message: "Turn rotation on", context: contextOnProduct });
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft", "assistant.products.update_existing_product"] }, { message: "Make it active again", context: contextOnProduct });
 
     expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+    expect(proposalSpy).toHaveBeenCalledTimes(1);
     expect(proposalSpy).toHaveBeenCalledWith(expect.objectContaining({ productId: "product_1", operations: { operations } }));
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "action_proposal", plan: expect.objectContaining({ action: "products.update_existing_product", operations }) })]) }));
+    expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: "The persisted Product is already active.", structuredCards: [] }));
     contextSpy.mockRestore(); proposalSpy.mockRestore();
   });
 
