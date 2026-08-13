@@ -343,10 +343,14 @@ export async function mergeDuplicateCustomers(input: {
       .where(and(eq(customerPortalCompanySettings.organizationId, input.organizationId), eq(customerPortalCompanySettings.customerId, survivor.id)))
       .limit(1);
     if (survivorPortalSettings) {
-      counts.portalCompanySettingsRemoved = Number((await tx
-        .delete(customerPortalCompanySettings)
+      // Settings conflict: retain the duplicate setting on the archived source
+      // for recovery/audit instead of silently discarding it. The survivor's
+      // existing setting remains the active portal policy.
+      counts.portalCompanySettingsRetainedOnMergedSource = Number((await tx
+        .select({ id: customerPortalCompanySettings.id })
+        .from(customerPortalCompanySettings)
         .where(and(eq(customerPortalCompanySettings.organizationId, input.organizationId), eq(customerPortalCompanySettings.customerId, duplicate.id)))
-        .returning({ id: customerPortalCompanySettings.id })).length);
+        .limit(1)).length);
     } else {
       counts.portalCompanySettingsMoved = Number((await tx
         .update(customerPortalCompanySettings)
@@ -496,7 +500,19 @@ export async function getCustomerMergePreview(input: {
     portalUsers: await count(customerPortalAccess, customerPortalAccess.customerId),
     notes: Number((await db.select({ count: sql<number>`count(*)::int` }).from(customerNotes).where(inArray(customerNotes.customerId, ids)))[0]?.count ?? 0),
   };
-  return { customers: rows, conflicts, relationshipCounts };
+  const primaryContacts = await db.select({
+    contactId: customerContactLinks.contactId,
+    customerId: customerContactLinks.customerId,
+    firstName: customerContacts.firstName,
+    lastName: customerContacts.lastName,
+    email: customerContacts.email,
+  }).from(customerContactLinks).innerJoin(customerContacts, eq(customerContacts.id, customerContactLinks.contactId)).where(and(
+    eq(customerContactLinks.organizationId, input.organizationId),
+    inArray(customerContactLinks.customerId, ids),
+    eq(customerContactLinks.status, "active"),
+    eq(customerContactLinks.isPrimary, true),
+  ));
+  return { customers: rows, conflicts, relationshipCounts, primaryContacts };
 }
 
 /** Multi-source, admin-reviewed canonical customer merge boundary. */
@@ -506,6 +522,7 @@ export async function mergeCustomers(input: {
   sourceCustomerIds: string[];
   actorUserId: string;
   fieldChoices: Partial<Record<MergeSelectableField, string>>;
+  primaryContactId?: string | null;
   reviewed: boolean;
   reason?: string | null;
 }) {
@@ -518,6 +535,9 @@ export async function mergeCustomers(input: {
     if (!choice || ![input.survivorCustomerId, ...sourceCustomerIds].includes(choice)) {
       throw new CustomerIdentityConflictError("FIELD_CONFLICT_RESOLUTION_REQUIRED", `Choose the canonical value for ${field}.`, { field, candidates: preview.conflicts[field] });
     }
+  }
+  if (preview.primaryContacts.length > 1 && !input.primaryContactId) {
+    throw new CustomerIdentityConflictError("PRIMARY_CONTACT_RESOLUTION_REQUIRED", "Choose the primary contact for the surviving customer.", { primaryContacts: preview.primaryContacts });
   }
 
   return db.transaction(async (tx: any) => {
@@ -567,6 +587,18 @@ export async function mergeCustomers(input: {
       for (const [key, value] of Object.entries(result.counts ?? {})) total[key] = Number(total[key] ?? 0) + Number(value ?? 0);
       return total;
     }, {} as Record<string, number>);
+    const activeSurvivorLinks = await tx.select().from(customerContactLinks).where(and(
+      eq(customerContactLinks.organizationId, input.organizationId),
+      eq(customerContactLinks.customerId, survivor.id),
+      eq(customerContactLinks.status, "active"),
+    )).orderBy(asc(customerContactLinks.createdAt), asc(customerContactLinks.id));
+    const primaryContactId = input.primaryContactId ?? activeSurvivorLinks.find((link: any) => link.isPrimary)?.contactId ?? null;
+    if (primaryContactId) {
+      if (!activeSurvivorLinks.some((link: any) => link.contactId === primaryContactId)) throw new CustomerIdentityConflictError("PRIMARY_CONTACT_INVALID", "The selected primary contact is not linked to the surviving customer.");
+      await tx.update(customerContactLinks).set({ isPrimary: false, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, survivor.id), eq(customerContactLinks.status, "active")));
+      await tx.update(customerContactLinks).set({ isPrimary: true, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, survivor.id), eq(customerContactLinks.contactId, primaryContactId), eq(customerContactLinks.status, "active")));
+      relationshipCounts.primaryContactNormalized = 1;
+    }
     await tx.update(customerMergeOperations).set({ relationshipCounts } as any).where(eq(customerMergeOperations.id, operation.id));
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,

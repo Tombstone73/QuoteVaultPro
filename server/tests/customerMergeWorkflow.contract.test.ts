@@ -17,6 +17,7 @@ describe("admin customer merge workflow wiring", () => {
     expect(service).toContain("export async function mergeCustomers");
     expect(service).toContain("getCustomerMergePreview");
     expect(service).toContain("FIELD_CONFLICT_RESOLUTION_REQUIRED");
+    expect(service).toContain("PRIMARY_CONTACT_RESOLUTION_REQUIRED");
     expect(service).toContain("SOURCE_ALREADY_MERGED");
     expect(service).toContain("customer_merge_completed");
     expect(service).toContain("mergedIntoCustomerId: survivor.id");
@@ -38,6 +39,7 @@ describe("admin customer merge workflow wiring", () => {
     expect(dialog).toContain("/api/customers/merge/preview");
     expect(dialog).toContain("/api/customers/merge");
     expect(dialog).toContain("reviewed: true");
+    expect(dialog).toContain("primaryContactId");
     expect(dialog).not.toContain("/api/orders/");
     expect(dialog).not.toContain("/api/invoices/");
   });

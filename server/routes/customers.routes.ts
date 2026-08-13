@@ -292,6 +292,7 @@ export function registerCustomerRoutes(
     survivorCustomerId: z.string().trim().min(1),
     sourceCustomerIds: z.array(z.string().trim().min(1)).min(1).max(19),
     fieldChoices: z.record(z.string().trim().min(1)).default({}),
+    primaryContactId: z.string().trim().min(1).optional().nullable(),
     reviewed: z.literal(true),
     reason: z.string().trim().max(500).optional().nullable(),
   }).strict();
