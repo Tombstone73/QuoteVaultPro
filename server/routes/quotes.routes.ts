@@ -92,6 +92,7 @@ import {
 } from "../lib/lineItemPricingPersistence";
 import { generateQuotePdfBytes, QuotePdfEligibilityError } from "../lib/quotePdf";
 import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
+import { normalizeRole } from "@shared/roleAccess";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { assertValidParentLink } from "../services/lineItemParentLinking";
 import { canonicalQuoteOperations } from "../services/quotes/canonicalQuoteOperations";
@@ -1198,7 +1199,9 @@ export function registerQuoteRoutes(
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
       }
-      const userRole = req.user.role || 'employee';
+      // Quote visibility is tenant-membership scoped. The global user role is not
+      // authoritative when a person has different roles in different organizations.
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
 
       const pageRaw = req.query.page as string | undefined;
       const pageSizeRaw = req.query.pageSize as string | undefined;
@@ -1255,7 +1258,9 @@ export function registerQuoteRoutes(
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ message: "Unauthorized" });
-      const userRole = req.user.role || 'employee';
+      // Keep export visibility identical to the Quotes list: use the active
+      // organization membership role resolved by tenantContext.
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
 
       const includeHeadersRaw = req.query.includeHeaders as string | undefined;
       const includeHeaders = includeHeadersRaw !== 'false' && includeHeadersRaw !== '0';
