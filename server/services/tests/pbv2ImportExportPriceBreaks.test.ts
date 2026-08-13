@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { exportProducts } from "../pbv2ExportMapper";
-import { applyImport, buildImportPlan, buildPbv2ImportProductValues } from "../pbv2ImportMapper";
+import { applyImport, buildImportPlan, buildPbv2ImportProductValues, remapPbv2TreeMaterialIds, resolvePortableMaterialReferences } from "../pbv2ImportMapper";
 import { createPbv2BannerProductTreeJson } from "../../../shared/pbv2/starterTree";
 import { normalizePbv2ExportOptions } from "../../../shared/pbv2ExportOptionNormalizer";
 
@@ -594,6 +594,45 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     expect(values.optionTreeJson).toEqual(activePbv2Tree);
   });
 
+  test("PBV2 import remaps nested source material UUIDs to destination materials", () => {
+    const tree = {
+      schemaVersion: 2,
+      nodes: {
+        substrate: {
+          id: "substrate",
+          label: "Substrate",
+          choices: [{
+            value: "banner",
+            materialOverride: { materialId: "source-material-id" },
+            inventoryConsumption: [{ materialId: "source-material-id", quantityBasis: "area_sqft" }],
+          }],
+        },
+      },
+      effects: [{ type: "setMaterial", materialId: "source-material-id" }],
+    };
+    const resolution = resolvePortableMaterialReferences(
+      { name: "Imported banner", description: "", pbv2: { hasActiveTree: true, activeTree: { schemaVersion: 2, treeJson: tree, publishedAt: null }, hasDraft: false } } as any,
+      [{ id: "source-material-id", sku: "BANNER-13OZ", name: "13oz Banner" }],
+      new Map([["banner-13oz", [{ id: "destination-material-id", sku: "BANNER-13OZ" }]]]),
+    );
+    expect(resolution.issues).toHaveLength(0);
+    expect(resolution.resolved.treeMaterialIdMap).toEqual({ "source-material-id": "destination-material-id" });
+    expect(remapPbv2TreeMaterialIds(tree, resolution.resolved.treeMaterialIdMap)).toMatchObject({
+      nodes: { substrate: { choices: [{ materialOverride: { materialId: "destination-material-id" }, inventoryConsumption: [{ materialId: "destination-material-id" }] }] } },
+      effects: [{ type: "setMaterial", materialId: "destination-material-id" }],
+    });
+  });
+
+  test("PBV2 import rejects missing or ambiguous portable material dependencies", () => {
+    const item = { name: "Imported banner", description: "", primaryMaterialSku: "BANNER-13OZ" } as any;
+    expect(resolvePortableMaterialReferences(item, [], new Map())).toMatchObject({
+      issues: [expect.objectContaining({ code: "MATERIAL_REFERENCE_UNRESOLVED" })],
+    });
+    expect(resolvePortableMaterialReferences(item, [], new Map([["banner-13oz", [{ id: "a" }, { id: "b" }]]]))).toMatchObject({
+      issues: [expect.objectContaining({ code: "MATERIAL_REFERENCE_AMBIGUOUS" })],
+    });
+  });
+
   test("PBV2 import preview includes counts for options, matrices, and tiers", async () => {
     const plan = await buildImportPlan(
       {
@@ -704,7 +743,7 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     expect(db.treeInserts).toHaveLength(2);
     expect(db.treeInserts.map((row: any) => row.status).sort()).toEqual(["ACTIVE", "DRAFT"]);
     expect(db.treeInserts.every((row: any) => row.productId === db.productInserts[0].id)).toBe(true);
-    expect(db.productUpdates[0]).toMatchObject({
+    expect(db.productUpdates.at(-1)).toMatchObject({
       optionTreeJson: installationServicePricingTree,
     });
   });

@@ -49,7 +49,9 @@ describe("CanonicalProductConfigurationOperations", () => {
   });
 
   it("keeps the Product Editor route delegated to the canonical operation and its migration report generated", async () => {
-    await expect(readFile(path.resolve(process.cwd(), "server/routes/products.routes.ts"), "utf8")).resolves.toContain("canonicalProductConfigurationOperations.execute");
+    const route = await readFile(path.resolve(process.cwd(), "server/routes/products.routes.ts"), "utf8");
+    expect(route).toContain("canonicalProductConfigurationOperations.execute");
+    expect(route).toContain('error.code !== "NO_PRODUCT_CONFIGURATION_CHANGES"');
     await expect(readFile(path.resolve(process.cwd(), "docs/architecture/canonical-product-operation-migration.md"), "utf8")).resolves.toBe(renderCanonicalProductOperationMigrationMarkdown());
   });
 });

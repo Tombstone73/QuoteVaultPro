@@ -23,7 +23,7 @@ import { summarizeProductExportItem } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
 import { products, pbv2TreeVersions, productTypes, materials, users } from "@shared/schema";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 type DbClient = typeof DbType;
@@ -39,6 +39,8 @@ export interface ImportMapperContext {
 export interface ResolvedReferences {
   productTypeId?: string;
   primaryMaterialId?: string;
+  /** Source material UUID -> trusted destination material UUID. */
+  treeMaterialIdMap?: Record<string, string>;
 }
 
 interface DryRunItem {
@@ -57,7 +59,7 @@ export function buildPbv2ImportProductValues(
   resolved: ResolvedReferences,
   extraValues: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const activeTreeJson = item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson;
+  const activeTreeJson = remapPbv2TreeMaterialIds(item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson, resolved.treeMaterialIdMap);
   const productValues = sanitizeLegacyPriceBreaksForPbv2({
     ...extraValues,
     name: item.name,
@@ -94,6 +96,112 @@ export function buildPbv2ImportProductValues(
   return dbValues;
 }
 
+type PortableMaterialMapping = { id: string; sku: string; name?: string };
+type MaterialReferenceIssue = { code: string; message: string; field: string };
+
+function normalizedSku(value: unknown): string {
+  return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function materialMapBySku(materialRows: readonly any[]): Map<string, any[]> {
+  const result = new Map<string, any[]>();
+  for (const material of materialRows) {
+    const sku = normalizedSku(material.sku);
+    if (!sku) continue;
+    const current = result.get(sku) ?? [];
+    current.push(material);
+    result.set(sku, current);
+  }
+  return result;
+}
+
+function collectTreeMaterialIds(value: unknown, path = "tree"): Array<{ materialId: string; path: string }> {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((entry, index) => collectTreeMaterialIds(entry, `${path}[${index}]`));
+  const record = value as Record<string, unknown>;
+  const refs: Array<{ materialId: string; path: string }> = [];
+  for (const [key, child] of Object.entries(record)) {
+    const childPath = `${path}.${key}`;
+    if (key === "materialId" && typeof child === "string" && child.trim()) refs.push({ materialId: child.trim(), path: childPath });
+    refs.push(...collectTreeMaterialIds(child, childPath));
+  }
+  return refs;
+}
+
+/** Maps every PBV2 material reference only after it has been resolved to a
+ * destination-tenant Material. It deliberately never falls back to source IDs. */
+export function remapPbv2TreeMaterialIds(treeJson: unknown, materialIdMap?: Record<string, string>): any {
+  if (!treeJson || typeof treeJson !== "object") return treeJson;
+  const cloned = cloneJson(treeJson);
+  if (!materialIdMap || Object.keys(materialIdMap).length === 0) return cloned;
+  const rewrite = (value: any): any => {
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key,
+      key === "materialId" && typeof child === "string" && materialIdMap[child.trim()] ? materialIdMap[child.trim()] : rewrite(child),
+    ]));
+  };
+  return rewrite(cloned);
+}
+
+export function resolvePortableMaterialReferences(
+  item: ProductExportV2Item,
+  sourceMappings: readonly PortableMaterialMapping[] | undefined,
+  targetBySku: Map<string, any[]>,
+): { resolved: ResolvedReferences; issues: MaterialReferenceIssue[] } {
+  const resolved: ResolvedReferences = {};
+  const issues: MaterialReferenceIssue[] = [];
+  const sourceById = new Map<string, PortableMaterialMapping[]>();
+  for (const mapping of sourceMappings ?? []) {
+    const sku = normalizedSku(mapping.sku);
+    if (!mapping.id || !sku) continue;
+    const current = sourceById.get(mapping.id) ?? [];
+    current.push(mapping);
+    sourceById.set(mapping.id, current);
+  }
+  const destinationForSku = (skuValue: unknown, field: string): string | null => {
+    const matches = targetBySku.get(normalizedSku(skuValue)) ?? [];
+    if (matches.length === 1) return matches[0]!.id;
+    issues.push({
+      code: matches.length > 1 ? "MATERIAL_REFERENCE_AMBIGUOUS" : "MATERIAL_REFERENCE_UNRESOLVED",
+      message: matches.length > 1
+        ? `Material SKU "${String(skuValue)}" matches multiple target materials; select one explicitly before importing.`
+        : `Material SKU "${String(skuValue)}" could not be matched in the target organization.`,
+      field,
+    });
+    return null;
+  };
+  if (item.primaryMaterialSku) {
+    const materialId = destinationForSku(item.primaryMaterialSku, "primaryMaterialSku");
+    if (materialId) resolved.primaryMaterialId = materialId;
+  }
+  const references = [
+    ...collectTreeMaterialIds(item.pbv2?.activeTree?.treeJson, "pbv2.activeTree.treeJson"),
+    ...collectTreeMaterialIds(item.pbv2?.draftTree?.treeJson, "pbv2.draftTree.treeJson"),
+    ...(!item.pbv2?.activeTree?.treeJson ? collectTreeMaterialIds(item.optionTreeJson, "optionTreeJson") : []),
+  ];
+  const idMap: Record<string, string> = {};
+  for (const reference of references) {
+    if (idMap[reference.materialId]) continue;
+    const sourceMatches = sourceById.get(reference.materialId) ?? [];
+    if (sourceMatches.length !== 1) {
+      issues.push({
+        code: sourceMatches.length > 1 ? "MATERIAL_PORTABLE_REFERENCE_AMBIGUOUS" : "MATERIAL_PORTABLE_REFERENCE_MISSING",
+        message: sourceMatches.length > 1
+          ? `PBV2 material reference at ${reference.path} has multiple source mapping records.`
+          : `PBV2 material reference at ${reference.path} has no portable source SKU mapping and cannot safely be imported.`,
+        field: reference.path,
+      });
+      continue;
+    }
+    const materialId = destinationForSku(sourceMatches[0]!.sku, reference.path);
+    if (materialId) idMap[reference.materialId] = materialId;
+  }
+  if (Object.keys(idMap).length) resolved.treeMaterialIdMap = idMap;
+  return { resolved, issues };
+}
+
 /**
  * Dry-run: validate and build import plan
  */
@@ -126,7 +234,7 @@ export async function buildImportPlan(
   ]);
   
   const productTypeByName = new Map(allProductTypes.map(pt => [pt.name.toLowerCase(), pt]));
-  const materialBySku = new Map(allMaterials.map(m => [m.sku.toLowerCase(), m]));
+  const materialBySku = materialMapBySku(allMaterials);
   
   for (let i = 0; i < request.products.length; i++) {
     const item = request.products[i];
@@ -154,18 +262,9 @@ export async function buildImportPlan(
       }
     }
     
-    if (item.primaryMaterialSku) {
-      const mat = materialBySku.get(item.primaryMaterialSku.toLowerCase());
-      if (mat) {
-        dryItem.resolved.primaryMaterialId = mat.id;
-      } else {
-        dryItem.warnings.push({
-          code: "MATERIAL_NOT_FOUND",
-          message: `Material SKU "${item.primaryMaterialSku}" not found in target org. Will be set to null.`,
-          field: "primaryMaterialSku",
-        });
-      }
-    }
+    const materialResolution = resolvePortableMaterialReferences(item, request.mappings?.materials, materialBySku);
+    Object.assign(dryItem.resolved, materialResolution.resolved);
+    dryItem.errors.push(...materialResolution.issues);
     
     // Check for conflicts
     const slug = item.slug || generateSlugFromName(item.name);
@@ -338,7 +437,7 @@ export async function applyImport(
   ]);
   
   const productTypeByName = new Map(allProductTypes.map(pt => [pt.name.toLowerCase(), pt]));
-  const materialBySku = new Map(allMaterials.map(m => [m.sku.toLowerCase(), m]));
+  const materialBySku = materialMapBySku(allMaterials);
   const existingBySlug = new Map(
     existingProducts.map(p => [generateSlugFromName(p.name), p])
   );
@@ -367,10 +466,11 @@ export async function applyImport(
         const pt = productTypeByName.get(item.productTypeName.toLowerCase());
         if (pt) resolved.productTypeId = pt.id;
       }
-      if (item.primaryMaterialSku) {
-        const mat = materialBySku.get(item.primaryMaterialSku.toLowerCase());
-        if (mat) resolved.primaryMaterialId = mat.id;
+      const materialResolution = resolvePortableMaterialReferences(item, request.mappings?.materials, materialBySku);
+      if (materialResolution.issues.length) {
+        throw Object.assign(new Error(materialResolution.issues[0]!.message), { code: materialResolution.issues[0]!.code });
       }
+      Object.assign(resolved, materialResolution.resolved);
       
       const slug = item.slug || generateSlugFromName(item.name);
       const existing = existingBySlug.get(slug);
@@ -432,7 +532,7 @@ async function createProductWithPbv2(
   
   await ctx.db.transaction(async (tx) => {
     await tx.insert(products).values(insertValues as any);
-    importedSummary = await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
+    importedSummary = await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, resolved, treeUserId);
   });
   
   return { productId, summary: importedSummary };
@@ -458,35 +558,35 @@ async function updateProductWithPbv2(
       .update(products)
       .set(updateValues as any)
       .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
-    importedSummary = await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, treeUserId);
+    importedSummary = await replacePbv2TreesForProduct(tx as TxClient, ctx, productId, item, resolved, treeUserId);
   });
   
   return { productId, summary: importedSummary };
 }
 
-function getActiveTreeForImport(item: ProductExportV2Item): { schemaVersion: number; treeJson: Record<string, any>; publishedAt?: string | null } | undefined {
+function getActiveTreeForImport(item: ProductExportV2Item, resolved: ResolvedReferences): { schemaVersion: number; treeJson: Record<string, any>; publishedAt?: string | null } | undefined {
   if (item.pbv2?.activeTree?.treeJson) {
     return {
       schemaVersion: item.pbv2.activeTree.schemaVersion || 1,
-      treeJson: item.pbv2.activeTree.treeJson,
+      treeJson: remapPbv2TreeMaterialIds(item.pbv2.activeTree.treeJson, resolved.treeMaterialIdMap),
       publishedAt: item.pbv2.activeTree.publishedAt,
     };
   }
   if (item.optionTreeJson && typeof item.optionTreeJson === "object") {
     return {
       schemaVersion: 1,
-      treeJson: item.optionTreeJson as Record<string, any>,
+      treeJson: remapPbv2TreeMaterialIds(item.optionTreeJson, resolved.treeMaterialIdMap) as Record<string, any>,
       publishedAt: null,
     };
   }
   return undefined;
 }
 
-function getDraftTreeForImport(item: ProductExportV2Item, activeTree: { schemaVersion: number; treeJson: Record<string, any> } | undefined): { schemaVersion: number; treeJson: Record<string, any> } | undefined {
+function getDraftTreeForImport(item: ProductExportV2Item, activeTree: { schemaVersion: number; treeJson: Record<string, any> } | undefined, resolved: ResolvedReferences): { schemaVersion: number; treeJson: Record<string, any> } | undefined {
   if (item.pbv2?.draftTree?.treeJson) {
     return {
       schemaVersion: item.pbv2.draftTree.schemaVersion || activeTree?.schemaVersion || 1,
-      treeJson: item.pbv2.draftTree.treeJson,
+      treeJson: remapPbv2TreeMaterialIds(item.pbv2.draftTree.treeJson, resolved.treeMaterialIdMap),
     };
   }
   if (!activeTree) return undefined;
@@ -505,10 +605,11 @@ async function replacePbv2TreesForProduct(
   ctx: ImportMapperContext,
   productId: string,
   item: ProductExportV2Item,
+  resolved: ResolvedReferences,
   treeUserId: string | null,
 ): Promise<ProductImportExportSummary> {
-  const activeTree = getActiveTreeForImport(item);
-  const draftTree = getDraftTreeForImport(item, activeTree);
+  const activeTree = getActiveTreeForImport(item, resolved);
+  const draftTree = getDraftTreeForImport(item, activeTree, resolved);
   const activeTreeJson = activeTree?.treeJson ?? null;
   const sourceSummary = summarizeProductExportItem(item);
   const importedSummary = summarizeProductExportItem({
@@ -542,19 +643,23 @@ async function replacePbv2TreesForProduct(
   if (!activeTree && !draftTree) {
     await dbClient
       .update(products)
-      .set({ pbv2ActiveTreeVersionId: null, optionTreeJson: item.optionTreeJson ?? null } as any)
+      .set({ pbv2ActiveTreeVersionId: null, optionTreeJson: remapPbv2TreeMaterialIds(item.optionTreeJson, resolved.treeMaterialIdMap) ?? null } as any)
       .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
     return importedSummary;
   }
 
+  // Existing Order lines retain their PBV2 tree-version IDs for pricing and
+  // Prepress material planning.  Archive superseded editable versions instead
+  // of deleting them during an upsert import, then create fresh imported
+  // ACTIVE/DRAFT versions below.
   await dbClient
-    .delete(pbv2TreeVersions)
-    .where(
-      and(
-        eq(pbv2TreeVersions.productId, productId),
-        eq(pbv2TreeVersions.organizationId, ctx.organizationId),
-      ),
-    );
+    .update(pbv2TreeVersions)
+    .set({ status: "ARCHIVED", updatedAt: new Date(), updatedByUserId: treeUserId } as any)
+    .where(and(
+      eq(pbv2TreeVersions.productId, productId),
+      eq(pbv2TreeVersions.organizationId, ctx.organizationId),
+      inArray(pbv2TreeVersions.status, ["ACTIVE", "DRAFT"]),
+    ));
 
   let activeTreeId: string | undefined;
 

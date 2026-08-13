@@ -1998,12 +1998,20 @@ export function registerProductRoutes(
       if (canonicalChanges) {
         const actorUserId = getUserId(req.user);
         if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
-        const result = await canonicalProductConfigurationOperations.execute({
-          organizationId, actorUserId,
-          productId, changes: canonicalChanges,
-          auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
-        });
-        existingProduct = result.product;
+        try {
+          const result = await canonicalProductConfigurationOperations.execute({
+            organizationId, actorUserId,
+            productId, changes: canonicalChanges,
+            auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
+          });
+          existingProduct = result.product;
+        } catch (error) {
+          // The Product Editor submits its complete form state.  A canonical
+          // configuration no-op is therefore an idempotent sub-operation, not
+          // a failed Product save.  Keep the stricter error intact for AI
+          // proposals, where no-change feedback is intentional.
+          if (!(error instanceof CanonicalProductConfigurationError) || error.code !== "NO_PRODUCT_CONFIGURATION_CHANGES") throw error;
+        }
       }
 
       const pricingMetadataChanges = takeCanonicalProductPricingMetadataChanges(productData);

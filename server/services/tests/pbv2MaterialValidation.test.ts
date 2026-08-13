@@ -84,4 +84,17 @@ describe("validatePbv2MaterialReferences", () => {
       }),
     ]));
   });
+
+  test("blocks publication when a Prepress inventory-consumption material is missing", () => {
+    const tree = makeTree("mat_destination");
+    (tree.nodes.substrate.choices[0] as any).inventoryConsumption = [{ materialId: "source-environment-uuid", quantityBasis: "area_sqft" }];
+    const findings = validatePbv2MaterialReferences({
+      treeJson: tree,
+      productPrimaryMaterialId: null,
+      materials: [{ id: "mat_destination", name: "13oz Banner", sku: "BANNER-13OZ", weightOzPerBasis: "13" }],
+    });
+    expect(findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_INVENTORY_MATERIAL_REFERENCE_MISSING", severity: "ERROR" }),
+    ]));
+  });
 });
