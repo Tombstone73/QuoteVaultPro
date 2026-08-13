@@ -19,6 +19,7 @@ import {
   responsePresentationForCards,
   responseStateForCards,
   type AssistantActor,
+  type AssistantRepository,
   type AssistantScope,
 } from "../services/assistant/assistantService";
 import { OrganizationAssistantCapabilityResolver } from "../services/assistant/assistantCapabilities";
@@ -26,13 +27,14 @@ import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { AnalyticalCustomerResolutionService } from "../services/assistant/analyticalCustomerResolution";
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
 import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
-import { ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
+import { canonicalProductIntentCards, ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
 import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { aiAuditEvents } from "@shared/schema";
 import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
 import { legacyChatPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
 import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
+import { hasCanonicalProposalCard } from "../services/assistant/canonicalProductIntentCardPersistence";
 
 const canonicalInteractionRequestSchema = z.object({
   proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
@@ -156,6 +158,8 @@ function withoutUntrustedIdentity(raw: unknown): unknown {
 
 export interface AssistantRouteDependencies {
   service?: AssistantService;
+  repository?: AssistantRepository;
+  canonicalProductIntentRouter?: Pick<ConfiguredCanonicalProductIntentRouter, "interact">;
   orderOptionSelectionService?: AssistantOrderOptionSelectionService;
   /**
    * Reporting entity selection is intentionally a separate server-owned
@@ -245,8 +249,9 @@ export function registerAssistantRoutes(
   middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler; isAdmin?: RequestHandler },
   dependencies: AssistantRouteDependencies = {},
 ): void {
+  const repository = dependencies.repository ?? new DrizzleAssistantRepository();
   const service = dependencies.service ?? new AssistantService(
-    new DrizzleAssistantRepository(),
+    repository,
     new OrganizationAssistantCapabilityResolver(),
     undefined,
     undefined,
@@ -263,6 +268,7 @@ export function registerAssistantRoutes(
     ?? (service as unknown as Partial<AssistantReportResolutionSelectionService>);
   const orderOptionSelectionService = dependencies.orderOptionSelectionService
     ?? (service as unknown as Partial<AssistantOrderOptionSelectionService>);
+  const canonicalProductIntentRouter = dependencies.canonicalProductIntentRouter ?? new ConfiguredCanonicalProductIntentRouter();
   const { isAuthenticated, tenantContext } = middleware;
   const guarded: RequestHandler[] = [isAuthenticated, tenantContext];
 
@@ -391,10 +397,20 @@ export function registerAssistantRoutes(
   app.post("/api/assistant/conversations/:conversationId/product-intent-interactions", ...guarded, async (req, res) => {
     try {
       const scope = resolveScope(req); const input = canonicalInteractionRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
-      const router = new ConfiguredCanonicalProductIntentRouter(); const result = await router.interact!({ organizationId: scope.organizationId, actorUserId: scope.userId, ...input });
-      if ("navigation" in result) return res.json({ success: true, data: result });
+      const conversation = await repository.getConversation({ ...scope, conversationId: req.params.conversationId });
+      const ownsProposal = conversation?.messages.some((message) => message.role === "assistant" && hasCanonicalProposalCard(message.structuredCards, input.proposalId));
+      if (!ownsProposal) return res.status(404).json({ error: { code: "product_intent_not_found", message: "Product draft interaction not found.", retryable: false } });
+      const result = await canonicalProductIntentRouter.interact!({ organizationId: scope.organizationId, actorUserId: scope.userId, ...input });
+      if ("navigation" in result) {
+        if (result.navigation.conversationId !== req.params.conversationId) return res.status(404).json({ error: { code: "product_intent_not_found", message: "Product draft interaction not found.", retryable: false } });
+        const { conversationId: _conversationId, ...navigation } = result.navigation;
+        return res.json({ success: true, data: { navigation } });
+      }
       if (!result.ok) return res.status(409).json({ error: { code: result.code, message: result.message, retryable: false } });
-      return res.json({ success: true, data: { proposalId: result.session.proposalId, card: result.card } });
+      if (result.session.conversationId !== req.params.conversationId) return res.status(404).json({ error: { code: "product_intent_not_found", message: "Product draft interaction not found.", retryable: false } });
+      const persisted = await repository.replaceCanonicalProductIntentCards?.({ ...scope, conversationId: req.params.conversationId, proposalId: result.session.proposalId, cards: canonicalProductIntentCards(result) as any });
+      if (!persisted?.turnId) return res.status(409).json({ error: { code: "product_intent_turn_stale", message: "This product draft is no longer attached to an active review turn. Refresh the conversation and try again.", retryable: true } });
+      return res.json({ success: true, data: { proposalId: result.session.proposalId, card: result.card, turnId: persisted.turnId, cards: withTurnBoundProposals(persisted.structuredCards, persisted.turnId) } });
     } catch (error) { return sendError(res, error); }
   });
 

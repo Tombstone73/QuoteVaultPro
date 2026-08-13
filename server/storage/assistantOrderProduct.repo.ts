@@ -12,6 +12,7 @@ import {
   products,
   productionJobs,
 } from "@shared/schema";
+import { selectProductQueryCandidate } from "../services/assistant/productIdentityResolution";
 
 /**
  * Narrow, tenant-bound data access for assistant read tools.  This is kept
@@ -101,11 +102,8 @@ export class AssistantOrderProductRepository {
   }
 
   async getProduct(organizationId: string, input: { productId?: string; query?: string }) {
-    const productPredicate = input.productId
-      ? eq(products.id, input.productId)
-      : ilike(products.name, `%${escapeLike(input.query!)}%`);
-
-    const [product] = await db
+    const productPredicate = input.productId ? eq(products.id, input.productId) : ilike(products.name, `%${escapeLike(input.query!)}%`);
+    const candidates = await db
       .select({
         id: products.id,
         name: products.name,
@@ -123,8 +121,17 @@ export class AssistantOrderProductRepository {
       })
       .from(products)
       .where(and(eq(products.organizationId, organizationId), productPredicate))
-      .orderBy(asc(products.name))
-      .limit(1);
+      .orderBy(
+        input.productId ? asc(products.name) : sql`case when lower(trim(${products.name})) = lower(trim(${String(input.query ?? "")})) then 0 else 1 end`,
+        asc(products.name),
+      )
+      .limit(input.productId ? 1 : 6);
+
+    const selection = input.productId
+      ? (candidates[0] ? { resolution: "resolved" as const, candidate: candidates[0] } : { resolution: "not_found" as const })
+      : selectProductQueryCandidate(candidates, String(input.query ?? ""));
+    if (selection.resolution === "ambiguous") return { resolution: "ambiguous" as const, candidates: candidates.map((candidate) => ({ id: candidate.id, name: candidate.name, isActive: candidate.isActive })) };
+    const product = selection.resolution === "resolved" ? selection.candidate : null;
 
     if (!product) return null;
 
@@ -170,7 +177,7 @@ export class AssistantOrderProductRepository {
         .limit(20),
     ]);
 
-    return { product, versions, options, materials: materialRows };
+    return { resolution: "resolved" as const, product, versions, options, materials: materialRows };
   }
 }
 

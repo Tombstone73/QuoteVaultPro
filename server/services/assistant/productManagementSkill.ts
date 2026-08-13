@@ -127,7 +127,7 @@ export interface CanonicalProductIntentRouter {
    * The router still reloads tenant-scoped canonical state server-side. */
   applySemanticOperations?(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; operations: unknown }): Promise<CanonicalProductIntentOutcome>;
   inspect?(input: { organizationId: string; actorUserId: string; proposalId: string }): Promise<CanonicalProductIntentInspection>;
-  interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }>;
+  interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; conversationId: string; cloneProductId?: string } }>;
 }
 
 function compilerInput(orgId: string, request: string, candidates: { categories: Array<{ label: string }>; materials: Array<{ label: string }>; productionRoutes: Array<{ label: string }> }): ProductIntentCompilerInput {
@@ -195,7 +195,7 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
   async applySemanticOperations(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; operations: unknown }): Promise<CanonicalProductIntentOutcome> {
     return (await this.semanticService(input.organizationId)).applySemanticOperations(input);
   }
-  async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }> {
+  async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; conversationId: string; cloneProductId?: string } }> {
     // Candidate actions and recommendations are server-authored revisions of
     // an existing draft. They must remain available to the direct Operator
     // creation path even when no compiler provider is configured.
@@ -207,7 +207,7 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
   }
 }
 
-function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: true }>): ProductManagementCard[] {
+export function canonicalProductIntentCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: true }>): ProductManagementCard[] {
   const proposal = { proposalId: outcome.session.proposalId, revision: outcome.card.revision, fingerprint: outcome.card.fingerprint };
   const title = outcome.card.title.replace(/^Create inactive draft:\s*/i, "Product draft: ");
   const cards: ProductManagementCard[] = [{ kind: "canonical_product_intent_proposal", title, summary: outcome.card.readiness.ready ? "The product draft is ready for review." : "The product draft needs the remaining business decisions.", sourceLinks: [], details: { canonicalProductIntent: outcome.card, ...proposal } }];
@@ -219,7 +219,7 @@ function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: tr
 }
 
 function canonicalCardsFromInspection(inspection: CanonicalProductIntentInspection): ProductManagementCard[] {
-  return canonicalCards({ ok: true, session: inspection.session, issues: inspection.issues, card: inspection.card });
+  return canonicalProductIntentCards({ ok: true, session: inspection.session, issues: inspection.issues, card: inspection.card });
 }
 
 function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspection: CanonicalProductIntentInspection | null): ActiveSemanticProductDraftContext {
@@ -315,7 +315,7 @@ export class ProductManagementSkillService {
           request: input.message,
         });
         return outcome.ok
-          ? { handled: true, response: outcome.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and will ask only for the business information still needed.", cards: canonicalCards(outcome) }
+          ? { handled: true, response: outcome.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and will ask only for the business information still needed.", cards: canonicalProductIntentCards(outcome) }
           : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft could not be created", summary: "No legacy Product Intake session or product was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : "The canonical product intent could not be created safely.";
@@ -335,7 +335,7 @@ export class ProductManagementSkillService {
     try {
       const outcome = await router.continue({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId, request: input.message });
       return outcome.ok
-        ? { handled: true, response: outcome.card.readiness.ready ? "I updated the product draft. It is ready for review." : "I updated the product draft and kept only its remaining business questions.", cards: canonicalCards(outcome) }
+        ? { handled: true, response: outcome.card.readiness.ready ? "I updated the product draft. It is ready for review." : "I updated the product draft and kept only its remaining business questions.", cards: canonicalProductIntentCards(outcome) }
         : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : "The canonical product intent could not be updated safely.";
@@ -373,7 +373,7 @@ export class ProductManagementSkillService {
         operations: input.operations,
       });
       return outcome.ok
-        ? { handled: true, response: `${outcome.changed === false ? "I confirmed the requested product detail is already in the active draft." : outcome.card.readiness.ready ? "I saved the product revision. It is ready for review." : "I saved the product revision and kept only its remaining questions."}${unsupportedProductDetailNotice(input.operations)}`, cards: canonicalCards(outcome) }
+        ? { handled: true, response: `${outcome.changed === false ? "I confirmed the requested product detail is already in the active draft." : outcome.card.readiness.ready ? "I saved the product revision. It is ready for review." : "I saved the product revision and kept only its remaining questions."}${unsupportedProductDetailNotice(input.operations)}`, cards: canonicalProductIntentCards(outcome) }
         : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : "The semantic product change could not be applied safely.";
@@ -482,13 +482,13 @@ export class ProductManagementSkillService {
       }
       const outcome = await router.begin({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
       if (outcome.ok && input.initialOperations) {
-        if (!router.applySemanticOperations) return { handled: true, response: "The initial product details could not be applied in this deployment.", cards: canonicalCards(outcome) };
+        if (!router.applySemanticOperations) return { handled: true, response: "The initial product details could not be applied in this deployment.", cards: canonicalProductIntentCards(outcome) };
         const applied = await router.applySemanticOperations({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: outcome.session.proposalId, request: input.message, operations: input.initialOperations });
-        if (applied.ok) return { handled: true, response: `${applied.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and applied the supplied business details."}${unsupportedProductDetailNotice(input.initialOperations)}`, cards: canonicalCards(applied) };
-        return { handled: true, response: applied.message, cards: [...canonicalCards(outcome), { kind: "product_validation_errors", title: "Product draft needs correction", summary: "The initial business details were not applied; the unfinished draft remains available for correction.", sourceLinks: [], details: { errors: [applied.message], code: applied.code } }] };
+        if (applied.ok) return { handled: true, response: `${applied.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and applied the supplied business details."}${unsupportedProductDetailNotice(input.initialOperations)}`, cards: canonicalProductIntentCards(applied) };
+        return { handled: true, response: applied.message, cards: [...canonicalProductIntentCards(outcome), { kind: "product_validation_errors", title: "Product draft needs correction", summary: "The initial business details were not applied; the unfinished draft remains available for correction.", sourceLinks: [], details: { errors: [applied.message], code: applied.code } }] };
       }
       return outcome.ok
-        ? { handled: true, response: "I started an unfinished product draft. I’ll add the requested business details and ask only for information that is still needed.", cards: canonicalCards(outcome) }
+        ? { handled: true, response: "I started an unfinished product draft. I’ll add the requested business details and ask only for information that is still needed.", cards: canonicalProductIntentCards(outcome) }
         : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft could not be started", summary: "No product or draft was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : "The unfinished product draft could not be started safely.";

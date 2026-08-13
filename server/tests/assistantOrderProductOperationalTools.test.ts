@@ -248,6 +248,18 @@ describe("assistant order/product/operational tools", () => {
     expect(result.sourceLinks[0]?.href).toBe("/products/product-1/edit");
   });
 
+  test("fails closed and directs canonical discovery when a Product name is ambiguous", async () => {
+    const repository = { ...repo(), getProduct: jest.fn(async () => ({ resolution: "ambiguous", candidates: [{ id: "banner-13", name: "Banner 13 oz", isActive: true }, { id: "banner-18", name: "Banner 18 oz", isActive: true }] })) };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+
+    const summary = await tools.productsGetSummary.execute(invocation, { query: "Banner" });
+    const pricing = await tools.productsGetPricing.execute(invocation, { query: "Banner" });
+
+    expect(summary).toMatchObject({ status: "not_found", data: { product: null }, warning: expect.stringContaining("Product search") });
+    expect(pricing).toMatchObject({ status: "not_found", data: { product: null, pricing: { status: "unavailable" } }, warning: expect.stringContaining("Product search") });
+    expect(JSON.stringify([summary, pricing])).not.toContain("banner-13");
+  });
+
   test("projects tenant-scoped authoritative PBV2 pricing without exposing the tree", async () => {
     const projectProductPrice = jest.fn(async () => ({
       pbv2TreeVersionId: "tree-1",

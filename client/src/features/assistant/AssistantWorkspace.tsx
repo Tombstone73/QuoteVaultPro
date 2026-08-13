@@ -433,6 +433,7 @@ export function ResultCards({
     new Promise<Response>((_, reject) => window.setTimeout(() => reject(new Error(`Diagnostic record could not be loaded. Reference: ${diagnosticLookupReference ?? "Unavailable"}`)), 10_000)),
   ])) as typeof globalThis.fetch;
   const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
+  const [genericCreatingTurns, setGenericCreatingTurns] = React.useState<Record<string, boolean>>({});
   const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
   const genericCreationsInFlight = React.useRef(new Map<string, Promise<unknown>>());
   const genericConfirmationsInFlight = React.useRef(new Map<string, Promise<unknown>>());
@@ -453,6 +454,7 @@ export function ResultCards({
     const existing = genericCreationsInFlight.current.get(turnId);
     if (existing) return existing;
     const creation = (async () => {
+      setGenericCreatingTurns((current) => ({ ...current, [turnId]: true }));
       try {
         const result = await onCreatePlan(turnId);
         setGenericCreateErrors((current) => { const { [turnId]: _removed, ...remaining } = current; return remaining; });
@@ -462,6 +464,7 @@ export function ResultCards({
         return undefined;
       } finally {
         genericCreationsInFlight.current.delete(turnId);
+        setGenericCreatingTurns((current) => { const { [turnId]: _removed, ...remaining } = current; return remaining; });
       }
     })();
     genericCreationsInFlight.current.set(turnId, creation);
@@ -499,7 +502,7 @@ export function ResultCards({
     const configurableBlocked = toConfigurableProductConfirmation((card as any)?.details?.configurableProduct);
     if (configurableBlocked && !configurableBlocked.ready) return <ConfigurableProductConfirmationCardView key={`configurable-blocked-${index}`} confirmation={configurableBlocked} />;
     const canonicalProductIntent = toCanonicalProductIntentCard(card);
-    if (canonicalProductIntent) return <CanonicalProductIntentCardView key={`canonical-product-intent-${canonicalProductIntent.revision}-${index}`} card={canonicalProductIntent} onInteraction={onCanonicalInteraction} />;
+    if (canonicalProductIntent) return <CanonicalProductIntentCardView key={`canonical-product-intent-${canonicalProductIntent.revision}-${index}`} card={canonicalProductIntent} onInteraction={onCanonicalInteraction} onCreatePlan={createGenericPlan} />;
     const canonicalProductIntentProposal = toCanonicalProductIntentProposal(card);
     if (canonicalProductIntentProposal) {
       const created = executionPlans[canonicalProductIntentProposal.turnId];
@@ -510,7 +513,7 @@ export function ResultCards({
       }
       const current = latestCanonicalRevision.get(canonicalProductIntentProposal.proposalId);
       const stale = Boolean(current && (current.revision !== canonicalProductIntentProposal.revision || current.fingerprint !== canonicalProductIntentProposal.fingerprint));
-      return <CanonicalProductIntentReviewProposalCard key={`canonical-product-intent-proposal-${canonicalProductIntentProposal.turnId}-${index}`} proposal={canonicalProductIntentProposal} onCreatePlan={onCreatePlan} stale={stale} />;
+      return <CanonicalProductIntentReviewProposalCard key={`canonical-product-intent-proposal-${canonicalProductIntentProposal.turnId}-${index}`} proposal={canonicalProductIntentProposal} onCreatePlan={createGenericPlan} creating={genericCreatingTurns[canonicalProductIntentProposal.turnId]} error={genericCreateErrors[canonicalProductIntentProposal.turnId]} stale={stale} />;
     }
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
@@ -562,7 +565,7 @@ export function ResultCards({
         const plan = toAssistantPlanCardModel(planCard);
         return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={confirmGenericPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} allowGenericConfirmation genericActionLabel={genericProposal.humanAction} confirmationError={genericConfirmErrors[plan.id]} /> : null;
       }
-      return <AssistantGenericActionProposalCard key={`proposal-${genericProposal.turnId}-${index}`} proposal={genericProposal} onCreatePlan={createGenericPlan} error={genericCreateErrors[genericProposal.turnId]} />;
+      return <AssistantGenericActionProposalCard key={`proposal-${genericProposal.turnId}-${index}`} proposal={genericProposal} onCreatePlan={createGenericPlan} creating={genericCreatingTurns[genericProposal.turnId]} error={genericCreateErrors[genericProposal.turnId]} />;
     }
     const plan = toAssistantPlanCardModel(card);
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;

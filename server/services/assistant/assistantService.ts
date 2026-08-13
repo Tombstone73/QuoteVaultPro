@@ -28,7 +28,7 @@ import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredPro
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
-import { existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
+import { ExistingProductEditError, existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
 import { existingProductEditProviderInputSchema, existingProductEditValidationDetails } from "./existingProductEditContract";
 import { currentTurnProductResolution, existingProductIdForMutation, isProductResolutionObservation } from "./trustedProductState";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
@@ -125,6 +125,14 @@ export interface AssistantRepository {
   getConversation(scope: AssistantScope & { conversationId: string }): Promise<AssistantConversationDetailRecord | null>;
   updateConversation(input: AssistantScope & { conversationId: string; patch: AssistantUpdateConversationRequest }): Promise<AssistantConversationRecord | null>;
   archiveConversations(input: AssistantScope & { conversationIds: string[] }): Promise<AssistantConversationRecord[]>;
+  /** Replaces the canonical Product Intent cards on the assistant turn that
+   * already owns this proposal. This keeps interaction revisions bound to a
+   * persisted turn instead of trusting a browser-created action envelope. */
+  replaceCanonicalProductIntentCards?(input: AssistantScope & {
+    conversationId: string;
+    proposalId: string;
+    cards: AssistantStructuredCard[];
+  }): Promise<AssistantMessageRecord | null>;
   createFoundationTurn(input: AssistantScope & {
     conversationId: string;
     actor: AssistantActor;
@@ -945,14 +953,16 @@ export class AssistantService {
         }
         try {
           const resolvedExistingProductId = existingProductIdForMutation(context);
-          if (!resolvedExistingProductId) return { status: "rejected" as const, warning: "Resolve exactly one existing product before preparing an edit." };
+          const operationType = parsed.data.operations[0]?.op;
+          if (!resolvedExistingProductId) return { status: "rejected" as const, warning: "Resolve exactly one existing product before preparing an edit.", failureCategory: "entity_resolution", failureCode: "existing_product_target_unresolved", failingStep: "existing_product_resolution", ...(operationType ? { operationType } : {}) };
           const resolvedExistingProduct = await existingProductEditService.trustedContext({ organizationId: context.scope.organizationId, productId: resolvedExistingProductId });
-          if (!resolvedExistingProduct) return { status: "rejected" as const, warning: "The resolved existing product is no longer available for editing." };
+          if (!resolvedExistingProduct) return { status: "rejected" as const, warning: "The resolved existing product is no longer available for editing.", failureCategory: "entity_resolution", failureCode: "existing_product_not_found", failingStep: "existing_product_resolution", ...(operationType ? { operationType } : {}) };
           const proposal = await existingProductEditService.buildProposal({ organizationId: context.scope.organizationId, productId: resolvedExistingProductId, operations: parsed.data });
           const summary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
           return { status: "succeeded" as const, result: { status: "succeeded", data: { response: `Prepared protected existing-product edit: ${summary}. GO is required before any change.`, taskDomain: "products", targetType: "existing_product" }, provenance: { sourceLinks: [{ label: proposal.productName, href: `/products/${encodeURIComponent(proposal.productId)}/edit`, entityType: "product", entityId: proposal.productId }], freshness: { capturedAt: new Date().toISOString() } } } as any, presentation: { cards: [{ kind: "action_proposal", title: `Review existing product edit: ${proposal.productName}`, summary: `${summary}. No change has been made; GO is required.`, sourceLinks: [{ label: `Open ${proposal.productName}`, href: `/products/${encodeURIComponent(proposal.productId)}/edit`, entityType: "product", entityId: proposal.productId }], plan: { action: "products.update_existing_product", productId: proposal.productId, operations: parsed.data.operations, proposalFingerprint: proposal.fingerprint } } as any] } };
         } catch (error) {
-          return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The existing product could not be prepared for editing." };
+          const operationType = parsed.data.operations[0]?.op;
+          return { status: "rejected" as const, warning: error instanceof ExistingProductEditError ? error.message : "The existing product could not be prepared for editing.", failureCategory: error instanceof ExistingProductEditError ? "business_validation" : "operation_preparation", failureCode: error instanceof ExistingProductEditError ? error.code : "existing_product_preparation_failed", failingStep: "existing_product_proposal", ...(operationType ? { operationType } : {}) };
         }
       },
     }] : [];

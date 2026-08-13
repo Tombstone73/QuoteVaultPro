@@ -766,6 +766,10 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       const input = productSummaryToolInputSchema.parse(rawInput);
       const record = await repository.getProduct(invocation.organizationId, input);
       const retrievedAt = now();
+      if (record && "resolution" in record && record.resolution === "ambiguous") return productSummaryToolResultSchema.parse({
+        status: "not_found", data: emptyProductSummary(), sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
+        warning: "Multiple tenant products matched that name. Use Product search to select one authoritative record.",
+      });
       if (!record) return productSummaryToolResultSchema.parse({
         status: "not_found", data: emptyProductSummary(), sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
       });
@@ -791,6 +795,11 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       const input = productPricingToolInputSchema.parse(rawInput);
       const record = await repository.getProduct(invocation.organizationId, input);
       const retrievedAt = now();
+      if (record && "resolution" in record && record.resolution === "ambiguous") return productPricingToolResultSchema.parse({
+        status: "not_found",
+        data: { product: null, pricing: { status: "unavailable", pricingMethod: null, treeVersionId: null, quantity: input.quantity ?? 1, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message: "Multiple tenant products matched that name. Use Product search to select one authoritative record." } },
+        sourceLinks: [], freshness: notFoundFreshness(retrievedAt), warning: "Multiple tenant products matched that name. Use Product search to select one authoritative record.",
+      });
       if (!record) return productPricingToolResultSchema.parse({
         status: "not_found",
         data: { product: null, pricing: { status: "unavailable", pricingMethod: null, treeVersionId: null, quantity: input.quantity ?? 1, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message: "No tenant-scoped product matched that reference." } },
@@ -1162,7 +1171,7 @@ async function resolveCurrentRecordContext(input: {
 
   if (context.entityType === "product") {
     const record = await input.repository.getProduct(organizationId, { productId: context.entityId });
-    if (!record) return null;
+    if (!record || ("resolution" in record && record.resolution === "ambiguous")) return null;
     const freshness = toIso(record.product.updatedAt) ?? retrievedAt;
     return {
       entityType: "product",

@@ -78,6 +78,42 @@ describe("canonical Product Intent assistant card", () => {
     expect(container.textContent).not.toContain("Use Flatbed Printing");
   });
 
+  it("renders the latest server-bound review after a candidate resolves the final blocker", async () => {
+    const proposalId = "11111111-1111-4111-8111-111111111111";
+    const actionId = "cand_flatbed_printing";
+    const payload = canonicalCard({ details: { proposalId, canonicalProductIntent: {
+      ...canonicalCard().details.canonicalProductIntent,
+      candidateResolutions: [{ id: actionId, label: "Use Flatbed Printing", description: "Use the tenant category.", blocksConfirmation: true, kind: "select_category" }],
+    } } });
+    const onCreatePlan = jest.fn(async () => ({ ok: true }));
+    const onInteraction = jest.fn(async () => ({
+      card: { ...payload.details.canonicalProductIntent, revision: 5, fingerprint: "b".repeat(64), readiness: { ready: true, blockers: [], questions: [] }, candidateResolutions: [] },
+      turnId: "turn_5",
+      cards: [{ kind: "action_proposal", title: "Create inactive draft: Yard Signs", proposal: { action: "products.create_from_canonical_intent", proposalId, revision: 5, fingerprint: "b".repeat(64), turnId: "turn_5" } }],
+    }));
+    act(() => root.render(<CanonicalProductIntentCardView card={toCanonicalProductIntentCard(payload)!} onInteraction={onInteraction} onCreatePlan={onCreatePlan} />));
+
+    await act(async () => container.querySelector("button")?.click());
+    expect(container.textContent).toContain("Revision 5 is bound to this review");
+    const review = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Review product plan"));
+    await act(async () => review?.click());
+    expect(onCreatePlan).toHaveBeenCalledTimes(1);
+    expect(onCreatePlan).toHaveBeenCalledWith("turn_5");
+  });
+
+  it("shows a safe interaction failure instead of leaving a dead action", async () => {
+    const proposalId = "11111111-1111-4111-8111-111111111111";
+    const payload = canonicalCard({ details: { proposalId, canonicalProductIntent: {
+      ...canonicalCard().details.canonicalProductIntent,
+      candidateResolutions: [{ id: "cand_flatbed", label: "Use Flatbed", description: "Use the tenant category.", blocksConfirmation: true, kind: "select_category" }],
+    } } });
+    const onInteraction = jest.fn(async () => { throw new Error("This product draft changed. Refresh and try again."); });
+    act(() => root.render(<CanonicalProductIntentCardView card={toCanonicalProductIntentCard(payload)!} onInteraction={onInteraction} />));
+
+    await act(async () => container.querySelector("button")?.click());
+    expect(container.querySelector("[role=alert]")?.textContent).toContain("Refresh and try again");
+  });
+
   it("fails closed for object-valued product facts and reports a ready revision without a GO control", () => {
     const payload = canonicalCard();
     (payload.details.canonicalProductIntent.fields as Record<string, unknown>).Pricing = { cents: 1200 };

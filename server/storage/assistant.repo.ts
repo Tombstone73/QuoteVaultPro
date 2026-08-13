@@ -19,6 +19,7 @@ import type {
   AssistantScope,
   AssistantTurnResult,
 } from "../services/assistant/assistantService";
+import { hasCanonicalProposalCard, replaceCanonicalProposalCards } from "../services/assistant/canonicalProductIntentCardPersistence";
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -105,6 +106,24 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       .limit(500);
 
     return { ...toConversation(conversation), messages: messages.map(toMessage) };
+  }
+
+  async replaceCanonicalProductIntentCards(input: AssistantScope & { conversationId: string; proposalId: string; cards: AssistantStructuredCard[] }): Promise<AssistantMessageRecord | null> {
+    const conversation = await this.getConversation(input);
+    if (!conversation) return null;
+    const owner = [...conversation.messages].reverse().find((message) => message.role === "assistant"
+      && Array.isArray(message.structuredCards)
+      && hasCanonicalProposalCard(message.structuredCards, input.proposalId));
+    if (!owner) return null;
+    const [updated] = await db.update(aiMessages).set({
+      structuredCards: replaceCanonicalProposalCards(owner.structuredCards, input.proposalId, input.cards),
+    }).where(and(
+      eq(aiMessages.id, owner.id),
+      eq(aiMessages.orgId, input.organizationId),
+      eq(aiMessages.conversationId, input.conversationId),
+      eq(aiMessages.role, "assistant"),
+    )).returning();
+    return updated ? toMessage(updated) : null;
   }
 
   async updateConversation(input: AssistantScope & { conversationId: string; patch: { title?: string; status?: "active" | "archived" } }): Promise<AssistantConversationRecord | null> {

@@ -92,7 +92,7 @@ function buildService() {
   };
 }
 
-function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; admin?: boolean; orgId?: string; reportResolutionService?: any } = {}) {
+function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; admin?: boolean; orgId?: string; reportResolutionService?: any; repository?: any; canonicalProductIntentRouter?: any } = {}) {
   const app = express();
   app.use(express.json());
   const authenticated = jest.fn((req: any, res: any, next: any) => {
@@ -112,6 +112,8 @@ function buildApp(service: any, options: { authenticated?: boolean; withTenant?:
   registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext, isAdmin }, {
     service,
     reportResolutionService: options.reportResolutionService,
+    repository: options.repository,
+    canonicalProductIntentRouter: options.canonicalProductIntentRouter,
   });
   return { app, authenticated, tenantContext, isAdmin };
 }
@@ -136,6 +138,38 @@ function turnBody(extra: Record<string, unknown> = {}) {
 
 describe("assistant routes", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test("persists and returns the latest turn-bound canonical Product review after an interaction", async () => {
+    const proposalId = "11111111-1111-4111-8111-111111111111";
+    const fingerprint = "a".repeat(64);
+    const replaceCanonicalProductIntentCards = jest.fn(async (input: any) => ({
+      id: "message_2", conversationId: "conversation_1", turnId: "turn_1", role: "assistant", content: "Product draft updated.", createdAt: NOW,
+      structuredCards: input.cards,
+    }));
+    const canonicalProductIntentRouter = { interact: jest.fn(async () => ({
+      ok: true,
+      session: { proposalId, conversationId: "conversation_1" },
+      issues: [],
+      card: { title: "Create inactive draft: Yard Signs", revision: 5, fingerprint, readiness: { ready: true, blockers: [], questions: [] } },
+    })) };
+    const repository = { getConversation: jest.fn(async () => ({ ...conversation, messages: [{ role: "assistant", structuredCards: [{ kind: "canonical_product_intent_proposal", details: { proposalId } }] }] })), replaceCanonicalProductIntentCards };
+    const { app } = buildApp(buildService(), { repository, canonicalProductIntentRouter });
+
+    const response = await request(app).post("/api/assistant/conversations/conversation_1/product-intent-interactions").send({ proposalId, action: "dismiss_recommendation", actionId: "recommendation_1" }).expect(200);
+
+    expect(replaceCanonicalProductIntentCards).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", proposalId }));
+    expect(response.body.data.cards).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal", proposal: expect.objectContaining({ turnId: "turn_1", proposalId, revision: 5, fingerprint }) })]));
+  });
+
+  test("rejects a canonical Product interaction bound to a different conversation", async () => {
+    const proposalId = "11111111-1111-4111-8111-111111111111";
+    const repository = { getConversation: jest.fn(async () => ({ ...conversation, messages: [{ role: "assistant", structuredCards: [{ kind: "canonical_product_intent_proposal", details: { proposalId } }] }] })), replaceCanonicalProductIntentCards: jest.fn() };
+    const canonicalProductIntentRouter = { interact: jest.fn(async () => ({ ok: true, session: { proposalId, conversationId: "conversation_other" }, issues: [], card: { title: "Draft", revision: 1, fingerprint: "b".repeat(64), readiness: { ready: false, blockers: [], questions: [] } } })) };
+    const { app } = buildApp(buildService(), { repository, canonicalProductIntentRouter });
+
+    await request(app).post("/api/assistant/conversations/conversation_1/product-intent-interactions").send({ proposalId, action: "dismiss_recommendation", actionId: "recommendation_1" }).expect(404);
+    expect(repository.replaceCanonicalProductIntentCards).not.toHaveBeenCalled();
+  });
 
   test("rejects diagnostic lookup before database access for unauthenticated, non-admin, and malformed requests", async () => {
     const service = buildService();

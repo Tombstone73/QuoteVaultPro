@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, type AssistantContextEnvelope, type AssistantStructuredCard, type AssistantToolResultEnvelope } from "@shared/assistantContracts";
 import type { ActiveSemanticProductDraftContext } from "./productManagementSkill";
-import { currentTurnProductResolution, taskForCurrentProductEvidence } from "./trustedProductState";
+import { currentTurnProductResolution, isProductResolutionObservation, taskForCurrentProductEvidence } from "./trustedProductState";
+import { existingProductEditOperationsSchema } from "./existingProductEditContract";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -234,13 +235,19 @@ function repeatsPriorClarification(previous: readonly string[], next: readonly s
  * persisted, and normalizes object key order so semantically identical model
  * calls cannot consume the full investigation budget after one deterministic
  * failure. */
-function equivalentToolCallKey(toolName: string, argumentsValue: Record<string, unknown>): string {
+function equivalentToolCallKey(toolName: string, argumentsValue: Record<string, unknown>, productResolutionEpoch = 0): string {
   const normalize = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(normalize);
     if (!value || typeof value !== "object") return value;
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, normalize(child)]));
   };
-  return `${toolName}:${JSON.stringify(normalize(argumentsValue))}`;
+  const canonicalArguments = toolName === "products.apply_existing_operations"
+    ? (() => {
+      const parsed = existingProductEditOperationsSchema.safeParse({ operations: argumentsValue.operations });
+      return parsed.success ? parsed.data : argumentsValue;
+    })()
+    : argumentsValue;
+  return `${productResolutionEpoch}:${toolName}:${JSON.stringify(normalize(canonicalArguments))}`;
 }
 
 function isDeterministicToolFailure(observation: Pick<AssistantOperatorObservation, "status" | "failureCode">): boolean {
@@ -282,6 +289,7 @@ export class AssistantOperatorRuntime {
     let printersHeroToolDecisionCount = 0;
     let continuationCount = 0;
     const deterministicFailureKeys = new Set<string>();
+    let productResolutionEpoch = 0;
 
     for (let step = 1; step <= boundedSteps; step += 1) {
       let decision: AssistantOperatorDecision;
@@ -337,16 +345,26 @@ export class AssistantOperatorRuntime {
 
       printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {
-        const callKey = equivalentToolCallKey(call.toolName, call.arguments);
+        const callKey = equivalentToolCallKey(call.toolName, call.arguments, productResolutionEpoch);
         if (deterministicFailureKeys.has(callKey)) {
-          observations.push({ step, toolName: call.toolName, status: "rejected", warning: "This equivalent lookup already failed deterministically in this investigation; choose a different authorized capability." });
+          const prior = [...observations].reverse().find((observation) => observation.toolName === call.toolName && isDeterministicToolFailure(observation));
+          observations.push({ step, toolName: call.toolName, status: "rejected", warning: "This equivalent operation already failed deterministically; it was not attempted again.", failureCategory: prior?.failureCategory ?? "deterministic_rejection", failureCode: prior?.failureCode ?? "equivalent_operation_rejected", failingStep: prior?.failingStep });
           console.warn("[AI_OPERATOR_TRACE]", { stage: "duplicate_deterministic_tool_failure_blocked", taskId: input.taskId, step, toolName: call.toolName });
-          continue;
+          if (call.toolName !== "products.apply_existing_operations") continue;
+          return {
+            status: "failed",
+            response: prior?.warning ?? "The requested business operation was rejected and was not retried without new evidence or a changed proposal.",
+            observations,
+            safeWorkingSummary,
+            missingInformation: [],
+            diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
+          };
         }
         try {
           console.info("[AI_OPERATOR_TRACE]", { stage: "handler_entered", taskId: input.taskId, step, toolName: call.toolName });
           const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
           observations.push({ step, ...execution });
+          if (isProductResolutionObservation(execution as AssistantOperatorObservation) && execution.status === "succeeded") productResolutionEpoch += 1;
           if (isDeterministicToolFailure(execution)) deterministicFailureKeys.add(callKey);
           console.info("[AI_OPERATOR_TRACE]", { stage: "observation_returned", taskId: input.taskId, step, toolName: call.toolName, status: execution.status });
         } catch {

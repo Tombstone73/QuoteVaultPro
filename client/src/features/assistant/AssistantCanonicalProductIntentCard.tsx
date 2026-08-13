@@ -115,13 +115,26 @@ function IssueList({ title, values, tone }: { title: string; values: string[]; t
   </div>;
 }
 
-export function CanonicalProductIntentCardView({ card, onInteraction }: { card: CanonicalProductIntentCard; onInteraction?: (input: { proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }) => Promise<unknown> }) {
+function safeActionError(error: unknown, fallback: string): string {
+  const message = error && typeof error === "object" && "message" in error && typeof (error as { message?: unknown }).message === "string" ? (error as { message: string }).message : "";
+  try {
+    const parsed = JSON.parse(message.replace(/^\d+:\s*/, "")) as { error?: { message?: unknown } };
+    return typeof parsed.error?.message === "string" && parsed.error.message.trim() ? parsed.error.message : fallback;
+  } catch { return message || fallback; }
+}
+
+export function CanonicalProductIntentCardView({ card, onInteraction, onCreatePlan }: { card: CanonicalProductIntentCard; onInteraction?: (input: { proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }) => Promise<unknown>; onCreatePlan?: (turnId: string) => Promise<unknown> | void }) {
   const [override, setOverride] = React.useState<CanonicalProductIntentCard | null>(null);
-  React.useEffect(() => setOverride(null), [card.fingerprint]);
+  const [latestProposal, setLatestProposal] = React.useState<CanonicalProductIntentProposal | null>(null);
+  const [interactionError, setInteractionError] = React.useState<string | null>(null);
+  const [planError, setPlanError] = React.useState<string | null>(null);
+  const [planCreating, setPlanCreating] = React.useState(false);
+  React.useEffect(() => { setOverride(null); setLatestProposal(null); setInteractionError(null); setPlanError(null); }, [card.fingerprint]);
   const currentCard = override ?? card;
   const needsInput = currentCard.questions.length > 0 || currentCard.blockers.length > 0;
   const [rename, setRename] = React.useState(""); const [busy, setBusy] = React.useState<string | null>(null);
-  const interact = async (action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate", actionId: string, newProductName?: string) => { if (!onInteraction || !currentCard.proposalId) return; setBusy(actionId); try { const result = await onInteraction({ proposalId: currentCard.proposalId, action, actionId, newProductName }); const raw = record(result); const next = raw?.card ? toCanonicalProductIntentCard({ kind: "canonical_product_intent_proposal", details: { canonicalProductIntent: raw.card, proposalId: currentCard.proposalId } }) : null; if (next) setOverride(next); } finally { setBusy(null); } };
+  const interact = async (action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate", actionId: string, newProductName?: string) => { if (!onInteraction || !currentCard.proposalId) return; setBusy(actionId); setInteractionError(null); try { const result = await onInteraction({ proposalId: currentCard.proposalId, action, actionId, newProductName }); const raw = record(result); const next = raw?.card ? toCanonicalProductIntentCard({ kind: "canonical_product_intent_proposal", details: { canonicalProductIntent: raw.card, proposalId: currentCard.proposalId } }) : null; if (next) setOverride(next); const nextProposal = Array.isArray(raw?.cards) ? raw.cards.map(toCanonicalProductIntentProposal).find(Boolean) ?? null : null; setLatestProposal(nextProposal); } catch (error) { setInteractionError(safeActionError(error, "The product draft could not be updated. Refresh and try again.")); } finally { setBusy(null); } };
+  const createLatestPlan = async (turnId: string) => { if (!onCreatePlan || planCreating) return; setPlanCreating(true); setPlanError(null); try { const result = await onCreatePlan(turnId); if (result === undefined) setPlanError("The server could not prepare this product plan."); } catch (error) { setPlanError(safeActionError(error, "The server could not prepare this product plan.")); } finally { setPlanCreating(false); } };
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product draft: ${currentCard.title}`}>
     <div className="flex items-start justify-between gap-3">
       <div><p className="font-semibold">{currentCard.title}</p><p className="mt-0.5 text-muted-foreground">Product configuration</p></div>
@@ -135,15 +148,18 @@ export function CanonicalProductIntentCardView({ card, onInteraction }: { card: 
     <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">
       {needsInput ? "This revision cannot be confirmed until the required decisions are resolved." : currentCard.ready ? "Ready for server-side review and confirmation. Any later correction creates a new revision." : "This revision is not yet ready for review."}
     </p>
+    {interactionError ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive" role="alert">{interactionError}</p> : null}
+    {latestProposal ? <CanonicalProductIntentReviewProposalCard proposal={latestProposal} onCreatePlan={createLatestPlan} creating={planCreating} error={planError} /> : null}
   </section>;
 }
 
-export function CanonicalProductIntentReviewProposalCard({ proposal, onCreatePlan, creating, stale = false }: { proposal: CanonicalProductIntentProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean; stale?: boolean }) {
+export function CanonicalProductIntentReviewProposalCard({ proposal, onCreatePlan, creating, stale = false, error }: { proposal: CanonicalProductIntentProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean; stale?: boolean; error?: string | null }) {
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product draft review: ${proposal.title}`}>
     <p className="font-semibold">{proposal.title}</p>
     <p className="mt-1 text-muted-foreground">Review this product draft before confirming creation of one inactive product and one PBV2 draft.</p>
     <p className="mt-2 text-muted-foreground">Revision {proposal.revision} is bound to this review. Later corrections require a new review.</p>
-    {stale ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2" role="status">A newer product revision is available. This review is stale and cannot be used.</p> : null}
+    {stale ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2" role="status">A newer canonical revision is available. This review is stale and cannot be used.</p> : null}
+    {error ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive" role="alert">{error} You can retry this review.</p> : null}
     <div className="mt-2"><Button type="button" size="sm" disabled={creating || stale} onClick={() => void onCreatePlan(proposal.turnId)}>{stale ? "Review stale — refresh required" : creating ? "Preparing plan…" : "Review product plan"}</Button></div>
   </section>;
 }

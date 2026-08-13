@@ -195,6 +195,39 @@ describe("AssistantOperatorRuntime", () => {
     expect(result.status).toBe("completed");
   });
 
+  test("normalizes lifecycle defaults and stops a repeated rejected existing-product proposal", async () => {
+    const execute = jest.fn(async ({ toolName }: any) => ({ toolName, status: "rejected" as const, warning: "Resolve exactly one existing product before preparing an edit.", failureCategory: "entity_resolution", failureCode: "existing_product_target_unresolved", failingStep: "existing_product_resolution", operationType: "update_product_lifecycle" }));
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations }) => observations.length === 0
+      ? { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "update_product_lifecycle", isActive: false }] } }] }
+      : { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ isActive: false, confirmPublishWarnings: false, op: "update_product_lifecycle" }] } }] }) };
+
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Deactivate the active Banner product.", taskId: "task_existing_rejection", trustedContext });
+
+    expect(result).toMatchObject({ status: "failed", response: "Resolve exactly one existing product before preparing an edit." });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(result.observations).toEqual([
+      expect.objectContaining({ status: "rejected", failureCode: "existing_product_target_unresolved" }),
+      expect.objectContaining({ status: "rejected", warning: expect.stringContaining("not attempted again") }),
+    ]);
+  });
+
+  test("permits a corrected existing-product proposal after the rejected operation changes", async () => {
+    const execute = jest.fn(async ({ toolName, arguments: args }: any) => args.operations[0].isActive === false
+      ? { toolName, status: "rejected" as const, warning: "No lifecycle change is available.", failureCategory: "business_validation", failureCode: "NO_PRODUCT_LIFECYCLE_CHANGES", operationType: "update_product_lifecycle" }
+      : { toolName, status: "succeeded" as const, result: { status: "succeeded" as const, data: { response: "Prepared one protected lifecycle proposal." }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } } as any });
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations }) => observations.length === 0
+      ? { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "update_product_lifecycle", isActive: false }] } }] }
+      : observations.length === 1
+        ? { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "update_product_lifecycle", isActive: true }] } }] }
+        : { kind: "complete", response: "I prepared one protected Product lifecycle plan. No change has been made; GO is required." }) };
+
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Correct the requested lifecycle operation.", taskId: "task_existing_corrected", trustedContext });
+
+    expect(result.status).toBe("completed");
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.response).toContain("GO is required");
+  });
+
   test("uses pricing directly for a trusted current product without rediscovery", async () => {
     const execute = jest.fn(async ({ toolName, arguments: args }: any) => {
       expect(toolName).toBe("products.get_pricing");

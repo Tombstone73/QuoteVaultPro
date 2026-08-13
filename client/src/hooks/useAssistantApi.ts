@@ -272,7 +272,7 @@ export function useCanonicalProductIntentInteraction() {
   return useMutation({
     mutationFn: async ({ conversationId, proposalId, action, actionId, newProductName }: { conversationId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }) => {
       const response = await apiRequest("POST", `/api/assistant/conversations/${encodeURIComponent(conversationId)}/product-intent-interactions`, { proposalId, action, actionId, ...(newProductName ? { newProductName } : {}) });
-      return unwrap<{ card?: unknown; navigation?: { href: string; abandon: boolean; cloneProductId?: string } }>(await response.json());
+      return unwrap<{ card?: unknown; cards?: unknown[]; turnId?: string; navigation?: { href: string; abandon: boolean; cloneProductId?: string } }>(await response.json());
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: conversationsKey }); },
   });
