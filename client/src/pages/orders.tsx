@@ -37,13 +37,20 @@ import BackNavControls from "@/components/BackNavControls";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
-import { documentNumberMatchesSearch } from "@shared/documentNumbering";
-import { orderMatchesStatusPillFilter } from "@/lib/orderStatusPills";
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "invoiceStatus" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
 type ProofFilterValue = "all" | "needs_action";
+
+function useDebouncedValue<T>(value: T, delayMs = 300): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [delayMs, value]);
+  return debouncedValue;
+}
 
 function ProductionSummaryBadge({
   summary,
@@ -183,6 +190,7 @@ export default function Orders() {
   const { onSmartBack } = useSmartBack();
   
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search.trim());
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
   const [statusPillFilter, setStatusPillFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
@@ -256,12 +264,21 @@ export default function Orders() {
 
   // Stable filters object for query key consistency
   const ordersFilters = useMemo(() => ({
+    search: debouncedSearch || undefined,
+    state: stateFilter === "all" ? undefined : stateFilter,
+    statusPillId: statusPillFilter === "all" ? undefined : statusPillFilter,
+    priority: priorityFilter === "all" ? undefined : priorityFilter,
     page,
     pageSize,
     includeThumbnails,
     sortBy: sortKey,
     sortDir: sortDirection,
-  }), [page, pageSize, includeThumbnails, sortKey, sortDirection]);
+  }), [debouncedSearch, stateFilter, statusPillFilter, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
+
+  // Every change to the server query shape starts at the first matching page.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, stateFilter, statusPillFilter, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
 
   // Fetch orders with pagination support
   const { data: ordersData, isLoading, error } = useOrders(ordersFilters);
@@ -288,42 +305,11 @@ export default function Orders() {
     return !!target.closest('button, a, input, select, textarea, [data-stop-row-nav="true"]');
   };
 
-  // Filter orders by search, state, status, priority (client-side for Phase 1)
+  // Core identity/state/pill/priority filtering is server-side and paginated.
+  // Production/proof summaries are derived list projections for this page.
   const baseFilteredOrders = useMemo(() => {
-    let filtered: OrderRow[] = orders || [];
-    
-    if (search) {
-      const searchLower = search.toLowerCase();
-      filtered = filtered.filter((order: any) =>
-        documentNumberMatchesSearch({
-          query: search,
-          displayNumber: order.displayNumber,
-          numberCore: order.numberCore,
-          legacyNumber: order.orderNumber,
-        }) ||
-        order.label?.toLowerCase().includes(searchLower) ||
-        order.poNumber?.toLowerCase().includes(searchLower) ||
-        order.customer?.companyName?.toLowerCase().includes(searchLower) ||
-        `${order.contact?.firstName ?? ""} ${order.contact?.lastName ?? ""} ${order.contact?.email ?? ""}`.toLowerCase().includes(searchLower)
-      );
-    }
-    
-    // TitanOS: Filter by state
-    if (stateFilter !== "all") {
-      filtered = filtered.filter((order: any) => order.state === stateFilter);
-    }
-
-    // TitanOS: Filter by status pill within the active state scope
-    if (pillFilterEnabled && statusPillFilter !== 'all') {
-      filtered = filtered.filter((order: any) => orderMatchesStatusPillFilter(order, statusPillFilter, pillsForFilter));
-    }
-
-    if (priorityFilter !== "all") {
-      filtered = filtered.filter((order: any) => order.priority === priorityFilter);
-    }
-    
-    return filtered;
-  }, [orders, search, stateFilter, pillFilterEnabled, statusPillFilter, priorityFilter, pillsForFilter]);
+    return orders || [];
+  }, [orders]);
 
   const filteredOrders = useMemo(() => {
     let filtered = baseFilteredOrders;
@@ -1161,7 +1147,7 @@ export default function Orders() {
         {/* Orders Table */}
         <DataCard
           title="Orders"
-          description={`${filteredOrders.length} order${filteredOrders.length !== 1 ? 's' : ''} found • ${totalCount} total orders`}
+          description={`${totalCount} order${totalCount !== 1 ? 's' : ''} found`}
           className="mt-0"
           headerActions={
             <ColumnConfig
@@ -1213,13 +1199,15 @@ export default function Orders() {
                     <TableCell colSpan={visibleColumnCount} className="text-center py-6 text-muted-foreground">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="w-8 h-8 text-muted-foreground" />
-                        <p>No orders found</p>
-                        <Link to={ROUTES.orders.new}>
-                          <Button variant="outline" size="sm">
-                            <Plus className="w-4 h-4 mr-2" />
-                            Create first order
-                          </Button>
-                        </Link>
+                        <p>{debouncedSearch || stateFilter !== "all" || statusPillFilter !== "all" || priorityFilter !== "all" || productionFilter !== "all" || proofFilter !== "all" ? "No orders match your search" : "No orders yet"}</p>
+                        {!debouncedSearch && stateFilter === "all" && statusPillFilter === "all" && priorityFilter === "all" && productionFilter === "all" && proofFilter === "all" ? (
+                          <Link to={ROUTES.orders.new}>
+                            <Button variant="outline" size="sm">
+                              <Plus className="w-4 h-4 mr-2" />
+                              Create first order
+                            </Button>
+                          </Link>
+                        ) : null}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -1258,7 +1246,7 @@ export default function Orders() {
             <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 border-t">
               <div className="flex items-center gap-3">
                 <div className="text-sm text-muted-foreground">
-                  Showing {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, filteredOrders.length)} of {filteredOrders.length}
+                  Showing {totalCount === 0 ? 0 : ((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, totalCount)} of {totalCount}
                 </div>
               </div>
               <div className="flex items-center gap-2">

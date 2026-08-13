@@ -15,4 +15,11 @@ describe("orders.search", () => {
     const adapter = createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated: jest.fn() } as any)["orders.search"]!;
     await expect(adapter.execute({ organizationId: "org-b", sort: "newest", limit: 5 } as any, context)).rejects.toThrow();
   });
+
+  test("uses the shared paginated repository search rather than client-side rows", async () => {
+    const getAllOrdersPaginated = jest.fn(async () => ({ items: [], totalCount: 0, page: 1, pageSize: 5, totalPages: 1, hasNext: false, hasPrev: false }));
+    const adapter = createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated } as any)["orders.search"]!;
+    await adapter.execute({ query: "20032", limit: 5 }, context);
+    expect(getAllOrdersPaginated).toHaveBeenCalledWith("org-a", expect.objectContaining({ search: "20032", page: 1, pageSize: 5 }));
+  });
 });

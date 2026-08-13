@@ -76,6 +76,7 @@ import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 import { ensureDraftInvoiceForOrderInTransaction } from "../invoicesService";
+import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -106,6 +107,35 @@ type OrderWithProofSummary = Order & {
     proofCounts?: OrderProofSummary["proofCounts"];
     proofLineItemId?: string | null;
 };
+
+function buildOrderSearchConditions(organizationId: string, rawSearch: unknown): any[] {
+    const normalizedSearch = String(rawSearch ?? "").trim();
+    if (!normalizedSearch) return [];
+
+    const dueDate = parseOrderSearchDate(normalizedSearch);
+    if (dueDate) return [gte(orders.dueDate, dueDate.start), sql`${orders.dueDate} < ${dueDate.end}`];
+
+    return orderSearchTokens(normalizedSearch).map((token) => {
+        const pattern = `%${token}%`;
+        const normalizedPattern = `%${normalizeOrderSearchTerm(token)}%`;
+        const digits = digitsOnlySearchTerm(token);
+        const phoneCondition = digits.length >= 3
+            ? sql`regexp_replace(coalesce(${customerContacts.phone}, ''), '\\D', '', 'g') like ${`%${digits}%`} or regexp_replace(coalesce(${customerContacts.mobile}, ''), '\\D', '', 'g') like ${`%${digits}%`}`
+            : sql`false`;
+        return or(
+            ilike(orders.orderNumber, pattern),
+            ilike(orders.displayNumber, pattern),
+            sql`regexp_replace(lower(coalesce(${orders.displayNumber}, ${orders.orderNumber})), '[^a-z0-9]', '', 'g') like ${normalizedPattern}`,
+            ilike(orders.poNumber, pattern),
+            ilike(orders.label, pattern),
+            ilike(orders.notesInternal, pattern),
+            sql`exists (select 1 from ${orderListNotes} where ${orderListNotes.orderId} = ${orders.id} and ${orderListNotes.organizationId} = ${organizationId} and ${orderListNotes.listLabel} ilike ${pattern})`,
+            sql`exists (select 1 from ${customers} where ${customers.id} = ${orders.customerId} and ${customers.organizationId} = ${organizationId} and (${customers.companyName} ilike ${pattern} or ${customers.email} ilike ${pattern} or regexp_replace(coalesce(${customers.phone}, ''), '\\D', '', 'g') like ${digits.length >= 3 ? `%${digits}%` : "__never_matches__"}))`,
+            sql`exists (select 1 from ${customerContacts} where ${customerContacts.id} = ${orders.contactId} and ${customerContacts.organizationId} = ${organizationId} and (${customerContacts.firstName} ilike ${pattern} or ${customerContacts.lastName} ilike ${pattern} or concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}) ilike ${pattern} or ${customerContacts.email} ilike ${pattern} or ${phoneCondition}))`,
+            sql`exists (select 1 from ${orderLineItems} inner join ${products} on ${products.id} = ${orderLineItems.productId} and ${products.organizationId} = ${organizationId} where ${orderLineItems.orderId} = ${orders.id} and (${orderLineItems.description} ilike ${pattern} or ${products.name} ilike ${pattern} or ${products.shopName} ilike ${pattern} or ${products.description} ilike ${pattern} or ${products.category} ilike ${pattern}))`,
+        );
+    });
+}
 
 type OrderSnapshotFields = Pick<
     typeof orders.$inferInsert,
@@ -761,6 +791,8 @@ export class OrdersRepository {
     async getAllOrdersPaginated(organizationId: string, opts: {
         search?: string;
         status?: string;
+        state?: string;
+        statusPillId?: string;
         priority?: string;
         customerId?: string;
         startDate?: string;
@@ -797,17 +829,10 @@ export class OrdersRepository {
         const offset = (page - 1) * pageSize;
 
         const conditions = [eq(orders.organizationId, organizationId)] as any[];
-        if (opts.search) {
-            const pattern = `%${opts.search}%`;
-            conditions.push(or(
-                ilike(orders.orderNumber, pattern),
-                ilike(orders.poNumber, pattern),
-                ilike(orders.label, pattern),
-                ilike(orders.notesInternal, pattern),
-                sql`exists (select 1 from ${customerContacts} where ${customerContacts.id} = ${orders.contactId} and (${customerContacts.firstName} ilike ${pattern} or ${customerContacts.lastName} ilike ${pattern} or ${customerContacts.email} ilike ${pattern}))`
-            ));
-        }
+        conditions.push(...buildOrderSearchConditions(organizationId, opts.search));
         if (opts.status) conditions.push(eq(orders.status, opts.status));
+        if (opts.state) conditions.push(eq(orders.state, opts.state));
+        if (opts.statusPillId) conditions.push(eq(orders.statusPillId, opts.statusPillId));
         if (opts.priority) conditions.push(eq(orders.priority, opts.priority));
         if (opts.customerId) conditions.push(eq(orders.customerId, opts.customerId));
         if (opts.startDate) conditions.push(gte(orders.createdAt, opts.startDate));
@@ -873,7 +898,7 @@ export class OrdersRepository {
             )
             .leftJoin(
                 customerContacts,
-                eq(customerContacts.id, orders.contactId)
+                and(eq(customerContacts.id, orders.contactId), eq(customerContacts.organizationId, organizationId))
             )
             .where(whereClause)
             .orderBy(orderByClause)

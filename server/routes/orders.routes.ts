@@ -1505,6 +1505,8 @@ export async function registerOrderRoutes(
                 const result = await storage.getAllOrdersPaginated(organizationId, {
                     search: req.query.search as string | undefined,
                     status: req.query.status as string | undefined,
+                    state: req.query.state as string | undefined,
+                    statusPillId: req.query.statusPillId as string | undefined,
                     priority: req.query.priority as string | undefined,
                     customerId: req.query.customerId as string | undefined,
                     startDate: req.query.startDate as string | undefined,

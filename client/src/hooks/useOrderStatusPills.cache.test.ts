@@ -21,6 +21,26 @@ const originalOrder = {
 };
 
 describe("status-pill assignment cache synchronization", () => {
+  test("keeps server-side search and lifecycle filters in the Orders list query key", () => {
+    expect(ordersListQueryKey({
+      page: 1,
+      pageSize: 25,
+      search: "20032",
+      state: "canceled",
+      statusPillId: "pill-hold",
+      priority: "rush",
+    })).toEqual([
+      "orders",
+      "list",
+      expect.objectContaining({
+        search: "20032",
+        state: "canceled",
+        statusPillId: "pill-hold",
+        priority: "rush",
+      }),
+    ]);
+  });
+
   test("successful assignment immediately patches every list page and order detail", () => {
     const queryClient = new QueryClient();
     const firstPageKey = ordersListQueryKey({ page: 1, pageSize: 25, sortBy: "date" });
