@@ -40,6 +40,7 @@ export const assistantToolNameValues = [
   "quotes.search",
   "quotes.get_detail",
   "customers.get_summary",
+  "orders.search",
   "orders.get_summary",
   "products.get_summary",
   "products.get_pricing",
@@ -98,7 +99,7 @@ export const assistantCapabilitySchema = z.object({
   /** True only when the configured provider can serve the internal assistant. */
   providerConfigured: z.boolean(),
   readToolsEnabled: z.boolean(),
-  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(16),
+  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(32),
   /** Whether the reviewed confirmation framework is available to this organization. */
   writeFrameworkEnabled: z.boolean(),
   // Stage 4 enables a server-owned, explicitly allowlisted write action. The
@@ -120,7 +121,8 @@ export const assistantCapabilitySchema = z.object({
    * separately configured server-owned fallback is available. */
   externalResearchEnabled: z.boolean(),
   mcpEnabled: z.literal(false),
-  productActivationEnabled: z.literal(false),
+  /** True only when this actor can prepare the reviewed GO-bound Product lifecycle operation. */
+  productActivationEnabled: z.boolean(),
   activeProductEditingEnabled: z.boolean(),
   /** Enables expandable implementation details for authorized staff only. */
   diagnosticsEnabled: z.boolean(),
@@ -396,6 +398,34 @@ export const assistantOrderSummaryInputSchema = z.object({
   message: "orderId or orderNumber is required",
 });
 
+export const assistantOrderSearchInputSchema = z.object({
+  query: z.string().trim().min(1).max(160).optional(),
+  status: z.string().trim().min(1).max(80).optional(),
+  priority: z.string().trim().min(1).max(80).optional(),
+  customerId: assistantSafeIdentifierSchema.optional(),
+  createdAtRange: z.object({ start: assistantIsoDateTimeSchema, end: assistantIsoDateTimeSchema }).strict().optional(),
+  sort: z.enum(["newest", "order_number_asc", "order_number_desc", "customer_asc", "customer_desc", "total_asc", "total_desc", "due_date_asc", "due_date_desc", "status_asc", "status_desc", "priority_asc", "priority_desc"]).default("newest"),
+  limit: z.number().int().min(1).max(20).default(5),
+}).strict().superRefine((value, ctx) => {
+  if (value.createdAtRange && value.createdAtRange.start > value.createdAtRange.end) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["createdAtRange", "end"], message: "created date range end must not precede start" });
+});
+export const assistantOrderSearchResultSchema = z.object({
+  totalMatchingOrders: z.number().int().nonnegative(),
+  orders: z.array(z.object({
+    orderId: assistantSafeIdentifierSchema,
+    orderNumber: z.string().trim().min(1).max(80),
+    customer: z.object({ id: assistantSafeIdentifierSchema.optional(), name: z.string().trim().min(1).max(240), sourceLink: assistantSourceLinkSchema.optional() }).strict(),
+    status: z.string().trim().min(1).max(120),
+    state: z.string().trim().min(1).max(120),
+    total: z.number().finite().nonnegative(),
+    createdAt: assistantIsoDateTimeSchema,
+    dueDate: assistantIsoDateTimeSchema.optional(),
+    priority: z.string().trim().min(1).max(120),
+    sourceLink: assistantSourceLinkSchema,
+  }).strict()).max(20),
+  appliedFilters: z.object({ sort: z.string().trim().min(1).max(40), limit: z.number().int().min(1).max(20) }).strict(),
+}).strict();
+
 /** A suggestion is a text-only continuation. It never carries an executable
  * tool call, confirmation token, or implicit authority. The backend receives
  * the prompt as an ordinary user message and resolves scope again. */
@@ -470,6 +500,12 @@ export const assistantProductSummaryResultSchema = z.object({
   active: z.boolean().optional(),
   category: z.string().trim().min(1).max(160).optional(),
   pricingMethod: z.string().trim().min(1).max(160).optional(),
+  pricingEngineConfiguration: z.object({
+    engine: z.string().trim().min(1).max(80),
+    profileKey: z.string().trim().min(1).max(120).nullable(),
+    allowRotation: z.boolean(),
+    mixedSheetLayout: z.boolean(),
+  }).strict().optional(),
   pbv2Summary: z.string().trim().min(1).max(500).optional(),
   materialSummary: z.array(z.string().trim().min(1).max(240)).max(20).optional(),
   optionSummary: z.string().trim().min(1).max(1_000).optional(),
@@ -511,6 +547,7 @@ export const assistantProductPricingResultSchema = z.object({
       quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
       matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]), cells: z.array(z.object({ selections: z.array(z.object({ axis: z.string().min(1), value: z.string().min(1) }).strict()).max(12), rateCents: z.number().int().nonnegative().nullable() }).strict()).max(120) }).strict().nullable(),
       options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), availableWhen: z.object({ optionGroup: z.string().min(1), value: z.string().min(1) }).strict().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
+      pricingEngineConfiguration: z.object({ engine: z.string().min(1), profileKey: z.string().nullable(), allowRotation: z.boolean(), mixedSheetLayout: z.boolean() }).strict().optional(),
       treeVersionId: assistantSafeIdentifierSchema, lifecycle: z.string().min(1).max(40),
     }).strict().nullable(),
     inputNeeded: z.array(z.object({ field: z.string().min(1).max(160), label: z.string().min(1).max(160), reason: z.string().min(1).max(500), allowedValues: z.array(z.string().min(1).max(160)).max(30) }).strict()).max(20),

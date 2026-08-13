@@ -69,4 +69,14 @@ describe("existing product edit execution command", () => {
     expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ operations: { operations: materialInput.operations }, expectedFingerprint: fingerprint }));
     expect(result.steps[0]?.summary).toContain("shared canonical Product material operation");
   });
+  test("keeps Product activation behind the same GO command and canonical lifecycle operation", async () => {
+    const lifecycleInput = { productId: "product_1", operations: [{ op: "update_product_lifecycle", isActive: true }], proposalFingerprint: fingerprint };
+    const lifecycleProposal = { ...proposal, sourceLifecycle: "PRODUCT", canonicalOperationReference: "products.update_lifecycle.v1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Lifecycle", before: "inactive", after: "active" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: lifecycleProposal })), execute: jest.fn(async () => lifecycleProposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: lifecycleInput, context: {} as any });
+    expect(service.execute).not.toHaveBeenCalled(); expect(built.preview.summary).toContain("before GO");
+    const result = await command.execute({ plan: { sanitizedArguments: lifecycleInput } as any, scope });
+    expect(result.steps[0]?.summary).toContain("canonical Product lifecycle operation");
+  });
 });

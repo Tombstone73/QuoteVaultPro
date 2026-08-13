@@ -16,6 +16,13 @@ function yardSignsIntent() {
 }
 
 describe("Product Intent resolver", () => {
+  test("canonical resolved provenance suppresses a stale measurement question while unresolved provenance keeps it", async () => {
+    const stale = { ...yardSignsIntent(), pricing: { model: "scalar", unit: "per_piece", priceCents: 100 }, unresolvedFields: [{ path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED", question: "Dimensions or quantity only?" }], fieldMetadata: { "measurement.mode": { source: "explicit_user" } } };
+    const resolved = await resolveAndValidateProductDraftIntent(stale, { categoryLabels: ["Signs"] });
+    expect(resolved.issues.some((issue) => issue.path === "measurement.mode")).toBe(false);
+    const reopened = await resolveAndValidateProductDraftIntent({ ...stale, fieldMetadata: { "measurement.mode": { source: "unresolved" } } }, { categoryLabels: ["Signs"] });
+    expect(reopened.issues).toEqual(expect.arrayContaining([expect.objectContaining({ path: "measurement.mode" })]));
+  });
   test("keeps every Yard Signs matrix value while making the pricing unit a required question", async () => {
     const result = await resolveAndValidateProductDraftIntent(yardSignsIntent(), { categoryLabels: ["Signs"] });
     expect(result.ready).toBe(false);

@@ -12,7 +12,7 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
   const changeSummary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
   return {
     title: `Update existing product: ${proposal.productName}`,
-    summary: `${changeSummary}. This is a protected existing-product edit; no pricing rate, dependency, active-tree pointer, publishing, or activation changes before GO.`,
+    summary: `${changeSummary}. This protected existing-product edit makes no change before GO and never publishes or changes an active-tree pointer.`,
     sideEffects: proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}.`),
     affectedRecords: [{ entityType: "product", entityId: proposal.productId, fingerprint: proposal.fingerprint }],
   } as ExecutionPlanPreview;
@@ -21,7 +21,7 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
 export function createExistingProductEditCommandDefinition(service: ExistingProductEditService): AssistantCommandDefinition<Input, unknown, unknown> {
   return {
     name: existingProductEditCommandName, version: "v1", domain: "products", mode: "write",
-    description: "Apply a confirmed existing-product edit through the shared canonical Product configuration, Product material, or PBV2 option-configuration operation. Legacy option-default plans are translated through the PBV2 operation.",
+    description: "Apply a confirmed existing-product edit through the shared canonical Product configuration, lifecycle, material, or PBV2 option-configuration operation.",
     risk: "high", requiredCapability: "assistant.products.update_existing_product", allowedRoles: ["owner", "admin"],
     inputSchema, previewSchema: z.unknown(), resultSchema: z.unknown(), maxAffectedRecords: 1, bulkAllowed: false,
     confirmationRequired: true, reauthenticationRequired: true, confirmationExpiresInMs: 10 * 60_000,
@@ -52,6 +52,8 @@ export function createExistingProductEditExecutionCommand(service: ExistingProdu
         ? "Applied the shared canonical PBV2 option configuration operation after GO."
         : result.canonicalOperationReference === "products.update_material_configuration.v1"
           ? "Applied the shared canonical Product material operation after GO."
+          : result.canonicalOperationReference === "products.update_lifecycle.v1"
+            ? "Applied the shared canonical Product lifecycle operation after GO."
           : "Applied the shared canonical Product configuration operation after GO.";
       return { status: "succeeded", summary: `Updated existing product ${result.productName}.`, details: { existingProductEdit: { productId: result.productId, changes: result.changes, canonicalOperationReference: result.canonicalOperationReference ?? null } } as any, steps: [{ commandName: `${existingProductEditCommandName}@v1`, status: "succeeded", summary: operationSummary }] };
     },

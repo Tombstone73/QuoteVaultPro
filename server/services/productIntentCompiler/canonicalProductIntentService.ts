@@ -463,9 +463,14 @@ function semanticOperationFailureMessage(error: unknown, requestedOperations: re
         const index = invalidSemanticOperationIndex(error);
         return index === null ? undefined : requestedOperations?.[index];
       })()
-      : undefined;
+      : requestedOperations?.length === 1 ? requestedOperations[0] : undefined;
   const subject = failedOperation ? `the ${failedOperation} product operation` : "that product change";
-  return `I could not apply ${subject} safely. The current draft was left unchanged; review that operation and try again. Reference: ${referenceId}.`;
+  const code = semanticFailureCode(error);
+  const category = code?.includes("STALE") ? "the draft changed while the operation was being prepared"
+    : code?.includes("UNRESOLVED") || code?.includes("NOT_FOUND") ? "a referenced Product option or value could not be resolved unambiguously"
+      : code?.includes("TIER") || code?.includes("PRICING") || error instanceof z.ZodError ? "the requested pricing structure did not pass canonical validation"
+        : "the operation did not pass canonical validation";
+  return `I could not apply ${subject} because ${category}. The current draft was left unchanged; review the structured values and try again. Reference: ${referenceId}.`;
 }
 
 function semanticBatchDiagnostic(input: { operations?: SemanticProductOperationsResult["operations"]; error?: unknown; stage: string; originalRevisionUnchanged: boolean }): SemanticBatchDiagnostic | undefined {

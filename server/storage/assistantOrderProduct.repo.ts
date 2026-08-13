@@ -114,6 +114,7 @@ export class AssistantOrderProductRepository {
         pricingMode: products.pricingMode,
         pricingEngine: products.pricingEngine,
         pricingProfileKey: products.pricingProfileKey,
+        pricingProfileConfig: products.pricingProfileConfig,
         requiresProductionJob: products.requiresProductionJob,
         requiresProofApproval: products.requiresProofApproval,
         artworkPolicy: products.artworkPolicy,

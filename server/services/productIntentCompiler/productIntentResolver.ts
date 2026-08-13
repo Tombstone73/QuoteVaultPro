@@ -162,6 +162,10 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
     // The material reference above owns material readiness. An optional
     // unresolved material must not reappear as a generic blocking question.
     if (field.path === "material") continue;
+    // Historical V1 state may retain a stale question beside a newer
+    // canonical value. Provenance, not the provisional concrete value,
+    // decides whether the question is still open.
+    if (intent.fieldMetadata[field.path]?.source && intent.fieldMetadata[field.path]?.source !== "unresolved") continue;
     issues.push({ code: field.code || "UNRESOLVED_FIELD", path: field.path, severity: "question", message: field.question ?? "This field needs a decision." });
   }
   validateTiers(intent, issues);

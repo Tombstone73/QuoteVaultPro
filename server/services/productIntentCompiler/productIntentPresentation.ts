@@ -20,6 +20,7 @@ function pricing(intent: ProductDraftIntent): string {
   const value = intent.pricing;
   if (value.model === "scalar") return `${money(value.priceCents)} ${value.unit === "per_square_foot" ? "per square foot" : value.unit === "per_piece" ? "per piece" : "flat fee"}${value.minimumChargeCents == null ? "" : `; minimum ${money(value.minimumChargeCents)}`}`;
   if (value.model === "quantity_tiers") return `Quantity tiers ${value.unit === "per_piece" ? "per piece" : "per square foot"}: ${value.tiers.map((tier) => `${tier.minimumQuantity}${tier.maximumQuantity == null ? "+" : `–${tier.maximumQuantity}`}: ${money(tier.priceCents)}`).join(", ")}`;
+  if (value.model === "option_quantity_tiers") return `${value.unit === "per_piece" ? "Per piece" : "Per square foot"} option quantity tiers (${value.rows.length} schedules)`;
   if (value.model === "one_dimensional_matrix" || value.model === "two_dimensional_matrix") return value.unit === "unresolved" ? `Matrix — pricing unit not selected (${value.cells.length} prices)` : `${value.unit === "per_square_foot" ? "Per square foot" : "Per piece"} matrix (${value.cells.length} prices)`;
   return "Unresolved";
 }
@@ -59,7 +60,7 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
     candidateResolutions: interactions.candidateResolutions ?? [], optionalRecommendations: interactions.optionalRecommendations ?? [],
     fields: {
       Product: intent.identity.name, Category: intent.identity.category.state === "resolved" ? intent.identity.category.label : "Not selected",
-      Measurement: intent.measurement.mode === "fixed_size" ? `Fixed size: ${intent.measurement.dimensions.widthIn} × ${intent.measurement.dimensions.heightIn} in` : intent.measurement.mode === "dimensions_required" ? "Width and height required" : "Quantity only",
+      Measurement: intent.fieldMetadata["measurement.mode"]?.source === "unresolved" ? "Not selected" : intent.measurement.mode === "fixed_size" ? `Fixed size: ${intent.measurement.dimensions.widthIn} × ${intent.measurement.dimensions.heightIn} in` : intent.measurement.mode === "dimensions_required" ? "Width and height required" : "Quantity only",
       Quantity: intent.quantity.behavior === "customer_entered" ? "Customer enters quantity" : intent.quantity.behavior === "fixed" ? `Fixed quantity: ${intent.quantity.quantity}` : "Not applicable",
       Pricing: pricing(intent), Material: reference(intent.material), Options: optionGroups,
       Proof: intent.workflow.requiresProofApproval ? "Required" : "Not required", "Production job": intent.workflow.requiresProductionJob ? "Required" : "Not required",

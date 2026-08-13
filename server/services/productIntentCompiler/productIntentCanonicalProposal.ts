@@ -176,6 +176,20 @@ function applyPricingProposalOperation(proposal: CanonicalProductPricingProposal
       next.configuration = normalizeCanonicalProductPricingConfiguration({ ...next.configuration, ...(basis ? { unit: basis } : {}), cells: next.configuration.cells.map((cell) => cell[axis] === value.key ? { ...cell, priceCents: operation.priceCents } : cell) });
     } else throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_RATE_UNSUPPORTED");
     removeMissing(ratePath(group.key, value.key));
+  } else if (operation.op === "set_option_quantity_tiers") {
+    const group = pricingGroup(String(operation.optionGroup));
+    const seen = new Set<string>();
+    const rows = operation.rows.map((row) => {
+      const value = pricingValue(group, String(row.value));
+      if (seen.has(value.key)) throw new Error("PRODUCT_INTENT_OPTION_TIER_ROW_DUPLICATE");
+      seen.add(value.key);
+      const ordered = [...row.tiers].sort((left, right) => left.minimumQuantity - right.minimumQuantity);
+      if (ordered[0]?.minimumQuantity !== 1 || new Set(ordered.map((tier) => tier.minimumQuantity)).size !== ordered.length) throw new Error("PRODUCT_INTENT_OPTION_TIER_BOUNDS_INVALID");
+      return { option: value.key, tiers: ordered.map((tier, index) => ({ minimumQuantity: tier.minimumQuantity, maximumQuantity: ordered[index + 1] ? ordered[index + 1]!.minimumQuantity - 1 : null, priceCents: tier.priceCents })) };
+    });
+    if (seen.size !== group.values.length) throw new Error("PRODUCT_INTENT_OPTION_TIER_SCHEDULE_INCOMPLETE");
+    next.configuration = normalizeCanonicalProductPricingConfiguration({ model: "option_quantity_tiers", unit: operation.basis, optionKey: group.key, rows });
+    next.missingInformation = next.missingInformation.filter((field) => !field.path.startsWith("pricing.optionTiers."));
   } else if (operation.op === "set_option_price_impact") {
     const group = pricingGroup(String(operation.optionGroup)); const value = pricingValue(group, String(operation.value));
     next.percentageImpacts = next.percentageImpacts.filter((impact) => impact.optionGroupKey !== group.key || impact.optionValueKey !== value.key);
@@ -301,6 +315,7 @@ export function buildCanonicalProductIntentProposal(
       case "set_scalar_price":
       case "set_option_rate":
       case "set_matrix_rate":
+      case "set_option_quantity_tiers":
       case "set_option_price_impact":
         productPricing = applyPricingProposalOperation(productPricing ?? pricingProposalFromIntent(current), operation, knownGroups);
         return;
@@ -505,6 +520,7 @@ export function projectCanonicalProductIntentStateToV1Draft(
     ...current.unresolvedFields.filter((field) => field.code !== "GROMMET_QUANTITY_UNRESOLVED" && field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit" && !field.path.startsWith("pricing.optionRates.")),
     ...productPricing.missingInformation,
   ];
+  if (current.fieldMetadata["measurement.mode"]?.source !== "unresolved") unresolvedFields = unresolvedFields.filter((field) => field.path !== "measurement.mode");
   if (unsupportedCodes.has("grommet_quantity")) unresolvedFields = [...unresolvedFields, {
     path: "optionGroups.grommets.quantity",
     code: "GROMMET_QUANTITY_UNRESOLVED",

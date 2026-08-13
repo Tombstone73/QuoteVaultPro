@@ -40,6 +40,7 @@ Product Editor saves and Operator pricing proposals use the shared canonical Pro
 
 - A scalar price is one saved integer-cent amount with a basis such as per piece, per square foot, or flat fee.
 - A matrix rate is controlled by one or two option axes. Every expected combination must appear exactly once; missing, duplicate, or unknown cells are invalid.
+- A matrix row may carry its own quantity tiers and tier basis. Matching row tiers override product-level tiers through the existing PBV2 evaluator.
 - Quantity and square-foot tier thresholds begin at 1 and increase strictly. Product-intent quantity ranges are gapless and end with one open-ended tier.
 - A percentage impact is evaluated against the resolved base using the existing PBV2 calculation engine. Dependent total percentages retain their prerequisite and established stacking semantics.
 

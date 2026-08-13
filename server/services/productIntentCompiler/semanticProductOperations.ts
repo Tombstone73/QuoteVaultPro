@@ -20,6 +20,7 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("add_option_value"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("add_text_input"), optionGroup: z.string().trim().min(1).max(160), label: z.string().trim().min(1).max(160), multiline: z.boolean(), required: z.boolean(), whenOptionGroup: z.string().trim().min(1).max(160).optional(), whenValue: z.string().trim().min(1).max(160).optional() }).strict(),
     z.object({ op: z.literal("set_option_rate"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160), priceCents: z.number().int().min(0).max(10_000_000), basis: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
+    z.object({ op: z.literal("set_option_quantity_tiers"), optionGroup: z.string().trim().min(1).max(160), basis: z.enum(["per_piece", "per_square_foot"]), rows: z.array(z.object({ value: z.string().trim().min(1).max(160), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), priceCents: z.number().int().min(0).max(10_000_000) }).strict()).min(1) }).strict()).min(1) }).strict(),
     // Retained for legacy compiler continuation compatibility. New Operator
     // function tools expose set_option_rate, not the matrix implementation term.
     z.object({ op: z.literal("set_matrix_rate"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160), priceCents: z.number().int().min(0).max(10_000_000), basis: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
@@ -236,7 +237,16 @@ export function compileSemanticProductOperations(
 ): ProductDraftIntentPatch {
   const semantic = semanticProductOperationsResultSchema.parse(raw);
   if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
-  const proposal = buildCanonicalProductIntentProposal(current, semantic.operations, request, options);
+  let proposal;
+  try {
+    proposal = buildCanonicalProductIntentProposal(current, semantic.operations, request, options);
+  } catch (error) {
+    // A single-operation batch can be attributed exactly without guessing.
+    // Multi-operation dependency attribution remains with the canonical
+    // batch diagnostics rather than assigning the wrong operation.
+    if (semantic.operations.length === 1) throw new SemanticProductOperationError(0, semantic.operations[0]!.op, error);
+    throw error;
+  }
   const canonicalPatch = applyCanonicalProductIntentProposal(current, proposal, baseRevision);
   const compatibilityIndexes = new Set(proposal.compatibilityOperations.map((operation) => operation.index));
   const compatibilityOperations = semantic.operations.filter((_, index) => compatibilityIndexes.has(index));

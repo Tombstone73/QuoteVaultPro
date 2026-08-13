@@ -5,10 +5,10 @@
 ## Counts
 
 - Registered: 64
-- Read: 17
+- Read: 18
 - Mutation: 38
-- Eligible: 55
-- Ineligible: 2
+- Eligible: 56
+- Ineligible: 1
 - Hard denied: 7
 
 ## Registry
@@ -19,6 +19,7 @@
 | capability.read.quotes.search | quotes | read | read_tool | quotes.search | assistant.internal_staff | eligible | — | quotes.operations | wrapped_existing |
 | capability.read.quotes.get_detail | quotes | read | read_tool | quotes.get_detail | assistant.internal_staff | eligible | — | quotes.operations | wrapped_existing |
 | capability.read.customers.get_summary | customers_contacts | read | read_tool | customers.get_summary | assistant.internal_staff | eligible | — | customers.contacts | wrapped_existing |
+| capability.read.orders.search | orders | read | read_tool | orders.search | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
 | capability.read.orders.get_summary | orders | read | read_tool | orders.get_summary | assistant.internal_staff | eligible | — | orders.operations | wrapped_existing |
 | capability.read.products.get_summary | products | read | read_tool | products.get_summary | catalog.read | eligible | — | products.pbv2 | wrapped_existing |
 | capability.read.products.get_pricing | pricing | read | read_tool | products.get_pricing | finance.read | eligible | — | pricing.pbv2 | wrapped_existing |
@@ -70,7 +71,6 @@
 | capability.command.billing.add_invoice_note | invoicing | mutation | command | billing.add_invoice_note | assistant.billing.add_invoice_note | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.payments.record_manual_payment | payments | mutation | command | payments.record_manual_payment | assistant.payments.record_manual_payment | eligible | — | payments.operations | shared_canonical |
 | capability.command.payments.add_payment_note | payments | mutation | command | payments.add_payment_note | assistant.payments.add_payment_note | eligible | — | payments.operations | shared_canonical |
-| capability.ui.products.activate | products | lifecycle | ui_compatibility | products.activate | products.activate | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.settings.organization_preferences | settings_permissions | administrative | ui_compatibility | organization.preferences.update | organization.settings.update | ineligible | — | settings.permissions | compatibility_only |
 | capability.hard_deny.organization.delete | security | administrative | security_policy | organization.delete | — | hard_denied | Owner-only destructive organization action. | — | security_policy |
 | capability.hard_deny.organization.destroy_tenant | security | administrative | security_policy | organization.destroy_tenant | — | hard_denied | Tenant destruction is never an AI capability. | — | security_policy |

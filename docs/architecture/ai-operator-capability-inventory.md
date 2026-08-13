@@ -62,7 +62,7 @@ None.
 | ai.command.products.clone_to_inactive_draft | mutation | unknown | command_plan_only | products.clone_to_inactive_draft | assistant.products.clone_to_inactive_draft | partial_or_indirect |
 | ai.command.products.update_existing_product | mutation | unknown | command_plan_only | products.update_existing_product | assistant.products.update_existing_product | partial_or_indirect |
 | ui.products.edit_primary_fields | mutation | page_and_route | none | — | owner_or_admin | ui_supported_ai_adapter_missing |
-| ui.products.activate_published_configuration | mutation | page_and_route | none | — | admin | ui_supported_ai_adapter_missing |
+| ui.products.activate_published_configuration | mutation | page_and_route | command_plan_only | products.update_existing_product | admin | shared_canonical_today |
 
 ### pbv2_pricing
 
@@ -90,6 +90,7 @@ None.
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
+| ai.read.orders.search | read | unknown | read_tool | orders.search | internal_staff | partial_or_indirect |
 | ai.read.orders.get_summary | read | unknown | read_tool | orders.get_summary | internal_staff | partial_or_indirect |
 | ai.read.orders.get_due_summary | read | unknown | read_tool | orders.get_due_summary | internal_staff | partial_or_indirect |
 | ai.command.orders.create | mutation | unknown | command_plan_only | orders.create | assistant.orders.create | partial_or_indirect |

@@ -4,9 +4,9 @@
 
 ## Counts
 
-- shared_canonical: 25
+- shared_canonical: 26
 - compatibility_only: 30
-- ui_only_reviewed: 2
+- ui_only_reviewed: 1
 - hard_denied: 7
 - underlying_model_unsupported: 2
 
@@ -48,6 +48,7 @@
 
 | Capability | Classification | UI exposure | AI exposure | Canonical operation | Adapter/tool | Authority | GO | Lifecycle/state owner |
 |---|---|---|---|---|---|---|---|---|
+| capability.read.orders.search | shared_canonical | Orders list; GET /api/orders | existing | OrdersRepository.getAllOrdersPaginated | orders.search | assistant.internal_staff | not_required | not_applicable |
 | capability.read.orders.get_summary | compatibility_only | unknown | existing | not_applicable | orders.get_summary | assistant.internal_staff | not_required | not_applicable |
 | capability.read.orders.get_due_summary | compatibility_only | unknown | existing | not_applicable | orders.get_due_summary | assistant.internal_staff | not_required | not_applicable |
 | capability.command.orders.create | compatibility_only | unknown | existing | not_applicable | orders.create | assistant.orders.create | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
@@ -93,8 +94,7 @@
 | capability.command.products.create_configurable_draft | compatibility_only | unknown | existing | not_applicable | products.create_configurable_draft | assistant.products.create_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 | capability.command.products.create_from_canonical_intent | compatibility_only | unknown | existing | not_applicable | products.create_from_canonical_intent | assistant.products.create_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 | capability.command.products.clone_to_inactive_draft | compatibility_only | unknown | existing | not_applicable | products.clone_to_inactive_draft | assistant.products.clone_to_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
-| capability.command.products.update_existing_product | shared_canonical | Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft | existing | products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1 | products.update_existing_product | assistant.products.update_existing_product | go_required | CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations |
-| capability.ui.products.activate | ui_only_reviewed | Product Editor | not_exposed | not_applicable | products.activate | products.activate | not_required | server/routes/products.routes.ts |
+| capability.command.products.update_existing_product | shared_canonical | Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft | existing | products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1; products.update_lifecycle.v1 | products.update_existing_product | assistant.products.update_existing_product | go_required | CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations + CanonicalProductLifecycleOperations |
 | product.products.customer_specific | underlying_model_unsupported | unknown | not_exposed | not_applicable | — | — | not_applicable | Proposal contract preserves this as unsupported without poisoning independent supported work. |
 | product.products.grommet_quantity | underlying_model_unsupported | unknown | not_exposed | not_applicable | — | — | not_applicable | Preserved as unresolved; no phrase-specific choice repair remains active. |
 

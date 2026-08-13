@@ -335,6 +335,7 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "add_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "label", "multiline", "required"], properties: { op: { const: "add_text_input" }, optionGroup: { type: "string" }, label: { type: "string" }, multiline: { type: "boolean" }, required: { type: "boolean" }, whenOptionGroup: { type: "string" }, whenValue: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "priceCents"], properties: { op: { const: "set_option_rate" }, optionGroup: { type: "string" }, value: { type: "string" }, priceCents: { type: "integer", minimum: 0 }, basis: { enum: ["per_piece", "per_square_foot"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "basis", "rows"], properties: { op: { const: "set_option_quantity_tiers" }, optionGroup: { type: "string" }, basis: { enum: ["per_piece", "per_square_foot"] }, rows: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["value", "tiers"], properties: { value: { type: "string" }, tiers: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["minimumQuantity", "priceCents"], properties: { minimumQuantity: { type: "integer", minimum: 1 }, priceCents: { type: "integer", minimum: 0 } } } } } } } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "percent"], properties: { op: { const: "set_option_price_impact" }, optionGroup: { type: "string" }, value: { type: "string" }, percent: { type: "number", minimum: -100, maximum: 100 }, replacesPercentageWhen: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string" }, value: { type: "string" } } } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "whenOptionGroup", "whenValue"], properties: { op: { const: "set_option_group_availability" }, optionGroup: { type: "string" }, whenOptionGroup: { type: "string" }, whenValue: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "remove_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
@@ -596,7 +597,7 @@ export class AssistantService {
       productionCommandsPermittedForUser,
       externalResearchEnabled: Boolean(resolved.enabled && resolved.externalResearchEnabled),
       mcpEnabled: false,
-      productActivationEnabled: false,
+      productActivationEnabled: Boolean(writeFrameworkEnabled && hasPermission(actor, "assistant.products.update_existing_product")),
       activeProductEditingEnabled: hasPermission(actor, "assistant.products.update_existing_product"),
       diagnosticsEnabled: hasPermission(actor, "assistant.diagnostics.view"),
       composerHelperText: !readToolsEnabled
@@ -941,7 +942,7 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. Use update_product_configuration for identity/workflow fields, update_product_material with an exact displayed active material label (or null to clear), and update_pbv2_option_configuration for shared PBV2 group/input/choice behavior. Never invent a material ID. Pricing and lifecycle changes are excluded. This never changes anything before GO; the server revalidates state at GO. Product identity and available materials are supplied by trusted context.",
+      description: "Prepare a protected edit to one trusted existing persisted product. Use update_product_lifecycle to activate or deactivate through the shared lifecycle rule. This never changes anything before GO; the server revalidates state at GO.",
       inputSchema: {
         type: "object", additionalProperties: false, required: ["operations"],
         properties: {
@@ -950,6 +951,7 @@ export class AssistantService {
             items: { anyOf: [
               { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
               { type: "object", additionalProperties: false, required: ["op", "materialLabel"], properties: { op: { const: "update_product_material" }, materialLabel: { type: ["string", "null"] } } },
+              { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" } } },
               { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
                 kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },
                 group: { anyOf: [{ type: "string" }, { type: "object" }] }, input: { anyOf: [{ type: "string" }, { type: "object" }] }, choice: { anyOf: [{ type: "string" }, { type: "object" }] }, changes: { type: "object" }, orderedGroups: { type: "array", items: { type: "string" } }, orderedValues: { type: "array", items: { type: "string" } },
@@ -1382,6 +1384,7 @@ function displayToolTitle(toolName: string): string {
     "operations.get_attention_summary": "Production attention",
     "reports.operational_summary": "Operational summary",
     "orders.get_summary": "Order summary",
+    "orders.search": "Orders",
     "orders.get_due_summary": "Order due summary",
     "production.get_completed_jobs": "Completed production jobs",
     "products.get_summary": "Product summary",
@@ -1401,6 +1404,10 @@ function summaryForTool(toolName: string, data: any): string {
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
   }
   if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${formatAssistantDisplayValue(data.customer.status)}` : ""}.`;
+  if (toolName === "orders.search") {
+    const orders = Array.isArray(data.orders) ? data.orders : [];
+    return orders.length ? `I found ${orders.length} matching order${orders.length === 1 ? "" : "s"}: ${orders.map((order: any) => `${order.orderNumber} — ${order.customer?.name}, ${formatAssistantDisplayValue(order.status)}, $${Number(order.total).toFixed(2)}, ${formatAssistantDate(order.createdAt)}`).join("; ")}.` : "There are no matching orders.";
+  }
   if (toolName === "orders.get_summary") {
     const order = data.order;
     const operationalSummary = summarizeOperationalOrder(data);

@@ -137,6 +137,7 @@ export const productSummaryToolResultSchema = toolEnvelopeSchema(z.object({
     active: z.boolean(),
     category: z.string().nullable(),
     pricingMethod: z.string().min(1),
+    pricingEngineConfiguration: z.object({ engine: z.string().min(1), profileKey: z.string().nullable(), allowRotation: z.boolean(), mixedSheetLayout: z.boolean() }).strict().optional(),
   }).nullable(),
   pbv2: z.array(z.object({
     id: identifierSchema,
@@ -173,6 +174,7 @@ export const productPricingToolResultSchema = toolEnvelopeSchema(z.object({
       quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
       matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]), cells: z.array(z.object({ selections: z.array(z.object({ axis: z.string().min(1), value: z.string().min(1) }).strict()).max(12), rateCents: z.number().int().nonnegative().nullable() }).strict()).max(120) }).strict().nullable(),
       options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), availableWhen: z.object({ optionGroup: z.string().min(1), value: z.string().min(1) }).strict().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
+      pricingEngineConfiguration: z.object({ engine: z.string().min(1), profileKey: z.string().nullable(), allowRotation: z.boolean(), mixedSheetLayout: z.boolean() }).strict().optional(),
       treeVersionId: identifierSchema, lifecycle: z.string().min(1).max(40),
     }).strict().nullable(),
     inputNeeded: z.array(z.object({ field: z.string().min(1).max(160), label: z.string().min(1).max(160), reason: z.string().min(1).max(500), allowedValues: z.array(z.string().min(1).max(160)).max(30) }).strict()).max(20),
@@ -574,6 +576,7 @@ function publicPricingConfiguration(configuration: ProductPricingIntrospection) 
       availableWhen: group.availableWhen ?? null,
       choices: group.choices.map((choice) => ({ label: choice.label, pricingImpactSummary: choice.pricingImpactSummary })),
     })),
+    pricingEngineConfiguration: configuration.pricingEngineConfiguration,
     treeVersionId: configuration.treeVersionId,
     lifecycle: configuration.lifecycle,
   };
@@ -769,7 +772,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       return productSummaryToolResultSchema.parse({
         status: "ok",
         data: {
-          product: { id: record.product.id, name: record.product.name, active: record.product.isActive, category: record.product.category ?? null, pricingMethod },
+          product: { id: record.product.id, name: record.product.name, active: record.product.isActive, category: record.product.category ?? null, pricingMethod, pricingEngineConfiguration: { engine: record.product.pricingEngine || "pricingProfile", profileKey: record.product.pricingProfileKey || null, allowRotation: record.product.pricingProfileConfig?.allowRotation === true, mixedSheetLayout: record.product.pricingProfileConfig?.allowRotation === true } },
           pbv2: record.versions.map((version) => ({ id: version.id, status: version.status, schemaVersion: version.schemaVersion, publishedAt: toIso(version.publishedAt) })),
           materials: record.materials.map((material) => ({ id: material.id, name: material.name, sku: material.sku ?? null })),
           options: record.options.map((option) => ({ id: option.id, name: option.name, type: option.type, active: option.isActive })),
@@ -1012,6 +1015,7 @@ export function createStage2OrderProductToolAdapters(
           active: product.active,
           ...(product.category ? { category: product.category } : {}),
           pricingMethod: product.pricingMethod,
+          pricingEngineConfiguration: product.pricingEngineConfiguration,
           ...(result.data.pbv2.length ? { pbv2Summary: result.data.pbv2.map((version) => `v${version.schemaVersion} ${version.status}`).join(", ") } : {}),
           ...(result.data.materials.length ? { materialSummary: result.data.materials.map((material) => material.sku ? `${material.name} (${material.sku})` : material.name) } : {}),
           ...(result.data.options.length ? { optionSummary: `${result.data.options.length} option${result.data.options.length === 1 ? "" : "s"}; ${result.data.options.filter((option) => option.active).length} active.` } : {}),

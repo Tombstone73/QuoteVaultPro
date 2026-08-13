@@ -56,7 +56,6 @@ import {
 } from "../services/pricing/pricingPreviewValidation";
 import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
 import { filterProductsForCatalog } from "@shared/productCatalogVisibility";
-import { requiresPublishedPbv2BeforeActivation } from "@shared/pbv2/productionLifecycle";
 import { normalizeProductRotationForWrite } from "../lib/productPricingRotationWrite";
 import {
   ProductParsingDescriptionGeneratorError,
@@ -66,6 +65,7 @@ import { CanonicalProductConfigurationError, canonicalProductConfigurationOperat
 import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations } from "../services/products/canonicalPbv2OptionConfigurationOperations";
 import { CanonicalProductPricingError, canonicalProductPricingOperations, takeCanonicalProductPricingMetadataChanges } from "../services/products/canonicalProductPricingOperations";
 import { CanonicalProductMaterialError, canonicalProductMaterialOperations, canonicalProductMaterialProposalFromTrustedId, takeCanonicalProductMaterialChange, validateCanonicalProductMaterialSelection } from "../services/products/canonicalProductMaterialOperations";
+import { CanonicalProductLifecycleError, canonicalProductLifecycleOperations, takeCanonicalProductLifecycleChange } from "../services/products/canonicalProductLifecycleOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -2146,6 +2146,7 @@ export function registerProductRoutes(
       });
 
       const requestedPrimaryMaterialId = takeCanonicalProductMaterialChange(productData);
+      const requestedActive = takeCanonicalProductLifecycleChange(productData);
 
       // Product Editor identity, operational configuration, and pricing
       // metadata use the same transport-independent operations available to
@@ -2186,6 +2187,13 @@ export function registerProductRoutes(
           expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(),
           auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
         });
+        existingProduct = result.product;
+      }
+
+      if (requestedActive !== undefined) {
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+        const result = await canonicalProductLifecycleOperations.execute({ organizationId, actorUserId, productId, isActive: requestedActive, expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(), auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` } });
         existingProduct = result.product;
       }
 
@@ -2289,30 +2297,6 @@ export function registerProductRoutes(
         ),
         existingProduct,
       );
-      if (sanitizedProductData.isActive === true && existingProduct.isActive === false && !existingProduct.pbv2ActiveTreeVersionId) {
-        const [draftTree] = await db
-          .select({ id: pbv2TreeVersions.id })
-          .from(pbv2TreeVersions)
-          .where(and(
-            eq(pbv2TreeVersions.organizationId, organizationId),
-            eq(pbv2TreeVersions.productId, productId),
-            eq(pbv2TreeVersions.status, "DRAFT"),
-          ))
-          .orderBy(desc(pbv2TreeVersions.updatedAt))
-          .limit(1);
-        if (requiresPublishedPbv2BeforeActivation({
-          currentlyActive: existingProduct.isActive,
-          requestedActive: sanitizedProductData.isActive,
-          activeTreeVersionId: existingProduct.pbv2ActiveTreeVersionId,
-          draftTreeVersionId: draftTree?.id,
-        })) {
-          return res.status(409).json({
-            success: false,
-            code: "PBV2_DRAFT_MUST_BE_PUBLISHED",
-            message: "Publish the PBV2 draft before activating this product for Order Entry.",
-          });
-        }
-      }
       const product = await storage.updateProduct(organizationId, productId, sanitizedProductData as UpdateProduct);
       if (!product) {
         return res.status(404).json({ success: false, message: "Product not found" });
@@ -2356,6 +2340,10 @@ export function registerProductRoutes(
       }
       if (error instanceof CanonicalProductMaterialError) {
         const status = error.code === "PRODUCT_NOT_FOUND" || error.code === "MATERIAL_NOT_FOUND" ? 404 : error.code === "PRODUCT_MATERIAL_STALE" ? 409 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message });
+      }
+      if (error instanceof CanonicalProductLifecycleError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_LIFECYCLE_STALE" || error.code === "PBV2_DRAFT_MUST_BE_PUBLISHED" ? 409 : 400;
         return res.status(status).json({ success: false, code: error.code, message: error.message });
       }
 

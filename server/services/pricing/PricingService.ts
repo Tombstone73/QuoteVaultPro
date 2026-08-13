@@ -36,6 +36,7 @@ import {
   type ProductOptionPricingMatrixResolution,
 } from '../../../shared/productOptionPricingMatrix';
 import { PBV2_PRICING_VARIABLES, type PricingVariableDefinition } from '../../../shared/pbv2/pricingVariableRegistry';
+import { getProductAllowRotation } from '../../../shared/pbv2/productPricingRotation';
 import {
   buildFormulaScope,
   buildFormulaEvaluationScope,
@@ -480,6 +481,7 @@ export type ProductPricingIntrospection = {
     cells: Array<{ selections: Array<{ axis: string; value: string }>; rateCents: number | null }>;
   } | null;
   optionGroups: Array<{ selectionKey: string; label: string; required: boolean; defaultValue: unknown; availableWhen: { optionGroup: string; value: string } | null; choices: Array<{ value: string; label: string; pricingImpactSummary: string | null }> }>;
+  pricingEngineConfiguration: { engine: string; profileKey: string | null; allowRotation: boolean; mixedSheetLayout: boolean };
 };
 
 /** Safe, read-only resolution failures for a product's authoritative PBV2
@@ -643,6 +645,7 @@ export async function inspectProductPricing(input: { organizationId: string; pro
     quantityTiers: tierRows.slice(0, 30),
     matrix: matrix ? { dimensions: matrix.dimensions.map((key) => optionGroups.find((group) => group.selectionKey === key)?.label ?? key).slice(0, 12), rowCount: matrix.rows.length, pricingUnit: pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot", cells: matrixCells } : null,
     optionGroups,
+    pricingEngineConfiguration: { engine: product.pricingEngine || "pricingProfile", profileKey: product.pricingProfileKey || null, allowRotation: getProductAllowRotation({ pricingProfileConfig: product.pricingProfileConfig }), mixedSheetLayout: getProductAllowRotation({ pricingProfileConfig: product.pricingProfileConfig }) },
   };
 }
 

@@ -5,6 +5,7 @@ import { CanonicalProductConfigurationError, canonicalProductConfigurationOperat
 import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations, type Pbv2OptionConfigurationMutations } from "../products/canonicalPbv2OptionConfigurationOperations";
 import { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 import { CanonicalProductMaterialError, canonicalProductMaterialOperations, canonicalProductMaterialProposalFromReference, resolveCanonicalProductMaterialProposal, type CanonicalProductMaterialProposal } from "../products/canonicalProductMaterialOperations";
+import { CanonicalProductLifecycleError, canonicalProductLifecycleOperations } from "../products/canonicalProductLifecycleOperations";
 export { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 
 /**
@@ -20,7 +21,7 @@ export type ExistingProductEditProposal = {
   treeId?: string;
   treeUpdatedAt?: string;
   sourceLifecycle: "DRAFT" | "ACTIVE" | "PRODUCT";
-  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1";
+  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1" | "products.update_lifecycle.v1";
   expectedProductUpdatedAt?: string;
   materialProposal?: CanonicalProductMaterialProposal;
   changes: Array<{ field: string; before: string; after: string }>;
@@ -94,6 +95,10 @@ export class ExistingProductEditService {
   async buildProposal(input: { organizationId: string; productId: string; operations: unknown }): Promise<ExistingProductEditProposal> {
     const { db } = await import("../../db");
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const lifecycleOperation = operations.operations.find((operation) => operation.op === "update_product_lifecycle");
+    if (lifecycleOperation) {
+      try { const proposal = await canonicalProductLifecycleOperations.propose({ organizationId: input.organizationId, productId: input.productId, isActive: lifecycleOperation.isActive }); return { productId: proposal.productId, productName: proposal.productName, productActive: !lifecycleOperation.isActive, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: "Lifecycle", before: change.before ? "active" : "inactive", after: change.after ? "active" : "inactive" })), fingerprint: proposal.fingerprint }; } catch (error) { if (error instanceof CanonicalProductLifecycleError) throw new ExistingProductEditError(error.code, error.message); throw error; }
+    }
     const materialOperation = operations.operations.find((operation): operation is { op: "update_product_material"; materialLabel: string | null } => operation.op === "update_product_material");
     if (materialOperation) {
       const candidates = await db.select({ id: materials.id, label: materials.name, isActive: materials.isActive }).from(materials).where(eq(materials.organizationId, input.organizationId));
@@ -136,6 +141,11 @@ export class ExistingProductEditService {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const lifecycleOperation = operations.operations.find((operation) => operation.op === "update_product_lifecycle");
+    if (lifecycleOperation) {
+      if (!validation.proposal.expectedProductUpdatedAt) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The Product lifecycle proposal is incomplete; review it again.");
+      try { const result = await canonicalProductLifecycleOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, isActive: lifecycleOperation.isActive, expectedUpdatedAt: validation.proposal.expectedProductUpdatedAt, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } }); return { ...validation.proposal, canonicalOperationReference: result.operationReference }; } catch (error) { if (error instanceof CanonicalProductLifecycleError) throw new ExistingProductEditError(error.code === "PRODUCT_LIFECYCLE_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message); throw error; }
+    }
     const materialOperation = operations.operations.find((operation) => operation.op === "update_product_material");
     if (materialOperation) {
       if (!validation.proposal.expectedProductUpdatedAt || !validation.proposal.materialProposal) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The Product material proposal is incomplete; review it again.");

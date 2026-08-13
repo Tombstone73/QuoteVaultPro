@@ -26,6 +26,7 @@ export const canonicalProductPricingConfigurationSchema = z.discriminatedUnion("
   z.object({ model: z.literal("one_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), optionKey: nonEmpty, cells: z.array(z.object({ option: nonEmpty, priceCents: cents }).strict()), minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(z.object({ row: nonEmpty, column: nonEmpty, priceCents: cents }).strict()), minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1), minimumChargeCents: cents.optional() }).strict(),
+  z.object({ model: z.literal("option_quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), optionKey: nonEmpty, rows: z.array(z.object({ option: nonEmpty, tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1) }).strict()).min(1), minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("unresolved"), unit: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
 ]).superRefine((pricing, ctx) => {
   if (pricing.model === "two_dimensional_matrix" && pricing.rowOptionKey === pricing.columnOptionKey) {
@@ -48,6 +49,11 @@ export const canonicalProductPricingConfigurationSchema = z.discriminatedUnion("
       if (index === pricing.tiers.length - 1 && tier.maximumQuantity !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["tiers", index, "maximumQuantity"], message: "The final quantity tier must be open ended." });
       expected = tier.maximumQuantity === null ? Number.MAX_SAFE_INTEGER : tier.maximumQuantity + 1;
     });
+  }
+  if (pricing.model === "option_quantity_tiers") {
+    const options = pricing.rows.map((row) => row.option);
+    if (new Set(options).size !== options.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows"], message: "Option tier rows must be unique." });
+    pricing.rows.forEach((row, rowIndex) => { let expected = 1; row.tiers.forEach((tier, tierIndex) => { if (tier.minimumQuantity !== expected) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows", rowIndex, "tiers", tierIndex], message: `Quantity tiers must start at ${expected} without a gap.` }); if (tier.maximumQuantity !== null && tier.maximumQuantity < tier.minimumQuantity) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows", rowIndex, "tiers", tierIndex], message: "Tier maximum cannot precede its minimum." }); if (tierIndex < row.tiers.length - 1 && tier.maximumQuantity === null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows", rowIndex, "tiers", tierIndex], message: "Only the final tier may be open ended." }); if (tierIndex === row.tiers.length - 1 && tier.maximumQuantity !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows", rowIndex, "tiers", tierIndex], message: "The final tier must be open ended." }); expected = tier.maximumQuantity === null ? Number.MAX_SAFE_INTEGER : tier.maximumQuantity + 1; }); });
   }
 });
 export type CanonicalProductPricingConfiguration = z.infer<typeof canonicalProductPricingConfigurationSchema>;

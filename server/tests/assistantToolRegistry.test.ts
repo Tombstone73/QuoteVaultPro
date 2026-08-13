@@ -43,6 +43,7 @@ describe("assistant tool registry", () => {
       "quotes.search",
       "quotes.get_detail",
       "customers.get_summary",
+      "orders.search",
       "orders.get_summary",
       "products.get_summary",
       "products.get_pricing",

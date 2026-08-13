@@ -20,6 +20,7 @@ import { createAssistantProductionReportingToolAdapters } from "./productionRepo
 import { createAssistantAnalyticsReportingToolAdapters } from "./analyticsReportingTools";
 import { createAssistantInvoiceActivityToolAdapters } from "./invoiceActivityTools";
 import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryTools";
+import { createAssistantOrderSearchToolAdapters } from "./orderSearchTools";
 import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 
@@ -97,6 +98,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
     ...createStage2OrderProductToolAdapters(),
     ...createAssistantProductionReportingToolAdapters(),
     ...createAssistantOrderDueSummaryToolAdapters(),
+    ...createAssistantOrderSearchToolAdapters(),
     ...createAssistantCompletedJobReportingToolAdapters(),
     ...createAssistantAnalyticsReportingToolAdapters(),
     ...createAssistantInvoiceActivityToolAdapters(),

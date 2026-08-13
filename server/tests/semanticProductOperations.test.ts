@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import { applyProductDraftIntentPatch, productDraftIntentSchema } from "@shared/productDraftIntent";
 import { compileSemanticProductOperations } from "../services/productIntentCompiler/semanticProductOperations";
 import { ProductIntentCompiler } from "../services/productIntentCompiler/productIntentCompiler";
+import { projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
 
 const translucentIntent = productDraftIntentSchema.parse({
   contractVersion: 1, intentId: "intent_1", organizationId: "org_1", revision: 4, state: "needs_answers", operation: "new_product",
@@ -12,6 +13,15 @@ const translucentIntent = productDraftIntentSchema.parse({
 });
 
 describe("semantic product operations", () => {
+  test("projects complete option-dependent lower-bound tiers into canonical schedules", () => {
+    const current = productDraftIntentSchema.parse({ ...translucentIntent, measurement: { mode: "quantity_only" }, pricing: { model: "unresolved", unit: "per_piece" }, optionGroups: [{ key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single Sided", isDefault: true }, { key: "double", label: "Double Sided", isDefault: false }] }] });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_option_quantity_tiers", optionGroup: "Sides", basis: "per_piece", rows: [{ value: "Single Sided", tiers: [{ minimumQuantity: 1, priceCents: 440 }, { minimumQuantity: 100, priceCents: 330 }, { minimumQuantity: 500, priceCents: 300 }] }, { value: "Double Sided", tiers: [{ minimumQuantity: 1, priceCents: 550 }, { minimumQuantity: 100, priceCents: 440 }, { minimumQuantity: 500, priceCents: 400 }] }] }] }, 4);
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.pricing).toMatchObject({ model: "option_quantity_tiers", optionKey: "sides", rows: [{ option: "single", tiers: [{ minimumQuantity: 1, maximumQuantity: 99, priceCents: 440 }, { minimumQuantity: 100, maximumQuantity: 499, priceCents: 330 }, { minimumQuantity: 500, maximumQuantity: null, priceCents: 300 }] }, { option: "double" }] });
+    const ready = productDraftIntentSchema.parse({ ...next, state: "ready_for_review", identity: { ...next.identity, category: { state: "resolved", id: "signs", label: "Signs" } }, unresolvedFields: [] });
+    const projected = projectProductDraftIntentToProductBuilderDraft(ready);
+    expect((projected.treeJson.pricingMatrix as any).rows).toEqual(expect.arrayContaining([expect.objectContaining({ when: { sides: "single" }, tierBasis: "line_item_quantity", qtyTiers: expect.arrayContaining([expect.objectContaining({ minQty: 100, maxQty: 499, perPieceCents: 330 })]) })]));
+  });
   test("translates multiple natural default answers without provider patch paths", () => {
     const patch = compileSemanticProductOperations(translucentIntent, { kind: "semantic_operations", operations: [{ op: "set_option_default", optionGroup: "Surface", value: "1st surface (right reading)" }, { op: "set_option_default", optionGroup: "Layers", value: "3 layers" }] }, 4);
     expect(JSON.stringify(patch)).not.toContain("ProductDraftPatch");

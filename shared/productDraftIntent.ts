@@ -64,6 +64,7 @@ const pricingSchema = z.discriminatedUnion("model", [
   z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(matrixCellSchema), minimumChargeCents: centsSchema.optional() }).strict(),
   z.object({ model: z.literal("one_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), optionKey: nonEmpty, cells: z.array(oneDimensionalMatrixCellSchema), minimumChargeCents: centsSchema.optional() }).strict(),
   z.object({ model: z.literal("quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("option_quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), optionKey: nonEmpty, rows: z.array(z.object({ option: nonEmpty, tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1) }).strict()).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
   // A known pricing basis is useful business state even before the user has
   // supplied enough information to choose a pricing structure or amount.
   // Keeping it here avoids discarding an explicit square-foot decision while
@@ -72,6 +73,7 @@ const pricingSchema = z.discriminatedUnion("model", [
 ]).superRefine((pricing, ctx) => {
   if (pricing.model === "two_dimensional_matrix" && pricing.rowOptionKey === pricing.columnOptionKey) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Matrix axes must use different option groups.", path: ["columnOptionKey"] });
   if (pricing.model === "quantity_tiers") pricing.tiers.forEach((tier, index) => { if (tier.maximumQuantity !== null && tier.maximumQuantity < tier.minimumQuantity) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Tier maximum cannot precede its minimum.", path: ["tiers", index, "maximumQuantity"] }); });
+  if (pricing.model === "option_quantity_tiers") pricing.rows.forEach((row, rowIndex) => row.tiers.forEach((tier, tierIndex) => { if (tier.maximumQuantity !== null && tier.maximumQuantity < tier.minimumQuantity) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Tier maximum cannot precede its minimum.", path: ["rows", rowIndex, "tiers", tierIndex, "maximumQuantity"] }); }));
 });
 const workflowSchema = z.object({ kind: z.enum(["standard_production", "fulfillment_only", "service_fee"]), requiresProofApproval: z.boolean(), requiresProductionJob: z.boolean() }).strict().superRefine((workflow, ctx) => {
   if (workflow.kind === "service_fee" && workflow.requiresProductionJob) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Service-fee products cannot require a production job.", path: ["requiresProductionJob"] });
