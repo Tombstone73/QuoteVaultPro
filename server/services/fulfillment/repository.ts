@@ -23,6 +23,7 @@ import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
 import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
+import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -1369,6 +1370,15 @@ export class FulfillmentDashboardRepo {
       .where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.orderId, orderId)));
   }
 
+  /** Read-only checklist lookup for workspace loading. Missing rows remain
+   * unverified in the response and are materialized only by a workflow write. */
+  async getChecklistItemsForOrder(orgId: string, orderId: string) {
+    return this.dbInstance
+      .select()
+      .from(fulfillmentChecklistItems)
+      .where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.orderId, orderId)));
+  }
+
   async getChecklistCompletion(orgId: string, orderId: string) {
     const rows = await this.ensureChecklistItemsForOrder(orgId, orderId);
     return summarizeFulfillmentChecklist(rows);
@@ -1631,20 +1641,20 @@ export class FulfillmentDashboardRepo {
   }
 
   async getFulfillmentDetail(orgId: string, orderId: string): Promise<FulfillmentDetailDto | null> {
-    const queue = await this.listFulfillmentQueue(orgId, {
-      type: 'all',
-      status: 'all',
-      showArchived: true,
-      overdueOnly: false,
-      page: 1,
-      pageSize: 5000,
-    });
-    const row = queue.rows.find((entry) => entry.orderId === orderId);
-    if (!row) return null;
-
     const [orderRow] = await this.dbInstance
       .select({
         id: orders.id,
+        orderNumber: orders.orderNumber,
+        shippingMethod: orders.shippingMethod,
+        state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
+        routingTarget: orders.routingTarget,
+        productionCompletedAt: orders.productionCompletedAt,
+        fulfillmentStatus: orders.fulfillmentStatus,
+        updatedAt: orders.updatedAt,
+        shipToCity: orders.shipToCity,
+        shipToState: orders.shipToState,
         customerName: customers.companyName,
         customerEmail: customers.email,
         customerPhone: customers.phone,
@@ -1653,6 +1663,7 @@ export class FulfillmentDashboardRepo {
       .leftJoin(customers, eq(customers.id, orders.customerId))
       .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
       .limit(1);
+    if (!orderRow) return null;
 
     const lineItems = await this.dbInstance
       .select({
@@ -1676,9 +1687,9 @@ export class FulfillmentDashboardRepo {
       .where(eq(orderLineItems.orderId, orderId));
 
     const lineItemIds = lineItems.map((item) => item.id);
-    const checklistRows = await this.ensureChecklistItemsForOrder(orgId, orderId);
+    const checklistRows = await this.getChecklistItemsForOrder(orgId, orderId);
     const checklistByLineItemId = new Map(checklistRows.map((item) => [item.lineItemId, item]));
-    const checklistSummary = summarizeFulfillmentChecklist(checklistRows);
+    const checklistSummary = summarizeFulfillmentChecklist(lineItems.map((item) => checklistByLineItemId.get(item.id) ?? { checked: false }));
 
     const artworkResolutions = lineItemIds.length > 0
       ? await lineItemArtworkReadResolver.resolveForLineItems({
@@ -1757,6 +1768,22 @@ export class FulfillmentDashboardRepo {
         eq(shipmentOrders.orderId, orderId),
       ))
       .orderBy(desc(shipments.updatedAt));
+
+    const shipmentDetails = await Promise.all(shipmentRows.map((shipment) => new ShipmentRepo(this.dbInstance).getShipmentById(orgId, shipment.id)));
+
+    const orderedQty = lineItems.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
+    const shippedQty = shipmentDetails
+      .filter((shipment): shipment is NonNullable<typeof shipment> => shipment?.status === 'SHIPPED')
+      .flatMap((shipment) => shipment.items.filter((item) => item.orderId === orderId))
+      .reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
+    const row = buildFulfillmentWorkspaceQueueRow({
+      order: orderRow,
+      orderedQty,
+      shippedQty,
+      pickupTicket: pickupTicket ? { id: pickupTicket.id, status: pickupTicket.status } : null,
+      shipmentId: shipmentRows[0]?.id ?? null,
+      deriveShipStatus: (fulfillmentStatus, ordered, shipped) => this.deriveShipQueueStatus(fulfillmentStatus, ordered, shipped),
+    });
 
     const eventConditions = [
       and(eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, orderId)),
@@ -1846,14 +1873,23 @@ export class FulfillmentDashboardRepo {
         contactEmail: pickupTicket.contactEmail ?? null,
         contactPhone: pickupTicket.contactPhone ?? null,
       } : null,
-      shipments: shipmentRows.map((shipment) => ({
+      shipments: shipmentRows.map((shipment, index) => ({
         id: shipment.id,
+        shipmentReference: shipmentDetails[index]?.shipmentReference ?? null,
         status: shipment.status,
         carrier: shipment.carrier ?? null,
         serviceLevel: shipment.serviceLevel ?? null,
         trackingNumber: shipment.trackingNumber ?? null,
         shippedAt: toIso(shipment.shippedAt),
         updatedAt: toIso(shipment.updatedAt),
+        packages: (shipmentDetails[index]?.packages ?? []).map((pkg) => ({
+          id: pkg.id,
+          ordinal: pkg.ordinal,
+          packageReference: pkg.packageReference,
+        })),
+        allocations: (shipmentDetails[index]?.items ?? [])
+          .filter((item) => item.orderId === orderId)
+          .map((item) => ({ id: item.id, orderLineItemId: item.orderLineItemId, quantity: Number(item.quantity), packageId: item.packageId ?? null })),
       })),
       events: events.map((event) => ({
         id: event.id,

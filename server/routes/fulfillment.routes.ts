@@ -35,6 +35,7 @@ import { updateOrderFulfillmentStatus, sendShipmentEmail } from "../fulfillmentS
 import {
   createShipmentSchema as createFulfillmentShipmentSchema,
   fulfillmentChecklistItemSchema,
+  fulfillmentOrderIdSchema,
   fulfillmentNoteSchema,
   fulfillmentUnreadySchema,
   listQueueQuerySchema,
@@ -102,10 +103,14 @@ export function registerFulfillmentRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const orderId = fulfillmentOrderIdSchema.parse(req.params.orderId);
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
-      const data = await canonicalFulfillmentOperations.getOrderDetail(organizationId, req.params.orderId, actorOrgRole);
+      const data = await canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId, actorOrgRole);
       return res.json({ success: true, data });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ success: false, message: 'Invalid order ID', code: 'VALIDATION_ERROR' });
+      }
       if (error instanceof FulfillmentHttpError) {
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       }

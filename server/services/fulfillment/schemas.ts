@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Canonical route identity for an order-centric fulfillment workspace. */
+export const fulfillmentOrderIdSchema = z.string().uuid('Invalid order ID');
+
 const queryBooleanSchema = z.preprocess((value) => {
   if (value === undefined || value === null) return undefined;
   if (typeof value === 'boolean') return value;

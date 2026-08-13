@@ -131,12 +131,15 @@ export interface FulfillmentDetailDto extends QueueRowDto {
   } | null;
   shipments: Array<{
     id: string;
+    shipmentReference: string | null;
     status: string;
     carrier: string | null;
     serviceLevel: string | null;
     trackingNumber: string | null;
     shippedAt: string | null;
     updatedAt: string | null;
+    packages: Array<{ id: string; ordinal: number; packageReference: string }>;
+    allocations: Array<{ id: string; orderLineItemId: string; quantity: number; packageId: string | null }>;
   }>;
   events: Array<{
     id: string;
