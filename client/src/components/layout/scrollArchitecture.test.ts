@@ -5,9 +5,14 @@ const source = (path: string) => readFileSync(path, "utf8");
 describe("application scroll architecture", () => {
   test("keeps the application main region as the primary page scroll owner", () => {
     const appLayout = source("client/src/components/layout/AppLayout.tsx");
+    const styles = source("client/src/index.css");
 
     expect(appLayout).toContain('h-dvh min-h-0 w-full overflow-hidden');
-    expect(appLayout).toContain('flex-1 flex-col overflow-y-auto bg-background');
+    expect(appLayout).toContain('root.classList.add("app-shell-scroll-lock")');
+    expect(appLayout).toContain('data-testid="app-main-content"');
+    expect(appLayout).toContain('overflow-y-auto overscroll-contain bg-background');
+    expect(styles).toContain('html.app-shell-scroll-lock #root');
+    expect(styles).toContain('overflow: clip;');
   });
 
   test("keeps Product Editor content in normal page flow", () => {

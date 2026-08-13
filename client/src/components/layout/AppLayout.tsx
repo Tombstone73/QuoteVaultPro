@@ -49,6 +49,15 @@ function InternalAppLayout() {
   const location = useLocation();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // AppLayout has one viewport-bounded workspace scroll owner: <main>.
+  // Route content can be naturally taller than that scrollport, so clip the
+  // document/root only while this authenticated shell is mounted.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add("app-shell-scroll-lock");
+    return () => root.classList.remove("app-shell-scroll-lock");
+  }, []);
   
   // DEV-ONLY: Log route changes to verify navigation is working
   useEffect(() => {
@@ -78,7 +87,7 @@ function InternalAppLayout() {
     location.pathname.startsWith("/settings/");
 
   return (
-    <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background">
+    <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background" data-testid="app-shell">
       {/* Desktop Sidebar */}
       <TitanSidebarNav
         isCollapsed={isSidebarCollapsed}
@@ -132,7 +141,7 @@ function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: st
   const docked = Boolean(capabilities?.enabled && capabilities.conversationsEnabled) && (presentation === "dock_left" || presentation === "dock_right" || presentation === "dock_bottom");
   // The application content viewport is the normal page-level vertical scroll owner.
   const main = (
-    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-background" style={{ ["--titan-order-right-col" as any]: orderRightCol }}>
+    <main data-testid="app-main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-background" style={{ ["--titan-order-right-col" as any]: orderRightCol }}>
       <div className="flex min-h-full w-full flex-1 flex-col"><RouteErrorBoundary key={locationPath}><Outlet /></RouteErrorBoundary></div>
     </main>
   );

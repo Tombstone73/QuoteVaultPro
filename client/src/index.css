@@ -352,6 +352,21 @@
     @apply border-border;
   }
 
+  /*
+   * Authenticated AppLayout owns a viewport-sized workspace. Its <main> is
+   * deliberately scrollable, so its natural-height route content must not
+   * escape through html/body/#root and create a second document scrollbar.
+   * The class is installed only while AppLayout is mounted; public pages keep
+   * their normal document-flow scrolling behavior.
+   */
+  html.app-shell-scroll-lock,
+  html.app-shell-scroll-lock body,
+  html.app-shell-scroll-lock #root {
+    height: 100%;
+    min-height: 0;
+    overflow: clip;
+  }
+
   body {
     @apply font-sans antialiased bg-background text-foreground;
     background-image:

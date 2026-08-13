@@ -12,7 +12,9 @@ async function openProductEditor(page: Page) {
 
 async function inspectWorkspaceScroll(page: Page) {
   return page.evaluate(() => {
-    const main = document.querySelector("main");
+    const documentElement = document.documentElement;
+    const body = document.body;
+    const main = document.querySelector('[data-testid="app-main-content"]');
     const workspace = document.querySelector('[data-testid="split-workspace"]');
     const editor = document.querySelector('[data-testid="split-workspace-main"]');
     const preview = document.querySelector('[data-testid="split-workspace-preview"]');
@@ -42,6 +44,18 @@ async function inspectWorkspaceScroll(page: Page) {
     const previewAfterScroll = preview.getBoundingClientRect();
 
     return {
+      document: {
+        clientHeight: documentElement.clientHeight,
+        scrollHeight: documentElement.scrollHeight,
+      },
+      body: {
+        clientHeight: body.clientHeight,
+        scrollHeight: body.scrollHeight,
+      },
+      main: {
+        clientHeight: main.clientHeight,
+        scrollHeight: main.scrollHeight,
+      },
       mainIsScrollable: isScrollableY(main),
       competingPreviewAncestor: ancestors.find((entry) => entry.scrollHeight > entry.clientHeight && (entry.overflowY === "auto" || entry.overflowY === "scroll")) ?? null,
       previewIsScrollable: isScrollableY(preview),
@@ -63,6 +77,9 @@ test.describe("Product Builder scroll ownership", () => {
     await openProductEditor(page);
 
     const audit = await inspectWorkspaceScroll(page);
+    expect(audit.document.scrollHeight).toBeLessThanOrEqual(audit.document.clientHeight + 2);
+    expect(audit.body.scrollHeight).toBeLessThanOrEqual(audit.body.clientHeight + 2);
+    expect(audit.main.scrollHeight).toBeGreaterThan(audit.main.clientHeight);
     expect(audit.mainIsScrollable).toBe(true);
     expect(audit.competingPreviewAncestor).toBeNull();
     expect(audit.previewIsScrollable).toBe(false);
@@ -76,6 +93,9 @@ test.describe("Product Builder scroll ownership", () => {
       await openProductEditor(page);
 
       const audit = await inspectWorkspaceScroll(page);
+      expect(audit.document.scrollHeight).toBeLessThanOrEqual(audit.document.clientHeight + 2);
+      expect(audit.body.scrollHeight).toBeLessThanOrEqual(audit.body.clientHeight + 2);
+      expect(audit.main.scrollHeight).toBeGreaterThan(audit.main.clientHeight);
       expect(audit.mainIsScrollable).toBe(true);
       expect(audit.competingPreviewAncestor).toBeNull();
       expect(audit.previewIsScrollable).toBe(false);
