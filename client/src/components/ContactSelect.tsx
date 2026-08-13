@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import {
   contactMatchesCustomer,
+  filterContactsForCustomer,
   getContactDisplayName,
   getContactSecondaryLine,
   sortContactsForCustomer,
@@ -58,15 +59,16 @@ export function ContactSelect({
   }, [searchQuery]);
 
   const contactsQuery = useQuery<ContactPickerContact[]>({
-    queryKey: ["/api/contacts", "picker", { search: debouncedSearch, preferCustomerId: customerId ?? null }],
+    queryKey: ["/api/contacts", "picker", { search: debouncedSearch, customerId: customerId ?? null }],
     queryFn: async () => {
       const params = new URLSearchParams({
         page: "1",
-        pageSize: "50",
+        pageSize: customerId ? "200" : "50",
         sortBy: "lastName",
         sortDir: "asc",
       });
       if (debouncedSearch) params.set("search", debouncedSearch);
+      if (customerId) params.set("customerId", customerId);
       const response = await fetch(`/api/contacts?${params.toString()}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to search contacts");
       const payload = await response.json();
@@ -91,7 +93,7 @@ export function ContactSelect({
   });
 
   const contacts = useMemo(
-    () => sortContactsForCustomer(contactsQuery.data ?? [], customerId),
+    () => sortContactsForCustomer(filterContactsForCustomer(contactsQuery.data ?? [], customerId), customerId),
     [contactsQuery.data, customerId],
   );
 
@@ -144,7 +146,7 @@ export function ContactSelect({
             <Command shouldFilter={false}>
               <CommandInput
                 ref={inputRef}
-                placeholder="Search by name, email, phone, or customer..."
+                placeholder={customerId ? "Search by name, email, or phone..." : "Search by name, email, phone, or customer..."}
                 value={searchQuery}
                 onValueChange={setSearchQuery}
               />
@@ -156,7 +158,9 @@ export function ContactSelect({
                     Failed to search contacts. Try again.
                   </div>
                 ) : contacts.length === 0 ? (
-                  <div className="p-4 text-center text-sm text-muted-foreground">No contacts found.</div>
+                  <div className="p-4 text-center text-sm text-muted-foreground">
+                    {customerId ? "No contacts are linked to this customer." : "No contacts found."}
+                  </div>
                 ) : (
                   <CommandGroup heading={debouncedSearch ? `Found ${contacts.length} contact${contacts.length === 1 ? "" : "s"}` : `Contacts (${contacts.length})`}>
                     {contacts.map((contact) => {

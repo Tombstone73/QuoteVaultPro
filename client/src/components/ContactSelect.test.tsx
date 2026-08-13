@@ -80,6 +80,16 @@ const contacts = [
     customer: { id: "customer-1", companyName: "Acme Signs", status: "active" },
     linkedCustomers: [{ id: "customer-1", companyName: "Acme Signs", status: "active", isPrimary: true }],
   },
+  {
+    id: "other-customer-contact",
+    customerId: "customer-2",
+    firstName: "Other",
+    lastName: "Customer",
+    email: "other@example.com",
+    companyName: "Other Signs",
+    customer: { id: "customer-2", companyName: "Other Signs", status: "active" },
+    linkedCustomers: [{ id: "customer-2", companyName: "Other Signs", status: "active", isPrimary: true }],
+  },
 ];
 
 beforeEach(() => {
@@ -149,6 +159,38 @@ describe("ContactSelect", () => {
     expect(onChange).toHaveBeenCalledWith("attached-contact", expect.objectContaining({ id: "attached-contact" }));
   });
 
+  test("uses the tenant contact endpoint with the selected customer scope", async () => {
+    let pickerOptions: any;
+    useQueryMock.mockImplementation((options: any) => {
+      const key = Array.isArray(options?.queryKey) ? options.queryKey : [];
+      if (key[1] === "picker") {
+        pickerOptions = options;
+        return { data: [], isLoading: false, isError: false } as any;
+      }
+      return { data: null, isLoading: false, isError: false } as any;
+    });
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ contacts: [] }) }));
+    (globalThis as any).fetch = fetchMock;
+
+    renderContactSelect({ customerId: "customer-1" });
+    await act(async () => {
+      await pickerOptions.queryFn();
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), "https://example.test");
+    expect(url.searchParams.get("customerId")).toBe("customer-1");
+    expect(url.searchParams.get("pageSize")).toBe("200");
+  });
+
+  test("never renders standalone or unrelated contacts in a selected customer's normal picker", () => {
+    renderContactSelect({ customerId: "customer-1" });
+
+    expect(container.textContent).toContain("Jane Smith");
+    expect(container.textContent).not.toContain("John Doe");
+    expect(container.textContent).not.toContain("Other Customer");
+    expect(container.textContent).not.toContain("CONTACT_CUSTOMER_CONFLICT");
+  });
+
   test("shows loading, empty, and error states", () => {
     useQueryMock.mockImplementation((options: any) => {
       const key = Array.isArray(options?.queryKey) ? options.queryKey : [];
@@ -165,6 +207,9 @@ describe("ContactSelect", () => {
     });
     act(() => root.render(<ContactSelect value={null} customerId={null} onChange={jest.fn()} />));
     expect(container.textContent).toContain("No contacts found.");
+
+    act(() => root.render(<ContactSelect value={null} customerId="customer-1" onChange={jest.fn()} />));
+    expect(container.textContent).toContain("No contacts are linked to this customer.");
 
     useQueryMock.mockImplementation((options: any) => {
       const key = Array.isArray(options?.queryKey) ? options.queryKey : [];

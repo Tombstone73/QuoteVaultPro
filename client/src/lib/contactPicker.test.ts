@@ -1,5 +1,6 @@
 import {
   contactMatchesCustomer,
+  filterContactsForCustomer,
   getCanonicalContactCustomerId,
   getContactCompanyLabel,
   getContactCustomerConflict,
@@ -85,5 +86,20 @@ describe("contact picker helpers", () => {
     };
     const sorted = sortContactsForCustomer([attached, otherCustomer, standalone], "customer-1");
     expect(sorted.map((contact) => contact.id)).toEqual(["contact-attached", "contact-standalone", "other"]);
+  });
+
+  test("strictly scopes a selected customer's picker to active customer links", () => {
+    const otherCustomerContact: ContactPickerContact = {
+      ...attached,
+      id: "other",
+      customerId: "customer-2",
+      customer: { id: "customer-2", companyName: "Other Signs", status: "active" },
+      linkedCustomers: [{ id: "customer-2", companyName: "Other Signs", status: "active" }],
+    };
+
+    expect(filterContactsForCustomer([attached, standalone, otherCustomerContact], "customer-1").map((contact) => contact.id))
+      .toEqual(["contact-attached"]);
+    expect(filterContactsForCustomer([attached, standalone], null).map((contact) => contact.id))
+      .toEqual(["contact-attached", "contact-standalone"]);
   });
 });

@@ -4,6 +4,7 @@ import path from "path";
 
 import { buildDirectOrderPayloadFromEditorState } from "../../client/src/features/quotes/editor/directOrderPayload";
 import { getBestMatchingCustomerContact, sortCustomersForSearch } from "../../client/src/lib/customerSearchRanking";
+import { getContactCustomerConflict } from "../../client/src/lib/contactPicker";
 
 const root = process.cwd();
 
@@ -51,5 +52,22 @@ describe("new order customer/contact resolution contract", () => {
     expect(routes).toContain("orderFields.contactId = resolvedIdentity.contactId;");
     expect(editorState).toContain("resolveOrderCustomerIdFromContact(selectedCustomerId, contact)");
     expect(ordersList).toContain("row.customer?.companyName || [row.contact?.firstName, row.contact?.lastName]");
+  });
+
+  test("blocks an incompatible contact after a customer change while preserving standalone contact behavior", () => {
+    const linkedToOtherCustomer = {
+      id: "contact-other",
+      customerId: "customer-b",
+      linkedCustomers: [{ id: "customer-b", companyName: "Customer B", status: "active" }],
+    };
+    const standalone = { id: "contact-standalone", customerId: null, linkedCustomers: [] };
+
+    expect(getContactCustomerConflict(linkedToOtherCustomer, "customer-a")).toBe("CONTACT_CUSTOMER_CONFLICT");
+    expect(getContactCustomerConflict(standalone, "customer-a")).toBeNull();
+
+    const legacyOrderForm = read("client/src/components/order-form.tsx");
+    const quoteEditor = read("client/src/features/quotes/editor/useQuoteEditorState.ts");
+    expect(legacyOrderForm).toContain("if (contactCustomerConflict)");
+    expect(quoteEditor).toContain("if (contactCustomerConflict) return \"CONTACT_CUSTOMER_CONFLICT");
   });
 });

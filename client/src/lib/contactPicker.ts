@@ -82,6 +82,22 @@ export function contactMatchesCustomer(contact: ContactPickerContact | null | un
   return activeCustomers.some((customer) => customer.id === customerId);
 }
 
+/**
+ * The normal customer-contact picker is stricter than order compatibility:
+ * once a customer is selected it offers only that customer's active links.
+ * Standalone contacts remain valid for contact-only orders, but are not
+ * implicitly offered as contacts for an unrelated customer account.
+ */
+export function isContactLinkedToCustomer(contact: ContactPickerContact | null | undefined, customerId: string | null | undefined): boolean {
+  if (!contact || !customerId) return true;
+  return getActiveContactCustomers(contact).some((customer) => customer.id === customerId);
+}
+
+export function filterContactsForCustomer<TContact extends ContactPickerContact>(contacts: TContact[], customerId: string | null | undefined): TContact[] {
+  if (!customerId) return contacts;
+  return contacts.filter((contact) => isContactLinkedToCustomer(contact, customerId));
+}
+
 export function getContactCustomerConflict(contact: ContactPickerContact | null | undefined, customerId: string | null | undefined): string | null {
   if (!contact || !customerId || contactMatchesCustomer(contact, customerId)) return null;
   return "CONTACT_CUSTOMER_CONFLICT";

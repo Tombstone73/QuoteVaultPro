@@ -731,6 +731,20 @@ describe("GET /api/contacts — paginated envelope with correct total", () => {
     expect(ids).not.toContain(ctctId(400));
   });
 
+  test("customer-scoped contact search remains scoped and tenant isolated", async () => {
+    const scopedSearch = await request(app)
+      .get(`/api/contacts?page=1&pageSize=50&customerId=${custId(1)}&search=${encodeURIComponent("Move Company")}`)
+      .set(authHeaders)
+      .expect(200);
+    expect(scopedSearch.body.contacts.map((contact: any) => contact.id)).toEqual([ctctId(300)]);
+
+    const foreignCustomer = await request(app)
+      .get(`/api/contacts?page=1&pageSize=50&customerId=${custId(101)}`)
+      .set(authHeaders)
+      .expect(200);
+    expect(foreignCustomer.body.contacts).toEqual([]);
+  });
+
   test("pageSize is capped at 200", async () => {
     const res = await request(app)
       .get("/api/contacts?page=1&pageSize=99999")
