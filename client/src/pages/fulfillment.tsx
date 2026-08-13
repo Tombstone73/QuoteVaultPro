@@ -16,11 +16,9 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
-import { getFulfillmentOrderDetailPath } from "@/lib/fulfillmentOrderNavigation";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { getFulfillmentArtworkViewUrl } from "@/lib/fulfillmentArtwork";
-import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import {
   FulfillmentQueueRow,
@@ -71,31 +69,11 @@ function statusBadgeClass(status: string): string {
   return "bg-muted text-muted-foreground border border-border";
 }
 
+// Retained for the secondary detail component while the list itself no longer
+// renders per-job ticket controls.
 function FulfillmentProductionTickets({ row }: { row: FulfillmentQueueRow }) {
-  const jobs = (row.productionJobs ?? []).filter((job) => job.id);
-
-  if (jobs.length === 0) {
-    return <span className="text-xs text-muted-foreground">--</span>;
-  }
-
-  return (
-    <div className="flex max-w-[260px] flex-col gap-2">
-      {jobs.map((job, index) => (
-        <div key={job.id} className="flex flex-wrap items-center gap-2">
-          {jobs.length > 1 ? (
-            <span className="text-[10px] font-bold uppercase text-muted-foreground">Job {index + 1}</span>
-          ) : null}
-          <PrintTicketActions
-            jobId={job.id}
-            jobQuantity={job.quantity ?? undefined}
-            size="sm"
-            variant="outline"
-            className="flex flex-wrap"
-          />
-        </div>
-      ))}
-    </div>
-  );
+  const count = (row.productionJobs ?? []).filter((job) => job.id).length;
+  return <span className="text-xs text-muted-foreground">{count ? `${count} production job${count === 1 ? "" : "s"}` : "--"}</span>;
 }
 
 function FulfillmentProductionContext({ row }: { row: FulfillmentQueueRow }) {
@@ -480,7 +458,6 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   const [showArchived, setShowArchived] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
-  const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
@@ -610,7 +587,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   };
 
   const handleOpenOrder = (orderId: string) => {
-    navigate(getFulfillmentOrderDetailPath(orderId), { state: { referrer: buildReferrer(location) } });
+    navigate(ROUTES.fulfillment.order(orderId), { state: { referrer: buildReferrer(location) } });
   };
 
   const handleOpenCustomer = async (row: FulfillmentQueueRow) => {
@@ -758,8 +735,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
         </div>
       </header>
 
-      <main className="grid flex-1 gap-4 overflow-auto p-6 pb-24 xl:grid-cols-[minmax(0,1fr)_minmax(380px,520px)]">
-        <div className="min-w-0">
+      <main className="flex-1 overflow-auto p-6 pb-24">
+        <div className="mx-auto max-w-[1500px]">
         {pickupTicketId && (
           <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm">
             <p className="font-semibold">Pickup ticket selected</p>
@@ -792,14 +769,14 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Items Remaining</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready Since</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ship To</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Production</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Print Tickets</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready / remaining</th>
+                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Destination</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {queueQuery.isLoading && (
                 <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     <div className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading queue...
@@ -810,7 +787,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
 
               {!queueQuery.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center">
+                  <td colSpan={9} className="px-4 py-12 text-center">
                     <div className="mx-auto mb-4 w-fit rounded-full bg-muted p-4">
                       <Box className="h-8 w-8 text-muted-foreground" />
                     </div>
@@ -822,14 +799,13 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
 
               {rows.map((row) => {
                 const isChecked = selectedOrderIds.has(row.orderId);
-                const isDetailSelected = detailOrderId === row.orderId;
                 const readySince = row.readySince ? `${formatDistanceToNowStrict(new Date(row.readySince), { addSuffix: true })}` : "--";
 
                 return (
                   <tr
                     key={row.orderId}
-                    className={`cursor-pointer transition-colors hover:bg-muted/50 ${isDetailSelected ? "bg-primary/10 ring-1 ring-inset ring-primary/30" : isChecked ? "bg-muted/50" : ""}`}
-                    onClick={() => setDetailOrderId(row.orderId)}
+                    className={`cursor-pointer transition-colors hover:bg-muted/50 ${isChecked ? "bg-muted/50" : ""}`}
+                    onClick={() => handleOpenOrder(row.orderId)}
                   >
                     <td className="px-4 py-4">
                       <input
@@ -885,22 +861,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                     <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
-                    <td className="px-4 py-4">
-                      <FulfillmentProductionContext row={row} />
-                    </td>
-                    <td className="px-4 py-4">
-                      <FulfillmentProductionTickets row={row} />
-                      <button
-                        type="button"
-                        className="mt-2 rounded border border-border px-2 py-1 text-xs font-bold hover:bg-accent"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setDetailOrderId(row.orderId);
-                        }}
-                      >
-                        Details
-                      </button>
-                    </td>
+                    <td className="px-4 py-4 text-sm"><span className="font-medium">{row.itemsRemaining}</span><p className="text-xs text-muted-foreground">{row.productionContext?.completedAt ? "Production complete" : "Ready for fulfillment"}</p></td>
+                    <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
                   </tr>
                 );
               })}
@@ -911,13 +873,6 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? queueQuery.data ?? null} lastError={lastError} />
         </div>
 
-        <div className="min-w-0 xl:sticky xl:top-28 xl:self-start">
-          <FulfillmentDetailPanel
-            orderId={detailOrderId}
-            onOpenOrder={handleOpenOrder}
-            onOpenShipment={(row) => void handleOpen(row)}
-          />
-        </div>
       </main>
 
       {selectedOrderIds.size > 0 && (

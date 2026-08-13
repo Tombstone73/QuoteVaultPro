@@ -1,12 +1,13 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
-import { customers, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
+import { customers, fulfillmentChecklistItems, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
+import { fulfillmentVerificationPolicyFromSettings, parseShipmentDate, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -137,8 +138,9 @@ export class FulfillmentService {
   private async requireChecklistComplete(orgId: string, orderId: string, target: 'ready_for_pickup' | 'shipped') {
     const result = await this.dashboardRepo.assertOrderChecklistComplete(orgId, orderId);
     if (!result.ok) {
+      const count = result.summary?.unchecked ?? 0;
       const message = target === 'shipped'
-        ? 'Verify all fulfillment checklist items before marking shipped.'
+        ? `${count} item${count === 1 ? '' : 's'} still require fulfillment verification.`
         : 'Verify all fulfillment checklist items before marking ready for pickup.';
       throw new FulfillmentHttpError(409, message, result.code);
     }
@@ -240,6 +242,7 @@ export class FulfillmentService {
       orderId: string;
       orderLineItemId: string;
       quantity: number;
+      packageId?: string | null;
     }>;
     actorUserId?: string | null;
   }) {
@@ -251,17 +254,15 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, 'Only DRAFT shipments are editable', 'INVALID_STATE');
     }
 
-    const parsedShipDate = payload.shipDate ? new Date(payload.shipDate) : null;
-
-    if (payload.shipDate && Number.isNaN(parsedShipDate?.getTime())) {
-      throw new FulfillmentHttpError(400, 'Invalid shipDate', 'VALIDATION_ERROR');
-    }
+    let parsedShipDate: string | null | undefined;
+    try { parsedShipDate = payload.shipDate === undefined ? undefined : parseShipmentDate(payload.shipDate); }
+    catch (error: any) { throw new FulfillmentHttpError(400, error.message, 'SHIP_DATE_INVALID'); }
 
     const updated = await this.shipmentRepo.patchDraftShipment(orgId, shipmentId, {
       carrier: payload.carrier,
       serviceLevel: payload.serviceLevel,
       trackingNumber: payload.trackingNumber,
-      shipDate: payload.shipDate ? parsedShipDate : undefined,
+      shipDate: parsedShipDate,
       boxCount: payload.boxCount,
       weightLbs: payload.weight,
       dimLengthIn: payload.dims?.length,
@@ -275,7 +276,13 @@ export class FulfillmentService {
     }
 
     if (payload.shipmentItems) {
-      await this.shipmentRepo.upsertShipmentItems(orgId, shipmentId, payload.shipmentItems);
+      const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, payload.shipmentItems);
+      if (!replacement.ok) {
+        throw new FulfillmentHttpError(409, replacement.message, replacement.code);
+      }
+      if (await this.getVerificationPolicy(orgId) === 'packing_completes_fulfillment') {
+        await this.syncSimplePackedQuantities(orgId, shipmentId, payload.actorUserId, existing.items.map((item: any) => item.orderLineItemId));
+      }
     }
 
     await this.shipmentRepo.insertEvent(
@@ -288,6 +295,72 @@ export class FulfillmentService {
     );
 
     return this.shipmentRepo.getShipmentById(orgId, shipmentId);
+  }
+
+  private async getVerificationPolicy(orgId: string): Promise<FulfillmentVerificationPolicy> {
+    const [organization] = await this.dbInstance.select({ settings: organizations.settings })
+      .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    return fulfillmentVerificationPolicyFromSettings(organization?.settings);
+  }
+
+  /** Packing is eligible to satisfy verification only after the existing
+   * production-complete fulfillment gate has been rechecked. */
+  private async syncSimplePackedQuantities(orgId: string, shipmentId: string, actorUserId?: string | null, previousLineItemIds: string[] = []) {
+    const current = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    const lineItemIds = Array.from(new Set([...(current?.items ?? []).map((item: any) => item.orderLineItemId), ...previousLineItemIds]));
+    if (!lineItemIds.length) return;
+    const rows = await this.dbInstance.select({
+      lineItemId: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
+      ordered: orderLineItems.quantity, orderId: orderLineItems.orderId, state: orders.state, status: orders.status,
+      canceledAt: orders.canceledAt, routingTarget: orders.routingTarget,
+    }).from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
+      .innerJoin(orderLineItems, eq(orderLineItems.id, shipmentItems.orderLineItemId)).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+      .where(and(eq(shipmentItems.organizationId, orgId), eq(orders.organizationId, orgId), inArray(shipmentItems.orderLineItemId, lineItemIds), ne(shipments.status, 'VOIDED')))
+      .groupBy(shipmentItems.orderLineItemId, orderLineItems.quantity, orderLineItems.orderId, orders.state, orders.status, orders.canceledAt, orders.routingTarget);
+    const allLines = await this.dbInstance.select({ lineItemId: orderLineItems.id, ordered: orderLineItems.quantity, orderId: orderLineItems.orderId,
+      state: orders.state, status: orders.status, canceledAt: orders.canceledAt, routingTarget: orders.routingTarget,
+    }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId)).where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.id, lineItemIds)));
+    const packedByLineItem = new Map(rows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+    for (const row of allLines) {
+      if (!isFulfillmentQueueEligibleOrder(row as any)) {
+        throw new FulfillmentHttpError(409, 'Packed quantities require production-complete fulfillment eligibility', 'PRODUCTION_NOT_COMPLETE');
+      }
+      await this.dashboardRepo.ensureChecklistItemsForOrder(orgId, row.orderId);
+      const fulfilled = Math.min(packedByLineItem.get(row.lineItemId) || 0, Number(row.ordered || 0));
+      const isComplete = fulfilled >= Number(row.ordered || 0);
+      await this.dbInstance.update(fulfillmentChecklistItems).set({ fulfilledQuantity: fulfilled, checked: isComplete,
+        checkedByUserId: isComplete ? actorUserId || null : null, checkedAt: isComplete ? new Date() : null, updatedAt: new Date(),
+      }).where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.lineItemId, row.lineItemId)));
+    }
+  }
+
+  async createShipmentPackage(orgId: string, shipmentId: string, payload: {
+    weightLbs?: number | null;
+    dims?: { length?: number | null; width?: number | null; height?: number | null };
+    notes?: string | null;
+    actorUserId?: string | null;
+  }) {
+    const created = await this.shipmentRepo.createShipmentPackage(orgId, shipmentId, {
+      weightLbs: payload.weightLbs,
+      dimLengthIn: payload.dims?.length,
+      dimWidthIn: payload.dims?.width,
+      dimHeightIn: payload.dims?.height,
+      notes: payload.notes,
+    });
+    if (!created) throw new FulfillmentHttpError(404, 'Draft shipment not found', 'NOT_FOUND');
+    await this.shipmentRepo.insertEvent(orgId, payload.actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
+      packageId: created.id, action: 'package_created', packageReference: created.packageReference,
+    });
+    return created;
+  }
+
+  async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string, actorUserId?: string | null) {
+    const deleted = await this.shipmentRepo.deleteShipmentPackage(orgId, shipmentId, packageId);
+    if (!deleted) throw new FulfillmentHttpError(404, 'Draft shipment package not found', 'NOT_FOUND');
+    await this.shipmentRepo.insertEvent(orgId, actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
+      packageId, action: 'package_deleted',
+    });
+    return deleted;
   }
 
   async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {
@@ -303,8 +376,8 @@ export class FulfillmentService {
     }
 
     const orderIds = Array.from(new Set((existing.orders || []).map((order: any) => String(order.orderId)).filter(Boolean)));
-    for (const orderId of orderIds) {
-      await this.requireChecklistComplete(orgId, orderId, 'shipped');
+    if (await this.getVerificationPolicy(orgId) === 'strict_separate_verification') {
+      for (const orderId of orderIds) await this.requireChecklistComplete(orgId, orderId, 'shipped');
     }
 
     const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);

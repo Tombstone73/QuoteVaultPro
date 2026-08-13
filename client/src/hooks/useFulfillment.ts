@@ -157,6 +157,7 @@ export interface FulfillmentQueueFilters {
 
 export interface ShipmentDetail {
   id: string;
+  shipmentReference: string | null;
   status: "DRAFT" | "SHIPPED" | "VOIDED";
   scope: "SINGLE_ORDER" | "MULTI_ORDER";
   orderId: string | null;
@@ -185,6 +186,17 @@ export interface ShipmentDetail {
     orderId: string;
     orderLineItemId: string;
     quantity: number;
+    packageId: string | null;
+  }>;
+  packages: Array<{
+    id: string;
+    ordinal: number;
+    packageReference: string;
+    weightLbs: string | null;
+    dimLengthIn: string | null;
+    dimWidthIn: string | null;
+    dimHeightIn: string | null;
+    notes: string | null;
   }>;
 }
 
@@ -405,7 +417,7 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       weight?: number | null;
       dims?: { length?: number | null; width?: number | null; height?: number | null };
       internalNotes?: string | null;
-      shipmentItems?: Array<{ orderId: string; orderLineItemId: string; quantity: number }>;
+      shipmentItems?: Array<{ orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null }>;
     }) => apiCall<ShipmentDetail>(`/api/fulfillment/shipments/${shipmentId}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -414,6 +426,15 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
       invalidateFulfillment(queryClient);
     },
+  });
+}
+
+export function useCreateShipmentPackageMutation(shipmentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload?: { weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }) =>
+      apiCall<any>(`/api/fulfillment/shipments/${shipmentId}/packages`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] }),
   });
 }
 

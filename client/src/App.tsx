@@ -97,6 +97,8 @@ import { useToast } from "@/hooks/use-toast";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
+import FulfillmentWorkspacePage from "@/pages/fulfillment-workspace";
+import FulfillmentShipmentManifestPage from "@/pages/fulfillment-shipment-manifest";
 import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
 import ReportStudioRoute from "@/pages/report-studio";
@@ -313,6 +315,8 @@ function Router() {
 
         {/* Fulfillment routes */}
         <Route path={ROUTES.fulfillment.list} element={<FulfillmentPage />} />
+        <Route path="/fulfillment/orders/:orderId" element={<FulfillmentWorkspacePage />} />
+        <Route path="/fulfillment/shipments/:shipmentId/manifest" element={<FulfillmentShipmentManifestPage />} />
         <Route path="/fulfillment/shipments/:shipmentId" element={<FulfillmentShipmentDetailPage />} />
         <Route path={ROUTES.labels} element={<LabelsPage />} />
         <Route path={ROUTES.reports} element={<ReportsPage />} />

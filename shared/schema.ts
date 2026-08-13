@@ -218,6 +218,7 @@ export const organizations = pgTable("organizations", {
       };
       fulfillment?: {
         pickupRetentionDaysAfterPickedUp?: number;
+        verificationPolicy?: 'strict_separate_verification' | 'packing_completes_fulfillment';
       };
       billingInvoiceTriggerPolicy?:
         | 'manual_only'
@@ -5419,7 +5420,9 @@ export const shipments = pgTable("shipments", {
   labelStorageKey: text("label_storage_key"),
   carrierLastStatus: text("carrier_last_status"),
   carrierRawResponse: jsonb("carrier_raw_response").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
-  shipDate: timestamp("ship_date", { mode: "date" }),
+  // Migration 0055 creates this as Postgres DATE, not timestamp.
+  shipDate: date("ship_date", { mode: "date" }),
+  shipmentReference: varchar("shipment_reference", { length: 80 }),
   shippedAt: timestamp("shipped_at", { withTimezone: true }), // legacy timestamp
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
   boxCount: integer("box_count"),
@@ -5443,6 +5446,7 @@ export const shipments = pgTable("shipments", {
   index("shipments_primary_order_id_idx").on(table.primaryOrderId),
   index("shipments_carrier_idx").on(table.carrier),
   index("shipments_tracking_number_idx").on(table.trackingNumber),
+  uniqueIndex("shipments_org_reference_uidx").on(table.organizationId, table.shipmentReference),
   index("shipments_sync_status_idx").on(table.syncStatus),
 ]);
 
@@ -5458,12 +5462,7 @@ export const insertShipmentSchema = createInsertSchema(shipments).omit({
   scope: shipmentScopeSchema.optional(),
   trackingNumber: z.string().optional().nullable(),
   serviceLevel: z.string().optional().nullable(),
-  shipDate: z.preprocess((val) => {
-    if (!val) return null;
-    if (val instanceof Date) return val;
-    if (typeof val === 'string') return new Date(val);
-    return val;
-  }, z.date().nullable().optional()),
+  shipDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   boxCount: z.coerce.number().int().min(0).optional().nullable(),
   weightLbs: z.coerce.number().min(0).optional().nullable(),
   dimLengthIn: z.coerce.number().min(0).optional().nullable(),
@@ -5521,6 +5520,7 @@ export const shipmentItems = pgTable("shipment_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
+  packageId: varchar("package_id"),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   quantity: integer("quantity").notNull(),
@@ -5529,6 +5529,7 @@ export const shipmentItems = pgTable("shipment_items", {
   index("shipment_items_org_order_idx").on(table.organizationId, table.orderId),
   index("shipment_items_org_line_item_idx").on(table.organizationId, table.orderLineItemId),
   index("shipment_items_shipment_idx").on(table.shipmentId),
+  index("shipment_items_package_idx").on(table.packageId),
 ]);
 
 export const insertShipmentItemSchema = createInsertSchema(shipmentItems).omit({
@@ -5540,6 +5541,25 @@ export const insertShipmentItemSchema = createInsertSchema(shipmentItems).omit({
 
 export type InsertShipmentItem = z.infer<typeof insertShipmentItemSchema>;
 export type ShipmentItem = typeof shipmentItems.$inferSelect;
+
+export const shipmentPackages = pgTable("shipment_packages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
+  ordinal: integer("ordinal").notNull(),
+  packageReference: varchar("package_reference", { length: 100 }).notNull(),
+  weightLbs: decimal("weight_lbs", { precision: 10, scale: 2 }),
+  dimLengthIn: decimal("dim_length_in", { precision: 10, scale: 2 }),
+  dimWidthIn: decimal("dim_width_in", { precision: 10, scale: 2 }),
+  dimHeightIn: decimal("dim_height_in", { precision: 10, scale: 2 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("shipment_packages_shipment_ordinal_uidx").on(table.shipmentId, table.ordinal),
+  uniqueIndex("shipment_packages_org_reference_uidx").on(table.organizationId, table.packageReference),
+  index("shipment_packages_org_shipment_idx").on(table.organizationId, table.shipmentId),
+]);
 
 export const pickupTickets = pgTable("pickup_tickets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -5642,6 +5662,8 @@ export const fulfillmentChecklistItems = pgTable("fulfillment_checklist_items", 
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   checked: boolean("checked").notNull().default(false),
+  // Strict mode uses checked; simple mode records the precise packed quantity.
+  fulfilledQuantity: integer("fulfilled_quantity").notNull().default(0),
   checkedByUserId: varchar("checked_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   checkedAt: timestamp("checked_at", { withTimezone: true }),
   notes: text("notes"),

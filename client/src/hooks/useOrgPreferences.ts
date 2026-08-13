@@ -71,6 +71,11 @@ export interface OrgPreferences {
     policy?: "automatic" | "manual_requested_only";
   };
 
+  fulfillment?: {
+    pickupRetentionDaysAfterPickedUp?: number;
+    verificationPolicy?: "strict_separate_verification" | "packing_completes_fulfillment";
+  };
+
   sidebar?: {
     showOperationalBadges?: boolean;
   };

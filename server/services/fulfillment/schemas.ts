@@ -31,13 +31,26 @@ export const shipmentItemInputSchema = z.object({
   orderId: z.string().min(1),
   orderLineItemId: z.string().min(1),
   quantity: z.coerce.number().int().positive(),
+  packageId: z.string().min(1).optional().nullable(),
+});
+
+export const shipmentPackageInputSchema = z.object({
+  id: z.string().min(1).optional(),
+  ordinal: z.coerce.number().int().positive().optional(),
+  weightLbs: z.coerce.number().min(0).optional().nullable(),
+  dims: z.object({
+    length: z.coerce.number().min(0).optional().nullable(),
+    width: z.coerce.number().min(0).optional().nullable(),
+    height: z.coerce.number().min(0).optional().nullable(),
+  }).optional(),
+  notes: z.string().trim().max(2000).optional().nullable(),
 });
 
 export const patchShipmentSchema = z.object({
   carrier: z.string().trim().min(1).optional().nullable(),
   serviceLevel: z.string().trim().min(1).optional().nullable(),
   trackingNumber: z.string().trim().min(1).optional().nullable(),
-  shipDate: z.string().optional().nullable(),
+  shipDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Ship date must use YYYY-MM-DD').optional().nullable(),
   boxCount: z.coerce.number().int().min(0).optional().nullable(),
   weight: z.coerce.number().min(0).optional().nullable(),
   dims: z.object({
@@ -47,6 +60,7 @@ export const patchShipmentSchema = z.object({
   }).optional(),
   internalNotes: z.string().optional().nullable(),
   shipmentItems: z.array(shipmentItemInputSchema).optional(),
+  packages: z.array(shipmentPackageInputSchema).optional(),
 });
 
 export const pickupReadySchema = z.object({

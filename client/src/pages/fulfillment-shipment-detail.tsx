@@ -21,6 +21,7 @@ import {
   ShipmentDetail,
   toFulfillmentError,
   useMarkShippedMutation,
+  useCreateShipmentPackageMutation,
   useShipmentDetailQuery,
   useUpdateShipmentMutation,
   useVoidShipmentMutation,
@@ -104,6 +105,7 @@ export default function FulfillmentShipmentDetailPage() {
 
   const [form, setForm] = useState<ShipmentFormState>(defaultForm);
   const [allocatedByLineItemId, setAllocatedByLineItemId] = useState<Record<string, number>>({});
+  const [packageByLineItemId, setPackageByLineItemId] = useState<Record<string, string>>({});
   const [ordersById, setOrdersById] = useState<Record<string, OrderDetailLite>>({});
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [lastResponse, setLastResponse] = useState<unknown>(null);
@@ -115,6 +117,7 @@ export default function FulfillmentShipmentDetailPage() {
   const updateShipment = useUpdateShipmentMutation(shipmentId || "");
   const markShipped = useMarkShippedMutation(shipmentId || "");
   const voidShipment = useVoidShipmentMutation(shipmentId || "");
+  const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
 
@@ -139,6 +142,9 @@ export default function FulfillmentShipmentDetailPage() {
       allocatedMap[item.orderLineItemId] = item.quantity;
     }
     setAllocatedByLineItemId(allocatedMap);
+    const packageMap: Record<string, string> = {};
+    for (const item of shipment.items) if (item.packageId) packageMap[item.orderLineItemId] = item.packageId;
+    setPackageByLineItemId(packageMap);
   }, [shipment]);
 
   useEffect(() => {
@@ -253,6 +259,7 @@ export default function FulfillmentShipmentDetailPage() {
             orderId: group.orderId,
             orderLineItemId: item.id,
             quantity: Number(allocatedByLineItemId[item.id] || 0),
+            packageId: packageByLineItemId[item.id] || null,
           }))
           .filter((item) => item.quantity > 0),
       );
@@ -290,6 +297,18 @@ export default function FulfillmentShipmentDetailPage() {
     }
   };
 
+  const handleAddPackage = async () => {
+    if (!shipmentId) return;
+    try {
+      const created = await createPackage.mutateAsync({});
+      toast({ title: "Package added", description: created.packageReference });
+      await shipmentQuery.refetch();
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      toast({ title: "Package could not be added", description: parsed.message, variant: "destructive" });
+    }
+  };
+
   const handleMarkShipped = async () => {
     if (!shipmentId) return;
     const saved = await saveDraft(true);
@@ -299,7 +318,7 @@ export default function FulfillmentShipmentDetailPage() {
       setLastError(null);
       const response = await markShipped.mutateAsync();
       setLastResponse(response);
-      toast({ title: "Shipment marked shipped", description: `Shipment ${shipmentId} is now SHIPPED` });
+      toast({ title: "Shipment marked shipped", description: `${shipment.shipmentReference || "Shipment"} is now SHIPPED` });
       await shipmentQuery.refetch();
     } catch (error) {
       const parsed = toFulfillmentError(error);
@@ -314,7 +333,7 @@ export default function FulfillmentShipmentDetailPage() {
       setLastError(null);
       const response = await voidShipment.mutateAsync();
       setLastResponse(response);
-      toast({ title: "Shipment voided", description: `Shipment ${shipmentId} moved to VOIDED` });
+      toast({ title: "Shipment voided", description: `${shipment.shipmentReference || "Shipment"} moved to VOIDED` });
       await shipmentQuery.refetch();
     } catch (error) {
       const parsed = toFulfillmentError(error);
@@ -364,12 +383,12 @@ export default function FulfillmentShipmentDetailPage() {
             </button>
             <div className="flex flex-col">
               <div className="flex items-center gap-3">
-                <h1 className="text-xl font-bold tracking-tight">Shipment {shipment.id}</h1>
+                <h1 className="text-xl font-bold tracking-tight">{shipment.shipmentReference || "Shipment"}</h1>
                 <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold uppercase tracking-wider ${statusPill(shipment.status)}`}>
                   {shipment.status}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground">/ fulfillment / shipments / {shipment.id}</p>
+              <p className="text-xs text-muted-foreground">Fulfillment shipment · {shipment.orders.map((order) => `Order #${order.orderNumber}`).join(" · ")}</p>
             </div>
           </div>
           <div className="flex items-center gap-6">
@@ -557,12 +576,13 @@ export default function FulfillmentShipmentDetailPage() {
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ordered</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Remaining</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">In Shipment</th>
+                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {loadingOrders && (
                       <tr>
-                        <td colSpan={5} className="px-6 py-6 text-center text-sm text-muted-foreground">
+                        <td colSpan={6} className="px-6 py-6 text-center text-sm text-muted-foreground">
                           <span className="inline-flex items-center gap-2">
                             <Loader2 className="h-4 w-4 animate-spin" />
                             Loading order line items...
@@ -574,7 +594,7 @@ export default function FulfillmentShipmentDetailPage() {
                     {!loadingOrders && lineItemsByOrder.map((group) => (
                       <>
                         <tr key={`${group.orderId}-header`} className="bg-muted/20">
-                          <td className="px-6 py-2" colSpan={5}>
+                          <td className="px-6 py-2" colSpan={6}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
                               <span className="h-px flex-1 bg-border" />
@@ -609,6 +629,17 @@ export default function FulfillmentShipmentDetailPage() {
                                 </div>
                                 {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Exceeds remaining quantity</p>}
                               </td>
+                              <td className="px-6 py-4 text-center">
+                                <select
+                                  className="h-8 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
+                                  disabled={!isDraft || shipment.packages.length === 0}
+                                  value={packageByLineItemId[item.id] || ""}
+                                  onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
+                                >
+                                  <option value="">Unpacked</option>
+                                  {shipment.packages.map((pkg) => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                                </select>
+                              </td>
                             </tr>
                           );
                         })}
@@ -616,6 +647,20 @@ export default function FulfillmentShipmentDetailPage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
+                <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">Assign packed items to a physical package before shipping.</p></div>
+                <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || createPackage.isPending} onClick={() => void handleAddPackage()}>
+                  {createPackage.isPending ? "ADDING..." : "ADD PACKAGE"}
+                </button>
+              </div>
+              <div className="divide-y divide-border">
+                {shipment.packages.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No packages yet. Create one to group physical contents and print a package ticket.</p> : shipment.packages.map((pkg) => (
+                  <div key={pkg.id} className="flex items-center justify-between px-6 py-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{shipment.items.filter((item) => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
+                ))}
               </div>
             </div>
           </section>
@@ -669,16 +714,12 @@ export default function FulfillmentShipmentDetailPage() {
                 <FileText className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
               <div className="space-y-1 p-2">
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href="#">
-                  <div className="flex items-center gap-3"><FileText className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Combined Packing Slip</span></div>
+                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href={`/fulfillment/shipments/${shipment.id}/manifest`} target="_blank" rel="noreferrer">
+                  <div className="flex items-center gap-3"><FileText className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Shipment Packing Slip / Manifest</span></div>
                   <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
                 </a>
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href="#">
-                  <div className="flex items-center gap-3"><Printer className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Print Preview (Labels)</span></div>
-                  <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
-                </a>
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href="#">
-                  <div className="flex items-center gap-3"><Download className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Download Full Manifest</span></div>
+                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href={`/fulfillment/shipments/${shipment.id}/manifest`} target="_blank" rel="noreferrer">
+                  <div className="flex items-center gap-3"><Printer className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Print Package Tickets</span></div>
                   <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
                 </a>
               </div>

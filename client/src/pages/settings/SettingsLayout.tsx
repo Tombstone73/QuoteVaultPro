@@ -1091,6 +1091,7 @@ export function ProductionSettings() {
   const proofApprovalLockEnabled = preferences.proofing?.proofApprovalLockEnabled ?? false;
   const proofingPolicy = preferences.proofing?.policy ?? "automatic";
   const orderSaveRoutingMode = preferences.orders?.saveRoutingMode ?? "save_only";
+  const fulfillmentVerificationPolicy = preferences.fulfillment?.verificationPolicy ?? "strict_separate_verification";
 
   const handlePrepressDefaultToggle = async (enabled: boolean) => {
     await updatePreferences({
@@ -1121,6 +1122,10 @@ export function ProductionSettings() {
       ...preferences,
       orders: { ...(preferences.orders ?? {}), saveRoutingMode: value },
     });
+  };
+
+  const handleFulfillmentVerificationPolicyChange = async (verificationPolicy: "strict_separate_verification" | "packing_completes_fulfillment") => {
+    await updatePreferences({ ...preferences, fulfillment: { ...(preferences.fulfillment ?? {}), verificationPolicy } });
   };
 
   const workflowValidation = React.useMemo(() => {
@@ -1270,6 +1275,25 @@ export function ProductionSettings() {
               </SelectContent>
             </Select>
             <p className="text-titan-xs text-titan-text-muted">Eligible lines route to Design, Proofing, or Prepress. Direct production handoff is not automatic.</p>
+          </div>
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          id="fulfillment-verification"
+          title="Fulfillment Verification"
+          summary={fulfillmentVerificationPolicy === "packing_completes_fulfillment" ? "Packing completes fulfillment" : "Separate fulfillment verification"}
+          help="Existing organizations remain in separate verification mode until an Owner or Admin deliberately changes this setting. Production-complete eligibility is always required."
+        >
+          <div className="space-y-2 rounded-titan-lg border border-titan-border-subtle p-4">
+            <Label htmlFor="fulfillment-verification-policy">When a production-complete item is packed</Label>
+            <Select value={fulfillmentVerificationPolicy} onValueChange={(value) => void handleFulfillmentVerificationPolicyChange(value as "strict_separate_verification" | "packing_completes_fulfillment")} disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}>
+              <SelectTrigger id="fulfillment-verification-policy"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="strict_separate_verification">Separate fulfillment verification</SelectItem>
+                <SelectItem value="packing_completes_fulfillment">Packing completes fulfillment</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-titan-xs text-titan-text-muted">Strict mode preserves the independent checklist. Simple mode records the packed quantity as fulfillment verification; it never bypasses production completion.</p>
           </div>
         </ProductionSettingsSection>
 

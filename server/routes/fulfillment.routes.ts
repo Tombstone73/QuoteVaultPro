@@ -25,6 +25,7 @@
  */
 
 import type { Express } from "express";
+import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { orders } from "@shared/schema";
 import { db } from "../db";
@@ -302,6 +303,36 @@ export function registerFulfillmentRoutes(
       }
       console.error('[fulfillment] patch shipment error:', error);
       return res.status(500).json({ success: false, message: 'Failed to update shipment' });
+    }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/packages', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user) || null;
+      const parsed = z.object({
+        weightLbs: z.coerce.number().min(0).optional().nullable(),
+        dims: z.object({ length: z.coerce.number().min(0).optional().nullable(), width: z.coerce.number().min(0).optional().nullable(), height: z.coerce.number().min(0).optional().nullable() }).optional(),
+        notes: z.string().max(2000).optional().nullable(),
+      }).parse(req.body || {});
+      const shipmentPackage = await canonicalFulfillmentOperations.createShipmentPackage(organizationId, req.params.shipmentId, { ...parsed, actorUserId });
+      return res.status(201).json({ success: true, data: shipmentPackage });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid package payload', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] create shipment package error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to create shipment package' });
+    }
+  });
+
+  app.delete('/api/fulfillment/shipments/:shipmentId/packages/:packageId', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const deleted = await canonicalFulfillmentOperations.deleteShipmentPackage(getRequestOrganizationId(req), req.params.shipmentId, req.params.packageId, getUserId(req.user) || null);
+      return res.json({ success: true, data: deleted });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] delete shipment package error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to delete shipment package' });
     }
   });
 

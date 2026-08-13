@@ -14,6 +14,7 @@ import {
   productionJobs,
   shipmentItems,
   shipmentOrders,
+  shipmentPackages,
   shipments,
   users,
 } from '@shared/schema';
@@ -254,37 +255,31 @@ export class ShipmentRepo {
     createdByUserId?: string | null;
   }) {
     const primaryOrderId = payload.primaryOrderId || payload.orderIds[0] || null;
-    const safeCreatedByUserId = await resolveExistingActorUserId(this.dbInstance, payload.createdByUserId);
-
-    const [shipment] = await this.dbInstance
-      .insert(shipments)
-      .values({
-        organizationId: orgId,
-        status: 'DRAFT',
-        scope: payload.scope,
-        orderId: primaryOrderId,
-        primaryOrderId,
-        createdByUserId: safeCreatedByUserId,
-      })
-      .returning();
-
-    if (payload.orderIds.length > 0) {
-      await this.dbInstance
-        .insert(shipmentOrders)
-        .values(payload.orderIds.map((orderId) => ({
-          organizationId: orgId,
-          shipmentId: shipment.id,
-          orderId,
-        })))
-        .onConflictDoNothing();
-    }
-
-    await this.insertEvent(orgId, payload.createdByUserId || null, 'SHIPMENT', shipment.id, 'SHIPMENT_CREATED', {
-      orderIds: payload.orderIds,
-      scope: payload.scope,
+    return this.dbInstance.transaction(async (tx) => {
+      // Serialize references for a primary order without making the UUID an
+      // operator-facing identifier.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${orgId} || ':' || ${primaryOrderId || ''}))`);
+      const safeCreatedByUserId = await resolveExistingActorUserId(tx, payload.createdByUserId);
+      const [order] = primaryOrderId ? await tx.select({ orderNumber: orders.orderNumber })
+        .from(orders).where(and(eq(orders.id, primaryOrderId), eq(orders.organizationId, orgId))).limit(1) : [];
+      const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipments)
+        .where(and(eq(shipments.organizationId, orgId), eq(shipments.primaryOrderId, primaryOrderId)));
+      const reference = `SH-${order?.orderNumber || 'MULTI'}-${String(Number(count || 0) + 1).padStart(2, '0')}`;
+      const [shipment] = await tx.insert(shipments).values({
+        organizationId: orgId, status: 'DRAFT', scope: payload.scope, orderId: primaryOrderId,
+        primaryOrderId, shipmentReference: reference, createdByUserId: safeCreatedByUserId,
+      }).returning();
+      if (payload.orderIds.length > 0) {
+        await tx.insert(shipmentOrders).values(payload.orderIds.map((orderId) => ({
+          organizationId: orgId, shipmentId: shipment.id, orderId,
+        }))).onConflictDoNothing();
+      }
+      await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId, actorUserId: safeCreatedByUserId, entityType: 'SHIPMENT', entityId: shipment.id,
+        eventType: 'SHIPMENT_CREATED', payloadJson: { orderIds: payload.orderIds, scope: payload.scope, shipmentReference: reference },
+      });
+      return shipment;
     });
-
-    return shipment;
   }
 
   async addOrdersToShipment(orgId: string, shipmentId: string, orderIds: string[]) {
@@ -303,6 +298,7 @@ export class ShipmentRepo {
     orderId: string;
     orderLineItemId: string;
     quantity: number;
+    packageId?: string | null;
   }>) {
     await this.dbInstance
       .delete(shipmentItems)
@@ -318,6 +314,7 @@ export class ShipmentRepo {
         orderId: item.orderId,
         orderLineItemId: item.orderLineItemId,
         quantity: item.quantity,
+        packageId: item.packageId ?? null,
       })));
   }
 
@@ -325,7 +322,7 @@ export class ShipmentRepo {
     carrier?: string | null;
     serviceLevel?: string | null;
     trackingNumber?: string | null;
-    shipDate?: Date | null;
+    shipDate?: string | null;
     boxCount?: number | null;
     weightLbs?: number | null;
     dimLengthIn?: number | null;
@@ -359,6 +356,82 @@ export class ShipmentRepo {
       .returning();
 
     return updated || null;
+  }
+
+  /** Replace draft allocations atomically, after proving every submitted line
+   * belongs to the tenant, shipment order set, and (when provided) package. */
+  async replaceDraftShipmentItems(orgId: string, shipmentId: string, items: Array<{
+    orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null;
+  }>) {
+    return this.dbInstance.transaction(async (tx) => {
+      const [shipment] = await tx.select({ id: shipments.id }).from(shipments).where(and(
+        eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
+      )).limit(1);
+      if (!shipment) return { ok: false as const, code: 'INVALID_STATE', message: 'Only DRAFT shipments are editable' };
+      const orderLinks = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
+        eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
+      ));
+      const allowedOrderIds = new Set(orderLinks.map((row) => row.orderId));
+      const ids = Array.from(new Set(items.map((item) => item.orderLineItemId)));
+      const lineRows = ids.length ? await tx.select({ id: orderLineItems.id, orderId: orderLineItems.orderId, quantity: orderLineItems.quantity })
+        .from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+        .where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.id, ids))) : [];
+      const lines = new Map(lineRows.map((line) => [line.id, line]));
+      const packageIds = Array.from(new Set(items.map((item) => item.packageId).filter((id): id is string => !!id)));
+      const packages = packageIds.length ? await tx.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
+        eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId), inArray(shipmentPackages.id, packageIds),
+      )) : [];
+      const validPackageIds = new Set(packages.map((entry) => entry.id));
+      for (const item of items) {
+        const line = lines.get(item.orderLineItemId);
+        if (!line || line.orderId !== item.orderId || !allowedOrderIds.has(item.orderId)) {
+          return { ok: false as const, code: 'INVALID_SHIPMENT_ITEM', message: 'A shipment item does not belong to this shipment order' };
+        }
+        if (item.packageId && !validPackageIds.has(item.packageId)) {
+          return { ok: false as const, code: 'INVALID_PACKAGE', message: 'A shipment item references a package outside this shipment' };
+        }
+      }
+      await tx.delete(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId)));
+      if (items.length) await tx.insert(shipmentItems).values(items.map((item) => ({
+        organizationId: orgId, shipmentId, orderId: item.orderId, orderLineItemId: item.orderLineItemId,
+        quantity: item.quantity, packageId: item.packageId ?? null,
+      })));
+      return { ok: true as const };
+    });
+  }
+
+  async listShipmentPackages(orgId: string, shipmentId: string) {
+    return this.dbInstance.select().from(shipmentPackages).where(and(
+      eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
+    )).orderBy(shipmentPackages.ordinal);
+  }
+
+  async createShipmentPackage(orgId: string, shipmentId: string, payload: {
+    weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
+  }) {
+    return this.dbInstance.transaction(async (tx) => {
+      const [shipment] = await tx.select({ id: shipments.id, shipmentReference: shipments.shipmentReference }).from(shipments).where(and(
+        eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
+      )).limit(1);
+      if (!shipment) return null;
+      const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipmentPackages).where(and(
+        eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
+      ));
+      const ordinal = Number(count || 0) + 1;
+      const [created] = await tx.insert(shipmentPackages).values({
+        organizationId: orgId, shipmentId, ordinal, packageReference: `${shipment.shipmentReference || `SH-${shipmentId.slice(0, 8)}`}-P${ordinal}`,
+        weightLbs: payload.weightLbs == null ? null : String(payload.weightLbs), dimLengthIn: payload.dimLengthIn == null ? null : String(payload.dimLengthIn),
+        dimWidthIn: payload.dimWidthIn == null ? null : String(payload.dimWidthIn), dimHeightIn: payload.dimHeightIn == null ? null : String(payload.dimHeightIn), notes: payload.notes ?? null,
+      }).returning();
+      return created;
+    });
+  }
+
+  async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string) {
+    return this.dbInstance.transaction(async (tx) => {
+      const [deleted] = await tx.delete(shipmentPackages).where(and(eq(shipmentPackages.id, packageId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.organizationId, orgId))).returning();
+      return deleted ?? null;
+    });
   }
 
   async markShipped(orgId: string, shipmentId: string, actorUserId?: string | null) {
@@ -449,7 +522,9 @@ export class ShipmentRepo {
         .set({
           status: 'SHIPPED',
           shippedAt: now,
-          shipDate: shipment.shipDate || now,
+          // DATE columns are calendar strings. Never pass a timestamp/invalid
+          // Date through the DATE serializer during the terminal transition.
+          shipDate: shipment.shipDate || now.toISOString().slice(0, 10),
           updatedAt: now,
         })
         .where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')))
@@ -522,7 +597,7 @@ export class ShipmentRepo {
 
     if (!shipment) return null;
 
-    const [orderLinks, items] = await Promise.all([
+    const [orderLinks, items, packages] = await Promise.all([
       this.dbInstance
         .select({
           shipmentOrderId: shipmentOrders.id,
@@ -546,18 +621,21 @@ export class ShipmentRepo {
           orderId: shipmentItems.orderId,
           orderLineItemId: shipmentItems.orderLineItemId,
           quantity: shipmentItems.quantity,
+          packageId: shipmentItems.packageId,
         })
         .from(shipmentItems)
         .where(and(
           eq(shipmentItems.organizationId, orgId),
           eq(shipmentItems.shipmentId, shipmentId),
         )),
+      this.listShipmentPackages(orgId, shipmentId),
     ]);
 
     return {
       ...shipment,
       orders: orderLinks,
       items,
+      packages,
     };
   }
 
