@@ -33,6 +33,9 @@ describe("CanonicalProductPublishOperations", () => {
     const proposal = await service.propose({ organizationId: "org_1", productId: "product_1" });
     await expect(service.execute({ organizationId: "org_1", actorUserId: "", productId: "product_1", treeVersionId: "tree_1", expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt })).rejects.toMatchObject({ code: "ACTOR_REQUIRED" });
     await expect(service.propose({ organizationId: "org_2", productId: "product_1" })).rejects.toMatchObject({ code: "PRODUCT_PUBLISH_TARGET_NOT_FOUND" });
-    await expect(readFile(path.resolve(process.cwd(), "server/routes/products.routes.ts"), "utf8")).resolves.toContain("canonicalProductPublishOperations.execute");
+    const route = await readFile(path.resolve(process.cwd(), "server/routes/products.routes.ts"), "utf8");
+    expect(route).toContain("canonicalProductPublishOperations.execute");
+    expect(route).toContain("const activateProduct = (req.body as any)?.activateProduct === true;");
+    expect(route).toContain("activateProduct, auditContext");
   });
 });

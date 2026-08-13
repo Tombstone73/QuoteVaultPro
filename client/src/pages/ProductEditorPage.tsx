@@ -46,12 +46,18 @@ import {
   type ProductAiParsingDescriptionMode,
 } from "@/lib/productAiParsingDescription";
 import { ProductActiveStatusHeaderControl } from "@/components/products/ProductActiveStatusHeaderControl";
+import { completeDeferredProductLifecycle } from "@/lib/productEditorLifecycleSave";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
   pricingProfileConfig: FlatGoodsConfig | null;
   pricingFormulaId: string | null;
 }
+
+type ProductEditorSaveResult = {
+  product: Product;
+  deferredLifecycle: { desiredIsActive: boolean } | null;
+};
 
 const PRODUCT_TYPE_LEGACY_ALIASES: Record<string, string> = {
   board: "pt_sheet",
@@ -562,13 +568,23 @@ const ProductEditorPage = () => {
           primaryMaterialId: data.primaryMaterialId || null,
           pricingEngine: pricingEngine, // Include pricing engine selection
         };
+        // The Product lifecycle guard correctly rejects an inactive Product
+        // with an unpublished PBV2 draft. Do not ask it to activate until this
+        // Save has durably saved and, when required, published that draft.
+        const deferredLifecycle = !effectiveIsNewProduct
+          && typeof payload.isActive === "boolean"
+          && payload.isActive !== product?.isActive
+          ? { desiredIsActive: payload.isActive }
+          : null;
+        const productPayload = { ...payload } as Record<string, unknown>;
+        if (deferredLifecycle) delete productPayload.isActive;
         
         let response;
         if (effectiveIsNewProduct) {
           if (import.meta.env.DEV) {
             console.log('[SAVE_PRODUCT]', { productId: 'new', mode: 'create' });
           }
-          response = await apiRequest("POST", "/api/products", payload);
+          response = await apiRequest("POST", "/api/products", productPayload);
           if (import.meta.env.DEV) {
             console.log('[SAVE_PIPELINE] phase=create-ok');
           }
@@ -576,7 +592,7 @@ const ProductEditorPage = () => {
           if (import.meta.env.DEV) {
             console.log('[SAVE_PRODUCT]', { productId: effectiveProductId, mode: 'update' });
           }
-          response = await apiRequest("PATCH", `/api/products/${effectiveProductId}`, payload);
+          response = await apiRequest("PATCH", `/api/products/${effectiveProductId}`, productPayload);
           if (import.meta.env.DEV) {
             console.log('[SAVE_PIPELINE] phase=update-ok');
           }
@@ -584,16 +600,16 @@ const ProductEditorPage = () => {
         
         // Extract product data from response
         const productData = await response.json();
-        return productData;
+        return { product: productData, deferredLifecycle } satisfies ProductEditorSaveResult;
       } catch (error) {
         // Release guard on error so retry is possible
         saveInFlightRef.current = false;
         throw error;
       }
     },
-    onSuccess: async (updatedProduct) => {
+    onSuccess: async (saveResult) => {
       try {
-        setLastSavedAt(new Date());
+        const { product: updatedProduct, deferredLifecycle } = saveResult as ProductEditorSaveResult;
         
         // IDEMPOTENCY: Store created product ID to prevent duplicate creates
         const targetProductId = isNewProduct ? updatedProduct.id : productId;
@@ -674,6 +690,9 @@ const ProductEditorPage = () => {
           return;
         }
         
+        let savedDraftId: string | null = null;
+        let draftAlreadyPublished = false;
+
         // Only persist if there are actual nodes (not just empty seed)
         if (nodeCount > 0) {
           if (import.meta.env.DEV) {
@@ -704,8 +723,10 @@ const ProductEditorPage = () => {
             return;
           }
           
+          const draftData = await draftRes.json().catch(() => ({}));
+          savedDraftId = typeof draftData?.data?.id === "string" ? draftData.data.id : null;
+          draftAlreadyPublished = draftData?.activationResult?.activated === true;
           if (import.meta.env.DEV) {
-            const draftData = await draftRes.json();
             console.log('[PBV2_DRAFT_PUT] ok', { draftId: draftData.data?.id });
           }
         } else {
@@ -713,6 +734,35 @@ const ProductEditorPage = () => {
             console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=empty-tree');
           }
         }
+
+        await completeDeferredProductLifecycle({
+          shouldApplyLifecycle: Boolean(deferredLifecycle),
+          desiredIsActive: deferredLifecycle?.desiredIsActive ?? Boolean(updatedProduct.isActive),
+          draftId: savedDraftId ?? pbv2State?.draftId ?? null,
+          draftAlreadyPublished,
+          publishDraft: async ({ treeVersionId, activateProduct }) => {
+            const publishRes = await fetch(`/api/pbv2/tree-versions/${treeVersionId}/publish`, {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ activateProduct }),
+            });
+            const publishData = await publishRes.json().catch(() => ({}));
+            if (!publishRes.ok) {
+              throw new Error(publishData.message || "PBV2 publish failed; Product remains inactive.");
+            }
+            if (publishData.requiresWarningsConfirm) {
+              throw new Error("PBV2 publish has warnings that require confirmation. Review and publish the configuration before activating the Product.");
+            }
+            return { productIsActive: publishData.product?.isActive === true };
+          },
+          updateLifecycle: async (isActive) => {
+            const lifecycleRes = await apiRequest("PATCH", `/api/products/${targetProductId}`, { isActive });
+            await lifecycleRes.json();
+          },
+        });
+
+        setLastSavedAt(new Date());
         
         // SUCCESS: Both product and PBV2 saved (or PBV2 skipped because empty)
         toast({

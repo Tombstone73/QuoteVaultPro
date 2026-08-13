@@ -1137,13 +1137,14 @@ export function registerProductRoutes(
 
       const { id } = req.params;
       const confirmWarnings = String((req.query as any)?.confirmWarnings ?? "").toLowerCase() === "true";
+      const activateProduct = (req.body as any)?.activateProduct === true;
       const userId = getUserId(req.user);
 
       if (!userId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
       const proposal = await canonicalProductPublishOperations.propose({ organizationId, treeVersionId: id });
       if (proposal.warnings.length && !confirmWarnings) return res.json({ success: true, requiresWarningsConfirm: true, findings: proposal.warnings });
-      const result = await canonicalProductPublishOperations.execute({ organizationId, actorUserId: userId, productId: proposal.productId, treeVersionId: proposal.treeVersionId, expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt, confirmWarnings, auditContext: { source: "product_editor", reference: `route:POST:/api/pbv2/tree-versions/${id}/publish` } });
-      return res.json({ success: true, data: result.tree, productId: result.product.id, pbv2ActiveTreeVersionId: result.tree.id, findings: proposal.warnings, ...(proposal.alreadyPublished ? { message: "Tree version already published and active" } : {}) });
+      const result = await canonicalProductPublishOperations.execute({ organizationId, actorUserId: userId, productId: proposal.productId, treeVersionId: proposal.treeVersionId, expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt, confirmWarnings, activateProduct, auditContext: { source: "product_editor", reference: `route:POST:/api/pbv2/tree-versions/${id}/publish` } });
+      return res.json({ success: true, data: result.tree, product: result.product, productId: result.product.id, pbv2ActiveTreeVersionId: result.tree.id, findings: proposal.warnings, ...(proposal.alreadyPublished ? { message: "Tree version already published and active" } : {}) });
     } catch (error: any) {
       if (error instanceof CanonicalProductPublishError) { const status = error.code === "PRODUCT_PUBLISH_TARGET_NOT_FOUND" ? 404 : error.code === "PBV2_PUBLISH_STALE" || error.code === "PBV2_DRAFT_REQUIRED" ? 409 : 400; return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings }); }
       console.error("Error publishing PBV2 tree version:", error);
