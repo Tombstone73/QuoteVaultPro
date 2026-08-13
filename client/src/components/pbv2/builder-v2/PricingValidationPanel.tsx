@@ -588,11 +588,12 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const warnings = findings.filter((f) => f.severity === "WARNING");
   const treeMeta = treeJson && typeof treeJson === "object" ? (treeJson as any).meta : null;
   const treePricingV2 = treeMeta && typeof treeMeta === "object" ? treeMeta.pricingV2 : null;
-  // The persisted product measurement mode is primary, but the canonical PBV2
-  // per-piece matrix contract must also be safe for an older product row.
-  const quantityOnly = measurementMode === "quantity_only"
-    || treeMeta?.pricingProfileKey === "qty_only"
-    || treePricingV2?.optionMatrixPricingUnit === "per_piece";
+  // Persisted Product measurement mode is the same authority used by Order
+  // and Quote runtime. PBV2 metadata is only a draft/legacy fallback.
+  const quantityOnly = measurementMode
+    ? measurementMode === "quantity_only"
+    : treeMeta?.pricingProfileKey === "qty_only"
+      || treePricingV2?.optionMatrixPricingUnit === "per_piece";
   const feeService = pricingProfileKey === "fee";
   const nonDimensionalPricing = quantityOnly || feeService;
 
@@ -670,9 +671,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         formulaSourceMode,
         pricingProfileKey,
         pricingProfileConfig,
+        measurementMode,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload],
+    [treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, measurementMode, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
@@ -1047,6 +1049,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
             formulaSourceMode,
             pricingProfileKey,
             pricingProfileConfig,
+            measurementMode,
             productPrimaryMaterialId,
             debug: true,
             optionSelectionsJson: selectionPayload,

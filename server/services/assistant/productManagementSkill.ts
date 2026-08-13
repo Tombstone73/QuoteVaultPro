@@ -438,7 +438,15 @@ export class ProductManagementSkillService {
       trace("pbv2_evaluation_started", { scenarioIndex: scenarioIndex + 1 });
       let result: ReturnType<typeof evaluatePricingPreviewFromTree>;
       try {
-        result = evaluatePricingPreviewFromTree({ treeJson: projected.treeJson, widthIn: scenario.squareFeet * 144, heightIn: 1, quantity: scenario.quantity ?? 1, pbv2ExplicitSelections: selected });
+        result = evaluatePricingPreviewFromTree({
+          treeJson: projected.treeJson,
+          widthIn: scenario.squareFeet * 144,
+          heightIn: 1,
+          quantity: scenario.quantity ?? 1,
+          pbv2ExplicitSelections: selected,
+          pricingProfileKey: projected.product.pricingProfileKey,
+          measurementMode: projected.product.measurementMode,
+        });
       } catch (error) {
         trace("pbv2_evaluation_completed", { scenarioIndex: scenarioIndex + 1, succeeded: false });
         throw error;

@@ -8090,7 +8090,9 @@ export async function registerOrderRoutes(
         }
     });
 
-    // PBV2: Explicit recompute for an order line item (updates snapshot only; accepted components remain unchanged)
+    // PBV2: Explicit recompute for an order line item. The financial snapshot
+    // must use the same PricingService evaluator as quote and order creation;
+    // accepted components remain unchanged.
     app.post("/api/order-line-items/:id/pbv2/recompute", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -8103,7 +8105,10 @@ export async function registerOrderRoutes(
             }).parse(req.body);
 
             const explicitSelections = (parsed.pbv2ExplicitSelections && typeof parsed.pbv2ExplicitSelections === 'object') ? parsed.pbv2ExplicitSelections : {};
-            const providedEnv = (parsed.pbv2Env && typeof parsed.pbv2Env === 'object') ? parsed.pbv2Env : {};
+            // Environment extras were previously passed to a simplified adapter
+            // which cannot evaluate matrices, Formula Library pricing, or the
+            // Product pricing profile. Canonical pricing owns its inputs from
+            // the persisted line instead of accepting an untrusted parallel env.
 
             const [li] = await db
                 .select({
@@ -8113,6 +8118,11 @@ export async function registerOrderRoutes(
                     width: orderLineItems.width,
                     height: orderLineItems.height,
                     quantity: orderLineItems.quantity,
+                    optionSelectionsJson: orderLineItems.optionSelectionsJson,
+                    specsJson: orderLineItems.specsJson,
+                    overridePriceCents: orderLineItems.overridePriceCents,
+                    unitPrice: orderLineItems.unitPrice,
+                    totalPrice: orderLineItems.totalPrice,
                     customerId: orders.customerId,
                 })
                 .from(orderLineItems)
@@ -8122,47 +8132,47 @@ export async function registerOrderRoutes(
 
             if (!li) return res.status(404).json({ message: "Order line item not found" });
 
-            const widthIn = numOrUndef((li as any).width);
-            const heightIn = numOrUndef((li as any).height);
-            const quantity = numOrUndef((li as any).quantity) ?? undefined;
-            const computedEnv: Record<string, unknown> = {
-                widthIn,
-                heightIn,
-                quantity,
-                sqft: widthIn != null && heightIn != null ? (widthIn * heightIn) / 144 : undefined,
-                perimeterIn: widthIn != null && heightIn != null ? 2 * (widthIn + heightIn) : undefined,
-            };
-            const env = { ...computedEnv, ...providedEnv };
-
-            let customerTier: 'default' | 'wholesale' | 'retail' | undefined;
-            if ((li as any).customerId) {
-                const [customer] = await db
-                    .select({ pricingTier: customers.pricingTier })
-                    .from(customers)
-                    .where(and(eq(customers.organizationId, organizationId), eq(customers.id, String((li as any).customerId))))
-                    .limit(1);
-                const tier = (customer as any)?.pricingTier;
-                if (tier === 'default' || tier === 'wholesale' || tier === 'retail') customerTier = tier;
-            }
-
-            // Evaluate using the PRODUCT ACTIVE tree version (must not be DRAFT).
-            const pbv2 = await evaluatePbv2SnapshotForProduct({
+            const { priceLineItem } = await import("../services/pricing/PricingService");
+            const persistedSelections = (li as any).optionSelectionsJson?.selected;
+            const effectiveSelections = Object.keys(explicitSelections).length > 0
+                ? explicitSelections
+                : (persistedSelections && typeof persistedSelections === "object" ? persistedSelections : {});
+            const pricingResult = await priceLineItem({
                 organizationId,
                 productId: String((li as any).productId),
-                explicitSelections: explicitSelections as any,
-                env,
-                pricingContext: { customerTier },
-                context: 'recompute',
-            }).catch((e: any) => {
-                if (e?.statusCode) throw e;
-                throw Object.assign(new Error(e?.message || 'PBV2 recompute failed'), { statusCode: 400 });
+                quantity: Number((li as any).quantity),
+                widthIn: numOrUndef((li as any).width),
+                heightIn: numOrUndef((li as any).height),
+                pbv2ExplicitSelections: effectiveSelections,
+                // Explicit recompute is an intentional current-Product pricing
+                // operation. Normal saved-order updates continue to reprice only
+                // on established pricing-driver changes.
+                pbv2TreeVersionIdOverride: undefined,
+            }).catch((error: any) => {
+                throw Object.assign(new Error(error?.message || "PBV2 recompute failed"), { statusCode: 400 });
+            });
+            const effectivePricing = resolvePersistedLineItemPricing({
+                baseCalculatedTotalCents: pricingResult.lineTotalCents,
+                quantity: Number((li as any).quantity),
+                specsJson: (li as any).specsJson,
+                legacyOverridePriceCents: (li as any).overridePriceCents,
+            });
+            const specsJson = mergePricingIntoSpecsJson({
+                specsJson: (li as any).specsJson,
+                pricing: effectivePricing,
             });
 
             const [updated] = await db
                 .update(orderLineItems)
                 .set({
-                    pbv2TreeVersionId: pbv2 ? pbv2.treeVersionId : null,
-                    pbv2SnapshotJson: pbv2 ? (pbv2.snapshotJson as any) : null,
+                    pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+                    pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
+                    optionSelectionsJson: { schemaVersion: 2, selected: pricingResult.pbv2SnapshotJson.selections || {} } as any,
+                    selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
+                    specsJson: specsJson as any,
+                    overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
+                    unitPrice: (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2),
+                    totalPrice: (effectivePricing.effectiveTotalCents / 100).toFixed(2),
                     updatedAt: new Date(),
                 })
                 .where(eq(orderLineItems.id, lineItemId))

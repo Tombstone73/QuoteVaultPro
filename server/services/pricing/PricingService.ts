@@ -1084,6 +1084,8 @@ export function evaluatePricingPreviewFromTree(input: {
   pricingFormulaLibrary?: PricingFormulaLibraryResolution | null;
   pricingProfileKey?: string | null;
   pricingProfileConfig?: unknown;
+  /** Product measurement mode is authoritative when previewing a persisted Product. */
+  measurementMode?: "dimensions_required" | "quantity_only";
   formulaVariables?: Record<string, number>;
   productPrimaryMaterialId?: string | null;
   materialRecords?: Pbv2WeightMaterialRecord[];
@@ -1092,7 +1094,11 @@ export function evaluatePricingPreviewFromTree(input: {
   const pricingProfile = getProfile(
     input.pricingProfileKey ?? input.treeJson?.meta?.pricingProfileKey,
   );
-  const quantityOnlyPricing = !pricingProfile.requiresDimensions;
+  const quantityOnlyPricing = input.measurementMode === "quantity_only"
+    ? true
+    : input.measurementMode === "dimensions_required"
+      ? false
+      : !pricingProfile.requiresDimensions;
   const runtimeDimensions = quantityOnlyPricing
     ? { widthIn: 0, heightIn: 0 }
     : resolvePbv2RuntimeDimensions({

@@ -1495,7 +1495,7 @@ export function registerProductRoutes(
       if (!validation.ok) {
         return res.status(validation.status).json(validation.envelope);
       }
-      const { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections } = validation.normalized;
+      const { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections, measurementMode } = validation.normalized;
       const normalizedFormulaSourceMode = typeof formulaSourceMode === "string" && formulaSourceMode.trim()
         ? formulaSourceMode.trim()
         : undefined;
@@ -1622,6 +1622,7 @@ export function registerProductRoutes(
         pricingFormulaLibrary,
         pricingProfileKey: typeof pricingProfileKey === "string" ? pricingProfileKey : undefined,
         pricingProfileConfig: pricingProfileConfig ?? undefined,
+        measurementMode,
         formulaVariables: formulaVariables && typeof formulaVariables === "object" && !Array.isArray(formulaVariables)
           ? formulaVariables as Record<string, number>
           : undefined,

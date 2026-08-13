@@ -37,9 +37,14 @@ export interface NormalizedPreviewRequest {
   heightNum: number;
   quantityNum: number;
   pbv2ExplicitSelections: Record<string, any>;
+  measurementMode?: "dimensions_required" | "quantity_only";
 }
 
-function previewDoesNotUseDimensions(treeJson: unknown): boolean {
+function previewDoesNotUseDimensions(treeJson: unknown, measurementMode?: "dimensions_required" | "quantity_only"): boolean {
+  // Product measurement mode is the established Order/Quote authority. Draft
+  // preview falls back to PBV2 metadata only when no Product mode is supplied.
+  if (measurementMode === "quantity_only") return true;
+  if (measurementMode === "dimensions_required") return false;
   if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) return false;
   const meta = (treeJson as { meta?: unknown }).meta;
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
@@ -122,6 +127,9 @@ export function validatePricingPreviewRequest(body: any): PreviewRequestValidati
   const safeBody = body && typeof body === "object" ? body : {};
 
   const { treeJson, width, height, quantity, optionSelectionsJson } = safeBody as Record<string, unknown>;
+  const measurementMode = safeBody.measurementMode === "quantity_only" || safeBody.measurementMode === "dimensions_required"
+    ? safeBody.measurementMode
+    : undefined;
 
   if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
     details.push({
@@ -132,7 +140,7 @@ export function validatePricingPreviewRequest(body: any): PreviewRequestValidati
     });
   }
 
-  const dimensionsAreIrrelevant = previewDoesNotUseDimensions(treeJson);
+  const dimensionsAreIrrelevant = previewDoesNotUseDimensions(treeJson, measurementMode);
   const runtimeDimensions = dimensionsAreIrrelevant
     ? { widthIn: 0, heightIn: 0, fixedDimensions: null }
     : resolvePbv2RuntimeDimensions({ treeJson, widthIn: width, heightIn: height });
@@ -193,6 +201,6 @@ export function validatePricingPreviewRequest(body: any): PreviewRequestValidati
 
   return {
     ok: true,
-    normalized: { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections },
+    normalized: { treeJson, widthNum, heightNum, quantityNum, pbv2ExplicitSelections, ...(measurementMode ? { measurementMode } : {}) },
   };
 }

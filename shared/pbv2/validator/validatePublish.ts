@@ -1404,6 +1404,32 @@ function validatePricingMatrices(
         }
       }
     });
+
+    // Publication must not leave an obviously selectable matrix combination
+    // without a price. Restrict this proof to finite, unconditioned discrete
+    // dimensions: visibility rules and multi-select semantics have their own
+    // runtime resolver and are not safe to infer as a blind Cartesian product.
+    const hasConditionalRules = getRuleCollections(tree).length > 0;
+    const dimensionValues = dimensions.map((dimension) => context.choiceValuesBySelectionKey[dimension]);
+    const canProveCoverage = !hasConditionalRules
+      && dimensions.length > 0
+      && dimensionValues.every((values) => values && values.size > 0)
+      && dimensions.every((dimension) => !context.booleanSelectionKeys.has(dimension));
+    if (canProveCoverage) {
+      const expected = dimensionValues.reduce<string[][]>((combinations, values) =>
+        combinations.flatMap((combination) => Array.from(values!).map((value) => [...combination, value])), [[]]);
+      for (const values of expected) {
+        const combination = dimensions.map((dimension, index) => `${dimension}:${values[index]}`).join("|");
+        if (seenCombinations.has(combination)) continue;
+        const display = dimensions.map((dimension, index) => `${dimension}=${values[index]}`).join(", ");
+        findings.push(errorFinding({
+          code: "PBV2_E_PRICING_MATRIX_COVERAGE_MISSING",
+          message: `Pricing matrix is missing an executable row for reachable selection (${display}).`,
+          path: `${candidate.path}.rows`,
+          context: { combination },
+        }));
+      }
+    }
   }
 }
 

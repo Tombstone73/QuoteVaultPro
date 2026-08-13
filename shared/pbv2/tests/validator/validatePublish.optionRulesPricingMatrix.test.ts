@@ -137,6 +137,19 @@ describe("pbv2/validator/validatePublish option rules and pricing matrix", () =>
     expect(result.errors).toHaveLength(0);
   });
 
+  test("blocks activation when an unconditioned reachable matrix combination has no row", () => {
+    const matrix = validAcmMatrix();
+    matrix.rows.pop();
+    expectError(makeTree({ pricingMatrix: matrix }), "PBV2_E_PRICING_MATRIX_COVERAGE_MISSING");
+  });
+
+  test("does not guess conditional reachability as a Cartesian product", () => {
+    const matrix = validAcmMatrix();
+    matrix.rows.pop();
+    const result = validateTreeForPublish(makeTree({ rules: [validBannerRule()], pricingMatrix: matrix }) as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((finding) => finding.code === "PBV2_E_PRICING_MATRIX_COVERAGE_MISSING")).toBe(false);
+  });
+
   test.each([
     ["invalid dimension", { dimensions: ["thickness", "missing"], rows: [{ match: { thickness: "choice_3mm", missing: "x" }, variables: { base_price: 500 } }] }, "PBV2_E_PRICING_MATRIX_DIMENSION_UNKNOWN"],
     ["invalid row match key", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm", sides: "choice_single" }, variables: { base_price: 500 } }] }, "PBV2_E_PRICING_MATRIX_ROW_MATCH_INVALID"],

@@ -142,6 +142,26 @@ describe('validatePricingPreviewRequest', () => {
     }
   });
 
+  test('uses persisted dimensions_required mode over stale per-piece matrix metadata', () => {
+    const result = validatePricingPreviewRequest({
+      treeJson: { ...validTree, meta: { pricingProfileKey: "qty_only", pricingV2: { optionMatrixPricingUnit: "per_piece" } } },
+      measurementMode: "dimensions_required",
+      quantity: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.envelope.details.map((detail) => detail.path)).toEqual(expect.arrayContaining(["width", "height"]));
+  });
+
+  test('uses persisted quantity_only mode over a dimension-requiring pricing profile', () => {
+    const result = validatePricingPreviewRequest({
+      treeJson: { ...validTree, meta: { pricingProfileKey: "default" } },
+      measurementMode: "quantity_only",
+      quantity: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.normalized).toMatchObject({ widthNum: 0, heightNum: 0, measurementMode: "quantity_only" });
+  });
+
   test('continues to require dimensions for a square-foot preview', () => {
     const result = validatePricingPreviewRequest({
       treeJson: { ...validTree, meta: { pricingV2: { optionMatrixPricingUnit: "per_square_foot", base: { perSqftCents: 500 } } } },
