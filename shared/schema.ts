@@ -5604,6 +5604,41 @@ export type InsertPickupTicket = z.infer<typeof insertPickupTicketSchema>;
 export type UpdatePickupTicket = z.infer<typeof updatePickupTicketSchema>;
 export type PickupTicket = typeof pickupTickets.$inferSelect;
 
+/** Immutable record of a customer collection. A ticket is the current pickup
+ * workflow state; handoffs preserve every partial collection. */
+export const pickupHandoffs = pgTable("pickup_handoffs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  pickupTicketId: varchar("pickup_ticket_id").notNull().references(() => pickupTickets.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  handedOffByUserId: varchar("handed_off_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  notes: text("notes"),
+  handedOffAt: timestamp("handed_off_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("pickup_handoffs_org_order_idx").on(table.organizationId, table.orderId),
+  index("pickup_handoffs_ticket_idx").on(table.pickupTicketId),
+]);
+
+/** Per-line quantities for one immutable pickup handoff. */
+export const pickupHandoffItems = pgTable("pickup_handoff_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  pickupHandoffId: varchar("pickup_handoff_id").notNull().references(() => pickupHandoffs.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  quantity: integer("quantity").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("pickup_handoff_items_org_line_idx").on(table.organizationId, table.orderLineItemId),
+  index("pickup_handoff_items_handoff_idx").on(table.pickupHandoffId),
+]);
+
+export const insertPickupHandoffSchema = createInsertSchema(pickupHandoffs).omit({ id: true, organizationId: true, createdAt: true });
+export const insertPickupHandoffItemSchema = createInsertSchema(pickupHandoffItems).omit({ id: true, organizationId: true, createdAt: true }).extend({ quantity: z.coerce.number().int().positive() });
+export type PickupHandoff = typeof pickupHandoffs.$inferSelect;
+export type PickupHandoffItem = typeof pickupHandoffItems.$inferSelect;
+
 export const outboundNotifications = pgTable("outbound_notifications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),

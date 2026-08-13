@@ -23,7 +23,11 @@ export type FulfillmentLineQuantityProjection = {
   label: string;
   orderedQuantity: number;
   productionCompleteQuantity: number;
+  /** All terminal physical handoffs, across shipment and pickup. */
+  fulfilledQuantity: number;
+  /** Retained for API compatibility; shipped is only one fulfillment channel. */
   shippedQuantity: number;
+  pickedUpQuantity: number;
   eligibleQuantity: number;
   blockedQuantity: number;
   remainingQuantity: number;
@@ -34,9 +38,11 @@ export type FulfillmentOrderQuantitySummary = {
   physicalLineCount: number;
   orderedQuantity: number;
   productionCompleteQuantity: number;
+  fulfilledQuantity: number;
   eligibleQuantity: number;
   blockedQuantity: number;
   shippedQuantity: number;
+  pickedUpQuantity: number;
   remainingQuantity: number;
   status: "WAITING_ON_PRODUCTION" | "PARTIALLY_READY" | "READY" | "PARTIALLY_SHIPPED" | "SHIPPED";
 };
@@ -97,10 +103,13 @@ export function resolveFulfillmentLineQuantity(input: {
   orderedQuantity?: number | null;
   productionCompleteQuantity?: number | null;
   shippedQuantity?: number | null;
+  pickedUpQuantity?: number | null;
 }): FulfillmentLineQuantityProjection {
   const orderedQuantity = quantity(input.orderedQuantity);
   const shippedQuantity = Math.min(orderedQuantity, quantity(input.shippedQuantity));
-  const remainingQuantity = Math.max(0, orderedQuantity - shippedQuantity);
+  const pickedUpQuantity = Math.min(Math.max(0, orderedQuantity - shippedQuantity), quantity(input.pickedUpQuantity));
+  const fulfilledQuantity = Math.min(orderedQuantity, shippedQuantity + pickedUpQuantity);
+  const remainingQuantity = Math.max(0, orderedQuantity - fulfilledQuantity);
   const workflowIntent = normalize(input.workflowIntent);
   const role = normalize(input.lineItemRole);
   const cancelled = [normalize(input.workflowState), normalize(input.lifecycleStatus)].some((value) => value === "canceled" || value === "cancelled");
@@ -120,7 +129,9 @@ export function resolveFulfillmentLineQuantity(input: {
       label: exclusionReason === "service_fee" ? "Billing-only service" : exclusionReason === "bundle_parent" ? "Bundle summary" : "Not fulfillable",
       orderedQuantity,
       productionCompleteQuantity: 0,
+      fulfilledQuantity,
       shippedQuantity,
+      pickedUpQuantity,
       eligibleQuantity: 0,
       blockedQuantity: 0,
       remainingQuantity: 0,
@@ -133,7 +144,7 @@ export function resolveFulfillmentLineQuantity(input: {
   const productionCompleteQuantity = productionRequired
     ? Math.min(orderedQuantity, lifecycleReadiness.eligible ? orderedQuantity : quantity(input.productionCompleteQuantity))
     : orderedQuantity;
-  const eligibleQuantity = Math.max(0, productionCompleteQuantity - shippedQuantity);
+  const eligibleQuantity = Math.max(0, productionCompleteQuantity - fulfilledQuantity);
   const blockedQuantity = Math.max(0, remainingQuantity - eligibleQuantity);
   const status: FulfillmentLineQuantityStatus = remainingQuantity === 0
     ? "fulfilled"
@@ -157,7 +168,9 @@ export function resolveFulfillmentLineQuantity(input: {
     label,
     orderedQuantity,
     productionCompleteQuantity,
+    fulfilledQuantity,
     shippedQuantity,
+    pickedUpQuantity,
     eligibleQuantity,
     blockedQuantity,
     remainingQuantity,
@@ -172,9 +185,11 @@ export function summarizeFulfillmentOrderQuantities(
   const sum = (field: keyof FulfillmentLineQuantityProjection) => physical.reduce((total, line) => total + Number(line[field] || 0), 0);
   const orderedQuantity = sum("orderedQuantity");
   const productionCompleteQuantity = sum("productionCompleteQuantity");
+  const fulfilledQuantity = sum("fulfilledQuantity");
   const eligibleQuantity = sum("eligibleQuantity");
   const blockedQuantity = sum("blockedQuantity");
   const shippedQuantity = sum("shippedQuantity");
+  const pickedUpQuantity = sum("pickedUpQuantity");
   const remainingQuantity = sum("remainingQuantity");
   const status = remainingQuantity <= 0 && orderedQuantity > 0
     ? "SHIPPED" as const
@@ -189,9 +204,11 @@ export function summarizeFulfillmentOrderQuantities(
     physicalLineCount: physical.length,
     orderedQuantity,
     productionCompleteQuantity,
+    fulfilledQuantity,
     eligibleQuantity,
     blockedQuantity,
     shippedQuantity,
+    pickedUpQuantity,
     remainingQuantity,
     status,
   };
@@ -202,6 +219,6 @@ export function resolveFulfillmentAllocatableQuantity(
   line: FulfillmentLineQuantityProjection,
   verifiedCumulativeQuantity: number,
 ): number {
-  const verifiedRemaining = Math.max(0, quantity(verifiedCumulativeQuantity) - line.shippedQuantity);
+  const verifiedRemaining = Math.max(0, quantity(verifiedCumulativeQuantity) - line.fulfilledQuantity);
   return Math.min(line.eligibleQuantity, verifiedRemaining);
 }

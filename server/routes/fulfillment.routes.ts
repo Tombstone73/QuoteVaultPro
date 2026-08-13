@@ -41,6 +41,7 @@ import {
   listQueueQuerySchema,
   patchShipmentSchema as patchFulfillmentShipmentSchema,
   pickupReadySchema,
+  pickupHandoffSchema,
 } from "../services/fulfillment/schemas";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
@@ -82,8 +83,11 @@ export function registerFulfillmentRoutes(
         showArchived: parsed.showArchived,
         overdueOnly: parsed.overdueOnly,
         search: parsed.search,
+        printer: parsed.printer,
         page: parsed.page,
         pageSize: parsed.pageSize,
+        sortBy: parsed.sortBy,
+        sortDirection: parsed.sortDirection,
       });
 
       return res.json({ success: true, data: { rows: data.rows, total: data.total } });
@@ -434,6 +438,20 @@ export function registerFulfillmentRoutes(
       }
       console.error('[fulfillment] mark pickup picked-up error:', error);
       return res.status(500).json({ success: false, message: 'Failed to mark pickup picked-up' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/:ticketId/handoffs', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const parsed = pickupHandoffSchema.parse(req.body || {});
+      const data = await canonicalFulfillmentOperations.recordPickupHandoff(organizationId, req.params.ticketId, parsed, getUserId(req.user) || null);
+      return res.json({ success: true, data, message: data.terminal ? 'Pickup completed' : 'Partial pickup recorded' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid pickup handoff payload', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] record pickup handoff error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to record pickup handoff' });
     }
   });
 

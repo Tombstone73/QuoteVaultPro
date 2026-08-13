@@ -15,9 +15,11 @@ export interface QueueRowDto {
   physicalLineCount: number;
   orderedQuantity: number;
   productionCompleteQuantity: number;
+  fulfilledQuantity: number;
   eligibleQuantity: number;
   blockedQuantity: number;
   shippedQuantity: number;
+  pickedUpQuantity: number;
   remainingQuantity: number;
   readySince: string | null;
   shipTo: string;
@@ -89,9 +91,11 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       productionRequired: boolean;
       orderedQuantity: number;
       productionCompleteQuantity: number;
+      fulfilledQuantity: number;
       eligibleQuantity: number;
       blockedQuantity: number;
       shippedQuantity: number;
+      pickedUpQuantity: number;
       remainingQuantity: number;
     };
     artwork: Array<{

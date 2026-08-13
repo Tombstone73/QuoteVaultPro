@@ -1191,6 +1191,13 @@
       "when": 1788048000021,
       "tag": "0174_customer_credit_limit_configuration",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1788048000022,
+      "tag": "0175_partial_pickup_handoffs",
+      "breakpoints": true
     }
   ]
 }

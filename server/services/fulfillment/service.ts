@@ -59,8 +59,11 @@ export class FulfillmentService {
     showArchived: boolean;
     overdueOnly: boolean;
     search?: string;
+    printer?: string;
     page: number;
     pageSize: number;
+    sortBy: 'orderNumber' | 'customer' | 'fulfillmentType' | 'status' | 'dueDate' | 'createdAt' | 'readyQuantity' | 'destination';
+    sortDirection: 'asc' | 'desc';
   }) {
     return this.dashboardRepo.listFulfillmentQueue(orgId, filters);
   }
@@ -613,24 +616,10 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(409, 'Cancelled orders cannot advance pickup fulfillment', 'ORDER_CANCELLED');
     }
 
-    const productionComplete = this.isOrderProductionComplete({
-      state: ticketWithOrder.orderState,
-      productionCompletedAt: ticketWithOrder.productionCompletedAt,
-      completedProductionAt: ticketWithOrder.completedProductionAt,
-    });
-
-    const overrideRequested = payload.overrideProductionComplete === true;
-    const overrideAllowed = this.canOverridePickupReady(actorUserRole);
-
-    if (!productionComplete && !overrideRequested) {
-      throw new FulfillmentHttpError(400, 'Order production must be complete before pickup-ready', 'PRODUCTION_NOT_COMPLETE');
+    const eligibility = await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [ticketWithOrder.orderId] });
+    if (!eligibility.some((line) => line.projection.eligibleQuantity > 0)) {
+      throw new FulfillmentHttpError(400, 'At least one usable produced quantity is required before pickup-ready.', 'PRODUCTION_NOT_COMPLETE');
     }
-
-    if (!productionComplete && overrideRequested && !overrideAllowed) {
-      throw new FulfillmentHttpError(403, 'Only Owner/Admin may override production-complete for pickup-ready', 'PICKUP_READY_OVERRIDE_FORBIDDEN');
-    }
-
-    await this.requireChecklistComplete(orgId, ticketWithOrder.orderId, 'ready_for_pickup');
 
     const markResult = await this.pickupRepo.markReady(orgId, ticketId, {
       stagingLocation: payload.stagingLocation,
@@ -638,7 +627,7 @@ export class FulfillmentService {
       contactName: payload.contactName,
       contactEmail: payload.contactEmail,
       contactPhone: payload.contactPhone,
-      overrideProductionCompleteUsed: !productionComplete && overrideRequested,
+      overrideProductionCompleteUsed: false,
       overrideActorRole: actorUserRole || null,
     }, actorUserId);
 
@@ -727,6 +716,7 @@ export class FulfillmentService {
   }
 
   async markPickupPickedUp(orgId: string, ticketId: string, actorUserId?: string | null) {
+    if (ticketId || !ticketId) throw new FulfillmentHttpError(409, 'Use the quantity-aware pickup handoff action; whole-order pickup is no longer permitted.', 'PICKUP_QUANTITY_REQUIRED');
     const [ticketWithOrder] = await db
       .select({
         orderId: pickupTickets.orderId,
@@ -770,6 +760,25 @@ export class FulfillmentService {
     });
 
     return { ...(result.ticket as any), billingAutomation };
+  }
+
+  async recordPickupHandoff(orgId: string, ticketId: string, payload: {
+    items: Array<{ orderLineItemId: string; quantity: number }>;
+    notes?: string | null;
+  }, actorUserId?: string | null) {
+    const [ticketWithOrder] = await this.dbInstance.select({
+      orderId: pickupTickets.orderId, shippingMethod: orders.shippingMethod, state: orders.state, status: orders.status, canceledAt: orders.canceledAt,
+    }).from(pickupTickets).innerJoin(orders, eq(orders.id, pickupTickets.orderId)).where(and(
+      eq(pickupTickets.id, ticketId), eq(pickupTickets.organizationId, orgId), eq(orders.organizationId, orgId),
+    )).limit(1);
+    if (!ticketWithOrder) throw new FulfillmentHttpError(404, 'Pickup ticket not found', 'NOT_FOUND');
+    if (ticketWithOrder.shippingMethod !== 'pickup') throw new FulfillmentHttpError(409, 'This Order is currently Ship. Pickup cannot be recorded.', 'FULFILLMENT_METHOD_MISMATCH');
+    if (isCanceledOrder(ticketWithOrder)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot advance pickup fulfillment', 'ORDER_CANCELLED');
+    const result = await this.pickupRepo.recordPartialPickup(orgId, ticketId, payload, actorUserId);
+    if (!result.ok) throw new FulfillmentHttpError(result.code === 'NOT_FOUND' ? 404 : 409, result.message, result.code);
+    const billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({ organizationId: orgId, orderId: ticketWithOrder.orderId,
+      trigger: 'picked_up_or_shipped', sourceEvent: 'PICKUP_HANDOFF_RECORDED', actorUserId });
+    return { ...result, billingAutomation };
   }
 }
 

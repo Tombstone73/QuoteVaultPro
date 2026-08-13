@@ -14,6 +14,7 @@ import {
   useFulfillmentOrderDetailQuery,
   useMarkOrderReadyForPickupMutation,
   useMarkPickupPickedUpMutation,
+  useRecordPickupHandoffMutation,
   useUpdateFulfillmentChecklistItemMutation,
 } from "@/hooks/useFulfillment";
 
@@ -26,6 +27,7 @@ export default function FulfillmentWorkspacePage() {
   const updateChecklist = useUpdateFulfillmentChecklistItemMutation(orderId || "");
   const createShipment = useCreateShipmentMutation();
   const readyForPickup = useMarkOrderReadyForPickupMutation(orderId || "");
+  const recordPickupHandoff = useRecordPickupHandoffMutation(detailQuery.data?.pickupTicket?.id || "", orderId);
   const markPickedUp = useMarkPickupPickedUpMutation(detailQuery.data?.pickupTicket?.id || "", orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
   const detail = detailQuery.data;
@@ -40,7 +42,7 @@ export default function FulfillmentWorkspacePage() {
   const workspaceMode = resolveFulfillmentWorkspaceMode(detail);
   const isPickup = workspaceMode.mode === "pickup";
   const canStartFulfillment = detail.eligibleQuantity > 0;
-  const canReadyPickup = detail.remainingQuantity > 0 && detail.blockedQuantity === 0 && detail.checklistComplete;
+  const canReadyPickup = detail.remainingQuantity > 0 && detail.eligibleQuantity > 0;
   const shipmentId = createdShipmentId || workspaceMode.singleDraftShipmentId;
   const readyLineCount = detail.lineItems.filter((item) => item.production.eligible).length;
   const readyQuantity = detail.lineItems.reduce((total, item) => total + item.production.eligibleQuantity, 0);
@@ -60,12 +62,22 @@ export default function FulfillmentWorkspacePage() {
     }
   };
 
-  const togglePhysicalPresence = async (lineItemId: string, checked: boolean) => {
+  const setPhysicalPresence = async (lineItemId: string, fulfilledQuantity: number, checked = fulfilledQuantity > 0) => {
     try {
-      await updateChecklist.mutateAsync({ lineItemId, checked });
+      await updateChecklist.mutateAsync({ lineItemId, checked, fulfilledQuantity });
     } catch (error) {
       showError("Could not update item", error);
     }
+  };
+
+  const recordAvailablePickup = async () => {
+    const items = detail.lineItems.flatMap((item) => {
+      const verifiedAvailable = Math.max(0, item.checklist.fulfilledQuantity - item.production.fulfilledQuantity);
+      const quantity = Math.min(item.production.eligibleQuantity, verifiedAvailable);
+      return quantity > 0 ? [{ orderLineItemId: item.id, quantity }] : [];
+    });
+    if (!items.length) return showError("No verified quantity available", new Error("Record the physically present quantity before handing items off."));
+    try { await recordPickupHandoff.mutateAsync({ items }); } catch (error) { showError("Could not record pickup", error); }
   };
 
   const previewArtwork = async (fileRecordId: string | null, mimeType: string | null, fileName: string) => {
@@ -84,6 +96,7 @@ export default function FulfillmentWorkspacePage() {
         <h1 className="text-2xl font-bold">Order #{detail.orderNumber}</h1><p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{isPickup ? "Pickup" : "Shipping"}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>
       <div className="flex flex-wrap gap-2"><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.orders.detail(orderId))}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button>
+        {isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" ? <button type="button" className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" disabled={recordPickupHandoff.isPending} onClick={() => void recordAvailablePickup()}>{recordPickupHandoff.isPending ? "Recording..." : "Process available quantity"}</button> : null}
         {!isPickup && !shipmentId && <button disabled={!canStartFulfillment || createShipment.isPending} title={canStartFulfillment ? undefined : "No produced quantity is available yet."} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
       </div>
     </header>
@@ -96,15 +109,15 @@ export default function FulfillmentWorkspacePage() {
       <div className="divide-y">
         {detail.lineItems.map((item) => {
           const artwork = item.artwork[0] ?? null;
-          const enabled = item.production.eligible;
+          const enabled = item.production.eligibleQuantity > 0;
           const itemName = item.productName || item.description || "Line item";
           return <article key={item.id} className="grid gap-3 p-4 md:grid-cols-[auto_56px_minmax(0,1fr)_minmax(170px,auto)] md:items-center">
-            <input aria-label={`Physically present: ${itemName}`} type="checkbox" checked={item.checklist.checked} disabled={!enabled || updateChecklist.isPending} onChange={(event) => void togglePhysicalPresence(item.id, event.target.checked)} className="mt-1 h-5 w-5 disabled:cursor-not-allowed" />
+            {item.production.orderedQuantity === 1 ? <input aria-label={`Physically present: ${itemName}`} type="checkbox" checked={item.checklist.fulfilledQuantity > 0} disabled={!enabled || updateChecklist.isPending} onChange={(event) => void setPhysicalPresence(item.id, event.target.checked ? 1 : 0, event.target.checked)} className="mt-1 h-5 w-5 disabled:cursor-not-allowed" /> : <span className="text-xs font-semibold text-muted-foreground">Qty</span>}
             <button type="button" className="h-14 w-14 overflow-hidden rounded border bg-muted disabled:cursor-default" disabled={!artwork?.fileRecordId} title={artwork?.fileRecordId ? `Preview ${artwork.fileName}` : artwork ? `${artwork.fileName} has no preview available` : "No artwork attached"} onClick={() => void previewArtwork(artwork?.fileRecordId ?? null, artwork?.mimeType ?? null, artwork?.fileName ?? "artwork")}>
               <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt="" className="h-full w-full object-cover" fallback={<span className="flex h-full w-full items-center justify-center text-muted-foreground"><FileImage className="h-5 w-5" /></span>} />
             </button>
             <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{itemName}</p><span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${enabled ? "bg-emerald-500/10 text-emerald-700" : "bg-muted text-muted-foreground"}`}>{enabled ? "Ready" : "Locked"}</span>{item.checklist.checked ? <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">Present</span> : null}</div><p className="text-sm text-muted-foreground">Ordered {item.production.orderedQuantity} · Ready {item.production.eligibleQuantity} · Shipped {item.production.shippedQuantity}{item.production.blockedQuantity > 0 ? ` · ${item.production.blockedQuantity} still in production` : ""}</p>{artwork ? <button type="button" className="mt-1 text-xs font-semibold text-primary hover:underline" disabled={!artwork.fileRecordId} onClick={() => void previewArtwork(artwork.fileRecordId, artwork.mimeType, artwork.fileName)}>{artwork.fileName}</button> : <p className="mt-1 text-xs text-muted-foreground">No artwork attached</p>}</div>
-            <div className="text-sm md:text-right"><p className="font-medium">{enabled ? "Physically present?" : "Unavailable"}</p><p className="text-muted-foreground">{enabled ? "Select when it is at handoff." : item.production.label}</p></div>
+            <div className="text-sm md:text-right">{item.production.orderedQuantity > 1 ? <><p className="font-medium">Ready / physically present</p><div className="mt-1 flex items-center justify-end gap-2"><input aria-label={`Physically present quantity: ${itemName}`} type="number" min={item.production.fulfilledQuantity} max={item.production.productionCompleteQuantity} defaultValue={item.checklist.fulfilledQuantity} disabled={updateChecklist.isPending} className="w-20 rounded border px-2 py-1" onBlur={(event) => void setPhysicalPresence(item.id, Number(event.target.value || 0))} /><button type="button" disabled={!enabled || updateChecklist.isPending} className="rounded border px-2 py-1 text-xs font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void setPhysicalPresence(item.id, item.production.productionCompleteQuantity)}>All available</button></div><p className="mt-1 text-xs text-muted-foreground">Up to {item.production.productionCompleteQuantity} produced.</p></> : <><p className="font-medium">{enabled ? "Physically present" : "Waiting"}</p><p className="text-muted-foreground">{enabled ? "Verify before handoff." : item.production.label}</p></>}</div>
           </article>;
         })}
       </div>

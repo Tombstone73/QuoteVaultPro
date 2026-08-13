@@ -9,6 +9,8 @@ import {
   orders,
   organizations,
   outboundNotifications,
+  pickupHandoffItems,
+  pickupHandoffs,
   pickupTickets,
   products,
   productionJobs,
@@ -518,14 +520,21 @@ export class ShipmentRepo {
       }
 
       const lineItemIds = Array.from(draftByLineItem.keys());
+      if (lineItemIds.length > 0) await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineItemIds)} FOR UPDATE`);
       const lineRows = lineItemIds.length > 0
         ? await tx
           .select({
             id: orderLineItems.id,
             quantity: orderLineItems.quantity,
+            workflowState: orderLineItems.workflowState,
+            lifecycleStatus: orderLineItems.status,
+            productionBypassed: orderLineItems.productionBypassed,
+            lineItemRole: orderLineItems.lineItemRole,
+            workflowIntent: products.workflowIntent,
+            requiresProductionJob: products.requiresProductionJob,
           })
-          .from(orderLineItems)
-          .where(inArray(orderLineItems.id, lineItemIds))
+          .from(orderLineItems).innerJoin(products, eq(products.id, orderLineItems.productId))
+          .where(and(eq(products.organizationId, orgId), inArray(orderLineItems.id, lineItemIds)))
         : [];
 
       const orderedQtyByLineItem = new Map(lineRows.map((row) => [row.id, row.quantity]));
@@ -548,19 +557,30 @@ export class ShipmentRepo {
         : [];
 
       const alreadyShippedByLineItem = new Map(shippedAggRows.map((row) => [row.orderLineItemId, row.shippedQty]));
+      const [producedRows, pickedUpRows] = lineItemIds.length > 0 ? await Promise.all([
+        tx.select({ id: productionRunMembers.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${productionRunMembers.successfulQuantity}), 0)::int` })
+          .from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+          .where(and(eq(productionRunMembers.organizationId, orgId), eq(productionRuns.organizationId, orgId), inArray(productionRunMembers.orderLineItemId, lineItemIds), notInArray(productionRuns.status, ['cancelled', 'canceled'] as any))).groupBy(productionRunMembers.orderLineItemId),
+        tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
+          .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
+          .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineItemIds))).groupBy(pickupHandoffItems.orderLineItemId),
+      ]) : [[], []] as const;
+      const producedByLine = new Map(producedRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.id, Number(row.quantity || 0)]));
 
       for (const [lineItemId, draftQty] of Array.from(draftByLineItem.entries())) {
+        const line = lineRows.find((row) => row.id === lineItemId);
         const orderedQty = orderedQtyByLineItem.get(lineItemId);
-        if (!orderedQty) {
+        if (!orderedQty || !line) {
           return { ok: false as const, code: 'LINE_ITEM_NOT_FOUND', message: `Line item ${lineItemId} was not found` };
         }
-        const shippedAlready = alreadyShippedByLineItem.get(lineItemId) || 0;
-        const remaining = Math.max(orderedQty - shippedAlready, 0);
-        if (draftQty > remaining) {
+        const projection = resolveFulfillmentLineQuantity({ ...line, orderedQuantity: Number(orderedQty), productionCompleteQuantity: producedByLine.get(lineItemId) ?? 0,
+          shippedQuantity: alreadyShippedByLineItem.get(lineItemId) ?? 0, pickedUpQuantity: pickedUpByLine.get(lineItemId) ?? 0 });
+        if (!projection.requiresFulfillment || draftQty > projection.eligibleQuantity) {
           return {
             ok: false as const,
-            code: 'QTY_EXCEEDS_REMAINING',
-            message: `Quantity exceeds remaining for line item ${lineItemId}`,
+            code: 'QTY_EXCEEDS_READY',
+            message: `Quantity exceeds usable produced quantity for line item ${lineItemId}`,
           };
         }
       }
@@ -693,6 +713,8 @@ export class ShipmentRepo {
     search?: string;
     page: number;
     pageSize: number;
+    sortBy: 'orderNumber' | 'customer' | 'fulfillmentType' | 'status' | 'dueDate' | 'createdAt' | 'readyQuantity' | 'destination';
+    sortDirection: 'asc' | 'desc';
   }) {
     const conditions = [eq(shipments.organizationId, orgId)] as any[];
 
@@ -908,6 +930,79 @@ export class PickupRepo {
     return updated || null;
   }
 
+  /** Append, never overwrite, a pickup handoff. The affected order lines are
+   * locked and their produced/fulfilled quantities are recomputed in the same
+   * transaction so pickup cannot race a shipment or another pickup. */
+  async recordPartialPickup(orgId: string, ticketId: string, payload: {
+    items: Array<{ orderLineItemId: string; quantity: number }>;
+    notes?: string | null;
+  }, actorUserId?: string | null) {
+    return this.dbInstance.transaction(async (tx) => {
+      const [ticket] = await tx.select().from(pickupTickets).where(and(
+        eq(pickupTickets.id, ticketId), eq(pickupTickets.organizationId, orgId),
+      )).limit(1);
+      if (!ticket) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup ticket not found' };
+      if (ticket.status !== 'READY_FOR_PICKUP') return { ok: false as const, code: 'INVALID_STATE', message: 'Only READY_FOR_PICKUP tickets can record a handoff' };
+
+      await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${ticket.orderId} FOR UPDATE`);
+      const lines = await tx.select({
+        id: orderLineItems.id, quantity: orderLineItems.quantity, workflowState: orderLineItems.workflowState,
+        lifecycleStatus: orderLineItems.status, productionBypassed: orderLineItems.productionBypassed,
+        lineItemRole: orderLineItems.lineItemRole, workflowIntent: products.workflowIntent, requiresProductionJob: products.requiresProductionJob,
+      }).from(orderLineItems).innerJoin(products, eq(products.id, orderLineItems.productId)).where(and(
+        eq(orderLineItems.orderId, ticket.orderId), eq(products.organizationId, orgId),
+      ));
+      const byId = new Map(lines.map((line) => [line.id, line]));
+      const requested = new Map<string, number>();
+      for (const item of payload.items) requested.set(item.orderLineItemId, (requested.get(item.orderLineItemId) ?? 0) + item.quantity);
+      if (!requested.size || Array.from(requested.entries()).some(([id, qty]) => !byId.has(id) || !Number.isInteger(qty) || qty <= 0)) {
+        return { ok: false as const, code: 'INVALID_HANDOFF_ITEMS', message: 'Pickup handoff items must be positive quantities from this order.' };
+      }
+      const ids = lines.map((line) => line.id);
+      const [producedRows, shippedRows, pickedRows] = await Promise.all([
+        tx.select({ id: productionRunMembers.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${productionRunMembers.successfulQuantity}), 0)::int` })
+          .from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+          .where(and(eq(productionRunMembers.organizationId, orgId), eq(productionRuns.organizationId, orgId), inArray(productionRunMembers.orderLineItemId, ids), notInArray(productionRuns.status, ['cancelled', 'canceled'] as any))).groupBy(productionRunMembers.orderLineItemId),
+        tx.select({ id: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
+          .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
+          .where(and(eq(shipmentItems.organizationId, orgId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'), inArray(shipmentItems.orderLineItemId, ids))).groupBy(shipmentItems.orderLineItemId),
+        tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
+          .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
+          .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, ids))).groupBy(pickupHandoffItems.orderLineItemId),
+      ]);
+      const produced = new Map(producedRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const shipped = new Map(shippedRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const picked = new Map(pickedRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const verifiedRows = await tx.select({ lineItemId: fulfillmentChecklistItems.lineItemId, quantity: fulfillmentChecklistItems.fulfilledQuantity })
+        .from(fulfillmentChecklistItems).where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.orderId, ticket.orderId)));
+      const verified = new Map(verifiedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+      const projections = lines.map((line) => resolveFulfillmentLineQuantity({
+        ...line, orderedQuantity: Number(line.quantity || 0), productionCompleteQuantity: produced.get(line.id) ?? 0,
+        shippedQuantity: shipped.get(line.id) ?? 0, pickedUpQuantity: picked.get(line.id) ?? 0,
+      }));
+      for (const [lineItemId, handoffQuantity] of Array.from(requested.entries())) {
+        const projection = projections[lines.findIndex((line) => line.id === lineItemId)];
+        const verifiedAvailable = Math.max(0, (verified.get(lineItemId) ?? 0) - projection.fulfilledQuantity);
+        if (!projection?.requiresFulfillment || handoffQuantity > projection.eligibleQuantity || handoffQuantity > verifiedAvailable) {
+          return { ok: false as const, code: 'QTY_EXCEEDS_READY', message: 'Pickup quantity exceeds the usable produced quantity for a line item.' };
+        }
+      }
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+      const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null }).returning();
+      await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({ organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity })));
+      const allFulfilled = projections.every((projection, index) => !projection.requiresFulfillment || projection.remainingQuantity - (requested.get(lines[index].id) ?? 0) <= 0);
+      const now = new Date();
+      const [updatedTicket] = await tx.update(pickupTickets).set({
+        status: allFulfilled ? 'PICKED_UP' : 'READY_FOR_PICKUP', pickedUpAt: allFulfilled ? now : null, updatedAt: now,
+      }).where(and(eq(pickupTickets.id, ticketId), eq(pickupTickets.organizationId, orgId))).returning();
+      await tx.update(orders).set({ fulfillmentStatus: allFulfilled ? 'delivered' : 'partially_picked_up', updatedAt: now.toISOString() })
+        .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
+      await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: safeActorUserId, entityType: 'PICKUP_TICKET', entityId: ticketId,
+        eventType: 'PICKUP_HANDOFF_RECORDED', payloadJson: { handoffId: handoff.id, itemCount: requested.size, terminal: allFulfilled } });
+      return { ok: true as const, ticket: updatedTicket, handoff, terminal: allFulfilled };
+    });
+  }
+
   async markPickedUp(orgId: string, ticketId: string, actorUserId?: string | null) {
     return this.dbInstance.transaction(async (tx) => {
       const [ticket] = await tx
@@ -1092,7 +1187,7 @@ export class FulfillmentDashboardRepo {
     if (lines.length === 0) return [];
 
     const ids = lines.map((line) => line.id);
-    const [owners, producedRows, shippedRows] = await Promise.all([
+    const [owners, producedRows, shippedRows, pickedUpRows] = await Promise.all([
       resolveActiveProductionOwners(this.dbInstance, {
         organizationId: orgId,
         lineItemIds: ids,
@@ -1122,9 +1217,21 @@ export class FulfillmentDashboardRepo {
           inArray(shipmentItems.orderLineItemId, ids),
         ))
         .groupBy(shipmentItems.orderLineItemId),
+      this.dbInstance.select({
+        lineItemId: pickupHandoffItems.orderLineItemId,
+        quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int`,
+      }).from(pickupHandoffItems)
+        .innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
+        .where(and(
+          eq(pickupHandoffItems.organizationId, orgId),
+          eq(pickupHandoffs.organizationId, orgId),
+          inArray(pickupHandoffItems.orderLineItemId, ids),
+        ))
+        .groupBy(pickupHandoffItems.orderLineItemId),
     ]);
     const producedByLine = new Map(producedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
     const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+    const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
 
     return lines.map((line) => {
       const owner = owners.get(line.id);
@@ -1144,6 +1251,7 @@ export class FulfillmentDashboardRepo {
           orderedQuantity: Number(line.quantity || 0),
           productionCompleteQuantity: producedByLine.get(line.id) ?? 0,
           shippedQuantity: shippedByLine.get(line.id) ?? 0,
+          pickedUpQuantity: pickedUpByLine.get(line.id) ?? 0,
         }),
       };
     });
@@ -1155,8 +1263,11 @@ export class FulfillmentDashboardRepo {
     showArchived: boolean;
     overdueOnly: boolean;
     search?: string;
+    printer?: string;
     page: number;
     pageSize: number;
+    sortBy: 'orderNumber' | 'customer' | 'fulfillmentType' | 'status' | 'dueDate' | 'createdAt' | 'readyQuantity' | 'destination';
+    sortDirection: 'asc' | 'desc';
   }) {
     const baseOrderConditions = [fulfillmentQueueEligibleOrderCondition(orgId)] as any[];
 
@@ -1180,6 +1291,8 @@ export class FulfillmentDashboardRepo {
         productionCompletedAt: orders.productionCompletedAt,
         fulfillmentStatus: orders.fulfillmentStatus,
         updatedAt: orders.updatedAt,
+        createdAt: orders.createdAt,
+        dueDate: orders.dueDate,
         shipToCity: orders.shipToCity,
         shipToState: orders.shipToState,
         customerName: customers.companyName,
@@ -1362,12 +1475,19 @@ export class FulfillmentDashboardRepo {
 
       if (filters.type === 'ship' && isPickup) continue;
       if (filters.type === 'pickup' && !isPickup) continue;
+      const productionContext = productionContextByOrder.get(order.id);
+      if (filters.printer && filters.printer !== 'all') {
+        const names = productionContext?.printerNames ?? [];
+        if (filters.printer === 'unassigned' ? Boolean(productionContext?.primaryPrinterName) : !names.includes(filters.printer)) continue;
+      }
 
       if (isPickup) {
         const ticket = ticketMap.get(order.id);
         const ticketStatus = cleanText(ticket?.status).toUpperCase();
-        const status = ticketStatus === 'READY_FOR_PICKUP' || ticketStatus === 'PICKED_UP'
+        const status = ticketStatus === 'PICKED_UP'
           ? ticketStatus
+          : ticketStatus === 'READY_FOR_PICKUP'
+            ? quantitySummary.pickedUpQuantity > 0 ? 'PARTIALLY_PICKED_UP' : ticketStatus
           : quantitySummary.status;
         const isArchivedPickup = ticket ? this.isPickedUpTicketArchived(ticket, pickupRetentionDays, nowMs) : false;
         if (isArchivedPickup && ticket?.id) {
@@ -1391,7 +1511,7 @@ export class FulfillmentDashboardRepo {
           isArchived: isArchivedPickup,
           archivedReason: isArchivedPickup ? `Picked up more than ${pickupRetentionDays} day(s) ago` : null,
           productionJobs: productionJobsByOrder.get(order.id) ?? [],
-          productionContext: productionContextByOrder.get(order.id),
+          productionContext,
         };
 
         if (filters.status !== 'all' && filters.status.toLowerCase() !== status.toLowerCase()) continue;
@@ -1435,10 +1555,27 @@ export class FulfillmentDashboardRepo {
         isArchived: isArchivedShip,
         archivedReason: isArchivedShip ? `Shipped more than ${pickupRetentionDays} day(s) ago` : null,
         productionJobs: productionJobsByOrder.get(order.id) ?? [],
-        productionContext: productionContextByOrder.get(order.id),
+        productionContext,
       });
     }
 
+    const compareText = (left: unknown, right: unknown) => String(left ?? '').localeCompare(String(right ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+    const statusRank = (status: string) => ({ WAITING_ON_PRODUCTION: 0, PARTIALLY_READY: 1, READY: 2, PARTIALLY_SHIPPED: 3, READY_FOR_PICKUP: 3, PARTIALLY_PICKED_UP: 4, SHIPPED: 5, PICKED_UP: 5 }[status] ?? 99);
+    rows.sort((left, right) => {
+      let result = 0;
+      switch (filters.sortBy) {
+        case 'orderNumber': result = compareText(left.orderNumber, right.orderNumber); break;
+        case 'customer': result = compareText(left.customerName, right.customerName); break;
+        case 'fulfillmentType': result = compareText(left.fulfillmentType, right.fulfillmentType); break;
+        case 'status': result = statusRank(left.status) - statusRank(right.status); break;
+        case 'readyQuantity': result = left.eligibleQuantity - right.eligibleQuantity; break;
+        case 'destination': result = compareText(left.shipTo, right.shipTo); break;
+        case 'dueDate': result = compareText((orderRows.find((order) => order.id === left.orderId)?.dueDate) || '', (orderRows.find((order) => order.id === right.orderId)?.dueDate) || ''); break;
+        case 'createdAt': result = compareText((orderRows.find((order) => order.id === left.orderId)?.createdAt) || '', (orderRows.find((order) => order.id === right.orderId)?.createdAt) || ''); break;
+      }
+      if (result === 0) result = compareText(left.orderId, right.orderId);
+      return filters.sortDirection === 'desc' ? -result : result;
+    });
     const total = rows.length;
     const start = (filters.page - 1) * filters.pageSize;
     const paged = rows.slice(start, start + filters.pageSize);
@@ -1459,6 +1596,8 @@ export class FulfillmentDashboardRepo {
       overdueOnly: filters?.overdueOnly ?? false,
       page: 1,
       pageSize: 1,
+      sortBy: 'createdAt',
+      sortDirection: 'asc',
     });
     return result.total;
   }
@@ -1587,7 +1726,7 @@ export class FulfillmentDashboardRepo {
       return { ok: false as const, code: 'LINE_NOT_FULFILLABLE', message: 'This line item has no physical fulfillment responsibility.' };
     }
     const maxVerifiable = eligibility.projection.productionCompleteQuantity;
-    const minimumVerified = eligibility.projection.shippedQuantity;
+    const minimumVerified = eligibility.projection.fulfilledQuantity;
     const fulfilledQuantity = input.fulfilledQuantity ?? (input.checked ? maxVerifiable : minimumVerified);
     if (fulfilledQuantity > maxVerifiable) {
       return { ok: false as const, code: 'QTY_EXCEEDS_READY', message: 'Verified quantity exceeds the production-ready quantity for this line item.' };
@@ -1952,6 +2091,8 @@ export class FulfillmentDashboardRepo {
       order: orderRow,
       orderedQty: quantitySummary.orderedQuantity,
       shippedQty: quantitySummary.shippedQuantity,
+      fulfilledQty: quantitySummary.fulfilledQuantity,
+      pickedUpQty: quantitySummary.pickedUpQuantity,
       productionCompleteQty: quantitySummary.productionCompleteQuantity,
       eligibleQty: quantitySummary.eligibleQuantity,
       blockedQty: quantitySummary.blockedQuantity,
@@ -1964,7 +2105,7 @@ export class FulfillmentDashboardRepo {
     const row: QueueRowDto = {
       ...baseRow,
       ...quantitySummary,
-      status: pickupStatus === 'READY_FOR_PICKUP' || pickupStatus === 'PICKED_UP' ? pickupStatus : quantitySummary.status,
+      status: pickupStatus === 'PICKED_UP' ? pickupStatus : pickupStatus === 'READY_FOR_PICKUP' ? quantitySummary.pickedUpQuantity > 0 ? 'PARTIALLY_PICKED_UP' : pickupStatus : quantitySummary.status,
       itemsRemaining: `${quantitySummary.remainingQuantity} item(s)`,
       readySince: quantitySummary.eligibleQuantity > 0 ? toIso(orderRow.productionCompletedAt ?? orderRow.updatedAt) : null,
     };
@@ -2040,9 +2181,11 @@ export class FulfillmentDashboardRepo {
           productionRequired: readiness.productionRequired,
           orderedQuantity: readiness.orderedQuantity,
           productionCompleteQuantity: readiness.productionCompleteQuantity,
+          fulfilledQuantity: readiness.fulfilledQuantity,
           eligibleQuantity: readiness.eligibleQuantity,
           blockedQuantity: readiness.blockedQuantity,
           shippedQuantity: readiness.shippedQuantity,
+          pickedUpQuantity: readiness.pickedUpQuantity,
           remainingQuantity: readiness.remainingQuantity,
         },
         artwork: artworkByLineItemId.get(item.id) ?? [],

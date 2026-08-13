@@ -22,6 +22,7 @@ import { getFulfillmentArtworkViewUrl } from "@/lib/fulfillmentArtwork";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import {
   FulfillmentQueueRow,
+  FulfillmentQueueFilters,
   useAddFulfillmentNoteMutation,
   getOrderDetails,
   getOrderShipments,
@@ -459,6 +460,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<NonNullable<FulfillmentQueueFilters["sortBy"]>>("createdAt");
+  const [sortDirection, setSortDirection] = useState<NonNullable<FulfillmentQueueFilters["sortDirection"]>>("asc");
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
   const [lastResponse, setLastResponse] = useState<unknown>(null);
@@ -473,6 +476,9 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     overdueOnly,
     showArchived,
     search,
+    printer: printerFilter,
+    sortBy,
+    sortDirection,
   });
 
   const createShipment = useCreateShipmentMutation();
@@ -489,13 +495,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     }
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [allRows]);
-  const rows = useMemo(() => {
-    if (printerFilter === "all") return allRows;
-    if (printerFilter === "unassigned") {
-      return allRows.filter((row) => !(row.productionContext?.primaryPrinterName || "").trim());
-    }
-    return allRows.filter((row) => (row.productionContext?.printerNames ?? []).includes(printerFilter));
-  }, [allRows, printerFilter]);
+  const rows = allRows;
   const selectedRows = rows.filter((row) => selectedOrderIds.has(row.orderId));
 
   const disableCombinedReason = useMemo(() => {
@@ -521,6 +521,12 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
       return next;
     });
   };
+
+  const toggleSort = (next: NonNullable<FulfillmentQueueFilters["sortBy"]>) => {
+    if (next === sortBy) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setSortBy(next); setSortDirection("asc"); }
+  };
+  const sortIndicator = (column: NonNullable<FulfillmentQueueFilters["sortBy"]>) => sortBy === column ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
 
   const handleOpenShipOrder = async (row: FulfillmentQueueRow) => {
     try {
@@ -763,13 +769,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                     }}
                   />
                 </th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Order #</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Customer</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Fulfillment</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Status</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready Since</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready / remaining</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Destination</th>
+                {([['orderNumber', 'Order #'], ['customer', 'Customer'], ['fulfillmentType', 'Fulfillment'], ['status', 'Status'], ['createdAt', 'Ready Since'], ['readyQuantity', 'Ready / remaining'], ['destination', 'Destination']] as const).map(([column, label]) => <th key={column} aria-sort={sortBy === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground"><button type="button" className="hover:text-foreground" onClick={() => toggleSort(column)}>{label}{sortIndicator(column)}</button></th>)}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">

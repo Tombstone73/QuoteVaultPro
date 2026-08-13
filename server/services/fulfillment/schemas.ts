@@ -20,8 +20,11 @@ export const listQueueQuerySchema = z.object({
   showArchived: queryBooleanSchema,
   overdueOnly: queryBooleanSchema,
   search: z.string().optional().default(''),
+  printer: z.string().trim().max(200).optional().default('all'),
   page: z.coerce.number().int().positive().optional().default(1),
   pageSize: z.coerce.number().int().positive().max(200).optional().default(50),
+  sortBy: z.enum(['orderNumber', 'customer', 'fulfillmentType', 'status', 'dueDate', 'createdAt', 'readyQuantity', 'destination']).optional().default('createdAt'),
+  sortDirection: z.enum(['asc', 'desc']).optional().default('asc'),
 });
 
 export const createShipmentSchema = z.object({
@@ -75,6 +78,14 @@ export const pickupReadySchema = z.object({
   overrideProductionComplete: z.coerce.boolean().optional().default(false),
 });
 
+export const pickupHandoffSchema = z.object({
+  items: z.array(z.object({
+    orderLineItemId: z.string().min(1),
+    quantity: z.coerce.number().int().positive(),
+  })).min(1),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
+
 export const fulfillmentNoteSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
@@ -106,6 +117,7 @@ export type ListQueueQueryInput = z.infer<typeof listQueueQuerySchema>;
 export type CreateShipmentInput = z.infer<typeof createShipmentSchema>;
 export type PatchShipmentInput = z.infer<typeof patchShipmentSchema>;
 export type PickupReadyInput = z.infer<typeof pickupReadySchema>;
+export type PickupHandoffInput = z.infer<typeof pickupHandoffSchema>;
 export type FulfillmentNoteInput = z.infer<typeof fulfillmentNoteSchema>;
 export type FulfillmentChecklistItemInput = z.infer<typeof fulfillmentChecklistItemSchema>;
 export type FulfillmentUnreadyInput = z.infer<typeof fulfillmentUnreadySchema>;

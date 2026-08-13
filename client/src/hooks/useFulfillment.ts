@@ -13,9 +13,11 @@ export interface FulfillmentQueueRow {
   physicalLineCount: number;
   orderedQuantity: number;
   productionCompleteQuantity: number;
+  fulfilledQuantity: number;
   eligibleQuantity: number;
   blockedQuantity: number;
   shippedQuantity: number;
+  pickedUpQuantity: number;
   remainingQuantity: number;
   readySince: string | null;
   shipTo: string;
@@ -87,9 +89,11 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       productionRequired: boolean;
       orderedQuantity: number;
       productionCompleteQuantity: number;
+      fulfilledQuantity: number;
       eligibleQuantity: number;
       blockedQuantity: number;
       shippedQuantity: number;
+      pickedUpQuantity: number;
       remainingQuantity: number;
     };
     artwork: Array<{
@@ -176,6 +180,9 @@ export interface FulfillmentQueueFilters {
   overdueOnly: boolean;
   showArchived: boolean;
   search: string;
+  printer?: string;
+  sortBy?: "orderNumber" | "customer" | "fulfillmentType" | "status" | "dueDate" | "createdAt" | "readyQuantity" | "destination";
+  sortDirection?: "asc" | "desc";
 }
 
 export interface ShipmentDetail {
@@ -321,6 +328,9 @@ export function useFulfillmentQueueQuery(filters: FulfillmentQueueFilters) {
       params.set("overdueOnly", String(filters.overdueOnly));
       params.set("showArchived", String(filters.showArchived));
       params.set("search", filters.search);
+      params.set("printer", filters.printer ?? "all");
+      params.set("sortBy", filters.sortBy ?? "createdAt");
+      params.set("sortDirection", filters.sortDirection ?? "asc");
       params.set("page", "1");
       params.set("pageSize", "200");
 
@@ -395,10 +405,10 @@ export function useUnreadyFulfillmentOrderMutation(orderId: string) {
 export function useUpdateFulfillmentChecklistItemMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { lineItemId: string; checked: boolean; notes?: string | null }) =>
+    mutationFn: (payload: { lineItemId: string; checked: boolean; fulfilledQuantity?: number; notes?: string | null }) =>
       apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/checklist/${payload.lineItemId}`, {
         method: "PATCH",
-        body: JSON.stringify({ checked: payload.checked, notes: payload.notes ?? null }),
+        body: JSON.stringify({ checked: payload.checked, fulfilledQuantity: payload.fulfilledQuantity, notes: payload.notes ?? null }),
       }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
@@ -526,6 +536,16 @@ export function useMarkPickupPickedUpMutation(ticketId: string, orderId?: string
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiCall<any>(`/api/fulfillment/pickup/${ticketId}/picked-up`, { method: "POST" }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useRecordPickupHandoffMutation(ticketId: string, orderId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null }) => apiCall<any>(`/api/fulfillment/pickup/${ticketId}/handoffs`, {
+      method: "POST", body: JSON.stringify(payload),
+    }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }

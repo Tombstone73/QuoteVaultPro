@@ -34,6 +34,8 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
   };
   orderedQty: number;
   shippedQty: number;
+  fulfilledQty?: number;
+  pickedUpQty?: number;
   productionCompleteQty?: number;
   eligibleQty?: number;
   blockedQty?: number;
@@ -43,9 +45,11 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
   deriveShipStatus: (fulfillmentStatus: string | null, orderedQty: number, shippedQty: number) => string;
 }): QueueRowDto {
   const { order, orderedQty, shippedQty, pickupTicket, shipmentId, deriveShipStatus } = input;
+  const fulfilledQty = input.fulfilledQty ?? shippedQty;
+  const pickedUpQty = input.pickedUpQty ?? 0;
   const isPickup = order.shippingMethod === 'pickup';
   const isEligible = isFulfillmentQueueEligibleOrder(order);
-  const remaining = Math.max(orderedQty - shippedQty, 0);
+  const remaining = Math.max(orderedQty - fulfilledQty, 0);
   const pickupStatus = cleanText(pickupTicket?.status).toUpperCase();
   const status = isPickup
     ? (pickupStatus || (isEligible ? 'DRAFT' : 'AWAITING_PRODUCTION'))
@@ -61,9 +65,11 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
     physicalLineCount: input.physicalLineCount ?? 0,
     orderedQuantity: orderedQty,
     productionCompleteQuantity: input.productionCompleteQty ?? 0,
+    fulfilledQuantity: fulfilledQty,
     eligibleQuantity: input.eligibleQty ?? 0,
     blockedQuantity: input.blockedQty ?? remaining,
     shippedQuantity: shippedQty,
+    pickedUpQuantity: pickedUpQty,
     remainingQuantity: remaining,
     readySince: isEligible ? toIso(order.productionCompletedAt ?? order.updatedAt) : null,
     shipTo: isPickup ? 'In-Store' : [order.shipToCity, order.shipToState].filter(Boolean).join(', ') || 'Unknown',

@@ -36,6 +36,23 @@ describe("canonical fulfillment quantity projection", () => {
     })).toMatchObject({ eligibleQuantity: 60, blockedQuantity: 40, remainingQuantity: 100, status: "partially_ready" });
   });
 
+  test("keeps usable partial production available while the line remains in production", () => {
+    const line = resolveFulfillmentLineQuantity({
+      workflowIntent: "standard_production", requiresProductionJob: true, workflowState: "in_production",
+      activeOwnerStationKey: "flatbed", activeOwnerStatus: "in_progress", orderedQuantity: 1000,
+      productionCompleteQuantity: 400, pickedUpQuantity: 150,
+    });
+    expect(line).toMatchObject({
+      productionCompleteQuantity: 400, pickedUpQuantity: 150, fulfilledQuantity: 150,
+      eligibleQuantity: 250, blockedQuantity: 600, remainingQuantity: 850, status: "partially_ready",
+    });
+  });
+
+  test("shares the produced cap between shipment and pickup handoffs", () => {
+    const line = resolveFulfillmentLineQuantity({ orderedQuantity: 400, productionCompleteQuantity: 400, shippedQuantity: 150, pickedUpQuantity: 100 });
+    expect(line).toMatchObject({ fulfilledQuantity: 250, eligibleQuantity: 150, blockedQuantity: 0 });
+  });
+
   test("subtracts prior shipped quantity and releases the remainder when production completes", () => {
     const partial = resolveFulfillmentLineQuantity({ workflowIntent: "standard_production", orderedQuantity: 100, productionCompleteQuantity: 60, shippedQuantity: 60 });
     expect(partial).toMatchObject({ eligibleQuantity: 0, blockedQuantity: 40, remainingQuantity: 40 });
