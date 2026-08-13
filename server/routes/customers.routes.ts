@@ -41,6 +41,7 @@ import {
   CanonicalCustomerContactError,
   canonicalCustomerContactOperations,
 } from "../services/customers/canonicalCustomerContactOperations";
+import { getCustomerCreditExposure, getCustomerCreditExposures } from "../services/customerCreditExposureService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -136,10 +137,10 @@ export function registerCustomerRoutes(
           sortDir: req.query.sortDir as string | undefined,
         });
 
-        // Attach availableCredit to each item
+        const exposures = await getCustomerCreditExposures(organizationId, result.items);
         const customersWithCredit = result.items.map((customer: any) => ({
           ...customer,
-          availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
+          ...(exposures.get(customer.id) ?? {}),
         }));
 
         return res.json({
@@ -161,9 +162,10 @@ export function registerCustomerRoutes(
       const customers = await storage.getAllCustomers(organizationId, filters);
       const capped = customers.slice(0, 500);
 
+      const exposures = await getCustomerCreditExposures(organizationId, capped);
       const customersWithCredit = capped.map((customer: any) => ({
         ...customer,
-        availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
+        ...(exposures.get(customer.id) ?? {}),
       }));
 
       res.json(customersWithCredit);
@@ -448,7 +450,8 @@ export function registerCustomerRoutes(
       if (!customer) {
         return res.status(404).json({ message: "Customer not found" });
       }
-      res.json(customer);
+      const exposure = await getCustomerCreditExposure(organizationId, customer);
+      res.json({ ...customer, ...exposure });
     } catch (error) {
       console.error("Error fetching customer:", error);
       res.status(500).json({ message: "Failed to fetch customer" });

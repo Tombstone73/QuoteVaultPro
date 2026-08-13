@@ -4,6 +4,7 @@ import { auditLogs, orders } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
+import { synchronizeDraftInvoiceFromOrder } from "../../invoicesService";
 
 type CreateOrderPayload = Parameters<typeof storage.createOrder>[1];
 type UpdateOrderPayload = Parameters<typeof storage.updateOrder>[2];
@@ -32,6 +33,11 @@ class CanonicalOrderOperations {
     const ownerTouched = input.changes.customerId !== undefined || input.changes.contactId !== undefined;
     const identity = ownerTouched ? await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.changes.customerId !== undefined ? input.changes.customerId as string | null : existing.customerId, contactId: input.changes.contactId !== undefined ? input.changes.contactId as string | null : existing.contactId }) : null;
     const order = await storage.updateOrder(input.organizationId, input.orderId, { ...input.changes, ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}) });
+    await synchronizeDraftInvoiceFromOrder({
+      organizationId: input.organizationId,
+      orderId: order.id,
+      actorUserId: input.actorUserId,
+    });
     await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
     return order;
   }

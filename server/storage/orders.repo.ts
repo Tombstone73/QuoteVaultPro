@@ -75,6 +75,7 @@ import {
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
+import { ensureDraftInvoiceForOrderInTransaction } from "../invoicesService";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -1284,9 +1285,20 @@ export class OrdersRepository {
         shippingInstructions?: string | null;
         trackingNumber?: string | null;
         shippingCents?: number | null;
+        /** Durable provenance for the required linked draft invoice. */
+        invoiceAuditSource?: "order_created" | "quote_converted" | "inbound_order";
         /** Opt-in policy for workflows that must defer all production intake. */
         productionIntakePolicy?: ProductionIntakePolicy;
     }): Promise<OrderWithRelations> {
+        // Direct Orders must never commit without their normal linked draft
+        // invoice. Quote conversion and inbound conversion already supply a
+        // transaction-scoped repository, so this outer transaction safely
+        // composes with those workflows as a savepoint.
+        if (!this.atomicConversionScoped) {
+            return this.dbInstance.transaction(async (tx) => {
+                return this.withExecutor(tx, true).createOrder(organizationId, data);
+            });
+        }
         await this.validateOrderIdentity(organizationId, data.customerId ?? null, data.contactId ?? null);
         if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
         const subtotal = data.lineItems.reduce((sum, li: any) => {
@@ -1653,6 +1665,13 @@ export class OrdersRepository {
                 }
             }
         }));
+
+        await ensureDraftInvoiceForOrderInTransaction(this.dbInstance, {
+            organizationId,
+            orderId: created.order.id,
+            actorUserId: data.createdByUserId,
+            source: data.invoiceAuditSource ?? (data.quoteId ? "quote_converted" : "order_created"),
+        });
 
         const [customer] = data.customerId
             ? await this.dbInstance.select().from(customers).where(and(eq(customers.id, data.customerId), eq(customers.organizationId, organizationId)))

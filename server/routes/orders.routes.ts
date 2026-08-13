@@ -162,6 +162,7 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
+import { synchronizeDraftInvoiceFromOrder } from "../invoicesService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -330,7 +331,7 @@ const materialReorderReceiveSchema = z.object({
     notes: z.string().trim().optional(),
 });
 
-async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organizationId: string) {
+async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organizationId: string, actorUserId?: string | null) {
     const [orderRow] = await db
         .select({
             id: orders.id,
@@ -376,6 +377,9 @@ async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organ
         .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
         .returning();
 
+    if (updated) {
+        await synchronizeDraftInvoiceFromOrder({ organizationId, orderId, actorUserId: actorUserId ?? null });
+    }
     return updated;
 }
 
@@ -7322,7 +7326,7 @@ export async function registerOrderRoutes(
                 }
             }
 
-            await recomputeOrderTotalsFromPersistedLineItems(String(created.orderId), organizationId);
+            await recomputeOrderTotalsFromPersistedLineItems(String(created.orderId), organizationId, userId ?? null);
             await recomputeOrderBillingStatus({ organizationId, orderId: String(created.orderId) });
 
             res.json(enrichLineItemWithEffectivePricing(created as any));
@@ -7443,7 +7447,7 @@ export async function registerOrderRoutes(
             for (const parentId of [priorParentId, parentLineItemId].filter((id): id is string => Boolean(id))) {
                 await recalculateOrderBundleParent(parentId);
             }
-            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId);
+            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId, getUserId(req.user) ?? null);
             await recomputeOrderBillingStatus({ organizationId, orderId: String(ownership.orderId) });
             await db.insert(auditLogs).values({
                 organizationId, userId: getUserId(req.user) ?? null,
@@ -7986,7 +7990,7 @@ export async function registerOrderRoutes(
                 }
             }
 
-            await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId);
+            await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId, userId ?? null);
             await recomputeOrderBillingStatus({ organizationId, orderId: String(lineItem.orderId) });
 
             res.json({
@@ -8757,7 +8761,7 @@ export async function registerOrderRoutes(
             if (!ownership) return res.status(404).json({ message: "Order line item not found" });
 
             await storage.deleteOrderLineItem(lineItemId);
-            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId);
+            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId, getUserId(req.user) ?? null);
             res.json({ message: "Order line item deleted successfully" });
         } catch (error) {
             res.status(500).json({ message: "Failed to delete order line item" });

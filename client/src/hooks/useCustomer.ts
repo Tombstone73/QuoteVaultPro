@@ -85,6 +85,9 @@ export interface CustomerWithRelations {
   currentBalance: string;
   creditLimit: string;
   availableCredit: string;
+  outstandingAr?: string;
+  pendingBilling?: string;
+  creditExposure?: string;
   paymentTerms: string;
   internalNotes: string | null;
   createdAt: string;

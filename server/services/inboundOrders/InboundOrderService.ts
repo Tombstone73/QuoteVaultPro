@@ -3957,7 +3957,10 @@ export class InboundOrderService {
           payload,
           actorUserId: args.actorUserId,
         });
-        const order = await orderRepository.createOrder(args.organizationId, orderInput);
+        const order = await orderRepository.createOrder(args.organizationId, {
+          ...orderInput,
+          invoiceAuditSource: "inbound_order",
+        });
         if (!order?.id || !order.orderNumber || order.organizationId !== args.organizationId) {
           throw new InboundOrderTransitionError("Draft order creation did not return a valid tenant-scoped order.", 500);
         }

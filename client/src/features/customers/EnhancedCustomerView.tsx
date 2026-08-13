@@ -361,10 +361,22 @@ function CustomerHeader({
               <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditLimit)}</div>
             </div>
             
-            {/* Current Balance */}
+            {/* Invoice-derived financial exposure */}
             <div className="text-right">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Balance</div>
-              <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.currentBalance)}</div>
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Outstanding A/R</div>
+              <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.outstandingAr ?? "0")}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Pending Billing</div>
+              <div className="text-[11px] font-semibold text-titan-warning">{formatCurrency(customer.pendingBilling ?? "0")}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Credit Exposure</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditExposure ?? "0")}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Available</div>
+              <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.availableCredit)}</div>
             </div>
           </div>
 

@@ -1,6 +1,6 @@
 import { db } from './db';
 import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
-import { asc, desc, eq, and, ilike, inArray, or, sql } from 'drizzle-orm';
+import { asc, desc, eq, and, ilike, inArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
@@ -488,6 +488,61 @@ async function lockInvoiceOrderCreation(tx: any, organizationId: string, orderId
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${organizationId}:${orderId}`}))`);
 }
 
+function buildOrderInvoiceFinancialSnapshot(order: any, lineItems: any[]) {
+  const pricedLineItems = lineItems.map((lineItem: any) => ({
+    lineItem,
+    pricing: resolveOrderLineItemInvoicePricing(lineItem),
+  }));
+  const billablePricedLineItems = getBillableBundleRoots(pricedLineItems.map((item) => item.lineItem))
+    .map((lineItem: any) => pricedLineItems.find((item) => item.lineItem.id === lineItem.id)!);
+  const subtotalCents = billablePricedLineItems.reduce((sum: number, item: any) => sum + item.pricing.effectiveTotalCents, 0);
+  const tax = Number(order.tax || '0');
+  const taxCents = toCents(tax);
+  const shippingCents = Number(order.shippingCents ?? 0) || 0;
+  const totalCents = Math.max(0, subtotalCents + taxCents + shippingCents);
+
+  return {
+    pricedLineItems,
+    subtotalCents,
+    taxCents,
+    shippingCents,
+    totalCents,
+    subtotal: subtotalCents / 100,
+    tax,
+    total: totalCents / 100,
+  };
+}
+
+function buildInvoiceLineItemSnapshots(invoiceId: string, pricedLineItems: Array<{ lineItem: any; pricing: any }>): InsertInvoiceLineItem[] {
+  return pricedLineItems.map(({ lineItem: li, pricing }: any, idx: number) => ({
+    invoiceId,
+    orderLineItemId: li.id,
+    productId: li.productId,
+    productVariantId: li.productVariantId,
+    productType: li.productType,
+    name: li.name ?? null,
+    sku: li.sku ?? null,
+    description: li.description,
+    width: li.width ? Number(li.width) : null,
+    height: li.height ? Number(li.height) : null,
+    quantity: pricing.quantity,
+    sqft: li.sqft ? Number(li.sqft) : null,
+    unitPrice: pricing.effectiveUnitPriceCents / 100,
+    totalPrice: pricing.effectiveTotalCents / 100,
+    unitPriceCents: pricing.effectiveUnitPriceCents,
+    lineTotalCents: pricing.effectiveTotalCents,
+    sortOrder: typeof li.sortOrder === 'number' ? li.sortOrder : idx,
+    specsJson: li.specsJson as any,
+    selectedOptions: li.selectedOptions as any,
+    optionSelectionsJson: li.optionSelectionsJson ?? null,
+    parentLineItemId: li.parentLineItemId ?? null,
+    lineItemRole: li.lineItemRole ?? "standalone",
+    childDisplayMode: li.childDisplayMode ?? "hidden",
+    parentPriceMode: li.parentPriceMode ?? "sum_children",
+    childCalculatedTotalCents: li.childCalculatedTotalCents ?? null,
+  } as any));
+}
+
 export async function createInvoiceFromOrderInTransaction(
   tx: any,
   organizationId: string,
@@ -501,6 +556,22 @@ export async function createInvoiceFromOrderInTransaction(
   }
 ) {
     await lockInvoiceOrderCreation(tx, organizationId, orderId);
+
+    // This low-level creator is still used by established UI/automation
+    // adapters. Keep the one-active-invoice invariant here as well so a
+    // compatibility caller cannot bypass the canonical order boundary.
+    const [existingActiveInvoice] = await tx
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.orderId, orderId),
+        ne(invoices.status, "void"),
+      ))
+      .limit(1);
+    if (existingActiveInvoice) {
+      throw Object.assign(new Error("Order already has an active invoice."), { code: "INVOICE_ALREADY_EXISTS" });
+    }
 
     // Fetch order & its line items
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
@@ -517,21 +588,7 @@ export async function createInvoiceFromOrderInTransaction(
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
-    const pricedLineItems = lineItems.map((li: any) => ({
-      lineItem: li,
-      pricing: resolveOrderLineItemInvoicePricing(li as any),
-    }));
-    const billablePricedLineItems = getBillableBundleRoots(pricedLineItems.map((item: any) => item.lineItem))
-      .map((lineItem: any) => pricedLineItems.find((item: any) => item.lineItem.id === lineItem.id)!);
-    const subtotalCents = billablePricedLineItems.reduce((sum: number, item: any) => sum + item.pricing.effectiveTotalCents, 0);
-    const subtotal = subtotalCents / 100;
-    const tax = Number(order.tax || '0');
-    const shippingCents = Number((order as any).shippingCents ?? 0) || 0;
-    const shipping = shippingCents / 100;
-    const total = subtotal + tax + shipping;
-
-    const taxCents = toCents(tax);
-    const totalCents = Math.max(0, subtotalCents + taxCents + shippingCents);
+    const financialSnapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
 
     const sourceOrderNumber = order.orderNumber ? parseInt(order.orderNumber, 10) || null : null;
     const invoiceInsert: InsertInvoice = {
@@ -548,15 +605,15 @@ export async function createInvoiceFromOrderInTransaction(
       issueDate,
       issuedAt: undefined,
       dueDate: dueDate || undefined,
-      subtotal: subtotal.toFixed(2) as any,
-      tax: tax.toFixed(2) as any,
-      total: total.toFixed(2) as any,
-      subtotalCents,
-      taxCents,
-      shippingCents,
-      totalCents,
+      subtotal: financialSnapshot.subtotal.toFixed(2) as any,
+      tax: financialSnapshot.tax.toFixed(2) as any,
+      total: financialSnapshot.total.toFixed(2) as any,
+      subtotalCents: financialSnapshot.subtotalCents,
+      taxCents: financialSnapshot.taxCents,
+      shippingCents: financialSnapshot.shippingCents,
+      totalCents: financialSnapshot.totalCents,
       amountPaid: '0.00' as any,
-      balanceDue: (totalCents / 100).toFixed(2) as any,
+      balanceDue: (financialSnapshot.totalCents / 100).toFixed(2) as any,
       currency: ((order as any)?.currency as any) || 'USD',
       notesPublic: undefined,
       notesInternal: undefined,
@@ -582,34 +639,8 @@ export async function createInvoiceFromOrderInTransaction(
     });
 
     // Snapshot line items
-    if (pricedLineItems.length) {
-      const snapshotRows: InsertInvoiceLineItem[] = pricedLineItems.map(({ lineItem: li, pricing }: any, idx: number) => ({
-        invoiceId: invoice.id,
-        orderLineItemId: li.id,
-        productId: li.productId,
-        productVariantId: li.productVariantId,
-        productType: li.productType,
-        name: (li as any).name ?? null,
-        sku: (li as any).sku ?? null,
-        description: li.description,
-        width: li.width ? Number(li.width) : null,
-        height: li.height ? Number(li.height) : null,
-        quantity: pricing.quantity,
-        sqft: li.sqft ? Number(li.sqft) : null,
-        unitPrice: pricing.effectiveUnitPriceCents / 100,
-        totalPrice: pricing.effectiveTotalCents / 100,
-        unitPriceCents: pricing.effectiveUnitPriceCents,
-        lineTotalCents: pricing.effectiveTotalCents,
-        sortOrder: typeof (li as any).sortOrder === 'number' ? (li as any).sortOrder : idx,
-        specsJson: li.specsJson as any,
-        selectedOptions: li.selectedOptions as any,
-        optionSelectionsJson: (li as any).optionSelectionsJson ?? null,
-        parentLineItemId: (li as any).parentLineItemId ?? null,
-        lineItemRole: (li as any).lineItemRole ?? "standalone",
-        childDisplayMode: (li as any).childDisplayMode ?? "hidden",
-        parentPriceMode: (li as any).parentPriceMode ?? "sum_children",
-        childCalculatedTotalCents: (li as any).childCalculatedTotalCents ?? null,
-      } as any));
+    if (financialSnapshot.pricedLineItems.length) {
+      const snapshotRows = buildInvoiceLineItemSnapshots(invoice.id, financialSnapshot.pricedLineItems);
       if (snapshotRows.length) {
         await tx.insert(invoiceLineItems).values(snapshotRows as any);
       }
@@ -627,6 +658,167 @@ export async function createInvoiceFromOrderInTransaction(
             message: billingCustomer.message,
           },
     };
+}
+
+/**
+ * The forward Order creation invariant.  The advisory lock serializes all
+ * creation paths (direct, quote conversion, inbound, and assistant) without
+ * imposing a new uniqueness migration on historical invoice data.
+ */
+export async function ensureDraftInvoiceForOrderInTransaction(
+  tx: any,
+  input: {
+    organizationId: string;
+    orderId: string;
+    actorUserId: string;
+    terms?: string;
+    customDueDate?: Date | null;
+    source?: "order_created" | "quote_converted" | "inbound_order";
+  },
+) {
+  await lockInvoiceOrderCreation(tx, input.organizationId, input.orderId);
+  const [existing] = await tx
+    .select()
+    .from(invoices)
+    .where(and(
+      eq(invoices.organizationId, input.organizationId),
+      eq(invoices.orderId, input.orderId),
+      ne(invoices.status, "void"),
+    ))
+    .orderBy(asc(invoices.createdAt), asc(invoices.id))
+    .limit(1);
+
+  if (existing) return { invoice: existing, created: false };
+
+  const invoice = await createInvoiceFromOrderInTransaction(
+    tx,
+    input.organizationId,
+    input.orderId,
+    input.actorUserId,
+    {
+      terms: input.terms ?? "due_on_receipt",
+      customDueDate: input.customDueDate ?? null,
+      // The persisted enum intentionally has no separate system-created value.
+      // Audit metadata records the actual creation path.
+      invoiceCreationSource: "manual",
+      billingMilestone: null,
+    },
+  );
+  await tx.insert(auditLogs).values({
+    organizationId: input.organizationId,
+    userId: input.actorUserId,
+    actionType: "invoice_draft_created_from_order",
+    entityType: "invoice",
+    entityId: invoice.id,
+    entityName: String(invoice.displayNumber || invoice.invoiceNumber),
+    description: "Created the linked draft invoice as part of Order creation.",
+    newValues: { orderId: input.orderId, source: input.source ?? "order_created" } as any,
+  } as any);
+  return { invoice, created: true };
+}
+
+function invoiceSnapshotComparable(row: any) {
+  return {
+    orderLineItemId: row.orderLineItemId ?? null,
+    productId: row.productId ?? null,
+    productVariantId: row.productVariantId ?? null,
+    productType: row.productType ?? null,
+    name: row.name ?? null,
+    sku: row.sku ?? null,
+    description: row.description ?? null,
+    width: row.width == null ? null : Number(row.width),
+    height: row.height == null ? null : Number(row.height),
+    quantity: Number(row.quantity ?? 0),
+    sqft: row.sqft == null ? null : Number(row.sqft),
+    unitPriceCents: Number(row.unitPriceCents ?? 0),
+    lineTotalCents: Number(row.lineTotalCents ?? 0),
+    sortOrder: Number(row.sortOrder ?? 0),
+    specsJson: row.specsJson ?? null,
+    selectedOptions: row.selectedOptions ?? null,
+    optionSelectionsJson: row.optionSelectionsJson ?? null,
+    parentLineItemId: row.parentLineItemId ?? null,
+    lineItemRole: row.lineItemRole ?? "standalone",
+    childDisplayMode: row.childDisplayMode ?? "hidden",
+    parentPriceMode: row.parentPriceMode ?? "sum_children",
+    childCalculatedTotalCents: row.childCalculatedTotalCents == null ? null : Number(row.childCalculatedTotalCents),
+  };
+}
+
+/**
+ * Updates only an unambiguous, native DRAFT invoice.  Historical orders with
+ * no invoice or multiple legacy invoices are deliberately left untouched.
+ */
+export async function synchronizeDraftInvoiceFromOrderInTransaction(
+  tx: any,
+  input: { organizationId: string; orderId: string; actorUserId?: string | null },
+) {
+  await lockInvoiceOrderCreation(tx, input.organizationId, input.orderId);
+  const [order] = await tx.select().from(orders).where(and(
+    eq(orders.id, input.orderId),
+    eq(orders.organizationId, input.organizationId),
+  )).limit(1);
+  if (!order) return { status: "order_not_found" as const };
+
+  const linkedInvoices = await tx.select().from(invoices).where(and(
+    eq(invoices.organizationId, input.organizationId),
+    eq(invoices.orderId, input.orderId),
+    ne(invoices.status, "void"),
+  )).orderBy(asc(invoices.createdAt), asc(invoices.id));
+  if (linkedInvoices.length !== 1 || String(linkedInvoices[0]!.status).toLowerCase() !== "draft") {
+    return { status: "not_editable" as const, invoiceId: linkedInvoices[0]?.id ?? null };
+  }
+
+  const invoice = linkedInvoices[0]!;
+  if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
+    return { status: "not_editable" as const, invoiceId: invoice.id };
+  }
+  const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, order.id));
+  const snapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
+  const desiredRows = buildInvoiceLineItemSnapshots(invoice.id, snapshot.pricedLineItems);
+  const existingRows = await tx.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id)).orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.id));
+  const lineSnapshotsChanged = JSON.stringify(existingRows.map(invoiceSnapshotComparable)) !== JSON.stringify(desiredRows.map(invoiceSnapshotComparable));
+  const financialChanged =
+    Number((invoice as any).subtotalCents ?? 0) !== snapshot.subtotalCents ||
+    Number((invoice as any).taxCents ?? 0) !== snapshot.taxCents ||
+    Number((invoice as any).shippingCents ?? 0) !== snapshot.shippingCents ||
+    Number((invoice as any).totalCents ?? 0) !== snapshot.totalCents ||
+    String((invoice as any).customerId ?? "") !== String((order as any).customerId ?? (invoice as any).customerId ?? "");
+  if (!lineSnapshotsChanged && !financialChanged) return { status: "unchanged" as const, invoice };
+
+  if (lineSnapshotsChanged) {
+    await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
+    if (desiredRows.length) await tx.insert(invoiceLineItems).values(desiredRows as any);
+  }
+  const [updated] = await tx.update(invoices).set({
+    customerId: order.customerId ?? invoice.customerId,
+    subtotal: snapshot.subtotal.toFixed(2),
+    tax: snapshot.tax.toFixed(2),
+    total: snapshot.total.toFixed(2),
+    subtotalCents: snapshot.subtotalCents,
+    taxCents: snapshot.taxCents,
+    shippingCents: snapshot.shippingCents,
+    totalCents: snapshot.totalCents,
+    balanceDue: (snapshot.totalCents / 100).toFixed(2),
+    invoiceVersion: Number((invoice as any).invoiceVersion || 1) + 1,
+    modifiedAfterBilling: false,
+    updatedAt: new Date(),
+  } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+  await tx.insert(auditLogs).values({
+    organizationId: input.organizationId,
+    userId: input.actorUserId ?? null,
+    actionType: "invoice_draft_synchronized_from_order",
+    entityType: "invoice",
+    entityId: invoice.id,
+    entityName: String(invoice.displayNumber || invoice.invoiceNumber),
+    description: "Synchronized an editable draft invoice from its Order financial snapshot.",
+    oldValues: { subtotalCents: invoice.subtotalCents, taxCents: invoice.taxCents, shippingCents: invoice.shippingCents, totalCents: invoice.totalCents } as any,
+    newValues: { subtotalCents: snapshot.subtotalCents, taxCents: snapshot.taxCents, shippingCents: snapshot.shippingCents, totalCents: snapshot.totalCents, lineSnapshotsChanged } as any,
+  } as any);
+  return { status: "updated" as const, invoice: updated };
+}
+
+export async function synchronizeDraftInvoiceFromOrder(input: { organizationId: string; orderId: string; actorUserId?: string | null }) {
+  return db.transaction((tx) => synchronizeDraftInvoiceFromOrderInTransaction(tx, input));
 }
 
 async function createInvoiceFromOrderImpl(

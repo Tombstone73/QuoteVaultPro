@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   auditLogs,
@@ -187,14 +187,15 @@ export class BillingInvoiceAutomationService {
           };
         }
 
+        // Normal Order creation now owns the forward linked-draft invariant.
+        // A later fulfillment trigger must never create a competing invoice.
         const [existingInvoice] = await tx
           .select()
           .from(invoices)
           .where(and(
             eq(invoices.organizationId, input.organizationId),
             eq(invoices.orderId, input.orderId),
-            eq(invoices.invoiceCreationSource, "automation"),
-            eq(invoices.billingMilestone, input.trigger),
+            ne(invoices.status, "void"),
           ))
           .limit(1);
 

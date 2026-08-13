@@ -211,7 +211,7 @@ describe("billing invoice automation", () => {
     expect(invoiceRows).toHaveLength(1);
   });
 
-  test("manual invoice can coexist with automated invoice and has no billing milestone", async () => {
+  test("an existing invoice rejects a duplicate manual creation", async () => {
     const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
 
     const automated = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
@@ -223,24 +223,29 @@ describe("billing invoice automation", () => {
     });
     expect(automated.status).toBe("created");
 
-    const manual = await createInvoiceFromOrder(org.id, order.id, user.id, {
+    await expect(createInvoiceFromOrder(org.id, order.id, user.id, {
       terms: "due_on_receipt",
       customDueDate: null,
-    });
+    })).rejects.toMatchObject({ code: "INVOICE_ALREADY_EXISTS" });
 
     const invoiceRows = await db
       .select()
       .from(invoices)
       .where(eq(invoices.orderId, order.id));
 
-    expect(invoiceRows).toHaveLength(2);
-
-    const manualRow = invoiceRows.find((invoice) => invoice.id === manual.id);
-    expect(manualRow?.invoiceCreationSource).toBe("manual");
-    expect(manualRow?.billingMilestone).toBeNull();
+    const later = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+      organizationId: org.id,
+      orderId: order.id,
+      trigger: "ready_for_pickup_or_ready_to_ship",
+      sourceEvent: "PICKUP_READY_RETRY",
+      actorUserId: user.id,
+    });
+    expect(later.status).toBe("skipped_existing_invoice");
+    expect(invoiceRows).toHaveLength(1);
+    expect(later.invoice?.id).toBe(automated.invoice?.id);
   });
 
-  test("manual invoice created first does not block automated milestone invoice", async () => {
+  test("manual invoice created first blocks an automated milestone invoice", async () => {
     const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
 
     const manual = await createInvoiceFromOrder(org.id, order.id, user.id, {
@@ -257,11 +262,11 @@ describe("billing invoice automation", () => {
       actorUserId: user.id,
     });
 
-    expect(automated.status).toBe("created");
+    expect(automated.status).toBe("skipped_existing_invoice");
 
     const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, order.id));
-    expect(invoiceRows).toHaveLength(2);
-    expect(invoiceRows.some((invoice) => invoice.invoiceCreationSource === "automation" && invoice.billingMilestone === "ready_for_pickup_or_ready_to_ship")).toBe(true);
+    expect(invoiceRows).toHaveLength(1);
+    expect(automated.invoice?.id).toBe(manual.id);
   });
 
   test("database unique index prevents duplicate automated milestone invoices", async () => {
