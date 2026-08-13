@@ -28,3 +28,21 @@ npx jest v2-poc/tests/v2VerticalSlice.test.ts --runInBand
 ```
 
 The suite covers valid PBV2 pricing, taxable/exempt/multi-line totals, invoice integrity, role and organization denial, guessed foreign customer/product IDs, idempotent restart replay/key conflict, rollback, and readback.
+
+## PostgreSQL experiment gate
+
+The PostgreSQL runner is intentionally separate from the repository Jest setup
+and does not alter its safety rules. It runs only with all of the following:
+
+```powershell
+$env:V2_POSTGRES_INTEGRATION = "1"
+$env:TEST_DATABASE_URL = "<approved disposable clone URL>"
+$env:V2_REFERENCE_DATABASE_URLS = '["<known DEV or PROD application URL>"]'
+npx jest --config v2-poc/jest.postgres.config.js --runInBand
+```
+
+`V2_REFERENCE_DATABASE_URLS` is deliberately required. The V2-only guard parses
+endpoint/database identities, rejects known application targets (including
+Neon direct/pooler aliases), and has no fallback connection string. Do not put
+credentials in source control or logs. The direct/reference URL must be supplied
+before any V2 PostgreSQL write test can run.

@@ -6,6 +6,12 @@
 
 The experiment was stopped before any database write because no safe isolated PostgreSQL target could be established, and this checkout cannot bootstrap the current schema into an empty database from its active migration stream alone. This is a safety-correct blocked result, not a production-schema failure.
 
+## Continuation status: disposable clone discovered, writes still fail closed
+
+A later continuation made a **read-only** connection to the user-designated `TEST_DATABASE_URL` clone. It confirmed the expected real schema tables and existing data shape (including organizations, memberships, customers, products, PBV2 trees, orders, invoice records, and 13 valid active product/tree pointers). No database data or schema was changed.
+
+The continuation could not compare that target endpoint to a DEV/PROD application endpoint because no application database URL was present in the process, user, machine, or workspace configuration. The brief requires that comparison before a write, so the PostgreSQL implementation/tests remain blocked. `v2-poc/src/infrastructure/postgresSafety.ts` now supplies a V2-only fail-closed guard: it requires `V2_POSTGRES_INTEGRATION=1`, `TEST_DATABASE_URL`, and `V2_REFERENCE_DATABASE_URLS` (a JSON array of known application references); it rejects exact and Neon pooler/direct endpoint aliases, has no fallback URL, and does not modify the V1 guard. `v2-poc/jest.postgres.config.js` invokes that guard before any integration-test import, isolating this clone from the V1 Jest setup, which correctly rejects its retained `neondb` name. Read-only normal SQL and `BEGIN`/`ROLLBACK` worked through the pooled endpoint; DDL, write rollback, and concurrency remain untested until endpoint isolation is proven.
+
 ## Starting state and safety confirmation
 
 | Item | Result |
