@@ -75,6 +75,8 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       stationLabel: string | null;
       status: string | null;
       completedAt: string | null;
+      eligible: boolean;
+      label: string;
     };
     artwork: Array<{
       id: string;
@@ -172,6 +174,7 @@ export interface ShipmentDetail {
   trackingNumber: string | null;
   shipDate: string | null;
   boxCount: number | null;
+  packingMode?: "simple_verified_packing" | "advanced_separate_packing";
   weightLbs: string | null;
   dimLengthIn: string | null;
   dimWidthIn: string | null;
@@ -423,6 +426,7 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       dims?: { length?: number | null; width?: number | null; height?: number | null };
       internalNotes?: string | null;
       shipmentItems?: Array<{ orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null }>;
+      packages?: Array<{ id: string; weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }>;
     }) => apiCall<ShipmentDetail>(`/api/fulfillment/shipments/${shipmentId}`, {
       method: "PATCH",
       body: JSON.stringify(payload),

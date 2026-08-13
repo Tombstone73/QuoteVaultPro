@@ -7,7 +7,9 @@ import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
-import { fulfillmentVerificationPolicyFromSettings, parseShipmentDate, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
+import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
+import { resolveActiveProductionOwners } from '../productionOwnership';
+import { resolveFulfillmentLineReadiness } from '@shared/fulfillmentReadiness';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -116,12 +118,19 @@ export class FulfillmentService {
 
   async updateChecklistItem(orgId: string, orderId: string, lineItemId: string, payload: {
     checked: boolean;
+    fulfilledQuantity?: number;
     notes?: string | null;
   }, actorUserId?: string | null) {
     const result = await this.dashboardRepo.updateChecklistItem(orgId, orderId, lineItemId, payload, actorUserId);
     if (!result.ok) {
       if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
       throw new FulfillmentHttpError(400, result.message, result.code);
+    }
+    if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
+      const drafts = await this.dbInstance.select({ shipmentId: shipmentOrders.shipmentId })
+        .from(shipmentOrders).innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+        .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')));
+      for (const draft of drafts) await this.syncSimpleShipmentAllocations(orgId, draft.shipmentId, actorUserId);
     }
     return this.getOrderDetail(orgId, orderId);
   }
@@ -213,16 +222,21 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, 'primaryOrderId must be included in orderIds', 'INVALID_PRIMARY_ORDER');
     }
 
-    return this.shipmentRepo.createDraftShipment(orgId, {
+    const shipment = await this.shipmentRepo.createDraftShipment(orgId, {
       scope: payload.scope,
       orderIds: normalizedOrderIds,
       primaryOrderId,
       createdByUserId: payload.actorUserId,
     });
+    if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
+      await this.syncSimpleShipmentAllocations(orgId, shipment.id, payload.actorUserId);
+    }
+    return this.shipmentRepo.getShipmentById(orgId, shipment.id) ?? shipment;
   }
 
   async getShipment(orgId: string, shipmentId: string) {
-    return this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    const shipment = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    return shipment ? { ...shipment, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length } : null;
   }
 
   async patchShipment(orgId: string, shipmentId: string, payload: {
@@ -243,6 +257,12 @@ export class FulfillmentService {
       orderLineItemId: string;
       quantity: number;
       packageId?: string | null;
+    }>;
+    packages?: Array<{
+      id: string;
+      weightLbs?: number | null;
+      dims?: { length?: number | null; width?: number | null; height?: number | null };
+      notes?: string | null;
     }>;
     actorUserId?: string | null;
   }) {
@@ -275,7 +295,22 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
     }
 
-    if (payload.shipmentItems) {
+    if (payload.packages) {
+      await this.shipmentRepo.patchDraftShipmentPackages(orgId, shipmentId, payload.packages.map((item) => ({
+        id: item.id,
+        weightLbs: item.weightLbs,
+        dimLengthIn: item.dims?.length,
+        dimWidthIn: item.dims?.width,
+        dimHeightIn: item.dims?.height,
+        notes: item.notes,
+      })));
+    }
+
+    const packingMode = await this.getPackingMode(orgId);
+    if (packingMode === 'simple_verified_packing') {
+      await this.syncSimpleShipmentAllocations(orgId, shipmentId, payload.actorUserId);
+    } else if (payload.shipmentItems) {
+      await this.assertExplicitAllocationsEligible(orgId, payload.shipmentItems);
       const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, payload.shipmentItems);
       if (!replacement.ok) {
         throw new FulfillmentHttpError(409, replacement.message, replacement.code);
@@ -325,6 +360,86 @@ export class FulfillmentService {
     const [organization] = await this.dbInstance.select({ settings: organizations.settings })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1);
     return fulfillmentVerificationPolicyFromSettings(organization?.settings);
+  }
+
+  private async getPackingMode(orgId: string): Promise<FulfillmentPackingMode> {
+    const [organization] = await this.dbInstance.select({ settings: organizations.settings })
+      .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    return fulfillmentPackingModeFromSettings(organization?.settings);
+  }
+
+  private async assertExplicitAllocationsEligible(orgId: string, items: Array<{ orderId: string; orderLineItemId: string; quantity: number }>) {
+    const lineItemIds = Array.from(new Set(items.map((item) => item.orderLineItemId)));
+    if (!lineItemIds.length) return;
+    const lines = await this.dbInstance.select({
+      id: orderLineItems.id, orderId: orderLineItems.orderId, quantity: orderLineItems.quantity,
+      workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status,
+    }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+      .where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.id, lineItemIds)));
+    const byId = new Map(lines.map((line) => [line.id, line]));
+    const owners = await resolveActiveProductionOwners(this.dbInstance, { organizationId: orgId, lineItemIds, debugLabel: 'FulfillmentService.assertExplicitAllocationsEligible' });
+    const shippedByLine = await this.getShippedQuantityByLine(orgId, lineItemIds);
+    const quantityByLine = new Map<string, number>();
+    for (const item of items) quantityByLine.set(item.orderLineItemId, (quantityByLine.get(item.orderLineItemId) ?? 0) + Number(item.quantity));
+    for (const [lineItemId, quantity] of quantityByLine) {
+      const line = byId.get(lineItemId);
+      const owner = owners.get(lineItemId);
+      const readiness = resolveFulfillmentLineReadiness({ workflowState: line?.workflowState, lifecycleStatus: line?.lifecycleStatus, activeOwnerStationKey: owner?.stationKey, activeOwnerStepKey: owner?.stepKey, activeOwnerStatus: owner?.status });
+      if (!line || line.orderId !== items.find((item) => item.orderLineItemId === lineItemId)?.orderId || !readiness.eligible) {
+        throw new FulfillmentHttpError(409, 'Shipment quantities require production-complete line items.', 'PRODUCTION_NOT_COMPLETE');
+      }
+      const remaining = Math.max(0, Number(line.quantity || 0) - (shippedByLine.get(lineItemId) ?? 0));
+      if (quantity > remaining) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the remaining quantity for a line item.', 'QTY_EXCEEDS_REMAINING');
+    }
+  }
+
+  /** Terminal shipment quantities are never reallocated by another draft. */
+  private async getShippedQuantityByLine(orgId: string, lineItemIds: string[]) {
+    if (!lineItemIds.length) return new Map<string, number>();
+    const rows = await this.dbInstance.select({
+      lineItemId: shipmentItems.orderLineItemId,
+      quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
+    }).from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
+      .where(and(
+        eq(shipmentItems.organizationId, orgId),
+        eq(shipments.organizationId, orgId),
+        eq(shipments.status, 'SHIPPED'),
+        inArray(shipmentItems.orderLineItemId, lineItemIds),
+      )).groupBy(shipmentItems.orderLineItemId);
+    return new Map(rows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+  }
+
+  /** Simple mode writes normal shipment_items and a real default package; it
+   * only removes the repetitive entry work from the operator. */
+  private async syncSimpleShipmentAllocations(orgId: string, shipmentId: string, actorUserId?: string | null) {
+    const shipment = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    if (!shipment || shipment.status !== 'DRAFT') return;
+    const orderIds = Array.from(new Set(shipment.orders.map((order: any) => String(order.orderId)).filter(Boolean)));
+    if (!orderIds.length) return;
+    const lines = await this.dbInstance.select({
+      id: orderLineItems.id, orderId: orderLineItems.orderId, quantity: orderLineItems.quantity,
+      workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status,
+    }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+      .where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.orderId, orderIds)));
+    const lineItemIds = lines.map((line) => line.id);
+    const checklistRows = lineItemIds.length ? await this.dbInstance.select({ lineItemId: fulfillmentChecklistItems.lineItemId, fulfilledQuantity: fulfillmentChecklistItems.fulfilledQuantity })
+      .from(fulfillmentChecklistItems).where(and(eq(fulfillmentChecklistItems.organizationId, orgId), inArray(fulfillmentChecklistItems.lineItemId, lineItemIds))) : [];
+    const fulfilledByLine = new Map(checklistRows.map((row) => [row.lineItemId, Number(row.fulfilledQuantity || 0)]));
+    const owners = lineItemIds.length ? await resolveActiveProductionOwners(this.dbInstance, { organizationId: orgId, lineItemIds, debugLabel: 'FulfillmentService.syncSimpleShipmentAllocations' }) : new Map<string, any>();
+    const shippedByLine = await this.getShippedQuantityByLine(orgId, lineItemIds);
+    let defaultPackage = shipment.packages[0] ?? null;
+    if (!defaultPackage) defaultPackage = await this.createShipmentPackage(orgId, shipmentId, { actorUserId });
+    const items = lines.flatMap((line) => {
+      const owner = owners.get(line.id);
+      const readiness = resolveFulfillmentLineReadiness({ workflowState: line.workflowState, lifecycleStatus: line.lifecycleStatus, activeOwnerStationKey: owner?.stationKey, activeOwnerStepKey: owner?.stepKey, activeOwnerStatus: owner?.status });
+      const remaining = Math.max(0, Number(line.quantity) - (shippedByLine.get(line.id) ?? 0));
+      const verifiedQuantity = Math.min(remaining, fulfilledByLine.get(line.id) ?? 0);
+      return readiness.eligible && verifiedQuantity > 0
+        ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: verifiedQuantity, packageId: defaultPackage!.id }]
+        : [];
+    });
+    const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, items);
+    if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
   }
 
   /** Packing is eligible to satisfy verification only after the existing
@@ -388,6 +503,9 @@ export class FulfillmentService {
   }
 
   async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {
+    if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
+      await this.syncSimpleShipmentAllocations(orgId, shipmentId, actorUserId);
+    }
     const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');

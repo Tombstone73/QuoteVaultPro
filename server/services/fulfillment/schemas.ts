@@ -63,7 +63,7 @@ export const patchShipmentSchema = z.object({
   }).optional(),
   internalNotes: z.string().optional().nullable(),
   shipmentItems: z.array(shipmentItemInputSchema).optional(),
-  packages: z.array(shipmentPackageInputSchema).optional(),
+  packages: z.array(shipmentPackageInputSchema.extend({ id: z.string().min(1) })).optional(),
 });
 
 export const pickupReadySchema = z.object({
@@ -82,9 +82,10 @@ export const fulfillmentNoteSchema = z.object({
 export const fulfillmentChecklistItemSchema = z.object({
   checked: z.boolean().optional(),
   verified: z.boolean().optional(),
+  fulfilledQuantity: z.coerce.number().int().min(0).optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
 }).superRefine((value, ctx) => {
-  if (typeof value.checked !== 'boolean' && typeof value.verified !== 'boolean') {
+  if (typeof value.checked !== 'boolean' && typeof value.verified !== 'boolean' && value.fulfilledQuantity === undefined) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'checked is required',
@@ -93,6 +94,7 @@ export const fulfillmentChecklistItemSchema = z.object({
   }
 }).transform((value) => ({
   checked: value.checked ?? value.verified ?? false,
+  fulfilledQuantity: value.fulfilledQuantity,
   notes: value.notes ?? null,
 }));
 

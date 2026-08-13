@@ -77,6 +77,8 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       stationLabel: string | null;
       status: string | null;
       completedAt: string | null;
+      eligible: boolean;
+      label: string;
     };
     artwork: Array<{
       id: string;
@@ -98,6 +100,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     checklist: {
       id: string;
       checked: boolean;
+      fulfilledQuantity: number;
       checkedByUserId: string | null;
       checkedAt: string | null;
       notes: string | null;

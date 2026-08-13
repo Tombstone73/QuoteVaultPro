@@ -21,4 +21,13 @@ describe('fulfillment workspace execution mode', () => {
       mode: 'ship', singleDraftShipmentId: null, combinedShipments: [],
     });
   });
+
+  test('deduplicates duplicate shipment relationships and hides voided combined history', () => {
+    const state = resolveFulfillmentWorkspaceMode({ fulfillmentType: 'SHIP', shipments: [
+      { id: 'combined', status: 'DRAFT', scope: 'MULTI_ORDER', orderCount: 2 },
+      { id: 'combined', status: 'DRAFT', scope: 'MULTI_ORDER', orderCount: 2 },
+      { id: 'voided', status: 'VOIDED', scope: 'MULTI_ORDER', orderCount: 2 },
+    ] });
+    expect(state.combinedShipments.map((shipment) => shipment.id)).toEqual(['combined']);
+  });
 });

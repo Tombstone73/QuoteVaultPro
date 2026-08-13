@@ -18,12 +18,14 @@ import {
   shipments,
   users,
 } from '@shared/schema';
-import type { DerivedOrderFulfillmentStatus, FulfillmentDetailDto, QueueRowDto } from './types';
+import { FulfillmentHttpError, type DerivedOrderFulfillmentStatus, type FulfillmentDetailDto, type QueueRowDto } from './types';
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
 import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
+import { resolveActiveProductionOwners } from '../productionOwnership';
+import { resolveFulfillmentLineReadiness } from '@shared/fulfillmentReadiness';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -424,14 +426,52 @@ export class ShipmentRepo {
         weightLbs: payload.weightLbs == null ? null : String(payload.weightLbs), dimLengthIn: payload.dimLengthIn == null ? null : String(payload.dimLengthIn),
         dimWidthIn: payload.dimWidthIn == null ? null : String(payload.dimWidthIn), dimHeightIn: payload.dimHeightIn == null ? null : String(payload.dimHeightIn), notes: payload.notes ?? null,
       }).returning();
+      await tx.update(shipments).set({ boxCount: ordinal, updatedAt: new Date() }).where(and(
+        eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
+      ));
       return created;
+    });
+  }
+
+  async patchDraftShipmentPackages(orgId: string, shipmentId: string, packages: Array<{
+    id: string; weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
+  }>) {
+    if (!packages.length) return;
+    await this.dbInstance.transaction(async (tx) => {
+      const existing = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
+        eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
+      ));
+      const existingIds = new Set(existing.map((entry) => entry.id));
+      if (packages.some((item) => !existingIds.has(item.id))) {
+        throw new FulfillmentHttpError(400, 'A package does not belong to this draft shipment', 'INVALID_PACKAGE');
+      }
+      for (const item of packages) {
+        await tx.update(shipmentPackages).set({
+          weightLbs: item.weightLbs == null ? null : String(item.weightLbs),
+          dimLengthIn: item.dimLengthIn == null ? null : String(item.dimLengthIn),
+          dimWidthIn: item.dimWidthIn == null ? null : String(item.dimWidthIn),
+          dimHeightIn: item.dimHeightIn == null ? null : String(item.dimHeightIn),
+          notes: item.notes ?? null,
+          updatedAt: new Date(),
+        }).where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.id, item.id)));
+      }
+      await tx.update(shipments).set({ boxCount: existing.length, updatedAt: new Date() }).where(and(
+        eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
+      ));
     });
   }
 
   async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string) {
     return this.dbInstance.transaction(async (tx) => {
       const [deleted] = await tx.delete(shipmentPackages).where(and(eq(shipmentPackages.id, packageId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.organizationId, orgId))).returning();
-      return deleted ?? null;
+      if (!deleted) return null;
+      const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipmentPackages).where(and(
+        eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
+      ));
+      await tx.update(shipments).set({ boxCount: Number(count || 0), updatedAt: new Date() }).where(and(
+        eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
+      ));
+      return deleted;
     });
   }
 
@@ -1385,7 +1425,37 @@ export class FulfillmentDashboardRepo {
   }
 
   async assertOrderChecklistComplete(orgId: string, orderId: string) {
-    const summary = await this.getChecklistCompletion(orgId, orderId);
+    const checklistRows = await this.ensureChecklistItemsForOrder(orgId, orderId);
+    const lines = await this.dbInstance.select({
+      id: orderLineItems.id,
+      workflowState: orderLineItems.workflowState,
+      lifecycleStatus: orderLineItems.status,
+    }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+      .where(and(eq(orders.organizationId, orgId), eq(orderLineItems.orderId, orderId)));
+    const owners = await resolveActiveProductionOwners(this.dbInstance, {
+      organizationId: orgId,
+      lineItemIds: lines.map((line) => line.id),
+      debugLabel: 'FulfillmentDashboardRepo.assertOrderChecklistComplete',
+    });
+    const eligibleLineIds = new Set(lines.filter((line) => {
+      const owner = owners.get(line.id);
+      return resolveFulfillmentLineReadiness({
+        workflowState: line.workflowState,
+        lifecycleStatus: line.lifecycleStatus,
+        activeOwnerStationKey: owner?.stationKey,
+        activeOwnerStepKey: owner?.stepKey,
+        activeOwnerStatus: owner?.status,
+      }).eligible;
+    }).map((line) => line.id));
+    const summary = summarizeFulfillmentChecklist(checklistRows.filter((row) => eligibleLineIds.has(row.lineItemId)));
+    if (eligibleLineIds.size !== lines.length) {
+      return {
+        ok: false as const,
+        code: 'PRODUCTION_NOT_COMPLETE',
+        message: 'Every line item must be production-complete before terminal fulfillment.',
+        summary,
+      };
+    }
     if (!summary.complete) {
       return {
         ok: false as const,
@@ -1416,10 +1486,11 @@ export class FulfillmentDashboardRepo {
 
   async updateChecklistItem(orgId: string, orderId: string, lineItemId: string, input: {
     checked: boolean;
+    fulfilledQuantity?: number;
     notes?: string | null;
   }, actorUserId?: string | null) {
     const [lineItem] = await this.dbInstance
-      .select({ id: orderLineItems.id })
+      .select({ id: orderLineItems.id, quantity: orderLineItems.quantity, workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status })
       .from(orderLineItems)
       .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
       .where(and(
@@ -1433,6 +1504,29 @@ export class FulfillmentDashboardRepo {
       return { ok: false as const, code: 'NOT_FOUND', message: 'Fulfillment checklist item not found' };
     }
 
+    const fulfilledQuantity = input.fulfilledQuantity ?? (input.checked ? Number(lineItem.quantity || 0) : 0);
+    if (fulfilledQuantity > Number(lineItem.quantity || 0)) {
+      return { ok: false as const, code: 'QTY_EXCEEDS_REMAINING', message: 'Verified quantity exceeds the ordered quantity for this line item.' };
+    }
+    if (input.checked || fulfilledQuantity > 0) {
+      const owners = await resolveActiveProductionOwners(this.dbInstance, {
+        organizationId: orgId,
+        lineItemIds: [lineItemId],
+        debugLabel: 'FulfillmentDashboardRepo.updateChecklistItem',
+      });
+      const owner = owners.get(lineItemId);
+      const readiness = resolveFulfillmentLineReadiness({
+        workflowState: lineItem.workflowState,
+        lifecycleStatus: lineItem.lifecycleStatus,
+        activeOwnerStationKey: owner?.stationKey,
+        activeOwnerStepKey: owner?.stepKey,
+        activeOwnerStatus: owner?.status,
+      });
+      if (!readiness.eligible) {
+        return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'This line item is not production-complete and cannot be verified for fulfillment.' };
+      }
+    }
+
     await this.ensureChecklistItemsForOrder(orgId, orderId);
 
     const now = new Date();
@@ -1440,9 +1534,10 @@ export class FulfillmentDashboardRepo {
     const [updated] = await this.dbInstance
       .update(fulfillmentChecklistItems)
       .set({
-        checked: input.checked,
-        checkedByUserId: input.checked ? safeActorUserId : null,
-        checkedAt: input.checked ? now : null,
+        checked: fulfilledQuantity >= Number(lineItem.quantity || 0) && fulfilledQuantity > 0,
+        fulfilledQuantity,
+        checkedByUserId: fulfilledQuantity > 0 ? safeActorUserId : null,
+        checkedAt: fulfilledQuantity > 0 ? now : null,
         notes: input.notes ?? null,
         updatedAt: now,
       })
@@ -1680,6 +1775,8 @@ export class FulfillmentDashboardRepo {
         selectedOptions: orderLineItems.selectedOptions,
         specsJson: orderLineItems.specsJson,
         pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+        workflowState: orderLineItems.workflowState,
+        lifecycleStatus: orderLineItems.status,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(products.id, orderLineItems.productId))
@@ -1689,8 +1786,6 @@ export class FulfillmentDashboardRepo {
     const lineItemIds = lineItems.map((item) => item.id);
     const checklistRows = await this.getChecklistItemsForOrder(orgId, orderId);
     const checklistByLineItemId = new Map(checklistRows.map((item) => [item.lineItemId, item]));
-    const checklistSummary = summarizeFulfillmentChecklist(lineItems.map((item) => checklistByLineItemId.get(item.id) ?? { checked: false }));
-
     const artworkResolutions = lineItemIds.length > 0
       ? await lineItemArtworkReadResolver.resolveForLineItems({
         organizationId: orgId,
@@ -1698,6 +1793,10 @@ export class FulfillmentDashboardRepo {
         purpose: 'print_ticket',
       }, this.dbInstance)
       : new Map();
+
+    const activeOwners = lineItemIds.length > 0
+      ? await resolveActiveProductionOwners(this.dbInstance, { organizationId: orgId, lineItemIds, debugLabel: 'FulfillmentDashboardRepo.getFulfillmentDetail' })
+      : new Map<string, any>();
 
     const productionSummary = await this.dbInstance
       .select({
@@ -1770,7 +1869,8 @@ export class FulfillmentDashboardRepo {
       ))
       .orderBy(desc(shipments.updatedAt));
 
-    const shipmentDetails = await Promise.all(shipmentRows.map((shipment) => new ShipmentRepo(this.dbInstance).getShipmentById(orgId, shipment.id)));
+    const uniqueShipmentRows = Array.from(new Map(shipmentRows.map((shipment) => [shipment.id, shipment])).values());
+    const shipmentDetails = await Promise.all(uniqueShipmentRows.map((shipment) => new ShipmentRepo(this.dbInstance).getShipmentById(orgId, shipment.id)));
 
     const orderedQty = lineItems.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
     const shippedQty = shipmentDetails
@@ -1782,7 +1882,7 @@ export class FulfillmentDashboardRepo {
       orderedQty,
       shippedQty,
       pickupTicket: pickupTicket ? { id: pickupTicket.id, status: pickupTicket.status } : null,
-      shipmentId: shipmentRows[0]?.id ?? null,
+      shipmentId: uniqueShipmentRows[0]?.id ?? null,
       deriveShipStatus: (fulfillmentStatus, ordered, shipped) => this.deriveShipQueueStatus(fulfillmentStatus, ordered, shipped),
     });
 
@@ -1792,8 +1892,8 @@ export class FulfillmentDashboardRepo {
     if (pickupTicket?.id) {
       eventConditions.push(and(eq(fulfillmentEvents.entityType, 'PICKUP_TICKET'), eq(fulfillmentEvents.entityId, pickupTicket.id)));
     }
-    if (shipmentRows.length > 0) {
-      eventConditions.push(and(eq(fulfillmentEvents.entityType, 'SHIPMENT'), inArray(fulfillmentEvents.entityId, shipmentRows.map((s) => s.id))));
+    if (uniqueShipmentRows.length > 0) {
+      eventConditions.push(and(eq(fulfillmentEvents.entityType, 'SHIPMENT'), inArray(fulfillmentEvents.entityId, uniqueShipmentRows.map((s) => s.id))));
     }
 
     const events = await this.dbInstance
@@ -1810,6 +1910,22 @@ export class FulfillmentDashboardRepo {
       .where(and(eq(fulfillmentEvents.organizationId, orgId), or(...eventConditions)))
       .orderBy(desc(fulfillmentEvents.createdAt));
 
+    // A line cannot count toward fulfillment verification merely because an
+    // old production job completed. The same active-owner resolver powers
+    // both this read model and the write gates.
+    const eligibleChecklistSummary = summarizeFulfillmentChecklist(lineItems
+      .filter((item) => {
+        const owner = activeOwners.get(item.id);
+        return resolveFulfillmentLineReadiness({
+          workflowState: item.workflowState,
+          lifecycleStatus: item.lifecycleStatus,
+          activeOwnerStationKey: owner?.stationKey,
+          activeOwnerStepKey: owner?.stepKey,
+          activeOwnerStatus: owner?.status,
+        }).eligible;
+      })
+      .map((item) => checklistByLineItemId.get(item.id) ?? { checked: false }));
+
     return {
       ...row,
       customer: {
@@ -1817,7 +1933,16 @@ export class FulfillmentDashboardRepo {
         email: orderRow?.customerEmail ?? null,
         phone: orderRow?.customerPhone ?? null,
       },
-      lineItems: lineItems.map((item) => ({
+      lineItems: lineItems.map((item) => {
+        const activeOwner = activeOwners.get(item.id);
+        const readiness = resolveFulfillmentLineReadiness({
+          workflowState: item.workflowState,
+          lifecycleStatus: item.lifecycleStatus,
+          activeOwnerStationKey: activeOwner?.stationKey,
+          activeOwnerStepKey: activeOwner?.stepKey,
+          activeOwnerStatus: activeOwner?.status,
+        });
+        return ({
         id: item.id,
         productName: item.productName ?? null,
         description: item.description ?? null,
@@ -1833,26 +1958,29 @@ export class FulfillmentDashboardRepo {
           lamination: buildLineItemProductionContext(item).lamination,
         },
         production: {
-          jobId: productionByLineItemId.get(item.id)?.id ?? null,
-          stationKey: productionByLineItemId.get(item.id)?.stationKey ?? null,
-          stationLabel: stationLabel(productionByLineItemId.get(item.id)?.stationKey),
-          status: productionByLineItemId.get(item.id)?.status ?? null,
-          completedAt: toIso(productionByLineItemId.get(item.id)?.completedAt),
+          jobId: activeOwner?.id ?? productionByLineItemId.get(item.id)?.id ?? null,
+          stationKey: activeOwner?.stationKey ?? productionByLineItemId.get(item.id)?.stationKey ?? null,
+          stationLabel: stationLabel(activeOwner?.stationKey ?? productionByLineItemId.get(item.id)?.stationKey),
+          status: readiness.status,
+          completedAt: readiness.eligible ? toIso(orderRow.productionCompletedAt) : null,
+          eligible: readiness.eligible,
+          label: readiness.label,
         },
         artwork: artworkByLineItemId.get(item.id) ?? [],
         checklist: {
           id: checklistByLineItemId.get(item.id)?.id ?? '',
           checked: checklistByLineItemId.get(item.id)?.checked === true,
+          fulfilledQuantity: Number(checklistByLineItemId.get(item.id)?.fulfilledQuantity || 0),
           checkedByUserId: checklistByLineItemId.get(item.id)?.checkedByUserId ?? null,
           checkedAt: toIso(checklistByLineItemId.get(item.id)?.checkedAt),
           notes: checklistByLineItemId.get(item.id)?.notes ?? null,
         },
-      })),
-      checklistComplete: checklistSummary.complete,
+      }); }),
+      checklistComplete: eligibleChecklistSummary.complete,
       checklistSummary: {
-        total: checklistSummary.total,
-        checked: checklistSummary.checked,
-        unchecked: checklistSummary.unchecked,
+        total: eligibleChecklistSummary.total,
+        checked: eligibleChecklistSummary.checked,
+        unchecked: eligibleChecklistSummary.unchecked,
       },
       productionSummary: productionSummary.map((job) => ({
         id: job.id,
@@ -1874,7 +2002,7 @@ export class FulfillmentDashboardRepo {
         contactEmail: pickupTicket.contactEmail ?? null,
         contactPhone: pickupTicket.contactPhone ?? null,
       } : null,
-      shipments: shipmentRows.map((shipment, index) => ({
+      shipments: uniqueShipmentRows.map((shipment, index) => ({
         id: shipment.id,
         shipmentReference: shipmentDetails[index]?.shipmentReference ?? null,
         status: shipment.status,

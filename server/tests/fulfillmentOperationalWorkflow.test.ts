@@ -268,13 +268,13 @@ describe("fulfillment operational workflow helpers", () => {
       dashboardRepo: fakeDashboardRepo as any,
       shipmentRepo: fakeShipmentRepo as any,
       pickupRepo: {} as any,
-      dbInstance: {} as any,
+      dbInstance: { select: jest.fn(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }])) } as any,
     });
 
     await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).rejects.toMatchObject({
       status: 409,
       code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
-      message: "Verify all fulfillment checklist items before marking shipped.",
+      message: "1 item still require fulfillment verification.",
     });
     expect(fakeShipmentRepo.markShipped).not.toHaveBeenCalled();
   });

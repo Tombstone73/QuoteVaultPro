@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -60,6 +60,7 @@ interface ShipmentFormState {
   length: string;
   width: string;
   height: string;
+  packageNotes: string;
   internalNotes: string;
 }
 
@@ -73,6 +74,7 @@ const defaultForm: ShipmentFormState = {
   length: "",
   width: "",
   height: "",
+  packageNotes: "",
   internalNotes: "",
 };
 
@@ -115,10 +117,13 @@ export function FulfillmentShipmentEditor({
   const [form, setForm] = useState<ShipmentFormState>(defaultForm);
   const [allocatedByLineItemId, setAllocatedByLineItemId] = useState<Record<string, number>>({});
   const [packageByLineItemId, setPackageByLineItemId] = useState<Record<string, string>>({});
+  const [packageFieldsById, setPackageFieldsById] = useState<Record<string, { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string }>>({});
   const [ordersById, setOrdersById] = useState<Record<string, OrderDetailLite>>({});
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
+  const [splitMode, setSplitMode] = useState(false);
+  const hydratedShipmentId = useRef<string | null>(null);
 
   const debugEnabled = useMemo(() => new URLSearchParams(location.search).get("debug") === "1", [location.search]);
 
@@ -132,16 +137,20 @@ export function FulfillmentShipmentEditor({
 
   useEffect(() => {
     if (!shipment) return;
+    if (hydratedShipmentId.current === shipment.id) return;
+    hydratedShipmentId.current = shipment.id;
+    const defaultPackage = shipment.packages[0];
     const nextForm: ShipmentFormState = {
       carrier: shipment.carrier ?? "",
       serviceLevel: shipment.serviceLevel ?? "",
       trackingNumber: shipment.trackingNumber ?? "",
       shipDate: toDateInput(shipment.shipDate),
       boxCount: shipment.boxCount == null ? "" : String(shipment.boxCount),
-      weight: shipment.weightLbs == null ? "" : String(shipment.weightLbs),
-      length: shipment.dimLengthIn == null ? "" : String(shipment.dimLengthIn),
-      width: shipment.dimWidthIn == null ? "" : String(shipment.dimWidthIn),
-      height: shipment.dimHeightIn == null ? "" : String(shipment.dimHeightIn),
+      weight: defaultPackage?.weightLbs ?? shipment.weightLbs ?? "",
+      length: defaultPackage?.dimLengthIn ?? shipment.dimLengthIn ?? "",
+      width: defaultPackage?.dimWidthIn ?? shipment.dimWidthIn ?? "",
+      height: defaultPackage?.dimHeightIn ?? shipment.dimHeightIn ?? "",
+      packageNotes: defaultPackage?.notes ?? "",
       internalNotes: shipment.internalNotes ?? "",
     };
     setForm(nextForm);
@@ -154,6 +163,13 @@ export function FulfillmentShipmentEditor({
     const packageMap: Record<string, string> = {};
     for (const item of shipment.items) if (item.packageId) packageMap[item.orderLineItemId] = item.packageId;
     setPackageByLineItemId(packageMap);
+    setPackageFieldsById(Object.fromEntries(shipment.packages.map((pkg) => [pkg.id, {
+      weight: pkg.weightLbs ?? "",
+      length: pkg.dimLengthIn ?? "",
+      width: pkg.dimWidthIn ?? "",
+      height: pkg.dimHeightIn ?? "",
+      notes: pkg.notes ?? "",
+    }])));
   }, [shipment]);
 
   useEffect(() => {
@@ -278,15 +294,19 @@ export function FulfillmentShipmentEditor({
         serviceLevel: form.serviceLevel || null,
         trackingNumber: form.trackingNumber || null,
         shipDate: form.shipDate || null,
-        boxCount: parseNumber(form.boxCount),
-        weight: parseNumber(form.weight),
-        dims: {
-          length: parseNumber(form.length),
-          width: parseNumber(form.width),
-          height: parseNumber(form.height),
-        },
         internalNotes: form.internalNotes || null,
-        shipmentItems,
+        packages: shipment.packages.map((pkg, index) => {
+          const fields = index === 0
+            ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes }
+            : packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
+          return ({
+          id: pkg.id,
+          weightLbs: parseNumber(fields.weight),
+          dims: { length: parseNumber(fields.length), width: parseNumber(fields.width), height: parseNumber(fields.height) },
+          notes: fields.notes || null,
+          });
+        }),
+        ...(advancedPacking ? { shipmentItems } : {}),
       };
 
       const response = await updateShipment.mutateAsync(payload);
@@ -374,6 +394,8 @@ export function FulfillmentShipmentEditor({
   }
 
   const isDraft = shipment.status === "DRAFT";
+  const advancedPacking = shipment.packingMode === "advanced_separate_packing" || splitMode;
+  const packedCount = shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
 
   const resolveCustomerId = (orderId: string): string | null => {
@@ -537,12 +559,11 @@ export function FulfillmentShipmentEditor({
 
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="border-b border-border bg-muted/30 px-6 py-3">
-                <h3 className="text-sm font-bold uppercase tracking-wider">Package Dimensions & Weight</h3>
+                <h3 className="text-sm font-bold uppercase tracking-wider">Default Package Dimensions & Weight</h3>
               </div>
               <div className="p-6">
                 <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-5">
                   {[
-                    ["Box Count", "boxCount"],
                     ["Weight (lbs)", "weight"],
                     ["Length (in)", "length"],
                     ["Width (in)", "width"],
@@ -560,12 +581,24 @@ export function FulfillmentShipmentEditor({
                     </div>
                   ))}
                 </div>
+                <p className="mb-4 text-xs text-muted-foreground">Package count: {shipment.packages.length}. Physical package records are the source of truth.</p>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package Notes</label>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Default Package Notes</label>
                   <textarea
                     className="w-full resize-none rounded border border-input bg-background p-3 text-sm focus:ring-2 focus:ring-primary"
                     rows={2}
                     placeholder="Add any special handling instructions..."
+                    value={form.packageNotes}
+                    onChange={(event) => setForm((prev) => ({ ...prev, packageNotes: event.target.value }))}
+                    disabled={!isDraft}
+                  />
+                </div>
+                <div className="mt-4 flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Shipment Internal Notes</label>
+                  <textarea
+                    className="w-full resize-none rounded border border-input bg-background p-3 text-sm focus:ring-2 focus:ring-primary"
+                    rows={2}
+                    placeholder="Internal shipping instructions..."
                     value={form.internalNotes}
                     onChange={(event) => setForm((prev) => ({ ...prev, internalNotes: event.target.value }))}
                     disabled={!isDraft}
@@ -579,11 +612,12 @@ export function FulfillmentShipmentEditor({
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
                 <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
               </div>
-              <div className="overflow-x-auto">
+              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Verified, production-complete quantities are automatically allocated to {shipment.packages[0]?.packageReference || "the default package"}.</p></div>{isDraft && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
+              <div className={advancedPacking ? "overflow-x-auto" : "hidden"}>
                 <table className="w-full border-collapse text-left">
                   <thead>
                     <tr className="border-b border-border bg-muted/30">
-                      <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Order Ref</th>
+                      {lineItemsByOrder.length > 1 && <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Order Ref</th>}
                       <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Product SKU / Name</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ordered</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Remaining</th>
@@ -594,7 +628,7 @@ export function FulfillmentShipmentEditor({
                   <tbody className="divide-y divide-border">
                     {loadingOrders && (
                       <tr>
-                        <td colSpan={6} className="px-6 py-6 text-center text-sm text-muted-foreground">
+                        <td colSpan={lineItemsByOrder.length > 1 ? 6 : 5} className="px-6 py-6 text-center text-sm text-muted-foreground">
                           <span className="inline-flex items-center gap-2">
                             <Loader2 className="h-4 w-4 animate-spin" />
                             Loading order line items...
@@ -606,7 +640,7 @@ export function FulfillmentShipmentEditor({
                     {!loadingOrders && lineItemsByOrder.map((group) => (
                       <>
                         <tr key={`${group.orderId}-header`} className="bg-muted/20">
-                          <td className="px-6 py-2" colSpan={6}>
+                          <td className="px-6 py-2" colSpan={lineItemsByOrder.length > 1 ? 6 : 5}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
                               <span className="h-px flex-1 bg-border" />
@@ -619,7 +653,7 @@ export function FulfillmentShipmentEditor({
                           const hasError = validationErrors.has(item.id);
                           return (
                             <tr key={item.id}>
-                              <td className="px-6 py-4 text-xs font-mono text-muted-foreground">--</td>
+                              {lineItemsByOrder.length > 1 && <td className="px-6 py-4 text-xs font-mono text-muted-foreground">#{group.orderNumber}</td>}
                               <td className="px-6 py-4">
                                 <p className="text-sm font-bold">{item.label}</p>
                                 <p className="text-xs font-mono text-muted-foreground">SKU: {item.sku}</p>
@@ -664,15 +698,23 @@ export function FulfillmentShipmentEditor({
 
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
-                <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">Assign packed items to a physical package before shipping.</p></div>
-                <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || createPackage.isPending} onClick={() => void handleAddPackage()}>
+                <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
+                {advancedPacking && <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || createPackage.isPending} onClick={() => void handleAddPackage()}>
                   {createPackage.isPending ? "ADDING..." : "ADD PACKAGE"}
-                </button>
+                </button>}
               </div>
               <div className="divide-y divide-border">
-                {shipment.packages.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No packages yet. Create one to group physical contents and print a package ticket.</p> : shipment.packages.map((pkg) => (
-                  <div key={pkg.id} className="flex items-center justify-between px-6 py-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{shipment.items.filter((item) => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
-                ))}
+                {shipment.packages.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No packages yet. Create one to group physical contents and print a package ticket.</p> : shipment.packages.map((pkg, index) => {
+                  const fields = packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
+                  const updateFields = (key: keyof typeof fields, value: string) => setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
+                  return <div key={pkg.id} className="px-6 py-4">
+                    <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{shipment.items.filter((item) => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
+                    {advancedPacking && index > 0 && <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
+                      {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="number" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft} /></label>)}
+                      <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package Notes<textarea rows={1} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft} /></label>
+                    </div>}
+                  </div>;
+                })}
               </div>
             </div>
           </section>

@@ -295,13 +295,14 @@ export function registerFulfillmentRoutes(
         dims: parsed.dims,
         internalNotes: parsed.internalNotes,
         shipmentItems: parsed.shipmentItems,
+        packages: parsed.packages,
         actorUserId,
       });
 
       return res.json({ success: true, data: shipment });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
-        return res.status(400).json({ success: false, message: 'Invalid shipment patch payload', code: 'VALIDATION_ERROR' });
+        return res.status(400).json({ success: false, message: error?.issues?.[0]?.message || 'Invalid shipment patch payload', code: 'VALIDATION_ERROR' });
       }
       if (error instanceof FulfillmentHttpError) {
         return res.status(error.status).json({ success: false, message: error.message, code: error.code });

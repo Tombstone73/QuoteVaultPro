@@ -1,4 +1,5 @@
 export type FulfillmentVerificationPolicy = 'strict_separate_verification' | 'packing_completes_fulfillment';
+export type FulfillmentPackingMode = 'simple_verified_packing' | 'advanced_separate_packing';
 
 export function parseShipmentDate(value: string | null | undefined): string | null {
   if (value == null || value === '') return null;
@@ -15,4 +16,12 @@ export function fulfillmentVerificationPolicyFromSettings(settings: any): Fulfil
   return settings?.preferences?.fulfillment?.verificationPolicy === 'packing_completes_fulfillment'
     ? 'packing_completes_fulfillment'
     : 'strict_separate_verification';
+}
+
+/** The old packing-completes value remains a compatible spelling for the
+ * simple workflow. Existing strict organizations retain explicit packing. */
+export function fulfillmentPackingModeFromSettings(settings: any): FulfillmentPackingMode {
+  return settings?.preferences?.fulfillment?.verificationPolicy === 'strict_separate_verification'
+    ? 'advanced_separate_packing'
+    : 'simple_verified_packing';
 }

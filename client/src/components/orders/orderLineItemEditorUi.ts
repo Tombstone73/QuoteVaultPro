@@ -1,3 +1,5 @@
+import { resolveFulfillmentLineReadiness } from "@shared/fulfillmentReadiness";
+
 export type OrderLineItemActiveWorkWarning = {
   title: string;
   description: string;
@@ -258,8 +260,14 @@ export function resolveOrderLineItemOperationalDisplay(input: {
 
   if (isProductionOwned) {
     if (ownerKey === "fulfillment") {
+      const readiness = resolveFulfillmentLineReadiness({
+        workflowState: input.workflowState,
+        activeOwnerStationKey: input.activeOwnerStationKey,
+        activeOwnerStepKey: input.activeOwnerStepKey,
+        activeOwnerStatus: input.activeOwnerStatus,
+      });
       return {
-        statusLabel: ownerStatus === "in_progress" ? "Fulfillment in progress" : "Production complete, awaiting fulfillment",
+        statusLabel: ownerStatus === "in_progress" ? "Fulfillment in progress" : readiness.label,
         nextStepLabel: ownerStatus === "in_progress" ? "Complete fulfillment" : "Prepare pickup or shipment",
         ownerLabel: "Fulfillment",
         isProductionOwned,
