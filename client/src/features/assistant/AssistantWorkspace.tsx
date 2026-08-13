@@ -434,6 +434,7 @@ export function ResultCards({
   ])) as typeof globalThis.fetch;
   const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
   const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
+  const genericConfirmationsInFlight = React.useRef(new Map<string, Promise<unknown>>());
   const presentation = responsePresentationForCards(serverPresentation);
   // Defense in depth for turns persisted before the response-contract fix.
   const visibleCards = cards.filter((card) => (card as { kind: string }).kind !== "response_presentation");
@@ -456,14 +457,22 @@ export function ResultCards({
     }
   };
   const confirmGenericPlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
-    try {
-      const result = await onConfirmPlan(input);
-      setGenericConfirmErrors((current) => { const { [input.planId]: _removed, ...remaining } = current; return remaining; });
-      return result;
-    } catch (error) {
-      setGenericConfirmErrors((current) => ({ ...current, [input.planId]: actionErrorMessage(error, "The server did not confirm this plan.") }));
-      return undefined;
-    }
+    const existing = genericConfirmationsInFlight.current.get(input.planId);
+    if (existing) return existing;
+    const confirmation = (async () => {
+      try {
+        const result = await onConfirmPlan(input);
+        setGenericConfirmErrors((current) => { const { [input.planId]: _removed, ...remaining } = current; return remaining; });
+        return result;
+      } catch (error) {
+        setGenericConfirmErrors((current) => ({ ...current, [input.planId]: actionErrorMessage(error, "The server did not confirm this plan.") }));
+        return undefined;
+      } finally {
+        genericConfirmationsInFlight.current.delete(input.planId);
+      }
+    })();
+    genericConfirmationsInFlight.current.set(input.planId, confirmation);
+    return confirmation;
   };
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
     const configurableProposal = toConfigurableProductProposal(card);

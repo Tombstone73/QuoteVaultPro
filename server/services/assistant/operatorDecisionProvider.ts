@@ -173,7 +173,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         console.info("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, succeeded: true });
       } else if (decision.kind === "call_tools") {
         const toolNames = decision.calls.map((call) => call.toolName);
-        console.info("[AI_OPERATOR_TRACE]", { stage: "tool_call_requested", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: false, toolCallRequested: true, toolNames, mutationRequested: toolNames.some((name) => name === "products.begin_draft" || name === "products.apply_operations"), ...contextTrace });
+        console.info("[AI_OPERATOR_TRACE]", { stage: "tool_call_requested", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: false, toolCallRequested: true, toolNames, mutationRequested: toolNames.some((name) => name === "products.begin_draft" || name === "products.apply_operations" || name === "products.apply_existing_operations"), ...contextTrace });
       }
       return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }

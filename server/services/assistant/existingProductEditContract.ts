@@ -31,3 +31,47 @@ export const existingProductEditOperationsSchema = z.object({
   if (pricingEngineOperations.length && value.operations.length !== 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A Product Pricing Engine configuration operation cannot be mixed with other Product edits." });
 });
 export type ExistingProductEditOperations = z.infer<typeof existingProductEditOperationsSchema>;
+
+export function existingProductEditValidationDetails(error: z.ZodError): { paths: string[]; codes: string[] } {
+  const paths = new Set<string>();
+  const codes = new Set<string>();
+  const visit = (issue: z.ZodIssue) => {
+    const nestedErrors = (issue as z.ZodIssue & { unionErrors?: z.ZodError[] }).unionErrors;
+    if (Array.isArray(nestedErrors) && nestedErrors.length) {
+      nestedErrors.forEach((nested) => nested.issues.forEach(visit));
+      return;
+    }
+    paths.add(issue.path.length ? issue.path.join(".") : "operations");
+    codes.add(issue.code);
+  };
+  error.issues.forEach(visit);
+  return { paths: Array.from(paths).slice(0, 20), codes: Array.from(codes).slice(0, 20) };
+}
+
+/** Model-facing projection of the same Existing Product operation DTO.
+ *
+ * Keep this beside the authoritative Zod contract so provider transport and
+ * runtime validation cannot acquire independently maintained discriminators.
+ * `oneOf` is intentional: provider adapters recognize and safely flatten this
+ * discriminated operation list when their native function transport requires
+ * a single object envelope.
+ */
+export const existingProductEditProviderInputSchema: Record<string, unknown> = {
+  type: "object", additionalProperties: false, required: ["operations"],
+  properties: {
+    operations: {
+      type: "array", minItems: 1, maxItems: 12,
+      items: { oneOf: [
+        { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
+        { type: "object", additionalProperties: false, required: ["op", "materialLabel"], properties: { op: { const: "update_product_material" }, materialLabel: { type: ["string", "null"] } } },
+        { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" } } },
+        { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "publish_product_configuration" } } },
+        { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_pricing_engine_configuration" }, changes: { type: "object", additionalProperties: false, required: ["allowRotation"], properties: { allowRotation: { type: "boolean" } } } } },
+        { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
+          kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },
+          group: { anyOf: [{ type: "string" }, { type: "object" }] }, input: { anyOf: [{ type: "string" }, { type: "object" }] }, choice: { anyOf: [{ type: "string" }, { type: "object" }] }, changes: { type: "object" }, orderedGroups: { type: "array", items: { type: "string" } }, orderedValues: { type: "array", items: { type: "string" } },
+        } } } } },
+      ] },
+    },
+  },
+};

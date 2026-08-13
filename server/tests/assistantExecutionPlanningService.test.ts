@@ -142,6 +142,34 @@ describe("Stage 3 execution planning service", () => {
     expect(registered.execute).toHaveBeenCalledTimes(1);
   });
 
+  test("accepts only the confirmation-issuance version boundary and still revalidates before execution", async () => {
+    const repo = repository();
+    const registered = command();
+    const service = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true });
+    const preview = await planReady(service);
+    const issued = await service.issueConfirmation(scope, preview.id, preview.version);
+
+    expect(issued.plan).toMatchObject({ status: "awaiting_confirmation", version: preview.version + 1 });
+    const result = await service.confirmAndExecute(scope, { planId: preview.id, expectedVersion: preview.version, token: issued.token, context });
+
+    expect(result.plan.status).toBe("succeeded");
+    expect(registered.revalidate).toHaveBeenCalledTimes(1);
+    expect(registered.execute).toHaveBeenCalledTimes(1);
+  });
+
+  test("rejects versions older than the one confirmation-issuance transition", async () => {
+    const repo = repository();
+    const registered = command();
+    const service = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true });
+    const preview = await planReady(service);
+    const issued = await service.issueConfirmation(scope, preview.id, preview.version);
+
+    await expect(service.confirmAndExecute(scope, { planId: preview.id, expectedVersion: preview.version - 1, token: issued.token, context })).rejects.toMatchObject({ code: "PLAN_VERSION_CONFLICT" });
+    expect(repo.consumeConfirmation).not.toHaveBeenCalled();
+    expect(registered.revalidate).not.toHaveBeenCalled();
+    expect(registered.execute).not.toHaveBeenCalled();
+  });
+
   test("replays a successful configurable-draft execution with the original product and DRAFT tree IDs", async () => {
     const repo = repository();
     const registered = command({ execute: jest.fn(async () => ({

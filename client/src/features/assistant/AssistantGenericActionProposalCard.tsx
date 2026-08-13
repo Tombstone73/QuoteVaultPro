@@ -62,6 +62,12 @@ export function toGenericActionProposal(card: unknown, supportingCards: unknown[
 }
 
 export function AssistantGenericActionProposalCard({ proposal, onCreatePlan, creating, error }: { proposal: GenericActionProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean; error?: string | null }) {
+  const autoPrepareStarted = React.useRef(false);
+  React.useEffect(() => {
+    if (autoPrepareStarted.current) return;
+    autoPrepareStarted.current = true;
+    void onCreatePlan(proposal.turnId);
+  }, [onCreatePlan, proposal.turnId]);
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Action proposal: ${proposal.command}`}>
     <p className="font-semibold">{proposal.title}</p><p className="mt-1 text-muted-foreground">Command: {proposal.command}</p><p className="mt-1"><span className="font-medium">Action: </span>{proposal.humanAction}</p>
     {proposal.summary ? <p className="mt-2 text-muted-foreground">{proposal.summary}</p> : null}{proposal.riskLevel ? <p className="mt-2"><span className="font-medium">Risk: </span>{proposal.riskLevel}</p> : null}
@@ -69,7 +75,7 @@ export function AssistantGenericActionProposalCard({ proposal, onCreatePlan, cre
     {proposal.parameters.length ? <dl className="mt-2 grid gap-1 sm:grid-cols-2">{proposal.parameters.map((parameter) => <div key={`${parameter.label}-${parameter.value}`}><dt className="inline font-medium">{parameter.label}: </dt><dd className="inline">{parameter.value}</dd></div>)}</dl> : null}
     {proposal.warnings.length ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="flex items-center gap-1 font-medium"><AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />Warnings</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{proposal.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
     {error ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="alert">Unable to prepare the server plan: {error}</p> : null}
-    <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Review creates a server-bound plan. This card cannot execute the action, and typing GO in chat does not confirm it.</p>
-    <div className="mt-2"><Button type="button" size="sm" disabled={creating} onClick={() => void onCreatePlan(proposal.turnId)}>{creating ? "Preparing plan…" : "Review server plan"}</Button></div>
+    <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">The server is preparing the protected plan. This card cannot execute the action; only the plan's GO control can do that.</p>
+    <div className="mt-2"><Button type="button" size="sm" disabled={!error || creating} onClick={() => void onCreatePlan(proposal.turnId)}>{error ? (creating ? "Preparing plan…" : "Retry plan preparation") : "Preparing plan…"}</Button></div>
   </section>;
 }

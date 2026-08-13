@@ -816,13 +816,18 @@ function normalizeDeepSeekTerminalDecisionAliases(
 /** DeepSeek V4's tool transport is less reliable with discriminated oneOf
  * arrays. This adapter-only projection preserves all business fields while
  * using one permissive object envelope; runtime schemas remain authoritative. */
-function deepSeekFunctionParameters(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+export function deepSeekFunctionParameters(schema: Record<string, unknown> | undefined): Record<string, unknown> {
   const transform = (value: unknown): unknown => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return value;
     const record = value as Record<string, unknown>;
     if (Array.isArray(record.oneOf)) {
       const variants = record.oneOf.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
-      const properties = Object.assign({}, ...variants.map((variant) => transform(variant.properties) as Record<string, unknown>));
+      const variantProperties = variants.map((variant) => transform(variant.properties) as Record<string, unknown>);
+      const properties = Object.fromEntries(Array.from(new Set(variantProperties.flatMap((variant) => Object.keys(variant)))).map((key) => {
+        const values = variantProperties.flatMap((variant) => Object.prototype.hasOwnProperty.call(variant, key) ? [variant[key]] : []);
+        const unique = Array.from(new Map(values.map((item) => [JSON.stringify(item), item])).values());
+        return [key, unique.length === 1 ? unique[0] : { anyOf: unique }];
+      }));
       // Do not copy a branch-specific discriminator const: the final branch
       // would otherwise make all earlier operations impossible to emit.
       properties.op = { type: "string" };

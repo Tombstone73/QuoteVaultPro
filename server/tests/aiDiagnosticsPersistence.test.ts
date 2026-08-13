@@ -42,9 +42,9 @@ describe("AI diagnostic persistence", () => {
       parseMethod: "none",
       repairAttempted: false,
       repairResult: "not_attempted",
-      validationSchema: null,
-      validationIssuePaths: [],
-      validationIssueCodes: [],
+      validationSchema: "ExistingProductEditOperations",
+      validationIssuePaths: ["operations.0.changes.allowRotation"],
+      validationIssueCodes: ["invalid_type"],
       specialistName: "operator_runtime",
       persistenceAttempted: true,
       persistenceResult: "succeeded",
@@ -58,6 +58,8 @@ describe("AI diagnostic persistence", () => {
         continuationStarted: true,
         finalResultAccepted: false,
         failureKind: "provider_result_unusable",
+        toolObservations: [{ toolName: "products.apply_existing_operations", status: "rejected", failureCode: "invalid_arguments", failureCategory: "argument_validation", failingStep: "ExistingProductEditOperations", validationSchema: "ExistingProductEditOperations", validationIssuePaths: ["operations.0.changes.allowRotation"], validationIssueCodes: ["invalid_type"], operationType: "update_product_pricing_engine_configuration" }],
+        firstFailedTool: { toolName: "products.apply_existing_operations", status: "rejected", failureCode: "invalid_arguments", failureCategory: "argument_validation", failingStep: "ExistingProductEditOperations", validationSchema: "ExistingProductEditOperations", validationIssuePaths: ["operations.0.changes.allowRotation"], validationIssueCodes: ["invalid_type"], operationType: "update_product_pricing_engine_configuration" },
       },
     });
 
@@ -68,7 +70,10 @@ describe("AI diagnostic persistence", () => {
       metadata: expect.objectContaining({
         referenceId,
         diagnosticType: "operator_runtime",
-        operatorRuntime: expect.objectContaining({ toolName: "products.get_summary", failureKind: "provider_result_unusable" }),
+        validationSchema: "ExistingProductEditOperations",
+        validationIssuePaths: ["operations.0.changes.allowRotation"],
+        validationIssueCodes: ["invalid_type"],
+        operatorRuntime: expect.objectContaining({ toolName: "products.get_summary", failureKind: "provider_result_unusable", firstFailedTool: expect.objectContaining({ operationType: "update_product_pricing_engine_configuration" }) }),
       }),
     }));
   });

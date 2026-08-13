@@ -280,7 +280,8 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).toContain("Customers Update Profile");
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: Customers Update Profile']");
     expect(go).not.toBeNull();
-    await act(async () => { go?.click(); });
+    await act(async () => { go?.click(); go?.click(); });
+    expect(onConfirmPlan).toHaveBeenCalledTimes(1);
     expect(onConfirmPlan).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan_crm", confirmationToken: "server-token" }));
     expect(container.textContent).toContain("The confirmation has expired.");
     act(() => root.unmount());
@@ -289,10 +290,12 @@ describe("Assistant workspace presentation", () => {
   test("reports generic plan-creation failure and renders a replayed successful result", async () => {
     const fingerprint = "b".repeat(64);
     const card = { kind: "action_proposal", title: "Confirm invoice", summary: "Create one invoice.", sourceLinks: [], plan: { action: "billing.create_invoice", billingIntakeSessionId: "session_2", proposalFingerprint: fingerprint }, proposal: { action: "billing.create_invoice", billingIntakeSessionId: "session_2", proposalFingerprint: fingerprint, turnId: "turn_billing" } };
-    const failed = render([card], { onCreatePlan: async () => { throw new Error('409: {"error":{"message":"The invoice proposal changed."}}'); } });
-    const review = Array.from(failed.container.querySelectorAll("button")).find((button) => button.textContent === "Review server plan") as HTMLButtonElement;
-    await act(async () => { review.click(); });
+    const onCreatePlan = jest.fn(async () => { throw new Error('409: {"error":{"message":"The invoice proposal changed."}}'); });
+    const failed = render([card], { onCreatePlan });
+    await act(async () => { await Promise.resolve(); });
+    expect(onCreatePlan).toHaveBeenCalledTimes(1);
     expect(failed.container.textContent).toContain("The invoice proposal changed.");
+    expect(failed.container.textContent).toContain("Retry plan preparation");
     act(() => failed.root.unmount());
 
     const replayed = render([card], { executionPlans: { turn_billing: { turnId: "turn_billing", confirmationToken: null, plan: { id: "plan_billing", action: "billing.create_invoice", status: "succeeded", planVersion: 3, riskLevel: "high", confirmationAvailable: false, preview: { summary: "Created invoice INV-1." }, missingInformation: [], cancellationAvailable: false, steps: [{ id: "step_1", label: "billing.create_invoice@v1", status: "succeeded", summary: "Created once." }] } } } });

@@ -94,6 +94,10 @@ export type AssistantOperatorObservation = {
   failureCategory?: string;
   failureCode?: string;
   failingStep?: string;
+  validationSchema?: string;
+  validationIssuePaths?: string[];
+  validationIssueCodes?: string[];
+  operationType?: string;
   /** Server-to-browser presentation only. It is intentionally excluded from
    * subsequent provider decisions so the model never receives GO tokens,
    * plan identifiers, fingerprints, or command payloads. */

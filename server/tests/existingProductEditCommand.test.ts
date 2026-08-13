@@ -80,8 +80,8 @@ describe("existing product edit execution command", () => {
     expect(result.steps[0]?.summary).toContain("canonical Product lifecycle operation");
   });
 
-  test("shows a transparent publish then activate plan and confirmed warnings before GO", async () => {
-    const lifecycleInput = { productId: "product_1", operations: [{ op: "update_product_lifecycle", isActive: true, confirmPublishWarnings: true }], proposalFingerprint: fingerprint };
+  test("shows a transparent publish then activate plan whose warnings are acknowledged by GO", async () => {
+    const lifecycleInput = { productId: "product_1", operations: [{ op: "update_product_lifecycle", isActive: true }], proposalFingerprint: fingerprint };
     const publishProposal = { ...proposal, productActive: false, sourceLifecycle: "DRAFT", canonicalOperationReference: "products.publish_configuration.v1", publishProposal: { treeVersionId: "tree_1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", expectedTreeUpdatedAt: "2026-08-10T00:00:00.000Z", activateAfterPublish: true, confirmWarnings: true, warnings: [{ code: "PBV2_W_TEST", message: "Review material weight." }] }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, { field: "Lifecycle", before: "inactive", after: "active" }] };
     const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: publishProposal })), execute: jest.fn(async () => publishProposal) } as any;
     const command = createExistingProductEditExecutionCommand(service);
@@ -89,6 +89,7 @@ describe("existing product edit execution command", () => {
     expect(service.execute).not.toHaveBeenCalled();
     expect(built.preview.summary).toContain("publish PBV2 configuration tree_1 and activate the Product atomically");
     expect(built.preview.summary).toContain("Review material weight");
+    expect(built.preview.summary).toContain("acknowledged by GO");
     const result = await command.execute({ plan: { sanitizedArguments: lifecycleInput } as any, scope });
     expect(result.steps[0]?.summary).toContain("PBV2 publication");
   });

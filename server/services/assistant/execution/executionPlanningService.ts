@@ -138,7 +138,7 @@ export class ExecutionPlanningService {
       const replay = await this.repository.acquireIdempotency({ plan, requestHash: sha256(`${plan.id}:${plan.contextHash}`), now: this.now() });
       if (replay.kind === "completed") return { plan, result: replay.result };
     }
-    this.assertCurrentVersion(plan, input.expectedVersion);
+    this.assertConfirmationVersion(plan, input.expectedVersion);
     plan = await this.expireIfNeeded(plan);
     if (plan.contextHash !== contextHash(input.context)) throw new ExecutionPlanError("CONTEXT_CHANGED", "The plan context changed; create a new plan.");
     if (plan.status !== "awaiting_confirmation") throw new ExecutionPlanError("PLAN_NOT_CONFIRMABLE", "This plan cannot be confirmed.");
@@ -202,6 +202,17 @@ export class ExecutionPlanningService {
   }
   private assertCurrentVersion(plan: ExecutionPlanRecord, expectedVersion: number) {
     if (plan.version !== expectedVersion) throw new ExecutionPlanError("PLAN_VERSION_CONFLICT", "The plan changed; reload it before continuing.");
+  }
+  /** Confirmation issuance is the one server-owned transition between the
+   * preview a browser may have rendered and the awaiting-confirmation record
+   * bound to its token. Accept only that exact one-version boundary. The
+   * actor-bound one-time token is still consumed below and every business
+   * fingerprint is still revalidated before execution. */
+  private assertConfirmationVersion(plan: ExecutionPlanRecord, expectedVersion: number) {
+    const issuanceBoundary = plan.status === "awaiting_confirmation" && expectedVersion === plan.version - 1;
+    if (plan.version !== expectedVersion && !issuanceBoundary) {
+      throw new ExecutionPlanError("PLAN_VERSION_CONFLICT", "The plan changed; reload it before continuing.");
+    }
   }
   private async expireIfNeeded(plan: ExecutionPlanRecord): Promise<ExecutionPlanRecord> {
     if (!isExpired(plan, this.now())) return plan;

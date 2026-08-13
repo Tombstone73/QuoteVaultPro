@@ -89,27 +89,30 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "Your current permissions do not allow product creation." }));
   });
 
-  test("a trusted existing product edit selects the protected existing-product capability and never begins a new draft", async () => {
+  test("an explicit existing Product rotation edit prepares the protected GO proposal without another clarification", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const { existingProductEditService } = await import("../services/assistant/existingProductEditService");
     const repo = repository();
     const product = { beginCanonicalProductDraft: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
     const contextOnProduct = assistantContextEnvelopeSchema.parse({ ...context, route: "/products/product_1/edit", pageTitle: "Edit Product", entityType: "product", entityId: "product_1" });
-    const contextSpy = jest.spyOn(existingProductEditService, "trustedContext").mockResolvedValue({ name: "Translucent Vinyl", lifecycle: "active", pricingLifecycle: "DRAFT", optionGroups: [{ label: "Layer", defaultValue: "5 Layer", values: ["3 Layer", "5 Layer"] }] });
-    const proposalSpy = jest.spyOn(existingProductEditService, "buildProposal").mockResolvedValue({ productId: "product_1", productName: "Translucent Vinyl", productActive: true, treeId: "tree_1", treeUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Layer default", before: "5 Layer", after: "3 Layer" }], fingerprint: "a".repeat(64) });
+    const operations = [{ op: "update_product_pricing_engine_configuration", changes: { allowRotation: true } }];
+    const contextSpy = jest.spyOn(existingProductEditService, "trustedContext").mockResolvedValue({ name: "Coroplast", lifecycle: "active", pricingLifecycle: "ACTIVE", primaryMaterial: null, availableMaterials: [], optionGroups: [] });
+    const proposalSpy = jest.spyOn(existingProductEditService, "buildProposal").mockResolvedValue({ productId: "product_1", productName: "Coroplast", productActive: true, sourceLifecycle: "PRODUCT", canonicalOperationReference: "products.update_pricing_engine_configuration.v1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Allow Rotation / Mixed Sheet Layout", before: "off", after: "on" }], fingerprint: "a".repeat(64) });
     const provider = { decide: jest.fn(async ({ observations, toolCatalog, task }: any) => {
-      expect(task.businessContext.existingProduct).toMatchObject({ name: "Translucent Vinyl", pricingLifecycle: "DRAFT" });
+      expect(task.businessContext.existingProduct).toMatchObject({ name: "Coroplast", pricingLifecycle: "ACTIVE" });
       expect(toolCatalog.map((tool: any) => tool.name)).toContain("products.apply_existing_operations");
-      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "set_option_default", optionGroup: "Layer", value: "3 Layer" }] } }] };
+      const inputSchema = toolCatalog.find((tool: any) => tool.name === "products.apply_existing_operations")?.inputSchema;
+      expect(JSON.stringify(inputSchema)).toContain("update_product_pricing_engine_configuration");
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations } }] };
       return { kind: "complete", response: "Prepared the protected edit.", workingSummary: "Existing product edit prepared." };
     }) };
     const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
 
-    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft", "assistant.products.update_existing_product"] }, { message: "Change the default Layer selection to 3 layer", context: contextOnProduct });
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft", "assistant.products.update_existing_product"] }, { message: "Turn rotation on", context: contextOnProduct });
 
     expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
-    expect(proposalSpy).toHaveBeenCalledWith(expect.objectContaining({ productId: "product_1" }));
-    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "action_proposal", plan: expect.objectContaining({ action: "products.update_existing_product" }) })]) }));
+    expect(proposalSpy).toHaveBeenCalledWith(expect.objectContaining({ productId: "product_1", operations: { operations } }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "action_proposal", plan: expect.objectContaining({ action: "products.update_existing_product", operations }) })]) }));
     contextSpy.mockRestore(); proposalSpy.mockRestore();
   });
 

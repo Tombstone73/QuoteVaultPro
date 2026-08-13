@@ -12,12 +12,12 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
   const publishSummary = proposal.publishProposal
     ? ` It will publish PBV2 configuration ${proposal.publishProposal.treeVersionId}${proposal.publishProposal.activateAfterPublish ? " and activate the Product atomically" : ""}.`
     : " It will not publish or change an active-tree pointer.";
-  const warningSummary = proposal.publishProposal?.warnings.length ? ` Confirmed publish warnings: ${proposal.publishProposal.warnings.map((item) => item.message).join("; ")}.` : "";
+  const warningSummary = proposal.publishProposal?.warnings.length ? ` Publish warnings acknowledged by GO: ${proposal.publishProposal.warnings.map((item) => item.message).join("; ")}.` : "";
   const changeSummary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
   return {
     title: `Update existing product: ${proposal.productName}`,
     summary: `${changeSummary}. This protected existing-product edit makes no change before GO.${publishSummary}${warningSummary}`,
-    sideEffects: [...proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}.`), ...(proposal.publishProposal?.warnings.map((item) => `Confirmed PBV2 warning: ${item.message}.`) ?? [])],
+    sideEffects: [...proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}.`), ...(proposal.publishProposal?.warnings.map((item) => `PBV2 warning acknowledged by GO: ${item.message}.`) ?? [])],
     affectedRecords: [{ entityType: "product", entityId: proposal.productId, fingerprint: proposal.fingerprint }],
   } as ExecutionPlanPreview;
 }

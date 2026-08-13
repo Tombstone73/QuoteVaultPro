@@ -29,6 +29,7 @@ import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
+import { existingProductEditProviderInputSchema, existingProductEditValidationDetails } from "./existingProductEditContract";
 import { currentTurnProductResolution, existingProductIdForMutation, isProductResolutionObservation } from "./trustedProductState";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
@@ -914,29 +915,27 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. Lifecycle activation may transparently propose publishing its current valid PBV2 DRAFT first; publish warnings require explicit confirmation. Pricing Engine rotation is separate from customer options. Nothing changes before GO, and the server revalidates state at GO.",
-      inputSchema: {
-        type: "object", additionalProperties: false, required: ["operations"],
-        properties: {
-          operations: {
-            type: "array", minItems: 1, maxItems: 12,
-            items: { anyOf: [
-              { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
-              { type: "object", additionalProperties: false, required: ["op", "materialLabel"], properties: { op: { const: "update_product_material" }, materialLabel: { type: ["string", "null"] } } },
-              { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" }, confirmPublishWarnings: { type: "boolean" } } },
-              { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "publish_product_configuration" }, confirmPublishWarnings: { type: "boolean" } } },
-              { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_pricing_engine_configuration" }, changes: { type: "object", additionalProperties: false, required: ["allowRotation"], properties: { allowRotation: { type: "boolean" } } } } },
-              { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
-                kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },
-                group: { anyOf: [{ type: "string" }, { type: "object" }] }, input: { anyOf: [{ type: "string" }, { type: "object" }] }, choice: { anyOf: [{ type: "string" }, { type: "object" }] }, changes: { type: "object" }, orderedGroups: { type: "array", items: { type: "string" } }, orderedValues: { type: "array", items: { type: "string" } },
-              } } } } },
-            ] },
-          },
-        },
-      },
+      description: "Prepare a protected edit to one trusted existing persisted product. Lifecycle activation may transparently propose publishing its current valid PBV2 DRAFT first; publish warnings are displayed in the protected plan and acknowledged by GO. Pricing Engine rotation is separate from customer options. Nothing changes before GO, and the server revalidates state at GO.",
+      inputSchema: existingProductEditProviderInputSchema,
       execute: async ({ arguments: args, context }) => {
         const parsed = existingProductEditOperationsSchema.safeParse({ operations: args.operations });
-        if (!parsed.success) return { status: "rejected" as const, warning: "Existing-product edits require one or more supported business operations." };
+        if (!parsed.success) {
+          const validation = existingProductEditValidationDetails(parsed.error);
+          const operation = Array.isArray(args.operations) && args.operations[0] && typeof args.operations[0] === "object" && !Array.isArray(args.operations[0])
+            ? (args.operations[0] as { op?: unknown }).op
+            : null;
+          return {
+            status: "rejected" as const,
+            warning: "Existing-product edits require one or more supported business operations.",
+            failureCategory: "argument_validation",
+            failureCode: "invalid_arguments",
+            failingStep: "ExistingProductEditOperations",
+            validationSchema: "ExistingProductEditOperations",
+            validationIssuePaths: validation.paths,
+            validationIssueCodes: validation.codes,
+            ...(typeof operation === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(operation) ? { operationType: operation } : {}),
+          };
+        }
         try {
           const resolvedExistingProductId = existingProductIdForMutation(context);
           if (!resolvedExistingProductId) return { status: "rejected" as const, warning: "Resolve exactly one existing product before preparing an edit." };
@@ -1011,22 +1010,29 @@ export class AssistantService {
         stage: "operator_runtime_failure", errorCode: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
         providerResponseState: run.observations.length ? "received" : "not_received",
         parseMethod: "none", repairAttempted: false, repairResult: "not_attempted",
-        validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [],
+        ...(() => {
+          const validationFailure = run.observations.find((observation) => observation.failureCategory === "argument_validation");
+          return {
+            validationSchema: validationFailure?.validationSchema ?? null,
+            validationIssuePaths: validationFailure?.validationIssuePaths ?? [],
+            validationIssueCodes: validationFailure?.validationIssueCodes ?? [],
+          };
+        })(), returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [],
         plannerOperation: null, selectedCapability: null, specialistName: "operator_runtime", optionNormalizationStage: null, resolverStage: null,
         persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(),
         operatorRuntime: {
           ...(() => {
-            const toolObservations = run.observations.slice(-12).map((observation) => ({ toolName: observation.toolName.slice(0, 160), status: observation.status, failureCode: observation.failureCode ?? null, failureCategory: observation.failureCategory ?? null, failingStep: observation.failingStep ?? null }));
+            const toolObservations = run.observations.slice(-12).map((observation) => ({ toolName: observation.toolName.slice(0, 160), status: observation.status, failureCode: observation.failureCode ?? null, failureCategory: observation.failureCategory ?? null, failingStep: observation.failingStep ?? null, validationSchema: observation.validationSchema ?? null, validationIssuePaths: observation.validationIssuePaths ?? [], validationIssueCodes: observation.validationIssueCodes ?? [], operationType: observation.operationType ?? null }));
             const firstFailed = run.observations.find((observation) => observation.status === "rejected" || observation.status === "failed" || observation.status === "timed_out");
             return {
               toolObservations,
-              firstFailedTool: firstFailed ? { toolName: firstFailed.toolName.slice(0, 160), status: firstFailed.status, failureCode: firstFailed.failureCode ?? null, failureCategory: firstFailed.failureCategory ?? null, failingStep: firstFailed.failingStep ?? null } : null,
+              firstFailedTool: firstFailed ? { toolName: firstFailed.toolName.slice(0, 160), status: firstFailed.status, failureCode: firstFailed.failureCode ?? null, failureCategory: firstFailed.failureCategory ?? null, failingStep: firstFailed.failingStep ?? null, validationSchema: firstFailed.validationSchema ?? null, validationIssuePaths: firstFailed.validationIssuePaths ?? [], validationIssueCodes: firstFailed.validationIssueCodes ?? [], operationType: firstFailed.operationType ?? null } : null,
             };
           })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
           decisionType: run.status === "completed" ? "complete" : run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
           toolName: run.observations.at(-1)?.toolName ?? null,
-          argumentValidationSucceeded: run.observations.length > 0 && !run.observations.some((observation) => observation.status === "rejected"),
+          argumentValidationSucceeded: run.observations.length > 0 && !run.observations.some((observation) => observation.failureCategory === "argument_validation"),
           handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
           continuationStarted: run.diagnostics.providerDecisionCount > 1,
           finalResultAccepted: run.status === "completed", failureKind: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
