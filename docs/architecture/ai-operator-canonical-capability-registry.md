@@ -4,11 +4,11 @@
 
 ## Counts
 
-- Registered: 64
+- Registered: 67
 - Read: 18
-- Mutation: 38
+- Mutation: 39
 - Eligible: 56
-- Ineligible: 1
+- Ineligible: 4
 - Hard denied: 7
 
 ## Registry
@@ -72,6 +72,9 @@
 | capability.command.payments.record_manual_payment | payments | mutation | command | payments.record_manual_payment | assistant.payments.record_manual_payment | eligible | — | payments.operations | shared_canonical |
 | capability.command.payments.add_payment_note | payments | mutation | command | payments.add_payment_note | assistant.payments.add_payment_note | eligible | — | payments.operations | shared_canonical |
 | capability.ui.settings.organization_preferences | settings_permissions | administrative | ui_compatibility | organization.preferences.update | organization.settings.update | ineligible | — | settings.permissions | compatibility_only |
+| capability.ui.products.pricing_formula_profile | products | mutation | ui_compatibility | products.pricing_formula_profile | assistant.products.update_existing_product | ineligible | — | products.pbv2 | compatibility_only |
+| capability.ui.products.delete | products | administrative | ui_compatibility | products.delete | product.delete | ineligible | — | products.pbv2 | compatibility_only |
+| capability.ui.products.advanced_pbv2_override | products | administrative | ui_compatibility | products.advanced_pbv2_override | product.update | ineligible | — | products.pbv2 | compatibility_only |
 | capability.hard_deny.organization.delete | security | administrative | security_policy | organization.delete | — | hard_denied | Owner-only destructive organization action. | — | security_policy |
 | capability.hard_deny.organization.destroy_tenant | security | administrative | security_policy | organization.destroy_tenant | — | hard_denied | Tenant destruction is never an AI capability. | — | security_policy |
 | capability.hard_deny.organization.transfer_ownership | security | administrative | security_policy | organization.transfer_ownership | — | hard_denied | Owner-only irreversible organization control. | — | security_policy |

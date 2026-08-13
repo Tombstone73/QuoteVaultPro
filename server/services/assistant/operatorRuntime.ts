@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, type AssistantContextEnvelope, type AssistantStructuredCard, type AssistantToolResultEnvelope } from "@shared/assistantContracts";
 import type { ActiveSemanticProductDraftContext } from "./productManagementSkill";
+import { currentTurnProductResolution, taskForCurrentProductEvidence } from "./trustedProductState";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -122,7 +123,7 @@ export type AssistantOperatorBusinessContext = {
   capabilities: string[];
   /** A server-refreshed existing product, intentionally label-only. Product
    * identity stays in the trusted execution context, never a model argument. */
-  existingProduct?: { name: string; lifecycle: "active" | "inactive"; pricingLifecycle: "DRAFT" | "ACTIVE"; optionGroups: Array<{ label: string; defaultValue: string | null; values: string[] }> } | null;
+  existingProduct?: { name: string; lifecycle: "active" | "inactive"; pricingLifecycle: "DRAFT" | "ACTIVE" | "UNAVAILABLE"; optionGroups: Array<{ label: string; defaultValue: string | null; values: string[] }> } | null;
 };
 
 export interface AssistantOperatorToolExecutor {
@@ -283,9 +284,10 @@ export class AssistantOperatorRuntime {
       try {
         providerDecisionCount += 1;
         if (observations.length) console.info("[AI_OPERATOR_TRACE]", { stage: "provider_continuation_started", taskId: input.taskId, step, observationCount: observations.length });
+        const productEvidence = currentTurnProductResolution(observations);
         const received = await this.provider.decide({
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
-          toolCatalog: this.tools.catalog(), observations, safeWorkingSummary, task: input.trustedContext.task,
+          toolCatalog: this.tools.catalog(), observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations),
         });
         const parsed = assistantOperatorDecisionSchema.safeParse(received);
         const shape = decisionDiagnosticShape(received);
@@ -356,9 +358,10 @@ export class AssistantOperatorRuntime {
     // evidence only and an empty catalog, so it cannot create more work.
     try {
       providerDecisionCount += 1;
+      const productEvidence = currentTurnProductResolution(observations);
       const synthesis = assistantOperatorDecisionSchema.parse(await this.provider.decide({
         goal: input.goal, taskId: input.taskId, step: boundedSteps + 1, remainingSteps: 0,
-        toolCatalog: [], observations, safeWorkingSummary, task: input.trustedContext.task, finalSynthesis: true,
+        toolCatalog: [], observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations), finalSynthesis: true,
       }));
       safeWorkingSummary = synthesis.kind === "fail" ? synthesis.recoverySummary ?? safeWorkingSummary : synthesis.workingSummary ?? safeWorkingSummary;
       if (synthesis.kind === "complete") return { status: "completed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };

@@ -7,6 +7,8 @@
 - shared_canonical: 26
 - compatibility_only: 30
 - ui_only_reviewed: 1
+- ai_integration_pending: 1
+- deliberately_ai_ineligible: 2
 - hard_denied: 7
 - underlying_model_unsupported: 2
 
@@ -94,7 +96,10 @@
 | capability.command.products.create_configurable_draft | compatibility_only | unknown | existing | not_applicable | products.create_configurable_draft | assistant.products.create_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 | capability.command.products.create_from_canonical_intent | compatibility_only | unknown | existing | not_applicable | products.create_from_canonical_intent | assistant.products.create_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 | capability.command.products.clone_to_inactive_draft | compatibility_only | unknown | existing | not_applicable | products.clone_to_inactive_draft | assistant.products.clone_to_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
-| capability.command.products.update_existing_product | shared_canonical | Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft | existing | products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1; products.update_lifecycle.v1 | products.update_existing_product | assistant.products.update_existing_product | go_required | CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations + CanonicalProductLifecycleOperations |
+| capability.command.products.update_existing_product | shared_canonical | Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft; POST /api/pbv2/tree-versions/:id/publish | existing | products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1; products.update_lifecycle.v1; products.publish_configuration.v1; products.update_pricing_engine_configuration.v1 | products.update_existing_product | assistant.products.update_existing_product | go_required | CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations + CanonicalProductLifecycleOperations + CanonicalProductPublishOperations + CanonicalProductPricingEngineConfigurationOperations |
+| capability.ui.products.pricing_formula_profile | ai_integration_pending | Product Editor Pricing Engine | not_exposed | products.update_pricing.v1 (UI metadata only) | products.pricing_formula_profile | assistant.products.update_existing_product | go_required | Product Editor pricing/PBV2 save orchestration |
+| capability.ui.products.delete | deliberately_ai_ineligible | Product administration | not_exposed | not_applicable | products.delete | product.delete | not_required | Product route policy |
+| capability.ui.products.advanced_pbv2_override | deliberately_ai_ineligible | Advanced Product administration | not_exposed | not_applicable | products.advanced_pbv2_override | product.update | not_required | PBV2 override route policy |
 | product.products.customer_specific | underlying_model_unsupported | unknown | not_exposed | not_applicable | — | — | not_applicable | Proposal contract preserves this as unsupported without poisoning independent supported work. |
 | product.products.grommet_quantity | underlying_model_unsupported | unknown | not_exposed | not_applicable | — | — | not_applicable | Preserved as unresolved; no phrase-specific choice repair remains active. |
 

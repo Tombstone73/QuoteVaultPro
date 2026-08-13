@@ -26,6 +26,7 @@ import { QuoteInternalNotesRepository, type QuoteInternalReference } from "../..
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 import { AssistantToolExecutionError } from "./orchestration";
 import type { ProductPricingIntrospection } from "../pricing/PricingService";
+import { getProductAllowRotation } from "@shared/pbv2/productPricingRotation";
 
 const identifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
 const isoDateSchema = z.string().datetime({ offset: true });
@@ -772,7 +773,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       return productSummaryToolResultSchema.parse({
         status: "ok",
         data: {
-          product: { id: record.product.id, name: record.product.name, active: record.product.isActive, category: record.product.category ?? null, pricingMethod, pricingEngineConfiguration: { engine: record.product.pricingEngine || "pricingProfile", profileKey: record.product.pricingProfileKey || null, allowRotation: record.product.pricingProfileConfig?.allowRotation === true, mixedSheetLayout: record.product.pricingProfileConfig?.allowRotation === true } },
+          product: { id: record.product.id, name: record.product.name, active: record.product.isActive, category: record.product.category ?? null, pricingMethod, pricingEngineConfiguration: { engine: record.product.pricingEngine || "pricingProfile", profileKey: record.product.pricingProfileKey || null, allowRotation: getProductAllowRotation(record.product.pricingProfileConfig) ?? false, mixedSheetLayout: getProductAllowRotation(record.product.pricingProfileConfig) ?? false } },
           pbv2: record.versions.map((version) => ({ id: version.id, status: version.status, schemaVersion: version.schemaVersion, publishedAt: toIso(version.publishedAt) })),
           materials: record.materials.map((material) => ({ id: material.id, name: material.name, sku: material.sku ?? null })),
           options: record.options.map((option) => ({ id: option.id, name: option.name, type: option.type, active: option.isActive })),

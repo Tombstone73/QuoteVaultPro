@@ -40,8 +40,11 @@ None.
 | Conditional rules | shared_canonical_today | Simple node/group/choice visibility uses validated selectionKey and choice-value references; complex nested authoring remains unmigrated. |
 | Free-form/text inputs | shared_canonical_today | Text and textarea INPUT nodes, including conditional fields, are shared canonical. |
 | Proof requirements | shared_canonical_today | Existing Product proof requirement is shared canonical. |
-| Prepress and production routing | ui_supported_ai_adapter_missing | No normal Operator product operation found. |
-| Active/inactive, draft/publish | ui_supported_ai_adapter_missing | Operator capabilities explicitly report product activation disabled. |
+| Advanced Prepress and production routing | ai_integration_pending | Reviewed Product routing fields remain UI-only pending typed AI integration. |
+| Active/inactive and PBV2 publish | shared_canonical_today | UI and AI share validated publication and Product lifecycle operations; DRAFT-only activation transparently proposes publish then activation behind GO. |
+| Pricing Engine rotation / mixed sheet layout | shared_canonical_today | UI and AI share the typed allowRotation operation without exposing raw pricingProfileConfig JSON. |
+| Pricing formula/profile/library and coupled sheet metadata | ai_integration_pending | These established UI controls have coupled Product/PBV2 semantics and remain intentionally unwired pending a typed server-owned operation. |
+| Delete and advanced PBV2 override administration | deliberately_ai_ineligible | Destructive Product deletion and temporary advanced override/bypass controls remain intentionally outside AI eligibility. |
 | Customer-specific availability | underlying_support_not_demonstrated | Proposal contract preserves this as unsupported without poisoning independent supported work. |
 | Exact grommet-count structure | underlying_support_not_demonstrated | Preserved as unresolved; no phrase-specific choice repair remains active. |
 

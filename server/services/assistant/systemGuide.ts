@@ -40,7 +40,7 @@ export function resolveSystemGuideAnswer(message: string, context: AssistantCont
   const response = screenQuestion && route
     ? `${route.label} is for ${route.summary} Typical next steps depend on the current record and your role. ${article ? article.body : "Use the visible page controls to review the current work; the assistant does not infer hidden controls."}`
     : /what can the ai/i.test(message)
-      ? "The assistant can explain workflows, screens, statuses, permissions, and supported record context. It can use approved read-only tools and the three existing confirmation-gated commands. It cannot run external research, MCP, SQL, invoice mutations, fulfillment mutations, activate products, or edit active products."
+      ? "The assistant can explain workflows, screens, statuses, permissions, and supported record context. It can use approved read-only tools and registered confirmation-gated commands, including reviewed canonical Product administration. It cannot run external research, MCP, SQL, arbitrary backend operations, or any mutation not exposed by the canonical capability registry."
       : article?.body ?? "I can explain this screen from the current route, but there is not yet an approved guide article for the requested workflow.";
   const suggestions = (article?.prompts ?? ["What does this page do?", "Explain order workflow", "What can the AI currently do?"]).slice(0, 4)
     .map((prompt, index) => ({ id: `guide-${index}`, label: prompt, prompt, intent: "system_guide", presentationPriority: index + 1 }));

@@ -29,6 +29,7 @@ import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
+import { currentTurnProductResolution, existingProductIdForMutation, isProductResolutionObservation } from "./trustedProductState";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
@@ -180,38 +181,6 @@ function hasPermission(actor: AssistantActor | undefined, permission: string): b
   return Boolean(actor?.permissions?.includes(permission));
 }
 
-/** Prefer the current Product Editor context, then one retained trusted product
- * reference. This is a server-selected target; a provider never supplies it. */
-function trustedExistingProductId(context: AssistantContextEnvelope, references: readonly { type: string; id: string }[]): string | null {
-  if (context.entityType === "product" && typeof context.entityId === "string") return context.entityId;
-  const productIds = Array.from(new Set(references.filter((reference) => reference.type === "product" && typeof reference.id === "string").map((reference) => reference.id)));
-  return productIds.length === 1 ? productIds[0]! : null;
-}
-
-/** A same-turn canonical product read may establish the only safe product
- * target after the Operator has started.  Accept only the single-product
- * result shapes from the server-owned product readers; broad search results
- * remain deliberately ineligible so an ambiguous request cannot mutate an
- * unrelated product. */
-function resolvedExistingProductIdFromObservations(observations: readonly AssistantOperatorObservation[] | undefined): string | null {
-  const ids = new Set<string>();
-  for (const observation of observations ?? []) {
-    if (observation.status !== "succeeded" || (observation.toolName !== "products.get_pricing" && observation.toolName !== "products.get_summary")) continue;
-    const data = observation.result?.data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-    const product = (data as { product?: unknown }).product;
-    if (!product || typeof product !== "object" || Array.isArray(product)) continue;
-    const identifiers = [(product as { id?: unknown }).id, (product as { recordId?: unknown }).recordId];
-    for (const id of identifiers) if (typeof id === "string" && id.length > 0) ids.add(id);
-  }
-  return ids.size === 1 ? [...ids][0]! : null;
-}
-
-function existingProductIdForMutation(context: { context: AssistantContextEnvelope; task?: { entityReferences: Array<{ type: string; id: string }> }; analysisObservations?: readonly AssistantOperatorObservation[] }): string | null {
-  return trustedExistingProductId(context.context, context.task?.entityReferences ?? [])
-    ?? resolvedExistingProductIdFromObservations(context.analysisObservations);
-}
-
 /** A named request that also states one or more concrete Product Builder
  * facts must enter the canonical flow with those facts.  This is a narrow
  * creation guard, not a prose-to-patch parser: the provider still supplies
@@ -277,7 +246,8 @@ function mergeOperatorEntityReferences(
     if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(id)) return;
     references.set(`${type}:${id}`, { type, id, ...(typeof label === "string" && label.trim() ? { label: label.trim().slice(0, 240) } : {}) });
   };
-  for (const reference of existing) add(reference.type, reference.id, reference.label);
+  const currentProduct = currentTurnProductResolution(observations);
+  for (const reference of existing) if (!(currentProduct.attempted && reference.type === "product")) add(reference.type, reference.id, reference.label);
   for (const observation of observations) {
     for (const link of observation.result?.provenance?.sourceLinks ?? []) {
       add(link.entityType, link.entityId, link.label);
@@ -296,6 +266,7 @@ function mergeOperatorEntityReferences(
       add("order", quote.relatedOrderId);
     }
   }
+  if (currentProduct.productId && !references.has(`product:${currentProduct.productId}`)) add("product", currentProduct.productId);
   return Array.from(references.values()).slice(-25);
 }
 
@@ -507,7 +478,8 @@ function mergeTrustedOperatorObservations(
   observations: readonly AssistantOperatorObservation[],
   recentCompletedTurn: RetainedCompletedOperatorTurn | null,
 ): Record<string, unknown> {
-  const retained = persistedTrustedObservations(semanticChanges);
+  const hasCurrentProductEvidence = observations.some(isProductResolutionObservation);
+  const retained = persistedTrustedObservations(semanticChanges).filter((item) => !hasCurrentProductEvidence || (item.toolName !== "products.get_summary" && item.toolName !== "products.get_pricing" && item.toolName !== "search.global"));
   const additions = observations.flatMap((observation) => {
     if (!registeredReadToolNames.has(observation.toolName) || !mayPersistTrustedObservation(observation.toolName) || observation.status !== "succeeded" || !observation.result?.provenance) return [];
     try {
@@ -831,7 +803,7 @@ export class AssistantService {
     const mayApplyProductOperations = mayBeginProductDraft
       || hasPermission(actor, "assistant.products.update_inactive_draft")
       || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
-    const existingProductId = trustedExistingProductId(request.context, task.entityReferences);
+    const existingProductId = existingProductIdForMutation({ context: request.context, task });
     const mayEditExistingProduct = hasPermission(actor, "assistant.products.update_existing_product");
     const existingProduct = existingProductId && mayEditExistingProduct
       ? await existingProductEditService.trustedContext({ organizationId: scope.organizationId, productId: existingProductId }).catch(() => null)
@@ -942,7 +914,7 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. Use update_product_lifecycle to activate or deactivate through the shared lifecycle rule. This never changes anything before GO; the server revalidates state at GO.",
+      description: "Prepare a protected edit to one trusted existing persisted product. Lifecycle activation may transparently propose publishing its current valid PBV2 DRAFT first; publish warnings require explicit confirmation. Pricing Engine rotation is separate from customer options. Nothing changes before GO, and the server revalidates state at GO.",
       inputSchema: {
         type: "object", additionalProperties: false, required: ["operations"],
         properties: {
@@ -951,7 +923,9 @@ export class AssistantService {
             items: { anyOf: [
               { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
               { type: "object", additionalProperties: false, required: ["op", "materialLabel"], properties: { op: { const: "update_product_material" }, materialLabel: { type: ["string", "null"] } } },
-              { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" } } },
+              { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" }, confirmPublishWarnings: { type: "boolean" } } },
+              { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "publish_product_configuration" }, confirmPublishWarnings: { type: "boolean" } } },
+              { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_pricing_engine_configuration" }, changes: { type: "object", additionalProperties: false, required: ["allowRotation"], properties: { allowRotation: { type: "boolean" } } } } },
               { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
                 kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },
                 group: { anyOf: [{ type: "string" }, { type: "object" }] }, input: { anyOf: [{ type: "string" }, { type: "object" }] }, choice: { anyOf: [{ type: "string" }, { type: "object" }] }, changes: { type: "object" }, orderedGroups: { type: "array", items: { type: "string" } }, orderedValues: { type: "array", items: { type: "string" } },

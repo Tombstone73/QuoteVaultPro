@@ -79,4 +79,29 @@ describe("existing product edit execution command", () => {
     const result = await command.execute({ plan: { sanitizedArguments: lifecycleInput } as any, scope });
     expect(result.steps[0]?.summary).toContain("canonical Product lifecycle operation");
   });
+
+  test("shows a transparent publish then activate plan and confirmed warnings before GO", async () => {
+    const lifecycleInput = { productId: "product_1", operations: [{ op: "update_product_lifecycle", isActive: true, confirmPublishWarnings: true }], proposalFingerprint: fingerprint };
+    const publishProposal = { ...proposal, productActive: false, sourceLifecycle: "DRAFT", canonicalOperationReference: "products.publish_configuration.v1", publishProposal: { treeVersionId: "tree_1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", expectedTreeUpdatedAt: "2026-08-10T00:00:00.000Z", activateAfterPublish: true, confirmWarnings: true, warnings: [{ code: "PBV2_W_TEST", message: "Review material weight." }] }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, { field: "Lifecycle", before: "inactive", after: "active" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: publishProposal })), execute: jest.fn(async () => publishProposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: lifecycleInput, context: {} as any });
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(built.preview.summary).toContain("publish PBV2 configuration tree_1 and activate the Product atomically");
+    expect(built.preview.summary).toContain("Review material weight");
+    const result = await command.execute({ plan: { sanitizedArguments: lifecycleInput } as any, scope });
+    expect(result.steps[0]?.summary).toContain("PBV2 publication");
+  });
+
+  test("keeps typed Pricing Engine rotation behind the existing Product GO command", async () => {
+    const pricingInput = { productId: "product_1", operations: [{ op: "update_product_pricing_engine_configuration", changes: { allowRotation: true } }], proposalFingerprint: fingerprint };
+    const pricingProposal = { ...proposal, sourceLifecycle: "PRODUCT", canonicalOperationReference: "products.update_pricing_engine_configuration.v1", changes: [{ field: "Allow Rotation / Mixed Sheet Layout", before: "off", after: "on" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: pricingProposal })), execute: jest.fn(async () => pricingProposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: pricingInput, context: {} as any });
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(built.preview.summary).toContain("Allow Rotation / Mixed Sheet Layout");
+    const result = await command.execute({ plan: { sanitizedArguments: pricingInput } as any, scope });
+    expect(result.steps[0]?.summary).toContain("Pricing Engine configuration");
+  });
 });

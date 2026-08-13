@@ -66,6 +66,8 @@ import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfiguration
 import { CanonicalProductPricingError, canonicalProductPricingOperations, takeCanonicalProductPricingMetadataChanges } from "../services/products/canonicalProductPricingOperations";
 import { CanonicalProductMaterialError, canonicalProductMaterialOperations, canonicalProductMaterialProposalFromTrustedId, takeCanonicalProductMaterialChange, validateCanonicalProductMaterialSelection } from "../services/products/canonicalProductMaterialOperations";
 import { CanonicalProductLifecycleError, canonicalProductLifecycleOperations, takeCanonicalProductLifecycleChange } from "../services/products/canonicalProductLifecycleOperations";
+import { CanonicalProductPublishError, canonicalProductPublishOperations } from "../services/products/canonicalProductPublishOperations";
+import { CanonicalProductPricingEngineConfigurationError, canonicalProductPricingEngineConfigurationOperations, takeCanonicalProductPricingEngineConfigurationChange } from "../services/products/canonicalProductPricingEngineConfigurationOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -1128,7 +1130,7 @@ export function registerProductRoutes(
   });
 
 
-  app.post("/api/pbv2/tree-versions/:id/publish", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/pbv2/tree-versions/:id/publish", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
@@ -1137,176 +1139,13 @@ export function registerProductRoutes(
       const confirmWarnings = String((req.query as any)?.confirmWarnings ?? "").toLowerCase() === "true";
       const userId = getUserId(req.user);
 
-      const [draft] = await db
-        .select()
-        .from(pbv2TreeVersions)
-        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)))
-        .limit(1);
-
-      if (!draft) return res.status(404).json({ success: false, message: "Tree version not found" });
-
-      // Idempotency: If already ACTIVE, check if product points to it
-      if (draft.status === "ACTIVE") {
-        const [product] = await db
-          .select({ pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
-          .from(products)
-          .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)))
-          .limit(1);
-
-        if (product && product.pbv2ActiveTreeVersionId === id) {
-          // Already published and active - idempotent success
-          console.log(`[PBV2_PUBLISH_IDEMPOTENT] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} status=already_active`);
-          return res.json({
-            success: true,
-            data: draft,
-            productId: draft.productId,
-            pbv2ActiveTreeVersionId: id,
-            message: "Tree version already published and active"
-          });
-        }
-      }
-
-      if (draft.status !== "DRAFT") {
-        return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be published" });
-      }
-
-      // GUARDRAIL 1: Validate schemaVersion = 2
-      const matrixSanitizer = sanitizePbv2PricingMatrix((draft as any).treeJson as any);
-      if (matrixSanitizer.changed) {
-        await db
-          .update(pbv2TreeVersions)
-          .set({
-            treeJson: matrixSanitizer.tree as any,
-            updatedAt: new Date(),
-            updatedByUserId: userId ?? null,
-          } as any)
-          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)));
-        (draft as any).treeJson = matrixSanitizer.tree;
-        console.warn('[PBV2_MATRIX_SANITIZER] publish repaired stale matrix references', {
-          productId: draft.productId,
-          treeVersionId: id,
-          changes: matrixSanitizer.changes.map((change) => ({ code: change.code, path: change.path })),
-        });
-      }
-
-      const treeJson = matrixSanitizer.tree as any;
-      const schemaVersion = treeJson?.schemaVersion ?? 1;
-      if (schemaVersion !== 2) {
-        console.warn(`[PBV2_ACTIVATION_BLOCKED] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} reason=schema_version_unsupported schemaVersion=${schemaVersion}`);
-        return res.status(400).json({
-          success: false,
-          code: "PBV2_E_SCHEMA_VERSION_UNSUPPORTED",
-          message: "Cannot activate this PBV2 tree: schema version outdated",
-          error: "This tree uses PBV2 schema v" + schemaVersion + ". Only v2 trees can be activated. Open the product in the PBV2 builder and re-save to upgrade, then try publishing again.",
-          findings: [{
-            severity: "error",
-            message: "Tree must be PBV2 schema version 2",
-            path: "schemaVersion",
-            actual: schemaVersion,
-            expected: 2,
-          }],
-        });
-      }
-
-      // GUARDRAIL 2: Validate base pricing is configured
-      const { validateTreeHasBasePrice } = await import("../../shared/pbv2/validator/validateBasePrice");
-      const basePriceValidation = validateTreeHasBasePrice(treeJson);
-      if (basePriceValidation.errors.length > 0) {
-        console.warn(`[PBV2_ACTIVATION_BLOCKED] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} reason=missing_base_price`);
-        return res.status(400).json({
-          success: false,
-          message: "PBV2 tree requires base pricing configuration before activation",
-          error: "Base pricing must be configured in the Base Pricing section. Set at least one of: $/sqft, $/piece, or minimum charge.",
-          findings: basePriceValidation.findings,
-        });
-      }
-
-      // Validate publish gate (Appendix 5)
-      const validation = mergeValidationFindings(
-        validateTreeForPublish(treeJson, DEFAULT_VALIDATE_OPTS),
-        await buildPbv2MaterialValidationFindings(organizationId, draft.productId, treeJson),
-      );
-      if (validation.errors.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "PBV2 publish blocked by validation errors",
-          findings: validation.findings,
-        });
-      }
-
-      if (validation.warnings.length > 0 && !confirmWarnings) {
-        return res.json({
-          success: true,
-          requiresWarningsConfirm: true,
-          findings: validation.findings,
-        });
-      }
-
-      const publishedAt = new Date();
-
-      const result = await db.transaction(async (tx) => {
-        const [product] = await tx
-          .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
-          .from(products)
-          .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)))
-          .limit(1);
-
-        if (!product) {
-          throw Object.assign(new Error("Product not found"), { statusCode: 404 });
-        }
-
-        const previousActiveId = product.pbv2ActiveTreeVersionId;
-        if (previousActiveId && previousActiveId !== draft.id) {
-          await tx
-            .update(pbv2TreeVersions)
-            .set({ status: "DEPRECATED", updatedAt: publishedAt, updatedByUserId: userId ?? null })
-            .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, previousActiveId)));
-        }
-
-        const nextTreeJson: Record<string, any> = {
-          ...(draft as any).treeJson,
-          schemaVersion: 2, // Preserve v2 schema
-          status: "ACTIVE",
-        };
-
-        const [updatedVersion] = await tx
-          .update(pbv2TreeVersions)
-          .set({
-            status: "ACTIVE",
-            publishedAt,
-            updatedAt: publishedAt,
-            updatedByUserId: userId ?? null,
-            treeJson: nextTreeJson,
-          })
-          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)))
-          .returning();
-
-        // Sync optionTreeJson so the client product list reflects the active tree
-        await tx
-          .update(products)
-          .set({ pbv2ActiveTreeVersionId: draft.id, optionTreeJson: nextTreeJson, updatedAt: publishedAt })
-          .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)));
-
-        console.log(`[PBV2_PUBLISH_SUCCESS] orgId=${organizationId} productId=${draft.productId} treeVersionId=${draft.id} previousActiveId=${previousActiveId || 'none'}`);
-
-        return {
-          updatedVersion,
-          productId: draft.productId,
-          pbv2ActiveTreeVersionId: draft.id
-        };
-      });
-
-      return res.json({
-        success: true,
-        data: result.updatedVersion,
-        productId: result.productId,
-        pbv2ActiveTreeVersionId: result.pbv2ActiveTreeVersionId,
-        findings: validation.findings
-      });
+      if (!userId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+      const proposal = await canonicalProductPublishOperations.propose({ organizationId, treeVersionId: id });
+      if (proposal.warnings.length && !confirmWarnings) return res.json({ success: true, requiresWarningsConfirm: true, findings: proposal.warnings });
+      const result = await canonicalProductPublishOperations.execute({ organizationId, actorUserId: userId, productId: proposal.productId, treeVersionId: proposal.treeVersionId, expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt, confirmWarnings, auditContext: { source: "product_editor", reference: `route:POST:/api/pbv2/tree-versions/${id}/publish` } });
+      return res.json({ success: true, data: result.tree, productId: result.product.id, pbv2ActiveTreeVersionId: result.tree.id, findings: proposal.warnings, ...(proposal.alreadyPublished ? { message: "Tree version already published and active" } : {}) });
     } catch (error: any) {
-      if (error?.statusCode === 404) {
-        return res.status(404).json({ success: false, message: error.message });
-      }
+      if (error instanceof CanonicalProductPublishError) { const status = error.code === "PRODUCT_PUBLISH_TARGET_NOT_FOUND" ? 404 : error.code === "PBV2_PUBLISH_STALE" || error.code === "PBV2_DRAFT_REQUIRED" ? 409 : 400; return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings }); }
       console.error("Error publishing PBV2 tree version:", error);
       return res.status(500).json({ success: false, message: "Failed to publish PBV2 tree version" });
     }
@@ -2147,6 +1986,7 @@ export function registerProductRoutes(
 
       const requestedPrimaryMaterialId = takeCanonicalProductMaterialChange(productData);
       const requestedActive = takeCanonicalProductLifecycleChange(productData);
+      const requestedPricingEngineConfiguration = takeCanonicalProductPricingEngineConfigurationChange(productData, existingProduct.pricingProfileConfig);
 
       // Product Editor identity, operational configuration, and pricing
       // metadata use the same transport-independent operations available to
@@ -2173,6 +2013,13 @@ export function registerProductRoutes(
           productId,
           changes: pricingMetadataChanges,
         });
+        existingProduct = result.product;
+      }
+
+      if (requestedPricingEngineConfiguration) {
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+        const result = await canonicalProductPricingEngineConfigurationOperations.execute({ organizationId, actorUserId, productId, changes: requestedPricingEngineConfiguration, expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(), auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` } });
         existingProduct = result.product;
       }
 
@@ -2337,6 +2184,10 @@ export function registerProductRoutes(
       if (error instanceof CanonicalProductPricingError) {
         const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_PRICING_STALE" ? 409 : 400;
         return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings });
+      }
+      if (error instanceof CanonicalProductPricingEngineConfigurationError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_PRICING_ENGINE_STALE" ? 409 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message });
       }
       if (error instanceof CanonicalProductMaterialError) {
         const status = error.code === "PRODUCT_NOT_FOUND" || error.code === "MATERIAL_NOT_FOUND" ? 404 : error.code === "PRODUCT_MATERIAL_STALE" ? 409 : 400;

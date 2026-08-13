@@ -6,6 +6,8 @@ import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfiguration
 import { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 import { CanonicalProductMaterialError, canonicalProductMaterialOperations, canonicalProductMaterialProposalFromReference, resolveCanonicalProductMaterialProposal, type CanonicalProductMaterialProposal } from "../products/canonicalProductMaterialOperations";
 import { CanonicalProductLifecycleError, canonicalProductLifecycleOperations } from "../products/canonicalProductLifecycleOperations";
+import { CanonicalProductPublishError, canonicalProductPublishOperations } from "../products/canonicalProductPublishOperations";
+import { CanonicalProductPricingEngineConfigurationError, canonicalProductPricingEngineConfigurationOperations, type ProductPricingEngineConfigurationChanges } from "../products/canonicalProductPricingEngineConfigurationOperations";
 export { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 
 /**
@@ -21,9 +23,10 @@ export type ExistingProductEditProposal = {
   treeId?: string;
   treeUpdatedAt?: string;
   sourceLifecycle: "DRAFT" | "ACTIVE" | "PRODUCT";
-  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1" | "products.update_lifecycle.v1";
+  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1" | "products.update_lifecycle.v1" | "products.publish_configuration.v1" | "products.update_pricing_engine_configuration.v1";
   expectedProductUpdatedAt?: string;
   materialProposal?: CanonicalProductMaterialProposal;
+  publishProposal?: { treeVersionId: string; expectedProductUpdatedAt: string; expectedTreeUpdatedAt: string; activateAfterPublish: boolean; confirmWarnings: boolean; warnings: Array<{ code: string; message: string }> };
   changes: Array<{ field: string; before: string; after: string }>;
   fingerprint: string;
 };
@@ -31,7 +34,7 @@ export type ExistingProductEditProposal = {
 export type TrustedExistingProductEditContext = {
   name: string;
   lifecycle: "active" | "inactive";
-  pricingLifecycle: "DRAFT" | "ACTIVE";
+  pricingLifecycle: "DRAFT" | "ACTIVE" | "UNAVAILABLE";
   primaryMaterial: { label: string; active: boolean } | null;
   availableMaterials: string[];
   optionGroups: Array<{ label: string; selectionKey?: string; inputType?: string; required?: boolean; defaultValue: string | null; values: string[]; choices?: Array<{ value: string; label: string }> }>;
@@ -89,7 +92,7 @@ export class ExistingProductEditService {
       const choices = node.choices.flatMap((choice: any) => typeof choice?.value === "string" && choice.value.trim() ? [{ value: choice.value, label: typeof choice?.label === "string" && choice.label.trim() ? choice.label : choice.value }] : []);
       return [{ label, selectionKey: String(node.input?.selectionKey ?? node.key ?? node.id), inputType: String(node.input?.type ?? "unknown"), required: Boolean(node.input?.required), defaultValue: displayDefault(node) === "(none)" ? null : displayDefault(node), values: choices.map((choice: any) => choice.label), choices }];
     }).slice(0, 24);
-    return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree?.status === "DRAFT" ? "DRAFT" : "ACTIVE", primaryMaterial: currentMaterialRows[0] ? { label: currentMaterialRows[0].name, active: currentMaterialRows[0].isActive } : null, availableMaterials: materialRows.map((row) => row.name), optionGroups };
+    return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree?.status === "DRAFT" ? "DRAFT" : tree?.status === "ACTIVE" ? "ACTIVE" : "UNAVAILABLE", primaryMaterial: currentMaterialRows[0] ? { label: currentMaterialRows[0].name, active: currentMaterialRows[0].isActive } : null, availableMaterials: materialRows.map((row) => row.name), optionGroups };
   }
 
   async buildProposal(input: { organizationId: string; productId: string; operations: unknown }): Promise<ExistingProductEditProposal> {
@@ -97,7 +100,30 @@ export class ExistingProductEditService {
     const operations = existingProductEditOperationsSchema.parse(input.operations);
     const lifecycleOperation = operations.operations.find((operation) => operation.op === "update_product_lifecycle");
     if (lifecycleOperation) {
-      try { const proposal = await canonicalProductLifecycleOperations.propose({ organizationId: input.organizationId, productId: input.productId, isActive: lifecycleOperation.isActive }); return { productId: proposal.productId, productName: proposal.productName, productActive: !lifecycleOperation.isActive, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: "Lifecycle", before: change.before ? "active" : "inactive", after: change.after ? "active" : "inactive" })), fingerprint: proposal.fingerprint }; } catch (error) { if (error instanceof CanonicalProductLifecycleError) throw new ExistingProductEditError(error.code, error.message); throw error; }
+      try { const proposal = await canonicalProductLifecycleOperations.propose({ organizationId: input.organizationId, productId: input.productId, isActive: lifecycleOperation.isActive }); return { productId: proposal.productId, productName: proposal.productName, productActive: !lifecycleOperation.isActive, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: "Lifecycle", before: change.before ? "active" : "inactive", after: change.after ? "active" : "inactive" })), fingerprint: proposal.fingerprint }; } catch (error) {
+        if (error instanceof CanonicalProductLifecycleError && error.code === "PBV2_DRAFT_MUST_BE_PUBLISHED" && lifecycleOperation.isActive) {
+          try {
+            const publish = await canonicalProductPublishOperations.propose({ organizationId: input.organizationId, productId: input.productId });
+            const warnings = publish.warnings.map((item) => ({ code: item.code, message: item.message }));
+            if (warnings.length && !lifecycleOperation.confirmPublishWarnings) throw new ExistingProductEditError("PBV2_PUBLISH_WARNINGS_CONFIRM_REQUIRED", `Publishing ${publish.productName} has warnings: ${warnings.map((item) => item.message).join("; ")}. Explicitly confirm the publish warnings before preparing GO.`);
+            return { productId: publish.productId, productName: publish.productName, productActive: false, treeId: publish.treeVersionId, treeUpdatedAt: publish.expectedTreeUpdatedAt, sourceLifecycle: "DRAFT", canonicalOperationReference: publish.operationReference, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, publishProposal: { treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, activateAfterPublish: true, confirmWarnings: lifecycleOperation.confirmPublishWarnings, warnings }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, { field: "Lifecycle", before: "inactive", after: "active" }], fingerprint: publish.fingerprint };
+          } catch (publishError) { if (publishError instanceof ExistingProductEditError) throw publishError; if (publishError instanceof CanonicalProductPublishError) throw new ExistingProductEditError(publishError.code, publishError.message); throw publishError; }
+        }
+        if (error instanceof CanonicalProductLifecycleError) throw new ExistingProductEditError(error.code, error.message); throw error;
+      }
+    }
+    const publishOperation = operations.operations.find((operation) => operation.op === "publish_product_configuration");
+    if (publishOperation) {
+      try {
+        const publish = await canonicalProductPublishOperations.propose({ organizationId: input.organizationId, productId: input.productId });
+        const warnings = publish.warnings.map((item) => ({ code: item.code, message: item.message }));
+        if (warnings.length && !publishOperation.confirmPublishWarnings) throw new ExistingProductEditError("PBV2_PUBLISH_WARNINGS_CONFIRM_REQUIRED", `Publishing ${publish.productName} has warnings: ${warnings.map((item) => item.message).join("; ")}. Explicitly confirm the publish warnings before preparing GO.`);
+        return { productId: publish.productId, productName: publish.productName, productActive: false, treeId: publish.treeVersionId, treeUpdatedAt: publish.expectedTreeUpdatedAt, sourceLifecycle: "DRAFT", canonicalOperationReference: publish.operationReference, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, publishProposal: { treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, activateAfterPublish: false, confirmWarnings: publishOperation.confirmPublishWarnings, warnings }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }], fingerprint: publish.fingerprint };
+      } catch (error) { if (error instanceof ExistingProductEditError) throw error; if (error instanceof CanonicalProductPublishError) throw new ExistingProductEditError(error.code, error.message); throw error; }
+    }
+    const pricingEngineOperation = operations.operations.find((operation): operation is { op: "update_product_pricing_engine_configuration"; changes: ProductPricingEngineConfigurationChanges } => operation.op === "update_product_pricing_engine_configuration");
+    if (pricingEngineOperation) {
+      try { const proposal = await canonicalProductPricingEngineConfigurationOperations.propose({ organizationId: input.organizationId, productId: input.productId, changes: pricingEngineOperation.changes }); return { productId: proposal.productId, productName: proposal.productName, productActive: false, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: change.field, before: change.before ? "on" : "off", after: change.after ? "on" : "off" })), fingerprint: proposal.fingerprint }; } catch (error) { if (error instanceof CanonicalProductPricingEngineConfigurationError) throw new ExistingProductEditError(error.code, error.message); throw error; }
     }
     const materialOperation = operations.operations.find((operation): operation is { op: "update_product_material"; materialLabel: string | null } => operation.op === "update_product_material");
     if (materialOperation) {
@@ -141,6 +167,10 @@ export class ExistingProductEditService {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    if (validation.proposal.publishProposal) {
+      const publish = validation.proposal.publishProposal;
+      try { const result = await canonicalProductPublishOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, confirmWarnings: publish.confirmWarnings, activateProduct: publish.activateAfterPublish, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } }); return { ...validation.proposal, canonicalOperationReference: result.operationReference }; } catch (error) { if (error instanceof CanonicalProductPublishError) throw new ExistingProductEditError(error.code === "PBV2_PUBLISH_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message); throw error; }
+    }
     const lifecycleOperation = operations.operations.find((operation) => operation.op === "update_product_lifecycle");
     if (lifecycleOperation) {
       if (!validation.proposal.expectedProductUpdatedAt) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The Product lifecycle proposal is incomplete; review it again.");
@@ -156,6 +186,11 @@ export class ExistingProductEditService {
         if (error instanceof CanonicalProductMaterialError) throw new ExistingProductEditError(error.code === "PRODUCT_MATERIAL_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message);
         throw error;
       }
+    }
+    const pricingEngineOperation = operations.operations.find((operation): operation is { op: "update_product_pricing_engine_configuration"; changes: ProductPricingEngineConfigurationChanges } => operation.op === "update_product_pricing_engine_configuration");
+    if (pricingEngineOperation) {
+      if (!validation.proposal.expectedProductUpdatedAt) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The Product Pricing Engine proposal is incomplete; review it again.");
+      try { const result = await canonicalProductPricingEngineConfigurationOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, changes: pricingEngineOperation.changes, expectedUpdatedAt: validation.proposal.expectedProductUpdatedAt, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } }); return { ...validation.proposal, canonicalOperationReference: result.operationReference }; } catch (error) { if (error instanceof CanonicalProductPricingEngineConfigurationError) throw new ExistingProductEditError(error.code === "PRODUCT_PRICING_ENGINE_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message); throw error; }
     }
     const configuration = operations.operations.find((operation): operation is { op: "update_product_configuration"; changes: ProductConfigurationChanges } => operation.op === "update_product_configuration");
     if (configuration) {

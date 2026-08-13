@@ -9,11 +9,15 @@ const inputSchema = z.object({ productId: z.string().trim().min(1).max(128), ope
 type Input = z.infer<typeof inputSchema>;
 
 function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildProposal"]>>): ExecutionPlanPreview {
+  const publishSummary = proposal.publishProposal
+    ? ` It will publish PBV2 configuration ${proposal.publishProposal.treeVersionId}${proposal.publishProposal.activateAfterPublish ? " and activate the Product atomically" : ""}.`
+    : " It will not publish or change an active-tree pointer.";
+  const warningSummary = proposal.publishProposal?.warnings.length ? ` Confirmed publish warnings: ${proposal.publishProposal.warnings.map((item) => item.message).join("; ")}.` : "";
   const changeSummary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
   return {
     title: `Update existing product: ${proposal.productName}`,
-    summary: `${changeSummary}. This protected existing-product edit makes no change before GO and never publishes or changes an active-tree pointer.`,
-    sideEffects: proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}.`),
+    summary: `${changeSummary}. This protected existing-product edit makes no change before GO.${publishSummary}${warningSummary}`,
+    sideEffects: [...proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}.`), ...(proposal.publishProposal?.warnings.map((item) => `Confirmed PBV2 warning: ${item.message}.`) ?? [])],
     affectedRecords: [{ entityType: "product", entityId: proposal.productId, fingerprint: proposal.fingerprint }],
   } as ExecutionPlanPreview;
 }
@@ -21,7 +25,7 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
 export function createExistingProductEditCommandDefinition(service: ExistingProductEditService): AssistantCommandDefinition<Input, unknown, unknown> {
   return {
     name: existingProductEditCommandName, version: "v1", domain: "products", mode: "write",
-    description: "Apply a confirmed existing-product edit through the shared canonical Product configuration, lifecycle, material, or PBV2 option-configuration operation.",
+    description: "Apply a confirmed existing-product edit through shared canonical Product configuration, lifecycle, publication, pricing-engine, material, or PBV2 option-configuration operations.",
     risk: "high", requiredCapability: "assistant.products.update_existing_product", allowedRoles: ["owner", "admin"],
     inputSchema, previewSchema: z.unknown(), resultSchema: z.unknown(), maxAffectedRecords: 1, bulkAllowed: false,
     confirmationRequired: true, reauthenticationRequired: true, confirmationExpiresInMs: 10 * 60_000,
@@ -54,6 +58,10 @@ export function createExistingProductEditExecutionCommand(service: ExistingProdu
           ? "Applied the shared canonical Product material operation after GO."
           : result.canonicalOperationReference === "products.update_lifecycle.v1"
             ? "Applied the shared canonical Product lifecycle operation after GO."
+          : result.canonicalOperationReference === "products.publish_configuration.v1"
+            ? "Applied the shared canonical Product PBV2 publication operation after GO."
+          : result.canonicalOperationReference === "products.update_pricing_engine_configuration.v1"
+            ? "Applied the shared canonical Product Pricing Engine configuration operation after GO."
           : "Applied the shared canonical Product configuration operation after GO.";
       return { status: "succeeded", summary: `Updated existing product ${result.productName}.`, details: { existingProductEdit: { productId: result.productId, changes: result.changes, canonicalOperationReference: result.canonicalOperationReference ?? null } } as any, steps: [{ commandName: `${existingProductEditCommandName}@v1`, status: "succeeded", summary: operationSummary }] };
     },

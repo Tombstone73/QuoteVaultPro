@@ -29,7 +29,15 @@ describe("canonical AI capability registry and privilege ceiling", () => {
     expect(capability).toMatchObject({ parityStatus: "shared_canonical", migrationStatus: "shared_canonical", confirmation: "go_required" });
     expect(capability?.canonicalOperationReference).toContain("products.update_configuration.v1");
     expect(capability?.canonicalOperationReference).toContain("products.update_option_configuration.v1");
+    expect(capability?.canonicalOperationReference).toContain("products.publish_configuration.v1");
+    expect(capability?.canonicalOperationReference).toContain("products.update_pricing_engine_configuration.v1");
     expect(canonicalCapabilityRegistry.filter((item) => item.domain === "products" && item.parityStatus === "shared_canonical").map((item) => item.sourceId)).toEqual(["products.update_existing_product"]);
+  });
+
+  it("distinguishes pending, deliberately ineligible, and hard-denied Product capabilities", () => {
+    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.ui.products.pricing_formula_profile")).toMatchObject({ parityStatus: "ai_integration_pending", aiEligibility: "ineligible", aiExposure: "not_exposed" });
+    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.ui.products.delete")).toMatchObject({ parityStatus: "deliberately_ai_ineligible", aiEligibility: "ineligible" });
+    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.hard_deny.organization.delete")).toMatchObject({ aiEligibility: "hard_denied" });
   });
 
   it("keeps members below prior synthetic execution privileges", () => {

@@ -2,12 +2,14 @@ import { canonicalCapabilityRegistry, type CanonicalCapabilityDescriptor } from 
 import { productParityInventory } from "./capabilityInventory";
 
 export const finalMigrationClassificationValues = [
-  "shared_canonical", "compatibility_only", "ui_only_reviewed", "hard_denied", "underlying_model_unsupported",
+  "shared_canonical", "compatibility_only", "ui_only_reviewed", "ai_integration_pending", "deliberately_ai_ineligible", "hard_denied", "underlying_model_unsupported",
 ] as const;
 export type FinalMigrationClassification = (typeof finalMigrationClassificationValues)[number];
 
 function classificationFor(capability: CanonicalCapabilityDescriptor): FinalMigrationClassification {
   if (capability.aiEligibility === "hard_denied") return "hard_denied";
+  if (capability.parityStatus === "ai_integration_pending") return "ai_integration_pending";
+  if (capability.parityStatus === "deliberately_ai_ineligible") return "deliberately_ai_ineligible";
   if (capability.aiEligibility === "ineligible") return "ui_only_reviewed";
   if (capability.migrationStatus === "compatibility_only" || capability.migrationStatus === "wrapped_existing" || capability.parityStatus === "ai_specific") return "compatibility_only";
   return "shared_canonical";
