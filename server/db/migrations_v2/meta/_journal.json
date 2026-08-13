@@ -1184,6 +1184,13 @@
       "when": 1788048000020,
       "tag": "0173_fulfillment_packages_and_references",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1788048000021,
+      "tag": "0174_customer_credit_limit_configuration",
+      "breakpoints": true
     }
   ]
 }

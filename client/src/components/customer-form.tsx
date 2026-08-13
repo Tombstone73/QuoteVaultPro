@@ -106,6 +106,7 @@ interface CustomerWithContacts {
   shippingPostalCode?: string | null;
   shippingCountry?: string | null;
   creditLimit?: string | number | null;
+  creditLimitConfiguredAt?: string | null;
   notes?: string | null;
   contacts?: Array<{
     id: string;
@@ -188,7 +189,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
         customer.billingPostalCode === customer.shippingPostalCode &&
         customer.billingCountry === customer.shippingCountry
       ),
-      creditLimit: customer.creditLimit ? Number(customer.creditLimit) : 0,
+      creditLimit: customer.creditLimitConfiguredAt ? Number(customer.creditLimit ?? 0) : undefined,
       notes: customer.notes || "",
       // Pre-populate primary contact when editing (includes id for update)
       primaryContact: existingPrimaryContact ? {
@@ -234,7 +235,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       shippingPostalCode: "",
       shippingCountry: "",
       sameAsBilling: true,
-      creditLimit: 0,
+      creditLimit: undefined,
       notes: "",
       primaryContact: {
         firstName: "",
@@ -262,7 +263,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
       const payload: any = {
         ...rest,
-        creditLimit: rest.creditLimit?.toString() || "0",
+        ...(rest.creditLimit === undefined ? {} : { creditLimit: rest.creditLimit.toString() }),
       };
 
       if (hasPrimaryContact) {
@@ -314,7 +315,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
       const payload: any = {
         ...rest,
-        creditLimit: rest.creditLimit?.toString() || "0",
+        ...(rest.creditLimit === undefined ? {} : { creditLimit: rest.creditLimit.toString() }),
       };
 
       if (hasPrimaryContact) {

@@ -358,7 +358,7 @@ function CustomerHeader({
             {/* Credit Limit */}
             <div className="text-right">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Limit</div>
-              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditLimit)}</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{customer.creditLimitConfigured ? formatCurrency(customer.creditLimit) : "Not set"}</div>
             </div>
             
             {/* Invoice-derived financial exposure */}
@@ -374,11 +374,21 @@ function CustomerHeader({
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Credit Exposure</div>
               <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditExposure ?? "0")}</div>
             </div>
+            {Number(customer.unbilledOpenOrders ?? 0) > 0 && <div className="text-right">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Unbilled Orders</div>
+              <div className="text-[11px] font-semibold text-titan-warning">{formatCurrency(customer.unbilledOpenOrders ?? "0")}</div>
+            </div>}
+            <div className="text-right">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Open Work</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.openWork ?? "0")}</div>
+            </div>
             <div className="text-right">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Available</div>
-              <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.availableCredit)}</div>
+              <div className={`text-[11px] font-semibold ${customer.overLimitCents ? "text-destructive" : "text-titan-success"}`}>{customer.availableCredit === null ? "—" : formatCurrency(customer.availableCredit)}</div>
             </div>
           </div>
+
+          {customer.overLimitCents ? <div className="text-[11px] font-semibold text-destructive">OVER CREDIT LIMIT by {formatCurrency((customer.overLimitCents / 100).toFixed(2))}</div> : null}
 
           {/* Vertical divider */}
           <div className="w-px h-6 bg-titan-border-subtle" />

@@ -21,10 +21,13 @@
  */
 
 import type { Express } from "express";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import Papa from "papaparse";
 import { storage } from "../storage";
+import { db } from "../db";
+import { auditLogs, customers } from "@shared/schema";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
   insertCustomerSchema,
@@ -47,6 +50,10 @@ import { getCustomerCreditExposure, getCustomerCreditExposures } from "../servic
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
+}
+
+export function canManageCustomerCredit(role: unknown): boolean {
+  return ["owner", "admin"].includes(String(role ?? "").trim().toLowerCase());
 }
 
 // =============================
@@ -194,7 +201,15 @@ export function registerCustomerRoutes(
         primaryContact: primaryContactInputSchema.optional(),
       });
 
-      const parsed = createCustomerWithContactSchema.parse(req.body);
+      const requestedCreditLimit = Object.prototype.hasOwnProperty.call(req.body ?? {}, "creditLimit")
+        ? req.body.creditLimit
+        : undefined;
+      if (requestedCreditLimit !== undefined && !canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)) {
+        return res.status(403).json({ message: "Organization Owner or Admin permission is required to set a customer credit limit.", code: "CUSTOMER_CREDIT_LIMIT_FORBIDDEN" });
+      }
+      const createPayload = { ...(req.body ?? {}) };
+      delete createPayload.creditLimit;
+      const parsed = createCustomerWithContactSchema.parse(createPayload);
       const { primaryContact, ...customerData } = parsed;
 
       const actorUserId = getUserId(req.user);
@@ -206,7 +221,30 @@ export function registerCustomerRoutes(
         primaryContact: primaryContact || null,
       });
 
-      res.json(result.customer);
+      if (requestedCreditLimit !== undefined) {
+        const creditLimit = z.coerce.number().finite().min(0).parse(requestedCreditLimit);
+        await db.transaction(async (tx) => {
+          const [updated] = await tx.update(customers).set({
+            creditLimit: creditLimit.toFixed(2),
+            creditLimitConfiguredAt: new Date(),
+            updatedAt: new Date(),
+          }).where(and(eq(customers.organizationId, organizationId), eq(customers.id, result.customer.id))).returning();
+          if (!updated) return;
+          await tx.insert(auditLogs).values({
+            organizationId,
+            userId: actorUserId,
+            actionType: "customer_credit_limit_updated",
+            entityType: "customer",
+            entityId: updated.id,
+            entityName: updated.companyName,
+            description: "Set customer credit limit during customer creation.",
+            oldValues: { creditLimit: null, creditLimitConfiguredAt: null } as any,
+            newValues: { creditLimit: updated.creditLimit, creditLimitConfiguredAt: updated.creditLimitConfiguredAt } as any,
+          } as any);
+        });
+      }
+
+      res.json((await storage.getCustomerById(organizationId, result.customer.id)) ?? result.customer);
     } catch (error) {
       if (error instanceof z.ZodError) {
         console.error("Zod validation error:", error.errors);
@@ -225,6 +263,12 @@ export function registerCustomerRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const payload = { ...(req.body || {}) };
+      const requestedCreditLimit = Object.prototype.hasOwnProperty.call(payload, "creditLimit")
+        ? payload.creditLimit
+        : undefined;
+      if (requestedCreditLimit !== undefined && !canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)) {
+        return res.status(403).json({ message: "Organization Owner or Admin permission is required to change a customer credit limit.", code: "CUSTOMER_CREDIT_LIMIT_FORBIDDEN" });
+      }
       const localCompanyFolderPath =
         payload.localCompanyFolderPath === null || typeof payload.localCompanyFolderPath === "string"
           ? payload.localCompanyFolderPath
@@ -232,6 +276,7 @@ export function registerCustomerRoutes(
 
       delete payload.localCompanyFolderPath;
       delete payload.customerProductionFolderReference;
+      delete payload.creditLimit;
 
       const customerData = updateCustomerSchema.parse(payload);
       const currentCustomer = await storage.getCustomerById(organizationId, req.params.id);
@@ -259,12 +304,41 @@ export function registerCustomerRoutes(
         });
       }
 
+      if (requestedCreditLimit !== undefined) {
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ message: "Authenticated user is required" });
+        const creditLimit = z.coerce.number().finite().min(0).parse(requestedCreditLimit);
+        const [updated] = await db.transaction(async (tx) => {
+          const [row] = await tx.update(customers).set({
+            creditLimit: creditLimit.toFixed(2),
+            creditLimitConfiguredAt: new Date(),
+            updatedAt: new Date(),
+          }).where(and(eq(customers.organizationId, organizationId), eq(customers.id, req.params.id)))
+            .returning();
+          if (!row) return [] as any[];
+          await tx.insert(auditLogs).values({
+            organizationId,
+            userId: actorUserId,
+            actionType: "customer_credit_limit_updated",
+            entityType: "customer",
+            entityId: row.id,
+            entityName: row.companyName,
+            description: "Updated customer credit limit.",
+            oldValues: { creditLimit: currentCustomer.creditLimit, creditLimitConfiguredAt: (currentCustomer as any).creditLimitConfiguredAt ?? null } as any,
+            newValues: { creditLimit: row.creditLimit, creditLimitConfiguredAt: row.creditLimitConfiguredAt } as any,
+          } as any);
+          return [row];
+        });
+        if (!updated) return res.status(404).json({ message: "Customer not found" });
+      }
+
       const hydratedCustomer = await storage.getCustomerById(organizationId, req.params.id);
       res.json(hydratedCustomer ?? currentCustomer);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
+
       if (error instanceof CanonicalCustomerContactError) {
         return res.status(error.statusCode).json({ message: error.message, code: error.code });
       }

@@ -2573,6 +2573,10 @@ export const customers = pgTable("customers", {
 
   taxId: varchar("tax_id", { length: 100 }),
   creditLimit: decimal("credit_limit", { precision: 10, scale: 2 }).default("0"),
+  // A legacy zero cannot safely tell us whether credit was intentionally set
+  // to $0. This marker preserves the distinction without replacing the money
+  // column or rewriting financial history.
+  creditLimitConfiguredAt: timestamp("credit_limit_configured_at", { withTimezone: true }),
 
   // Pricing tier for wholesale/retail support
   pricingTier: varchar("pricing_tier", { length: 20 }).default("default"),

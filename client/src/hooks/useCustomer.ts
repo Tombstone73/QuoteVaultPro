@@ -84,10 +84,15 @@ export interface CustomerWithRelations {
   billingCountry: string | null;
   currentBalance: string;
   creditLimit: string;
-  availableCredit: string;
+  creditLimitConfiguredAt?: string | null;
+  creditLimitConfigured?: boolean;
+  availableCredit: string | null;
   outstandingAr?: string;
   pendingBilling?: string;
+  unbilledOpenOrders?: string;
+  openWork?: string;
   creditExposure?: string;
+  overLimitCents?: number;
   paymentTerms: string;
   internalNotes: string | null;
   mergedIntoCustomerId?: string | null;

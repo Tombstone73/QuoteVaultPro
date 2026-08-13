@@ -164,6 +164,7 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
+import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { synchronizeDraftInvoiceFromOrder } from "../invoicesService";
@@ -2220,7 +2221,7 @@ export async function registerOrderRoutes(
             }
 
             // Validate the order data (excluding line items for now)
-            const { lineItems, idempotencyKey: _bodyIdempotencyKey, ...orderFields } = req.body;
+            const { lineItems, idempotencyKey: _bodyIdempotencyKey, creditOverride, creditOverrideReason, ...orderFields } = req.body;
 
             if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
                 return res.status(400).json({ success: false, message: "At least one line item is required", code: "ORDER_LINE_ITEMS_REQUIRED" });
@@ -2415,7 +2416,7 @@ export async function registerOrderRoutes(
             }
 
             // Create order with line items and tax totals
-            const order = await canonicalOrderOperations.create({ organizationId, actorUserId: userId, payload: {
+            const order = await canonicalOrderOperations.create({ organizationId, actorUserId: userId, actorOrgRole: String(req.actorOrgRole ?? req.orgRole ?? ""), creditOverride: creditOverride === true, creditOverrideReason: creditOverrideReason ?? null, payload: {
                 ...orderFields,
                 dueDate: sanitizeDateField(orderFields.dueDate),
                 promisedDate: sanitizeDateField(orderFields.promisedDate),
@@ -2557,6 +2558,14 @@ export async function registerOrderRoutes(
                 ...result.value,
             });
         } catch (error) {
+            if (error instanceof CustomerCreditPolicyError) {
+                return res.status(409).json({
+                    success: false,
+                    message: error.message,
+                    code: error.code,
+                    details: error.details,
+                });
+            }
             if (error instanceof z.ZodError) {
                 console.error("Zod validation error:", error.errors);
                 return res.status(400).json({ success: false, message: fromZodError(error).message, code: "ORDER_VALIDATION_ERROR" });
@@ -2802,9 +2811,16 @@ export async function registerOrderRoutes(
             }
 
             // Update order - now returns full OrderWithRelations
+            const creditOverride = req.body.creditOverride === true;
+            const creditOverrideReason = req.body.creditOverrideReason ?? null;
+            delete req.body.creditOverride;
+            delete req.body.creditOverrideReason;
             const order = await canonicalOrderOperations.updateEditableHeader({
                 organizationId,
                 actorUserId: userId,
+                actorOrgRole: userRole,
+                creditOverride,
+                creditOverrideReason,
                 orderId: req.params.id,
                 allowNonNew: true, // route already enforces its terminal-edit policy
                 changes: {
@@ -2938,6 +2954,9 @@ export async function registerOrderRoutes(
         } catch (error) {
             if (error instanceof FulfillmentHttpError) {
                 return res.status(error.status).json({ message: error.message, code: error.code });
+            }
+            if (error instanceof CustomerCreditPolicyError) {
+                return res.status(409).json({ message: error.message, code: error.code, details: error.details });
             }
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: fromZodError(error).message });
