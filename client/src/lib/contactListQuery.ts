@@ -15,6 +15,7 @@ export type ContactListSortDir = "asc" | "desc";
 
 export type ContactListQueryState = {
   search: string;
+  filter?: string;
   page: number;
   pageSize: number;
   sortBy: ContactListSortBy;
@@ -39,6 +40,7 @@ export function buildContactListQueryKey(state: ContactListQueryState) {
     "contacts",
     {
       search: state.search,
+      filter: state.filter ?? "",
       page: state.page,
       pageSize: state.pageSize,
       sortBy: state.sortBy,
@@ -52,6 +54,7 @@ export function buildContactListSearchParams(state: ContactListQueryState): URLS
   const trimmedSearch = state.search.trim();
 
   if (trimmedSearch) params.set("search", trimmedSearch);
+  if (state.filter) params.set("filter", state.filter);
   params.set("page", String(state.page));
   params.set("pageSize", String(state.pageSize));
   params.set("sortBy", state.sortBy);

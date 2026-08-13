@@ -46,6 +46,8 @@ jest.mock("@/hooks/useContacts", () => ({
 
 jest.mock("@tanstack/react-query", () => ({
   useQuery: jest.fn(),
+  useQueryClient: () => ({ invalidateQueries: jest.fn() }),
+  useMutation: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 
 jest.mock("@/components/list/ListViewSettings", () => ({
@@ -63,7 +65,7 @@ jest.mock("@/features/customers", () => ({
 }));
 
 jest.mock("@/components/titan", () => ({
-  Page: ({ children }: any) => <div>{children}</div>,
+  Page: ({ children, maxWidth }: any) => <div data-max-width={maxWidth}>{children}</div>,
   PageHeader: ({ title, actions, backButton }: any) => (
     <header>
       {backButton}
@@ -264,6 +266,45 @@ test("Contacts exposes first-name and last-name backend sort controls", () => {
   });
 
   expect(useContactsMock).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: "lastName", sortDir: "asc" }));
+});
+
+test("Contacts uses the full application workspace and removes the redundant list header", () => {
+  act(() => {
+    root.render(<ContactsPage />);
+  });
+
+  expect(container.querySelector('[data-max-width="full"]')).toBeTruthy();
+  expect(container.textContent).not.toContain("All Contacts");
+  expect(container.textContent).not.toContain("Search contacts by name, email, or company name");
+  expect(container.querySelector("table")).toBeTruthy();
+});
+
+test("Contacts relationship filter changes the backend query identity and resets pagination", () => {
+  act(() => {
+    root.render(<ContactsPage />);
+  });
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Next"));
+  act(() => {
+    nextButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  expect(useContactsMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, filter: undefined }));
+
+  const relationshipSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+    Array.from(select.options).some((option) => option.value === "unlinked"),
+  ) as HTMLSelectElement;
+  expect(relationshipSelect).toBeTruthy();
+  act(() => {
+    relationshipSelect.value = "unlinked";
+    relationshipSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  expect(useContactsMock).toHaveBeenLastCalledWith(expect.objectContaining({
+    filter: "unlinked",
+    page: 1,
+    sortBy: "lastName",
+    sortDir: "asc",
+  }));
 });
 
 test("Contacts Add Contact flow renders and submits a company-linked payload", async () => {

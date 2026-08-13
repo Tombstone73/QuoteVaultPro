@@ -116,6 +116,7 @@ export interface CreateContactInput extends UpdateContactInput {
 export function useContacts(filters?: { search?: string; page?: number; pageSize?: number; sortBy?: ContactListSortBy; sortDir?: ContactListSortDir; filter?: string }) {
   const queryState = {
     search: filters?.search ?? "",
+    filter: filters?.filter ?? "",
     page: filters?.page ?? 1,
     pageSize: filters?.pageSize ?? 20,
     sortBy: filters?.sortBy ?? "lastName",
@@ -126,7 +127,6 @@ export function useContacts(filters?: { search?: string; page?: number; pageSize
     queryKey: buildContactListQueryKey(queryState),
     queryFn: async () => {
       const params = buildContactListSearchParams(queryState);
-      if (filters?.filter) params.set("filter", filters.filter);
 
       const response = await fetch(`/api/contacts?${params.toString()}`, {
         credentials: "include",

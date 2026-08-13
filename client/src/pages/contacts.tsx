@@ -354,7 +354,7 @@ export default function ContactsPage() {
   };
 
   return (
-    <Page>
+    <Page maxWidth="full">
       <PageHeader
         title="Contacts"
         subtitle="Manage all customer contacts across the system"
@@ -366,8 +366,8 @@ export default function ContactsPage() {
 
       <ContentLayout className="space-y-3">
         {/* Search and Filters */}
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-md">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[240px] flex-1 basis-[45%] max-w-2xl">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-titan-text-muted" />
             <Input
               placeholder="Search contacts by name, email, or company..."
@@ -414,21 +414,17 @@ export default function ContactsPage() {
         </div>
 
         {/* Contacts Table */}
-        <DataCard 
-          title="All Contacts"
-          description="Search contacts by name, email, or company name"
-          className="bg-titan-bg-card border-titan-border-subtle"
-        >
+        <DataCard noPadding className="bg-titan-bg-card border-titan-border-subtle">
           {isLoading ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex items-center justify-center p-5 py-8">
               <div className="w-8 h-8 border-4 border-titan-accent border-t-transparent rounded-full animate-spin" />
             </div>
           ) : error ? (
-            <div className="text-center py-8 text-titan-error">
+            <div className="p-5 py-8 text-center text-titan-error">
               Failed to load contacts. Please try again.
             </div>
           ) : !data || data.contacts.length === 0 ? (
-            <div className="text-center py-8 text-titan-text-muted">
+            <div className="p-5 py-8 text-center text-titan-text-muted">
               {searchQuery ? "No contacts found matching your search." : "No contacts found."}
             </div>
           ) : (

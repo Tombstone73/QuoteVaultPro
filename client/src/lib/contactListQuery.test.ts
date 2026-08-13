@@ -20,6 +20,7 @@ describe("contactListQuery helpers", () => {
       "contacts",
       {
         search: "ada",
+        filter: "",
         page: 2,
         pageSize: 50,
         sortBy: "lastName",
@@ -53,6 +54,17 @@ describe("contactListQuery helpers", () => {
 
     expect(firstNameParams.get("sortBy")).toBe("firstName");
     expect(lastNameParams.get("sortBy")).toBe("lastName");
+  });
+
+  test("includes relationship filter in both cache identity and request params", () => {
+    const allKey = buildContactListQueryKey({ ...baseState, filter: "" });
+    const linkedKey = buildContactListQueryKey({ ...baseState, filter: "linked" });
+    const linkedParams = buildContactListSearchParams({ ...baseState, filter: "linked" });
+    const allParams = buildContactListSearchParams({ ...baseState, filter: "" });
+
+    expect(linkedKey).not.toEqual(allKey);
+    expect(linkedParams.get("filter")).toBe("linked");
+    expect(allParams.has("filter")).toBe(false);
   });
 
   test("normalizes missing or malformed contact payloads without crashing", () => {
