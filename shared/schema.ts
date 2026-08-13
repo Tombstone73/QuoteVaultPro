@@ -2618,6 +2618,12 @@ export const customers = pgTable("customers", {
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: false }),
 
+  // Customer merge provenance. Merged records are retained, never deleted.
+  mergedIntoCustomerId: varchar("merged_into_customer_id").references((): any => customers.id, { onDelete: "restrict" }),
+  mergedAt: timestamp("merged_at", { withTimezone: true }),
+  mergedByUserId: varchar("merged_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  customerMergeOperationId: varchar("customer_merge_operation_id"),
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -2628,6 +2634,22 @@ export const customers = pgTable("customers", {
   uniqueIndex("customers_individual_source_contact_uidx")
     .on(table.organizationId, table.sourceContactId)
     .where(sql`customer_type = 'individual' AND source_contact_id IS NOT NULL`),
+  index("customers_merged_into_customer_idx").on(table.organizationId, table.mergedIntoCustomerId),
+]);
+
+export const customerMergeOperations = pgTable("customer_merge_operations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  survivorCustomerId: varchar("survivor_customer_id").notNull().references(() => customers.id, { onDelete: "restrict" }),
+  sourceCustomerIds: jsonb("source_customer_ids").notNull().$type<string[]>(),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  fieldChoices: jsonb("field_choices").$type<Record<string, string>>(),
+  relationshipCounts: jsonb("relationship_counts").notNull().$type<Record<string, number>>(),
+  warnings: jsonb("warnings").$type<string[]>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("customer_merge_operations_org_created_idx").on(table.organizationId, table.createdAt),
+  index("customer_merge_operations_survivor_idx").on(table.organizationId, table.survivorCustomerId),
 ]);
 
 export const insertCustomerSchema = createInsertSchema(customers).omit({

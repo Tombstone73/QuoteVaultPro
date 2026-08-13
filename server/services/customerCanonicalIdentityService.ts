@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   customerContactImportCompanyRecords,
@@ -7,6 +7,7 @@ import {
   customerContactLinks,
   customerContacts,
   customerCreditTransactions,
+  customerMergeOperations,
   customerNotes,
   customerPortalAccess,
   customerPortalCompanySettings,
@@ -14,11 +15,13 @@ import {
   customerProductionFolderReferences,
   customerVisibleProducts,
   customers,
+  auditLogs,
   externalIdentityMappings,
   inboundAttachmentClassificationRules,
   inboundOrderRecords,
   invoices,
   orders,
+  payments,
   quotes,
   type Customer,
   type ExternalIdentityMapping,
@@ -52,6 +55,20 @@ export class CustomerIdentityConflictError extends Error {
     super(message);
     this.name = "CustomerIdentityConflictError";
   }
+}
+
+const mergeSelectableFields = [
+  "companyName", "displayName", "email", "phone", "website",
+  "billingAddress", "billingStreet1", "billingStreet2", "billingCity", "billingState", "billingPostalCode", "billingCountry",
+  "shippingAddress", "shippingStreet1", "shippingStreet2", "shippingCity", "shippingState", "shippingPostalCode", "shippingCountry",
+  "customerType", "taxId", "creditLimit", "pricingTier", "defaultDiscountPercent", "defaultMarkupPercent", "defaultMarginPercent",
+  "productVisibilityMode", "isTaxExempt", "taxRateOverride", "taxExemptReason", "taxExemptCertificateRef", "paymentTerms", "blindShipping", "alwaysRequireProof", "assignedTo", "notes",
+] as const;
+type MergeSelectableField = typeof mergeSelectableFields[number];
+
+function comparableFieldValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  return typeof value === "string" ? value.trim() : String(value);
 }
 
 function cleanId(value: unknown): string | null {
@@ -152,6 +169,7 @@ export async function mergeDuplicateCustomers(input: {
   actorUserId?: string | null;
   reviewed?: boolean;
   reason?: string | null;
+  mergeOperationId?: string | null;
   dbClient?: DbClient;
 }) {
   const dbClient = input.dbClient ?? db;
@@ -169,6 +187,22 @@ export async function mergeDuplicateCustomers(input: {
         organizationId: input.organizationId,
         survivorCustomerId: input.survivorCustomerId,
         duplicateCustomerId: input.duplicateCustomerId,
+      });
+    }
+
+    if ((survivor as any).mergedIntoCustomerId) {
+      throw new CustomerIdentityConflictError("SURVIVOR_ALREADY_MERGED", "Choose the final active customer as the survivor.", {
+        survivorCustomerId: survivor.id,
+        mergedIntoCustomerId: (survivor as any).mergedIntoCustomerId,
+      });
+    }
+    if ((duplicate as any).mergedIntoCustomerId) {
+      if ((duplicate as any).mergedIntoCustomerId === survivor.id) {
+        return { success: true, alreadyMerged: true, survivorCustomerId: survivor.id, duplicateCustomerId: duplicate.id, counts: {} };
+      }
+      throw new CustomerIdentityConflictError("SOURCE_ALREADY_MERGED", "A selected source customer was already merged into a different customer.", {
+        duplicateCustomerId: duplicate.id,
+        mergedIntoCustomerId: (duplicate as any).mergedIntoCustomerId,
       });
     }
 
@@ -393,8 +427,28 @@ export async function mergeDuplicateCustomers(input: {
     ].filter(Boolean).join("\n");
     await tx
       .update(customers)
-      .set({ status: "archived", isActive: false, notes: archivedNote, updatedAt: new Date() })
+      .set({
+        status: "archived",
+        isActive: false,
+        notes: archivedNote,
+        mergedIntoCustomerId: survivor.id,
+        mergedAt: new Date(),
+        mergedByUserId: input.actorUserId ?? null,
+        customerMergeOperationId: input.mergeOperationId ?? null,
+        updatedAt: new Date(),
+      } as any)
       .where(and(eq(customers.organizationId, input.organizationId), eq(customers.id, duplicate.id)));
+
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId ?? null,
+      actionType: "customer_merged",
+      entityType: "customer",
+      entityId: duplicate.id,
+      entityName: duplicate.companyName,
+      description: `Merged customer into ${survivor.companyName}.`,
+      newValues: { survivorCustomerId: survivor.id, mergeOperationId: input.mergeOperationId ?? null, counts } as any,
+    } as any);
 
     console.info("[CUSTOMER IDENTITY] merge committed", {
       organizationId: input.organizationId,
@@ -411,5 +465,119 @@ export async function mergeDuplicateCustomers(input: {
       duplicateCustomerId: duplicate.id,
       counts,
     };
+  });
+}
+
+export async function getCustomerMergePreview(input: {
+  organizationId: string;
+  customerIds: string[];
+}) {
+  const customerIds = Array.from(new Set(input.customerIds.map((id) => id.trim()).filter(Boolean)));
+  if (customerIds.length < 2) throw new CustomerIdentityConflictError("MERGE_SELECTION_TOO_SMALL", "Select at least two customers to merge.");
+  const rows = await db.select().from(customers).where(and(
+    eq(customers.organizationId, input.organizationId),
+    inArray(customers.id, customerIds),
+  ));
+  if (rows.length !== customerIds.length) throw new CustomerIdentityConflictError("CUSTOMER_NOT_FOUND", "Every selected customer must belong to this organization.");
+  const conflicts: Record<string, Array<{ customerId: string; value: unknown }>> = {};
+  for (const field of mergeSelectableFields) {
+    const values = rows.map((customer: any) => ({ customerId: customer.id, value: customer[field] }))
+      .filter((entry) => comparableFieldValue(entry.value) !== null);
+    if (new Set(values.map((entry) => comparableFieldValue(entry.value))).size > 1) conflicts[field] = values;
+  }
+  const ids = rows.map((row) => row.id);
+  const count = async (table: any, field: any) => Number((await db.select({ count: sql<number>`count(*)::int` }).from(table).where(and(eq((table as any).organizationId, input.organizationId), inArray(field, ids))))[0]?.count ?? 0);
+  const relationshipCounts = {
+    contacts: Number((await db.select({ count: sql<number>`count(*)::int` }).from(customerContactLinks).where(and(eq(customerContactLinks.organizationId, input.organizationId), inArray(customerContactLinks.customerId, ids))))[0]?.count ?? 0),
+    orders: await count(orders, orders.customerId),
+    quotes: await count(quotes, quotes.customerId),
+    invoices: await count(invoices, invoices.customerId),
+    payments: Number((await db.select({ count: sql<number>`count(*)::int` }).from(payments).innerJoin(invoices, eq(payments.invoiceId, invoices.id)).where(and(eq(payments.organizationId, input.organizationId), inArray(invoices.customerId, ids))))[0]?.count ?? 0),
+    portalUsers: await count(customerPortalAccess, customerPortalAccess.customerId),
+    notes: Number((await db.select({ count: sql<number>`count(*)::int` }).from(customerNotes).where(inArray(customerNotes.customerId, ids)))[0]?.count ?? 0),
+  };
+  return { customers: rows, conflicts, relationshipCounts };
+}
+
+/** Multi-source, admin-reviewed canonical customer merge boundary. */
+export async function mergeCustomers(input: {
+  organizationId: string;
+  survivorCustomerId: string;
+  sourceCustomerIds: string[];
+  actorUserId: string;
+  fieldChoices: Partial<Record<MergeSelectableField, string>>;
+  reviewed: boolean;
+  reason?: string | null;
+}) {
+  const sourceCustomerIds = Array.from(new Set(input.sourceCustomerIds.map((id) => id.trim()).filter((id) => id && id !== input.survivorCustomerId)));
+  if (!input.reviewed) throw new CustomerIdentityConflictError("REVIEW_REQUIRED", "Confirm the reviewed customer merge before it can execute.");
+  if (!sourceCustomerIds.length) throw new CustomerIdentityConflictError("MERGE_SELECTION_TOO_SMALL", "Select at least one source customer in addition to the survivor.");
+  const preview = await getCustomerMergePreview({ organizationId: input.organizationId, customerIds: [input.survivorCustomerId, ...sourceCustomerIds] });
+  for (const field of Object.keys(preview.conflicts)) {
+    const choice = input.fieldChoices[field as MergeSelectableField];
+    if (!choice || ![input.survivorCustomerId, ...sourceCustomerIds].includes(choice)) {
+      throw new CustomerIdentityConflictError("FIELD_CONFLICT_RESOLUTION_REQUIRED", `Choose the canonical value for ${field}.`, { field, candidates: preview.conflicts[field] });
+    }
+  }
+
+  return db.transaction(async (tx: any) => {
+    const selectedIds = [input.survivorCustomerId, ...sourceCustomerIds];
+    const selected = await tx.select().from(customers).where(and(eq(customers.organizationId, input.organizationId), inArray(customers.id, selectedIds))).orderBy(asc(customers.id)).for("update");
+    if (selected.length !== selectedIds.length) throw new CustomerIdentityConflictError("CUSTOMER_NOT_FOUND", "Every selected customer must belong to this organization.");
+    const survivor = selected.find((customer: Customer) => customer.id === input.survivorCustomerId)!;
+    if ((survivor as any).mergedIntoCustomerId) throw new CustomerIdentityConflictError("SURVIVOR_ALREADY_MERGED", "Choose the final active customer as the survivor.");
+    const alreadyMergedSources = selected.filter((customer: Customer) => customer.id !== survivor.id && (customer as any).mergedIntoCustomerId);
+    if (alreadyMergedSources.length === sourceCustomerIds.length) {
+      const wrongSurvivor = alreadyMergedSources.find((customer: any) => customer.mergedIntoCustomerId !== survivor.id);
+      if (wrongSurvivor) throw new CustomerIdentityConflictError("SOURCE_ALREADY_MERGED", "A selected source customer was already merged into a different customer.", { sourceCustomerId: wrongSurvivor.id, mergedIntoCustomerId: wrongSurvivor.mergedIntoCustomerId });
+      return { success: true, alreadyMerged: true, mergeOperationId: (alreadyMergedSources[0] as any).customerMergeOperationId ?? null, survivorCustomerId: survivor.id, sourceCustomerIds, relationshipCounts: {} };
+    }
+    if (alreadyMergedSources.length) throw new CustomerIdentityConflictError("SOURCE_ALREADY_MERGED", "A selected source customer was already merged; retry only the same complete merge or start a new reviewed merge.");
+    const patch: Record<string, unknown> = {};
+    for (const [field, choiceCustomerId] of Object.entries(input.fieldChoices)) {
+      if (!(mergeSelectableFields as readonly string[]).includes(field)) continue;
+      const source = selected.find((customer: Customer) => customer.id === choiceCustomerId);
+      if (!source) throw new CustomerIdentityConflictError("FIELD_CHOICE_INVALID", "A chosen field source is not part of this merge.", { field, choiceCustomerId });
+      patch[field] = (source as any)[field];
+    }
+    if (Object.keys(patch).length) await tx.update(customers).set({ ...patch, updatedAt: new Date() } as any).where(and(eq(customers.organizationId, input.organizationId), eq(customers.id, survivor.id)));
+    const [operation] = await tx.insert(customerMergeOperations).values({
+      organizationId: input.organizationId,
+      survivorCustomerId: survivor.id,
+      sourceCustomerIds,
+      actorUserId: input.actorUserId,
+      fieldChoices: input.fieldChoices as any,
+      relationshipCounts: {},
+      warnings: [],
+    } as any).returning();
+    const results = [] as any[];
+    for (const duplicateCustomerId of sourceCustomerIds) {
+      results.push(await mergeDuplicateCustomers({
+        organizationId: input.organizationId,
+        survivorCustomerId: survivor.id,
+        duplicateCustomerId,
+        actorUserId: input.actorUserId,
+        reviewed: true,
+        reason: input.reason ?? null,
+        mergeOperationId: operation.id,
+        dbClient: tx,
+      }));
+    }
+    const relationshipCounts = results.reduce((total, result) => {
+      for (const [key, value] of Object.entries(result.counts ?? {})) total[key] = Number(total[key] ?? 0) + Number(value ?? 0);
+      return total;
+    }, {} as Record<string, number>);
+    await tx.update(customerMergeOperations).set({ relationshipCounts } as any).where(eq(customerMergeOperations.id, operation.id));
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      actionType: "customer_merge_completed",
+      entityType: "customer",
+      entityId: survivor.id,
+      entityName: survivor.companyName,
+      description: `Merged ${sourceCustomerIds.length} customer record(s) into the canonical customer.`,
+      newValues: { mergeOperationId: operation.id, sourceCustomerIds, fieldChoices: input.fieldChoices, relationshipCounts } as any,
+    } as any);
+    return { success: true, mergeOperationId: operation.id, survivorCustomerId: survivor.id, sourceCustomerIds, fieldChoices: input.fieldChoices, relationshipCounts };
   });
 }

@@ -2724,6 +2724,14 @@ export default function EnhancedCustomerView({
     customerId,
   });
 
+  // Historical customer URLs remain useful after a merge: resolve the
+  // archived source record to the retained canonical survivor.
+  useEffect(() => {
+    if (customer?.mergedIntoCustomerId && customer.mergedIntoCustomerId !== customerId) {
+      navigate(ROUTES.customers.detail(customer.mergedIntoCustomerId), { replace: true });
+    }
+  }, [customer?.mergedIntoCustomerId, customerId, navigate]);
+
   // Quotes from customer data
   const quotes = customer?.quotes || [];
 

@@ -24,7 +24,9 @@ import {
   ArrowUp,
   ArrowUpDown,
   Loader2,
+  GitMerge,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   buildCustomerListQueryKey,
   buildCustomerListSearchParams,
@@ -126,6 +128,7 @@ interface CustomerListProps {
   search: string;
   viewMode?: CustomerListViewMode;
   collapseOnSelect?: boolean;
+  onMergeCustomers?: (customerIds: string[]) => void;
 }
 
 export default function CustomerList({
@@ -135,6 +138,7 @@ export default function CustomerList({
   search,
   viewMode = "split",
   collapseOnSelect = false,
+  onMergeCustomers,
 }: CustomerListProps) {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -142,6 +146,7 @@ export default function CustomerList({
   const [sortDir, setSortDir] = useState<CustomerListSortDir>("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setPage(1);
@@ -192,6 +197,12 @@ export default function CustomerList({
   const handlePageSizeChange = (value: string) => {
     setPageSize(Number(value));
   };
+
+  const toggleMergeSelection = (customerId: string) => setSelectedForMerge((current) => {
+    const next = new Set(current);
+    if (next.has(customerId)) next.delete(customerId); else next.add(customerId);
+    return next;
+  });
 
   const renderPaginationFooter = () => {
     if (collapse || !pagination) return null;
@@ -317,6 +328,7 @@ export default function CustomerList({
               : `${pagination.total} customer${pagination.total !== 1 ? "s" : ""}`}
         </p>
       )}
+      {onMergeCustomers && selectedForMerge.size >= 2 && <div className="mt-2 px-0.5"><Button size="sm" variant="outline" onClick={() => onMergeCustomers(Array.from(selectedForMerge))}><GitMerge className="w-4 h-4 mr-2" />Merge {selectedForMerge.size} customers</Button></div>}
     </div>
   );
 
@@ -337,6 +349,7 @@ export default function CustomerList({
             `}
           >
             <div className="flex items-center gap-2">
+              {onMergeCustomers && <span onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName} for merge`} checked={selectedForMerge.has(customer.id)} onCheckedChange={() => toggleMergeSelection(customer.id)} /></span>}
               <Avatar className="w-8 h-8 flex-shrink-0">
                 <AvatarFallback className="bg-primary/20 text-primary text-xs">
                   {customer.companyName?.[0] || "C"}
@@ -398,6 +411,7 @@ export default function CustomerList({
     <Table>
       <TableHeader>
         <TableRow>
+          {onMergeCustomers && <TableHead className="w-10">Merge</TableHead>}
           <TableHead>{sortHeader("Company Name", "name")}</TableHead>
           <TableHead>{sortHeader("Primary Contact", "primaryContact")}</TableHead>
           <TableHead>{sortHeader("Email", "email")}</TableHead>
@@ -422,6 +436,7 @@ export default function CustomerList({
               onClick={() => onSelectCustomer(customer.id)}
               data-state={selectedCustomerId === customer.id ? "selected" : undefined}
             >
+              {onMergeCustomers && <TableCell onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName} for merge`} checked={selectedForMerge.has(customer.id)} onCheckedChange={() => toggleMergeSelection(customer.id)} /></TableCell>}
               <TableCell className="font-medium">{customer.companyName}</TableCell>
               <TableCell>{contactName || "-"}</TableCell>
               <TableCell className="max-w-[220px] truncate">{email}</TableCell>

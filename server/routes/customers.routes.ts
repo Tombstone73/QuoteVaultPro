@@ -35,6 +35,8 @@ import {
 import { customerProductionFolderReferenceRepository } from "../storage/customerProductionFolderReference.repo";
 import {
   CustomerIdentityConflictError,
+  getCustomerMergePreview,
+  mergeCustomers,
   mergeDuplicateCustomers,
 } from "../services/customerCanonicalIdentityService";
 import {
@@ -280,6 +282,48 @@ export function registerCustomerRoutes(
     } catch (error) {
       console.error("Error deleting customer:", error);
       res.status(500).json({ message: "Failed to delete customer" });
+    }
+  });
+
+  const customerMergePreviewSchema = z.object({
+    customerIds: z.array(z.string().trim().min(1)).min(2).max(20),
+  }).strict();
+  const customerMergeSchema = z.object({
+    survivorCustomerId: z.string().trim().min(1),
+    sourceCustomerIds: z.array(z.string().trim().min(1)).min(1).max(19),
+    fieldChoices: z.record(z.string().trim().min(1)).default({}),
+    reviewed: z.literal(true),
+    reason: z.string().trim().max(500).optional().nullable(),
+  }).strict();
+
+  app.post("/api/customers/merge/preview", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: { code: "MISSING_ORGANIZATION_CONTEXT", message: "Missing organization context" } });
+      const input = customerMergePreviewSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await getCustomerMergePreview({ organizationId, customerIds: input.customerIds }) });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: fromZodError(error).message } });
+      if (error instanceof CustomerIdentityConflictError) return res.status(409).json({ success: false, error: { code: error.code, message: error.message, details: error.details } });
+      console.error("Error preparing customer merge:", error);
+      return res.status(500).json({ success: false, error: { code: "CUSTOMER_MERGE_PREVIEW_FAILED", message: "Failed to prepare customer merge" } });
+    }
+  });
+
+  app.post("/api/customers/merge", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ success: false, error: { code: "MISSING_ORGANIZATION_CONTEXT", message: "Missing organization context" } });
+      if (!actorUserId) return res.status(401).json({ success: false, error: { code: "ACTOR_REQUIRED", message: "Authenticated user is required" } });
+      const input = customerMergeSchema.parse(req.body ?? {});
+      const result = await mergeCustomers({ organizationId, actorUserId, ...input });
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: fromZodError(error).message } });
+      if (error instanceof CustomerIdentityConflictError) return res.status(409).json({ success: false, error: { code: error.code, message: error.message, details: error.details } });
+      console.error("Error merging customers:", error);
+      return res.status(500).json({ success: false, error: { code: "CUSTOMER_MERGE_FAILED", message: "Failed to merge customers" } });
     }
   });
 

@@ -37,6 +37,7 @@ beforeAll(async () => {
   await db.execute(sql.raw(readFileSync(resolve(process.cwd(), "server/db/migrations_v2/0079_contact_relationships.sql"), "utf8")));
   await db.execute(sql.raw(readFileSync(resolve(process.cwd(), "server/db/migrations_v2/0109_customer_contact_migration_workflow.sql"), "utf8")));
   await db.execute(sql.raw(readFileSync(resolve(process.cwd(), "server/db/migrations_v2/0111_customer_portal_bulk_onboarding.sql"), "utf8")));
+  await db.execute(sql.raw(readFileSync(resolve(process.cwd(), "server/db/migrations_v2/0171_customer_merge_workflow.sql"), "utf8")));
 
   await db.execute(sql`
     insert into organizations (id, name, slug)

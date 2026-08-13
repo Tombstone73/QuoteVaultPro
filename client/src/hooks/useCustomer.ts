@@ -90,6 +90,8 @@ export interface CustomerWithRelations {
   creditExposure?: string;
   paymentTerms: string;
   internalNotes: string | null;
+  mergedIntoCustomerId?: string | null;
+  mergedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   contacts: CustomerContact[];

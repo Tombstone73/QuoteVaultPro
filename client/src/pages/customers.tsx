@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search, Plus, Building2, LayoutGrid, SplitSquareHorizontal } from "lucide-react";
 import CustomerList from "@/components/CustomerList";
+import { CustomerMergeDialog } from "@/components/CustomerMergeDialog";
 import { EnhancedCustomerView } from "@/features/customers";
 import CustomerForm from "@/components/customer-form";
 import { useAuth } from "@/hooks/useAuth";
@@ -127,6 +128,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
   
   // Search state
   const [search, setSearch] = useState("");
+  const [mergeCustomerIds, setMergeCustomerIds] = useState<string[]>([]);
 
   // Fetch customer for editing
   const { data: editingCustomer } = useQuery({
@@ -273,6 +275,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 onNewCustomer={handleNewCustomer}
                 search={search}
                 viewMode="split"
+                onMergeCustomers={setMergeCustomerIds}
               />
             </DataCard>
             
@@ -298,6 +301,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
               onNewCustomer={handleNewCustomer}
               search={search}
               viewMode="enhanced"
+              onMergeCustomers={setMergeCustomerIds}
             />
           </DataCard>
         )}
@@ -309,6 +313,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
         onOpenChange={handleFormClose}
         customer={editingCustomer}
       />
+      <CustomerMergeDialog customerIds={mergeCustomerIds} open={mergeCustomerIds.length >= 2} onOpenChange={(open) => { if (!open) setMergeCustomerIds([]); }} />
     </Page>
   );
 }
