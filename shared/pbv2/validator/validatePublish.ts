@@ -1155,6 +1155,66 @@ function hasMatrixRowQtyTiers(row: Record<string, unknown>): boolean {
   return Array.isArray((row as any).qtyTiers) && (row as any).qtyTiers.length > 0;
 }
 
+/** Matrix tiers use established lower-bound semantics.  They may be paired
+ * with a static matrix price (which covers quantities below the first tier),
+ * so unlike the product-level quantity-only family they are not required to
+ * begin at one or be contiguous.  They must still be executable by the
+ * runtime: a recognized basis, strictly increasing positive bounds, and at
+ * least one positive rate per tier. */
+function validateMatrixRowQtyTiers(
+  row: Record<string, unknown>,
+  rowPath: string,
+  rowLabel: string,
+  findings: Finding[],
+): void {
+  if (!Array.isArray((row as any).qtyTiers)) return;
+
+  const tierBasis = (row as any).tierBasis;
+  if (tierBasis !== undefined && !["line_item_quantity", "computed_sheet_usage", "product_default"].includes(String(tierBasis))) {
+    findings.push(errorFinding({
+      code: "PBV2_E_PRICING_MATRIX_TIER_BASIS_INVALID",
+      message: `Pricing matrix ${rowLabel} has an unsupported quantity-tier basis.`,
+      path: `${rowPath}.tierBasis`,
+      context: { rowId: (row as any).id ?? null, tierBasis },
+    }));
+  }
+
+  let previousMin: number | null = null;
+  for (const [tierIndex, rawTier] of (row as any).qtyTiers.entries()) {
+    const tier = asRecord(rawTier);
+    const tierPath = `${rowPath}.qtyTiers[${tierIndex}]`;
+    const minQty = Number(tier?.minQty);
+    if (!tier || !Number.isFinite(minQty) || minQty <= 0) {
+      findings.push(errorFinding({
+        code: "PBV2_E_PRICING_MATRIX_TIER_BOUND_INVALID",
+        message: `Every quantity tier in pricing matrix ${rowLabel} requires a positive numeric minimum.`,
+        path: `${tierPath}.minQty`,
+        context: { rowId: (row as any).id ?? null },
+      }));
+      continue;
+    }
+    if (previousMin !== null && minQty <= previousMin) {
+      findings.push(errorFinding({
+        code: "PBV2_E_PRICING_MATRIX_TIER_ORDER_INVALID",
+        message: `Quantity tiers in pricing matrix ${rowLabel} must be strictly increasing.`,
+        path: `${tierPath}.minQty`,
+        context: { rowId: (row as any).id ?? null },
+      }));
+    }
+    previousMin = minQty;
+    const hasPositiveRate = ["perSqftCents", "perPieceCents", "minimumChargeCents"]
+      .some((field) => Number.isFinite(Number((tier as any)[field])) && Number((tier as any)[field]) > 0);
+    if (!hasPositiveRate) {
+      findings.push(errorFinding({
+        code: "PBV2_E_PRICING_MATRIX_TIER_RATE_MISSING",
+        message: `Every quantity tier in pricing matrix ${rowLabel} requires a positive PBV2 price rate.`,
+        path: tierPath,
+        context: { rowId: (row as any).id ?? null },
+      }));
+    }
+  }
+}
+
 function validatePricingMatrices(
   tree: Record<string, unknown>,
   findings: Finding[],
@@ -1230,6 +1290,8 @@ function validatePricingMatrices(
         );
         return;
       }
+
+      validateMatrixRowQtyTiers(row, rowPath, rowLabel, findings);
 
       const matchEntry = getMatrixRowMatch(row);
       const match = matchEntry ? asRecord(matchEntry.value) : null;

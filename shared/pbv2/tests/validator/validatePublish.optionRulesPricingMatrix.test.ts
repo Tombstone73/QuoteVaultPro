@@ -145,6 +145,10 @@ describe("pbv2/validator/validatePublish option rules and pricing matrix", () =>
     ["protected built-in override", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm" }, variables: { q: 2 } }] }, "PBV2_E_PRICING_MATRIX_VARIABLE_PROTECTED"],
     ["non-numeric variable", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm" }, variables: { base_price: "nope" } }] }, "PBV2_E_PRICING_MATRIX_VARIABLE_INVALID"],
     ["missing dimensions", { dimensions: ["thickness", "sides"], rows: [{ match: { thickness: "choice_3mm" }, variables: { base_price: 500 } }] }, "PBV2_E_PRICING_MATRIX_ROW_MISSING_DIMENSION"],
+    ["matrix tier without a rate", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm" }, qtyTiers: [{ minQty: 1 }] }] }, "PBV2_E_PRICING_MATRIX_TIER_RATE_MISSING"],
+    ["matrix tier with invalid minimum", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm" }, qtyTiers: [{ minQty: 0, perPieceCents: 500 }] }] }, "PBV2_E_PRICING_MATRIX_TIER_BOUND_INVALID"],
+    ["matrix tiers out of order", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm" }, qtyTiers: [{ minQty: 10, perPieceCents: 500 }, { minQty: 10, perPieceCents: 400 }] }] }, "PBV2_E_PRICING_MATRIX_TIER_ORDER_INVALID"],
+    ["matrix tier with unsupported basis", { dimensions: ["thickness"], rows: [{ match: { thickness: "choice_3mm" }, tierBasis: "unknown", qtyTiers: [{ minQty: 1, perPieceCents: 500 }] }] }, "PBV2_E_PRICING_MATRIX_TIER_BASIS_INVALID"],
   ])("invalid pricing matrix: %s", (_label, pricingMatrix, code) => {
     expectError(makeTree({ pricingMatrix }), code);
   });

@@ -8,6 +8,7 @@ import {
   validateCanonicalPricingMatrixReplacement,
   validateCanonicalPricingTierReplacement,
 } from "../services/products/canonicalProductPricingOperations";
+import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 
 const matrixTree = {
   schemaVersion: 2,
@@ -71,6 +72,16 @@ describe("CanonicalProductPricingOperations", () => {
     expect(() => validateCanonicalPricingTierReplacement({ ...tiers, tiers: [{ minQty: 2, perSqftCents: 450 }] })).toThrow(expect.objectContaining({ code: "PBV2_TIER_COVERAGE_INVALID" }));
     expect(validateCanonicalPercentageImpact({ mode: "addPercent", percent: 12.5, basis: "base" })).toEqual({ mode: "addPercent", percent: 12.5, basis: "base" });
     expect(() => validateCanonicalPercentageImpact({ mode: "multiplier", factor: 1.2 })).toThrow(expect.objectContaining({ code: "PBV2_PERCENTAGE_IMPACT_INVALID" }));
+  });
+
+  test("uses the publish pricing-source rule before an active scalar replacement", () => {
+    const activeTree = {
+      ...matrixTree,
+      meta: { pricingProfileKey: "qty_only", pricingV2: { base: { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 } } },
+      pricingMatrix: { dimensions: ["size"], rows: [{ when: { size: "small" }, variables: { base_price: 400 } }, { when: { size: "large" }, variables: { base_price: 500 } }] },
+    };
+    expect(validateTreeHasBasePrice(activeTree).ok).toBe(true);
+    expect(validateTreeHasBasePrice({ ...activeTree, pricingMatrix: undefined }).ok).toBe(false);
   });
 
   test("keeps Product Editor and AI adapters delegated and the generated report synchronized", async () => {
