@@ -96,6 +96,8 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     };
     artwork: Array<{
       id: string;
+      /** Canonical file identity for authenticated thumbnail/preview access. */
+      fileRecordId: string | null;
       fileName: string;
       fileUrl: string | null;
       originalUrl: string | null;

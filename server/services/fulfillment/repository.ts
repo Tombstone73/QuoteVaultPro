@@ -1900,6 +1900,7 @@ export class FulfillmentDashboardRepo {
         const originalUrl = artwork.file.contentPath;
         pushArtwork(artworkByLineItemId, lineItemId, {
           id: artwork.relationshipId,
+          fileRecordId: artwork.fileRecordId,
           fileName: artwork.file.originalFilename ?? artwork.relationshipId,
           fileUrl: originalUrl,
           originalUrl,
