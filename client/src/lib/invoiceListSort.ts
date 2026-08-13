@@ -6,6 +6,7 @@ export type InvoiceSortKey =
   | "purchaseOrderNumber"
   | "issueDate"
   | "dueDate"
+  | "lastSentAt"
   | "status"
   | "total"
   | "balance";
@@ -17,7 +18,7 @@ export type InvoiceSortState = {
   sortDir: InvoiceSortDir;
 };
 
-const DEFAULT_DESC_SORTS = new Set<InvoiceSortKey>(["issueDate", "dueDate", "total", "balance"]);
+const DEFAULT_DESC_SORTS = new Set<InvoiceSortKey>(["issueDate", "dueDate", "lastSentAt", "total", "balance"]);
 
 export function getDefaultInvoiceSortDir(key: InvoiceSortKey): InvoiceSortDir {
   return DEFAULT_DESC_SORTS.has(key) ? "desc" : "asc";

@@ -385,6 +385,7 @@ export function useMarkInvoiceSent() {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/timeline'] });
     },
   });
 }

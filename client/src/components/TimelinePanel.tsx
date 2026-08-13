@@ -171,23 +171,26 @@ function inboundRecordIdForEvent(evt: TimelineEventDto): string | null {
 export function TimelinePanel({
   quoteId,
   orderId,
+  invoiceId,
   limit = 50,
 }: {
   quoteId?: string;
   orderId?: string;
+  invoiceId?: string;
   limit?: number;
 }) {
-  const enabled = Boolean(quoteId || orderId);
+  const enabled = Boolean(quoteId || orderId || invoiceId);
 
   const { data, isLoading, error } = useQuery<TimelineEventDto[]>({
-    queryKey: orderId 
+    queryKey: orderId && !invoiceId
       ? orderTimelineQueryKey(orderId)
-      : ["/api/timeline", { quoteId: quoteId ?? null, orderId: orderId ?? null, limit }],
+      : ["/api/timeline", { quoteId: quoteId ?? null, orderId: orderId ?? null, invoiceId: invoiceId ?? null, limit }],
     enabled,
     queryFn: async () => {
       const params = new URLSearchParams();
       if (quoteId) params.set("quoteId", quoteId);
       if (orderId) params.set("orderId", orderId);
+      if (invoiceId) params.set("invoiceId", invoiceId);
       if (limit) params.set("limit", String(limit));
 
       const response = await fetch(`/api/timeline?${params.toString()}`, {

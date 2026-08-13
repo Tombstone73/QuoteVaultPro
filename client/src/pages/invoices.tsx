@@ -271,7 +271,7 @@ export default function InvoicesListPage() {
                 {renderSortableHead("issueDate", "Issue Date", "min-w-[120px]")}
                 {renderSortableHead("dueDate", "Due Date", "min-w-[120px]")}
                 {renderSortableHead("status", "Status", "min-w-[130px]")}
-                <TitanTableHead className="min-w-[140px]">Last Sent</TitanTableHead>
+                {renderSortableHead("lastSentAt", "Last Sent", "min-w-[140px]")}
                 {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
                 <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
                 {renderSortableHead("balance", "Balance", "min-w-[110px] text-right")}

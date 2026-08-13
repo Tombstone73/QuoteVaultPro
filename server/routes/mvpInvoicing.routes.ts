@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
+import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
@@ -502,18 +503,17 @@ export async function registerMvpInvoicingRoutes(
     }
 
     try {
-      await db.insert(auditLogs).values({
+      await db.insert(auditLogs).values(buildInvoiceEmailSentAudit({
         organizationId: input.organizationId,
-        userId: input.userId || null,
-        userName: input.userName || null,
-        actionType: "invoice.sent",
-        entityType: "invoice",
-        entityId: input.invoiceId,
-        entityName: String(inv.invoiceNumber),
-        description: `Invoice sent via email to ${recipientEmail}`,
-        newValues: { via: "email", invoiceVersion, recipientEmail, messageId } as any,
-        createdAt: now,
-      } as any);
+        invoiceId: input.invoiceId,
+        invoiceNumber: inv.invoiceNumber,
+        actorUserId: input.userId,
+        actorName: input.userName,
+        recipientEmail,
+        invoiceVersion,
+        messageId,
+        sentAt: now,
+      }) as any);
     } catch (auditError) {
       console.error("Audit log failed:", auditError);
     }

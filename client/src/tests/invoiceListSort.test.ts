@@ -15,6 +15,10 @@ describe("invoice list sorting", () => {
       sortKey: "balance",
       sortDir: "desc",
     });
+    expect(getNextInvoiceSortState({ sortKey: "balance", sortDir: "desc" }, "lastSentAt")).toEqual({
+      sortKey: "lastSentAt",
+      sortDir: "desc",
+    });
   });
 
   test("clicking the active sort key toggles direction", () => {

@@ -176,6 +176,7 @@ export type InvoiceListSortBy =
   | 'purchaseOrderNumber'
   | 'issueDate'
   | 'dueDate'
+  | 'lastSentAt'
   | 'status'
   | 'total'
   | 'balance';
@@ -255,6 +256,15 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
       return sql`lower(coalesce(${orders.poNumber}, ${invoices.customerPoNumber}, ''))`;
     case 'dueDate':
       return sql`coalesce(${invoices.dueDate}, '9999-12-31'::timestamptz)`;
+    case 'lastSentAt':
+      return sql`coalesce((
+        select max(${invoiceEmailLogs.sentAt})
+        from ${invoiceEmailLogs}
+        where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+          and ${invoiceEmailLogs.organizationId} = ${organizationId}
+          and ${invoiceEmailLogs.type} = 'invoice_send'
+          and ${invoiceEmailLogs.status} = 'sent'
+      ), 'epoch'::timestamptz)`;
     case 'status':
       return sql`lower(coalesce(${invoices.status}, ''))`;
     case 'total':

@@ -53,9 +53,10 @@ export function registerTimelineRoutes(
 
       const quoteId = (req.query.quoteId as string | undefined) || undefined;
       const orderId = (req.query.orderId as string | undefined) || undefined;
+      const invoiceId = (req.query.invoiceId as string | undefined) || undefined;
 
-      if (!quoteId && !orderId) {
-        return res.status(400).json({ message: "Provide quoteId and/or orderId" });
+      if (!quoteId && !orderId && !invoiceId) {
+        return res.status(400).json({ message: "Provide quoteId, orderId, and/or invoiceId" });
       }
 
       const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;
@@ -85,6 +86,7 @@ export function registerTimelineRoutes(
 
       const quoteIds = new Set<string>();
       const orderIds = new Set<string>();
+      const invoiceIds = new Set<string>();
 
       // Validate and expand quote/order context
       if (quoteId) {
@@ -126,6 +128,18 @@ export function registerTimelineRoutes(
         if (!o) return res.status(404).json({ message: "Order not found" });
         orderIds.add(o.id);
         if (o.quoteId) quoteIds.add(o.quoteId);
+      }
+
+      if (invoiceId) {
+        const invoice = await db
+          .select({ id: invoices.id, orderId: invoices.orderId })
+          .from(invoices)
+          .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
+          .limit(1)
+          .then((rows) => rows[0]);
+        if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+        invoiceIds.add(invoice.id);
+        if (invoice.orderId) orderIds.add(invoice.orderId);
       }
 
       // Helper: best-effort user name lookup (fail-soft)
@@ -212,6 +226,10 @@ export function registerTimelineRoutes(
         }
         if (oIds.length) {
           auditEntityConds.push(and(eq(auditLogs.entityType, 'order'), inArray(auditLogs.entityId, oIds)));
+        }
+        const iIds = Array.from(invoiceIds);
+        if (iIds.length) {
+          auditEntityConds.push(and(eq(auditLogs.entityType, 'invoice'), inArray(auditLogs.entityId, iIds)));
         }
 
         const audit: any[] = auditEntityConds.length
@@ -629,11 +647,15 @@ export function registerTimelineRoutes(
       const invoiceIdToNumber = new Map<string, number>();
       try {
         const oIds = Array.from(orderIds);
-        if (oIds.length) {
+        const directInvoiceIds = Array.from(invoiceIds);
+        if (oIds.length || directInvoiceIds.length) {
+          const invoiceConditions: any[] = [];
+          if (oIds.length) invoiceConditions.push(inArray(invoices.orderId, oIds));
+          if (directInvoiceIds.length) invoiceConditions.push(inArray(invoices.id, directInvoiceIds));
           const inv = await db
             .select()
             .from(invoices)
-            .where(and(eq(invoices.organizationId, organizationId), inArray(invoices.orderId, oIds)))
+            .where(and(eq(invoices.organizationId, organizationId), or(...invoiceConditions)))
             .orderBy(desc(invoices.createdAt))
             .limit(Math.min(limit * 2, 200));
 

@@ -2601,7 +2601,7 @@ export default function InvoiceDetailPage() {
                 <CardContent className="py-4 px-6">
                   {bottomPanel === "timeline" && (
                     invoice.orderId ? (
-                      <TimelinePanel orderId={invoice.orderId} />
+                      <TimelinePanel orderId={invoice.orderId} invoiceId={invoice.id} />
                     ) : (
                       <div className="text-sm text-muted-foreground">No activity yet.</div>
                     )
