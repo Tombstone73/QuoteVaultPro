@@ -1170,6 +1170,13 @@
       "when": 1788048000018,
       "tag": "0171_customer_merge_workflow",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1788048000019,
+      "tag": "0172_material_vendor_purchase_units",
+      "breakpoints": true
     }
   ]
 }

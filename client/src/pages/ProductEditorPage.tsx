@@ -252,7 +252,8 @@ const ProductEditorPage = () => {
     },
   });
 
-  const { data: materials } = useMaterials();
+  const materialsQuery = useMaterials();
+  const materials = materialsQuery.data;
   const { data: pricingFormulas } = usePricingFormulas();
   const { data: productTypes, isError: productTypesError } = useProductTypes();
   const draft = useProductBuilderDraft({ form, materials, pricingFormulas });
@@ -1120,6 +1121,9 @@ const ProductEditorPage = () => {
             <ProductForm
               form={form}
               materials={materials}
+              materialsLoading={materialsQuery.isLoading}
+              materialsError={materialsQuery.isError}
+              onRetryMaterials={() => { void materialsQuery.refetch(); }}
               pricingFormulas={pricingFormulas}
               productTypes={productTypes}
               onSave={handleSave}

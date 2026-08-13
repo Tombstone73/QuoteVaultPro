@@ -66,6 +66,9 @@ const MATERIAL_SELECT_CONTENT_CLASS = "max-h-80 overflow-y-auto";
 export const ProductForm = ({
   form,
   materials,
+  materialsLoading = false,
+  materialsError = false,
+  onRetryMaterials,
   pricingFormulas,
   productTypes,
   onSave,
@@ -89,6 +92,9 @@ export const ProductForm = ({
 }: {
   form: any;
   materials: any;
+  materialsLoading?: boolean;
+  materialsError?: boolean;
+  onRetryMaterials?: () => void;
   pricingFormulas: any;
   productTypes: any;
   onSave: any;
@@ -496,13 +502,14 @@ export const ProductForm = ({
                   />
                 </div>
                 <Select
-                  key={materialsLoaded ? "primary-material-loaded" : "primary-material-loading"}
+                  key={materialsError ? "primary-material-error" : materialsLoaded ? "primary-material-loaded" : "primary-material-loading"}
                   onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                   value={field.value || "__none__"}
+                  disabled={materialsLoading || materialsError}
                 >
                   <FormControl>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select primary material" />
+                      <SelectValue placeholder={materialsLoading ? "Loading materials…" : materialsError ? "Materials unavailable" : "Select primary material"} />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent className={MATERIAL_SELECT_CONTENT_CLASS}>
@@ -520,6 +527,22 @@ export const ProductForm = ({
                 <FormDescription className="text-[11px] text-slate-500">
                   Used as the weight source unless a PBV2 option choice resolves a more specific material.
                 </FormDescription>
+                {materialsLoading ? (
+                  <div className="text-[11px] text-slate-400" role="status">Loading active materials…</div>
+                ) : null}
+                {materialsError ? (
+                  <div className="flex items-center gap-2 text-[11px] text-amber-300" role="alert">
+                    <span>Materials could not be loaded. The selector is disabled until the list is available.</span>
+                    {onRetryMaterials ? (
+                      <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[11px]" onClick={onRetryMaterials}>
+                        Retry
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {materialsLoaded && materials.length === 0 ? (
+                  <div className="text-[11px] text-slate-400">No active materials are available in this organization.</div>
+                ) : null}
                 {selectedPrimaryMaterial ? (
                   <div className={`text-[11px] ${formatMaterialWeightStatus(selectedPrimaryMaterial) === "Weight not configured" ? "text-amber-300" : "text-emerald-300"}`}>
                     {formatMaterialWeightStatus(selectedPrimaryMaterial)}

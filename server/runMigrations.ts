@@ -179,6 +179,11 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // migration 0172 - vendor purchasing fields are selected by the material
+  // repository, so startup must fail clearly instead of serving an empty UI.
+  { type: "column_exists", table: "materials", column: "inventory_units_per_purchase_unit", label: "materials.inventory_units_per_purchase_unit" },
+  { type: "column_exists", table: "materials", column: "minimum_purchase_quantity", label: "materials.minimum_purchase_quantity" },
+  { type: "column_exists", table: "purchase_order_line_items", column: "inventory_units_per_purchase_unit", label: "purchase_order_line_items.inventory_units_per_purchase_unit" },
   // migration 0169 - repair historical allocation-column drift that blocks
   // the compatibility projection within canonical artwork upload transactions.
   { type: "column_exists", table: "order_attachments", column: "production_quantity", label: "order_attachments.production_quantity" },

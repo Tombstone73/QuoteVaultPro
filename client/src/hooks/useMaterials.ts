@@ -158,7 +158,7 @@ export interface MaterialUsage {
   createdAt: string;
 }
 
-interface MaterialFilters {
+export interface MaterialFilters {
   search?: string;
   type?: string;
   lowStockOnly?: boolean;
@@ -226,34 +226,47 @@ export function useMaterialsSearch(searchText: string, options?: { limit?: numbe
   });
 }
 
+export function buildMaterialsApiUrl(filters?: MaterialFilters): string {
+  const params = new URLSearchParams();
+  if (filters?.includeInactive) params.set("includeInactive", "true");
+  return params.toString() ? `/api/materials?${params.toString()}` : "/api/materials";
+}
+
+export function parseMaterialsApiResponse(json: unknown): Material[] {
+  const response = json as { success?: boolean; data?: unknown; materials?: unknown } | null;
+  const payload = response?.success ? response.data : response;
+  return Array.isArray(payload) ? payload as Material[] : Array.isArray((payload as { materials?: unknown })?.materials) ? (payload as { materials: Material[] }).materials : [];
+}
+
+export function filterMaterialsForClient(list: Material[], filters?: MaterialFilters): Material[] {
+  // Client-side filters until server supports them.
+  return list.filter(m => {
+    if (filters?.search) {
+      const s = filters.search.toLowerCase();
+      if (!(m.name.toLowerCase().includes(s) || m.sku.toLowerCase().includes(s))) return false;
+    }
+    if (filters?.type && filters.type !== "all" && m.type !== filters.type) return false;
+    if (filters?.lowStockOnly) {
+      const stock = parseFloat(m.stockQuantity || "0");
+      const min = parseFloat(m.minStockAlert || "0");
+      if (!(stock <= min && min > 0)) return false;
+    }
+    return true;
+  });
+}
+
+type MaterialsRequest = (input: RequestInfo | URL, init?: RequestInit) => Promise<Pick<Response, "ok" | "json">>;
+
+export async function fetchMaterials(filters?: MaterialFilters, request: MaterialsRequest = fetch): Promise<Material[]> {
+  const response = await request(buildMaterialsApiUrl(filters), { credentials: "include" });
+  if (!response.ok) throw new Error("Failed to fetch materials");
+  return filterMaterialsForClient(parseMaterialsApiResponse(await response.json()), filters);
+}
+
 export function useMaterials(filters?: MaterialFilters) {
   return useQuery<Material[]>({
     queryKey: ["/api/materials", filters],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (filters?.includeInactive) params.set("includeInactive", "true");
-
-      const url = params.toString() ? `/api/materials?${params.toString()}` : "/api/materials";
-      const response = await fetch(url, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch materials");
-      const json = await response.json();
-      const payload = json?.success ? json.data : json;
-      const list: Material[] = Array.isArray(payload) ? payload : Array.isArray(payload?.materials) ? payload.materials : [];
-      // Client-side filters until server supports them
-      return list.filter(m => {
-        if (filters?.search) {
-          const s = filters.search.toLowerCase();
-          if (!(m.name.toLowerCase().includes(s) || m.sku.toLowerCase().includes(s))) return false;
-        }
-        if (filters?.type && filters.type !== "all" && m.type !== filters.type) return false;
-        if (filters?.lowStockOnly) {
-          const stock = parseFloat(m.stockQuantity || "0");
-          const min = parseFloat(m.minStockAlert || "0");
-            if (!(stock <= min && min > 0)) return false;
-        }
-        return true;
-      });
-    },
+    queryFn: () => fetchMaterials(filters),
   });
 }
 
