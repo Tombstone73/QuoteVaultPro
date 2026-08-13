@@ -34,6 +34,10 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
   };
   orderedQty: number;
   shippedQty: number;
+  productionCompleteQty?: number;
+  eligibleQty?: number;
+  blockedQty?: number;
+  physicalLineCount?: number;
   pickupTicket: { id: string; status: string | null } | null;
   shipmentId: string | null;
   deriveShipStatus: (fulfillmentStatus: string | null, orderedQty: number, shippedQty: number) => string;
@@ -54,6 +58,13 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
     fulfillmentType: isPickup ? 'PICKUP' : 'SHIP',
     status,
     itemsRemaining: `${remaining} item(s)`,
+    physicalLineCount: input.physicalLineCount ?? 0,
+    orderedQuantity: orderedQty,
+    productionCompleteQuantity: input.productionCompleteQty ?? 0,
+    eligibleQuantity: input.eligibleQty ?? 0,
+    blockedQuantity: input.blockedQty ?? remaining,
+    shippedQuantity: shippedQty,
+    remainingQuantity: remaining,
     readySince: isEligible ? toIso(order.productionCompletedAt ?? order.updatedAt) : null,
     shipTo: isPickup ? 'In-Store' : [order.shipToCity, order.shipToState].filter(Boolean).join(', ') || 'Unknown',
     overdue: false,

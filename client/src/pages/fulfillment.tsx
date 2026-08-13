@@ -41,8 +41,10 @@ import { formatDistanceToNowStrict } from "date-fns";
 
 const statusOptions = [
   { value: "all", label: "All" },
-  { value: "draft", label: "Draft" },
+  { value: "waiting_on_production", label: "Waiting" },
+  { value: "partially_ready", label: "Partially Ready" },
   { value: "ready", label: "Ready" },
+  { value: "partially_shipped", label: "Partially Shipped" },
   { value: "shipped", label: "Shipped" },
   { value: "ready_for_pickup", label: "Ready for Pickup" },
   { value: "picked_up", label: "Picked Up" },
@@ -53,20 +55,20 @@ type FulfillmentPageProps = {
   initialType?: "all" | "ship" | "pickup";
 };
 
-function parseItemsRemaining(value: string): number {
-  const match = value.match(/\d+/);
-  return match ? Number(match[0]) : 0;
-}
-
 function statusBadgeClass(status: string): string {
   const normalized = status.toUpperCase();
   if (normalized === "DRAFT") return "bg-muted text-muted-foreground border border-border";
   if (normalized === "READY") return "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20";
   if (normalized === "SHIPPED") return "bg-blue-500/10 text-blue-500 border border-blue-500/20";
-  if (normalized === "PARTIAL") return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
+  if (["PARTIAL", "PARTIALLY_READY", "PARTIALLY_SHIPPED"].includes(normalized)) return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
+  if (normalized === "WAITING_ON_PRODUCTION") return "bg-orange-500/10 text-orange-500 border border-orange-500/20";
   if (normalized === "READY_FOR_PICKUP") return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
   if (normalized === "PICKED_UP") return "bg-muted text-muted-foreground border border-border";
   return "bg-muted text-muted-foreground border border-border";
+}
+
+function statusLabel(status: string): string {
+  return status.toLowerCase().split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
 }
 
 // Retained for the secondary detail component while the list itself no longer
@@ -506,8 +508,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     const uniqueAddresses = new Set(selectedRows.map((row) => row.shipTo.trim().toLowerCase()));
     if (uniqueAddresses.size > 1) return "Selected orders have different delivery addresses";
 
-    const hasRemaining = selectedRows.some((row) => parseItemsRemaining(row.itemsRemaining) > 0);
-    if (!hasRemaining) return "No shippable items remaining";
+    if (selectedRows.some((row) => row.eligibleQuantity <= 0)) return "Every selected order must have a production-ready quantity";
 
     return null;
   }, [selectedRows]);
@@ -766,9 +767,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Customer</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Fulfillment</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Status</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Items Remaining</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready Since</th>
-                <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ship To</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Ready / remaining</th>
                 <th className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">Destination</th>
               </tr>
@@ -776,7 +775,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
             <tbody className="divide-y divide-border">
               {queueQuery.isLoading && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     <div className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading queue...
@@ -787,11 +786,11 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
 
               {!queueQuery.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <div className="mx-auto mb-4 w-fit rounded-full bg-muted p-4">
                       <Box className="h-8 w-8 text-muted-foreground" />
                     </div>
-                    <h3 className="mb-1 text-lg font-bold">No orders ready for fulfillment</h3>
+                    <h3 className="mb-1 text-lg font-bold">No active fulfillment work</h3>
                     <p className="text-sm text-muted-foreground">Try adjusting your filters to find what you're looking for.</p>
                   </td>
                 </tr>
@@ -855,13 +854,11 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                     </td>
                     <td className="px-4 py-4">
                       <span className={`inline-flex items-center rounded px-2 py-1 text-[11px] font-bold ${statusBadgeClass(row.status)}`}>
-                        {row.status}
+                        {statusLabel(row.status)}
                       </span>
                     </td>
-                    <td className="px-4 py-4 text-sm font-medium">{row.itemsRemaining}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
-                    <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
-                    <td className="px-4 py-4 text-sm"><span className="font-medium">{row.itemsRemaining}</span><p className="text-xs text-muted-foreground">{row.productionContext?.completedAt ? "Production complete" : "Ready for fulfillment"}</p></td>
+                    <td className="px-4 py-4 text-sm"><span className="font-medium">Ready {row.eligibleQuantity} / {row.remainingQuantity}</span><p className="text-xs text-muted-foreground">{row.blockedQuantity > 0 ? `${row.blockedQuantity} waiting on production` : `${row.shippedQuantity} shipped`}</p></td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
                   </tr>
                 );

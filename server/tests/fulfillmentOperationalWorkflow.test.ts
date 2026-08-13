@@ -246,35 +246,38 @@ describe("fulfillment operational workflow helpers", () => {
     });
   });
 
-  test("mark shipped requires completed checklist with shipped-specific error message", async () => {
+  test("mark shipped rejects allocations beyond the verified ready quantity", async () => {
     const fakeShipmentRepo = {
       getShipmentById: jest.fn(async () => ({
         id: "shipment-1",
         status: "DRAFT",
         orders: [{ orderId: "order-1", orderState: "production_complete", orderStatus: "in_production", orderCanceledAt: null }],
+        items: [{ orderId: "order-1", orderLineItemId: "line-1", quantity: 1 }],
       })),
       markShipped: jest.fn(),
     };
     const fakeDashboardRepo = {
       getOrdersForCombinedShipmentValidation: jest.fn(async () => [{ id: "order-1", shippingMethod: "ship" }]),
-      assertOrderChecklistComplete: jest.fn(async () => ({
-        ok: false,
-        code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
-        message: "old generic message",
-        summary: { total: 1, checked: 0, unchecked: 1, complete: false },
-      })),
+      listLineEligibility: jest.fn(async () => [{
+        id: "line-1",
+        orderId: "order-1",
+        projection: { requiresFulfillment: true, eligibleQuantity: 1, shippedQuantity: 0 },
+      }]),
     };
+    const select = jest.fn()
+      .mockImplementationOnce(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }]))
+      .mockImplementationOnce(() => selectChain([{ lineItemId: "line-1", fulfilledQuantity: 0 }]));
     const service = new FulfillmentService({
       dashboardRepo: fakeDashboardRepo as any,
       shipmentRepo: fakeShipmentRepo as any,
       pickupRepo: {} as any,
-      dbInstance: { select: jest.fn(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }])) } as any,
+      dbInstance: { select } as any,
     });
 
     await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).rejects.toMatchObject({
       status: 409,
-      code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
-      message: "1 item still require fulfillment verification.",
+      code: "QTY_EXCEEDS_READY",
+      message: "Shipment quantity exceeds the verified production-ready quantity for a line item.",
     });
     expect(fakeShipmentRepo.markShipped).not.toHaveBeenCalled();
   });

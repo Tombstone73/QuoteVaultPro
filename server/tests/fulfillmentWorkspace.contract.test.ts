@@ -42,7 +42,7 @@ describe('fulfillment order workspace contract', () => {
     });
   });
 
-  it('keeps a real non-production-complete Order addressable while signaling that shipping remains blocked', () => {
+  it('keeps a real non-production-complete Order addressable in the fulfillment workspace', () => {
     const workspace = buildFulfillmentWorkspaceQueueRow({
       order: { ...baseOrder, state: 'open', status: 'new', productionCompletedAt: null },
       orderedQty: 7,
@@ -54,7 +54,7 @@ describe('fulfillment order workspace contract', () => {
 
     expect(workspace).toMatchObject({
       orderId: baseOrder.id,
-      status: 'AWAITING_PRODUCTION',
+      status: 'DRAFT',
       shipmentId: null,
     });
   });

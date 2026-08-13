@@ -8,8 +8,7 @@ import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
-import { resolveActiveProductionOwners } from '../productionOwnership';
-import { resolveFulfillmentLineReadiness } from '@shared/fulfillmentReadiness';
+import { resolveFulfillmentAllocatableQuantity } from '@shared/fulfillmentReadiness';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -168,8 +167,14 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(404, 'One or more orders were not found', 'ORDER_NOT_FOUND');
     }
 
-    const lineItemCounts = await this.dashboardRepo.getLineItemCountsForOrders(uniqueOrderIds);
-    const lineItemCountByOrderId = new Map(lineItemCounts.map((r) => [r.orderId, r.count]));
+    const lineEligibility = await this.dashboardRepo.listLineEligibility(orgId, { orderIds: uniqueOrderIds });
+    const eligibleQuantityByOrderId = new Map<string, number>();
+    const physicalLineCountByOrderId = new Map<string, number>();
+    for (const line of lineEligibility) {
+      if (!line.projection.requiresFulfillment) continue;
+      physicalLineCountByOrderId.set(line.orderId, (physicalLineCountByOrderId.get(line.orderId) ?? 0) + 1);
+      eligibleQuantityByOrderId.set(line.orderId, (eligibleQuantityByOrderId.get(line.orderId) ?? 0) + line.projection.eligibleQuantity);
+    }
 
     for (const order of ordersForValidation) {
       if (isCanceledOrder(order)) {
@@ -184,9 +189,12 @@ export class FulfillmentService {
         throw new FulfillmentHttpError(400, 'Cannot combine pickup and shipping orders', 'MIXED_FULFILLMENT_TYPES');
       }
 
-      const lineItemCount = lineItemCountByOrderId.get(order.id) || 0;
+      const lineItemCount = physicalLineCountByOrderId.get(order.id) || 0;
       if (lineItemCount <= 0) {
         throw new FulfillmentHttpError(400, `Order ${order.id} has no shippable line items`, 'ORDER_NOT_SHIP_ELIGIBLE');
+      }
+      if ((eligibleQuantityByOrderId.get(order.id) ?? 0) <= 0) {
+        throw new FulfillmentHttpError(409, `Order ${order.id} has no production-ready quantity to ship`, 'NO_ELIGIBLE_QUANTITY');
       }
     }
 
@@ -371,42 +379,26 @@ export class FulfillmentService {
   private async assertExplicitAllocationsEligible(orgId: string, items: Array<{ orderId: string; orderLineItemId: string; quantity: number }>) {
     const lineItemIds = Array.from(new Set(items.map((item) => item.orderLineItemId)));
     if (!lineItemIds.length) return;
-    const lines = await this.dbInstance.select({
-      id: orderLineItems.id, orderId: orderLineItems.orderId, quantity: orderLineItems.quantity,
-      workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status,
-    }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
-      .where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.id, lineItemIds)));
+    const lines = await this.dashboardRepo.listLineEligibility(orgId, { lineItemIds });
     const byId = new Map(lines.map((line) => [line.id, line]));
-    const owners = await resolveActiveProductionOwners(this.dbInstance, { organizationId: orgId, lineItemIds, debugLabel: 'FulfillmentService.assertExplicitAllocationsEligible' });
-    const shippedByLine = await this.getShippedQuantityByLine(orgId, lineItemIds);
+    const checklistRows = await this.dbInstance.select({
+      lineItemId: fulfillmentChecklistItems.lineItemId,
+      fulfilledQuantity: fulfillmentChecklistItems.fulfilledQuantity,
+    }).from(fulfillmentChecklistItems).where(and(
+      eq(fulfillmentChecklistItems.organizationId, orgId),
+      inArray(fulfillmentChecklistItems.lineItemId, lineItemIds),
+    ));
+    const verifiedByLine = new Map(checklistRows.map((row) => [row.lineItemId, Number(row.fulfilledQuantity || 0)]));
     const quantityByLine = new Map<string, number>();
     for (const item of items) quantityByLine.set(item.orderLineItemId, (quantityByLine.get(item.orderLineItemId) ?? 0) + Number(item.quantity));
     for (const [lineItemId, quantity] of quantityByLine) {
       const line = byId.get(lineItemId);
-      const owner = owners.get(lineItemId);
-      const readiness = resolveFulfillmentLineReadiness({ workflowState: line?.workflowState, lifecycleStatus: line?.lifecycleStatus, activeOwnerStationKey: owner?.stationKey, activeOwnerStepKey: owner?.stepKey, activeOwnerStatus: owner?.status });
-      if (!line || line.orderId !== items.find((item) => item.orderLineItemId === lineItemId)?.orderId || !readiness.eligible) {
-        throw new FulfillmentHttpError(409, 'Shipment quantities require production-complete line items.', 'PRODUCTION_NOT_COMPLETE');
+      if (!line || line.orderId !== items.find((item) => item.orderLineItemId === lineItemId)?.orderId || !line.projection.requiresFulfillment) {
+        throw new FulfillmentHttpError(409, 'Shipment quantities require a physical fulfillment line item.', 'LINE_NOT_FULFILLABLE');
       }
-      const remaining = Math.max(0, Number(line.quantity || 0) - (shippedByLine.get(lineItemId) ?? 0));
-      if (quantity > remaining) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the remaining quantity for a line item.', 'QTY_EXCEEDS_REMAINING');
+      const allowed = resolveFulfillmentAllocatableQuantity(line.projection, verifiedByLine.get(lineItemId) ?? 0);
+      if (quantity > allowed) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the verified production-ready quantity for a line item.', 'QTY_EXCEEDS_READY');
     }
-  }
-
-  /** Terminal shipment quantities are never reallocated by another draft. */
-  private async getShippedQuantityByLine(orgId: string, lineItemIds: string[]) {
-    if (!lineItemIds.length) return new Map<string, number>();
-    const rows = await this.dbInstance.select({
-      lineItemId: shipmentItems.orderLineItemId,
-      quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
-    }).from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
-      .where(and(
-        eq(shipmentItems.organizationId, orgId),
-        eq(shipments.organizationId, orgId),
-        eq(shipments.status, 'SHIPPED'),
-        inArray(shipmentItems.orderLineItemId, lineItemIds),
-      )).groupBy(shipmentItems.orderLineItemId);
-    return new Map(rows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
   }
 
   /** Simple mode writes normal shipment_items and a real default package; it
@@ -416,26 +408,17 @@ export class FulfillmentService {
     if (!shipment || shipment.status !== 'DRAFT') return;
     const orderIds = Array.from(new Set(shipment.orders.map((order: any) => String(order.orderId)).filter(Boolean)));
     if (!orderIds.length) return;
-    const lines = await this.dbInstance.select({
-      id: orderLineItems.id, orderId: orderLineItems.orderId, quantity: orderLineItems.quantity,
-      workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status,
-    }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
-      .where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.orderId, orderIds)));
+    const lines = await this.dashboardRepo.listLineEligibility(orgId, { orderIds });
     const lineItemIds = lines.map((line) => line.id);
     const checklistRows = lineItemIds.length ? await this.dbInstance.select({ lineItemId: fulfillmentChecklistItems.lineItemId, fulfilledQuantity: fulfillmentChecklistItems.fulfilledQuantity })
       .from(fulfillmentChecklistItems).where(and(eq(fulfillmentChecklistItems.organizationId, orgId), inArray(fulfillmentChecklistItems.lineItemId, lineItemIds))) : [];
     const fulfilledByLine = new Map(checklistRows.map((row) => [row.lineItemId, Number(row.fulfilledQuantity || 0)]));
-    const owners = lineItemIds.length ? await resolveActiveProductionOwners(this.dbInstance, { organizationId: orgId, lineItemIds, debugLabel: 'FulfillmentService.syncSimpleShipmentAllocations' }) : new Map<string, any>();
-    const shippedByLine = await this.getShippedQuantityByLine(orgId, lineItemIds);
     let defaultPackage = shipment.packages[0] ?? null;
     if (!defaultPackage) defaultPackage = await this.createShipmentPackage(orgId, shipmentId, { actorUserId });
     const items = lines.flatMap((line) => {
-      const owner = owners.get(line.id);
-      const readiness = resolveFulfillmentLineReadiness({ workflowState: line.workflowState, lifecycleStatus: line.lifecycleStatus, activeOwnerStationKey: owner?.stationKey, activeOwnerStepKey: owner?.stepKey, activeOwnerStatus: owner?.status });
-      const remaining = Math.max(0, Number(line.quantity) - (shippedByLine.get(line.id) ?? 0));
-      const verifiedQuantity = Math.min(remaining, fulfilledByLine.get(line.id) ?? 0);
-      return readiness.eligible && verifiedQuantity > 0
-        ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: verifiedQuantity, packageId: defaultPackage!.id }]
+      const allocatableQuantity = resolveFulfillmentAllocatableQuantity(line.projection, fulfilledByLine.get(line.id) ?? 0);
+      return line.projection.requiresFulfillment && allocatableQuantity > 0
+        ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: allocatableQuantity, packageId: defaultPackage!.id }]
         : [];
     });
     const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, items);
@@ -522,9 +505,11 @@ export class FulfillmentService {
     }
 
     const orderIds = Array.from(new Set((existing.orders || []).map((order: any) => String(order.orderId)).filter(Boolean)));
-    if (await this.getVerificationPolicy(orgId) === 'strict_separate_verification') {
-      for (const orderId of orderIds) await this.requireChecklistComplete(orgId, orderId, 'shipped');
-    }
+    await this.assertExplicitAllocationsEligible(orgId, (existing.items || []).map((item: any) => ({
+      orderId: String(item.orderId),
+      orderLineItemId: String(item.orderLineItemId),
+      quantity: Number(item.quantity || 0),
+    })));
     const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
 
     if (!result.ok) {

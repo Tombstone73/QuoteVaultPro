@@ -1,4 +1,4 @@
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { orders } from "@shared/schema";
 import { isCanceledOrder } from "@shared/operationalState";
 
@@ -16,16 +16,13 @@ export function isProductionCompleteForFulfillment(order: Pick<FulfillmentEligib
 
 export function isFulfillmentQueueEligibleOrder(order: FulfillmentEligibilityOrder): boolean {
   if (isCanceledOrder(order)) return false;
-  if (!isProductionCompleteForFulfillment(order)) return false;
-  if (order.shippingMethod === "pickup") return true;
-  return order.routingTarget === "fulfillment";
+  return ["open", "production_complete"].includes(String(order.state || "").toLowerCase());
 }
 
 export function fulfillmentQueueEligibleOrderCondition(organizationId: string) {
   return and(
     eq(orders.organizationId, organizationId),
-    eq(orders.state as any, "production_complete"),
-    or(eq(orders.routingTarget as any, "fulfillment"), eq(orders.shippingMethod as any, "pickup")),
+    sql`lower(coalesce(${orders.state}, '')) in ('open', 'production_complete')`,
     isNull(orders.canceledAt),
     sql`lower(coalesce(${orders.status}, '')) not in ('canceled', 'cancelled')`,
   );

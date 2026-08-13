@@ -18,6 +18,8 @@ import { useToast } from "@/hooks/use-toast";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import {
   getOrderDetails,
+  getFulfillmentOrderDetail,
+  FulfillmentDetail,
   ShipmentDetail,
   toFulfillmentError,
   useMarkShippedMutation,
@@ -119,6 +121,7 @@ export function FulfillmentShipmentEditor({
   const [packageByLineItemId, setPackageByLineItemId] = useState<Record<string, string>>({});
   const [packageFieldsById, setPackageFieldsById] = useState<Record<string, { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string }>>({});
   const [ordersById, setOrdersById] = useState<Record<string, OrderDetailLite>>({});
+  const [fulfillmentByOrderId, setFulfillmentByOrderId] = useState<Record<string, FulfillmentDetail>>({});
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
@@ -178,14 +181,20 @@ export function FulfillmentShipmentEditor({
     let cancelled = false;
     setLoadingOrders(true);
 
-    Promise.all(shipment.orders.map(async (orderRef) => getOrderDetails(orderRef.orderId)))
+    Promise.all(shipment.orders.map(async (orderRef) => Promise.all([
+      getOrderDetails(orderRef.orderId),
+      getFulfillmentOrderDetail(orderRef.orderId),
+    ])))
       .then((results) => {
         if (cancelled) return;
         const map: Record<string, OrderDetailLite> = {};
-        results.forEach((order) => {
+        const fulfillmentMap: Record<string, FulfillmentDetail> = {};
+        results.forEach(([order, fulfillment]) => {
           map[String(order.id)] = order as OrderDetailLite;
+          fulfillmentMap[String(order.id)] = fulfillment;
         });
         setOrdersById(map);
+        setFulfillmentByOrderId(fulfillmentMap);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -217,12 +226,13 @@ export function FulfillmentShipmentEditor({
 
     return shipment.orders.map((orderRef) => {
       const order = ordersById[orderRef.orderId];
-      const lineItems = (order?.lineItems ?? []).map((li) => ({
+      const fulfillment = fulfillmentByOrderId[orderRef.orderId];
+      const lineItems = (fulfillment?.lineItems ?? []).map((li) => ({
         id: li.id,
-        label: li.product?.name || li.description || "Line Item",
-        sku: li.product?.sku || "--",
-        orderedQty: Number(li.quantity || 0),
-        remainingQty: Number(li.quantity || 0),
+        label: li.productName || li.description || "Line Item",
+        sku: "--",
+        orderedQty: li.production.orderedQuantity,
+        remainingQty: li.production.eligibleQuantity,
       }));
 
       return {
@@ -232,7 +242,7 @@ export function FulfillmentShipmentEditor({
         lineItems,
       };
     });
-  }, [ordersById, shipment]);
+  }, [fulfillmentByOrderId, ordersById, shipment]);
 
   const addressMismatch = useMemo(() => {
     const addresses = new Set(

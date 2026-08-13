@@ -10,6 +10,13 @@ export interface FulfillmentQueueRow {
   fulfillmentType: "SHIP" | "PICKUP";
   status: string;
   itemsRemaining: string;
+  physicalLineCount: number;
+  orderedQuantity: number;
+  productionCompleteQuantity: number;
+  eligibleQuantity: number;
+  blockedQuantity: number;
+  shippedQuantity: number;
+  remainingQuantity: number;
   readySince: string | null;
   shipTo: string;
   overdue: boolean;
@@ -77,6 +84,13 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       completedAt: string | null;
       eligible: boolean;
       label: string;
+      productionRequired: boolean;
+      orderedQuantity: number;
+      productionCompleteQuantity: number;
+      eligibleQuantity: number;
+      blockedQuantity: number;
+      shippedQuantity: number;
+      remainingQuantity: number;
     };
     artwork: Array<{
       id: string;
@@ -93,11 +107,12 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       mimeType: string | null;
       side: string | null;
       role: string | null;
-      source: "order_attachment" | "line_item_file" | "asset";
+      source: "canonical" | "order_attachment" | "line_item_file" | "asset";
     }>;
     checklist: {
       id: string;
       checked: boolean;
+      fulfilledQuantity: number;
       checkedByUserId: string | null;
       checkedAt: string | null;
       notes: string | null;
@@ -436,6 +451,10 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       invalidateFulfillment(queryClient);
     },
   });
+}
+
+export function getFulfillmentOrderDetail(orderId: string) {
+  return apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}`);
 }
 
 export function useCreateShipmentPackageMutation(shipmentId: string) {
