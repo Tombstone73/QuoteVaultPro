@@ -7,7 +7,7 @@ import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
-import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
+import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 import { resolveFulfillmentAllocatableQuantity } from '@shared/fulfillmentReadiness';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
@@ -315,9 +315,7 @@ export class FulfillmentService {
     }
 
     const packingMode = await this.getPackingMode(orgId);
-    if (packingMode === 'simple_verified_packing') {
-      await this.syncSimpleShipmentAllocations(orgId, shipmentId, payload.actorUserId);
-    } else if (payload.shipmentItems) {
+    if (payload.shipmentItems) {
       await this.assertExplicitAllocationsEligible(orgId, payload.shipmentItems);
       const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, payload.shipmentItems);
       if (!replacement.ok) {
@@ -326,6 +324,8 @@ export class FulfillmentService {
       if (await this.getVerificationPolicy(orgId) === 'packing_completes_fulfillment') {
         await this.syncSimplePackedQuantities(orgId, shipmentId, payload.actorUserId, existing.items.map((item: any) => item.orderLineItemId));
       }
+    } else if (packingMode === 'simple_verified_packing') {
+      await this.syncSimpleShipmentAllocations(orgId, shipmentId, payload.actorUserId);
     }
 
     await this.shipmentRepo.insertEvent(
@@ -486,12 +486,14 @@ export class FulfillmentService {
   }
 
   async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {
-    if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
-      await this.syncSimpleShipmentAllocations(orgId, shipmentId, actorUserId);
-    }
-    const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    let existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
+    }
+    if (await this.getPackingMode(orgId) === 'simple_verified_packing' && !hasExplicitSplitAllocations(existing)) {
+      await this.syncSimpleShipmentAllocations(orgId, shipmentId, actorUserId);
+      existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+      if (!existing) throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
     }
     const linkedOrders = await this.dashboardRepo.getOrdersForCombinedShipmentValidation(orgId, (existing.orders || []).map((order: any) => order.orderId));
     if (linkedOrders.some((order: any) => order.shippingMethod === 'pickup')) {

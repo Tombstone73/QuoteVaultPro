@@ -25,3 +25,16 @@ export function fulfillmentPackingModeFromSettings(settings: any): FulfillmentPa
     ? 'advanced_separate_packing'
     : 'simple_verified_packing';
 }
+
+/** An actual allocation outside Package 1 is the durable signal that the
+ * operator chose Split Shipment / Packages. Empty extra packages alone do not
+ * disable simple automatic packing. */
+export function hasExplicitSplitAllocations(shipment: {
+  packages?: Array<{ id: string; ordinal?: number | null }> | null;
+  items?: Array<{ packageId?: string | null }> | null;
+}): boolean {
+  const packages = [...(shipment.packages ?? [])].sort((a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
+  if (packages.length < 2) return false;
+  const defaultPackageId = packages[0]?.id;
+  return Boolean(defaultPackageId && (shipment.items ?? []).some((item) => item.packageId && item.packageId !== defaultPackageId));
+}

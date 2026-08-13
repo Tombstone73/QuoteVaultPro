@@ -1,4 +1,4 @@
-import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, parseShipmentDate } from '@shared/fulfillmentVerification';
+import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate } from '@shared/fulfillmentVerification';
 
 describe('fulfillment shipment date contract', () => {
   it('accepts only real ISO calendar dates without locale parsing', () => {
@@ -16,5 +16,11 @@ describe('fulfillment shipment date contract', () => {
     expect(fulfillmentPackingModeFromSettings({})).toBe('simple_verified_packing');
     expect(fulfillmentPackingModeFromSettings({ preferences: { fulfillment: { verificationPolicy: 'packing_completes_fulfillment' } } })).toBe('simple_verified_packing');
     expect(fulfillmentPackingModeFromSettings({ preferences: { fulfillment: { verificationPolicy: 'strict_separate_verification' } } })).toBe('advanced_separate_packing');
+  });
+
+  it('preserves an explicit split allocation without treating an empty extra package as a mode switch', () => {
+    const packages = [{ id: 'p1', ordinal: 1 }, { id: 'p2', ordinal: 2 }];
+    expect(hasExplicitSplitAllocations({ packages, items: [{ packageId: 'p1' }] })).toBe(false);
+    expect(hasExplicitSplitAllocations({ packages, items: [{ packageId: 'p2' }] })).toBe(true);
   });
 });
