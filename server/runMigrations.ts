@@ -179,6 +179,12 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // migration 0173 - the order-centric fulfillment workspace reads these on
+  // every detail request. Fail startup clearly rather than returning a 500.
+  { type: "column_exists", table: "shipments", column: "shipment_reference", label: "shipments.shipment_reference" },
+  { type: "table_exists", table: "shipment_packages", label: "shipment_packages table" },
+  { type: "column_exists", table: "shipment_items", column: "package_id", label: "shipment_items.package_id" },
+  { type: "column_exists", table: "fulfillment_checklist_items", column: "fulfilled_quantity", label: "fulfillment_checklist_items.fulfilled_quantity" },
   // migration 0172 - vendor purchasing fields are selected by the material
   // repository, so startup must fail clearly instead of serving an empty UI.
   { type: "column_exists", table: "materials", column: "inventory_units_per_purchase_unit", label: "materials.inventory_units_per_purchase_unit" },
