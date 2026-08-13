@@ -21,10 +21,11 @@ import type {
 } from "@shared/importExportSchemas";
 import { summarizeProductExportItem } from "@shared/importExportSchemas";
 import type { db as DbType } from "../db";
-import { products, pbv2TreeVersions, productTypes, materials, users } from "@shared/schema";
+import { products, pbv2TreeVersions, productTypes, materials, pricingFormulas, users } from "@shared/schema";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 import { eq, and, inArray } from "drizzle-orm";
 import { randomUUID } from "crypto";
+import { validateCanonicalProductPublishTarget } from "./products/canonicalProductPublishOperations";
 
 type DbClient = typeof DbType;
 type TxClient = any;
@@ -41,6 +42,7 @@ export interface ResolvedReferences {
   primaryMaterialId?: string;
   /** Source material UUID -> trusted destination material UUID. */
   treeMaterialIdMap?: Record<string, string>;
+  pricingFormulaId?: string;
 }
 
 interface DryRunItem {
@@ -59,7 +61,9 @@ export function buildPbv2ImportProductValues(
   resolved: ResolvedReferences,
   extraValues: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const activeTreeJson = remapPbv2TreeMaterialIds(item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson, resolved.treeMaterialIdMap);
+  const activeTreeJson = stripImportedProductIntakeReferences(
+    remapPbv2TreeMaterialIds(item.pbv2?.activeTree?.treeJson ?? item.optionTreeJson, resolved.treeMaterialIdMap),
+  );
   const productValues = sanitizeLegacyPriceBreaksForPbv2({
     ...extraValues,
     name: item.name,
@@ -69,6 +73,7 @@ export function buildPbv2ImportProductValues(
     pricingMode: item.pricingMode,
     pricingFormula: item.pricingFormula,
     pricingEngine: item.pricingEngine,
+    pricingFormulaId: resolved.pricingFormulaId ?? null,
     pricingProfileKey: item.pricingProfileKey,
     pricingProfileConfig: item.pricingProfileConfig,
     primaryMaterialId: resolved.primaryMaterialId,
@@ -94,6 +99,39 @@ export function buildPbv2ImportProductValues(
   });
   const { pbv2: _pbv2, ...dbValues } = productValues;
   return dbValues;
+}
+
+function normalizedFormulaCode(value: unknown): string {
+  return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function resolvePortableFormulaReference(item: ProductExportV2Item, formulas: readonly any[]): MaterialReferenceIssue[] {
+  if (item.pricingEngine !== "formulaLibrary") return [];
+  const code = normalizedFormulaCode(item.pricingFormulaRef?.code);
+  if (!code) return [{ code: "FORMULA_LIBRARY_REFERENCE_UNRESOLVED", message: "Formula Library pricing requires a portable formula code. Re-export the source Product with its Formula Library reference.", field: "pricingFormulaRef" }];
+  const matches = formulas.filter((formula) => formula.isActive && normalizedFormulaCode(formula.code) === code);
+  if (matches.length === 1) return [];
+  return [{ code: matches.length > 1 ? "FORMULA_LIBRARY_REFERENCE_AMBIGUOUS" : "FORMULA_LIBRARY_REFERENCE_UNRESOLVED", message: matches.length > 1 ? `Formula code "${item.pricingFormulaRef!.code}" matches multiple target Formula Library entries.` : `Formula code "${item.pricingFormulaRef!.code}" could not be resolved in the target organization.`, field: "pricingFormulaRef.code" }];
+}
+
+function resolvePortableFormulaId(item: ProductExportV2Item, formulas: readonly any[]): string | undefined {
+  if (item.pricingEngine !== "formulaLibrary") return undefined;
+  const code = normalizedFormulaCode(item.pricingFormulaRef?.code);
+  const matches = formulas.filter((formula) => formula.isActive && normalizedFormulaCode(formula.code) === code);
+  return matches.length === 1 ? matches[0]!.id : undefined;
+}
+
+function canonicalActiveImportIssues(input: { item: ProductExportV2Item; resolved: ResolvedReferences; materials: readonly any[] }): MaterialReferenceIssue[] {
+  const active = getActiveTreeForImport(input.item, input.resolved);
+  if (!input.item.isActive || !active) return [];
+  const draftCandidate = { ...active.treeJson, schemaVersion: 2, status: "DRAFT" };
+  const validation = validateCanonicalProductPublishTarget({
+    product: { id: "import-candidate", organizationId: "import-candidate", name: input.item.name, isActive: false, primaryMaterialId: input.resolved.primaryMaterialId ?? null, pbv2ActiveTreeVersionId: null, updatedAt: new Date(), pricingEngine: input.item.pricingEngine, pricingFormulaId: input.resolved.pricingFormulaId ?? null } as any,
+    tree: { id: "import-candidate", organizationId: "import-candidate", productId: "import-candidate", status: "DRAFT", schemaVersion: 2, treeJson: draftCandidate, publishedAt: null, updatedAt: new Date() } as any,
+    materials: input.materials,
+    pricingFormula: input.resolved.pricingFormulaId ? { id: input.resolved.pricingFormulaId, isActive: true } : null,
+  } as any);
+  return validation.errors.map((finding) => ({ code: finding.code, message: finding.message, field: finding.path }));
 }
 
 type PortableMaterialMapping = { id: string; sku: string; name?: string };
@@ -143,6 +181,27 @@ export function remapPbv2TreeMaterialIds(treeJson: unknown, materialIdMap?: Reco
     ]));
   };
   return rewrite(cloned);
+}
+
+/** Product Intake provenance is tenant-local review metadata, not portable
+ * runtime configuration. Keep safe descriptive fields but never retain source
+ * session/formula/station/template UUIDs in an imported tree. */
+export function stripImportedProductIntakeReferences(treeJson: unknown): any {
+  if (!treeJson || typeof treeJson !== "object") return treeJson;
+  const cloned = cloneJson(treeJson) as Record<string, any>;
+  const intake = cloned.meta?.productIntake;
+  if (!intake || typeof intake !== "object") return cloned;
+  delete intake.sessionId;
+  if (intake.formulaAssignment && typeof intake.formulaAssignment === "object") delete intake.formulaAssignment.pricingFormulaId;
+  if (intake.draftRouting && typeof intake.draftRouting === "object") delete intake.draftRouting.stationId;
+  if (Array.isArray(intake.draftOptionTemplates)) {
+    intake.draftOptionTemplates = intake.draftOptionTemplates.map((template: any) => {
+      if (!template || typeof template !== "object") return template;
+      const { templateId, id, ...safe } = template;
+      return safe;
+    });
+  }
+  return cloned;
 }
 
 export function resolvePortableMaterialReferences(
@@ -228,9 +287,10 @@ export async function buildImportPlan(
   );
   
   // Load reference data for validation
-  const [allProductTypes, allMaterials] = await Promise.all([
+  const [allProductTypes, allMaterials, allPricingFormulas] = await Promise.all([
     ctx.db.select().from(productTypes).where(eq(productTypes.organizationId, ctx.organizationId)),
     ctx.db.select().from(materials).where(eq(materials.organizationId, ctx.organizationId)),
+    ctx.db.select().from(pricingFormulas).where(eq(pricingFormulas.organizationId, ctx.organizationId)),
   ]);
   
   const productTypeByName = new Map(allProductTypes.map(pt => [pt.name.toLowerCase(), pt]));
@@ -265,6 +325,10 @@ export async function buildImportPlan(
     const materialResolution = resolvePortableMaterialReferences(item, request.mappings?.materials, materialBySku);
     Object.assign(dryItem.resolved, materialResolution.resolved);
     dryItem.errors.push(...materialResolution.issues);
+    const formulaIssues = resolvePortableFormulaReference(item, allPricingFormulas);
+    dryItem.errors.push(...formulaIssues);
+    dryItem.resolved.pricingFormulaId = resolvePortableFormulaId(item, allPricingFormulas);
+    dryItem.errors.push(...canonicalActiveImportIssues({ item, resolved: dryItem.resolved, materials: allMaterials }));
     
     // Check for conflicts
     const slug = item.slug || generateSlugFromName(item.name);
@@ -430,9 +494,10 @@ export async function applyImport(
   }
   
   // Load reference data
-  const [allProductTypes, allMaterials, existingProducts] = await Promise.all([
+  const [allProductTypes, allMaterials, allPricingFormulas, existingProducts] = await Promise.all([
     ctx.db.select().from(productTypes).where(eq(productTypes.organizationId, ctx.organizationId)),
     ctx.db.select().from(materials).where(eq(materials.organizationId, ctx.organizationId)),
+    ctx.db.select().from(pricingFormulas).where(eq(pricingFormulas.organizationId, ctx.organizationId)),
     ctx.db.select().from(products).where(eq(products.organizationId, ctx.organizationId)),
   ]);
   
@@ -471,6 +536,11 @@ export async function applyImport(
         throw Object.assign(new Error(materialResolution.issues[0]!.message), { code: materialResolution.issues[0]!.code });
       }
       Object.assign(resolved, materialResolution.resolved);
+      const formulaIssues = resolvePortableFormulaReference(item, allPricingFormulas);
+      if (formulaIssues.length) throw Object.assign(new Error(formulaIssues[0]!.message), { code: formulaIssues[0]!.code });
+      resolved.pricingFormulaId = resolvePortableFormulaId(item, allPricingFormulas);
+      const activeValidationIssues = canonicalActiveImportIssues({ item, resolved, materials: allMaterials });
+      if (activeValidationIssues.length) throw Object.assign(new Error(activeValidationIssues[0]!.message), { code: activeValidationIssues[0]!.code });
       
       const slug = item.slug || generateSlugFromName(item.name);
       const existing = existingBySlug.get(slug);
@@ -568,14 +638,14 @@ function getActiveTreeForImport(item: ProductExportV2Item, resolved: ResolvedRef
   if (item.pbv2?.activeTree?.treeJson) {
     return {
       schemaVersion: item.pbv2.activeTree.schemaVersion || 1,
-      treeJson: remapPbv2TreeMaterialIds(item.pbv2.activeTree.treeJson, resolved.treeMaterialIdMap),
+      treeJson: stripImportedProductIntakeReferences(remapPbv2TreeMaterialIds(item.pbv2.activeTree.treeJson, resolved.treeMaterialIdMap)),
       publishedAt: item.pbv2.activeTree.publishedAt,
     };
   }
   if (item.optionTreeJson && typeof item.optionTreeJson === "object") {
     return {
       schemaVersion: 1,
-      treeJson: remapPbv2TreeMaterialIds(item.optionTreeJson, resolved.treeMaterialIdMap) as Record<string, any>,
+      treeJson: stripImportedProductIntakeReferences(remapPbv2TreeMaterialIds(item.optionTreeJson, resolved.treeMaterialIdMap)) as Record<string, any>,
       publishedAt: null,
     };
   }
@@ -586,7 +656,7 @@ function getDraftTreeForImport(item: ProductExportV2Item, activeTree: { schemaVe
   if (item.pbv2?.draftTree?.treeJson) {
     return {
       schemaVersion: item.pbv2.draftTree.schemaVersion || activeTree?.schemaVersion || 1,
-      treeJson: remapPbv2TreeMaterialIds(item.pbv2.draftTree.treeJson, resolved.treeMaterialIdMap),
+      treeJson: stripImportedProductIntakeReferences(remapPbv2TreeMaterialIds(item.pbv2.draftTree.treeJson, resolved.treeMaterialIdMap)),
     };
   }
   if (!activeTree) return undefined;
@@ -643,7 +713,7 @@ async function replacePbv2TreesForProduct(
   if (!activeTree && !draftTree) {
     await dbClient
       .update(products)
-      .set({ pbv2ActiveTreeVersionId: null, optionTreeJson: remapPbv2TreeMaterialIds(item.optionTreeJson, resolved.treeMaterialIdMap) ?? null } as any)
+      .set({ pbv2ActiveTreeVersionId: null, optionTreeJson: stripImportedProductIntakeReferences(remapPbv2TreeMaterialIds(item.optionTreeJson, resolved.treeMaterialIdMap)) ?? null } as any)
       .where(and(eq(products.id, productId), eq(products.organizationId, ctx.organizationId)));
     return importedSummary;
   }

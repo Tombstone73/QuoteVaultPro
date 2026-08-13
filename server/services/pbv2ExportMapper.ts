@@ -20,6 +20,7 @@ type Product = any; // From Drizzle select
 type Pbv2TreeVersion = any;
 type ProductType = any;
 type Material = any;
+type PricingFormula = any;
 
 const NO_CUSTOMER_OPTIONS_WARNING = "NO_CUSTOMER_OPTIONS";
 
@@ -37,12 +38,14 @@ export async function exportProducts(
   products: Product[],
   pbv2Trees: Map<string, { active?: Pbv2TreeVersion; draft?: Pbv2TreeVersion }>,
   productTypes: ProductType[],
-  materials: Material[]
+  materials: Material[],
+  pricingFormulas: PricingFormula[] = [],
 ): Promise<ProductExportV2> {
   
   // Build lookup maps for reference resolution
   const productTypeById = new Map(productTypes.map(pt => [pt.id, pt]));
   const materialById = new Map(materials.map(m => [m.id, m]));
+  const pricingFormulaById = new Map(pricingFormulas.map(formula => [formula.id, formula]));
   
   const exportedProducts: ProductExportV2Item[] = [];
   
@@ -76,6 +79,9 @@ export async function exportProducts(
       pricingMode: product.pricingMode || "area",
       pricingFormula: product.pricingFormula || undefined,
       pricingEngine: product.pricingEngine || "pricingProfile",
+      pricingFormulaRef: product.pricingFormulaId && pricingFormulaById.get(product.pricingFormulaId)?.code
+        ? { code: pricingFormulaById.get(product.pricingFormulaId)!.code, name: pricingFormulaById.get(product.pricingFormulaId)!.name }
+        : undefined,
       pricingProfileKey: product.pricingProfileKey || undefined,
       pricingProfileConfig: product.pricingProfileConfig || undefined,
       
@@ -174,6 +180,7 @@ export async function exportProducts(
       name: m.name,
       id: m.id,
     })),
+    pricingFormulas: pricingFormulas.flatMap(formula => formula.code ? [{ code: formula.code, name: formula.name }] : []),
   };
   
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { exportProducts } from "../pbv2ExportMapper";
-import { applyImport, buildImportPlan, buildPbv2ImportProductValues, remapPbv2TreeMaterialIds, resolvePortableMaterialReferences } from "../pbv2ImportMapper";
+import { applyImport, buildImportPlan, buildPbv2ImportProductValues, remapPbv2TreeMaterialIds, resolvePortableMaterialReferences, stripImportedProductIntakeReferences } from "../pbv2ImportMapper";
 import { createPbv2BannerProductTreeJson } from "../../../shared/pbv2/starterTree";
 import { normalizePbv2ExportOptions } from "../../../shared/pbv2ExportOptionNormalizer";
 import { validateTreeHasBasePrice } from "../../../shared/pbv2/validator/validateBasePrice";
@@ -147,6 +147,15 @@ const installationServicePricingTree = {
       formula: "flatFee",
     },
   },
+};
+
+const canonicalInstallationServicePricingTree = {
+  schemaVersion: 2,
+  status: "ACTIVE",
+  rootNodeIds: ["installation-root"],
+  nodes: [{ id: "installation-root", type: "INPUT", status: "ENABLED", label: "Installation", input: { selectionKey: "installation", valueType: "BOOLEAN" } }],
+  edges: [],
+  meta: { pricingV2: { base: { perPieceCents: 10000 } } },
 };
 
 const brokenPopulatedZeroOptionTree = {
@@ -595,6 +604,25 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     expect(values.optionTreeJson).toEqual(activePbv2Tree);
   });
 
+  test("PBV2 import stores the destination Formula Library ID, never a source UUID", () => {
+    const values = buildPbv2ImportProductValues({
+      name: "Formula Product", description: "", pricingEngine: "formulaLibrary",
+      pricingFormulaRef: { code: "BANNER_PRICE", name: "Banner Price" },
+    } as any, { pricingFormulaId: "destination-formula-id" });
+    expect(values.pricingFormulaId).toBe("destination-formula-id");
+  });
+
+  test("PBV2 import strips tenant-local Product Intake IDs while preserving safe context", () => {
+    const tree = stripImportedProductIntakeReferences({ meta: { productIntake: {
+      sessionId: "source-session", formulaAssignment: { pricingFormulaId: "source-formula", label: "Formula" },
+      draftRouting: { stationId: "source-station", stationName: "Print" },
+      draftOptionTemplates: [{ id: "instance", templateId: "source-template", label: "Grommets" }],
+      sheet: { width: 48, height: 96 },
+    } } });
+    expect(tree.meta.productIntake).toMatchObject({ formulaAssignment: { label: "Formula" }, draftRouting: { stationName: "Print" }, draftOptionTemplates: [{ label: "Grommets" }], sheet: { width: 48, height: 96 } });
+    expect(JSON.stringify(tree)).not.toContain("source-");
+  });
+
   test("imported qty_only metadata does not make direct matrix base prices require tiers", () => {
     const importedTree = {
       schemaVersion: 2,
@@ -751,7 +779,7 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
         isService: true,
         optionTreeJson: null,
       }],
-      new Map([["prod_install_service", { active: { schemaVersion: 2, treeJson: installationServicePricingTree } }]]),
+      new Map([["prod_install_service", { active: { schemaVersion: 2, treeJson: canonicalInstallationServicePricingTree } }]]),
       [],
       [],
     );
@@ -775,7 +803,7 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     expect(db.treeInserts.map((row: any) => row.status).sort()).toEqual(["ACTIVE", "DRAFT"]);
     expect(db.treeInserts.every((row: any) => row.productId === db.productInserts[0].id)).toBe(true);
     expect(db.productUpdates.at(-1)).toMatchObject({
-      optionTreeJson: installationServicePricingTree,
+      optionTreeJson: canonicalInstallationServicePricingTree,
     });
   });
 });

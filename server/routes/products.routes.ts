@@ -619,9 +619,10 @@ export function registerProductRoutes(
       }
 
       // Fetch reference data
-      const [allProductTypes, allMaterials, org] = await Promise.all([
+      const [allProductTypes, allMaterials, allPricingFormulas, org] = await Promise.all([
         db.select().from(productTypes).where(eq(productTypes.organizationId, organizationId)),
         db.select().from(materials).where(eq(materials.organizationId, organizationId)),
+        db.select().from(pricingFormulas).where(eq(pricingFormulas.organizationId, organizationId)),
         db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1),
       ]);
 
@@ -634,7 +635,8 @@ export function registerProductRoutes(
         allProducts,
         pbv2Trees,
         allProductTypes,
-        allMaterials
+        allMaterials,
+        allPricingFormulas,
       );
 
       // Audit log

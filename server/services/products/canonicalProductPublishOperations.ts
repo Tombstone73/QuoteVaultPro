@@ -4,12 +4,12 @@ import type { Finding } from "@shared/pbv2/findings";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
-import { auditLogs, materials, pbv2TreeVersions, products } from "@shared/schema";
+import { auditLogs, materials, pbv2TreeVersions, pricingFormulas, products } from "@shared/schema";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../pbv2MaterialValidation";
 
-type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt">;
+type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId">;
 type TreeRecord = Pick<typeof pbv2TreeVersions.$inferSelect, "id" | "organizationId" | "productId" | "status" | "schemaVersion" | "treeJson" | "publishedAt" | "updatedAt">;
-export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }> };
+export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>; pricingFormula?: { id: string; isActive: boolean } | null };
 type PublishRepository = {
   get(input: { organizationId: string; productId?: string; treeVersionId?: string }): Promise<CanonicalProductPublishTarget | null>;
   publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
@@ -36,11 +36,12 @@ const repository: PublishRepository = {
         ? await db.select({ id: pbv2TreeVersions.id, organizationId: pbv2TreeVersions.organizationId, productId: pbv2TreeVersions.productId, status: pbv2TreeVersions.status, schemaVersion: pbv2TreeVersions.schemaVersion, treeJson: pbv2TreeVersions.treeJson, publishedAt: pbv2TreeVersions.publishedAt, updatedAt: pbv2TreeVersions.updatedAt }).from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.productId, input.productId), eq(pbv2TreeVersions.status, "DRAFT"))).orderBy(desc(pbv2TreeVersions.updatedAt)).limit(1)
         : [];
     if (!tree) return null;
-    const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
+    const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
     if (!product || (input.productId && product.id !== input.productId)) return null;
     const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
-    return { product, tree, materials: materialRows };
+    const [pricingFormula] = product.pricingFormulaId ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, product.pricingFormulaId))).limit(1) : [];
+    return { product, tree, materials: materialRows, pricingFormula: pricingFormula ?? null };
   },
   async publish(input) {
     const { db } = await import("../../db");
@@ -69,9 +70,15 @@ export function validateCanonicalProductPublishTarget(target: CanonicalProductPu
   const schemaVersion = Number((treeJson as any)?.schemaVersion ?? target.tree.schemaVersion ?? 1);
   const schemaFindings: Finding[] = schemaVersion === 2 ? [] : [{ code: "PBV2_E_SCHEMA_VERSION_UNSUPPORTED", severity: "ERROR", message: "Tree must be PBV2 schema version 2", path: "schemaVersion", actual: schemaVersion, expected: 2 } as Finding];
   const base = validateTreeHasBasePrice(treeJson as any);
-  const publish = validateTreeForPublish(treeJson as any, DEFAULT_VALIDATE_OPTS);
+  // The same structural rules apply when diagnosing an already ACTIVE tree;
+  // validatePublish's status check is specific to the DRAFT→ACTIVE transition.
+  const publishCandidate = String((treeJson as any).status).toUpperCase() === "ACTIVE" ? { ...treeJson, status: "DRAFT" } : treeJson;
+  const publish = validateTreeForPublish(publishCandidate as any, DEFAULT_VALIDATE_OPTS);
   const materialFindings = validatePbv2MaterialReferences({ treeJson, productPrimaryMaterialId: target.product.primaryMaterialId, materials: target.materials });
-  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings);
+  const formulaFindings: Finding[] = target.product.pricingEngine === "formulaLibrary" && (!target.product.pricingFormulaId || !target.pricingFormula?.isActive)
+    ? [{ code: "PBV2_E_FORMULA_LIBRARY_REFERENCE_MISSING", severity: "ERROR", message: "Formula Library pricing requires an active Formula Library entry in this organization.", path: "product.pricingFormulaId" } as Finding]
+    : [];
+  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings);
   return { treeJson, findings, warnings: findings.filter((item) => item.severity === "WARNING"), errors: findings.filter((item) => item.severity === "ERROR") };
 }
 
@@ -87,7 +94,10 @@ export class CanonicalProductPublishOperations {
     if (!target) throw new CanonicalProductPublishError("PRODUCT_PUBLISH_TARGET_NOT_FOUND", "The tenant-scoped Product PBV2 configuration is no longer available.");
     const alreadyPublished = target.tree.status === "ACTIVE" && target.product.pbv2ActiveTreeVersionId === target.tree.id;
     if (!alreadyPublished && target.tree.status !== "DRAFT") throw new CanonicalProductPublishError("PBV2_DRAFT_REQUIRED", "Only the current PBV2 DRAFT configuration can be published.");
-    const validation = alreadyPublished ? { treeJson: target.tree.treeJson as Record<string, unknown>, findings: [], warnings: [], errors: [] } : this.validate(target);
+    // Reuse the same validator when an existing ACTIVE pointer is inspected by
+    // lifecycle/repair paths.  Returning a no-op publish proposal must not
+    // turn a legacy import or clone into an activation-validation bypass.
+    const validation = this.validate(target);
     if (validation.errors.length) throw new CanonicalProductPublishError("PBV2_PUBLISH_INVALID", validation.errors[0]?.message ?? "PBV2 publish validation failed.", validation.findings);
     const expectedProductUpdatedAt = iso(target.product.updatedAt); const expectedTreeUpdatedAt = iso(target.tree.updatedAt);
     return { productId: target.product.id, productName: target.product.name, treeVersionId: target.tree.id, expectedProductUpdatedAt, expectedTreeUpdatedAt, alreadyPublished, warnings: validation.warnings, operationReference: "products.publish_configuration.v1" as const, fingerprint: fingerprint({ organizationId: input.organizationId, productId: target.product.id, treeVersionId: target.tree.id, expectedProductUpdatedAt, expectedTreeUpdatedAt, activeTreeVersionId: target.product.pbv2ActiveTreeVersionId, treeStatus: target.tree.status, warnings: validation.warnings.map((item) => ({ code: item.code, path: item.path })) }) };

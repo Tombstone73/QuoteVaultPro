@@ -8,6 +8,7 @@ import {
     productTypes,
     productOptions,
     productVariants,
+    materials,
     pbv2TreeVersions,
     globalVariables,
     pricingFormulas,
@@ -50,7 +51,8 @@ import {
     type InsertCompanySettings,
     type UpdateCompanySettings,
 } from "@shared/schema";
-import { eq, and, sql, desc } from "drizzle-orm";
+import { eq, and, sql, desc, inArray } from "drizzle-orm";
+import { validatePbv2MaterialReferences, collectPbv2MaterialValidationIds } from "../services/pbv2MaterialValidation";
 
 function cloneJson<T>(value: T): T {
     const sc = (globalThis as any).structuredClone as ((v: any) => any) | undefined;
@@ -520,33 +522,37 @@ export class SharedRepository {
                     throw new Error(`Cannot duplicate product: active PBV2 tree failed publish validation (${errorCodes.join(", ")})`);
                 }
 
-                const publishedAt = new Date();
-                const activeTreeJson = {
-                    ...draftCandidateTree,
-                    status: "ACTIVE",
-                };
-                const [newActive] = await tx
-                    .insert(pbv2TreeVersions)
-                    .values({
-                        organizationId,
-                        productId: newProduct.id,
-                        status: 'ACTIVE',
-                        schemaVersion: originalActive.schemaVersion,
-                        treeJson: activeTreeJson,
-                        publishedAt,
-                        createdByUserId: userId,
-                        updatedByUserId: userId,
-                    } as any)
-                    .returning();
+                const materialIds = collectPbv2MaterialValidationIds({ treeJson: draftCandidateTree, productPrimaryMaterialId: newProduct.primaryMaterialId });
+                const materialRows = materialIds.length > 0
+                    ? await tx.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+                    : [];
+                const materialErrors = validatePbv2MaterialReferences({ treeJson: draftCandidateTree, productPrimaryMaterialId: newProduct.primaryMaterialId, materials: materialRows }).filter((finding) => finding.severity === "ERROR");
+                if (materialErrors.length > 0) throw new Error(`Cannot duplicate product: active PBV2 tree has unresolved production references (${materialErrors.map((finding) => finding.code).join(", ")})`);
 
-                await tx
-                    .update(products)
-                    .set({
-                        pbv2ActiveTreeVersionId: newActive.id,
-                        optionTreeJson: activeTreeJson,
-                        updatedAt: publishedAt,
-                    } as any)
-                    .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
+                if (newProduct.pricingEngine === "formulaLibrary") {
+                    const [formula] = newProduct.pricingFormulaId
+                        ? await tx.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, organizationId), eq(pricingFormulas.id, newProduct.pricingFormulaId))).limit(1)
+                        : [];
+                    if (!formula?.isActive) throw new Error("Cannot duplicate product: Formula Library pricing must reference an active formula in this organization");
+                }
+
+                // A duplicate is an independent editable draft. If the source
+                // already has a DRAFT above, preserve that work; otherwise
+                // seed one from the validated ACTIVE tree.
+                if (!originalDraft) {
+                    await tx
+                        .insert(pbv2TreeVersions)
+                        .values({
+                            organizationId,
+                            productId: newProduct.id,
+                            status: 'DRAFT',
+                            schemaVersion: originalActive.schemaVersion,
+                            treeJson: draftCandidateTree,
+                            publishedAt: null,
+                            createdByUserId: userId,
+                            updatedByUserId: userId,
+                        } as any);
+                }
             }
 
             // Clone PBV2 override tree version (ARCHIVED) if configured

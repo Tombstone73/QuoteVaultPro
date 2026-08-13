@@ -26,6 +26,8 @@ export const productExportV2ItemSchema = z.object({
   pricingMode: z.enum(["area", "quantity", "flat"]).default("area"),
   pricingFormula: z.string().optional(),
   pricingEngine: z.enum(["formulaLibrary", "pricingProfile", "pricingFormula"]).default("pricingProfile"),
+  /** A Formula Library UUID is tenant-local; only its code is portable. */
+  pricingFormulaRef: z.object({ code: z.string().trim().min(1), name: z.string().optional() }).optional(),
   pricingProfileKey: z.string().optional(),
   pricingProfileConfig: z.record(z.any()).optional(),
   
@@ -125,6 +127,10 @@ export const productsExportV2Schema = z.object({
       sku: z.string(),
       name: z.string(),
       id: z.string(),
+    })).optional(),
+    pricingFormulas: z.array(z.object({
+      code: z.string().trim().min(1),
+      name: z.string(),
     })).optional(),
   }).optional(),
 });

@@ -13,9 +13,10 @@ import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 import { getProductAllowRotation } from "@shared/pbv2/productPricingRotation";
-import { pbv2TreeVersions, products } from "@shared/schema";
+import { pbv2TreeVersions, pricingFormulas, products } from "@shared/schema";
 import { normalizeProductRotationForWrite } from "../../lib/productPricingRotationWrite";
 import { getDefaultFormula } from "@shared/pricingProfiles";
+import { CanonicalProductPublishError, canonicalProductPublishOperations } from "./canonicalProductPublishOperations";
 
 const nonEmpty = z.string().trim().min(1);
 const cents = z.number().int().min(0);
@@ -219,6 +220,20 @@ function assertActiveScalarPricingIsValid(treeJson: unknown): void {
   }
 }
 
+/** An immutable ACTIVE replacement must never repair or perpetuate an older
+ * unvalidated tree.  Validate the current pointer at the canonical boundary
+ * before changing only its scalar/formula fields. */
+async function assertCurrentActiveTreeIsPublishable(input: { organizationId: string; productId: string; treeVersionId: string }): Promise<void> {
+  try {
+    await canonicalProductPublishOperations.propose(input);
+  } catch (error) {
+    if (error instanceof CanonicalProductPublishError) {
+      throw new CanonicalProductPricingError("PBV2_PRICING_INVALID", error.message);
+    }
+    throw error;
+  }
+}
+
 export class CanonicalProductPricingOperations {
   async updateProductMetadata(input: { organizationId: string; actorUserId: string; productId: string; changes: unknown; expectedUpdatedAt?: string }) {
     if (!input.actorUserId) throw new CanonicalProductPricingError("ACTOR_REQUIRED", "An authenticated actor is required.");
@@ -229,6 +244,14 @@ export class CanonicalProductPricingOperations {
     const normalized = normalizeProductRotationForWrite(changes, current) as ProductPricingMetadataChanges;
     const changed = Object.fromEntries(Object.entries(normalized).filter(([field, value]) => (current as any)[field] !== value));
     if (!Object.keys(changed).length) return { product: current, operationReference: "products.update_pricing.v1" as const, appliedChanges: [] };
+    const effectiveEngine = (changed.pricingEngine ?? current.pricingEngine) as string | null;
+    const effectiveFormulaId = (changed.pricingFormulaId ?? current.pricingFormulaId) as string | null;
+    if (effectiveEngine === "formulaLibrary") {
+      const [formula] = effectiveFormulaId
+        ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, effectiveFormulaId))).limit(1)
+        : [];
+      if (!formula?.isActive) throw new CanonicalProductPricingError("PBV2_PRICING_INVALID", "Formula Library pricing requires an active Formula Library entry in this organization.");
+    }
     const [updated] = await db.update(products).set({ ...changed, updatedAt: new Date() }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId), ...(input.expectedUpdatedAt ? [eq(products.updatedAt, new Date(input.expectedUpdatedAt))] : []))).returning();
     if (!updated) throw new CanonicalProductPricingError("PRODUCT_PRICING_STALE", "Product pricing changed before this update could be applied.");
     return { product: updated, operationReference: "products.update_pricing.v1" as const, appliedChanges: Object.keys(changed) };
@@ -251,7 +274,10 @@ export class CanonicalProductPricingOperations {
     const currentFingerprint = scalarTargetFingerprint({ productId: product.id, active: product.isActive, activeTreeVersionId: currentTreeId, pricing: currentPricing });
     if (currentFingerprint !== input.expectedFingerprint) throw new CanonicalProductPricingError("PRODUCT_PRICING_STALE", "The Product pricing or active-tree identity changed after proposal confirmation.");
     const nextBase = pricingV2BaseSchema.parse({ ...currentPricing, ...parsedValues }); const treeJson = clone(tree.treeJson as any); treeJson.meta ??= {}; treeJson.meta.pricingV2 ??= {}; treeJson.meta.pricingV2.base = nextBase;
-    if (product.isActive) assertActiveScalarPricingIsValid(treeJson);
+    if (product.isActive) {
+      await assertCurrentActiveTreeIsPublishable({ organizationId: input.organizationId, productId: input.productId, treeVersionId: tree.id });
+      assertActiveScalarPricingIsValid(treeJson);
+    }
     const now = new Date();
     const result = await db.transaction(async (tx) => {
       let activeTreeVersionId = tree.id;
@@ -284,6 +310,7 @@ export class CanonicalProductPricingOperations {
     const draftTree = clone(draft.treeJson as any); const activeTree = clone(active.treeJson as any); const draftBase = draftTree?.meta?.pricingV2?.base; const activeBase = activeTree?.meta?.pricingV2?.base; const nextMeta = formulaMeta(product, draftTree); const currentMeta = { pricingProfileKey: activeTree?.meta?.pricingProfileKey ?? null, pricingFormula: activeTree?.meta?.pricingFormula ?? null, formulaVariables: activeTree?.meta?.formulaVariables ?? {}, pricingFormulaVariables: activeTree?.meta?.pricingFormulaVariables ?? {} }; const desiredMeta = { ...nextMeta, pricingFormulaVariables: nextMeta.formulaVariables };
     if (!((draftBase && stable(draftBase) !== stable(activeBase)) || stable(currentMeta) !== stable(desiredMeta))) return { changed: false, product };
     activeTree.meta ??= {}; if (draftBase) { activeTree.meta.pricingV2 ??= {}; activeTree.meta.pricingV2.base = draftBase; } activeTree.meta.pricingProfileKey = nextMeta.pricingProfileKey; activeTree.meta.pricingFormula = nextMeta.pricingFormula; activeTree.meta.formulaVariables = nextMeta.formulaVariables; activeTree.meta.pricingFormulaVariables = nextMeta.formulaVariables;
+    await assertCurrentActiveTreeIsPublishable({ organizationId: input.organizationId, productId: input.productId, treeVersionId: active.id });
     assertActiveScalarPricingIsValid(activeTree);
     const now = new Date();
     const replacement = await db.transaction(async (tx) => { await tx.update(pbv2TreeVersions).set({ status: "DEPRECATED", updatedAt: now, updatedByUserId: input.actorUserId }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, active.id), eq(pbv2TreeVersions.status, "ACTIVE"))); const [created] = await tx.insert(pbv2TreeVersions).values({ organizationId: input.organizationId, productId: input.productId, status: "ACTIVE", schemaVersion: active.schemaVersion, treeJson: activeTree, publishedAt: now, createdByUserId: input.actorUserId, updatedByUserId: input.actorUserId }).returning(); if (!created) throw new CanonicalProductPricingError("PRODUCT_PRICING_STALE", "The replacement active pricing tree could not be created."); const [updated] = await tx.update(products).set({ pbv2ActiveTreeVersionId: created.id, optionTreeJson: activeTree, updatedAt: now }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId), eq(products.pbv2ActiveTreeVersionId, active.id))).returning(); if (!updated) throw new CanonicalProductPricingError("PRODUCT_PRICING_STALE", "The active pricing tree changed during propagation."); return { created, updated }; });
