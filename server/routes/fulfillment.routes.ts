@@ -169,6 +169,22 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  app.post('/api/fulfillment/orders/:orderId/reconcile-billing', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(400).json({ success: false, message: 'Organization context is required' });
+      if (!['owner', 'admin', 'manager'].includes(String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase())) {
+        return res.status(403).json({ success: false, message: 'Manager, Admin, or Owner role required' });
+      }
+      const data = await canonicalFulfillmentOperations.reconcileTerminalBilling(organizationId, req.params.orderId, getUserId(req.user) || null);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] billing reconciliation error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to reconcile fulfillment billing' });
+    }
+  });
+
   app.post('/api/fulfillment/orders/:orderId/note', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -542,8 +558,13 @@ export function registerFulfillmentRoutes(
   });
 
   // Send shipment notification email
-  app.post('/api/orders/:id/send-shipping-email', isAuthenticated, async (req: any, res) => {
+  app.post('/api/orders/:id/send-shipping-email', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(400).json({ error: 'Organization context is required' });
+      if (!['owner', 'admin', 'manager'].includes(String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase())) {
+        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
+      }
       const orderId = req.params.id;
       const { shipmentId, subject, customMessage } = req.body;
 
@@ -551,7 +572,7 @@ export function registerFulfillmentRoutes(
         return res.status(400).json({ error: 'shipmentId is required' });
       }
 
-      await sendShipmentEmail(orderId, shipmentId.toString(), subject, customMessage);
+      await sendShipmentEmail(organizationId, orderId, shipmentId.toString(), subject, customMessage);
       res.json({ success: true, message: 'Shipment email sent successfully' });
     } catch (error) {
       console.error('Error sending shipment email:', error);

@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
-import { customers, fulfillmentChecklistItems, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
+import { auditLogs, customers, fulfillmentChecklistItems, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
@@ -42,6 +42,36 @@ export class FulfillmentService {
   private canOverridePickupReady(actorRole?: string | null): boolean {
     const normalizedRole = String(actorRole || '').trim().toLowerCase();
     return normalizedRole === 'owner' || normalizedRole === 'admin';
+  }
+
+  /** Billing runs after the irreversible physical transaction.  A failed run is
+   * recorded durably so an operator can replay the canonical, idempotent
+   * invoice operation without recreating fulfillment. */
+  private async ensureTerminalBilling(input: Parameters<typeof billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger>[0]) {
+    const result = await this.billingAutomationService.ensureDraftInvoiceForOrderTrigger(input);
+    if (result.status === 'failed_controlled_error') {
+      await this.dbInstance.insert(auditLogs).values({
+        organizationId: input.organizationId,
+        userId: input.actorUserId ?? null,
+        actionType: 'FULFILLMENT_BILLING_RECONCILIATION_REQUIRED',
+        entityType: 'order',
+        entityId: input.orderId,
+        entityName: null,
+        description: 'Terminal fulfillment completed; billing reconciliation is required.',
+        newValues: { trigger: input.trigger, sourceEvent: input.sourceEvent, code: result.code ?? null, message: result.message },
+      } as any);
+    }
+    return result;
+  }
+
+  async reconcileTerminalBilling(orgId: string, orderId: string, actorUserId?: string | null) {
+    const [order] = await this.dbInstance.select({ id: orders.id, fulfillmentStatus: orders.fulfillmentStatus })
+      .from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
+    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+    if (!['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
+      throw new FulfillmentHttpError(409, 'Billing reconciliation is available after terminal fulfillment only.', 'FULFILLMENT_NOT_TERMINAL');
+    }
+    return this.ensureTerminalBilling({ organizationId: orgId, orderId, trigger: 'picked_up_or_shipped', sourceEvent: 'FULFILLMENT_BILLING_RECONCILILED', actorUserId });
   }
 
   private isOrderProductionComplete(order: {
@@ -506,7 +536,7 @@ export class FulfillmentService {
     for (const orderId of orderIds) {
       await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
       if (!options.suppressBillingAutomation) {
-        billingAutomationResults.push(await this.billingAutomationService.ensureDraftInvoiceForOrderTrigger({
+        billingAutomationResults.push(await this.ensureTerminalBilling({
           organizationId: orgId,
           orderId,
           trigger: 'picked_up_or_shipped',
@@ -622,7 +652,7 @@ export class FulfillmentService {
       pickupTicketId: ticket.id,
     });
 
-    const billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const billingAutomation = await this.ensureTerminalBilling({
       organizationId: orgId,
       orderId: ticketWithOrder.orderId,
       trigger: 'ready_for_pickup_or_ready_to_ship',
@@ -731,7 +761,7 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
 
-    const billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const billingAutomation = await this.ensureTerminalBilling({
       organizationId: orgId,
       orderId: ticketWithOrder.orderId,
       trigger: 'picked_up_or_shipped',
@@ -757,7 +787,7 @@ export class FulfillmentService {
     if (isCanceledOrder(ticketWithOrder)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot advance pickup fulfillment', 'ORDER_CANCELLED');
     const result = await this.pickupRepo.recordPartialPickup(orgId, ticketId, payload, actorUserId);
     if (!result.ok) throw new FulfillmentHttpError(result.code === 'NOT_FOUND' ? 404 : 409, result.message, result.code);
-    const billingAutomation = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({ organizationId: orgId, orderId: ticketWithOrder.orderId,
+    const billingAutomation = await this.ensureTerminalBilling({ organizationId: orgId, orderId: ticketWithOrder.orderId,
       trigger: 'picked_up_or_shipped', sourceEvent: 'PICKUP_HANDOFF_RECORDED', actorUserId });
     return { ...result, billingAutomation };
   }

@@ -1,6 +1,6 @@
 import { db } from './db';
-import { orders, orderLineItems, shipments, customers } from '../shared/schema';
-import { eq } from 'drizzle-orm';
+import { orders, orderLineItems, shipments, shipmentOrders, customers } from '../shared/schema';
+import { and, eq } from 'drizzle-orm';
 import { emailService } from './emailService';
 
 export async function generatePackingSlipHTML(orderId: string): Promise<string> {
@@ -124,8 +124,15 @@ export async function sendShipmentEmail(
   const recipientEmail = customer?.email ?? order.billToEmail;
   if (!recipientEmail) throw new Error('Order has no customer or contact email address');
 
-  const [shipment] = await db.select().from(shipments).where(eq(shipments.id, shipmentId));
+  const [shipment] = await db.select().from(shipments).where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, organizationId)));
   if (!shipment) throw new Error('Shipment not found');
+
+  const [shipmentOrder] = await db.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
+    eq(shipmentOrders.organizationId, organizationId),
+    eq(shipmentOrders.shipmentId, shipmentId),
+    eq(shipmentOrders.orderId, orderId),
+  )).limit(1);
+  if (!shipmentOrder) throw new Error('Shipment does not belong to order');
 
   const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
 
@@ -189,6 +196,7 @@ export async function sendShipmentEmail(
       </tbody>
     </table>
 
+    ${customMessage?.trim() ? `<p>${customMessage.trim()}</p>` : ''}
     ${shipment.notes ? `<p><strong>Shipping Notes:</strong> ${shipment.notes}</p>` : ''}
 
     <p style="margin-top: 30px;">If you have any questions about your shipment, please don't hesitate to contact us.</p>
@@ -203,7 +211,7 @@ export async function sendShipmentEmail(
 
   await emailService.sendEmail(organizationId, {
     to: recipientEmail,
-    subject: `Your Order ${orderDisplayNumber} Has Shipped!`,
+    subject: subject?.trim() || `Your Order ${orderDisplayNumber} Has Shipped!`,
     html,
   });
 }

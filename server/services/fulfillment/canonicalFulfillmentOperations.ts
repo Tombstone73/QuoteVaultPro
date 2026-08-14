@@ -25,6 +25,7 @@ export class CanonicalFulfillmentOperations {
   markPickupReady(...args: Parameters<typeof fulfillmentServiceV2.markPickupReady>) { return fulfillmentServiceV2.markPickupReady(...args); }
   markPickupPickedUp(...args: Parameters<typeof fulfillmentServiceV2.markPickupPickedUp>) { return fulfillmentServiceV2.markPickupPickedUp(...args); }
   recordPickupHandoff(...args: Parameters<typeof fulfillmentServiceV2.recordPickupHandoff>) { return fulfillmentServiceV2.recordPickupHandoff(...args); }
+  reconcileTerminalBilling(...args: Parameters<typeof fulfillmentServiceV2.reconcileTerminalBilling>) { return fulfillmentServiceV2.reconcileTerminalBilling(...args); }
 }
 
 export const canonicalFulfillmentOperations = new CanonicalFulfillmentOperations();
