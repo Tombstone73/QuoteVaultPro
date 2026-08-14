@@ -30,6 +30,7 @@ import { prepareSingleContactPortalAccessForInvoice } from "../services/customer
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
+import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -529,7 +530,7 @@ export async function registerMvpInvoicingRoutes(
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)
   // ------------------------------------------------------------
-  app.post("/api/invoices/:id/payments/stripe/create-intent", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/invoices/:id/payments/stripe/create-intent", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -638,13 +639,17 @@ export async function registerMvpInvoicingRoutes(
                 amountCents: amountDueCents,
               });
 
-              const now = new Date();
-              await db
-                .update(payments)
-                .set({ status: 'succeeded', paidAt: now, succeededAt: now, updatedAt: now } as any)
-                .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
-
-              await refreshInvoiceStatus(inv.id);
+              await captureAndApplyStripeObservation({
+                eventId: `stripe-browser-create:${existingIntentId}:payment_intent.succeeded`,
+                type: "payment_intent.succeeded",
+                organizationId,
+                invoiceId: inv.id,
+                paymentIntentId: existingIntentId,
+                stripeAccountId,
+                amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? amountDueCents))),
+                currency: String((pi as any).currency || currency),
+                occurredAt: new Date(),
+              });
               return res.status(400).json({ success: false, error: 'Invoice is already paid' });
             }
 
@@ -681,12 +686,7 @@ export async function registerMvpInvoicingRoutes(
               stripePaymentIntentId: existingIntentId,
               message: String(err?.message || err),
             });
-
-            const now = new Date();
-            await db
-              .update(payments)
-              .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
-              .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+            return res.status(502).json({ success: false, error: "Unable to verify the existing Stripe payment attempt; it was left unchanged." });
           }
         } else {
           // Pending row without intent id should not block payment attempts.
@@ -744,6 +744,9 @@ export async function registerMvpInvoicingRoutes(
         });
         return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id } });
       }
+      if (existingByIntent && ['succeeded', 'captured'].includes(String((existingByIntent as any).status || '').toLowerCase())) {
+        return res.status(409).json({ success: false, error: 'Invoice is already paid' });
+      }
 
       const now = new Date();
       const insertedRows = await db
@@ -796,6 +799,9 @@ export async function registerMvpInvoicingRoutes(
           });
           return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id } });
         }
+        if (existingAfterConflict && ['succeeded', 'captured'].includes(String((existingAfterConflict as any).status || '').toLowerCase())) {
+          return res.status(409).json({ success: false, error: 'Invoice is already paid' });
+        }
 
         throw new Error('Failed to create payment row');
       }
@@ -839,7 +845,7 @@ export async function registerMvpInvoicingRoutes(
   // Confirm Stripe payment (called after client confirmPayment succeeds)
   // Checks PaymentIntent status and updates payment record immediately
   // ------------------------------------------------------------
-  app.post("/api/invoices/:id/payments/stripe/confirm", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/invoices/:id/payments/stripe/confirm", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -908,29 +914,21 @@ export async function registerMvpInvoicingRoutes(
 
       const currentStatus = String((payment as any).status || '').toLowerCase();
 
-      // If PaymentIntent succeeded, update payment record immediately
-      if (piStatus === 'succeeded' && currentStatus !== 'succeeded') {
-        const now = new Date();
-        await db
-          .update(payments)
-          .set({ 
-            status: 'succeeded', 
-            paidAt: now, 
-            succeededAt: now, 
-            updatedAt: now 
-          } as any)
-          .where(eq(payments.id, (payment as any).id));
-
-        // Refresh invoice status to update paid/remaining totals
-        await refreshInvoiceStatus(inv.id);
-
-        if (DEV) {
-          console.log('[StripeConfirm] Payment marked as succeeded', {
-            invoiceId: inv.id,
-            paymentId: (payment as any).id,
-            paymentIntentId,
-          });
-        }
+      if (["succeeded", "payment_failed", "requires_payment_method", "canceled"].includes(piStatus)) {
+        const type = piStatus === "succeeded"
+          ? "payment_intent.succeeded"
+          : piStatus === "canceled" ? "payment_intent.canceled" : "payment_intent.payment_failed";
+        await captureAndApplyStripeObservation({
+          eventId: `stripe-browser-confirm:${paymentIntentId}:${type}`,
+          type,
+          organizationId,
+          invoiceId: inv.id,
+          paymentIntentId,
+          stripeAccountId,
+          amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? (payment as any).amountCents ?? 0))),
+          currency: String((pi as any).currency || (payment as any).currency || "USD"),
+          occurredAt: new Date(),
+        });
       }
 
       // Fetch updated invoice with payments for rollup
@@ -1334,6 +1332,19 @@ export async function registerMvpInvoicingRoutes(
         const currency = String(pi.currency || 'usd').toUpperCase();
         const now = new Date();
 
+        await captureAndApplyStripeObservation({
+          eventId,
+          type,
+          organizationId,
+          invoiceId,
+          paymentIntentId: intentId,
+          stripeAccountId,
+          amountCents,
+          currency,
+          occurredAt: receivedAt,
+        });
+        return res.json({ received: true });
+
         const matches = await db
           .select()
           .from(payments)
@@ -1431,6 +1442,28 @@ export async function registerMvpInvoicingRoutes(
           throw new Error('Missing organizationId for payment_failed');
         }
 
+        const stripeAccountId = stripeAccountIdFromEvent || (pi?.metadata?.stripeAccountId ? String(pi.metadata.stripeAccountId) : null);
+        if (stripeAccountId) {
+          const [conn] = await db.select({ organizationId: integrationConnections.organizationId }).from(integrationConnections).where(and(
+            eq(integrationConnections.provider, "stripe"),
+            eq(integrationConnections.externalAccountId, stripeAccountId),
+          )).limit(1);
+          if (!conn || String(conn.organizationId) !== String(organizationId)) throw new Error("Stripe account does not match organization");
+        }
+
+        await captureAndApplyStripeObservation({
+          eventId,
+          type,
+          organizationId,
+          invoiceId: pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null,
+          paymentIntentId: intentId,
+          stripeAccountId,
+          amountCents: Math.max(0, Math.round(Number(pi.amount_received ?? pi.amount ?? 0))),
+          currency: String(pi.currency || "USD"),
+          occurredAt: now,
+        });
+        return res.json({ received: true });
+
         await db
           .update(payments)
           .set({ status: 'failed', failedAt: now, updatedAt: now } as any)
@@ -1451,10 +1484,60 @@ export async function registerMvpInvoicingRoutes(
           throw new Error('Missing organizationId for canceled');
         }
 
+        const stripeAccountId = stripeAccountIdFromEvent || (pi?.metadata?.stripeAccountId ? String(pi.metadata.stripeAccountId) : null);
+        if (stripeAccountId) {
+          const [conn] = await db.select({ organizationId: integrationConnections.organizationId }).from(integrationConnections).where(and(
+            eq(integrationConnections.provider, "stripe"),
+            eq(integrationConnections.externalAccountId, stripeAccountId),
+          )).limit(1);
+          if (!conn || String(conn.organizationId) !== String(organizationId)) throw new Error("Stripe account does not match organization");
+        }
+
+        await captureAndApplyStripeObservation({
+          eventId,
+          type,
+          organizationId,
+          invoiceId: pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null,
+          paymentIntentId: intentId,
+          stripeAccountId,
+          amountCents: Math.max(0, Math.round(Number(pi.amount_received ?? pi.amount ?? 0))),
+          currency: String(pi.currency || "USD"),
+          occurredAt: now,
+        });
+        return res.json({ received: true });
+
         await db
           .update(payments)
           .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
           .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
+      } else if (type === "refund.created" || type === "refund.updated") {
+        const refund: any = obj;
+        const organizationId = refund?.metadata?.organizationId ? String(refund.metadata.organizationId) : resolvedOrganizationId;
+        const paymentIntentId = String(refund?.payment_intent || refund?.metadata?.paymentIntentId || "");
+        if (!organizationId || !paymentIntentId) throw new Error("Stripe refund is missing organization or PaymentIntent identity");
+        const stripeAccountId = stripeAccountIdFromEvent || (refund?.metadata?.stripeAccountId ? String(refund.metadata.stripeAccountId) : null);
+        if (stripeAccountId) {
+          const [conn] = await db.select({ organizationId: integrationConnections.organizationId }).from(integrationConnections).where(and(
+            eq(integrationConnections.provider, "stripe"),
+            eq(integrationConnections.externalAccountId, stripeAccountId),
+          )).limit(1);
+          if (!conn || String(conn.organizationId) !== organizationId) throw new Error("Stripe account does not match organization");
+        }
+        await captureAndApplyStripeObservation({
+          eventId,
+          type,
+          organizationId,
+          invoiceId: refund?.metadata?.invoiceId ? String(refund.metadata.invoiceId) : null,
+          paymentIntentId,
+          stripeAccountId,
+          amountCents: Math.max(0, Math.round(Number(refund.amount ?? refund.amount_refunded ?? 0))),
+          currency: String(refund.currency || "USD"),
+          refundId: refund.id ? String(refund.id) : null,
+          refundAmountCents: Math.max(0, Math.round(Number(refund.amount ?? refund.amount_refunded ?? 0))),
+          refundStatus: String(refund.status || "succeeded"),
+          occurredAt: receivedAt,
+        });
+        return res.json({ received: true });
       } else {
         // ignore safely
       }
@@ -2320,6 +2403,25 @@ export async function registerMvpInvoicingRoutes(
         success: false,
         error: error.message || "Failed to resolve invoice email recipients",
       });
+    }
+  });
+
+  // Replays a durably captured provider observation only. It retrieves no
+  // provider data and therefore cannot initiate or repeat a charge/refund.
+  app.post('/api/payments/stripe/events/:eventId/reconcile', isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const eventId = String(req.params.eventId || "").trim();
+      const [event] = await db.select({ organizationId: paymentWebhookEvents.organizationId })
+        .from(paymentWebhookEvents)
+        .where(and(eq(paymentWebhookEvents.provider, "stripe"), eq(paymentWebhookEvents.eventId, eventId)))
+        .limit(1);
+      if (!event || event.organizationId !== organizationId) return res.status(404).json({ error: "Stripe reconciliation event not found" });
+      const result = await retryStripeObservationByEvent(eventId);
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const conflict = error?.code === "STRIPE_EVENT_CONFLICT" || error?.code === "STRIPE_EVENT_INVOICE_MISMATCH";
+      return res.status(conflict ? 409 : 500).json({ success: false, error: error?.message || "Failed to reconcile Stripe payment", code: error?.code });
     }
   });
 

@@ -11,6 +11,7 @@ import { assertStripeServerConfig } from "./lib/stripe";
 import { getQuickBooksSyncStabilityWindowMs, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 import { runInvoiceReminderJob } from "./invoiceReminderJob";
+import { reconcilePendingStripeObservations } from "./services/stripePaymentReconciliationService";
 import { runMigrations } from "./runMigrations";
 import { getAllowedCorsOrigins, getRuntimeConfigLogLine } from "./lib/appRuntimeConfig";
 import { getStartupSharedDevDatabaseWarning } from "./lib/runtimeEnvironment";
@@ -367,6 +368,29 @@ process.on('uncaughtException', (error) => {
         }, invoiceReminderInterval);
       } else {
         console.log('[Server] Invoice reminder automation DISABLED. No reminder emails will be sent automatically. Enable with WORKER_INVOICE_REMINDERS_ENABLED=true.');
+      }
+
+      const paymentReconciliationEnabled = isWorkerEnabled('PAYMENT_RECONCILIATION', true);
+      const paymentReconciliationInterval = getWorkerIntervalOverride(
+        'PAYMENT_RECONCILIATION',
+        60 * 1000,
+        5 * 60 * 1000,
+      );
+      logWorkerStatus('Payment Reconciliation', paymentReconciliationEnabled, paymentReconciliationEnabled ? paymentReconciliationInterval : undefined);
+      if (paymentReconciliationEnabled) {
+        const runPaymentReconciliation = async () => {
+          const tickStart = Date.now();
+          try {
+            const summary = await reconcilePendingStripeObservations();
+            if (summary.processed || summary.failed) console.log(`[PaymentReconciliationTick] processed=${summary.processed} failed=${summary.failed}`);
+            logWorkerTick('payment_reconciliation', Date.now() - tickStart, summary.processed + summary.failed);
+          } catch (error) {
+            console.error('[PaymentReconciliationTick] Unexpected error:', error);
+          }
+        };
+        void runPaymentReconciliation();
+        const paymentReconciliationTimer = setInterval(runPaymentReconciliation, paymentReconciliationInterval);
+        paymentReconciliationTimer.unref?.();
       }
     });
 
