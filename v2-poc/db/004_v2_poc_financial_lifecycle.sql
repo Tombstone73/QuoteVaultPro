@@ -23,3 +23,9 @@ CREATE TABLE IF NOT EXISTS v2_poc_financial_reconciliations (
   payload_json jsonb NOT NULL, result_json jsonb, last_error text, created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz,
   UNIQUE (organization_id, operation, external_key)
 );
+ALTER TABLE v2_poc_financial_reconciliations ADD COLUMN IF NOT EXISTS provider varchar(32);
+ALTER TABLE v2_poc_financial_reconciliations ADD COLUMN IF NOT EXISTS provider_event_id varchar(160);
+ALTER TABLE v2_poc_financial_reconciliations ADD COLUMN IF NOT EXISTS provider_transaction_id varchar(160);
+ALTER TABLE v2_poc_financial_reconciliations ADD COLUMN IF NOT EXISTS currency varchar(8) NOT NULL DEFAULT 'USD';
+CREATE UNIQUE INDEX IF NOT EXISTS v2_poc_financial_reconciliations_provider_event_uidx
+  ON v2_poc_financial_reconciliations(provider, provider_event_id) WHERE provider_event_id IS NOT NULL;
