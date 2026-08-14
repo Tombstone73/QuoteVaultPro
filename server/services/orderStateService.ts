@@ -182,7 +182,7 @@ export async function transitionOrderState(args: {
   metadata?: Record<string, any>;
 }): Promise<Order> {
   const { organizationId, orderId, nextState, actorUserId, actorUserName, notes, metadata } = args;
-  if (nextState === 'canceled') throw new Error('USE_CANONICAL_CANCELLATION');
+  if (['canceled', 'cancelled'].includes(String(nextState || '').toLowerCase())) throw new Error('USE_CANONICAL_CANCELLATION');
 
   // Load order with org scope
   const [order] = await db

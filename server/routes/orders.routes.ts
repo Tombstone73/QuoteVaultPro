@@ -1380,7 +1380,7 @@ export async function registerOrderRoutes(
             if (!resolvedWorkflowStatusId) {
                 return res.status(400).json({ success: false, message: "workflowStatusId or valid toStatus is required" });
             }
-            if (String(toStatus || '').trim().toLowerCase() === 'canceled') return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
+            if (['canceled', 'cancelled'].includes(String(toStatus || '').trim().toLowerCase())) return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
 
             const transition = await updateOrderWorkflowStatus({
                 organizationId,
@@ -3041,7 +3041,7 @@ export async function registerOrderRoutes(
             if (!toStatus || typeof toStatus !== 'string') {
                 return res.status(400).json({ success: false, message: "toStatus is required" });
             }
-            if (toStatus.trim().toLowerCase() === 'canceled') return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
+            if (['canceled', 'cancelled'].includes(toStatus.trim().toLowerCase())) return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
 
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ success: false, message: "Order not found" });
@@ -3530,7 +3530,7 @@ export async function registerOrderRoutes(
             const { nextState, notes } = req.body;
 
             if (!nextState) return res.status(400).json({ success: false, message: "nextState is required" });
-            if (String(nextState).trim().toLowerCase() === 'canceled') return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
+            if (['canceled', 'cancelled'].includes(String(nextState).trim().toLowerCase())) return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
 
             const { validateOrderStateTransition, transitionOrderState, isTerminalState } = await import('../services/orderStateService');
             const order = await storage.getOrderById(organizationId, orderId);

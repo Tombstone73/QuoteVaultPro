@@ -132,4 +132,15 @@ describe("order cancellation policy helpers", () => {
     expect(isOperationallyActiveProductionJob({ status: "canceled" })).toBe(false);
     expect(isOperationallyActiveProductionJob({ status: "queued" })).toBe(true);
   });
+
+  test("generic order endpoints reject both cancellation spellings before lifecycle writes", () => {
+    const routes = fs.readFileSync(path.join(process.cwd(), "server/routes/orders.routes.ts"), "utf8");
+    const workflow = fs.readFileSync(path.join(process.cwd(), "server/services/orderWorkflowService.ts"), "utf8");
+    const state = fs.readFileSync(path.join(process.cwd(), "server/services/orderStateService.ts"), "utf8");
+
+    expect(routes.match(/USE_CANONICAL_CANCELLATION/g)).toHaveLength(3);
+    expect(routes).toContain("['canceled', 'cancelled'].includes");
+    expect(workflow).toContain("['canceled', 'cancelled'].includes");
+    expect(state).toContain("['canceled', 'cancelled'].includes");
+  });
 });

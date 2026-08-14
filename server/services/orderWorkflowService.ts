@@ -397,7 +397,7 @@ export async function updateOrderWorkflowStatus(args: {
       console.warn("[order-workflow] No transitions configured; fallback allow-any-active-status is in effect");
     }
 
-    if (targetStatus.category === 'canceled' || targetStatus.key === 'canceled') throw new Error('USE_CANONICAL_CANCELLATION');
+    if (['canceled', 'cancelled'].includes(String(targetStatus.category || '').toLowerCase()) || ['canceled', 'cancelled'].includes(String(targetStatus.key || '').toLowerCase())) throw new Error('USE_CANONICAL_CANCELLATION');
 
     const [updatedOrder] = await tx
       .update(orders)
