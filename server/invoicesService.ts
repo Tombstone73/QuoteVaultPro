@@ -1167,9 +1167,11 @@ export async function markInvoiceSent(id: string) {
 }
 
 export async function refreshInvoiceStatus(id: string) {
-  const rel = await getInvoiceWithRelations(id);
-  if (!rel) return null;
-  const { invoice, payments: paymentRows } = rel;
+  const result = await db.transaction(async (tx) => {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-rollup:${id}`}))`);
+  const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, id)).limit(1);
+  if (!invoice) return null;
+  const paymentRows = await tx.select().from(payments).where(eq(payments.invoiceId, id));
   const financialState = computeInvoiceFinancialState(invoice as any, paymentRows as any);
 
   const amountPaid = centsToDecimalString(financialState.amountPaidCents);
@@ -1180,7 +1182,11 @@ export async function refreshInvoiceStatus(id: string) {
   if (!isImportedFromQuickBooks && status !== 'paid' && invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
     status = 'overdue';
   }
-  const [updated] = await db.update(invoices).set({ amountPaid, balanceDue, status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
+  const [updated] = await tx.update(invoices).set({ amountPaid, balanceDue, status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
+  return { updated, invoice, status };
+  });
+  if (!result) return null;
+  const { updated, invoice, status } = result;
   if (status === 'paid' && (invoice as any).orderId) {
     const { applyWorkflowStatusPillFailSoft } = await import('./services/workflowStatusPillService');
     await applyWorkflowStatusPillFailSoft({
