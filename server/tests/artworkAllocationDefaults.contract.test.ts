@@ -17,6 +17,7 @@ describe("production artwork allocation defaults", () => {
   const prepressQueueRoute = fs.readFileSync(path.join(root, "server/routes/prepress.routes.ts"), "utf8");
   const allocationRepairMigration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0169_repair_order_attachment_production_allocation.sql"), "utf8");
   const lineItemFileAllocationRepairMigration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0170_repair_line_item_file_production_allocation.sql"), "utf8");
+  const quoteAttachmentAllocationRepairMigration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0177_repair_quote_attachment_production_allocation.sql"), "utf8");
   const migrationJournal = fs.readFileSync(path.join(root, "server/db/migrations_v2/meta/_journal.json"), "utf8");
 
   test("new quote and order production artwork relationships default to one when no explicit allocation is supplied", () => {
@@ -75,5 +76,13 @@ describe("production artwork allocation defaults", () => {
     expect(lineItemFileAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_quantity integer");
     expect(lineItemFileAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_group_id varchar(128)");
     expect(migrationJournal).toContain('"tag": "0170_repair_line_item_file_production_allocation"');
+  });
+
+  test("reconciles quote artwork allocation columns before quote conversion reads them", () => {
+    expect(quoteAttachmentAllocationRepairMigration).toContain("ALTER TABLE quote_attachments");
+    expect(quoteAttachmentAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_quantity integer");
+    expect(quoteAttachmentAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_group_id varchar(128)");
+    expect(quoteAttachmentAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_role varchar(16) NOT NULL DEFAULT 'artwork'");
+    expect(migrationJournal).toContain('"tag": "0177_repair_quote_attachment_production_allocation"');
   });
 });
