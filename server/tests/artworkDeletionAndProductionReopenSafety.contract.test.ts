@@ -33,4 +33,13 @@ describe("artwork deletion and production reopen safety", () => {
     expect(reopenRoute).toContain("res.status(409)");
     expect(reopenRoute).not.toContain('.set({ status: "in_progress"');
   });
+
+  test("legacy production views delegate reopening to guarded completion recovery", () => {
+    const hook = source("../client/src/hooks/useProduction.ts".replace("../client", "../../client"));
+    const start = hook.indexOf("export function useReopenProductionJob");
+    const end = hook.indexOf("export function useUndoCompleteProductionJob", start);
+    const reopenHook = hook.slice(start, end);
+    expect(reopenHook).toContain("/undo-complete");
+    expect(reopenHook).not.toContain("/reopen");
+  });
 });

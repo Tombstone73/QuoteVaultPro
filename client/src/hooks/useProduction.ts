@@ -1598,19 +1598,23 @@ export function useReopenProductionJob(jobId: string) {
   const { toast } = useToast();
   return useMutation({
     mutationFn: async () => {
-      const res = await fetch(`/api/production/jobs/${jobId}/reopen`, {
+      // Legacy callers retain this hook name, but reopening must run the
+      // guarded completion-recovery operation rather than mutating the job alone.
+      const res = await fetch(`/api/production/jobs/${jobId}/undo-complete`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
         credentials: "include",
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error || "Failed to reopen job");
+      if (!res.ok || json?.success === false) throw new Error(json.message || json.error || "Failed to reopen job");
       return json.data;
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
       // Reopening pulls the job back from done/proofing into production boards.
       qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
-      toast({ title: "Job reopened" });
+      toast({ title: "Job restored" });
     },
     onError: (e: Error) => {
       toast({ title: "Reopen failed", description: e.message, variant: "destructive" });
