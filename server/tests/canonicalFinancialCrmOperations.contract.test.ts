@@ -53,4 +53,15 @@ describe("canonical CRM, Invoice, and Payment operation wiring", () => {
     expect(financialCore).toContain("IDEMPOTENCY_KEY_CONFLICT");
     expect(financialCore).toContain("OVERPAYMENT_NOT_ALLOWED");
   });
+
+  it("keeps manual payment voids as audited rollup reconciliations instead of deleting history", async () => {
+    const [route, financialCore] = await Promise.all([
+      source("server/routes/mvpInvoicing.routes.ts"),
+      source("server/invoicesService.ts"),
+    ]);
+    expect(financialCore).toContain("reconcileInvoicePaymentStateInTransaction");
+    expect(financialCore).toContain("voidManualPaymentCanonical");
+    expect(route).toContain("voidManualPaymentCanonical");
+    expect(route).not.toContain("await db.delete(payments)");
+  });
 });

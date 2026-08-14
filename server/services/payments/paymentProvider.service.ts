@@ -9,7 +9,7 @@ import {
   type OrganizationPaymentSettings,
 } from "../../../shared/schema";
 import { normalizeInvoiceAccountingDisplay } from "../../../shared/invoiceAccountingDisplay";
-import { refreshInvoiceStatus } from "../../invoicesService";
+import { reconcileInvoicePaymentStateInTransaction, refreshInvoiceStatus } from "../../invoicesService";
 import { decryptAiSecret, encryptAiSecret } from "../ai/aiSecretsEncryption";
 import {
   buildHostedPtkRequest,
@@ -665,6 +665,7 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
     ) {
       throw new PaymentProviderError("Only pending EPS hosted payments can be confirmed manually.", "EPS_HOSTED_PAYMENT_NOT_PENDING", 409);
     }
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-rollup:${pendingPayment.invoiceId}`}))`);
 
     const [duplicateTransaction] = epsTransactionId
       ? await tx
@@ -756,10 +757,17 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
       throw new PaymentProviderError("Only pending EPS hosted payments can be confirmed manually.", "EPS_HOSTED_PAYMENT_NOT_PENDING", 409);
     }
 
-    return { payment: updated as any, pendingAmountCents };
+    const reconciled = await reconcileInvoicePaymentStateInTransaction({
+      tx,
+      organizationId: input.organizationId,
+      invoiceId: String(updated.invoiceId),
+    });
+    return { payment: updated as any, pendingAmountCents, invoice: reconciled?.updated ?? null };
   });
 
   const updatedPayment = resultRecord.payment;
+  // This repeat is now only the existing post-commit workflow-pillar hook; the
+  // payment record and persisted invoice rollup were committed together above.
   const updatedInvoice = await refreshInvoiceStatus(String((updatedPayment as any).invoiceId));
   const invoiceName = String((updatedInvoice as any)?.invoiceNumber || (updatedPayment as any).invoiceId || "");
   const amountOverride = result === "approved" && approvedAmountCents !== resultRecord.pendingAmountCents;

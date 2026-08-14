@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
-import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -1211,103 +1211,16 @@ export async function registerMvpInvoicingRoutes(
       const paymentId = String(req.params.paymentId || '');
       if (!paymentId) return res.status(400).json({ error: 'Missing paymentId' });
 
-      const [payment] = await db
-        .select()
-        .from(payments)
-        .where(and(eq(payments.id, paymentId), eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
-        .limit(1);
-
-      if (!payment) return res.status(404).json({ error: 'Payment not found' });
-
-      const provider = String((payment as any).provider || '').toLowerCase();
-      if (provider === 'stripe') return res.status(400).json({ error: 'Stripe payments cannot be voided here' });
-
-      const currentStatus = String((payment as any).status || '').toLowerCase();
-      if (currentStatus === 'voided') {
-        const updatedInvoice = await refreshInvoiceStatus(inv.id);
-        const paymentRowsAfter = await db
-          .select()
-          .from(payments)
-          .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
-
-        const rollup = computeInvoicePaymentRollup({
-          invoiceTotalCents: Number(inv.totalCents || 0),
-          payments: paymentRowsAfter.map((p: any) => ({
-            id: p.id,
-            status: String(p.status || 'succeeded'),
-            amountCents: Number(p.amountCents || 0),
-          })),
-        });
-
-        return res.json({ success: true, data: { payment, invoice: updatedInvoice, rollup } });
-      }
-
-      const now = new Date();
-      const nextMetadata = {
-        ...((payment as any).metadata || {}),
-        voidedAt: now.toISOString(),
-        voidedByUserId: userId,
-      };
-
-      const [updatedPayment] = await db
-        .update(payments)
-        .set({
-          status: 'voided',
-          canceledAt: now,
-          metadata: nextMetadata as any,
-          updatedAt: now,
-        } as any)
-        .where(and(eq(payments.id, paymentId), eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
-        .returning();
-
-      const updatedInvoice = await refreshInvoiceStatus(inv.id);
-
-      const paymentRowsAfter = await db
-        .select()
-        .from(payments)
-        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
-
+      const result = await voidManualPaymentCanonical({ organizationId, invoiceId: inv.id, paymentId, userId });
+      const paymentRowsAfter = await db.select().from(payments).where(and(
+        eq(payments.invoiceId, inv.id),
+        eq(payments.organizationId, organizationId),
+      ));
       const rollup = computeInvoicePaymentRollup({
         invoiceTotalCents: Number(inv.totalCents || 0),
-        payments: paymentRowsAfter.map((p: any) => ({
-          id: p.id,
-          status: String(p.status || 'succeeded'),
-          amountCents: Number(p.amountCents || 0),
-        })),
+        payments: paymentRowsAfter.map((p: any) => ({ id: p.id, status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
       });
-
-      try {
-        await db.insert(auditLogs).values({
-          organizationId,
-          userId: userId || null,
-          userName,
-          actionType: 'manual_payment_voided',
-          entityType: 'invoice',
-          entityId: inv.id,
-          entityName: String(inv.invoiceNumber),
-          description: 'Manual payment voided',
-          oldValues: {
-            paymentId: (payment as any).id,
-            status: (payment as any).status,
-            amountCents: Number((payment as any).amountCents || 0),
-          } as any,
-          newValues: {
-            paymentId: (payment as any).id,
-            status: 'voided',
-            voidedAt: now.toISOString(),
-          } as any,
-          createdAt: now,
-        } as any);
-      } catch {}
-
-      return res.json({
-        success: true,
-        data: {
-          payment: updatedPayment,
-          invoice: updatedInvoice,
-          rollup,
-        },
-      });
+      return res.json({ success: true, data: { payment: result.payment, invoice: result.invoice, rollup } });
     } catch (error: any) {
       console.error('Error voiding manual payment:', error);
       return res.status(500).json({ error: error.message || 'Failed to void payment' });
@@ -2612,31 +2525,31 @@ export async function registerMvpInvoicingRoutes(
     }
   });
 
-  // Payment deletion (only if invoice not fully paid yet)
+  // Legacy payment deletion endpoint: retain history by soft-voiding manual payments.
   app.delete('/api/payments/:id', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'Missing user' });
 
       const paymentId = req.params.id;
       const paymentRows = await db.select().from(payments).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
       const payment = paymentRows[0];
       if (!payment) return res.status(404).json({ error: 'Payment not found' });
-
-      if (String((payment as any).provider || '').toLowerCase() === 'stripe') {
-        return res.status(400).json({ error: 'Stripe payments cannot be deleted' });
-      }
-
-      const rel = await getInvoiceWithRelations(payment.invoiceId);
-      if (!rel) return res.status(404).json({ error: 'Parent invoice not found' });
-      if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: 'Parent invoice not found' });
-      if (rel.invoice.status === 'paid') return res.status(400).json({ error: 'Cannot delete payment from fully paid invoice' });
-      await db.delete(payments).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
-      await refreshInvoiceStatus(payment.invoiceId);
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error deleting payment:', error);
-      res.status(500).json({ error: 'Failed to delete payment' });
+      const result = await voidManualPaymentCanonical({
+        organizationId,
+        invoiceId: payment.invoiceId,
+        paymentId,
+        userId,
+      });
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const code = error?.code;
+      if (code === 'PAYMENT_VOID_NOT_ALLOWED') return res.status(400).json({ error: error.message, code });
+      if (code === 'INVOICE_NOT_FOUND' || code === 'PAYMENT_NOT_FOUND') return res.status(404).json({ error: error.message, code });
+      console.error('Error voiding legacy payment deletion:', error);
+      res.status(500).json({ error: error.message || 'Failed to void payment' });
     }
   });
 

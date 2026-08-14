@@ -1166,38 +1166,95 @@ export async function markInvoiceSent(id: string) {
   return updated;
 }
 
-export async function refreshInvoiceStatus(id: string) {
-  const result = await db.transaction(async (tx) => {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-rollup:${id}`}))`);
-  const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, id)).limit(1);
+/** Rebuild an invoice rollup inside the payment mutation's transaction. */
+export async function reconcileInvoicePaymentStateInTransaction(input: {
+  tx: any;
+  organizationId: string;
+  invoiceId: string;
+}) {
+  const [invoice] = await input.tx.select().from(invoices).where(and(
+    eq(invoices.id, input.invoiceId),
+    eq(invoices.organizationId, input.organizationId),
+  )).limit(1);
   if (!invoice) return null;
-  const paymentRows = await tx.select().from(payments).where(eq(payments.invoiceId, id));
+  const paymentRows = await input.tx.select().from(payments).where(and(
+    eq(payments.invoiceId, input.invoiceId),
+    eq(payments.organizationId, input.organizationId),
+  ));
   const financialState = computeInvoiceFinancialState(invoice as any, paymentRows as any);
-
-  const amountPaid = centsToDecimalString(financialState.amountPaidCents);
-  const balanceDue = centsToDecimalString(financialState.amountDueCents);
-
   let status = financialState.status;
   const isImportedFromQuickBooks = String((invoice as any).importSource || '').trim().toLowerCase() === 'quickbooks';
-  if (!isImportedFromQuickBooks && status !== 'paid' && invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
-    status = 'overdue';
-  }
-  const [updated] = await tx.update(invoices).set({ amountPaid, balanceDue, status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
+  if (!isImportedFromQuickBooks && status !== 'paid' && invoice.dueDate && new Date(invoice.dueDate) < new Date()) status = 'overdue';
+  const [updated] = await input.tx.update(invoices).set({
+    amountPaid: centsToDecimalString(financialState.amountPaidCents),
+    balanceDue: centsToDecimalString(financialState.amountDueCents),
+    status,
+    updatedAt: new Date(),
+  }).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).returning();
   return { updated, invoice, status };
+}
+
+/** Soft-void a manual payment and rebuild its invoice rollup atomically. */
+export async function voidManualPaymentCanonical(input: {
+  organizationId: string;
+  invoiceId: string;
+  paymentId: string;
+  userId: string;
+}) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-rollup:${input.invoiceId}`}))`);
+    const [invoice] = await tx.select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber }).from(invoices).where(and(
+      eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId),
+    )).limit(1);
+    if (!invoice) throw Object.assign(new Error("Invoice not found."), { code: "INVOICE_NOT_FOUND" });
+    const [payment] = await tx.select().from(payments).where(and(
+      eq(payments.id, input.paymentId), eq(payments.invoiceId, input.invoiceId), eq(payments.organizationId, input.organizationId),
+    )).limit(1);
+    if (!payment) throw Object.assign(new Error("Payment not found."), { code: "PAYMENT_NOT_FOUND" });
+    if (String((payment as any).provider || "").toLowerCase() !== "manual") {
+      throw Object.assign(new Error("Only manual payments can be voided here."), { code: "PAYMENT_VOID_NOT_ALLOWED" });
+    }
+    const now = new Date();
+    const alreadyVoided = String((payment as any).status || "").toLowerCase() === "voided";
+    const [updatedPayment] = alreadyVoided ? [payment] : await tx.update(payments).set({
+      status: "voided",
+      canceledAt: now,
+      metadata: {
+        ...(((payment as any).metadata && typeof (payment as any).metadata === "object") ? (payment as any).metadata : {}),
+        voidedAt: now.toISOString(),
+        voidedByUserId: input.userId,
+      } as any,
+      updatedAt: now,
+    } as any).where(and(eq(payments.id, payment.id), eq(payments.organizationId, input.organizationId))).returning();
+    const reconciled = await reconcileInvoicePaymentStateInTransaction({ tx, organizationId: input.organizationId, invoiceId: input.invoiceId });
+    if (!alreadyVoided) {
+      await tx.insert(auditLogs).values({
+        organizationId: input.organizationId, userId: input.userId, actionType: "manual_payment_voided",
+        entityType: "payment", entityId: payment.id, entityName: String(invoice.invoiceNumber),
+        description: "Manual payment voided through the canonical Payment operation.",
+        oldValues: { status: payment.status, amountCents: Number((payment as any).amountCents || 0) } as any,
+        newValues: { status: "voided", voidedAt: now.toISOString() } as any,
+      } as any);
+    }
+    return { payment: updatedPayment, invoice: reconciled?.updated ?? null };
+  });
+}
+
+export async function refreshInvoiceStatus(id: string) {
+  const result = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-rollup:${id}`}))`);
+    const [invoice] = await tx.select({ organizationId: invoices.organizationId }).from(invoices).where(eq(invoices.id, id)).limit(1);
+    if (!invoice) return null;
+    return reconcileInvoicePaymentStateInTransaction({ tx, organizationId: invoice.organizationId, invoiceId: id });
   });
   if (!result) return null;
   const { updated, invoice, status } = result;
   if (status === 'paid' && (invoice as any).orderId) {
     const { applyWorkflowStatusPillFailSoft } = await import('./services/workflowStatusPillService');
     await applyWorkflowStatusPillFailSoft({
-      organizationId: String((invoice as any).organizationId),
-      orderId: String((invoice as any).orderId),
-      triggerKey: 'payment_received',
-      actorUserId: String((invoice as any).createdByUserId),
-      actorUserName: 'System',
-      source: 'system',
-      reason: 'Invoice paid',
-      metadata: { invoiceId: id },
+      organizationId: String((invoice as any).organizationId), orderId: String((invoice as any).orderId),
+      triggerKey: 'payment_received', actorUserId: String((invoice as any).createdByUserId), actorUserName: 'System',
+      source: 'system', reason: 'Invoice paid', metadata: { invoiceId: id },
     });
   }
   return updated;
