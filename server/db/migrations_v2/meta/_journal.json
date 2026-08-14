@@ -1212,6 +1212,13 @@
       "when": 1788048000024,
       "tag": "0177_repair_quote_attachment_production_allocation",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1788048000025,
+      "tag": "0178_reconcile_runtime_critical_schema_contracts",
+      "breakpoints": true
     }
   ]
 }

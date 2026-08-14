@@ -1,0 +1,30 @@
+name: Migration integrity
+
+on:
+  pull_request:
+    paths:
+      - 'server/db/migrations_v2/**'
+      - 'scripts/check-migration-**'
+      - 'scripts/check-journal-monotonic.mjs'
+      - 'package.json'
+      - '.github/workflows/migration-integrity.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'server/db/migrations_v2/**'
+      - 'scripts/check-migration-**'
+      - 'scripts/check-journal-monotonic.mjs'
+      - 'package.json'
+      - '.github/workflows/migration-integrity.yml'
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrations:v2:preflight

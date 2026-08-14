@@ -48,7 +48,7 @@ import { synchronizeFinalArtworkForLineQuantityChange } from "../services/canoni
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
-import { OrderIdentityError } from "../storage/orders.repo";
+import { OrderDeletionProtectedError, OrderIdentityError } from "../storage/orders.repo";
 import { resolveOrderCustomerContactIds } from "../services/orderCustomerResolutionService";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -5694,6 +5694,14 @@ export async function registerOrderRoutes(
             }
             res.json({ message: "Order deleted successfully" });
         } catch (error) {
+            if (error instanceof OrderDeletionProtectedError) {
+                return res.status(error.statusCode).json({
+                    success: false,
+                    message: error.message,
+                    code: error.code,
+                    details: error.details,
+                });
+            }
             console.error("Error deleting order:", error);
             res.status(500).json({ message: "Failed to delete order" });
         }

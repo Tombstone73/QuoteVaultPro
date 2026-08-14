@@ -24,6 +24,8 @@ import {
     quoteAttachments,
     quoteLineItems,
     productionJobs,
+    productionRuns,
+    productionRunMembers,
     invoices,
     jobs,
     jobStatusLog,
@@ -135,6 +137,24 @@ function buildOrderSearchConditions(organizationId: string, rawSearch: unknown):
             sql`exists (select 1 from ${orderLineItems} inner join ${products} on ${products.id} = ${orderLineItems.productId} and ${products.organizationId} = ${organizationId} where ${orderLineItems.orderId} = ${orders.id} and (${orderLineItems.description} ilike ${pattern} or ${products.name} ilike ${pattern} or ${products.shopName} ilike ${pattern} or ${products.description} ilike ${pattern} or ${products.category} ilike ${pattern}))`,
         );
     });
+}
+
+/**
+ * Hard deletion is only permitted for disposable orders. Production records are
+ * operational history, so operators must cancel or archive an order once any
+ * production job, run, or run-member exists for it.
+ */
+export class OrderDeletionProtectedError extends Error {
+    readonly code = "ORDER_DELETION_PRODUCTION_HISTORY" as const;
+    readonly statusCode = 409;
+
+    constructor(readonly details: {
+        hasProductionJob: boolean;
+        hasProductionRun: boolean;
+        hasProductionRunMember: boolean;
+    }) {
+        super("Orders with production history cannot be deleted. Cancel or archive the order instead.");
+    }
 }
 
 type OrderSnapshotFields = Pick<
@@ -1810,7 +1830,53 @@ export class OrdersRepository {
     }
 
     async deleteOrder(organizationId: string, id: string): Promise<void> {
-        await this.dbInstance.delete(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
+        // Keep the guard and delete in one transaction. The row lock prevents
+        // a concurrent production insert from appearing between the history
+        // check and the hard delete, which could otherwise reintroduce the
+        // cascade-loss race this policy is meant to prevent.
+        await this.dbInstance.transaction(async (tx: any) => {
+            const [order] = await tx.select({ id: orders.id }).from(orders).where(and(
+                eq(orders.id, id),
+                eq(orders.organizationId, organizationId),
+            )).for("update");
+            if (!order) return;
+
+            // Keep this guard at the repository boundary so every current and
+            // future hard-delete caller receives the same protection.
+            const [[productionJob], [productionRun], [productionRunMember]] = await Promise.all([
+                tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+                eq(productionJobs.organizationId, organizationId),
+                eq(productionJobs.orderId, id),
+                )).limit(1),
+                tx.select({ id: productionRuns.id }).from(productionRuns).where(and(
+                eq(productionRuns.organizationId, organizationId),
+                eq(productionRuns.orderId, id),
+                )).limit(1),
+                tx.select({ id: productionRunMembers.id }).from(productionRunMembers)
+                .innerJoin(productionJobs, eq(productionRunMembers.productionJobId, productionJobs.id))
+                .innerJoin(productionRuns, eq(productionRunMembers.productionRunId, productionRuns.id))
+                .where(and(
+                    eq(productionRunMembers.organizationId, organizationId),
+                    eq(productionJobs.organizationId, organizationId),
+                    eq(productionRuns.organizationId, organizationId),
+                    or(
+                        eq(productionJobs.orderId, id),
+                        eq(productionRuns.orderId, id),
+                    ),
+                ))
+                .limit(1),
+            ]);
+
+            if (productionJob || productionRun || productionRunMember) {
+                throw new OrderDeletionProtectedError({
+                    hasProductionJob: Boolean(productionJob),
+                    hasProductionRun: Boolean(productionRun),
+                    hasProductionRunMember: Boolean(productionRunMember),
+                });
+            }
+
+            await tx.delete(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
+        });
     }
 
     async convertQuoteToOrder(organizationId: string, quoteId: string, createdByUserId: string, options?: {

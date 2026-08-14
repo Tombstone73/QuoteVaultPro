@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+/**
+ * Prevents two migration-history failures that Drizzle's timestamp ledger
+ * cannot detect: editing an already-recorded migration and adding a migration
+ * behind the current journal frontier.
+ *
+ * The committed manifest is an intentionally small, reviewable trust anchor.
+ * Normal CI use is read-only. `--refresh` is allowed only when the previously
+ * protected history is byte-for-byte unchanged and the new entries are a
+ * strictly later append.
+ */
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+// The override exists solely for hermetic tests; CI and developer commands use
+// the repository root derived from this script.
+const root = process.env.MIGRATION_HISTORY_ROOT
+  ? path.resolve(process.env.MIGRATION_HISTORY_ROOT)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const migrationsDir = path.join(root, "server", "db", "migrations_v2");
+const journalPath = path.join(migrationsDir, "meta", "_journal.json");
+const manifestPath = path.join(migrationsDir, "meta", "_history-integrity.json");
+const refresh = process.argv.slice(2).includes("--refresh");
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function loadJournal() {
+  const raw = JSON.parse(readFileSync(journalPath, "utf8"));
+  if (!Array.isArray(raw.entries) || raw.entries.length === 0) fail("journal has no entries");
+  const entries = raw.entries.map(({ idx, tag, when }) => ({ idx, tag, when })).sort((a, b) => a.idx - b.idx);
+  const tags = new Set();
+  let previous = null;
+
+  for (const entry of entries) {
+    if (!Number.isInteger(entry.idx) || entry.idx < 0) fail(`invalid idx for ${entry.tag}`);
+    if (!Number.isInteger(entry.when) || entry.when < 0) fail(`invalid when for ${entry.tag}`);
+    if (typeof entry.tag !== "string" || !/^[a-z0-9_]+$/i.test(entry.tag)) fail(`invalid tag for idx=${entry.idx}`);
+    if (tags.has(entry.tag)) fail(`duplicate journal tag: ${entry.tag}`);
+    if (previous && entry.idx <= previous.idx) fail(`journal idx is not strictly increasing at ${entry.tag}`);
+    if (previous && entry.when <= previous.when) {
+      fail(`backfilled/lower migration timestamp: ${entry.tag} (${entry.when}) is not greater than ${previous.tag} (${previous.when})`);
+    }
+    const source = path.join(migrationsDir, `${entry.tag}.sql`);
+    try { readFileSync(source); } catch { fail(`missing SQL source for journal tag: ${entry.tag}`); }
+    tags.add(entry.tag);
+    previous = entry;
+  }
+
+  return entries;
+}
+
+function canonical(entries) {
+  return entries.map((entry) => {
+    const source = readFileSync(path.join(migrationsDir, `${entry.tag}.sql`));
+    return `${entry.idx}\t${entry.when}\t${entry.tag}\t${sha256(source)}`;
+  }).join("\n") + "\n";
+}
+
+function makeManifest(entries) {
+  const last = entries.at(-1);
+  return {
+    version: 1,
+    purpose: "CI trust anchor for immutable V2 migration history",
+    entryCount: entries.length,
+    immutableThrough: { idx: last.idx, when: last.when, tag: last.tag },
+    canonicalSha256: sha256(canonical(entries)),
+  };
+}
+
+function verifyManifest(manifest, entries) {
+  if (manifest?.version !== 1 || !Number.isInteger(manifest.entryCount) || !manifest.immutableThrough || typeof manifest.canonicalSha256 !== "string") {
+    fail("invalid migration history integrity manifest");
+  }
+  if (entries.length < manifest.entryCount) fail("journal lost entries protected by the integrity manifest");
+
+  const protectedEntries = entries.slice(0, manifest.entryCount);
+  const protectedLast = protectedEntries.at(-1);
+  if (
+    protectedLast.idx !== manifest.immutableThrough.idx ||
+    protectedLast.when !== manifest.immutableThrough.when ||
+    protectedLast.tag !== manifest.immutableThrough.tag
+  ) fail("journal order/tag/timestamp changed inside protected migration history");
+
+  const protectedDigest = sha256(canonical(protectedEntries));
+  if (protectedDigest !== manifest.canonicalSha256) {
+    fail("historical migration SQL or journal metadata changed; create a new repair migration instead of editing applied history");
+  }
+  return protectedEntries;
+}
+
+try {
+  const entries = loadJournal();
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const protectedEntries = verifyManifest(manifest, entries);
+  const additions = entries.slice(protectedEntries.length);
+
+  if (additions.length === 0) {
+    console.log(`[migration-integrity] PASSED: ${entries.length} protected V2 migrations are unchanged.`);
+  } else if (!refresh) {
+    fail(`${additions.length} new migration(s) are not yet recorded in the integrity manifest. Run the reviewed refresh command after confirming this is an append-only change.`);
+  } else {
+    const nextManifest = makeManifest(entries);
+    writeFileSync(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`);
+    console.log(`[migration-integrity] REFRESHED: protected append-only V2 history through ${nextManifest.immutableThrough.tag}.`);
+  }
+} catch (error) {
+  console.error(`[migration-integrity] FAILED: ${error instanceof Error ? error.message : "unknown error"}`);
+  process.exitCode = 1;
+}

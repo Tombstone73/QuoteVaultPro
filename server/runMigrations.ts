@@ -174,11 +174,19 @@ async function acquireMigrationAdvisoryLock(client: any): Promise<boolean> {
 
 type ReleaseCheck =
   | { type: "column_exists"; table: string; column: string; label: string }
+  | { type: "column_nullable"; table: string; column: string; label: string }
   | { type: "table_exists"; table: string; label: string }
   | { type: "index_exists"; index: string; label: string }
+  | { type: "enum_value_exists"; enumType: string; value: string; label: string }
+  | { type: "exact_foreign_key"; table: string; column: string; referencesTable: string; referencesColumn: string; onDelete: "SET NULL"; label: string }
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // Migration 0178 verifies physical repair postconditions rather than trusting
+  // that a migration ledger timestamp implies the intended catalog state.
+  { type: "exact_foreign_key", table: "production_runs", column: "order_id", referencesTable: "orders", referencesColumn: "id", onDelete: "SET NULL", label: "production_runs.order_id has exactly one orders(id) SET NULL FK" },
+  { type: "enum_value_exists", enumType: "line_item_file_status", value: "retired", label: "line_item_file_status includes retired" },
+  { type: "column_nullable", table: "orders", column: "customer_id", label: "orders.customer_id is nullable" },
   // migration 0173 - the order-centric fulfillment workspace reads these on
   // every detail request. Fail startup clearly rather than returning a 500.
   { type: "column_exists", table: "shipments", column: "shipment_reference", label: "shipments.shipment_reference" },
@@ -273,6 +281,15 @@ async function runReleaseChecks(client: any): Promise<void> {
           [check.table, check.column],
         );
         exists = res.rows[0].ok;
+      } else if (check.type === "column_nullable") {
+        const res = await client.query(
+          `SELECT EXISTS (
+             SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2 AND is_nullable = 'YES'
+           ) AS ok`,
+          [check.table, check.column],
+        );
+        exists = res.rows[0].ok;
       } else if (check.type === "table_exists") {
         const res = await client.query(
           `SELECT EXISTS (
@@ -291,6 +308,33 @@ async function runReleaseChecks(client: any): Promise<void> {
           [check.index],
         );
         exists = res.rows[0].ok;
+      } else if (check.type === "enum_value_exists") {
+        const res = await client.query(
+          `SELECT EXISTS (
+             SELECT 1
+             FROM pg_type t
+             JOIN pg_namespace n ON n.oid = t.typnamespace
+             JOIN pg_enum e ON e.enumtypid = t.oid
+             WHERE n.nspname = 'public' AND t.typname = $1 AND e.enumlabel = $2
+           ) AS ok`,
+          [check.enumType, check.value],
+        );
+        exists = res.rows[0].ok;
+      } else if (check.type === "exact_foreign_key") {
+        const res = await client.query(
+          `SELECT pg_get_constraintdef(c.oid) AS definition
+           FROM pg_constraint c
+           JOIN pg_class source_table ON source_table.oid = c.conrelid
+           JOIN pg_namespace source_schema ON source_schema.oid = source_table.relnamespace
+           WHERE source_schema.nspname = 'public' AND source_table.relname = $1 AND c.contype = 'f'`,
+          [check.table],
+        );
+        const relation = new RegExp(
+          `^FOREIGN KEY \\(${check.column}\\) REFERENCES (?:public\\.)?${check.referencesTable}\\(${check.referencesColumn}\\)`,
+          "i",
+        );
+        const matching = res.rows.filter((row: { definition?: string }) => relation.test(row.definition ?? ""));
+        exists = matching.length === 1 && new RegExp(`ON DELETE ${check.onDelete}$`, "i").test(matching[0]?.definition ?? "");
       } else if (check.type === "row_exists") {
         // WHERE is developer-controlled in-file config — not user input.
         const safeName = check.table.replace(/[^a-z0-9_]/gi, "");

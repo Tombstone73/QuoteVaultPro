@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "purpose": "CI trust anchor for immutable V2 migration history",
+  "entryCount": 174,
+  "immutableThrough": {
+    "idx": 179,
+    "when": 1788048000025,
+    "tag": "0178_reconcile_runtime_critical_schema_contracts"
+  },
+  "canonicalSha256": "01d0ed3bde4efe9545d52f3913ae869f0b5308c8db65e9c4861272a3a5a0609a"
+}
