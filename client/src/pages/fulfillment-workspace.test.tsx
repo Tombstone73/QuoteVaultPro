@@ -75,6 +75,14 @@ describe("FulfillmentWorkspacePage active routed workflow", () => {
     expect(button(container, "Mark Selected Ready for Pickup")).toBeTruthy();
     expect(container.querySelector('input[aria-label="Pickup quantity: PVC 3mm"]')).toBeNull();
     expect(container.querySelector('input[aria-label="Adjust ready quantity: PVC 3mm"]')).toBeNull();
+    const readyInput = container.querySelector('input[aria-label="Ready quantity: PVC 3mm"]') as HTMLInputElement;
+    const noteInput = container.querySelector('textarea[aria-label="Order note"]') as HTMLTextAreaElement;
+    for (const control of [readyInput, noteInput]) {
+      expect(control.className).toContain("bg-background");
+      expect(control.className).toContain("border-input");
+      expect(control.className).toContain("placeholder:text-muted-foreground");
+      expect(control.className).toContain("focus-visible:ring-ring");
+    }
     expect(container.textContent).toContain("Order Notes");
     act(() => root.unmount());
   });
@@ -87,7 +95,10 @@ describe("FulfillmentWorkspacePage active routed workflow", () => {
     act(rerender);
     expect(adjustReady).toHaveBeenCalledWith({ items: [{ orderLineItemId: "line-1", quantityDelta: 1000 }] });
     expect(detail.lineItems[0].production.productionCompleteQuantity).toBe(0);
-    expect(container.querySelector('input[aria-label="Pickup quantity: PVC 3mm"]')).not.toBeNull();
+    const pickupInput = container.querySelector('input[aria-label="Pickup quantity: PVC 3mm"]') as HTMLInputElement;
+    expect(pickupInput).not.toBeNull();
+    expect(pickupInput.className).toContain("bg-background");
+    expect(pickupInput.className).toContain("focus-visible:ring-ring");
     expect(button(container, "All Ready")).toBeTruthy();
     expect(button(container, "Complete Pickup")).toBeTruthy();
     expect(button(container, "Adjust ready qty")).toBeTruthy();
