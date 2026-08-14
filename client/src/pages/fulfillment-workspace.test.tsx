@@ -111,17 +111,41 @@ describe("FulfillmentWorkspacePage pickup workflow", () => {
     detail = makeDetail();
     const { container, root, render } = renderWorkspace();
 
-    expect(container.textContent).toContain("Ordered 1000");
-    expect(container.textContent).toContain("Available 1000");
-    expect(container.textContent).toContain("Remaining 1000");
-    expect(container.textContent).toContain("Pickup now");
-    expect(container.textContent).toContain("All available");
+    expect(container.textContent).toContain("Product");
+    expect(container.textContent).toContain("Ordered");
+    expect(container.textContent).toContain("Produced / Eligible");
+    expect(container.textContent).toContain("Picked Up");
+    expect(container.textContent).toContain("Available");
+    expect(container.textContent).toContain("Pickup Now");
+    expect(container.textContent).toContain("All Available");
     expect(container.textContent).toContain("Complete Pickup");
     expect(container.textContent).not.toContain("Ready / physically present");
+    expect(container.textContent).not.toContain("Present");
+    expect(container.textContent).not.toContain("physically present");
     expect(container.textContent).not.toContain("Mark Ready for Pickup");
+    expect(container.textContent).not.toContain("Ordered 1000 · Produced 0");
+
+    const coroplastRow = container.querySelector('[data-testid="pickup-line-coroplast"]') as HTMLTableRowElement;
+    const stakesRow = container.querySelector('[data-testid="pickup-line-stakes"]') as HTMLTableRowElement;
+    expect(coroplastRow).not.toBeNull();
+    expect(stakesRow).not.toBeNull();
+    expect(coroplastRow.textContent).toContain("Coroplast");
+    expect(coroplastRow.textContent).toContain("Production in progress");
+    expect(coroplastRow.textContent).toContain("1000");
+    expect(coroplastRow.textContent).toContain("0");
+    expect(coroplastRow.querySelector('input[aria-label="Pickup quantity: Coroplast"]')).toBeNull();
+    expect(stakesRow.textContent).toContain("Economy Yard Sign Stakes");
+    expect(stakesRow.querySelector('[data-testid="pickup-ordered-stakes"]')?.textContent).toBe("1000");
+    expect(stakesRow.querySelector('[data-testid="pickup-produced-stakes"]')?.textContent).toBe("1000");
+    expect(stakesRow.querySelector('[data-testid="pickup-picked-up-stakes"]')?.textContent).toBe("0");
+    expect(stakesRow.querySelector('[data-testid="pickup-available-stakes"]')?.textContent).toBe("1000");
 
     const stakeInput = container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement;
     expect(stakeInput).not.toBeNull();
+    expect(stakeInput.min).toBe("0");
+    expect(stakeInput.max).toBe("1000");
+    await act(async () => { Simulate.click(Array.from(stakesRow.querySelectorAll("button")).find((button) => button.textContent === "All Available")!); });
+    expect(stakeInput.value).toBe("1000");
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
       setValue?.call(stakeInput, "600");
@@ -133,14 +157,15 @@ describe("FulfillmentWorkspacePage pickup workflow", () => {
     act(render);
 
     expect(recordHandoff).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("Picked up 600");
-    expect(container.textContent).toContain("Available 400");
-    expect(container.textContent).toContain("Remaining 400");
+    expect(container.querySelector('[data-testid="pickup-picked-up-stakes"]')?.textContent).toBe("600");
+    expect(container.querySelector('[data-testid="pickup-available-stakes"]')?.textContent).toBe("400");
     expect(container.textContent).toContain("Pickup History");
     expect(container.textContent).toContain("600 Economy Yard Sign Stakes");
-    expect(container.textContent).toContain("Completed by Dale");
+    expect(container.textContent).toContain("Dale");
 
     const remainingStakeInput = container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement;
+    expect(remainingStakeInput.value).toBe("");
+    expect(remainingStakeInput.max).toBe("400");
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
       setValue?.call(remainingStakeInput, "400");
@@ -150,9 +175,10 @@ describe("FulfillmentWorkspacePage pickup workflow", () => {
     act(render);
 
     expect(recordHandoff).toHaveBeenCalledTimes(2);
-    expect(container.textContent).toContain("Picked up 1000");
-    expect(container.textContent).toContain("Available 0");
+    expect(container.querySelector('[data-testid="pickup-picked-up-stakes"]')?.textContent).toBe("1000");
+    expect(container.querySelector('[data-testid="pickup-available-stakes"]')?.textContent).toBe("0");
     expect(container.textContent).toContain("400 Economy Yard Sign Stakes");
+    expect(container.querySelectorAll('[data-testid^="pickup-line-"]')).toHaveLength(2);
 
     act(() => root.unmount());
   });
