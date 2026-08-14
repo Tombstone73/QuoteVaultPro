@@ -6,13 +6,32 @@
 
 The original read-only audit confirmed **five findings**: **one P0**, **two P1**, and **two P2 migration-history integrity gaps**. The previously reported quote-artwork allocation drift and pickup-handoff contract were physically present; the `line_item_file_status.retired` repair was not.
 
-Forward migration `0178_reconcile_runtime_critical_schema_contracts` has now repaired SCHEMA-001, SCHEMA-002, and SCHEMA-003 on an explicitly authorized disposable Neon clone. The migration runner, startup postconditions, rollback-only behavioral checks, quote-conversion/contact-only integration suite, and a new read-only catalog audit all passed on that clone. This is **disposable-clone proof only**: real DEV is not yet live-validated and must not be described as repaired until normal deployment completes and a brand-new clone from deployed DEV independently passes the read-only reconciliation.
-
-The V2 ledger is useful as an execution hint, but it is **not trustworthy by itself as evidence of schema correctness**. It contains later migration records while omitting earlier journal timestamps, and the runner's timestamp-based selection makes missed backfilled migrations permanently ineligible without an explicit later repair.
+Forward migration `0178_reconcile_runtime_critical_schema_contracts` was first proven on an explicitly authorized disposable Neon clone. The migration runner, startup postconditions, rollback-only behavioral checks, quote-conversion/contact-only integration suite, and catalog audit passed there. The post-deployment section below records the independent fresh-clone verification that subsequently established physical DEV correctness.
 
 The V2 ledger remains useful as an execution hint, but it is **not trustworthy by itself as evidence of schema correctness**. It contains later migration records while omitting earlier journal timestamps, and the runner's timestamp-based selection makes missed backfilled migrations permanently ineligible without an explicit later repair.
 
-The three runtime defects are now covered by a forward migration and permanent physical postconditions. Deploy that migration before relying on hard deletion of disposable orders, contact-only order creation/conversion, or artwork retirement/prepress removal in DEV. SCHEMA-004 and SCHEMA-005 remain historical P2 auditability findings.
+The three runtime defects are now covered by a forward migration and permanent physical postconditions. SCHEMA-004 and SCHEMA-005 remain historical P2 auditability findings.
+
+## POST-DEPLOYMENT RECONCILIATION
+
+**Verification date:** 2026-08-14 (America/Indianapolis)
+**DEV SHA:** `f8b8c759eadf957e283309a00f20ecd19c3bb006` (`fix: reconcile runtime critical schema contracts`)
+**Basis:** a brand-new user-authorized disposable Neon clone created from DEV after normal deployment. Every database session used `BEGIN READ ONLY` / `ROLLBACK`; `transaction_read_only=on` was independently confirmed. No credentials, application URLs, Railway configuration, DEV application database URL, or PROD connection was used.
+
+The physical ledger contains the latest migration timestamp `1788048000025`, corresponding to journal migration `0178_reconcile_runtime_critical_schema_contracts`; its physical ledger row is `id=176`. Ledger row IDs are sequential bookkeeping IDs, not V2 journal indexes.
+
+| Finding | Post-deployment physical result |
+|---|---|
+| SCHEMA-001 | **REPAIRED / VERIFIED.** Exactly one validated `production_runs.order_id → orders.id` FK exists: `production_runs_order_id_orders_id_fk ON DELETE SET NULL`. No cascade FK for that relationship exists. |
+| SCHEMA-002 | **REPAIRED / VERIFIED.** `line_item_file_status` contains `active`, `superseded`, and exactly one `retired`. |
+| SCHEMA-003 | **REPAIRED / VERIFIED.** `orders.customer_id` exists and is nullable; customer/contact identity foreign keys remain intact. |
+| Current P0 count | **0** across all audited runtime-critical contracts. |
+| Current P1 count | **0** across all audited runtime-critical contracts. |
+| SCHEMA-004 / SCHEMA-005 | **Historical P2.** Ledger timestamp/source-hash history remains incomplete/auditability-limited, but 0178 itself is physically recorded and the current runtime contracts are matched. |
+
+One non-blocking P2 declaration disagreement remains: `shared/schema.ts` permits nullable `quote_attachments.production_role`, while migrations 0149/0177 and physical DEV require `NOT NULL DEFAULT 'artwork'`. The physical contract is safely stricter, all 41 current rows are non-null, and current runtime callers default/fallback to `artwork`; this is not a P0/P1 physical defect.
+
+**Final DEV physical-schema verdict:** **CURRENT-RUNTIME SCHEMA-CORRECT FOR AUDITED CONTRACTS.** This verdict is based on the fresh post-deployment clone and does not erase the historical SCHEMA-004/005 evidence.
 
 ## Audit Basis
 
@@ -20,13 +39,15 @@ The three runtime defects are now covered by a forward migration and permanent p
 |---|---|
 | Original audited DEV SHA / `origin/dev` | `2b8133a2abbc539e109c929100e196d84d7acf57` |
 | Repair starting DEV SHA / `origin/dev` | `a285945aed2150723f058a0d063df241c1344f34` |
+| Post-deployment verification DEV SHA / `origin/dev` | `f8b8c759eadf957e283309a00f20ecd19c3bb006` |
 | `origin/main` inspected (not modified) | `29a3a1edbaf60a3d255e02a14a4ac54aefa7f102` |
 | Working tree at audit start | Clean |
 | Active V2 journal before repair | 173 SQL files / 173 journal entries; latest `0177_repair_quote_attachment_production_allocation` |
 | Active V2 journal after repair | 174 SQL files / 174 journal entries; latest `0178_reconcile_runtime_critical_schema_contracts` |
-| Physical source | User-authorized disposable 24-hour Neon DEV-shaped clone; database name omitted from this document |
+| Physical source | User-authorized fresh disposable Neon clone created from post-deployment DEV; database name omitted from this document |
 | Original audit database access | PostgreSQL catalog and supporting data `SELECT`s only, each in `BEGIN READ ONLY` / `ROLLBACK`; `transaction_read_only=on` confirmed |
 | Repair validation database access | Migration runner applied only 0178; behavioral fixture writes were rollback-only; catalog re-audit was `BEGIN READ ONLY` / `ROLLBACK` |
+| Post-deployment database access | Catalog/data inspection only, explicit `BEGIN READ ONLY` / `ROLLBACK`; zero writes and zero migration applications |
 | Audit date | 2026-08-14 (America/Indianapolis) |
 
 No production, Railway credential, or MAIN database was accessed. The repair validation used only the explicitly authorized disposable clone. No historical migration was rewritten and no application schema was manually edited outside the new forward migration.
@@ -37,11 +58,12 @@ Before repair, the clone had the current latest V2 ledger timestamp (`1788048000
 
 | ID | Severity | Domain | Expected | Physical | Migration State | Runtime Impact | Recommendation |
 |---|---|---|---|---|---|---|---|
-| SCHEMA-001 | P0 historical; repaired on clone | Production / orders | `production_runs.order_id` has exactly one FK to `orders(id)` with `ON DELETE SET NULL` | Before repair: both `production_runs_order_id_fkey ON DELETE CASCADE` and `production_runs_order_id_orders_id_fk ON DELETE SET NULL`; after 0178 clone: exactly one `SET NULL` FK and no direct cascade FK | 0158 attempted to replace only the latter constraint name; 0153 created the original implicit `production_runs_order_id_fkey`, so it survived. 0178 now identifies the relationship by catalog columns, removes duplicates/non-SET-NULL variants, and retains/adds one intended FK. | Before repair, hard delete could cascade production history. The canonical delete boundary now returns typed `ORDER_DELETION_PRODUCTION_HISTORY` / 409 whenever production job/run/member history exists; disposable orders still delete. | Deploy 0178, then obtain a brand-new live-DEV clone and rerun exact catalog plus behavioral proof. |
-| SCHEMA-002 | P1 historical; repaired on clone | Artwork / prepress | `line_item_file_status` contains `active`, `superseded`, `retired` | Before repair: only `active`, `superseded`; after 0178 clone: all three values exactly once | 0150 (`ALTER TYPE ... ADD VALUE IF NOT EXISTS 'retired'`) has no physical ledger timestamp while later entries exist; 0178 adds the required value idempotently. | Before repair, active retirement callers would fail on normal `status='retired'` writes. Rollback-only clone validation persisted a retired file and verified resolver exclusion of retired/superseded projections. | Deploy 0178 and rerun read-only enum/value audit on fresh live-DEV clone. |
-| SCHEMA-003 | P1 historical; repaired on clone | Orders / customer identity | `orders.customer_id` is nullable; runtime validates customer **or** contact | Before repair: `orders.customer_id` was `NOT NULL`; after 0178 clone: nullable with existing customer/contact FKs preserved | 0151 (`DROP NOT NULL`) is absent from the ledger while later entries exist; 0178 applies the physical nullability repair. | Before repair, supported contact-only order creation/conversion could fail. Clone validation proved customer-backed and contact-only persistence; the focused quote conversion suite passed its contact-only cases. | Deploy 0178 and repeat contact-only order/conversion checks against a fresh live-DEV clone. |
-| SCHEMA-004 | P2 | Migration system | Every active journal migration has a physical ledger identity/timestamp, or a documented immutable baseline exception | Nine journal timestamps are absent while later timestamps exist: `0001`, `0003`, `0004`, `0015`, `0016`, `0017`, `0149`, `0150`, `0151` | V2 ledger has 175 rows / 174 distinct timestamps vs 173 active journal entries; 0149 was later repaired, 0150/0151 were not | Ledger progression alone can falsely declare an incomplete schema current | Reconcile history only through a reviewed repair plan; do not rewrite ledger as a substitute for physical postconditions. |
+| SCHEMA-001 | P0 historical; repaired/verified | Production / orders | `production_runs.order_id` has exactly one FK to `orders(id)` with `ON DELETE SET NULL` | Before repair: both `production_runs_order_id_fkey ON DELETE CASCADE` and `production_runs_order_id_orders_id_fk ON DELETE SET NULL`; fresh post-deployment clone: exactly one `SET NULL` FK and no direct cascade FK | 0158 attempted to replace only the latter constraint name; 0153 created the original implicit `production_runs_order_id_fkey`, so it survived. 0178 now identifies the relationship by catalog columns, removes duplicates/non-SET-NULL variants, and retains/adds one intended FK. | Before repair, hard delete could cascade production history. The canonical delete boundary now returns typed `ORDER_DELETION_PRODUCTION_HISTORY` / 409 whenever production job/run/member history exists; disposable orders still delete. | Verified on fresh post-deployment DEV clone; repeat against PROD before MAIN. |
+| SCHEMA-002 | P1 historical; repaired/verified | Artwork / prepress | `line_item_file_status` contains `active`, `superseded`, `retired` | Before repair: only `active`, `superseded`; fresh post-deployment clone: all three values exactly once | 0150 (`ALTER TYPE ... ADD VALUE IF NOT EXISTS 'retired'`) has no physical ledger timestamp while later entries exist; 0178 adds the required value idempotently. | Before repair, active retirement callers would fail on normal `status='retired'` writes. Rollback-only clone validation persisted a retired file and verified resolver exclusion of retired/superseded projections. | Verified on fresh post-deployment DEV clone; repeat against PROD before MAIN. |
+| SCHEMA-003 | P1 historical; repaired/verified | Orders / customer identity | `orders.customer_id` is nullable; runtime validates customer **or** contact | Before repair: `orders.customer_id` was `NOT NULL`; fresh post-deployment clone: nullable with existing customer/contact FKs preserved | 0151 (`DROP NOT NULL`) is absent from the ledger while later entries exist; 0178 applies the physical nullability repair. | Before repair, supported contact-only order creation/conversion could fail. Clone validation proved customer-backed and contact-only persistence; the focused quote conversion suite passed its contact-only cases. | Verified on fresh post-deployment DEV clone; repeat against PROD before MAIN. |
+| SCHEMA-004 | P2 historical | Migration system | Every active journal migration has a physical ledger identity/timestamp, or a documented immutable baseline exception | Historic journal timestamps remain absent while later timestamps exist; post-deployment ledger has 176 rows and records 0178 at `1788048000025` | Historical baseline/manual ledger state; 0178 itself is recorded | Ledger progression alone can falsely declare an incomplete schema current | Retain history evidence; do not rewrite ledger as a substitute for physical postconditions. |
 | SCHEMA-005 | P2 | Migration system | Active migration files and physical ledger hashes form an auditable immutable history | Canonical Git-LF comparison found 15 current source hashes absent from the ledger and 13 ledger hashes with no current source equivalent | Representative physical contracts for the historic hash gaps are mostly present; this is an auditability/integrity gap, not automatically a runtime defect | Source-file mutation/duplicate/manual ledger history prevents a ledger-only proof of what ran | Freeze applied migration contents; validate source hash set in CI and use new repairs rather than editing historical migration files. |
+| SCHEMA-006 | P2 | Quote artwork declaration | Drizzle declaration and migration/physical nullability should agree | `quote_attachments.production_role` is physically `NOT NULL DEFAULT 'artwork'`; Drizzle permits null | 0149/0177 and physical catalog agree; no null rows exist | Physical schema is safely stricter and runtime defaults/falls back to `artwork`; no current failure | Reconcile the declaration only in a separately approved schema-ownership change; do not weaken the physical constraint. |
 
 ### Expected vs Physical Matrix
 
@@ -53,9 +75,9 @@ The reusable script at `scripts/db/auditPhysicalSchema.ts` emits JSON with this 
 | Customers/contacts | `customer_contact_links` | FKs/partial uniques | Active pair and one-primary relationship invariants | 0079/0109 | Present | MATCH | — |
 | Products/PBV2 | `pbv2_tree_versions` | tables/enums/FKs/indexes | Active/draft tree ownership and product pointer | PBV2 migrations | Present; active/draft partial uniqueness and active-tree FK | MATCH | — |
 | Quotes/artwork | quote allocation fields | columns/check/index | Allocation quantity/group/role used in conversion | 0149, repaired by 0169/0170/0177 | Present with correct types, default, positive check and group index | MATCH | — |
-| Orders | `orders.customer_id` | nullability | Customer or contact identity | 0151, forward-repaired by 0178 | Pre-repair clone `NOT NULL`; post-0178 clone nullable | MATCH on clone / live DEV pending | P1 historical |
-| Artwork/prepress | `line_item_file_status.retired` | enum value | Retirement state | 0150, forward-repaired by 0178 | Pre-repair clone missing; post-0178 clone present | MATCH on clone / live DEV pending | P1 historical |
-| Production | `production_runs.order_id` | FK | One `SET NULL` FK | 0153/0158, forward-repaired by 0178 | Pre-repair clone conflicting CASCADE and SET NULL FKs; post-0178 clone exact SET NULL FK | MATCH on clone / live DEV pending | P0 historical |
+| Orders | `orders.customer_id` | nullability | Customer or contact identity | 0151, forward-repaired by 0178 | Fresh post-deployment clone nullable with current identity FKs | MATCH | P1 historical |
+| Artwork/prepress | `line_item_file_status.retired` | enum value | Retirement state | 0150, forward-repaired by 0178 | Fresh post-deployment clone includes `retired` exactly once | MATCH | P1 historical |
+| Production | `production_runs.order_id` | FK | One `SET NULL` FK | 0153/0158, forward-repaired by 0178 | Fresh post-deployment clone has exactly one `SET NULL` FK and no cascade FK | MATCH | P0 historical |
 | Fulfillment | pickup handoffs | tables/FKs/check/index | Partial pickup quantity and replay safety | 0175/0176 | Present, including positive quantity check and partial request unique | MATCH | — |
 | Billing/payments | payment identifiers/webhooks | unique indexes | Provider idempotency, transaction and webhook identities | 0081 and legacy/baseline | Present | MATCH | — |
 | Background/integrations | storage, QB, bridge, notifications | tables/FKs/uniques | Worker/integration persistence | 0007+, 0132 and legacy/baseline | Present for inspected active contracts | MATCH | — |
@@ -81,13 +103,15 @@ The quote allocation repair is verified: `quote_attachments.production_quantity`
 
 ### Orders and Order Lines
 
-The pre-repair clone did not support the contact-only identity contract: current `shared/schema.ts` and canonical order validation allow a contact without a customer, while `orders.customer_id` was `NOT NULL`. Migration 0178 makes the column nullable. The rollback-only clone fixture proved both normal customer/contact ownership and contact-only order persistence; the focused quote-routing/conversion integration suite passed the supported contact-only conversion path. Live DEV still requires a post-deployment clone proof.
+The pre-repair clone did not support the contact-only identity contract: current `shared/schema.ts` and canonical order validation allow a contact without a customer, while `orders.customer_id` was `NOT NULL`. Migration 0178 makes the column nullable. The rollback-only clone fixture proved both normal customer/contact ownership and contact-only order persistence; the focused quote-routing/conversion integration suite passed the supported contact-only conversion path. The fresh post-deployment clone now verifies the physical contract in DEV.
 
 ### Artwork, Proofing, and Prepress
 
 Proof/prepress tables, their primary/foreign keys, and canonical artwork relationships are present for the inspected current contracts. Before repair, `line_item_file_status.retired` was absent (SCHEMA-002), making file retirement writes fail. Migration 0178 adds it idempotently. The disposable clone accepted a `retired` line-item-file row and the current resolver returned only active production projection rows while excluding retired and superseded rows; a different tenant resolved nothing.
 
 ### Production
+
+The fresh post-deployment clone contains `production_runs`, `production_run_members`, their current quantity/outcome/recovery fields, required positive-quantity checks, and current uniqueness/index contracts. SCHEMA-001 is physically verified: exactly one validated `production_runs.order_id → orders.id ON DELETE SET NULL` constraint exists and no cascade relationship remains.
 
 Production-run/member quantity, outcome, recovery, file-strategy, and uniqueness contracts are present. Before repair, SCHEMA-001 left a historic cascade FK in addition to the intended `SET NULL` FK. Migration 0178 removed that dangerous duplicate relationship. The repository-level hard-delete guard locks the scoped order and rejects deletion with `ORDER_DELETION_PRODUCTION_HISTORY` / 409 if a production job, run, or run member exists; rollback-only clone validation confirmed all five protected records remain and a genuinely disposable order deletes. Cancellation remains a separate workflow operation.
 
@@ -117,7 +141,7 @@ Inspected active persistence for audit logs, accounting sync, outbound pickup no
 
 ## Migration Ledger Reconciliation and Root Cause
 
-The V2 journal has 173 checked-in SQL files and 173 entries; its current `when` values are strictly monotonic. Numeric gaps (45–49 and 155) and duplicate `0162` filename prefixes are informational because Drizzle identifies the migration stream through ordered journal entries/timestamps, not filename numbers.
+The V2 journal now has 174 checked-in SQL files and 174 entries through 0178; its current `when` values are strictly monotonic. Numeric gaps (45–49 and 155) and duplicate `0162` filename prefixes are informational because Drizzle identifies the migration stream through ordered journal entries/timestamps, not filename numbers.
 
 The physical V2 ledger has 175 rows, 174 distinct `created_at` timestamps, and a latest timestamp equal to current 0177. Nine current journal timestamps are absent from the ledger, while later timestamps exist. Canonical Git-LF source comparison also found 15 active source hashes absent from the ledger and 13 ledger hashes without a current source counterpart. Representative effects of most historical gaps are physically present, so this is not a claim that all gaps are live defects. It is decisive evidence that the ledger cannot prove physical correctness.
 
@@ -127,9 +151,9 @@ This supports **A + B + C**: historical manual/baseline ledger state and a times
 
 ## Recommended Repair Order
 
-1. **Deploy 0178 to DEV:** it repairs SCHEMA-001/002/003, adds runner postconditions, and preserves production history by rejecting hard deletion once production history exists.
-2. **Re-clone and audit DEV:** after deployment, create a brand-new DEV clone and run only the read-only catalog reconciliation. Treat any remaining P0/P1 result as a release blocker.
-3. **SCHEMA-004/005 (P2):** retain historic evidence, do not rewrite ledger history merely to make it look complete, and use the new append-only/immutability preflight for all future migrations.
+1. **Maintain the 0178 postconditions:** treat a failing exact FK, enum-value, or nullable-column startup check as a deployment blocker.
+2. **Before MAIN:** independently run this same read-only catalog reconciliation against PROD; do not infer PROD state from DEV success.
+3. **SCHEMA-004/005 (P2):** retain historic evidence, do not rewrite ledger history merely to make it look complete, and use the append-only/immutability preflight for all future migrations.
 
 ## Recommended Permanent Safeguard
 
@@ -162,6 +186,7 @@ Do **not** use application credentials in CI output and do **not** run DDL. Agai
 - Git branch, original HEAD, `origin/dev`, `origin/main`, and clean working tree verified before the original audit.
 - `git fetch origin --prune` completed; MAIN was not changed.
 - `npm run db:migrations:v2:preflight` passed after repair: 174 active entries have strictly monotonic `when` values and all protected migration history is unchanged.
+- Final post-deployment fresh-clone audit passed on DEV SHA `f8b8c759eadf957e283309a00f20ecd19c3bb006`: 0178 is physically recorded, SCHEMA-001/002/003 are MATCH, and the expanded tenant/customer/PBV2/allocation/artwork/production/fulfillment/billing P0/P1 catalog sweep found zero mismatches.
 - Migration 0178 ran through the application migration runner on the authorized disposable clone; all 55 startup release checks passed.
 - The post-repair read-only physical audit reported MATCH for SCHEMA-001/002/003 and every other audited runtime-critical contract. Its only remaining report is the pre-existing SCHEMA-004 journal-timestamp history gap.
 - Rollback-only disposable clone validation passed: protected production-history delete rejected with typed 409 and no partial cleanup; disposable order deletion succeeded; customer/contact and contact-only identity persisted; retired enum/resolver lifecycle and tenant isolation behaved as intended. A separate two-session check proved the repository's `FOR UPDATE` order lock blocks a concurrent production-job insert before the hard-delete decision can proceed.
@@ -169,13 +194,13 @@ Do **not** use application credentials in CI output and do **not** run DDL. Agai
 - Focused static suites passed: `schemaReconciliationRepairs`, `migrationRuntimePostconditions`, and `migrationHistoryIntegrity` (10 passed; safe-test-name-gated duplicates skipped because the disposable database uses a neutral name).
 - TypeScript validation, production build, and `git diff --check` passed.
 - Parallel static/runtime, migration-history, and physical-catalog domain reviews completed.
-- The original reconciliation queries were read-only. Repair validation applied exactly the approved forward migration and used rollback-only fixture transactions; no DEV/PROD database was written.
+- The original reconciliation queries were read-only. Repair validation applied exactly the approved forward migration and used rollback-only fixture transactions; no DEV/PROD database was written. The final post-deployment reconciliation performed zero database writes, zero DDL, zero fixture inserts, and zero migration applications.
 - This repair milestone adds one forward migration, migration safety tooling/CI, physical postconditions, deletion guard, focused tests, and this updated audit. No historical migration was changed.
 
 ## Remaining Unknowns
 
-- The database was a user-supplied DEV-shaped clone; no provider-side clone provenance metadata was available to independently prove the instant it was created.
+- The final verification relies on operator-provided fresh-clone provenance; no provider-side clone timestamp/API metadata was independently queried.
 - This audit intentionally did not access PROD. PROD requires the checklist above before MAIN promotion.
 - Historical ledger/source hash differences need a separately approved reconciliation decision; they should not be normalized by replaying or editing old migrations.
 
-**Status:** deployable but not yet live-validated. The disposable clone proof does not establish that real DEV has applied 0178; a fresh clone from deployed DEV is the next required reconciliation step.
+**Status:** DEV is **CURRENT-RUNTIME SCHEMA-CORRECT FOR AUDITED CONTRACTS**. Resume the V2 Interface Convergence experiment next; preserve the PROD-before-MAIN read-only reconciliation gate.
