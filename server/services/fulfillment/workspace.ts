@@ -1,5 +1,5 @@
 import type { QueueRowDto } from './types';
-import { isFulfillmentQueueEligibleOrder } from './eligibility';
+import { isCanceledOrder } from '@shared/operationalState';
 
 function cleanText(value: unknown): string {
   return String(value ?? '').trim();
@@ -36,6 +36,8 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
   shippedQty: number;
   fulfilledQty?: number;
   pickedUpQty?: number;
+  readyWaitingQty?: number;
+  notReadyQty?: number;
   productionCompleteQty?: number;
   eligibleQty?: number;
   blockedQty?: number;
@@ -48,12 +50,12 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
   const fulfilledQty = input.fulfilledQty ?? shippedQty;
   const pickedUpQty = input.pickedUpQty ?? 0;
   const isPickup = order.shippingMethod === 'pickup';
-  const isEligible = isFulfillmentQueueEligibleOrder(order);
+  const isEligible = !isCanceledOrder(order);
   const remaining = Math.max(orderedQty - fulfilledQty, 0);
   const pickupStatus = cleanText(pickupTicket?.status).toUpperCase();
   const status = isPickup
-    ? (pickupStatus || (isEligible ? 'DRAFT' : 'AWAITING_PRODUCTION'))
-    : (!isEligible ? 'AWAITING_PRODUCTION' : deriveShipStatus(order.fulfillmentStatus, orderedQty, shippedQty));
+    ? (pickupStatus || (isEligible ? 'DRAFT' : 'CANCELLED'))
+    : (!isEligible ? 'CANCELLED' : deriveShipStatus(order.fulfillmentStatus, orderedQty, shippedQty));
 
   return {
     orderId: order.id,
@@ -70,6 +72,8 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
     blockedQuantity: input.blockedQty ?? remaining,
     shippedQuantity: shippedQty,
     pickedUpQuantity: pickedUpQty,
+    readyWaitingQuantity: input.readyWaitingQty ?? input.eligibleQty ?? 0,
+    notReadyQuantity: input.notReadyQty ?? input.blockedQty ?? remaining,
     remainingQuantity: remaining,
     readySince: isEligible ? toIso(order.productionCompletedAt ?? order.updatedAt) : null,
     shipTo: isPickup ? 'In-Store' : [order.shipToCity, order.shipToState].filter(Boolean).join(', ') || 'Unknown',

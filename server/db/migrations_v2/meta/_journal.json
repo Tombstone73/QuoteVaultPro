@@ -1219,6 +1219,13 @@
       "when": 1788048000025,
       "tag": "0178_reconcile_runtime_critical_schema_contracts",
       "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1788048000026,
+      "tag": "0179_fulfillment_ready_quantities",
+      "breakpoints": true
     }
   ]
 }

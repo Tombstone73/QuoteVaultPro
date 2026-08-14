@@ -285,7 +285,7 @@ describe("fulfillment operational workflow helpers", () => {
     expect(requireChecklist).not.toHaveBeenCalled();
   });
 
-  test("mark shipped uses the canonical produced cap rather than a manual verification quantity", async () => {
+  test("mark shipped uses the fulfillment-ready pool rather than reported production", async () => {
     const fakeShipmentRepo = {
       getShipmentById: jest.fn(async () => ({
         id: "shipment-1",
@@ -301,7 +301,7 @@ describe("fulfillment operational workflow helpers", () => {
       listLineEligibility: jest.fn(async () => [{
         id: "line-1",
         orderId: "order-1",
-        projection: { requiresFulfillment: true, eligibleQuantity: 1, shippedQuantity: 0 },
+        projection: { requiresFulfillment: true, readyWaitingQuantity: 1, eligibleQuantity: 1, shippedQuantity: 0 },
       }]),
     };
     const select = jest.fn().mockImplementationOnce(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }]));

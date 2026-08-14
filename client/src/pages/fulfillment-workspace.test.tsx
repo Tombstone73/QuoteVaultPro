@@ -7,179 +7,86 @@ import { TextDecoder, TextEncoder } from "util";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).TextEncoder = TextEncoder;
 (globalThis as any).TextDecoder = TextDecoder;
-Object.defineProperty(globalThis, "crypto", {
-  configurable: true,
-  value: { randomUUID: () => "pickup-request-1" },
-});
+Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "pickup-request-1" } });
 
 let detail: any;
-const recordHandoff = jest.fn(async (payload: any) => {
-  const quantity = Number(payload.items?.[0]?.quantity || 0);
-  expect(payload).toMatchObject({ ticketId: "ticket-1", items: [{ orderLineItemId: "stakes", quantity }] });
-  const priorPickedUp = Number(detail.lineItems.find((item: any) => item.id === "stakes")?.production.pickedUpQuantity || 0);
-  const pickedUp = priorPickedUp + quantity;
-  const available = 1000 - pickedUp;
+const adjustReady = jest.fn(async ({ items }: any) => {
+  for (const item of items) detail = {
+    ...detail,
+    readyWaitingQuantity: detail.readyWaitingQuantity + item.quantityDelta,
+    lineItems: detail.lineItems.map((line: any) => line.id === item.orderLineItemId ? {
+      ...line,
+      production: { ...line.production, readyWaitingQuantity: line.production.readyWaitingQuantity + item.quantityDelta, notReadyQuantity: line.production.notReadyQuantity - item.quantityDelta },
+    } : line),
+  };
+});
+const recordHandoff = jest.fn(async ({ items }: any) => {
+  const quantity = items[0].quantity;
   detail = {
     ...detail,
-    fulfilledQuantity: pickedUp,
-    eligibleQuantity: available,
-    remainingQuantity: 1000 + available,
-    lineItems: detail.lineItems.map((item: any) => item.id === "stakes" ? {
-      ...item,
-      production: { ...item.production, pickedUpQuantity: pickedUp, fulfilledQuantity: pickedUp, eligibleQuantity: available, remainingQuantity: available, blockedQuantity: 0 },
-    } : item),
-    pickupHandoffs: [...detail.pickupHandoffs, {
-      id: `handoff-${detail.pickupHandoffs.length + 1}`,
-      handedOffAt: "2026-08-13T23:14:00.000Z",
-      handedOffByUserId: "user-1",
-      handedOffByName: "Dale",
-      notes: null,
-      items: [{ orderLineItemId: "stakes", quantity, productName: "Economy Yard Sign Stakes", description: null }],
-    }],
+    readyWaitingQuantity: detail.readyWaitingQuantity - quantity,
+    pickedUpQuantity: detail.pickedUpQuantity + quantity,
+    fulfilledQuantity: detail.fulfilledQuantity + quantity,
+    remainingQuantity: detail.remainingQuantity - quantity,
+    lineItems: detail.lineItems.map((line: any) => ({ ...line, production: { ...line.production, readyWaitingQuantity: line.production.readyWaitingQuantity - quantity, pickedUpQuantity: line.production.pickedUpQuantity + quantity, fulfilledQuantity: line.production.fulfilledQuantity + quantity, remainingQuantity: line.production.remainingQuantity - quantity } })),
+    pickupHandoffs: [...detail.pickupHandoffs, { id: `handoff-${detail.pickupHandoffs.length + 1}`, handedOffAt: "2026-08-14T12:00:00Z", handedOffByUserId: "user-1", handedOffByName: "Dale", notes: null, items: [{ orderLineItemId: "line-1", quantity, productName: "PVC 3mm", description: null }] }],
   };
-  return { terminal: false };
+  return { terminal: detail.remainingQuantity === 0 };
 });
 
 jest.mock("@/hooks/useFulfillment", () => ({
   toFulfillmentError: (error: any) => ({ message: error?.message || "Unexpected error" }),
-  useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: jest.fn(async () => ({ data: detail })) }),
+  useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: jest.fn() }),
   useCreateShipmentMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useCreatePickupTicketMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useMarkPickupReadyMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
+  useAdjustFulfillmentReadyQuantitiesMutation: () => ({ mutateAsync: adjustReady, isPending: false }),
   useRecordPickupHandoffMutation: () => ({ mutateAsync: recordHandoff, isPending: false }),
 }));
-
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
 jest.mock("@/lib/artworkAccess", () => ({ openArtworkPreview: jest.fn() }));
-jest.mock("@/components/artwork/AuthenticatedArtworkThumbnail", () => ({ AuthenticatedArtworkThumbnail: () => <span>Artwork</span> }));
-jest.mock("@/pages/fulfillment-shipment-detail", () => ({ FulfillmentShipmentEditor: () => <div>Shipment editor</div> }));
+jest.mock("@/components/artwork/AuthenticatedArtworkThumbnail", () => ({ AuthenticatedArtworkThumbnail: () => <span /> }));
+jest.mock("@/pages/fulfillment-shipment-detail", () => ({ FulfillmentShipmentEditor: () => <div /> }));
 
 const { MemoryRouter, Route, Routes } = require("react-router-dom") as typeof import("react-router-dom");
-const FulfillmentWorkspacePage = require("./fulfillment-workspace").default as typeof import("./fulfillment-workspace").default;
-
-function pickupLine(id: string, name: string, produced: number, available: number, blocked: number) {
-  return {
-    id,
-    productName: name,
-    description: null,
-    productType: null,
-    quantity: 1000,
-    size: null,
-    materialName: null,
-    optionSummary: [],
-    finishing: { requirements: [], lamination: null },
-    production: {
-      jobId: null, stationKey: null, stationLabel: null, status: available ? "ready" : "waiting_on_production",
-      completedAt: null, eligible: available > 0, label: available ? "Ready" : "Production in progress", productionRequired: true,
-      orderedQuantity: 1000, productionCompleteQuantity: produced, fulfilledQuantity: 0, eligibleQuantity: available,
-      blockedQuantity: blocked, shippedQuantity: 0, pickedUpQuantity: 0, remainingQuantity: 1000,
-    },
-    artwork: [], checklist: { id: "", checked: false, fulfilledQuantity: 0, checkedByUserId: null, checkedAt: null, notes: null },
-  };
-}
+const Page = require("./fulfillment-workspace").default;
 
 function makeDetail() {
-  return {
-    orderId: "order-1", orderNumber: "20045", customerName: "Graphic Solutions", fulfillmentType: "PICKUP", status: "PARTIALLY_READY",
-    itemsRemaining: "2000 item(s)", physicalLineCount: 2, orderedQuantity: 2000, productionCompleteQuantity: 1000, fulfilledQuantity: 0,
-    eligibleQuantity: 1000, blockedQuantity: 1000, shippedQuantity: 0, pickedUpQuantity: 0, remainingQuantity: 2000,
-    readySince: null, shipTo: "In-Store", overdue: false, isArchived: false, productionJobs: [],
-    customer: { name: "Graphic Solutions", email: null, phone: null },
-    lineItems: [pickupLine("coroplast", "Coroplast", 0, 0, 1000), pickupLine("stakes", "Economy Yard Sign Stakes", 1000, 1000, 0)],
-    checklistComplete: false, checklistSummary: { total: 0, checked: 0, unchecked: 0 }, productionSummary: [],
-    pickupTicket: { id: "ticket-1", status: "READY_FOR_PICKUP", readyAt: null, pickedUpAt: null, stagingLocation: null, pickupNotes: null, contactName: null, contactEmail: null, contactPhone: null },
-    pickupHandoffs: [], shipments: [], events: [],
-  };
+  const production = { jobId: null, stationKey: null, stationLabel: null, status: "not_ready", completedAt: null, eligible: false, label: "Not yet marked ready", productionRequired: true, orderedQuantity: 1000, productionCompleteQuantity: 0, fulfilledQuantity: 0, eligibleQuantity: 0, blockedQuantity: 1000, shippedQuantity: 0, pickedUpQuantity: 0, readyWaitingQuantity: 0, notReadyQuantity: 1000, remainingQuantity: 1000 };
+  return { orderId: "order-1", orderNumber: "1129", customerName: "Titan Graphics", fulfillmentType: "PICKUP", status: "NOT_READY", itemsRemaining: "1000 item(s)", physicalLineCount: 1, orderedQuantity: 1000, productionCompleteQuantity: 0, fulfilledQuantity: 0, eligibleQuantity: 0, blockedQuantity: 1000, shippedQuantity: 0, pickedUpQuantity: 0, readyWaitingQuantity: 0, notReadyQuantity: 1000, remainingQuantity: 1000, readySince: null, shipTo: "In-Store", overdue: false, isArchived: false, productionJobs: [], customer: { name: "Titan Graphics", email: null, phone: null }, lineItems: [{ id: "line-1", productName: "PVC 3mm", description: null, productType: null, quantity: 1000, size: null, materialName: null, optionSummary: [], finishing: { requirements: [], lamination: null }, production, artwork: [], checklist: { id: "", checked: false, fulfilledQuantity: 0, checkedByUserId: null, checkedAt: null, notes: null } }], checklistComplete: false, checklistSummary: { total: 0, checked: 0, unchecked: 0 }, productionSummary: [], pickupTicket: { id: "ticket-1", status: "READY_FOR_PICKUP", readyAt: null, pickedUpAt: null, stagingLocation: null, pickupNotes: null, contactName: null, contactEmail: null, contactPhone: null }, pickupHandoffs: [], shipments: [], events: [] };
 }
 
-function renderWorkspace() {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const render = () => root.render(<MemoryRouter initialEntries={["/fulfillment/orders/order-1"]}><Routes><Route path="/fulfillment/orders/:orderId" element={<FulfillmentWorkspacePage />} /></Routes></MemoryRouter>);
-  act(render);
-  return { container, root, render };
-}
+function render() { const container = document.createElement("div"); document.body.appendChild(container); const root = createRoot(container); const rerender = () => root.render(<MemoryRouter initialEntries={["/fulfillment/orders/order-1"]}><Routes><Route path="/fulfillment/orders/:orderId" element={<Page />} /></Routes></MemoryRouter>); act(rerender); return { container, root, rerender }; }
+function change(input: HTMLInputElement, value: string) { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; setter?.call(input, value); Simulate.change(input, { target: { value } }); }
 
-afterEach(() => {
-  document.body.innerHTML = "";
-  jest.clearAllMocks();
-});
+afterEach(() => { document.body.innerHTML = ""; jest.clearAllMocks(); });
 
-describe("FulfillmentWorkspacePage pickup workflow", () => {
-  test("renders the active route with quantity-aware partial pickup and immutable history", async () => {
-    detail = makeDetail();
-    const { container, root, render } = renderWorkspace();
-
-    expect(container.textContent).toContain("Product");
-    expect(container.textContent).toContain("Ordered");
-    expect(container.textContent).toContain("Produced / Eligible");
-    expect(container.textContent).toContain("Picked Up");
-    expect(container.textContent).toContain("Available");
-    expect(container.textContent).toContain("Pickup Now");
-    expect(container.textContent).toContain("All Available");
-    expect(container.textContent).toContain("Complete Pickup");
-    expect(container.textContent).not.toContain("Ready / physically present");
-    expect(container.textContent).not.toContain("Present");
-    expect(container.textContent).not.toContain("physically present");
-    expect(container.textContent).not.toContain("Mark Ready for Pickup");
-    expect(container.textContent).not.toContain("Ordered 1000 · Produced 0");
-
-    const coroplastRow = container.querySelector('[data-testid="pickup-line-coroplast"]') as HTMLTableRowElement;
-    const stakesRow = container.querySelector('[data-testid="pickup-line-stakes"]') as HTMLTableRowElement;
-    expect(coroplastRow).not.toBeNull();
-    expect(stakesRow).not.toBeNull();
-    expect(coroplastRow.textContent).toContain("Coroplast");
-    expect(coroplastRow.textContent).toContain("Production in progress");
-    expect(coroplastRow.textContent).toContain("1000");
-    expect(coroplastRow.textContent).toContain("0");
-    expect(coroplastRow.querySelector('input[aria-label="Pickup quantity: Coroplast"]')).toBeNull();
-    expect(stakesRow.textContent).toContain("Economy Yard Sign Stakes");
-    expect(stakesRow.querySelector('[data-testid="pickup-ordered-stakes"]')?.textContent).toBe("1000");
-    expect(stakesRow.querySelector('[data-testid="pickup-produced-stakes"]')?.textContent).toBe("1000");
-    expect(stakesRow.querySelector('[data-testid="pickup-picked-up-stakes"]')?.textContent).toBe("0");
-    expect(stakesRow.querySelector('[data-testid="pickup-available-stakes"]')?.textContent).toBe("1000");
-
-    const stakeInput = container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement;
-    expect(stakeInput).not.toBeNull();
-    expect(stakeInput.min).toBe("0");
-    expect(stakeInput.max).toBe("1000");
-    await act(async () => { Simulate.click(Array.from(stakesRow.querySelectorAll("button")).find((button) => button.textContent === "All Available")!); });
-    expect(stakeInput.value).toBe("1000");
-    await act(async () => {
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      setValue?.call(stakeInput, "600");
-      Simulate.change(stakeInput, { target: { value: "600" } });
-    });
-    const completeButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Complete Pickup");
-    expect(completeButton).toBeDefined();
-    await act(async () => { Simulate.click(completeButton!); });
-    act(render);
-
-    expect(recordHandoff).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-testid="pickup-picked-up-stakes"]')?.textContent).toBe("600");
-    expect(container.querySelector('[data-testid="pickup-available-stakes"]')?.textContent).toBe("400");
-    expect(container.textContent).toContain("Pickup History");
-    expect(container.textContent).toContain("600 Economy Yard Sign Stakes");
-    expect(container.textContent).toContain("Dale");
-
-    const remainingStakeInput = container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement;
-    expect(remainingStakeInput.value).toBe("");
-    expect(remainingStakeInput.max).toBe("400");
-    await act(async () => {
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      setValue?.call(remainingStakeInput, "400");
-      Simulate.change(remainingStakeInput, { target: { value: "400" } });
-    });
-    await act(async () => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Complete Pickup")!); });
-    act(render);
-
+describe("FulfillmentWorkspacePage active pickup route", () => {
+  test("allows ready then two immutable pickups while production remains zero", async () => {
+    detail = makeDetail(); const { container, root, rerender } = render();
+    expect(container.textContent).toContain("Ready for Pickup");
+    expect(container.textContent).toContain("Production is informational only");
+    const ready = container.querySelector('input[aria-label="Ready quantity: PVC 3mm"]') as HTMLInputElement;
+    expect(ready.max).toBe("1000");
+    await act(async () => { change(ready, "1000"); });
+    await act(async () => { Simulate.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Mark Ready for Pickup")!); });
+    act(rerender);
+    expect(adjustReady).toHaveBeenCalledWith({ items: [{ orderLineItemId: "line-1", quantityDelta: 1000 }] });
+    expect(detail.lineItems[0].production.productionCompleteQuantity).toBe(0);
+    expect(container.querySelector('[data-testid="ready-waiting-line-1"]')?.textContent).toBe("1000");
+    const pickup = container.querySelector('input[aria-label="Pickup quantity: PVC 3mm"]') as HTMLInputElement;
+    await act(async () => { change(pickup, "600"); });
+    await act(async () => { Simulate.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Complete Pickup")!); await Promise.resolve(); await Promise.resolve(); });
+    expect(recordHandoff).toHaveBeenCalledWith(expect.objectContaining({ items: [{ orderLineItemId: "line-1", quantity: 600 }] }));
+    act(rerender);
+    expect(container.querySelector('[data-testid="pickup-ready-line-1"]')?.textContent).toBe("400");
+    expect(container.textContent).toContain("600 PVC 3mm");
+    const remaining = container.querySelector('input[aria-label="Pickup quantity: PVC 3mm"]') as HTMLInputElement;
+    await act(async () => { change(remaining, "400"); });
+    await act(async () => { Simulate.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Complete Pickup")!); await Promise.resolve(); await Promise.resolve(); });
+    act(rerender);
     expect(recordHandoff).toHaveBeenCalledTimes(2);
-    expect(container.querySelector('[data-testid="pickup-picked-up-stakes"]')?.textContent).toBe("1000");
-    expect(container.querySelector('[data-testid="pickup-available-stakes"]')?.textContent).toBe("0");
-    expect(container.textContent).toContain("400 Economy Yard Sign Stakes");
-    expect(container.querySelectorAll('[data-testid^="pickup-line-"]')).toHaveLength(2);
-
+    expect(container.textContent).toContain("400 PVC 3mm");
     act(() => root.unmount());
   });
 });

@@ -12,6 +12,7 @@ export class CanonicalFulfillmentOperations {
   markOrderReady(...args: Parameters<typeof fulfillmentServiceV2.markOrderReady>) { return fulfillmentServiceV2.markOrderReady(...args); }
   markOrderReadyForPickup(...args: Parameters<typeof fulfillmentServiceV2.markOrderReadyForPickup>) { return fulfillmentServiceV2.markOrderReadyForPickup(...args); }
   unreadyOrder(...args: Parameters<typeof fulfillmentServiceV2.unreadyOrder>) { return fulfillmentServiceV2.unreadyOrder(...args); }
+  adjustReadyQuantities(...args: Parameters<typeof fulfillmentServiceV2.adjustReadyQuantities>) { return fulfillmentServiceV2.adjustReadyQuantities(...args); }
   updateChecklistItem(...args: Parameters<typeof fulfillmentServiceV2.updateChecklistItem>) { return fulfillmentServiceV2.updateChecklistItem(...args); }
   addOrderNote(...args: Parameters<typeof fulfillmentServiceV2.addOrderNote>) { return fulfillmentServiceV2.addOrderNote(...args); }
   createShipment(...args: Parameters<typeof fulfillmentServiceV2.createShipment>) { return fulfillmentServiceV2.createShipment(...args); }

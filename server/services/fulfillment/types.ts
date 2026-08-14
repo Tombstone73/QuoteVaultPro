@@ -20,6 +20,8 @@ export interface QueueRowDto {
   blockedQuantity: number;
   shippedQuantity: number;
   pickedUpQuantity: number;
+  readyWaitingQuantity: number;
+  notReadyQuantity: number;
   remainingQuantity: number;
   readySince: string | null;
   shipTo: string;
@@ -96,6 +98,8 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       blockedQuantity: number;
       shippedQuantity: number;
       pickedUpQuantity: number;
+      readyWaitingQuantity: number;
+      notReadyQuantity: number;
       remainingQuantity: number;
     };
     artwork: Array<{

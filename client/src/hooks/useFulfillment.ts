@@ -18,6 +18,8 @@ export interface FulfillmentQueueRow {
   blockedQuantity: number;
   shippedQuantity: number;
   pickedUpQuantity: number;
+  readyWaitingQuantity: number;
+  notReadyQuantity: number;
   remainingQuantity: number;
   readySince: string | null;
   shipTo: string;
@@ -94,6 +96,8 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       blockedQuantity: number;
       shippedQuantity: number;
       pickedUpQuantity: number;
+      readyWaitingQuantity: number;
+      notReadyQuantity: number;
       remainingQuantity: number;
     };
     artwork: Array<{
@@ -367,6 +371,18 @@ export function useMarkFulfillmentReadyMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/ready`, { method: "POST" }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useAdjustFulfillmentReadyQuantitiesMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { items: Array<{ orderLineItemId: string; quantityDelta: number }> }) =>
+      apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/ready-quantities`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }

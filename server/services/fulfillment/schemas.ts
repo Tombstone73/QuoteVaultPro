@@ -87,6 +87,13 @@ export const pickupHandoffSchema = z.object({
   clientRequestId: z.string().trim().min(1).max(128).optional(),
 });
 
+export const fulfillmentReadyQuantityAdjustmentSchema = z.object({
+  items: z.array(z.object({
+    orderLineItemId: z.string().min(1),
+    quantityDelta: z.coerce.number().int().refine((value) => value !== 0, 'Quantity adjustment cannot be zero'),
+  })).min(1),
+});
+
 export const fulfillmentNoteSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
@@ -119,6 +126,7 @@ export type CreateShipmentInput = z.infer<typeof createShipmentSchema>;
 export type PatchShipmentInput = z.infer<typeof patchShipmentSchema>;
 export type PickupReadyInput = z.infer<typeof pickupReadySchema>;
 export type PickupHandoffInput = z.infer<typeof pickupHandoffSchema>;
+export type FulfillmentReadyQuantityAdjustmentInput = z.infer<typeof fulfillmentReadyQuantityAdjustmentSchema>;
 export type FulfillmentNoteInput = z.infer<typeof fulfillmentNoteSchema>;
 export type FulfillmentChecklistItemInput = z.infer<typeof fulfillmentChecklistItemSchema>;
 export type FulfillmentUnreadyInput = z.infer<typeof fulfillmentUnreadySchema>;

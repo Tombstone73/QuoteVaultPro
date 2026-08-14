@@ -11,7 +11,7 @@ export type FulfillmentLineReadiness = {
 
 export type FulfillmentLineQuantityStatus =
   | "excluded"
-  | "waiting_on_production"
+  | "not_ready"
   | "partially_ready"
   | "ready"
   | "fulfilled";
@@ -28,7 +28,13 @@ export type FulfillmentLineQuantityProjection = {
   /** Retained for API compatibility; shipped is only one fulfillment channel. */
   shippedQuantity: number;
   pickedUpQuantity: number;
+  /** Quantity physically confirmed by Fulfillment but not yet handed off. */
+  readyWaitingQuantity: number;
+  /** Outstanding order quantity that has not yet been marked ready. */
+  notReadyQuantity: number;
+  /** @deprecated compatibility alias for readyWaitingQuantity. */
   eligibleQuantity: number;
+  /** @deprecated compatibility alias for notReadyQuantity. */
   blockedQuantity: number;
   remainingQuantity: number;
   exclusionReason: "service_fee" | "bundle_parent" | "cancelled" | null;
@@ -43,8 +49,10 @@ export type FulfillmentOrderQuantitySummary = {
   blockedQuantity: number;
   shippedQuantity: number;
   pickedUpQuantity: number;
+  readyWaitingQuantity: number;
+  notReadyQuantity: number;
   remainingQuantity: number;
-  status: "WAITING_ON_PRODUCTION" | "PARTIALLY_READY" | "READY" | "PARTIALLY_SHIPPED" | "SHIPPED";
+  status: "NOT_READY" | "PARTIALLY_READY" | "READY" | "PARTIALLY_SHIPPED" | "SHIPPED";
 };
 
 function normalize(value: unknown): string {
@@ -104,6 +112,7 @@ export function resolveFulfillmentLineQuantity(input: {
   productionCompleteQuantity?: number | null;
   shippedQuantity?: number | null;
   pickedUpQuantity?: number | null;
+  readyWaitingQuantity?: number | null;
 }): FulfillmentLineQuantityProjection {
   const orderedQuantity = quantity(input.orderedQuantity);
   const shippedQuantity = Math.min(orderedQuantity, quantity(input.shippedQuantity));
@@ -132,6 +141,8 @@ export function resolveFulfillmentLineQuantity(input: {
       fulfilledQuantity,
       shippedQuantity,
       pickedUpQuantity,
+      readyWaitingQuantity: 0,
+      notReadyQuantity: 0,
       eligibleQuantity: 0,
       blockedQuantity: 0,
       remainingQuantity: 0,
@@ -142,27 +153,28 @@ export function resolveFulfillmentLineQuantity(input: {
   const productionRequired = workflowIntent !== "fulfillment_only" && input.requiresProductionJob !== false && input.productionBypassed !== true;
   const lifecycleReadiness = resolveFulfillmentLineReadiness(input);
   const productionCompleteQuantity = productionRequired
-    // Successful production-run quantity is the physical ceiling.  Lifecycle
-    // state can explain why a line is eligible, but must never manufacture the
-    // missing quantity when a run is only partially complete.
+    // Production is informative to Fulfillment. It never authorizes or caps a
+    // physical handoff; only the Fulfillment-owned ready pool can do that.
     ? Math.min(orderedQuantity, quantity(input.productionCompleteQuantity))
     : orderedQuantity;
-  const eligibleQuantity = Math.max(0, productionCompleteQuantity - fulfilledQuantity);
-  const blockedQuantity = Math.max(0, remainingQuantity - eligibleQuantity);
+  const readyWaitingQuantity = Math.min(remainingQuantity, quantity(input.readyWaitingQuantity));
+  const notReadyQuantity = Math.max(0, remainingQuantity - readyWaitingQuantity);
+  const eligibleQuantity = readyWaitingQuantity;
+  const blockedQuantity = notReadyQuantity;
   const status: FulfillmentLineQuantityStatus = remainingQuantity === 0
     ? "fulfilled"
-    : eligibleQuantity > 0 && blockedQuantity > 0
+    : readyWaitingQuantity > 0 && notReadyQuantity > 0
       ? "partially_ready"
-      : eligibleQuantity > 0
+      : readyWaitingQuantity > 0
         ? "ready"
-        : "waiting_on_production";
+        : "not_ready";
   const label = status === "fulfilled"
     ? "Fulfilled"
     : status === "partially_ready"
-      ? `Ready ${eligibleQuantity} / ${remainingQuantity}`
+      ? `Ready ${readyWaitingQuantity} / ${remainingQuantity}`
       : status === "ready"
-        ? productionRequired ? "Production complete, awaiting fulfillment" : "Ready for fulfillment"
-        : lifecycleReadiness.label;
+        ? "Ready for fulfillment"
+        : lifecycleReadiness.eligible ? "Not yet marked ready" : "Not yet marked ready";
 
   return {
     requiresFulfillment: true,
@@ -174,6 +186,8 @@ export function resolveFulfillmentLineQuantity(input: {
     fulfilledQuantity,
     shippedQuantity,
     pickedUpQuantity,
+    readyWaitingQuantity,
+    notReadyQuantity,
     eligibleQuantity,
     blockedQuantity,
     remainingQuantity,
@@ -193,16 +207,18 @@ export function summarizeFulfillmentOrderQuantities(
   const blockedQuantity = sum("blockedQuantity");
   const shippedQuantity = sum("shippedQuantity");
   const pickedUpQuantity = sum("pickedUpQuantity");
+  const readyWaitingQuantity = sum("readyWaitingQuantity");
+  const notReadyQuantity = sum("notReadyQuantity");
   const remainingQuantity = sum("remainingQuantity");
   const status = remainingQuantity <= 0 && orderedQuantity > 0
     ? "SHIPPED" as const
     : shippedQuantity > 0
       ? "PARTIALLY_SHIPPED" as const
-      : eligibleQuantity > 0 && blockedQuantity > 0
+      : readyWaitingQuantity > 0 && notReadyQuantity > 0
         ? "PARTIALLY_READY" as const
-        : eligibleQuantity > 0
+        : readyWaitingQuantity > 0
           ? "READY" as const
-          : "WAITING_ON_PRODUCTION" as const;
+          : "NOT_READY" as const;
   return {
     physicalLineCount: physical.length,
     orderedQuantity,
@@ -212,6 +228,8 @@ export function summarizeFulfillmentOrderQuantities(
     blockedQuantity,
     shippedQuantity,
     pickedUpQuantity,
+    readyWaitingQuantity,
+    notReadyQuantity,
     remainingQuantity,
     status,
   };

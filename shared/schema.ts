@@ -5728,6 +5728,28 @@ export const insertFulfillmentChecklistItemSchema = createInsertSchema(fulfillme
 export type InsertFulfillmentChecklistItem = z.infer<typeof insertFulfillmentChecklistItemSchema>;
 export type FulfillmentChecklistItem = typeof fulfillmentChecklistItems.$inferSelect;
 
+/**
+ * Fulfillment-owned physical availability. This is deliberately mutable state:
+ * immutable shipment and pickup handoff records remain the source of truth for
+ * what left the building.
+ */
+export const fulfillmentReadyQuantities = pgTable("fulfillment_ready_quantities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  readyWaitingQuantity: integer("ready_waiting_quantity").notNull().default(0),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("fulfillment_ready_quantities_org_order_line_uidx").on(table.organizationId, table.orderId, table.orderLineItemId),
+  index("fulfillment_ready_quantities_org_order_idx").on(table.organizationId, table.orderId),
+  index("fulfillment_ready_quantities_org_line_idx").on(table.organizationId, table.orderLineItemId),
+]);
+
+export type FulfillmentReadyQuantity = typeof fulfillmentReadyQuantities.$inferSelect;
+
 // Append-only job notes & status log tables (no duplicate jobs table)
 export const jobNotes = pgTable('job_notes', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),

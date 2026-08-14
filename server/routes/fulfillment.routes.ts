@@ -35,6 +35,7 @@ import { updateOrderFulfillmentStatus, sendShipmentEmail } from "../fulfillmentS
 import {
   createShipmentSchema as createFulfillmentShipmentSchema,
   fulfillmentChecklistItemSchema,
+  fulfillmentReadyQuantityAdjustmentSchema,
   fulfillmentOrderIdSchema,
   fulfillmentNoteSchema,
   fulfillmentUnreadySchema,
@@ -166,6 +167,23 @@ export function registerFulfillmentRoutes(
         'Failed to mark pickup ready',
         'FULFILLMENT_PICKUP_READY_FAILED',
       ));
+    }
+  });
+
+  app.post('/api/fulfillment/orders/:orderId/ready-quantities', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const parsed = fulfillmentReadyQuantityAdjustmentSchema.parse(req.body || {});
+      const actorUserId = getUserId(req.user) || null;
+      const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
+      const data = await canonicalFulfillmentOperations.adjustReadyQuantities(organizationId, req.params.orderId, parsed, actorUserId, actorOrgRole);
+      return res.json({ success: true, data, message: 'Fulfillment ready quantities updated' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid ready quantity payload', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] ready quantity error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to update fulfillment ready quantities', code: 'FULFILLMENT_READY_QUANTITY_FAILED' });
     }
   });
 

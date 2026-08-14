@@ -159,6 +159,26 @@ export class FulfillmentService {
     return this.getOrderDetail(orgId, orderId);
   }
 
+  async adjustReadyQuantities(orgId: string, orderId: string, payload: {
+    items: Array<{ orderLineItemId: string; quantityDelta: number }>;
+  }, actorUserId?: string | null, actorOrgRole?: string | null) {
+    const result = await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId);
+    if (!result.ok) {
+      const status = result.code === 'NOT_FOUND' ? 404 : 409;
+      throw new FulfillmentHttpError(status, result.message, result.code);
+    }
+
+    // A pickup ticket remains the existing notification/current-status envelope.
+    // The ready quantity above, not production, authorizes this transition.
+    if (result.shippingMethod === 'pickup' && payload.items.some((item) => item.quantityDelta > 0)) {
+      const ticket = await this.pickupRepo.createOrGetDraftTicket(orgId, orderId, actorUserId);
+      if (ticket.status === 'DRAFT') {
+        await this.markPickupReady(orgId, ticket.id, {}, actorUserId, actorOrgRole);
+      }
+    }
+    return this.getOrderDetail(orgId, orderId);
+  }
+
   async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {
     const result = await this.dashboardRepo.addOrderNote(orgId, orderId, note, actorUserId);
     if (!result.ok) {
@@ -206,10 +226,6 @@ export class FulfillmentService {
         throw new FulfillmentHttpError(400, `Order ${order.id} is cancelled and not ship-eligible`, 'ORDER_NOT_SHIP_ELIGIBLE');
       }
 
-      if (!isFulfillmentQueueEligibleOrder(order)) {
-        throw new FulfillmentHttpError(400, `Order ${order.id} is not yet eligible for fulfillment`, 'ORDER_NOT_FULFILLMENT_ELIGIBLE');
-      }
-
       if (order.shippingMethod === 'pickup') {
         throw new FulfillmentHttpError(400, 'Cannot combine pickup and shipping orders', 'MIXED_FULFILLMENT_TYPES');
       }
@@ -219,7 +235,7 @@ export class FulfillmentService {
         throw new FulfillmentHttpError(400, `Order ${order.id} has no shippable line items`, 'ORDER_NOT_SHIP_ELIGIBLE');
       }
       if ((eligibleQuantityByOrderId.get(order.id) ?? 0) <= 0) {
-        throw new FulfillmentHttpError(409, `Order ${order.id} has no production-ready quantity to ship`, 'NO_ELIGIBLE_QUANTITY');
+        throw new FulfillmentHttpError(409, `Order ${order.id} has no quantity marked ready to ship`, 'NO_ELIGIBLE_QUANTITY');
       }
     }
 
@@ -414,7 +430,7 @@ export class FulfillmentService {
         throw new FulfillmentHttpError(409, 'Shipment quantities require a physical fulfillment line item.', 'LINE_NOT_FULFILLABLE');
       }
       const allowed = line.projection.eligibleQuantity;
-      if (quantity > allowed) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the verified production-ready quantity for a line item.', 'QTY_EXCEEDS_READY');
+      if (quantity > allowed) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the quantity marked ready for fulfillment for a line item.', 'QTY_EXCEEDS_READY');
     }
   }
 
@@ -627,8 +643,8 @@ export class FulfillmentService {
     }
 
     const eligibility = await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [ticketWithOrder.orderId] });
-    if (!eligibility.some((line) => line.projection.eligibleQuantity > 0)) {
-      throw new FulfillmentHttpError(400, 'At least one usable produced quantity is required before pickup-ready.', 'PRODUCTION_NOT_COMPLETE');
+    if (!eligibility.some((line) => line.projection.readyWaitingQuantity > 0)) {
+      throw new FulfillmentHttpError(400, 'At least one quantity must be marked ready before pickup-ready.', 'NO_READY_QUANTITY');
     }
 
     const markResult = await this.pickupRepo.markReady(orgId, ticketId, {
