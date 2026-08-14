@@ -15,6 +15,7 @@ import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 type RouteDeps = {
   isAuthenticated: any;
   tenantContext: any;
+  isAdmin: any;
 };
 
 const metadataSchema = z.object({
@@ -138,7 +139,7 @@ function validationFailure(res: any, errors: OptionGroupTemplateValidationError[
   return failure(res, 422, "Template tree is not self-contained.", errors);
 }
 
-export function registerPbv2OptionGroupTemplateRoutes(app: Express, { isAuthenticated, tenantContext }: RouteDeps) {
+export function registerPbv2OptionGroupTemplateRoutes(app: Express, { isAuthenticated, tenantContext, isAdmin }: RouteDeps) {
   app.get("/api/pbv2/option-group-templates", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -203,7 +204,7 @@ export function registerPbv2OptionGroupTemplateRoutes(app: Express, { isAuthenti
     }
   });
 
-  app.post("/api/pbv2/option-group-templates/from-group", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/pbv2/option-group-templates/from-group", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const parsed = fromGroupSchema.safeParse(req.body);
       if (!parsed.success) return failure(res, 400, "Invalid template request.", parsed.error.flatten());
@@ -253,7 +254,7 @@ export function registerPbv2OptionGroupTemplateRoutes(app: Express, { isAuthenti
     }
   });
 
-  app.patch("/api/pbv2/option-group-templates/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.patch("/api/pbv2/option-group-templates/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const parsed = patchSchema.safeParse(req.body);
       if (!parsed.success) return failure(res, 400, "Invalid template update.", parsed.error.flatten());
@@ -298,7 +299,7 @@ export function registerPbv2OptionGroupTemplateRoutes(app: Express, { isAuthenti
     }
   });
 
-  app.post("/api/pbv2/option-group-templates/:id/archive", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/pbv2/option-group-templates/:id/archive", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const template = await getAccessibleTemplate(req.params.id, organizationId);

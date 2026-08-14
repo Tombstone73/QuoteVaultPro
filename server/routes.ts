@@ -370,7 +370,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Product routes extracted to ./routes/products.routes.ts (do NOT re-add here)
   // PBV2 pricing-preview routes restored and extracted to ./routes/products.routes.ts
   registerProductRoutes(app, { isAuthenticated, isAdmin: requireOrgAdmin, isAdminOrOwner: requireOrgAdminOrOwner, requireOrgOwnerAdmin, tenantContext });
-  registerPbv2OptionGroupTemplateRoutes(app, { isAuthenticated, tenantContext });
+  registerPbv2OptionGroupTemplateRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
 
   // Global Variables routes extracted to ./routes/catalogSettings.routes.ts (do NOT re-add here)

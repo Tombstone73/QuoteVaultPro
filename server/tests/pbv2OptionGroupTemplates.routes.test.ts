@@ -44,7 +44,7 @@ function chainUpdateRows(rows: unknown[]) {
   };
 }
 
-function buildApp() {
+function buildApp(canManageTemplates = true) {
   const app = express();
   app.use(express.json());
   registerPbv2OptionGroupTemplateRoutes(app, {
@@ -52,7 +52,14 @@ function buildApp() {
       req.user = { id: "user_1" };
       next();
     },
-    tenantContext: (_req: any, _res: any, next: any) => next(),
+    tenantContext: (req: any, _res: any, next: any) => {
+      req.organizationId = "org_1";
+      next();
+    },
+    isAdmin: (_req: any, res: any, next: any) => {
+      if (!canManageTemplates) return res.status(403).json({ message: "Access denied." });
+      next();
+    },
   });
   return app;
 }
@@ -179,6 +186,25 @@ describe("PBV2 option group template routes", () => {
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
     expect(dbMock.insert).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not let a regular member mutate organization templates", async () => {
+    const app = buildApp(false);
+
+    const create = await request(app)
+      .post("/api/pbv2/option-group-templates/from-group")
+      .send({});
+    const edit = await request(app)
+      .patch("/api/pbv2/option-group-templates/tpl_org")
+      .send({ description: "Nope" });
+    const archive = await request(app)
+      .post("/api/pbv2/option-group-templates/tpl_org/archive");
+
+    expect(create.status).toBe(403);
+    expect(edit.status).toBe(403);
+    expect(archive.status).toBe(403);
+    expect(dbMock.insert).not.toHaveBeenCalled();
+    expect(dbMock.update).not.toHaveBeenCalled();
   });
 
   test("clone returns a draft preview and does not persist product changes", async () => {
