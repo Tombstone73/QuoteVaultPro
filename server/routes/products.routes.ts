@@ -873,7 +873,7 @@ export function registerProductRoutes(
     }
   });
 
-  app.put("/api/products/:productId/pbv2/draft", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.put("/api/products/:productId/pbv2/draft", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);
@@ -2341,8 +2341,10 @@ export function registerProductRoutes(
   // Product Options
   // ============================================================================
 
-  app.get("/api/products/:id/options", isAuthenticated, async (req, res) => {
+  app.get("/api/products/:id/options", isAuthenticated, tenantContext, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.id);
+      if (!product) return res.status(404).json({ message: "Product not found" });
       const options = await storage.getProductOptions(req.params.id);
       res.json(options);
     } catch (error) {
@@ -2409,8 +2411,10 @@ export function registerProductRoutes(
   // Product Variants
   // ============================================================================
 
-  app.get("/api/products/:id/variants", isAuthenticated, async (req, res) => {
+  app.get("/api/products/:id/variants", isAuthenticated, tenantContext, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.id);
+      if (!product) return res.status(404).json({ message: "Product not found" });
       const variants = await storage.getProductVariants(req.params.id);
       res.json(variants);
     } catch (error) {
