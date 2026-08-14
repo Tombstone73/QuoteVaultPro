@@ -1,7 +1,8 @@
 import { describe, expect, test } from "@jest/globals";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 
-const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const source = (relativePath: string) => readFileSync(path.join(process.cwd(), "server", relativePath.replace(/^\.\.\//, "")), "utf8");
 
 describe("artwork deletion and production reopen safety", () => {
   test("supported artwork removals retire canonical customer-source ownership without retiring production art", () => {
