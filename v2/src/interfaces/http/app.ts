@@ -1,0 +1,34 @@
+import express, { type Express, type Request, type Response } from "express";
+import type { V2RuntimeConfig } from "../../config/runtimeConfig.js";
+import type { V2Logger } from "../../observability/logger.js";
+
+export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
+
+export const createV2HttpApp = (
+  config: V2RuntimeConfig,
+  logger: V2Logger,
+  readinessProbe: ReadinessProbe = async () => ({ ready: true }),
+): Express => {
+  const app = express();
+  app.disable("x-powered-by");
+
+  app.get("/health", (_request: Request, response: Response) => {
+    response.status(200).json({ status: "ok", service: config.serviceName });
+  });
+
+  app.get("/ready", async (_request: Request, response: Response) => {
+    try {
+      const readiness = await readinessProbe();
+      response.status(readiness.ready ? 200 : 503).json({
+        status: readiness.ready ? "ready" : "not_ready",
+        checks: { application: readiness.ready ? "ok" : "unavailable" },
+      });
+    } catch {
+      logger.log("warn", "v2.readiness.failed");
+      response.status(503).json({ status: "not_ready", checks: { application: "unavailable" } });
+    }
+  });
+
+  app.use((_request, response) => response.status(404).json({ code: "NOT_FOUND" }));
+  return app;
+};

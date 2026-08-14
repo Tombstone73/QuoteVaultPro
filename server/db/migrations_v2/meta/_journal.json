@@ -1226,6 +1226,13 @@
       "when": 1788048000026,
       "tag": "0179_fulfillment_ready_quantities",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1788048000027,
+      "tag": "0180_v2_foundation_persistence",
+      "breakpoints": true
     }
   ]
 }

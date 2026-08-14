@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "../node_modules/typescript/v2.tsbuildinfo",
+    "noEmit": true,
+    "isolatedModules": true,
+    "module": "ESNext",
+    "target": "ES2022",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "infrastructure/**/*.ts"]
+}

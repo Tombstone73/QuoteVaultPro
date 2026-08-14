@@ -1,0 +1,65 @@
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const importPatterns = [
+  /(?:import|export)\s+(?:type\s+)?(?:[^'";]+?\s+from\s+)?["']([^"']+)["']/g,
+  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+  /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+];
+const violations = [];
+
+const listTypeScriptFiles = async (directory) => {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const candidate = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listTypeScriptFiles(candidate);
+    return entry.isFile() && /\.(?:[cm]?ts|[cm]?js|tsx)$/u.test(entry.name) ? [candidate] : [];
+  }));
+  return nested.flat();
+};
+
+const isPath = (source, target) => source.replaceAll("\\", "/").includes(target);
+const isRelativeTo = (specifier, filename, fragment) =>
+  specifier.startsWith(".") && isPath(path.normalize(path.resolve(path.dirname(filename), specifier)), fragment);
+const imported = (specifier, filename, fragment) =>
+  isPath(specifier, fragment) || isRelativeTo(specifier, filename, fragment);
+const isRawDatabasePackage = (specifier) =>
+  ["pg", "drizzle-orm", "@neondatabase/serverless"].includes(specifier);
+
+// Test and future infrastructure source must obey the same no-POC/no-V1
+// runtime boundary. Generated output is intentionally not scanned.
+for (const filename of await listTypeScriptFiles(root)) {
+  const source = await readFile(filename, "utf8");
+  const relativeFilename = path.relative(root, filename).replaceAll("\\", "/");
+  for (const importPattern of importPatterns) {
+    for (const match of source.matchAll(importPattern)) {
+      const specifier = match[1];
+    const fail = (rule) => violations.push(`${relativeFilename}: ${rule} (${specifier})`);
+
+    if (imported(specifier, filename, "v2-poc") || imported(specifier, filename, "server/index") || imported(specifier, filename, "server/routes") || imported(specifier, filename, "server/services")) {
+      fail("production V2 must not import POC or V1 route/service code");
+    }
+    if (relativeFilename.startsWith("src/interfaces/") && (imported(specifier, filename, "/repositories") || imported(specifier, filename, "/infrastructure/persistence") || imported(specifier, filename, "server/db") || isRawDatabasePackage(specifier))) {
+      fail("interfaces must not import repositories or raw database clients");
+    }
+    if (relativeFilename.startsWith("src/authorization/") && (imported(specifier, filename, "/repositories") || imported(specifier, filename, "/interfaces") || imported(specifier, filename, "/infrastructure/persistence") || imported(specifier, filename, "server/db") || isRawDatabasePackage(specifier))) {
+      fail("authorization must remain persistence and interface free");
+    }
+    if (relativeFilename.startsWith("src/repositories/") && imported(specifier, filename, "/interfaces")) {
+      fail("repositories must not import interfaces");
+    }
+      if ((relativeFilename.startsWith("src/application/") || relativeFilename.startsWith("src/domain/")) && (imported(specifier, filename, "/interfaces") || imported(specifier, filename, "client/") || imported(specifier, filename, "/infrastructure/persistence") || imported(specifier, filename, "server/db"))) {
+        fail("application and domain modules must not import interface, frontend, or persistence implementation code");
+      }
+    }
+  }
+}
+
+if (violations.length) {
+  console.error("V2 import-boundary violations:\n" + violations.map((violation) => `- ${violation}`).join("\n"));
+  process.exit(1);
+}
+
+console.log("V2 import boundaries passed.");
