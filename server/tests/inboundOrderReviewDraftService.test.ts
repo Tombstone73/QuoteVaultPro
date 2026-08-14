@@ -4,6 +4,10 @@ jest.mock("../services/pricing/PricingService", () => ({
   priceLineItem: jest.fn(),
 }));
 
+jest.mock("../services/orders/orderTaxCalculationService", () => ({
+  calculateAuthoritativeOrderTax: jest.fn(),
+}));
+
 import {
   InboundOrderReviewDraftValidationError,
   InboundOrderService,
@@ -11,6 +15,7 @@ import {
 } from "../services/inboundOrders/InboundOrderService";
 import { extractPurchaseOrderFields } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { hydrateInboundPbv2Selections } from "@shared/inboundOrderPbv2Options";
+import { calculateAuthoritativeOrderTax } from "../services/orders/orderTaxCalculationService";
 
 const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
 
@@ -46,6 +51,14 @@ function pricingResult(lineTotalCents = 4500) {
 
 function mockSuccessfulPricing() {
   mockPriceLineItem.mockResolvedValue(pricingResult());
+  (calculateAuthoritativeOrderTax as jest.Mock).mockResolvedValue({
+    totals: {
+      taxRate: 0.07,
+      taxAmount: 3.15,
+      taxableSubtotal: 45,
+      lineItemsWithTax: [{ taxAmount: 3.15, isTaxableSnapshot: true }],
+    },
+  });
 }
 
 function inboundRecord(overrides: Record<string, any> = {}) {
@@ -3027,6 +3040,8 @@ describe("InboundOrderService editable review draft", () => {
         workflowState: "new",
         requiresPrepress: false,
         requiresProofApproval: false,
+        taxAmount: 3.15,
+        isTaxableSnapshot: true,
         specsJson: expect.objectContaining({
           inbound: expect.objectContaining({
             artworkLinks: [expect.objectContaining({
@@ -3045,7 +3060,15 @@ describe("InboundOrderService editable review draft", () => {
           }),
         }),
       })],
+      taxRate: 0.07,
+      taxAmount: 3.15,
+      taxableSubtotal: 45,
       dueDate: "2026-06-11",
+    }));
+    expect(calculateAuthoritativeOrderTax).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      customerId: "customer_1",
+      lines: [expect.objectContaining({ productId: "product_pvc", totalPrice: 45 })],
     }));
     expect(mockPriceLineItem).toHaveBeenCalledWith(expect.objectContaining({
       productId: "product_pvc",
@@ -3107,6 +3130,30 @@ describe("InboundOrderService editable review draft", () => {
     expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
       customerId: null,
       contactId: "contact_independent",
+    }));
+  });
+
+  test("preserves the canonical tax-exempt result when converting an inbound review", async () => {
+    (calculateAuthoritativeOrderTax as jest.Mock).mockResolvedValueOnce({
+      totals: {
+        taxRate: 0,
+        taxAmount: 0,
+        taxableSubtotal: 0,
+        lineItemsWithTax: [{ taxAmount: 0, isTaxableSnapshot: false }],
+      },
+    });
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service);
+
+    await service.convertInboundReviewDraftToOrder({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+
+    expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      taxRate: 0,
+      taxAmount: 0,
+      taxableSubtotal: 0,
+      lineItems: [expect.objectContaining({ taxAmount: 0, isTaxableSnapshot: false })],
     }));
   });
 

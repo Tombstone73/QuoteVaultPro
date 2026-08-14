@@ -167,7 +167,7 @@ import { canonicalOrderOperations } from "../services/orders/canonicalOrderOpera
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
-import { synchronizeDraftInvoiceFromOrder } from "../invoicesService";
+import { recalculateEditableOrderFinancials } from "../services/orders/orderTaxCalculationService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -337,55 +337,7 @@ const materialReorderReceiveSchema = z.object({
 });
 
 async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organizationId: string, actorUserId?: string | null) {
-    const [orderRow] = await db
-        .select({
-            id: orders.id,
-            discount: orders.discount,
-            tax: orders.tax,
-            taxAmount: orders.taxAmount,
-            shippingCents: orders.shippingCents,
-        })
-        .from(orders)
-        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-        .limit(1);
-
-    if (!orderRow) return null;
-
-    const lineItems = await db
-        .select({
-            totalPrice: orderLineItems.totalPrice,
-            isTaxableSnapshot: orderLineItems.isTaxableSnapshot,
-            parentLineItemId: orderLineItems.parentLineItemId,
-            lineItemRole: orderLineItems.lineItemRole,
-        })
-        .from(orderLineItems)
-        .where(eq(orderLineItems.orderId, orderId));
-
-    const billableLineItems = lineItems.filter((item) => item.lineItemRole !== "child" && !item.parentLineItemId);
-    const subtotal = billableLineItems.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
-    const taxableSubtotal = billableLineItems
-        .filter((item) => item.isTaxableSnapshot !== false)
-        .reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
-    const discount = Number(orderRow.discount) || 0;
-    const tax = Number(orderRow.taxAmount ?? orderRow.tax) || 0;
-    const shipping = Math.max(0, Number(orderRow.shippingCents) || 0) / 100;
-    const total = subtotal - discount + tax + shipping;
-
-    const [updated] = await db
-        .update(orders)
-        .set({
-            subtotal: subtotal.toFixed(2),
-            taxableSubtotal: taxableSubtotal.toFixed(2),
-            total: total.toFixed(2),
-            updatedAt: new Date().toISOString(),
-        } as any)
-        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-        .returning();
-
-    if (updated) {
-        await synchronizeDraftInvoiceFromOrder({ organizationId, orderId, actorUserId: actorUserId ?? null });
-    }
-    return updated;
+    return recalculateEditableOrderFinancials({ organizationId, orderId, actorUserId: actorUserId ?? null });
 }
 
 async function recalculateOrderBundleParent(parentLineItemId: string) {
@@ -8187,6 +8139,7 @@ export async function registerOrderRoutes(
                     eq(orderLineItemComponents.status, 'ACCEPTED')
                 ));
 
+            await recomputeOrderTotalsFromPersistedLineItems(String((li as any).orderId), organizationId, getUserId(req.user) ?? null);
             res.json({ ...(updated as any), components });
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });

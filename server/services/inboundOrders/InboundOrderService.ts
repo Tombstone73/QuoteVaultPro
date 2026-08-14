@@ -84,6 +84,7 @@ import {
 import { priceLineItem } from "../pricing/PricingService";
 import { CustomerIntelligenceService, customerIntelligenceService } from "./CustomerIntelligenceService";
 import { canonicalArtworkWriteService } from "../artwork/CanonicalArtworkWriteService";
+import { calculateAuthoritativeOrderTax } from "../orders/orderTaxCalculationService";
 
 export type InboundQuoteSyncStatus =
   | "quote_missing"
@@ -5779,6 +5780,16 @@ export class InboundOrderService {
 
     const normalizedDueDate = normalizeInboundReviewedDueDate(order.dueDate, detail.record.receivedAt);
 
+    const taxCalculation = await calculateAuthoritativeOrderTax({
+      organizationId: detail.record.organizationId,
+      customerId: customer.selectedCustomerId ?? null,
+      lines: lineItems,
+    });
+    taxCalculation.totals.lineItemsWithTax.forEach((lineTax, index) => {
+      lineItems[index]!.taxAmount = lineTax.taxAmount;
+      lineItems[index]!.isTaxableSnapshot = lineTax.isTaxableSnapshot;
+    });
+
     return {
       customerId: customer.selectedCustomerId ?? null,
       contactId: customer.selectedContactId ?? null,
@@ -5794,9 +5805,9 @@ export class InboundOrderService {
       notesInternal: null,
       createdByUserId: args.actorUserId,
       lineItems,
-      taxRate: 0,
-      taxAmount: 0,
-      taxableSubtotal: 0,
+      taxRate: taxCalculation.totals.taxRate,
+      taxAmount: taxCalculation.totals.taxAmount,
+      taxableSubtotal: taxCalculation.totals.taxableSubtotal,
       shippingMethod,
       shippingMode: shippingMethod ? "single_shipment" : null,
       billToName: customer.sourceName ?? null,
