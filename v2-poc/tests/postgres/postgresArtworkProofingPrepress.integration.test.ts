@@ -15,7 +15,7 @@ const orgA = `v2poc-app-org-a-${suffix}`,
   ownerB = `v2poc-app-owner-b-${suffix}`;
 let sequence = 0;
 const app = () => new PostgresArtworkProofingPrepressApplication(pool);
-type Fixture = { orderId: string; lineId: string };
+type Fixture = { orderId: string; lineId: string; customerId: string };
 async function fixture(
   org = orgA,
   owner = ownerA,
@@ -42,7 +42,7 @@ async function fixture(
     `insert into order_line_items(id,order_id,product_id,product_type,description,quantity,unit_price,total_price,status,option_selections_json,selected_options,priced_at,tax_amount,is_taxable_snapshot,sort_order)values($1,$2,$3,'wide_roll','V2 artwork fixture',$4,'1.00','10.00','new','{}'::jsonb,'[]'::jsonb,now(),'0.00',false,0)`,
     [lineId, orderId, product, quantity],
   );
-  return { orderId, lineId };
+  return { orderId, lineId, customerId: customer };
 }
 const attach = (
   row: Fixture,
@@ -89,6 +89,17 @@ beforeAll(async () => {
     `insert into user_organizations(user_id,organization_id,role,is_default)values($1,$2,'owner',true),($3,$4,'owner',true)`,
     [ownerA, orgA, ownerB, orgB],
   );
+});
+test("records a customer-scoped portal proof response without fabricating a staff responder", async () => {
+  const row = await fixture();
+  const attached = await attach(row, `portal-attach-${suffix}`, "portal.pdf", 10, "portal-group");
+  await app().useForProduction(ownerA, { organizationId: orgA, orderId: row.orderId, lineItemId: row.lineId, requestId: `portal-promote-${suffix}`, artworkId: attached.artworkId, expectedRevision: attached.revision });
+  const proof = await app().createProof(ownerA, { organizationId: orgA, orderId: row.orderId, lineItemId: row.lineId, requestId: `portal-proof-${suffix}` });
+  const sent = await app().sendProof(ownerA, { organizationId: orgA, orderId: row.orderId, lineItemId: row.lineId, requestId: `portal-send-${suffix}`, proofVersionId: proof.proofVersionId, recipientEmail: "customer@example.test" });
+  const portal = { kind: "portal" as const, organizationId: orgA, customerId: row.customerId, portalSubjectId: `portal-${suffix}`, capabilities: ["proof.respond"] as const };
+  await expect(app().recordProofResponseAs(portal, { organizationId: orgA, orderId: row.orderId, lineItemId: row.lineId, requestId: `portal-approve-${suffix}`, token: sent.responseToken, decision: "approved" })).resolves.toMatchObject({ proofVersionId: proof.proofVersionId, decision: "approved" });
+  expect((await pool.query("select responder_user_id from line_item_proof_approvals where proof_version_id=$1", [proof.proofVersionId])).rows[0].responder_user_id).toBeNull();
+  expect((await pool.query("select principal_kind,principal_id from v2_poc_operation_attributions where organization_id=$1 and operation='proof.respond' and resource_id=$2", [orgA, proof.proofVersionId])).rows[0]).toMatchObject({ principal_kind: "portal", principal_id: portal.portalSubjectId });
 });
 afterAll(async () => {
   try {

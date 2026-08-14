@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
+import { AuthorityPolicy, staffActor, type Principal } from "../authorization/authorityPolicy";
+import { PostgresPrincipalContext } from "../authorization/postgresPrincipalContext";
 import { V2PocError } from "../shared/errors";
 
 type Operation = "record_production_outcome.v2_poc" | "record_pickup_handoff.v2_poc" | "finalize_shipment.v2_poc";
@@ -135,12 +137,47 @@ class BillingReconciliationRepository {
 
 export class PostgresProductionFulfillmentApplication {
   private readonly authorization = new AuthorizationRepository(); private readonly requests = new FulfillmentRequestRepository(); private readonly availability = new AvailabilityRepository(); private readonly production = new ProductionRepository(); private readonly fulfillment = new PhysicalFulfillmentRepository(); private readonly billing = new BillingReconciliationRepository();
+  private readonly authority = new AuthorityPolicy(); private readonly principalContext = new PostgresPrincipalContext();
   constructor(private readonly pool: Pool) {}
   async installExperimentalSchema() { await this.pool.query(ddl); }
   private async mutate<T extends { organizationId: string; requestId: string }>(actorId: string, operation: Operation, command: T, fn: (client: PoolClient) => Promise<unknown>, failurePoint?: FulfillmentFailurePoint): Promise<any> {
     const client = await this.pool.connect(); try { await client.query("begin"); await this.authorization.authorize(client, actorId, command.organizationId); const requestHash = hash(operation, command); const replay = await this.requests.claim(client, actorId, operation, command.organizationId, command.requestId, requestHash); if (replay) { await client.query("commit"); return { ...(replay as object), idempotentReplay: true }; } fail(failurePoint, "after_request_claim"); const result = await fn(client); fail(failurePoint, "after_physical_write"); await this.requests.complete(client, actorId, operation, command.organizationId, command.requestId, requestHash, result); fail(failurePoint, "before_commit"); await client.query("commit"); return { ...(result as object), idempotentReplay: false }; } catch (error) { try { await client.query("rollback"); } catch {} throw error; } finally { client.release(); } }
   async recordProductionOutcome(actorId: string, command: ProductionOutcomeCommand, failurePoint?: FulfillmentFailurePoint) { return this.mutate(actorId, "record_production_outcome.v2_poc", command, async (client) => { await this.availability.lockLine(client, command.organizationId, command.orderId, command.lineItemId); await this.production.recordOutcome(client, command, actorId); return { availability: await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId) }; }, failurePoint); }
   async recordPickupHandoff(actorId: string, command: PickupHandoffCommand, failurePoint?: FulfillmentFailurePoint) { return this.mutate(actorId, "record_pickup_handoff.v2_poc", command, async (client) => { if (!Number.isInteger(command.quantity) || command.quantity <= 0) throw new V2PocError("VALIDATION", "Pickup quantity must be a positive integer."); await this.availability.lockOrderLines(client, command.organizationId, command.orderId, command.lineItemId); const before = await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId); if (command.quantity > before.available) throw new V2PocError("VALIDATION", "Pickup quantity exceeds available produced inventory."); const physical = await this.fulfillment.handoff(client, actorId, command); const after = await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId); const reconciliationId = await this.billing.enqueueTerminal(client, command.organizationId, command.orderId, physical.eventId, await this.availability.orderIsPhysicallyTerminal(client, command.organizationId, command.orderId)); return { ...physical, reconciliationId, availability: after }; }, failurePoint); }
+  /**
+   * Pickup has non-null staff attribution in the shared physical tables.  It
+   * therefore accepts a verified staff/AI principal only; portal and service
+   * callers fail closed instead of being represented by a synthetic user.
+   */
+  async recordPickupHandoffAs(principal: Principal, command: PickupHandoffCommand, failurePoint?: FulfillmentFailurePoint) {
+    if (principal.kind === "portal" || principal.kind === "service")
+      throw new V2PocError("FORBIDDEN", "Pickup handoff requires a staff-attributable principal.");
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const context = await this.principalContext.resolve(client, principal, command.organizationId);
+      this.authority.authorize(context.principal, "fulfillment.pickup", { organizationId: command.organizationId });
+      const actorId = staffActor(context.principal);
+      if (!actorId) throw new V2PocError("FORBIDDEN", "Pickup handoff requires a staff-attributable principal.");
+      const requestHash = hash("record_pickup_handoff.v2_poc", command);
+      const replay = await this.requests.claim(client, actorId, "record_pickup_handoff.v2_poc", command.organizationId, command.requestId, requestHash);
+      if (replay) { await client.query("commit"); return { ...(replay as object), idempotentReplay: true }; }
+      fail(failurePoint, "after_request_claim");
+      if (!Number.isInteger(command.quantity) || command.quantity <= 0) throw new V2PocError("VALIDATION", "Pickup quantity must be a positive integer.");
+      await this.availability.lockOrderLines(client, command.organizationId, command.orderId, command.lineItemId);
+      const before = await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId);
+      if (command.quantity > before.available) throw new V2PocError("VALIDATION", "Pickup quantity exceeds available produced inventory.");
+      const physical = await this.fulfillment.handoff(client, actorId, command);
+      const availability = await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId);
+      const reconciliationId = await this.billing.enqueueTerminal(client, command.organizationId, command.orderId, physical.eventId, await this.availability.orderIsPhysicallyTerminal(client, command.organizationId, command.orderId));
+      const result = { ...physical, reconciliationId, availability };
+      fail(failurePoint, "after_physical_write");
+      await this.requests.complete(client, actorId, "record_pickup_handoff.v2_poc", command.organizationId, command.requestId, requestHash, result);
+      fail(failurePoint, "before_commit");
+      await client.query("commit");
+      return { ...result, idempotentReplay: false };
+    } catch (error) { try { await client.query("rollback"); } catch {} throw error; } finally { client.release(); }
+  }
   async finalizeShipment(actorId: string, command: ShipmentCommand, failurePoint?: FulfillmentFailurePoint) { return this.mutate(actorId, "finalize_shipment.v2_poc", command, async (client) => { if (!Number.isInteger(command.quantity) || command.quantity <= 0 || !command.shipmentReference.trim()) throw new V2PocError("VALIDATION", "Shipment quantity and reference are required."); await this.availability.lockOrderLines(client, command.organizationId, command.orderId, command.lineItemId); const before = await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId); if (command.quantity > before.available) throw new V2PocError("VALIDATION", "Shipment quantity exceeds available produced inventory."); const physical = await this.fulfillment.shipment(client, actorId, command); const after = await this.availability.read(client, command.organizationId, command.orderId, command.lineItemId); const reconciliationId = await this.billing.enqueueTerminal(client, command.organizationId, command.orderId, physical.eventId, await this.availability.orderIsPhysicallyTerminal(client, command.organizationId, command.orderId)); return { ...physical, reconciliationId, availability: after }; }, failurePoint); }
   async getAvailability(actorId: string, organizationId: string, orderId: string, lineItemId: string) { const client = await this.pool.connect(); try { await this.authorization.authorize(client, actorId, organizationId); return await this.availability.read(client, organizationId, orderId, lineItemId); } finally { client.release(); } }
   async reconcileTerminalBilling(actorId: string, organizationId: string, orderId: string, failurePoint?: FulfillmentFailurePoint) { const client = await this.pool.connect(); try { await client.query("begin"); await this.authorization.authorize(client, actorId, organizationId); const result = await this.billing.reconcile(client, organizationId, orderId, failurePoint); await client.query("commit"); return result; } catch (error) { try { await client.query("rollback"); } catch {} throw error; } finally { client.release(); } }

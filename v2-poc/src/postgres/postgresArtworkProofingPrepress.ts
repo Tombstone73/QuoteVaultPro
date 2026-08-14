@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { AuthorityPolicy, principalSubject, staffActor, type Principal } from "../authorization/authorityPolicy";
+import { PostgresPrincipalContext } from "../authorization/postgresPrincipalContext";
 import { V2PocError } from "../shared/errors";
 
 type Operation =
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS v2_poc_artwork_retirements (id varchar(96) PRIMARY KE
 CREATE TABLE IF NOT EXISTS v2_poc_proof_deliveries (id varchar(96) PRIMARY KEY,organization_id varchar NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,proof_version_id varchar NOT NULL REFERENCES line_item_proof_versions(id) ON DELETE CASCADE,status varchar(16) NOT NULL DEFAULT 'PENDING',attempts integer NOT NULL DEFAULT 0,last_error text,created_at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz,UNIQUE(organization_id,proof_version_id));
 CREATE TABLE IF NOT EXISTS v2_poc_proof_artwork_assignments (id varchar(96) PRIMARY KEY,organization_id varchar NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,proof_version_id varchar NOT NULL REFERENCES line_item_proof_versions(id) ON DELETE CASCADE,artwork_id varchar NOT NULL REFERENCES line_item_artwork(id) ON DELETE RESTRICT,file_record_id varchar NOT NULL REFERENCES file_records(id) ON DELETE RESTRICT,allocation_group_id varchar(128) NOT NULL,allocation_quantity integer NOT NULL,side line_item_artwork_side NOT NULL,UNIQUE(proof_version_id,artwork_id));
 CREATE TABLE IF NOT EXISTS v2_poc_prepress_handoffs (id varchar(96) PRIMARY KEY,organization_id varchar NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,order_id varchar NOT NULL REFERENCES orders(id) ON DELETE CASCADE,line_item_id varchar NOT NULL REFERENCES order_line_items(id) ON DELETE CASCADE,artwork_id varchar NOT NULL REFERENCES line_item_artwork(id) ON DELETE RESTRICT,file_record_id varchar NOT NULL REFERENCES file_records(id) ON DELETE RESTRICT,production_job_id varchar NOT NULL REFERENCES production_jobs(id) ON DELETE RESTRICT,status varchar(16) NOT NULL DEFAULT 'READY',snapshot_json jsonb NOT NULL,assignments_json jsonb NOT NULL DEFAULT '[]'::jsonb,created_at timestamptz NOT NULL DEFAULT now(),returned_at timestamptz,returned_by_user_id varchar REFERENCES users(id) ON DELETE SET NULL,UNIQUE(organization_id,line_item_id,status));
+CREATE TABLE IF NOT EXISTS v2_poc_operation_attributions (id varchar(96) PRIMARY KEY,organization_id varchar NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,operation varchar(64) NOT NULL,resource_type varchar(32) NOT NULL,resource_id varchar NOT NULL,principal_kind varchar(16) NOT NULL,principal_id varchar(160) NOT NULL,staff_actor_user_id varchar REFERENCES users(id) ON DELETE SET NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(organization_id,operation,resource_type,resource_id));
 ALTER TABLE v2_poc_prepress_handoffs ADD COLUMN IF NOT EXISTS assignments_json jsonb NOT NULL DEFAULT '[]'::jsonb;`;
 const required = <T>(v: T | undefined | null, m: string): T => {
   if (v == null) throw new V2PocError("NOT_FOUND", m);
@@ -341,6 +344,8 @@ export class PostgresArtworkProofingPrepressApplication {
   private requests = new Requests();
   private artwork = new Artwork();
   private projections = new Projections();
+  private readonly authority = new AuthorityPolicy();
+  private readonly principalContext = new PostgresPrincipalContext();
   constructor(private pool: Pool) {}
   async installExperimentalSchema() {
     await this.pool.query(ddl);
@@ -814,6 +819,50 @@ export class PostgresArtworkProofingPrepressApplication {
       );
       return { proofVersionId: t.proof_version_id, decision: x.decision };
     });
+  }
+  /**
+   * Canonical portal-aware proof response.  The proof token remains the
+   * one-time, line-scoped credential; the typed principal additionally proves
+   * the customer and organization scope.  Portal/service identities are kept
+   * in V2 attribution instead of being fabricated as staff users.
+   */
+  async recordProofResponseAs(principal: Principal, x: ProofResponseCommand) {
+    const c = await this.pool.connect();
+    try {
+      await c.query("begin");
+      const order = required((await c.query(
+        "select customer_id from orders where id=$1 and organization_id=$2 for update",
+        [x.orderId, x.organizationId],
+      )).rows[0] as { customer_id: string | null } | undefined, "Order not found in this organization.");
+      const context = await this.principalContext.resolve(c, principal, x.organizationId);
+      this.authority.authorize(context.principal, "proof.respond", {
+        organizationId: x.organizationId,
+        customerId: order.customer_id,
+      });
+      await this.artwork.lockLine(c, x);
+      const token = required((await c.query(
+        `select t.proof_version_id,p.status from proof_access_tokens t join line_item_proof_versions p on p.id=t.proof_version_id where t.organization_id=$1 and t.line_item_id=$2 and t.token=$3 and t.revoked_at is null and t.expires_at>now() for update`,
+        [x.organizationId, x.lineItemId, tokenHash(x.token)],
+      )).rows[0] as { proof_version_id: string; status: string } | undefined, "Valid proof token not found in this organization.");
+      if (token.status !== "awaiting_response") throw new V2PocError("VALIDATION", "Proof response is stale or already recorded.");
+      const actor = staffActor(context.principal);
+      await c.query(
+        `insert into line_item_proof_approvals(id,organization_id,order_id,line_item_id,proof_version_id,decision,response_notes,responder_user_id,responder_source)values($1,$2,$3,$4,$5,$6::line_item_proof_response_decision,$7,$8,'v2_poc')`,
+        [`v2poc-proof-approval-${randomUUID()}`, x.organizationId, x.orderId, x.lineItemId, token.proof_version_id, x.decision, x.notes ?? null, actor],
+      );
+      await c.query("update line_item_proof_versions set status=$1::line_item_proof_version_status,updated_at=now() where id=$2", [x.decision, token.proof_version_id]);
+      await c.query("update proof_access_tokens set revoked_at=now() where proof_version_id=$1", [token.proof_version_id]);
+      await c.query("update order_line_items set requires_proof_approval=$1,approved_proof_version_id=$2 where id=$3", [x.decision !== "approved", x.decision === "approved" ? token.proof_version_id : null, x.lineItemId]);
+      await c.query(
+        `insert into v2_poc_operation_attributions(id,organization_id,operation,resource_type,resource_id,principal_kind,principal_id,staff_actor_user_id) values($1,$2,'proof.respond','proof_version',$3,$4,$5,$6) on conflict(organization_id,operation,resource_type,resource_id) do update set principal_kind=excluded.principal_kind,principal_id=excluded.principal_id,staff_actor_user_id=excluded.staff_actor_user_id`,
+        [`v2poc-attribution-${randomUUID()}`, x.organizationId, token.proof_version_id, context.principal.kind, principalSubject(context.principal), actor],
+      );
+      await c.query("commit");
+      return { proofVersionId: token.proof_version_id, decision: x.decision };
+    } catch (error) {
+      try { await c.query("rollback"); } catch {}
+      throw error;
+    } finally { c.release(); }
   }
   async reconcileProofDelivery(
     actor: string,

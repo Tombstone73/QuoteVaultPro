@@ -4,6 +4,7 @@ import pg from "pg";
 import { evaluateOptionTreeV2 } from "../../../server/services/optionTreeV2Evaluator";
 
 import { PostgresCreateOrderApplication, type PgFailurePoint } from "../../src/postgres/postgresOrderCreate";
+import type { PortalPrincipal, ServicePrincipal } from "../../src/authorization/authorityPolicy";
 import { V2PocError } from "../../src/shared/errors";
 
 const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 8 });
@@ -63,6 +64,8 @@ afterAll(async () => {
     await pool.query(`delete from invoice_line_items where invoice_id in (select id from invoices where organization_id in ($1,$2))`, [orgA,orgB]);
     await pool.query(`delete from invoices where organization_id in ($1,$2)`, [orgA,orgB]);
     await pool.query(`delete from order_line_items where order_id in (select id from orders where organization_id in ($1,$2))`, [orgA,orgB]);
+    await pool.query(`delete from v2_poc_operation_attributions where organization_id in ($1,$2)`, [orgA,orgB]);
+    await pool.query(`delete from v2_poc_business_requests where organization_id in ($1,$2)`, [orgA,orgB]);
     await pool.query(`delete from v2_poc_order_create_requests where organization_id in ($1,$2)`, [orgA,orgB]);
     await pool.query(`delete from orders where organization_id in ($1,$2)`, [orgA,orgB]);
     await pool.query(`delete from organizations where id in ($1,$2)`, [orgA,orgB]);
@@ -121,6 +124,26 @@ describe("V2 PostgreSQL compatibility vertical slice", () => {
     expect(outcomes.filter((result) => !result.idempotentReplay)).toHaveLength(1);
     const result = await pool.query(`select count(*)::int as orders,count(distinct i.id)::int as invoices,count(l.id)::int as lines from v2_poc_order_create_requests r join orders o on o.id=r.order_id left join invoices i on i.id=r.invoice_id left join order_line_items l on l.order_id=o.id where r.organization_id=$1 and r.request_id=$2`, [orgA,requestId]);
     expect(result.rows[0]).toEqual({ orders: 1, invoices: 1, lines: 1 });
+  });
+
+  test("creates with a portal principal without fabricating a staff actor and keeps truthful V2 attribution", async () => {
+    const portal: PortalPrincipal = { kind: "portal", organizationId: orgA, customerId: taxableCustomerA, portalSubjectId: `portal-${suffix}`, capabilities: ["orders.create"] };
+    const created = await app().executePrincipal(portal, command(`portal-transport-${suffix}`, { businessRequestId: `portal-business-${suffix}` }));
+    const source = await pool.query(`select o.created_by_user_id,i.created_by_user_id,a.principal_kind,a.principal_id from orders o join invoices i on i.id=$2 join v2_poc_operation_attributions a on a.organization_id=o.organization_id and a.resource_type='order' and a.resource_id=o.id where o.id=$1`, [created.order.id, created.invoice.id]);
+    expect(source.rows[0]).toMatchObject({ created_by_user_id: null, principal_kind: "portal", principal_id: portal.portalSubjectId });
+  });
+
+  test("uses a principal-neutral business request key across portal and service retries", async () => {
+    const businessRequestId = `cross-principal-${suffix}`;
+    const portal: PortalPrincipal = { kind: "portal", organizationId: orgA, customerId: taxableCustomerA, portalSubjectId: `portal-retry-${suffix}`, capabilities: ["orders.create"] };
+    const service: ServicePrincipal = { kind: "service", organizationId: orgA, clientId: `service-retry-${suffix}`, capabilities: ["orders.create"] };
+    const [first, retry] = await Promise.all([
+      app().executePrincipal(portal, command(`portal-race-${suffix}`, { businessRequestId })),
+      app().executePrincipal(service, command(`service-race-${suffix}`, { businessRequestId })),
+    ]);
+    expect(first.order.id).toBe(retry.order.id);
+    expect([first.idempotentReplay, retry.idempotentReplay].filter(Boolean)).toHaveLength(1);
+    await expect(app().executePrincipal(service, command(`service-conflict-${suffix}`, { businessRequestId, lines: [{ productId: productA, quantity: 3 }] }))).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" } satisfies Partial<V2PocError>);
   });
 
   test("allocates distinct document numbers for concurrent different requests", async () => {

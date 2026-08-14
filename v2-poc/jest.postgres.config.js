@@ -9,6 +9,9 @@ export default {
   rootDir: "..",
   preset: "ts-jest/presets/default-esm",
   testEnvironment: "node",
+  // The disposable remote clone occasionally spends more than Jest's default
+  // five seconds resolving deliberate recovery/concurrency races.
+  testTimeout: 15000,
   extensionsToTreatAsEsm: [".ts"],
   testMatch: ["<rootDir>/v2-poc/tests/postgres/**/*.test.ts"],
   setupFiles: ["<rootDir>/v2-poc/tests/postgres/setup.ts"],

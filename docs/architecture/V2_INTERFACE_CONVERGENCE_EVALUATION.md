@@ -2,26 +2,43 @@
 
 ## Executive verdict
 
-**V2 ARCHITECTURE MOSTLY PROVEN — ONE MORE EXPERIMENT REQUIRED.**
+**V2 ARCHITECTURE PROVEN — PROCEED TO RECONSTRUCTION PLANNING.**
 
-The adapter boundary is clean: staff UI, reviewed inbound, AI Plan/GO, and a future API can invoke the same typed operation port with no adapter SQL, repository, pricing, tax, fulfillment, invoice, or artwork logic. The experiment deliberately rejects portal authority rather than silently impersonating a staff user.
+The V2 POC now translates every supported interface into a typed principal and invokes a canonical application operation. Interface adapters contain only context translation, Plan/GO orchestration, request shaping, and response shaping; they do not import persistence, SQL, V1 services, pricing, tax, fulfillment, invoice, proof, or payment logic.
 
-## Inventory and parity
+## Canonical route
 
-Existing V2 canonical operations cover order creation, quote conversion, artwork/proofing/prepress, fulfillment, and financial/provider finalization. Quote conversion remains distinct from generic create-order because it must preserve the locked quote snapshot instead of repricing.
+```text
+Staff / AI / Portal / reviewed Inbound / Service API
+                     -> typed Principal
+                     -> AuthorityPolicy
+                     -> canonical application operation
+                     -> organization- and resource-scoped repository
+```
 
-| Operation | Staff | AI | Portal | Inbound | Future API | Result |
+`AuthorityPolicy` is persistence-free. `PostgresPrincipalContext` is the separate, explicit boundary that revalidates a Staff or delegated-AI staff membership. Portal and Service are never translated into a user identity.
+
+## Interface parity matrix
+
+| Operation | Staff | AI | Portal | Inbound | Future API | Same Canonical Operation |
 | --- | --- | --- | --- | --- | --- | --- |
-| Create order | SUPPORTED | SUPPORTED after GO | GAP | SUPPORTED after review | SUPPORTED | shared port |
-| Quote conversion | SUPPORTED | SUPPORTED after GO | GAP | NOT APPLICABLE | NOT APPLICABLE | staff-only canonical auth |
-| Artwork | SUPPORTED | eligible staff action | GAP | NOT APPLICABLE | future policy | staff-only canonical auth |
-| Fulfillment | SUPPORTED | eligible staff action | INTENTIONALLY NOT AUTHORIZED | NOT APPLICABLE | future policy | shared operation available |
-| Finance | SUPPORTED | eligible staff action | provider-finalization only | NOT APPLICABLE | future policy | shared local financial model |
+| Create order | SUPPORTED | SUPPORTED after valid Plan/GO | INTENTIONALLY FORBIDDEN | SUPPORTED after Staff review | SUPPORTED with `orders.create` | YES |
+| Quote conversion | SUPPORTED | SUPPORTED after valid Plan/GO | SUPPORTED for own customer quote | SUPPORTED after Staff review | SUPPORTED with `quotes.convert` | YES |
+| Proof/artwork response | SUPPORTED | SUPPORTED after valid Plan/GO | SUPPORTED for own customer proof | NOT APPLICABLE | NOT APPLICABLE | YES |
+| Fulfillment pickup/shipment | SUPPORTED | SUPPORTED after valid Plan/GO | INTENTIONALLY FORBIDDEN | NOT APPLICABLE | INTENTIONALLY FORBIDDEN unless separately granted and attributable | YES |
+| Financial read/finalization | SUPPORTED | SUPPORTED after valid Plan/GO | customer-scoped read/approval only | NOT APPLICABLE | provider/service outer flow converges on local model | YES |
 
-## Evidence and remaining uncertainty
+Quote conversion intentionally remains different from generic create-order: it preserves the approved quote’s price, tax, PBV2, artwork, proof, and customer/contact snapshots rather than repricing a request.
 
-Current V1 inbound conversion is an independent order/pricing/tax/artwork persistence path; portal quote approval and payment flows also own persistence. V2 avoids that adapter duplication, but existing V2 PostgreSQL applications still hard-code staff membership and generic order idempotency is actor-scoped. The single remaining experiment must introduce a canonical typed authority policy (staff, portal customer, API client, provider) inside application operations, and operation-scoped idempotency where cross-principal retries are a business requirement.
+## Boundary evidence
 
-No portal user was elevated to staff; no V1 business services/repositories were reused; no adapter has a DB/repository dependency.
+- Architectural tests assert that the representative order and quote applications have no direct `user_organizations` query; membership revalidation lives only in `PostgresPrincipalContext`.
+- Architectural tests assert that `AuthorityPolicy` has no persistence dependency and interface adapters have no persistence/SQL/V1 service dependency.
+- Portal and Service subjects resolve to no Staff actor. V2-private attribution records carry principal kind/subject and an optional verified Staff actor instead.
+- The original string-actor methods remain compatibility wrappers for pre-existing POC tests. Typed-principal entry points are the canonical operation surface; no new adapter is permitted to call the legacy methods.
 
-Recommended next task: **CREATE THE PRINTERSHERO V2 RECONSTRUCTION MASTER PLAN** only after the authority-policy/idempotency convergence experiment closes this gap.
+## Validation
+
+The combined V2 regression completed against the guarded disposable PostgreSQL target: 49 PostgreSQL integration tests and 26 in-memory/boundary/safety tests, all passing. The V2 harness required `V2_POSTGRES_INTEGRATION=1`, used only `TEST_DATABASE_URL`, and rejected alternate database URL variables.
+
+The next task is **CREATE THE PRINTERSHERO V2 RECONSTRUCTION MASTER PLAN**. This POC phase is closed; do not start another V2 feature experiment from this branch.
