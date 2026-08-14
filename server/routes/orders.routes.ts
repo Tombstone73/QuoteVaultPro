@@ -5938,7 +5938,13 @@ export async function registerOrderRoutes(
             if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
                 return res.status(400).json({ error: 'Invalid fulfillment status' });
             }
-            await updateOrderFulfillmentStatus(req.params.id, status);
+            if (['shipped', 'delivered'].includes(status)) {
+                return res.status(409).json({
+                    error: 'Terminal fulfillment status must be recorded through shipment or pickup actions.',
+                    code: 'FULFILLMENT_TERMINAL_ACTION_REQUIRED',
+                });
+            }
+            await updateOrderFulfillmentStatus(organizationId, req.params.id, status);
             res.json({ success: true, message: 'Fulfillment status updated successfully' });
         } catch (error) {
             console.error('Error updating fulfillment status:', error);

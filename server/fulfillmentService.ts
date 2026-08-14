@@ -115,11 +115,17 @@ export async function sendShipmentEmail(
   subject?: string,
   customMessage?: string
 ): Promise<void> {
-  const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
+  const [order] = await db.select().from(orders).where(and(
+    eq(orders.id, orderId),
+    eq(orders.organizationId, organizationId),
+  ));
   if (!order) throw new Error('Order not found');
 
   const [customer] = order.customerId
-    ? await db.select().from(customers).where(eq(customers.id, order.customerId))
+    ? await db.select().from(customers).where(and(
+      eq(customers.id, order.customerId),
+      eq(customers.organizationId, organizationId),
+    ))
     : [];
   const recipientEmail = customer?.email ?? order.billToEmail;
   if (!recipientEmail) throw new Error('Order has no customer or contact email address');
@@ -134,7 +140,10 @@ export async function sendShipmentEmail(
   )).limit(1);
   if (!shipmentOrder) throw new Error('Shipment does not belong to order');
 
-  const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+  const lineItems = await db.select().from(orderLineItems).where(and(
+    eq(orderLineItems.orderId, orderId),
+    eq(orderLineItems.organizationId, organizationId),
+  ));
 
   const trackingNumber = shipment.trackingNumber || null;
 
@@ -232,6 +241,9 @@ function generateTrackingLink(carrier: string, trackingNumber: string): string |
   return null;
 }
 
-export async function updateOrderFulfillmentStatus(orderId: string, status: 'pending' | 'packed' | 'shipped' | 'delivered'): Promise<void> {
-  await db.update(orders).set({ fulfillmentStatus: status, updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId));
+export async function updateOrderFulfillmentStatus(organizationId: string, orderId: string, status: 'pending' | 'packed' | 'shipped' | 'delivered'): Promise<void> {
+  await db.update(orders).set({ fulfillmentStatus: status, updatedAt: new Date().toISOString() }).where(and(
+    eq(orders.id, orderId),
+    eq(orders.organizationId, organizationId),
+  ));
 }

@@ -547,8 +547,14 @@ export function registerFulfillmentRoutes(
       if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
         return res.status(400).json({ error: 'Invalid fulfillment status' });
       }
+      if (['shipped', 'delivered'].includes(status)) {
+        return res.status(409).json({
+          error: 'Terminal fulfillment status must be recorded through shipment or pickup actions.',
+          code: 'FULFILLMENT_TERMINAL_ACTION_REQUIRED',
+        });
+      }
 
-      await updateOrderFulfillmentStatus(req.params.id, status);
+      await updateOrderFulfillmentStatus(organizationId, req.params.id, status);
 
       res.json({ success: true, message: 'Fulfillment status updated successfully' });
     } catch (error) {

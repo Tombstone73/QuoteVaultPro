@@ -1,4 +1,6 @@
 import { describe, expect, jest, test } from "@jest/globals";
+import fs from "node:fs";
+import path from "node:path";
 import { FulfillmentDashboardRepo, isPickedUpArchivedForRetention, resolveFulfillmentUnreadyTransition, summarizeFulfillmentChecklist } from "../services/fulfillment/repository";
 import { canRevertFulfillmentStatus, FULFILLMENT_REVERT_STATUS_PERMISSION, FulfillmentService } from "../services/fulfillment/service";
 import { fulfillmentChecklistItemSchema } from "../services/fulfillment/schemas";
@@ -14,6 +16,18 @@ function selectChain(rows: any[]) {
 }
 
 describe("fulfillment operational workflow helpers", () => {
+  test("legacy fulfillment status routes cannot record terminal delivery outside canonical actions", () => {
+    const fulfillmentRoutes = fs.readFileSync(path.join(process.cwd(), "server/routes/fulfillment.routes.ts"), "utf8");
+    const orderRoutes = fs.readFileSync(path.join(process.cwd(), "server/routes/orders.routes.ts"), "utf8");
+    const emailService = fs.readFileSync(path.join(process.cwd(), "server/fulfillmentService.ts"), "utf8");
+
+    expect(fulfillmentRoutes).toContain("FULFILLMENT_TERMINAL_ACTION_REQUIRED");
+    expect(orderRoutes).toContain("FULFILLMENT_TERMINAL_ACTION_REQUIRED");
+    expect(emailService).toContain("eq(orders.organizationId, organizationId)");
+    expect(emailService).toContain("eq(customers.organizationId, organizationId)");
+    expect(emailService).toContain("eq(orderLineItems.organizationId, organizationId)");
+  });
+
   test("picked-up rows remain active before retention window", () => {
     const now = new Date("2026-05-28T12:00:00Z").getTime();
     expect(isPickedUpArchivedForRetention({
