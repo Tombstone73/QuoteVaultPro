@@ -223,6 +223,38 @@ describe("fulfillment operational workflow helpers", () => {
     expect(result.billingAutomation).toBeUndefined();
   });
 
+  test("terminal billing failures are durably recorded and reconciliation replays only canonical billing", async () => {
+    const auditEntries: any[] = [];
+    const fakeDb = {
+      select: jest.fn(() => selectChain([{ id: "order-1", fulfillmentStatus: "delivered" }])),
+      insert: jest.fn(() => ({ values: async (entry: any) => { auditEntries.push(entry); } })),
+    };
+    const billingAutomationService = {
+      ensureDraftInvoiceForOrderTrigger: jest
+        .fn()
+        .mockResolvedValueOnce({ status: "failed_controlled_error", code: "TRANSIENT", message: "temporary failure" })
+        .mockResolvedValueOnce({ status: "succeeded", invoiceId: "invoice-1" }),
+    };
+    const service = new FulfillmentService({
+      dashboardRepo: {} as any,
+      shipmentRepo: {} as any,
+      pickupRepo: {} as any,
+      dbInstance: fakeDb as any,
+      billingAutomationService: billingAutomationService as any,
+    });
+
+    await expect((service as any).ensureTerminalBilling({
+      organizationId: "org-1", orderId: "order-1", trigger: "picked_up_or_shipped", sourceEvent: "SHIPMENT_SHIPPED", actorUserId: "user-1",
+    })).resolves.toMatchObject({ status: "failed_controlled_error" });
+    expect(auditEntries).toHaveLength(1);
+    expect(auditEntries[0]).toMatchObject({ actionType: "FULFILLMENT_BILLING_RECONCILIATION_REQUIRED", entityId: "order-1" });
+
+    await expect(service.reconcileTerminalBilling("org-1", "order-1", "user-1")).resolves.toMatchObject({ status: "succeeded" });
+    expect(billingAutomationService.ensureDraftInvoiceForOrderTrigger).toHaveBeenLastCalledWith(expect.objectContaining({
+      organizationId: "org-1", orderId: "order-1", trigger: "picked_up_or_shipped",
+    }));
+  });
+
   test("ready-for-pickup notification does not replace quantity-aware handoffs with a checklist gate", async () => {
     const service = new FulfillmentService({
       dashboardRepo: {} as any,
