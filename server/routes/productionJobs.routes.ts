@@ -4035,71 +4035,13 @@ export function registerProductionJobsRoutes(
 
   // 6) POST /api/production/jobs/:jobId/reopen
   app.post("/api/production/jobs/:jobId/reopen", isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      if (!assertInternalUser(req, res)) return;
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
-      const userId = getUserId(req.user);
-      if (!userId) return res.status(401).json({ error: "User ID not found" });
-
-      const jobId = req.params.jobId;
-      const now = new Date();
-
-      const result = await db.transaction(async (tx) => {
-        const jobRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        const job = jobRows[0];
-        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-        if (job.status !== "done") {
-          throw Object.assign(new Error("Only done jobs can be reopened"), { statusCode: 400 });
-        }
-
-        await tx
-          .update(productionJobs)
-          .set({ status: "in_progress", completedAt: null, updatedAt: now })
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-
-        await appendEvent({
-          tx,
-          organizationId,
-          productionJobId: jobId,
-          type: "note",
-          actorUserId: userId ?? null,
-          payload: { system: true, text: "Job reopened" },
-        });
-
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId: userId ?? null,
-          userName: req.user?.email || req.user?.name || null,
-          actionType: "UPDATE",
-          entityType: "production_job",
-          entityId: jobId,
-          entityName: jobId,
-          description: "Production job reopened",
-          oldValues: { status: job.status },
-          newValues: { status: "in_progress" },
-          ipAddress: req.ip || null,
-          userAgent: req.headers["user-agent"] || null,
-        } as any);
-
-        const updatedRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        return updatedRows[0];
-      });
-
-      res.json({ success: true, data: result });
-    } catch (error: any) {
-      const status = error?.statusCode || 500;
-      console.error("Error reopening production job:", error);
-      res.status(status).json({ error: error?.message || "Failed to reopen job" });
-    }
+    // The former implementation only changed this job row, leaving its line,
+    // order, combined-run membership, and fulfillment successors unchanged.
+    // Keep recovery on the guarded undo, legacy-recovery, or combined-run flows.
+    return res.status(409).json({
+      code: "RECOVERY_WORKFLOW_REQUIRED",
+      error: "Direct production-job reopen is unavailable. Use the supported completion recovery workflow.",
+    });
   });
 
   // 7) POST /api/production/jobs/:jobId/reprint

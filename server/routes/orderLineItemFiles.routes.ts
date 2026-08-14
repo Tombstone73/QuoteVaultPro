@@ -72,8 +72,8 @@ async function clearRemovedArtworkSideIntent(args: {
   lineItemId: string;
   fileIds: Array<string | null | undefined>;
   removedSide?: "front" | "back" | "both" | "na" | null;
-}): Promise<void> {
-  const [lineItem] = await db
+}, executor: any = db): Promise<void> {
+  const [lineItem] = await executor
     .select({ specsJson: orderLineItems.specsJson })
     .from(orderLineItems)
     .where(and(eq(orderLineItems.id, args.lineItemId), eq(orderLineItems.orderId, args.orderId)))
@@ -87,10 +87,34 @@ async function clearRemovedArtworkSideIntent(args: {
   });
   if (JSON.stringify(nextSpecsJson) === JSON.stringify(lineItem.specsJson ?? {})) return;
 
-  await db
+  await executor
     .update(orderLineItems)
     .set({ specsJson: nextSpecsJson, updatedAt: new Date() })
     .where(and(eq(orderLineItems.id, args.lineItemId), eq(orderLineItems.orderId, args.orderId)));
+}
+
+/** Retire only a deleted customer-source edge; independent production art stays historical/current. */
+async function retireCurrentCustomerSourceArtworkForFileRecord(args: {
+  tx: any;
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  fileRecordId: string | null | undefined;
+  actorUserId: string | null | undefined;
+}): Promise<void> {
+  if (!args.fileRecordId) return;
+  await args.tx.update(lineItemArtwork).set({
+    status: "superseded",
+    supersededAt: new Date(),
+    supersededByUserId: args.actorUserId ?? null,
+  }).where(and(
+    eq(lineItemArtwork.organizationId, args.organizationId),
+    eq(lineItemArtwork.orderId, args.orderId),
+    eq(lineItemArtwork.lineItemId, args.lineItemId),
+    eq(lineItemArtwork.fileRecordId, args.fileRecordId),
+    eq(lineItemArtwork.role, "customer_source"),
+    eq(lineItemArtwork.status, "current"),
+  ));
 }
 
 export function registerOrderLineItemFileRoutes(
@@ -1197,6 +1221,8 @@ export function registerOrderLineItemFileRoutes(
 
       if (!li) return res.status(404).json({ error: 'Line item not found' });
 
+      const actorUserId = getUserId(req.user);
+
       // First try: DB-backed order attachments (some legacy/alternate UIs store these here)
       const deletedAttachment = await db.transaction(async (tx) => {
         // Do this before deleting the attachment: the foreign key deliberately
@@ -1229,17 +1255,36 @@ export function registerOrderLineItemFileRoutes(
             previewKey: orderAttachments.previewKey,
             side: orderAttachments.side,
           });
+        const record = removed[0];
+        if (record) {
+          await retireCurrentCustomerSourceArtworkForFileRecord({
+            tx,
+            organizationId,
+            orderId,
+            lineItemId,
+            fileRecordId: record.fileRecordId,
+            actorUserId,
+          });
+          await clearRemovedArtworkSideIntent({
+            orderId,
+            lineItemId,
+            fileIds: [record.id, record.fileRecordId],
+            removedSide: record.side,
+          }, tx);
+          if (actorUserId) {
+            await autoSyncCanonicalProofForLineItem(tx, {
+              organizationId,
+              lineItemId,
+              actorUserId,
+              reason: "artwork_deleted",
+            });
+          }
+        }
         return removed;
       });
 
       if (deletedAttachment.length) {
         const record = deletedAttachment[0];
-        await clearRemovedArtworkSideIntent({
-          orderId,
-          lineItemId,
-          fileIds: [record.id, record.fileRecordId],
-          removedSide: record.side,
-        });
         try {
           const resolvedOriginal = record.fileRecordId
             ? await canonicalFileReadResolver.resolveOriginal(String(record.fileRecordId))
@@ -1402,7 +1447,7 @@ export function registerOrderLineItemFileRoutes(
         }
 
         try {
-          const userId = getUserId(req.user);
+          const userId = actorUserId;
           const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
           await storage.createOrderAuditLog({
             orderId,
@@ -1438,22 +1483,6 @@ export function registerOrderLineItemFileRoutes(
           console.warn('[OrderLineItemFiles:DELETE] audit log failed', err);
         }
 
-        const userId = getUserId(req.user);
-        if (userId) {
-          try {
-            await db.transaction((tx) =>
-              autoSyncCanonicalProofForLineItem(tx, {
-                organizationId,
-                lineItemId,
-                actorUserId: userId,
-                reason: "artwork_deleted",
-              }),
-            );
-          } catch (proofSyncError) {
-            console.error("[OrderLineItemFiles:DELETE] Auto proof sync failed after attachment delete (non-fatal)", proofSyncError);
-          }
-        }
-
         return res.json({ success: true });
       }
 
@@ -1471,8 +1500,6 @@ export function registerOrderLineItemFileRoutes(
       if (!existingLink.length) {
         return res.status(404).json({ error: 'File not found' });
       }
-
-      const { assetRepository } = await import('../services/assets/AssetRepository');
 
       let removedAsset: any = null;
       try {
@@ -1493,12 +1520,34 @@ export function registerOrderLineItemFileRoutes(
         removedAsset = null;
       }
 
-      await assetRepository.unlinkAsset(organizationId, fileId, 'order_line_item', lineItemId);
-
-      await clearRemovedArtworkSideIntent({
-        orderId,
-        lineItemId,
-        fileIds: [fileId, removedAsset?.fileRecordId],
+      await db.transaction(async (tx) => {
+        await tx.delete(assetLinks).where(and(
+          eq(assetLinks.organizationId, organizationId),
+          eq(assetLinks.assetId, fileId),
+          eq(assetLinks.parentType, 'order_line_item'),
+          eq(assetLinks.parentId, String(lineItemId)),
+        ));
+        await retireCurrentCustomerSourceArtworkForFileRecord({
+          tx,
+          organizationId,
+          orderId,
+          lineItemId,
+          fileRecordId: removedAsset?.fileRecordId,
+          actorUserId,
+        });
+        await clearRemovedArtworkSideIntent({
+          orderId,
+          lineItemId,
+          fileIds: [fileId, removedAsset?.fileRecordId],
+        }, tx);
+        if (actorUserId) {
+          await autoSyncCanonicalProofForLineItem(tx, {
+            organizationId,
+            lineItemId,
+            actorUserId,
+            reason: "artwork_deleted",
+          });
+        }
       });
 
       try {
@@ -1538,22 +1587,6 @@ export function registerOrderLineItemFileRoutes(
         });
       } catch (err) {
         console.warn('[OrderLineItemFiles:DELETE] audit log failed', err);
-      }
-
-      const unlinkUserId = getUserId(req.user);
-      if (unlinkUserId) {
-        try {
-          await db.transaction((tx) =>
-            autoSyncCanonicalProofForLineItem(tx, {
-              organizationId,
-              lineItemId,
-              actorUserId: unlinkUserId,
-              reason: "artwork_deleted",
-            }),
-          );
-        } catch (proofSyncError) {
-          console.error("[OrderLineItemFiles:DELETE] Auto proof sync failed after asset unlink (non-fatal)", proofSyncError);
-        }
       }
 
       return res.json({ success: true });
