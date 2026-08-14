@@ -38,7 +38,6 @@ import {
   fulfillmentReadyQuantityAdjustmentSchema,
   fulfillmentOrderIdSchema,
   fulfillmentNoteSchema,
-  fulfillmentUnreadySchema,
   listQueueQuerySchema,
   patchShipmentSchema as patchFulfillmentShipmentSchema,
   pickupReadySchema,
@@ -125,24 +124,10 @@ export function registerFulfillmentRoutes(
   });
 
   app.post('/api/fulfillment/orders/:orderId/ready', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
-      const actorUserId = getUserId(req.user) || null;
-      const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
-      const data = await canonicalFulfillmentOperations.markOrderReady(organizationId, req.params.orderId, actorUserId, actorOrgRole);
-      return res.json({ success: true, data, message: 'Fulfillment marked ready' });
-    } catch (error: any) {
-      if (error instanceof FulfillmentHttpError) {
-        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
-      }
-      console.error('[fulfillment] mark ready error:', error);
-      return res.status(500).json(fulfillmentFailureResponse(
-        error,
-        'Failed to mark fulfillment ready',
-        'FULFILLMENT_MARK_READY_FAILED',
-      ));
-    }
+    // This whole-order transition cannot represent partial physical readiness.
+    // The fulfillment workspace is intentionally the single writer for its
+    // line-level ready pool.
+    return res.status(409).json({ success: false, message: 'Use the line-level ready quantity workflow.', code: 'FULFILLMENT_READY_QUANTITY_WORKFLOW_REQUIRED' });
   });
 
   app.post('/api/fulfillment/orders/:orderId/ready-for-pickup', isAuthenticated, tenantContext, async (req: any, res) => {
@@ -224,24 +209,9 @@ export function registerFulfillmentRoutes(
   });
 
   app.post('/api/fulfillment/orders/:orderId/unready', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
-      const parsed = fulfillmentUnreadySchema.parse(req.body || {});
-      const actorUserId = getUserId(req.user) || null;
-      const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
-      const data = await canonicalFulfillmentOperations.unreadyOrder(organizationId, req.params.orderId, parsed.reason, actorUserId, actorOrgRole);
-      return res.json({ success: true, data, message: 'Fulfillment status reverted' });
-    } catch (error: any) {
-      if (error?.name === 'ZodError') {
-        return res.status(400).json({ success: false, message: 'Reason is required to revert fulfillment status', code: 'VALIDATION_ERROR' });
-      }
-      if (error instanceof FulfillmentHttpError) {
-        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
-      }
-      console.error('[fulfillment] un-ready error:', error);
-      return res.status(500).json({ success: false, message: 'Failed to revert fulfillment status' });
-    }
+    // A status-only reversal would leave mutable readiness and immutable
+    // handoff history contradictory. Use a negative line-level adjustment.
+    return res.status(409).json({ success: false, message: 'Use the line-level ready quantity workflow.', code: 'FULFILLMENT_READY_QUANTITY_WORKFLOW_REQUIRED' });
   });
 
   app.patch('/api/fulfillment/orders/:orderId/checklist/:lineItemId', isAuthenticated, tenantContext, async (req: any, res) => {

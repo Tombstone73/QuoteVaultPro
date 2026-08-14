@@ -508,7 +508,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     const uniqueAddresses = new Set(selectedRows.map((row) => row.shipTo.trim().toLowerCase()));
     if (uniqueAddresses.size > 1) return "Selected orders have different delivery addresses";
 
-    if (selectedRows.some((row) => row.eligibleQuantity <= 0)) return "Every selected order must have a production-ready quantity";
+    if (selectedRows.some((row) => row.readyWaitingQuantity <= 0)) return "Every selected order must have a quantity marked ready to ship";
 
     return null;
   }, [selectedRows]);
@@ -858,7 +858,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                       </span>
                     </td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
-                    <td className="px-4 py-4 text-sm"><span className="font-medium">Ready {row.eligibleQuantity} / {row.remainingQuantity}</span><p className="text-xs text-muted-foreground">{row.blockedQuantity > 0 ? `${row.blockedQuantity} waiting on production` : `${row.shippedQuantity} shipped`}</p></td>
+                    <td className="px-4 py-4 text-sm"><span className="font-medium">Ready {row.readyWaitingQuantity} / {row.remainingQuantity}</span><p className="text-xs text-muted-foreground">{row.notReadyQuantity > 0 ? `${row.notReadyQuantity} not ready` : `${row.fulfillmentType === "PICKUP" ? row.pickedUpQuantity : row.shippedQuantity} ${row.fulfillmentType === "PICKUP" ? "picked up" : "shipped"}`}</p></td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
                   </tr>
                 );

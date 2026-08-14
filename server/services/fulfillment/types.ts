@@ -184,6 +184,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     entityId: string;
     eventType: string;
     actorUserId: string | null;
+    actorName: string | null;
     payloadJson: Record<string, any>;
     createdAt: string;
   }>;

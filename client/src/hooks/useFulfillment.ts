@@ -181,6 +181,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     entityId: string;
     eventType: string;
     actorUserId: string | null;
+    actorName: string | null;
     payloadJson: Record<string, any>;
     createdAt: string;
   }>;

@@ -1329,9 +1329,7 @@ export class FulfillmentDashboardRepo {
       const readyByLine = new Map(readyRows.map((row) => [row.orderLineItemId, Number(row.readyWaitingQuantity || 0)]));
       const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
       const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
-      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
-      const now = new Date();
-
+      const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number }> = [];
       for (const [lineItemId, quantityDelta] of requested) {
         const line = lineById.get(lineItemId)!;
         const current = readyByLine.get(lineItemId) ?? 0;
@@ -1340,6 +1338,15 @@ export class FulfillmentDashboardRepo {
         const remaining = Math.max(0, Number(line.quantity || 0) - fulfilled);
         if (next < 0) return { ok: false as const, code: 'QTY_BELOW_FULFILLED', message: 'Cannot un-ready quantity that has already been picked up or shipped.' };
         if (next > remaining) return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Ready quantity exceeds the remaining order quantity.' };
+        adjustments.push({ lineItemId, quantityDelta, next });
+      }
+
+      // Validate every requested line before touching the mutable pool. Returning a
+      // normal error from a transaction commits prior writes, so a multi-line
+      // operator action must be fully preflighted to remain all-or-nothing.
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+      const now = new Date();
+      for (const { lineItemId, next } of adjustments) {
         await tx.insert(fulfillmentReadyQuantities).values({
           organizationId: orgId, orderId, orderLineItemId: lineItemId, readyWaitingQuantity: next, updatedByUserId: safeActorUserId, updatedAt: now,
         }).onConflictDoUpdate({
@@ -1588,12 +1595,14 @@ export class FulfillmentDashboardRepo {
 
       if (isPickup) {
         const ticket = ticketMap.get(order.id);
-        const ticketStatus = cleanText(ticket?.status).toUpperCase();
-        const status = ticketStatus === 'PICKED_UP'
-          ? ticketStatus
-          : ticketStatus === 'READY_FOR_PICKUP'
-            ? quantitySummary.pickedUpQuantity > 0 ? 'PARTIALLY_PICKED_UP' : ticketStatus
-          : quantitySummary.status;
+        // The ticket is a notification envelope, not the physical readiness
+        // authority. Its READY_FOR_PICKUP state can exist after a partial
+        // adjustment, so derive the operator-facing status from quantities.
+        const status = quantitySummary.remainingQuantity === 0
+          ? 'PICKED_UP'
+          : quantitySummary.pickedUpQuantity > 0
+            ? 'PARTIALLY_PICKED_UP'
+            : quantitySummary.status;
         const isArchivedPickup = ticket ? this.isPickedUpTicketArchived(ticket, pickupRetentionDays, nowMs) : false;
         if (isArchivedPickup && ticket?.id) {
           await this.logPickupAutoArchiveOnce(orgId, ticket.id, pickupRetentionDays);
@@ -2241,11 +2250,17 @@ export class FulfillmentDashboardRepo {
       shipmentId: uniqueShipmentRows[0]?.id ?? null,
       deriveShipStatus: (fulfillmentStatus, ordered, shipped) => this.deriveShipQueueStatus(fulfillmentStatus, ordered, shipped),
     });
-    const pickupStatus = cleanText(pickupTicket?.status).toUpperCase();
+    const detailIsPickup = orderRow.shippingMethod === 'pickup';
     const row: QueueRowDto = {
       ...baseRow,
       ...quantitySummary,
-      status: pickupStatus === 'PICKED_UP' ? pickupStatus : pickupStatus === 'READY_FOR_PICKUP' ? quantitySummary.pickedUpQuantity > 0 ? 'PARTIALLY_PICKED_UP' : pickupStatus : quantitySummary.status,
+      status: detailIsPickup
+        ? quantitySummary.remainingQuantity === 0
+          ? 'PICKED_UP'
+          : quantitySummary.pickedUpQuantity > 0
+            ? 'PARTIALLY_PICKED_UP'
+            : quantitySummary.status
+        : quantitySummary.status,
       itemsRemaining: `${quantitySummary.remainingQuantity} item(s)`,
       readySince: quantitySummary.readyWaitingQuantity > 0 ? toIso(orderRow.updatedAt) : null,
     };
@@ -2267,10 +2282,13 @@ export class FulfillmentDashboardRepo {
         entityId: fulfillmentEvents.entityId,
         eventType: fulfillmentEvents.eventType,
         actorUserId: fulfillmentEvents.actorUserId,
+        actorFirstName: users.firstName,
+        actorLastName: users.lastName,
         payloadJson: fulfillmentEvents.payloadJson,
         createdAt: fulfillmentEvents.createdAt,
       })
       .from(fulfillmentEvents)
+      .leftJoin(users, eq(users.id, fulfillmentEvents.actorUserId))
       .where(and(eq(fulfillmentEvents.organizationId, orgId), or(...eventConditions)))
       .orderBy(desc(fulfillmentEvents.createdAt));
 
@@ -2405,6 +2423,7 @@ export class FulfillmentDashboardRepo {
         entityId: event.entityId,
         eventType: event.eventType,
         actorUserId: event.actorUserId ?? null,
+        actorName: [event.actorFirstName, event.actorLastName].filter(Boolean).join(' ') || null,
         payloadJson: event.payloadJson ?? {},
         createdAt: toIso(event.createdAt) || new Date().toISOString(),
       })),
