@@ -559,14 +559,12 @@ export class ShipmentRepo {
         : [];
 
       const alreadyShippedByLineItem = new Map(shippedAggRows.map((row) => [row.orderLineItemId, row.shippedQty]));
-      const [pickedUpRows, readyRows] = lineItemIds.length > 0 ? await Promise.all([
-        tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
+      const pickedUpRows = lineItemIds.length > 0
+        ? await tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
           .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
-          .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineItemIds))).groupBy(pickupHandoffItems.orderLineItemId),
-        tx.select().from(fulfillmentReadyQuantities).where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), inArray(fulfillmentReadyQuantities.orderLineItemId, lineItemIds))),
-      ]) : [[], []] as const;
+          .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineItemIds))).groupBy(pickupHandoffItems.orderLineItemId)
+        : [];
       const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.id, Number(row.quantity || 0)]));
-      const readyByLine = new Map(readyRows.map((row) => [row.orderLineItemId, Number(row.readyWaitingQuantity || 0)]));
 
       for (const [lineItemId, draftQty] of Array.from(draftByLineItem.entries())) {
         const line = lineRows.find((row) => row.id === lineItemId);
@@ -575,13 +573,12 @@ export class ShipmentRepo {
           return { ok: false as const, code: 'LINE_ITEM_NOT_FOUND', message: `Line item ${lineItemId} was not found` };
         }
         const projection = resolveFulfillmentLineQuantity({ ...line, orderedQuantity: Number(orderedQty),
-          shippedQuantity: alreadyShippedByLineItem.get(lineItemId) ?? 0, pickedUpQuantity: pickedUpByLine.get(lineItemId) ?? 0,
-          readyWaitingQuantity: readyByLine.get(lineItemId) ?? 0 });
-        if (!projection.requiresFulfillment || draftQty > projection.eligibleQuantity) {
+          shippedQuantity: alreadyShippedByLineItem.get(lineItemId) ?? 0, pickedUpQuantity: pickedUpByLine.get(lineItemId) ?? 0 });
+        if (!projection.requiresFulfillment || draftQty > projection.remainingQuantity) {
           return {
             ok: false as const,
-            code: 'QTY_EXCEEDS_READY',
-            message: `Quantity exceeds the quantity ready to ship for line item ${lineItemId}`,
+            code: 'QTY_EXCEEDS_ORDER',
+            message: `Quantity exceeds the remaining order quantity for line item ${lineItemId}`,
           };
         }
       }
@@ -602,12 +599,6 @@ export class ShipmentRepo {
 
       if (!updated) {
         return { ok: false as const, code: 'CONFLICT', message: 'Shipment state changed during update' };
-      }
-
-      for (const [lineItemId, draftQty] of draftByLineItem) {
-        const current = readyByLine.get(lineItemId) ?? 0;
-        await tx.update(fulfillmentReadyQuantities).set({ readyWaitingQuantity: current - draftQty, updatedAt: now })
-          .where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderLineItemId, lineItemId)));
       }
 
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
@@ -879,14 +870,6 @@ export class PickupRepo {
         },
       });
 
-      await tx
-        .update(orders)
-        .set({
-          fulfillmentStatus: 'packed',
-          updatedAt: new Date().toISOString(),
-        })
-        .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
-
       const toAddress = updated.contactEmail || '';
       const [notification] = await tx
         .insert(outboundNotifications)
@@ -938,8 +921,8 @@ export class PickupRepo {
   }
 
   /** Append, never overwrite, a pickup handoff. The affected order lines are
-   * locked and the Fulfillment-owned ready pool is consumed in the same
-   * transaction so pickup cannot race shipment or another pickup. */
+   * locked so pickup cannot race shipment or another pickup; immutable prior
+   * fulfillment is the authority for the remaining-order ceiling. */
   async recordPartialPickup(orgId: string, ticketId: string, payload: {
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
@@ -950,7 +933,6 @@ export class PickupRepo {
         eq(pickupTickets.id, ticketId), eq(pickupTickets.organizationId, orgId),
       )).limit(1);
       if (!ticket) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup ticket not found' };
-      if (ticket.status !== 'READY_FOR_PICKUP') return { ok: false as const, code: 'INVALID_STATE', message: 'Only READY_FOR_PICKUP tickets can record a handoff' };
 
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${ticket.orderId} FOR UPDATE`);
       // The line lock serializes concurrent pickup/shipment operations. Check
@@ -965,6 +947,9 @@ export class PickupRepo {
         if (existing) {
           return { ok: true as const, ticket, handoff: existing, terminal: ticket.status === 'PICKED_UP', replayed: true };
         }
+      }
+      if (ticket.status !== 'DRAFT' && ticket.status !== 'READY_FOR_PICKUP') {
+        return { ok: false as const, code: 'INVALID_STATE', message: 'Only active pickup tickets can record a handoff' };
       }
 
       const lines = await tx.select({
@@ -981,41 +966,33 @@ export class PickupRepo {
         return { ok: false as const, code: 'INVALID_HANDOFF_ITEMS', message: 'Pickup handoff items must be positive quantities from this order.' };
       }
       const ids = lines.map((line) => line.id);
-      const [shippedRows, pickedRows, readyRows] = await Promise.all([
+      const [shippedRows, pickedRows] = await Promise.all([
         tx.select({ id: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
           .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
           .where(and(eq(shipmentItems.organizationId, orgId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'), inArray(shipmentItems.orderLineItemId, ids))).groupBy(shipmentItems.orderLineItemId),
         tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
           .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
           .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, ids))).groupBy(pickupHandoffItems.orderLineItemId),
-        tx.select().from(fulfillmentReadyQuantities).where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderId, ticket.orderId))),
       ]);
       const shipped = new Map(shippedRows.map((row) => [row.id, Number(row.quantity || 0)]));
       const picked = new Map(pickedRows.map((row) => [row.id, Number(row.quantity || 0)]));
-      const ready = new Map(readyRows.map((row) => [row.orderLineItemId, Number(row.readyWaitingQuantity || 0)]));
       const projections = lines.map((line) => resolveFulfillmentLineQuantity({
         ...line, orderedQuantity: Number(line.quantity || 0),
         shippedQuantity: shipped.get(line.id) ?? 0, pickedUpQuantity: picked.get(line.id) ?? 0,
-        readyWaitingQuantity: ready.get(line.id) ?? 0,
       }));
       for (const [lineItemId, handoffQuantity] of Array.from(requested.entries())) {
         const projection = projections[lines.findIndex((line) => line.id === lineItemId)];
-        if (!projection?.requiresFulfillment || handoffQuantity > projection.eligibleQuantity) {
-          return { ok: false as const, code: 'QTY_EXCEEDS_READY', message: 'Pickup quantity exceeds the quantity ready for pickup for a line item.' };
+        if (!projection?.requiresFulfillment || handoffQuantity > projection.remainingQuantity) {
+          return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Pickup quantity exceeds the remaining order quantity for a line item.' };
         }
       }
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null, clientRequestId: payload.clientRequestId ?? null }).returning();
       await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({ organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity })));
       const now = new Date();
-      for (const [orderLineItemId, quantity] of requested) {
-        const current = ready.get(orderLineItemId) ?? 0;
-        await tx.update(fulfillmentReadyQuantities).set({ readyWaitingQuantity: current - quantity, updatedByUserId: safeActorUserId, updatedAt: now })
-          .where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderId, ticket.orderId), eq(fulfillmentReadyQuantities.orderLineItemId, orderLineItemId)));
-      }
       const allFulfilled = projections.every((projection, index) => !projection.requiresFulfillment || projection.remainingQuantity - (requested.get(lines[index].id) ?? 0) <= 0);
       const [updatedTicket] = await tx.update(pickupTickets).set({
-        status: allFulfilled ? 'PICKED_UP' : 'READY_FOR_PICKUP', pickedUpAt: allFulfilled ? now : null, updatedAt: now,
+        status: allFulfilled ? 'PICKED_UP' : ticket.status, pickedUpAt: allFulfilled ? now : null, updatedAt: now,
       }).where(and(eq(pickupTickets.id, ticketId), eq(pickupTickets.organizationId, orgId))).returning();
       await tx.update(orders).set({ fulfillmentStatus: allFulfilled ? 'delivered' : 'partially_picked_up', updatedAt: now.toISOString() })
         .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));

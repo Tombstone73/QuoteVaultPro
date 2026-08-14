@@ -241,5 +241,5 @@ export function resolveFulfillmentAllocatableQuantity(
   verifiedCumulativeQuantity: number,
 ): number {
   const verifiedRemaining = Math.max(0, quantity(verifiedCumulativeQuantity) - line.fulfilledQuantity);
-  return Math.min(line.eligibleQuantity, verifiedRemaining);
+  return Math.min(line.remainingQuantity, verifiedRemaining);
 }

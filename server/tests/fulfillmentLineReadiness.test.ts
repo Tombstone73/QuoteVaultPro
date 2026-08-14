@@ -62,7 +62,7 @@ describe("canonical fulfillment quantity projection", () => {
     });
   });
 
-  test("shares the fulfillment-ready pool between shipment and pickup handoffs", () => {
+  test("keeps legacy readiness data informational beside immutable fulfillment", () => {
     const line = resolveFulfillmentLineQuantity({ orderedQuantity: 400, productionCompleteQuantity: 0, shippedQuantity: 150, pickedUpQuantity: 100, readyWaitingQuantity: 150 });
     expect(line).toMatchObject({ fulfilledQuantity: 250, readyWaitingQuantity: 150, notReadyQuantity: 0 });
   });
@@ -81,9 +81,9 @@ describe("canonical fulfillment quantity projection", () => {
     expect(summary).toMatchObject({ physicalLineCount: 2, orderedQuantity: 2, eligibleQuantity: 1, blockedQuantity: 1, status: "PARTIALLY_READY" });
   });
 
-  test("auto-packing and split allocations cannot exceed ready and verified remainder", () => {
+  test("auto-packing and split allocations cannot exceed remaining order and verified remainder", () => {
     const line = resolveFulfillmentLineQuantity({ workflowIntent: "standard_production", orderedQuantity: 100, productionCompleteQuantity: 0, shippedQuantity: 20, readyWaitingQuantity: 40 });
     expect(resolveFulfillmentAllocatableQuantity(line, 50)).toBe(30);
-    expect(resolveFulfillmentAllocatableQuantity(line, 100)).toBe(40);
+    expect(resolveFulfillmentAllocatableQuantity(line, 100)).toBe(80);
   });
 });

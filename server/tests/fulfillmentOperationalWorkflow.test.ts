@@ -28,6 +28,19 @@ describe("fulfillment operational workflow helpers", () => {
     expect(emailService).toContain("eq(orderLineItems.organizationId, organizationId)");
   });
 
+  test("direct pickup and shipping use remaining-order authority while retaining the immutable paths", () => {
+    const repository = fs.readFileSync(path.join(process.cwd(), "server/services/fulfillment/repository.ts"), "utf8");
+    const service = fs.readFileSync(path.join(process.cwd(), "server/services/fulfillment/service.ts"), "utf8");
+
+    expect(repository).toContain("ticket.status !== 'DRAFT' && ticket.status !== 'READY_FOR_PICKUP'");
+    expect(repository).toContain("handoffQuantity > projection.remainingQuantity");
+    expect(repository).toContain("draftQty > projection.remainingQuantity");
+    expect(repository).toContain("QTY_EXCEEDS_ORDER");
+    expect(service).toContain("remainingQuantityByOrderId");
+    expect(service).toContain("Shipment quantity exceeds the remaining order quantity");
+    expect(service).not.toContain("At least one quantity must be marked ready before pickup-ready.");
+  });
+
   test("picked-up rows remain active before retention window", () => {
     const now = new Date("2026-05-28T12:00:00Z").getTime();
     expect(isPickedUpArchivedForRetention({
@@ -285,7 +298,7 @@ describe("fulfillment operational workflow helpers", () => {
     expect(requireChecklist).not.toHaveBeenCalled();
   });
 
-  test("mark shipped uses the fulfillment-ready pool rather than reported production", async () => {
+  test("mark shipped uses remaining order quantity rather than readiness or reported production", async () => {
     const fakeShipmentRepo = {
       getShipmentById: jest.fn(async () => ({
         id: "shipment-1",
@@ -301,7 +314,7 @@ describe("fulfillment operational workflow helpers", () => {
       listLineEligibility: jest.fn(async () => [{
         id: "line-1",
         orderId: "order-1",
-        projection: { requiresFulfillment: true, readyWaitingQuantity: 1, eligibleQuantity: 1, shippedQuantity: 0 },
+        projection: { requiresFulfillment: true, readyWaitingQuantity: 0, eligibleQuantity: 0, remainingQuantity: 1, shippedQuantity: 0 },
       }]),
     };
     const select = jest.fn().mockImplementationOnce(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }]));

@@ -232,7 +232,7 @@ export function FulfillmentShipmentEditor({
         label: li.productName || li.description || "Line Item",
         sku: "--",
         orderedQty: li.production.orderedQuantity,
-        remainingQty: li.production.readyWaitingQuantity,
+        remainingQty: li.production.remainingQuantity,
       }));
 
       return {

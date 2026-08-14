@@ -11,11 +11,10 @@ import { resolveFulfillmentWorkspaceMode } from "@/lib/fulfillmentWorkspaceMode"
 import {
   toFulfillmentError,
   useAddFulfillmentNoteMutation,
-  useAdjustFulfillmentReadyQuantitiesMutation,
   useCreatePickupTicketMutation,
   useCreateShipmentMutation,
   useFulfillmentOrderDetailQuery,
-  useMarkPickupReadyMutation,
+  useMarkOrderReadyForPickupMutation,
   useRecordPickupHandoffMutation,
 } from "@/hooks/useFulfillment";
 
@@ -27,16 +26,11 @@ export default function FulfillmentWorkspacePage() {
   const detailQuery = useFulfillmentOrderDetailQuery(orderId);
   const createShipment = useCreateShipmentMutation();
   const createPickupTicket = useCreatePickupTicketMutation();
-  const markPickupReady = useMarkPickupReadyMutation(orderId);
-  const adjustReadyQuantities = useAdjustFulfillmentReadyQuantitiesMutation(orderId);
+  const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId);
   const addNote = useAddFulfillmentNoteMutation(orderId);
   const recordPickupHandoff = useRecordPickupHandoffMutation(orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
-  const [readyQuantityByLine, setReadyQuantityByLine] = useState<Record<string, number>>({});
-  const [unreadyQuantityByLine, setUnreadyQuantityByLine] = useState<Record<string, number>>({});
-  const [adjustingLineId, setAdjustingLineId] = useState<string | null>(null);
-  const [addingReadyLineId, setAddingReadyLineId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [pickupRequestId, setPickupRequestId] = useState<string | null>(null);
   const detail = detailQuery.data;
@@ -51,13 +45,8 @@ export default function FulfillmentWorkspacePage() {
   const workspaceMode = resolveFulfillmentWorkspaceMode(detail);
   const isPickup = workspaceMode.mode === "pickup";
   const methodLabel = isPickup ? "Pickup" : "Shipping";
-  const readyActionLabel = `Mark Selected Ready for ${methodLabel}`;
-  const canStartFulfillment = detail.readyWaitingQuantity > 0;
   const shipmentId = createdShipmentId || workspaceMode.singleDraftShipmentId;
-  const pickupPending = recordPickupHandoff.isPending || createPickupTicket.isPending || markPickupReady.isPending;
-  const readyPending = adjustReadyQuantities.isPending;
-  const selectedReadyCount = Object.values(readyQuantityByLine).reduce((total, quantity) => total + Math.max(0, Number(quantity) || 0), 0);
-  const selectedUnreadyCount = Object.values(unreadyQuantityByLine).reduce((total, quantity) => total + Math.max(0, Number(quantity) || 0), 0);
+  const pickupPending = recordPickupHandoff.isPending || createPickupTicket.isPending;
   const fulfillmentNotes = detail.events.filter((event) => event.eventType === "FULFILLMENT_NOTE");
 
   const showError = (title: string, error: unknown) => toast({ title, description: toFulfillmentError(error).message, variant: "destructive" });
@@ -65,37 +54,8 @@ export default function FulfillmentWorkspacePage() {
     const parsed = Math.floor(Number(value));
     return Number.isFinite(parsed) ? Math.max(0, Math.min(max, parsed)) : 0;
   };
-  const setReady = (lineId: string, quantity: number) => setReadyQuantityByLine((current) => ({ ...current, [lineId]: quantity }));
-  const setUnready = (lineId: string, quantity: number) => setUnreadyQuantityByLine((current) => ({ ...current, [lineId]: quantity }));
-
-  const submitReady = async () => {
-    const items = detail.lineItems.flatMap((item) => {
-      const quantityDelta = Math.floor(Number(readyQuantityByLine[item.id] || 0));
-      return quantityDelta > 0 ? [{ orderLineItemId: item.id, quantityDelta }] : [];
-    });
-    if (!items.length) return showError("No ready quantity entered", new Error("Enter the quantity physically ready for fulfillment."));
-    try {
-      await adjustReadyQuantities.mutateAsync({ items });
-      setReadyQuantityByLine({});
-      setAddingReadyLineId(null);
-    } catch (error) { showError("Could not mark items ready", error); }
-  };
-
-  const submitUnready = async () => {
-    const items = detail.lineItems.flatMap((item) => {
-      const quantity = Math.floor(Number(unreadyQuantityByLine[item.id] || 0));
-      return quantity > 0 ? [{ orderLineItemId: item.id, quantityDelta: -quantity }] : [];
-    });
-    if (!items.length) return showError("No ready quantity entered", new Error("Enter the quantity to remove from the ready pool."));
-    try {
-      await adjustReadyQuantities.mutateAsync({ items });
-      setUnreadyQuantityByLine({});
-      setAdjustingLineId(null);
-    } catch (error) { showError("Could not adjust ready quantity", error); }
-  };
-
   const startShipment = async () => {
-    if (!canStartFulfillment || isPickup) return;
+    if (isPickup) return;
     try {
       const created = await createShipment.mutateAsync({ scope: "SINGLE_ORDER", orderIds: [orderId], primaryOrderId: orderId });
       setCreatedShipmentId(created.shipmentId);
@@ -108,16 +68,13 @@ export default function FulfillmentWorkspacePage() {
       const quantity = Math.floor(Number(pickupQuantityByLine[item.id] || 0));
       return quantity > 0 ? [{ orderLineItemId: item.id, quantity }] : [];
     });
-    if (!items.length) return showError("No pickup quantity entered", new Error("Enter a quantity that is currently ready for pickup."));
+    if (!items.length) return showError("No pickup quantity entered", new Error("Enter a quantity that physically left with the customer."));
     try {
       let ticketId = detail.pickupTicket?.id;
-      let ticketStatus = detail.pickupTicket?.status;
       if (!ticketId) {
         const ticket = await createPickupTicket.mutateAsync(orderId);
         ticketId = ticket.id;
-        ticketStatus = ticket.status;
       }
-      if (ticketStatus === "DRAFT") await markPickupReady.mutateAsync({ ticketId });
       const clientRequestId = pickupRequestId || crypto.randomUUID();
       setPickupRequestId(clientRequestId);
       await recordPickupHandoff.mutateAsync({ ticketId, items, clientRequestId });
@@ -127,6 +84,11 @@ export default function FulfillmentWorkspacePage() {
       showError("Could not complete pickup", error);
       await detailQuery.refetch();
     }
+  };
+
+  const markOrderReady = async () => {
+    try { await markOrderReadyForPickup.mutateAsync({}); }
+    catch (error) { showError("Could not mark order ready for pickup", error); }
   };
 
   const submitNote = async () => {
@@ -145,35 +107,29 @@ export default function FulfillmentWorkspacePage() {
         <h1 className="text-2xl font-bold">Order #{detail.orderNumber}</h1>
         <p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{methodLabel}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>
-      <div className="flex flex-wrap gap-2"><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.orders.detail(orderId))}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button>
-        {!isPickup && !shipmentId && <button disabled={!canStartFulfillment || createShipment.isPending} title={canStartFulfillment ? undefined : "Mark a quantity ready before starting shipment."} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
+      <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.orders.detail(orderId))}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button>
+        {isPickup && detail.pickupTicket?.status !== "READY_FOR_PICKUP" && detail.remainingQuantity > 0 && <button disabled={markOrderReadyForPickup.isPending} className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void markOrderReady()}>{markOrderReadyForPickup.isPending ? "Marking…" : "Mark Order Ready for Pickup"}</button>}
+        {!isPickup && !shipmentId && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
       </div>
     </header>
 
     <section className="rounded-xl border bg-card" data-testid="fulfillment-line-items">
-      <div className="border-b px-4 py-3"><h2 className="font-bold">Fulfillment line items</h2><p className="text-sm text-muted-foreground">Confirm what is physically waiting. Production reports are informational only.</p></div>
+      <div className="border-b px-4 py-3"><h2 className="font-bold">Fulfillment line items</h2><p className="text-sm text-muted-foreground">Record what physically left. Production reports are informational only.</p></div>
       <div className="divide-y">{detail.lineItems.map((item) => {
         const itemName = item.productName || item.description || "Line item";
-        const { orderedQuantity, readyWaitingQuantity, pickedUpQuantity, shippedQuantity, remainingQuantity, notReadyQuantity, productionCompleteQuantity } = item.production;
+        const { orderedQuantity, pickedUpQuantity, shippedQuantity, remainingQuantity, productionCompleteQuantity } = item.production;
         const fulfilledQuantity = isPickup ? pickedUpQuantity : shippedQuantity;
         const isComplete = remainingQuantity <= 0;
         const pickupQuantity = pickupQuantityByLine[item.id] ?? "";
-        const readyQuantity = readyQuantityByLine[item.id] ?? "";
-        const unreadyQuantity = unreadyQuantityByLine[item.id] ?? "";
         return <article key={item.id} data-testid={`fulfillment-line-${item.id}`} className="space-y-3 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{itemName}</h3><p className="mt-1 text-sm text-muted-foreground">Ordered {orderedQuantity} · Ready {readyWaitingQuantity} · {isPickup ? "Picked up" : "Shipped"} {fulfilledQuantity} · Remaining {remainingQuantity}</p><p className="mt-1 text-xs text-muted-foreground">Production reports: {productionCompleteQuantity}</p></div><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{isComplete ? "Completed" : readyWaitingQuantity > 0 ? `Ready waiting ${readyWaitingQuantity}` : `Not ready ${notReadyQuantity}`}</span></div>
-          {!isComplete && readyWaitingQuantity === 0 && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Mark ready now<Input aria-label={`Ready quantity: ${itemName}`} type="number" min={0} max={notReadyQuantity} value={readyQuantity} disabled={readyPending} className="w-28 tabular-nums" onChange={(event) => setReady(item.id, bounded(event.target.value, notReadyQuantity))} /></label><button type="button" disabled={readyPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setReady(item.id, notReadyQuantity)}>All Remaining</button></div>}
-          {!isComplete && readyWaitingQuantity > 0 && <div className="space-y-2">{isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Customer taking now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={readyWaitingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, readyWaitingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: readyWaitingQuantity }))}>All Ready</button></div>}
-            <div className="flex flex-wrap gap-2">{notReadyQuantity > 0 && <button type="button" className="text-sm font-semibold text-primary hover:underline" onClick={() => { setAddingReadyLineId(item.id); setAdjustingLineId(null); }}>Mark more ready</button>}<button type="button" className="text-sm font-semibold text-muted-foreground hover:underline" onClick={() => { setAdjustingLineId(item.id); setAddingReadyLineId(null); }}>Adjust ready qty</button></div>
-            {addingReadyLineId === item.id && notReadyQuantity > 0 && <div className="flex flex-wrap items-end gap-2 rounded-lg bg-muted/40 p-3"><label className="grid gap-1 text-sm font-medium">Additional ready<Input aria-label={`Additional ready quantity: ${itemName}`} type="number" min={0} max={notReadyQuantity} value={readyQuantity} className="w-28 tabular-nums" onChange={(event) => setReady(item.id, bounded(event.target.value, notReadyQuantity))} /></label><button type="button" className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted" onClick={() => setReady(item.id, notReadyQuantity)}>All Remaining</button></div>}
-            {adjustingLineId === item.id && <div className="flex flex-wrap items-end gap-2 rounded-lg bg-muted/40 p-3"><label className="grid gap-1 text-sm font-medium">Remove from ready<Input aria-label={`Adjust ready quantity: ${itemName}`} type="number" min={0} max={readyWaitingQuantity} value={unreadyQuantity} className="w-28 tabular-nums" onChange={(event) => setUnready(item.id, bounded(event.target.value, readyWaitingQuantity))} /></label><button type="button" className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted" onClick={() => setUnready(item.id, readyWaitingQuantity)}>Remove All Ready</button></div>}
-          </div>}
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{itemName}</h3><p className="mt-1 text-sm text-muted-foreground">Ordered {orderedQuantity} · {isPickup ? "Picked up" : "Shipped"} {fulfilledQuantity} · Remaining {remainingQuantity}</p><p className="mt-1 text-xs text-muted-foreground">Production reports: {productionCompleteQuantity}</p></div><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{isComplete ? "Completed" : `${remainingQuantity} remaining`}</span></div>
+          {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
-      <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3">{selectedUnreadyCount > 0 && <button type="button" disabled={readyPending} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void submitUnready()}>Save ready adjustment</button>}<button type="button" disabled={readyPending || selectedReadyCount <= 0} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitReady()}>{readyPending ? "Saving…" : readyActionLabel}</button>{isPickup && detail.readyWaitingQuantity > 0 && <button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button>}</div>
+      {isPickup && detail.remainingQuantity > 0 && <div className="flex justify-end border-t px-4 py-3"><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
     </section>
 
-    {!isPickup && <section className="space-y-3"><div className="rounded-xl border bg-card p-4"><h2 className="font-bold"><Truck className="mr-2 inline h-4 w-4" />Shipping</h2><p className="mt-1 text-sm text-muted-foreground">{shipmentId ? "Ready quantities are packed into the default package. Split only when multiple packages are needed." : canStartFulfillment ? "Start a shipment when at least one item is marked ready." : "Mark a quantity ready before shipping."}</p></div>{shipmentId && <FulfillmentShipmentEditor shipmentId={shipmentId} embedded onMutationComplete={() => detailQuery.refetch()} />}{workspaceMode.combinedShipments.map((shipment) => <div key={shipment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div><p className="font-semibold">Included in combined shipment {shipment.shipmentReference || shipment.id} · {shipment.status}</p><p className="text-sm text-muted-foreground">Shared by {shipment.orderCount} orders.</p></div><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.shipmentDetail(shipment.id))}>Open Combined Shipment</button></div>)}</section>}
+    {!isPickup && <section className="space-y-3"><div className="rounded-xl border bg-card p-4"><h2 className="font-bold"><Truck className="mr-2 inline h-4 w-4" />Shipping</h2><p className="mt-1 text-sm text-muted-foreground">{shipmentId ? "Allocate what is leaving in the shipment package." : "Start a shipment to record what physically leaves the shop."}</p></div>{shipmentId && <FulfillmentShipmentEditor shipmentId={shipmentId} embedded onMutationComplete={() => detailQuery.refetch()} />}{workspaceMode.combinedShipments.map((shipment) => <div key={shipment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div><p className="font-semibold">Included in combined shipment {shipment.shipmentReference || shipment.id} · {shipment.status}</p><p className="text-sm text-muted-foreground">Shared by {shipment.orderCount} orders.</p></div><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.shipmentDetail(shipment.id))}>Open Combined Shipment</button></div>)}</section>}
 
     <section className="rounded-xl border bg-card p-4" data-testid="fulfillment-order-notes"><h2 className="font-bold">Order Notes</h2><p className="mt-1 text-sm text-muted-foreground">Internal fulfillment notes. They do not change fulfillment quantities or status.</p><div className="mt-3 flex gap-2"><Textarea aria-label="Order note" value={note} maxLength={2000} className="min-h-20 flex-1" placeholder="Add a note for the fulfillment team" onChange={(event) => setNote(event.target.value)} /><button type="button" disabled={!note.trim() || addNote.isPending} className="h-fit rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitNote()}>{addNote.isPending ? "Adding…" : "Add note"}</button></div>{fulfillmentNotes.length > 0 ? <div className="mt-3 divide-y">{fulfillmentNotes.map((event) => <div key={event.id} className="py-3 text-sm"><p>{String(event.payloadJson?.note || "")}</p><p className="mt-1 text-xs text-muted-foreground">{event.actorName || "Staff"} · {new Date(event.createdAt).toLocaleString()}</p></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">No fulfillment notes yet.</p>}</section>
 

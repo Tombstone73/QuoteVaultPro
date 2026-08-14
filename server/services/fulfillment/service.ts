@@ -168,14 +168,8 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(status, result.message, result.code);
     }
 
-    // A pickup ticket remains the existing notification/current-status envelope.
-    // The ready quantity above, not production, authorizes this transition.
-    if (result.shippingMethod === 'pickup' && payload.items.some((item) => item.quantityDelta > 0)) {
-      const ticket = await this.pickupRepo.createOrGetDraftTicket(orgId, orderId, actorUserId);
-      if (ticket.status === 'DRAFT') {
-        await this.markPickupReady(orgId, ticket.id, {}, actorUserId, actorOrgRole);
-      }
-    }
+    // Legacy readiness records remain available for compatibility, but changing
+    // them is no longer a physical-fulfillment or customer-notification action.
     return this.getOrderDetail(orgId, orderId);
   }
 
@@ -213,12 +207,12 @@ export class FulfillmentService {
     }
 
     const lineEligibility = await this.dashboardRepo.listLineEligibility(orgId, { orderIds: uniqueOrderIds });
-    const eligibleQuantityByOrderId = new Map<string, number>();
+    const remainingQuantityByOrderId = new Map<string, number>();
     const physicalLineCountByOrderId = new Map<string, number>();
     for (const line of lineEligibility) {
       if (!line.projection.requiresFulfillment) continue;
       physicalLineCountByOrderId.set(line.orderId, (physicalLineCountByOrderId.get(line.orderId) ?? 0) + 1);
-      eligibleQuantityByOrderId.set(line.orderId, (eligibleQuantityByOrderId.get(line.orderId) ?? 0) + line.projection.eligibleQuantity);
+      remainingQuantityByOrderId.set(line.orderId, (remainingQuantityByOrderId.get(line.orderId) ?? 0) + line.projection.remainingQuantity);
     }
 
     for (const order of ordersForValidation) {
@@ -234,8 +228,8 @@ export class FulfillmentService {
       if (lineItemCount <= 0) {
         throw new FulfillmentHttpError(400, `Order ${order.id} has no shippable line items`, 'ORDER_NOT_SHIP_ELIGIBLE');
       }
-      if ((eligibleQuantityByOrderId.get(order.id) ?? 0) <= 0) {
-        throw new FulfillmentHttpError(409, `Order ${order.id} has no quantity marked ready to ship`, 'NO_ELIGIBLE_QUANTITY');
+      if ((remainingQuantityByOrderId.get(order.id) ?? 0) <= 0) {
+        throw new FulfillmentHttpError(409, `Order ${order.id} has no remaining quantity to ship`, 'NO_REMAINING_QUANTITY');
       }
     }
 
@@ -429,8 +423,8 @@ export class FulfillmentService {
       if (!line || line.orderId !== items.find((item) => item.orderLineItemId === lineItemId)?.orderId || !line.projection.requiresFulfillment) {
         throw new FulfillmentHttpError(409, 'Shipment quantities require a physical fulfillment line item.', 'LINE_NOT_FULFILLABLE');
       }
-      const allowed = line.projection.eligibleQuantity;
-      if (quantity > allowed) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the quantity marked ready for fulfillment for a line item.', 'QTY_EXCEEDS_READY');
+      const allowed = line.projection.remainingQuantity;
+      if (quantity > allowed) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the remaining order quantity for a line item.', 'QTY_EXCEEDS_ORDER');
     }
   }
 
@@ -445,7 +439,7 @@ export class FulfillmentService {
     let defaultPackage = shipment.packages[0] ?? null;
     if (!defaultPackage) defaultPackage = await this.createShipmentPackage(orgId, shipmentId, { actorUserId });
     const items = lines.flatMap((line) => {
-      const allocatableQuantity = line.projection.eligibleQuantity;
+      const allocatableQuantity = line.projection.remainingQuantity;
       return line.projection.requiresFulfillment && allocatableQuantity > 0
         ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: allocatableQuantity, packageId: defaultPackage!.id }]
         : [];
@@ -640,11 +634,6 @@ export class FulfillmentService {
       canceledAt: ticketWithOrder.orderCanceledAt,
     })) {
       throw new FulfillmentHttpError(409, 'Cancelled orders cannot advance pickup fulfillment', 'ORDER_CANCELLED');
-    }
-
-    const eligibility = await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [ticketWithOrder.orderId] });
-    if (!eligibility.some((line) => line.projection.readyWaitingQuantity > 0)) {
-      throw new FulfillmentHttpError(400, 'At least one quantity must be marked ready before pickup-ready.', 'NO_READY_QUANTITY');
     }
 
     const markResult = await this.pickupRepo.markReady(orgId, ticketId, {
