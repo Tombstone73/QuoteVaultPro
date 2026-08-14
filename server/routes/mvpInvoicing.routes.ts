@@ -2248,6 +2248,10 @@ export async function registerMvpInvoicingRoutes(
       const existingInvoiceVersion = Number(existing.invoiceVersion || 1);
 
       const requestKeys = Object.keys(req.body || {});
+      const forbiddenFinancialKeys = ["subtotalCents", "taxCents", "shippingCents", "totalCents", "subtotal", "tax", "total", "balanceDue", "amountPaid"];
+      if (requestKeys.some((key) => forbiddenFinancialKeys.includes(key))) {
+        return res.status(400).json({ error: "Invoice financial totals are derived from canonical lines and payments.", code: "INVOICE_FINANCIAL_PATCH_FORBIDDEN" });
+      }
       const safeCanonicalKeys = new Set(["terms", "customDueDate", "notesPublic"]);
       if (userId && existingStatus === "draft" && !isImportedQuickBooks && requestKeys.length > 0 && requestKeys.every((key) => safeCanonicalKeys.has(key))) {
         const customDueDate = typeof req.body.customDueDate === "string" ? new Date(req.body.customDueDate) : undefined;
@@ -2294,7 +2298,7 @@ export async function registerMvpInvoicingRoutes(
       }
 
       const financialUpdates: any = {};
-      const hasFinancialBody = req.body.subtotalCents !== undefined || req.body.taxCents !== undefined || req.body.shippingCents !== undefined;
+      const hasFinancialBody = false;
       const hasCustomerChange = typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId;
       const hasTermsChange = typeof req.body.terms === "string" && req.body.terms !== existing.terms;
 

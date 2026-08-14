@@ -1126,8 +1126,8 @@ export class CustomersRepository {
             await tx.insert(customerCreditTransactions).values({
                 customerId,
                 amount: amount.toString(),
-                type,
-                reason,
+                transactionType: 'adjustment',
+                description: `${type === 'credit' ? 'Credit' : 'Debit'} adjustment: ${reason}`,
                 userId: createdBy,
             } as any);
 
