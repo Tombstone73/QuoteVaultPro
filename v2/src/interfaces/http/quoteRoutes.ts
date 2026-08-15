@@ -3,6 +3,7 @@ import { Router as expressRouter } from "express";
 import type { OperationContext } from "../../application/operation.js";
 import type { Principal } from "../../authorization/principals.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import type {
   CreateQuoteInput,
   QuoteApplicationService,
@@ -17,9 +18,15 @@ import { brandedId } from "../../modules/shared/commercialValues.js";
 export interface VerifiedV2PrincipalProvider {
   principal(request: Request, organizationId: string): Promise<Principal>;
 }
+export interface QuoteFormReadPort {
+  customers(organizationId: string, query?: string): Promise<readonly Readonly<{ customerId: string; displayName: string }>[]>;
+  contacts(organizationId: string, customerId: string): Promise<readonly Readonly<{ contactId: string; displayName: string }>[]>;
+  products(organizationId: string, query?: string): Promise<readonly Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean }>[]>;
+}
 export type QuoteHttpDependencies = Readonly<{
   service: QuoteApplicationService;
   principals: VerifiedV2PrincipalProvider;
+  formReads: QuoteFormReadPort;
 }>;
 
 const status = (code: string): number =>
@@ -161,6 +168,17 @@ export const createQuoteRouter = (
   dependencies: QuoteHttpDependencies,
 ): Router => {
   const router = expressRouter({ mergeParams: true });
+  const readForm = async (request: Request, response: Response, read: () => Promise<unknown>) => {
+    try {
+      const operation = await context(request, dependencies);
+      if (!new AuthorityPolicy().decide(operation.principal, { capability: "quote.view", resource: { organizationId: operation.organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "Quote access is unavailable.");
+      response.json({ ok: true, data: await read() });
+    } catch (cause) { error(response, cause); }
+  };
+  router.get("/form/customers", (request, response) => readForm(request, response, () => dependencies.formReads.customers(String((request.params as Record<string, string>).organizationId), String(request.query.q ?? ""))));
+  router.get("/form/customers/:customerId/contacts", (request, response) => readForm(request, response, () => dependencies.formReads.contacts(String((request.params as Record<string, string>).organizationId), request.params.customerId)));
+  router.get("/form/products", (request, response) => readForm(request, response, () => dependencies.formReads.products(String((request.params as Record<string, string>).organizationId), String(request.query.q ?? ""))));
   router.post("/", async (request, response) => {
     try {
       await send(

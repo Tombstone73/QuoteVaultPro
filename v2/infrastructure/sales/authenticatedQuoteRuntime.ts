@@ -9,6 +9,7 @@ import {
   type TrustedHostIdentitySource,
 } from "../authentication/trustedHostPrincipalProvider.js";
 import { PostgresQuoteTransactionRunner } from "./postgresQuoteTransaction.js";
+import { PostgresQuoteFormReads } from "./postgresQuoteFormReads.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -37,6 +38,7 @@ export const composeAuthenticatedQuoteRuntime = (
         input.trustedHostIdentity,
         principalIssuer,
       ),
+      formReads: new PostgresQuoteFormReads(input.pool),
     },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
