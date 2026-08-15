@@ -1268,6 +1268,13 @@
       "when": 1788048000032,
       "tag": "0185_permission_admin_floor_active_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1788048000033,
+      "tag": "0186_permission_admin_floor_serialization",
+      "breakpoints": true
     }
   ]
 }

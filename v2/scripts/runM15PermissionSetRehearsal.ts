@@ -15,6 +15,7 @@ import { PostgresPermissionAdministration } from "../infrastructure/authorizatio
 const migrationsFolder = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../server/db/migrations_v2");
 const staffIdentity = (subjectId: string) => ({ subjectId, authenticatedAt: new Date(), authenticationMethod: "session" as const });
 const portalIdentity = (subjectId: string) => ({ subjectId, authenticatedAt: new Date(), authenticationMethod: "portal_session" as const });
+const operationContext = (label: string) => ({ correlationId: `m15-${label}-${randomUUID()}`, businessRequestId: `m15-${label}-${randomUUID()}` });
 
 /**
  * Guarded clone-only rehearsal. It deliberately does not import dotenv, the
@@ -57,12 +58,12 @@ async function main(): Promise<void> {
     await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$2,$3,$4,'staff')",[limitedSet,orgA,`M15 Limited ${suffix}`,`m15 limited ${suffix}`]);
     await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,'permissions.manageSets'),($1,$2,'permissions.assignStaff')",[orgA,limitedSet]);
     await client.query("INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id) VALUES($1,$2,$3)",[orgA,limited,limitedSet]); await client.query("COMMIT");
-    const bootstrap=new PostgresPermissionBootstrap(client); await bootstrap.bootstrapLegacyMembership({organizationId:orgA,userId:boot});
+    const bootstrap=new PostgresPermissionBootstrap(client); await bootstrap.bootstrapLegacyMembership({organizationId:orgA,userId:boot,...operationContext("bootstrap")});
     const bootIssued=await issuer.issue(staffIdentity(boot),{organizationId:orgA}); if(bootIssued.kind!=="staff" || !bootIssued.authority.capabilities.includes("quote.view"))throw new Error("Bootstrap did not create V2-backed member authority.");
-    await client.query("UPDATE user_organizations SET role='owner' WHERE user_id=$1 AND organization_id=$2",[boot,orgA]); await bootstrap.bootstrapLegacyMembership({organizationId:orgA,userId:boot});
+    await client.query("UPDATE user_organizations SET role='owner' WHERE user_id=$1 AND organization_id=$2",[boot,orgA]); await bootstrap.bootstrapLegacyMembership({organizationId:orgA,userId:boot,...operationContext("bootstrap-retry")});
     const bootstrapAssignments=await client.query("SELECT count(*)::int AS count FROM v2_staff_permission_set_assignments WHERE organization_id=$1 AND user_id=$2 AND assignment_source='legacy_role_bootstrap'",[orgA,boot]); if(bootstrapAssignments.rows[0].count!==1)throw new Error("Bootstrap was not one-time/idempotent.");
     const limitedIssued=await issuer.issue(staffIdentity(limited),{organizationId:orgA}); if(limitedIssued.kind!=="staff")throw new Error("Limited V2 permission administrator did not issue.");
-    const administration=new PostgresPermissionAdministration(client); let escalated=false; try { await administration.assignStaff(limitedIssued,orgA,limited,(await client.query<{id:string}>("SELECT id FROM v2_permission_sets WHERE organization_id=$1 AND source_template_key='owner'",[orgA])).rows[0].id); escalated=true; } catch { /* expected grant-ceiling rejection */ }
+    const administration=new PostgresPermissionAdministration(client); let escalated=false; try { await administration.assignStaff(limitedIssued,orgA,limited,(await client.query<{id:string}>("SELECT id FROM v2_permission_sets WHERE organization_id=$1 AND source_template_key='owner'",[orgA])).rows[0].id,operationContext("self-escalation")); escalated=true; } catch { /* expected grant-ceiling rejection */ }
     if(escalated)throw new Error("Limited administrator assigned an out-of-ceiling Owner set.");
     await client.query("BEGIN"); await client.query("DELETE FROM v2_permission_audit_events WHERE organization_id=$1 AND target_user_id IN($2,$3)",[orgA,boot,limited]); await client.query("DELETE FROM user_organizations WHERE organization_id=$1 AND user_id IN($2,$3)",[orgA,boot,limited]); await client.query("DELETE FROM users WHERE id IN($1,$2)",[boot,limited]); await client.query("COMMIT");
     console.log("[m1.5-postgres] bootstrap idempotence and self-escalation rehearsal passed.");
