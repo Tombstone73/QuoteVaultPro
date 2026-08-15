@@ -47,6 +47,13 @@ for (const filename of await listTypeScriptFiles(root)) {
     if (relativeFilename.startsWith("src/authorization/") && (imported(specifier, filename, "/repositories") || imported(specifier, filename, "/interfaces") || imported(specifier, filename, "/infrastructure/persistence") || imported(specifier, filename, "server/db") || isRawDatabasePackage(specifier))) {
       fail("authorization must remain persistence and interface free");
     }
+    if (
+      !relativeFilename.startsWith("tests/") &&
+      imported(specifier, filename, "staffAuthorityCompatibility") &&
+      relativeFilename !== "src/authorization/temporaryStaffPrincipalIssuer.ts"
+    ) {
+      fail("temporary Staff compatibility resolver may only be consumed through its PrincipalIssuer");
+    }
     if (relativeFilename.startsWith("src/repositories/") && imported(specifier, filename, "/interfaces")) {
       fail("repositories must not import interfaces");
     }

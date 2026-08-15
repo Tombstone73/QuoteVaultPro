@@ -12,6 +12,9 @@ export type AuthenticatedIdentity = Readonly<{
   authenticationMethod: "session" | "portal_session" | "service_credential";
 }>;
 
+/** Requested scope is never an authority claim; the issuer validates it server-side. */
+export type PrincipalIssuanceContext = Readonly<{ organizationId?: string }>;
+
 export interface PrincipalIssuer {
-  issue(identity: AuthenticatedIdentity): Promise<Principal>;
+  issue(identity: AuthenticatedIdentity, context?: PrincipalIssuanceContext): Promise<Principal>;
 }

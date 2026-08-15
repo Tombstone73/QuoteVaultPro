@@ -7,6 +7,10 @@ export type StaffAuthority = Readonly<{
   membershipId: string;
   role: string;
   capabilities: readonly Capability[];
+  /** Present only while M1.4 temporary membership compatibility is installed. */
+  source?: "temporary_staff_membership_compatibility";
+  authorityRevision?: string;
+  replacementMilestone?: "M1.5 — Permission-Set Foundation";
 }>;
 
 export type StaffPrincipal = Readonly<{
