@@ -1,15 +1,27 @@
-import express, { type Express, type Request, type Response } from "express";
+import express, {
+  type Express,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
 import type { V2RuntimeConfig } from "../../config/runtimeConfig.js";
 import type { V2Logger } from "../../observability/logger.js";
-import { createQuoteRouter, type QuoteHttpDependencies } from "./quoteRoutes.js";
+import {
+  createQuoteRouter,
+  type QuoteHttpDependencies,
+} from "./quoteRoutes.js";
 
 export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
+export type AuthenticatedQuoteRouteRuntime = Readonly<{
+  dependencies: QuoteHttpDependencies;
+  trustedHostMiddleware: RequestHandler;
+}>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
   logger: V2Logger,
   readinessProbe: ReadinessProbe = async () => ({ ready: true }),
-  quote?: QuoteHttpDependencies,
+  quote?: AuthenticatedQuoteRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -28,11 +40,20 @@ export const createV2HttpApp = (
       });
     } catch {
       logger.log("warn", "v2.readiness.failed");
-      response.status(503).json({ status: "not_ready", checks: { application: "unavailable" } });
+      response
+        .status(503)
+        .json({ status: "not_ready", checks: { application: "unavailable" } });
     }
   });
-  if (quote) app.use("/v2/organizations/:organizationId/quotes", createQuoteRouter(quote));
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/quotes",
+      quote.trustedHostMiddleware,
+      createQuoteRouter(quote.dependencies),
+    );
 
-  app.use((_request, response) => response.status(404).json({ code: "NOT_FOUND" }));
+  app.use((_request, response) =>
+    response.status(404).json({ code: "NOT_FOUND" }),
+  );
   return app;
 };

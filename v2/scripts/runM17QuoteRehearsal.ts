@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool, type PoolClient } from "pg";
+import request from "supertest";
+import { PassportSessionIdentitySource } from "../infrastructure/authentication/trustedHostPrincipalProvider.js";
 import { PostgresPermissionAuthorityReader } from "../infrastructure/authorization/postgresPermissionAuthorityRead.js";
 import { requireV2M0CloneDatabaseUrl } from "../infrastructure/persistence/cloneSafety.js";
 import {
@@ -15,6 +17,9 @@ import {
   checkV2CommercialPhysicalPostconditions,
 } from "../infrastructure/sales/commercialPhysicalPostconditions.js";
 import { PostgresQuoteTransactionRunner } from "../infrastructure/sales/postgresQuoteTransaction.js";
+import { composeAuthenticatedQuoteRuntime } from "../infrastructure/sales/authenticatedQuoteRuntime.js";
+import { loadV2RuntimeConfig } from "../src/config/runtimeConfig.js";
+import { createV2HttpApp } from "../src/interfaces/http/app.js";
 import { PermissionSetPrincipalIssuer } from "../src/authorization/permissionSets.js";
 import {
   QuoteApplicationService,
@@ -157,6 +162,7 @@ async function fixture(client: PoolClient) {
     badContact,
     product,
     foreignProduct,
+    set,
   };
 }
 async function main() {
@@ -404,6 +410,91 @@ async function main() {
       [f.org, quoteId],
     );
     assert(audit.rowCount >= 3, "Semantic Audit was missing.");
+    const trustedHostMiddleware = (req: any, _res: any, next: () => void) => {
+      // Test host state is server-side and fixed. Request headers cannot select
+      // a subject, organization, capability, or staff actor.
+      req.isAuthenticated = () => true;
+      req.user = { id: f.user };
+      req.sessionID = "m17-trusted-session";
+      next();
+    };
+    const runtime = composeAuthenticatedQuoteRuntime({
+      pool,
+      trustedHostIdentity: new PassportSessionIdentitySource(),
+      trustedHostMiddleware,
+    });
+    const app = createV2HttpApp(
+      loadV2RuntimeConfig({ NODE_ENV: "test", V2_SERVICE_NAME: "m17-runtime" }),
+      { log: () => undefined },
+      undefined,
+      runtime,
+    );
+    const routeInput = {
+      businessRequestId: "m17-http-create",
+      customerContact: {
+        organizationId: f.org,
+        customerId: f.customer,
+        contactId: f.contact,
+      },
+      lines: [{ productId: f.product, quantity: 1 }],
+      // This forged body identity must never be consulted.
+      principal: { kind: "staff", userId: f.limited, organizationId: f.other },
+    };
+    const httpCreate = await request(app)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .send(routeInput);
+    assert(
+      httpCreate.status === 200,
+      `Authenticated Quote HTTP create failed: ${JSON.stringify(httpCreate.body)}`,
+    );
+    const httpQuoteId = httpCreate.body.data.quote.quote.quoteId as string;
+    assert(httpQuoteId, "Authenticated Quote route did not create a Quote.");
+    const httpReplay = await request(app)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .send(routeInput)
+      .expect(200);
+    assert(
+      httpReplay.body.data.quote.quote.quoteId === httpQuoteId,
+      "Authenticated Quote route lost M0 replay semantics.",
+    );
+    await request(app)
+      .get(`/v2/organizations/${f.org}/quotes/${httpQuoteId}`)
+      .set("x-forged-user", f.limited)
+      .expect(200);
+    await request(app)
+      .get(`/v2/organizations/${f.other}/quotes/${httpQuoteId}`)
+      .set("x-forged-organization", f.other)
+      .expect(404);
+    const httpAudit = await client.query<{ principal_subject: string }>(
+      "SELECT principal_subject FROM v2_audit_events WHERE organization_id=$1 AND resource_id=$2 AND event_type='quote_created' ORDER BY created_at DESC LIMIT 1",
+      [f.org, httpQuoteId],
+    );
+    assert(
+      httpAudit.rows[0]?.principal_subject === f.user,
+      "HTTP Quote Audit did not record the authenticated Staff actor.",
+    );
+    const unauthenticated = createV2HttpApp(
+      loadV2RuntimeConfig({ NODE_ENV: "test" }),
+      { log: () => undefined },
+      undefined,
+      composeAuthenticatedQuoteRuntime({
+        pool,
+        trustedHostIdentity: new PassportSessionIdentitySource(),
+        trustedHostMiddleware: (_req, _res, next) => next(),
+      }),
+    );
+    await request(unauthenticated)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .send(routeInput)
+      .expect(403);
+    await client.query(
+      "DELETE FROM v2_permission_set_capabilities WHERE organization_id=$1 AND permission_set_id=$2 AND capability_id='quote.create'",
+      [f.org, f.set],
+    );
+    await request(app)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .send({ ...routeInput, businessRequestId: "m17-http-capability-removed" })
+      .expect(403);
     console.log("[m1.7] Quote application PostgreSQL rehearsal passed.");
   } finally {
     client?.release();

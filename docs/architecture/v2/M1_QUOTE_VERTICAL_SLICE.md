@@ -6,7 +6,15 @@ explicit selling decisions, semantic audit, and sent/accepted checkpoints.
 
 ## Boundary
 
-The injected V2 HTTP route resolves a verified principal outside request data,
+The authenticated V2 composition accepts a trusted host middleware, then uses
+`PassportSessionIdentitySource` to extract only the host-verified session
+subject. `IssuedV2PrincipalProvider` issues a fresh Principal through the final
+M1.5 `PermissionSetPrincipalIssuer` and PostgreSQL authority reader for the
+route organization. The request never supplies Staff identity, role,
+capability, membership, or tenant authority. An uncomposed V2 shell has no
+trusted identity source and does not mount Quote routes.
+
+The injected V2 HTTP route resolves that verified principal outside request data,
 then calls the Sales application service. The service authorizes through the
 final permission-set `AuthorityPolicy`, reserves the M0 operation request,
 coordinates one PostgreSQL transaction, and records attribution and audit only
@@ -52,7 +60,10 @@ composition.
 V2 catalog and exercises final permission-set issuance, CRM/Product scoped
 compatibility reads, V2 Pricing, M0 replay, forced rollback, stale edit,
 immutable checkpoints, audit, override denial, and concurrent request/number
-behavior. It accepts only the existing guarded `TEST_DATABASE_URL` contract.
+behavior. It also executes the composed HTTP path: trusted host session,
+fresh authority issuance, create/replay/read, forged identity/tenant denial,
+capability removal, and truthful Audit attribution. It accepts only the
+existing guarded `TEST_DATABASE_URL` contract.
 
 ## Next milestone
 

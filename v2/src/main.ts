@@ -5,7 +5,10 @@ import {
   type V2RuntimeConfig,
 } from "./config/runtimeConfig.js";
 import { createV2HttpApp } from "./interfaces/http/app.js";
-import type { QuoteHttpDependencies } from "./interfaces/http/quoteRoutes.js";
+import {
+  composeAuthenticatedQuoteRuntime,
+  type AuthenticatedQuoteRuntimeDependencies,
+} from "../infrastructure/sales/authenticatedQuoteRuntime.js";
 import { createConsoleLogger, type V2Logger } from "./observability/logger.js";
 
 export type RunningV2Server = Readonly<{
@@ -15,9 +18,14 @@ export type RunningV2Server = Readonly<{
 export const startV2Server = async (
   config: V2RuntimeConfig = loadV2RuntimeConfig(),
   logger: V2Logger = createConsoleLogger(),
-  dependencies: Readonly<{ quote?: QuoteHttpDependencies }> = {},
+  dependencies: Readonly<{
+    authenticatedQuote?: AuthenticatedQuoteRuntimeDependencies;
+  }> = {},
 ): Promise<RunningV2Server> => {
-  const app = createV2HttpApp(config, logger, undefined, dependencies.quote);
+  const quote = dependencies.authenticatedQuote
+    ? composeAuthenticatedQuoteRuntime(dependencies.authenticatedQuote)
+    : undefined;
+  const app = createV2HttpApp(config, logger, undefined, quote);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);

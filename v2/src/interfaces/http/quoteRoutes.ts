@@ -42,12 +42,10 @@ const error = (response: Response, value: unknown): void => {
           "INTERNAL_ERROR",
           "Quote operation could not be completed.",
         );
-  response
-    .status(status(safe.code))
-    .json({
-      ok: false,
-      error: { code: safe.code, message: safe.publicMessage },
-    });
+  response.status(status(safe.code)).json({
+    ok: false,
+    error: { code: safe.code, message: safe.publicMessage },
+  });
 };
 const requestId = (body: unknown): string => {
   const value =
@@ -95,7 +93,16 @@ const send = async (
   result: Awaited<ReturnType<QuoteApplicationService["create"]>>,
 ): Promise<void> => {
   if (!result.ok) return error(response, result.error);
-  response.status(200).json({ ok: true, data: result.value });
+  response
+    .status(200)
+    .type("application/json")
+    .send(
+      JSON.stringify(
+        { ok: true, data: result.value },
+        (_key, value: unknown) =>
+          typeof value === "bigint" ? value.toString() : value,
+      ),
+    );
 };
 
 export const createQuoteRouter = (
@@ -122,7 +129,16 @@ export const createQuoteRouter = (
         brandedId<"QuoteId">(request.params.quoteId),
       );
       if (!result.ok) return error(response, result.error);
-      response.status(200).json({ ok: true, data: result.value });
+      response
+        .status(200)
+        .type("application/json")
+        .send(
+          JSON.stringify(
+            { ok: true, data: result.value },
+            (_key, value: unknown) =>
+              typeof value === "bigint" ? value.toString() : value,
+          ),
+        );
     } catch (cause) {
       error(response, cause);
     }
