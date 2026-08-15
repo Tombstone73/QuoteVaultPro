@@ -81,7 +81,13 @@ function verifyManifest(manifest, entries) {
   }
   if (entries.length < manifest.entryCount) fail("journal lost entries protected by the integrity manifest");
 
-  const protectedEntries = entries.slice(0, manifest.entryCount);
+  // Journal idx values are strictly ordered but are not guaranteed dense: historic
+  // entries can legitimately be absent. The manifest's immutable frontier is the
+  // stable identity, so select through that frontier rather than by array offset.
+  const protectedEntries = entries.filter((entry) => entry.idx <= manifest.immutableThrough.idx);
+  if (protectedEntries.length !== manifest.entryCount) {
+    fail("protected migration entry count does not match the immutable journal frontier");
+  }
   const protectedLast = protectedEntries.at(-1);
   if (
     protectedLast.idx !== manifest.immutableThrough.idx ||
@@ -100,7 +106,7 @@ try {
   const entries = loadJournal();
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const protectedEntries = verifyManifest(manifest, entries);
-  const additions = entries.slice(protectedEntries.length);
+  const additions = entries.filter((entry) => entry.idx > protectedEntries.at(-1).idx);
 
   if (additions.length === 0) {
     console.log(`[migration-integrity] PASSED: ${entries.length} protected V2 migrations are unchanged.`);
