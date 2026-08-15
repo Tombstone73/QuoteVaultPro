@@ -165,10 +165,11 @@ export class V2PricingParityAdapter implements PricingPort {
       components.push({ kind: "option", label: rule.id, amount: money(sellableProduct.pricingCurrency, impactCents) });
     }
 
+    const effectiveMinimumChargeCents = tier?.minimumChargeCents ?? rules.minimumChargeCents;
     const beforeMinimumCents = runningCents;
     // Characterized V1 quantity-only pricing ignores stale geometry and a line minimum.
-    if (!quantityOnly && rules.minimumChargeCents != null && runningCents < rules.minimumChargeCents) {
-      runningCents = rules.minimumChargeCents;
+    if (!quantityOnly && effectiveMinimumChargeCents != null && runningCents < effectiveMinimumChargeCents) {
+      runningCents = effectiveMinimumChargeCents;
       components.push({ kind: "minimum_charge", label: "Minimum charge", amount: money(sellableProduct.pricingCurrency, runningCents - beforeMinimumCents) });
     }
     const evidence = {

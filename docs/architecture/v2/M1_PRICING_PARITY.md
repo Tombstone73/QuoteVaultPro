@@ -19,7 +19,7 @@ Explicitly excluded: `PricingService.priceLineItem`, `evaluatePricingPreviewFrom
 3. For computed-sheet tiers, use only supplied sheet-count evidence; no raw-quantity fallback is allowed.
 4. Calculate base: per-piece, per-square-foot, flat fee, or a resolved dollar-valued formula. Formula results are converted to integer cents at the named rounding stage.
 5. Apply flat, per-unit, per-square-foot, percentage, and multiplier impacts. Characterized percentage/multiplier effects use the calculated base, so selected percentages are additive rather than compounded.
-6. Apply the line-level minimum charge once; quantity-only profiles deliberately ignore stale geometry, area formulas, and line minimums.
+6. Apply the selected tier minimum charge when declared, otherwise the line-level minimum charge, once; quantity-only profiles deliberately ignore stale geometry, area formulas, and line minimums.
 
 `PricingResult.calculatedLineAmount` is authoritative. `calculatedUnitAmount` is display allocation only, with exact decimal unit cents and allocation policy recorded so non-divisible line totals do not pretend to be exact per-unit monetary truth. Components reconcile exactly to the calculated line cents. Selling-price overrides remain exclusively a Sales `SellingPriceDecision` and never enter `PricingCalculationRequest`.
 

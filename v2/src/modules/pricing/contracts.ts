@@ -26,7 +26,7 @@ export type NestingEstimateEvidence = Readonly<{
   calculatorVersion: string;
   facts: Readonly<Record<string, JsonValue>>;
 }>;
-export type PricingTierRule = Readonly<{ id: string; minQuantity: number; maxQuantity?: number; perPieceCents?: number; perSquareFootCents?: DecimalText }>;
+export type PricingTierRule = Readonly<{ id: string; minQuantity: number; maxQuantity?: number; perPieceCents?: number; perSquareFootCents?: DecimalText; minimumChargeCents?: number }>;
 export type PricingMatrixRow = Readonly<{ id: string; when: Readonly<Record<string, string | boolean | number>>; tierBasis?: "quantity" | "square_foot" | "computed_sheet"; tiers?: readonly PricingTierRule[]; perPieceCents?: number; perSquareFootCents?: DecimalText }>;
 export type PricingOptionRule = Readonly<{ id: string; selectionKey: string; whenValue?: string | boolean | number; kind: "fixed" | "per_unit" | "per_square_foot" | "percent" | "multiplier"; amount?: number; percentBasisPoints?: PercentageBasisPoints }>;
 /** Explicit resolved pricing inputs supplied by a future Product/PBV2 compatibility reader. */
