@@ -21,12 +21,13 @@ export const coroplastGoldenVectors = [
   { id: "coroplast-24x18-q101", source: "PricingService.goldenRegression:4x8", widthIn: 24, heightIn: 18, quantity: 101, expected: { sheets: 11, tierMinQuantity: 10, tierRate: "1.03", lineCents: 36256 } },
 ] as const;
 
-/** Required M1.2 extraction backlog; these are not yet parity assertions. */
-export const pendingCharacterizationVectors = [
-  { id: "banner-sqft-options", source: "PricingService.bannerProduct.test.ts", required: ["dimensions", "minimum", "grommets", "rounding"] },
-  { id: "contour-sticker-nesting", source: "PricingService.sheetConsumption.test.ts", required: ["formula", "nesting", "sheet_evidence"] },
-  { id: "quantity-only-piece", source: "PricingService.basePrice.test.ts", required: ["per_piece", "quantity_boundary"] },
-  { id: "matrix-product", source: "PricingService.pricingMatrix.test.ts", required: ["matrix_choice_value", "tier_precedence", "fallback_warning"] },
-  { id: "formula-product", source: "PricingService.formula.test.ts", required: ["resolved_expression", "formula_variables", "rounding"] },
-  { id: "quote-order-billing", source: "quoteConversionAtomicity.contract.test.ts + orderInvoiceFinancialIntegrity.contract.test.ts", required: ["no_reprice", "original_quote_preserved", "one_draft", "draft_only_sync"] },
+/** M1.2 deterministic V1 characterization sources, asserted through V2 DTOs. */
+export const pricingCharacterizationVectors = [
+  { id: "banner-36x42-pole-pocket", source: "PricingService.bannerProduct.test.ts", expectedLineCents: 1913, evidence: ["square_foot", "flat_option"] },
+  { id: "contour-4x4-q100", source: "PricingService.formula.test.ts", expectedLineCents: 1600, evidence: ["roll_nesting_billable_sqft", "physical_consumption"] },
+  { id: "quantity-only-stale-geometry", source: "PricingService.basePrice.test.ts", expectedLineCents: 600, evidence: ["per_piece", "stale_geometry_ignored", "minimum_ignored"] },
+  { id: "matrix-4mm-single-q100-q101", source: "PricingService.pricingMatrix.test.ts", expectedLineCents: [44000, 33330], evidence: ["stable_choice_values", "matrix_tier"] },
+  { id: "formula-ceil-24x36", source: "PricingService.formula.test.ts", expectedLineCents: 700, evidence: ["resolved_expression", "formula_version_hash"] },
+  { id: "option-impact-composition", source: "PricingService.choicePricingOverride.test.ts + numericOptionPricing.test.ts", expectedLineCents: 13500, evidence: ["flat", "per_unit", "per_square_foot", "percent", "multiplier", "non_stacking_percent"] },
+  { id: "minimum-and-fractional-rounding", source: "PricingService.basePrice.test.ts + sheetConsumption.test.ts", expectedLineCents: [444, 4267], evidence: ["line_minimum", "fractional_cents", "final_round"] },
 ] as const;

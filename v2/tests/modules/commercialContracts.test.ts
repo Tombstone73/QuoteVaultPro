@@ -4,7 +4,7 @@ import path from "node:path";
 import { assertPricingCalculationRequest, assertPricingResultEvidence, type PricingResult, type ResolvedProductConfiguration } from "../../src/modules/pricing/contracts";
 import type { DraftInvoiceSynchronizationInput } from "../../src/modules/billing/contracts";
 import { assertSalesLineSnapshot, assertSellingPriceDecision, type ConvertQuoteCommand, type SellingPriceDecision } from "../../src/modules/sales/contracts";
-import { brandedId, currencyCode, freezeCheckpoint, money, type OrganizationId } from "../../src/modules/shared/commercialValues";
+import { brandedId, currencyCode, decimalText, freezeCheckpoint, money, type OrganizationId } from "../../src/modules/shared/commercialValues";
 
 const usd = currencyCode("USD");
 const org = brandedId<"OrganizationId">("org-a");
@@ -17,6 +17,7 @@ const pricing: PricingResult = {
   schemaVersion: 1, id: brandedId<"PricingResultId">("price-a"), organizationId: org, currency: usd,
   evidenceFingerprint: "pricing-evidence-a",
   calculatedUnitAmount: money(usd, 1250), calculatedLineAmount: money(usd, 2500), components: [{ kind: "base", label: "Base", amount: money(usd, 2500) }],
+  unitAmountEvidence: { exactUnitCents: decimalText("1250"), allocation: "rounded_line_total_divided_by_quantity" },
   optionImpacts: [], minimumChargeApplied: false, evaluator: { id: "pbv2-adapter", version: "1" },
   rounding: { policyId: "half-up", policyVersion: "1", stages: [{ stage: "line-total", mode: "half-up", precision: 2 }] },
   normalizedInput: resolved, warnings: [],
@@ -59,8 +60,8 @@ describe("M1.1 commercial contracts", () => {
 
   test("pricing validates organization/product/configuration lineage", () => {
     const sellable = { organizationId: org, productId: resolved.productId, displayName: "Fixture", lifecycle: "active" as const, pricingConfiguration: { id: resolved.pricingConfigurationId, version: resolved.pricingConfigurationVersion, contentHash: "hash" }, requiresDimensions: false, pricingCurrency: usd };
-    expect(assertPricingCalculationRequest({ organizationId: org, sellableProduct: sellable, resolvedConfiguration: resolved, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } })).toBeTruthy();
-    expect(() => assertPricingCalculationRequest({ organizationId: brandedId<"OrganizationId">("org-b"), sellableProduct: sellable, resolvedConfiguration: resolved, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } })).toThrow(/organization/i);
+    expect(assertPricingCalculationRequest({ organizationId: org, sellableProduct: sellable, resolvedConfiguration: resolved, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" }, rules: { base: { perPieceCents: 100 } } })).toBeTruthy();
+    expect(() => assertPricingCalculationRequest({ organizationId: brandedId<"OrganizationId">("org-b"), sellableProduct: sellable, resolvedConfiguration: resolved, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" }, rules: { base: { perPieceCents: 100 } } })).toThrow(/organization/i);
   });
 
   test("quote conversion requires a preserved checkpoint identity rather than a repricing input", () => {
