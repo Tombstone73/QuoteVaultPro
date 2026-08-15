@@ -15,6 +15,7 @@
     "v2:m0:postgres": "tsx v2/scripts/runM0PostgresRehearsal.ts",
     "v2:m1:compatibility-reads": "tsx v2/scripts/runM13CompatibilityReadRehearsal.ts",
     "v2:m1:staff-authority": "tsx v2/scripts/runM14StaffAuthorityCompatibilityRehearsal.ts",
+    "v2:m1:permission-sets": "tsx v2/scripts/runM15PermissionSetRehearsal.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:dotenv": "node -r dotenv/config ./node_modules/drizzle-kit/bin.cjs migrate",

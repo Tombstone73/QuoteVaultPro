@@ -54,6 +54,13 @@ for (const filename of await listTypeScriptFiles(root)) {
     ) {
       fail("temporary Staff compatibility resolver may only be consumed through its PrincipalIssuer");
     }
+    if (!relativeFilename.startsWith("tests/") &&
+      (imported(specifier, filename, "temporaryStaffPrincipalIssuer") || imported(specifier, filename, "postgresStaffMembershipRead")) &&
+      relativeFilename !== "scripts/runM14StaffAuthorityCompatibilityRehearsal.ts" &&
+      relativeFilename !== "src/authorization/temporaryStaffPrincipalIssuer.ts" &&
+      relativeFilename !== "infrastructure/compatibility/postgresStaffMembershipRead.ts") {
+      fail("M1.4 temporary Staff authority may not be imported by normal V2 runtime code");
+    }
     if (relativeFilename.startsWith("src/repositories/") && imported(specifier, filename, "/interfaces")) {
       fail("repositories must not import interfaces");
     }

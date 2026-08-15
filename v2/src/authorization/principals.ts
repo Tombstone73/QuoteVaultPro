@@ -5,10 +5,12 @@ export type PrincipalKind = "staff" | "delegated_ai" | "portal" | "service";
 /** Organization-specific authority asserted by a verified membership adapter. */
 export type StaffAuthority = Readonly<{
   membershipId: string;
-  role: string;
+  /** Legacy role is characterization/bootstrap evidence only, never final authority. */
+  role?: string;
+  permissionSetIds?: readonly string[];
   capabilities: readonly Capability[];
   /** Present only while M1.4 temporary membership compatibility is installed. */
-  source?: "temporary_staff_membership_compatibility";
+  source?: "permission_set" | "temporary_staff_membership_compatibility";
   authorityRevision?: string;
   replacementMilestone?: "M1.5 — Permission-Set Foundation";
 }>;

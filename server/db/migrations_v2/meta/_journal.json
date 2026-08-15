@@ -1233,6 +1233,27 @@
       "when": 1788048000027,
       "tag": "0180_v2_foundation_persistence",
       "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1788048000028,
+      "tag": "0181_v2_permission_set_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1788048000029,
+      "tag": "0182_v2_permission_admin_floor",
+      "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1788048000030,
+      "tag": "0183_permission_set_assignment_kind_hardening",
+      "breakpoints": true
     }
   ]
 }
