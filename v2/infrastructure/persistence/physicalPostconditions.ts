@@ -51,10 +51,10 @@ export async function checkV2M0PhysicalPostconditions(client: TransactionalClien
     ),
     client.query<{ source_table: string; target_table: string }>(
       `SELECT source.relname AS source_table, target.relname AS target_table
-       FROM pg_constraint constraint
-       JOIN pg_class source ON source.oid = constraint.conrelid
-       JOIN pg_class target ON target.oid = constraint.confrelid
-       WHERE constraint.contype = 'f'
+       FROM pg_constraint con
+       JOIN pg_class source ON source.oid = con.conrelid
+       JOIN pg_class target ON target.oid = con.confrelid
+       WHERE con.contype = 'f'
          AND source.relname = ANY($1::text[])
          AND target.relname = ANY($2::text[])`,
       [["v2_operation_requests", "v2_principal_attributions", "v2_outbox_messages"], ["organizations", "users", "v2_operation_requests"]],
