@@ -51,60 +51,60 @@ export class PostgresOutboxRepository {
     return toRecord(result.rows[0]!);
   }
 
-  async claim(client: TransactionalClient, workerId: string, leaseSeconds: number, limit: number): Promise<OutboxMessageRecord[]> {
+  async claim(client: TransactionalClient, organizationId: string, workerId: string, leaseSeconds: number, limit: number): Promise<OutboxMessageRecord[]> {
     assertWorkerId(workerId);
     if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) throw new Error("leaseSeconds must be a positive integer.");
     if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer.");
     const result = await client.query<OutboxRow>(
       `WITH candidates AS (
         SELECT id FROM v2_outbox_messages
-        WHERE (status = 'pending' AND available_at <= now())
+        WHERE organization_id = $1 AND ((status = 'pending' AND available_at <= now())
            OR (status = 'processing' AND lease_expires_at <= now())
-        ORDER BY available_at, created_at
+        ) ORDER BY available_at, created_at
         FOR UPDATE SKIP LOCKED
-        LIMIT $3
+        LIMIT $4
       )
       UPDATE v2_outbox_messages AS message
-      SET status = 'processing', claimed_by = $1,
-          lease_expires_at = now() + ($2 * interval '1 second'),
+      SET status = 'processing', claimed_by = $2,
+          lease_expires_at = now() + ($3 * interval '1 second'),
           attempt_count = message.attempt_count + 1
       FROM candidates
-      WHERE message.id = candidates.id
+      WHERE message.organization_id = $1 AND message.id = candidates.id
       RETURNING message.*`,
-      [workerId, leaseSeconds, limit],
+      [organizationId, workerId, leaseSeconds, limit],
     );
     return result.rows.map(toRecord);
   }
 
-  async complete(client: TransactionalClient, id: string, workerId: string): Promise<boolean> {
+  async complete(client: TransactionalClient, organizationId: string, id: string, workerId: string): Promise<boolean> {
     assertWorkerId(workerId);
     const result = await client.query(
       `UPDATE v2_outbox_messages
        SET status = 'completed', claimed_by = NULL, lease_expires_at = NULL, completed_at = now()
-       WHERE id = $1 AND status = 'processing' AND claimed_by = $2 AND lease_expires_at > now()`,
-      [id, workerId],
+       WHERE organization_id = $1 AND id = $2 AND status = 'processing' AND claimed_by = $3 AND lease_expires_at > now()`,
+      [organizationId, id, workerId],
     );
     return result.rowCount === 1;
   }
 
-  async retry(client: TransactionalClient, id: string, workerId: string, availableAt: Date, sanitizedError: string): Promise<boolean> {
+  async retry(client: TransactionalClient, organizationId: string, id: string, workerId: string, availableAt: Date, sanitizedError: string): Promise<boolean> {
     assertWorkerId(workerId);
     const result = await client.query(
       `UPDATE v2_outbox_messages
-       SET status = 'pending', claimed_by = NULL, lease_expires_at = NULL, available_at = $3, last_error = $4
-       WHERE id = $1 AND status = 'processing' AND claimed_by = $2 AND lease_expires_at > now()`,
-      [id, workerId, availableAt, sanitizeOutboxError(sanitizedError)],
+       SET status = 'pending', claimed_by = NULL, lease_expires_at = NULL, available_at = $4, last_error = $5
+       WHERE organization_id = $1 AND id = $2 AND status = 'processing' AND claimed_by = $3 AND lease_expires_at > now()`,
+      [organizationId, id, workerId, availableAt, sanitizeOutboxError(sanitizedError)],
     );
     return result.rowCount === 1;
   }
 
-  async deadLetter(client: TransactionalClient, id: string, workerId: string, sanitizedError: string): Promise<boolean> {
+  async deadLetter(client: TransactionalClient, organizationId: string, id: string, workerId: string, sanitizedError: string): Promise<boolean> {
     assertWorkerId(workerId);
     const result = await client.query(
       `UPDATE v2_outbox_messages
-       SET status = 'dead_letter', claimed_by = NULL, lease_expires_at = NULL, last_error = $3
-       WHERE id = $1 AND status = 'processing' AND claimed_by = $2 AND lease_expires_at > now()`,
-      [id, workerId, sanitizeOutboxError(sanitizedError)],
+       SET status = 'dead_letter', claimed_by = NULL, lease_expires_at = NULL, last_error = $4
+       WHERE organization_id = $1 AND id = $2 AND status = 'processing' AND claimed_by = $3 AND lease_expires_at > now()`,
+      [organizationId, id, workerId, sanitizeOutboxError(sanitizedError)],
     );
     return result.rowCount === 1;
   }
