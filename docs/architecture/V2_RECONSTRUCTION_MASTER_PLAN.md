@@ -10,7 +10,7 @@
 4. **What is rewritten?** Route-local and service-local business mutation orchestration. V2 owns named application operations, typed authority, repositories, idempotency, and durable side effects.
 5. **Database?** Reuse the current database and core tables; add production-designed operation-request, attribution, outbox/reconciliation, and narrowly justified invariant tables/indexes.
 6. **Repository?** Same repository, new top-level production V2 modules/application. Keep V1 and V2 independently deployable; do not use the POC branch as the production branch.
-7. **Build shape?** Parallel V2 service with a vertical-slice strangler cutover. V1 is the sole writer until each V2 domain is approved, then V2 is the sole writer for that domain.
+7. **Build shape?** Parallel V2 service with a vertical-slice strangler cutover. V1 is the sole writer of the existing V1 DEV and production business databases until each production domain is approved; V2 writes normally to its dedicated isolated V2 DEV database and authorized disposable clones, then becomes the sole production writer for a cut-over domain.
 8. **Sequence?** Foundation → commercial spine → artwork/production → fulfillment/finance → interface/integration adapters → shadow/parity → controlled cutover.
 9. **Calendar estimate.** Optimistic 3–4 months; likely 6–9 months; conservative 9–14 months, including human workflow validation and cutover rehearsal.
 10. **Model/cost estimate.** Tens of millions of model tokens across the program is a planning estimate, not a quote. Use Tera for invariants/schema/finance/production, lower-cost models for inventories and mechanical work, Sol only for demonstrated architecture/concurrency stalls. Translate tokens to dollars only using current provider pricing at approval time.
@@ -88,8 +88,8 @@ Use a **hybrid vertical-slice approach**: establish cross-cutting foundation onc
 
 | Milestone | Scope and prerequisites | Exit criteria / V1 authority |
 | --- | --- | --- |
-| M0 Foundation | V2 app shell, ports, Principal/Authority, repository conventions, production migration/outbox/request designs, observability | boundary tests, clone safety, physical checks; V1 sole writer |
-| M1 Commercial spine | customers/contacts, catalog/PBV2 adapter, pricing, direct order, quote lifecycle/conversion | semantic parity, PG rollback/concurrency, DEV read-only shadow; V1 writer |
+| M0 Foundation | V2 app shell, ports, Principal/Authority, repository conventions, production migration/outbox/request designs, observability | boundary tests, clone safety, physical checks; no M0 business routes; V1 remains writer of existing V1 databases |
+| M1 Commercial spine | customers/contacts, catalog/PBV2 adapter, pricing, direct order, quote lifecycle/conversion | semantic parity, PG rollback/concurrency, normal isolated-V2-DEV writes; V1 remains writer of existing V1 databases |
 | M2 Artwork to production | artwork/proof, prepress, production outcomes/readiness | lineage/proof/quantity contracts and storage/outbox rehearsal; V1 writer |
 | M3 Fulfillment and finance | pickup/shipping, billing, payment/refund/provider recovery | availability/invoice/provider contracts; V1 writer |
 | M4 Interface convergence | staff UI adapters, Portal, AI, Inbound final submission, Service API DTOs | all supported callers use one operation; V1 writer |
@@ -109,21 +109,22 @@ Testing pyramid: pure policy/pricing/money tests; application contracts; Postgre
 
 Minimum operational signals: operation/business request IDs; principal kind/subject/verified Staff actor; org/resource IDs; reconciliation attempts/errors; provider event identity; worker lease/dead-letter state; physical-schema result; and parity drift. Dashboard pending/failed proof delivery, fulfillment-to-billing reconciliation, provider receipts, QB work, parity mismatches, request conflicts, and worker ownership.
 
-## V1/V2 coexistence, V1 policy, and tenant timing
+## V1/V2 coexistence, V2 DEV, and tenant timing
 
 ```mermaid
 flowchart LR
-  U[Users] --> V1[V1 routes/workers: sole writer]
-  V1 --> DB[(Shared compatible DB)]
-  V2[V2 shadow readers] --> DB
-  V2 --> P[Parity observations only]
+  U[Users] --> V1[V1 DEV/PROD routes/workers: sole writer]
+  V1 --> DB[(V1 DEV/PROD compatible DB)]
+  V2[V2 DEV real writers] --> V2DB[(Isolated V2 DEV compatible DB)]
+  V1 --> P[Parity observations]
+  V2 --> P
   G{Domain gate passed?}
   V2 --> G
   G -- No --> V1
   G -- Yes --> V2W[V2 sole writer + V2 workers]
 ```
 
-There is one authoritative writer per domain. Avoid dual writes. If a temporary comparison copy is unavoidable, it must be durable, idempotent, reconciled, time-limited, and explicitly retired. Continue V1 work only for urgent security/integrity/customer-blocking fixes; for any material business change, write a requirement note, update a V1 behavior test/parity contract, and update the V2 backlog. Prefer large new platform work in V2; defer nonessential expansion. Cut over before a second tenant, storefront launch, broad AI mutation, or carrier automation increases the migration surface.
+There is one authoritative writer per domain **within each business database**. V1 remains the writer of existing V1 DEV/production data until production cutover; V2 DEV writes normal test/development data only to its isolated database and its transactions are never merged into production. Avoid dual writes to the same database. Compatibility reads are local to the V2-compatible schema, never remote calls to V1 writers. Continue V1 work only for urgent security/integrity/customer-blocking fixes; for any material business change, write a requirement note, update a V1 behavior test/parity contract, and update the V2 backlog. Prefer large new platform work in V2; defer nonessential expansion. Cut over before a second tenant, storefront launch, broad AI mutation, or carrier automation increases the migration surface.
 
 ## Risks and decision gates
 

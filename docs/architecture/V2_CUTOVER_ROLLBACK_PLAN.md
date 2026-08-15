@@ -8,8 +8,8 @@ Use the current PostgreSQL database with additive backward-compatible V2 migrati
 
 ## Transition rules
 
-1. V1 remains the sole writer until a domain gate passes.
-2. A cut-over domain has exactly one writer: V2. Disable corresponding V1 routes and workers before V2 writes.
+1. V1 remains the sole writer of the existing V1 DEV and production business databases until a production domain gate passes. V2 writes normally to its dedicated isolated V2 DEV database and authorized disposable clones.
+2. In a shared production database, a cut-over domain has exactly one writer: V2. Disable corresponding V1 routes and workers before V2 production writes. V2 DEV transactions are never merged into production.
 3. Never independently dual-write shared business objects. Provider ingress is recorded once and reconciled by the active owner.
 4. Shadow mode is read-only: pricing, permission decisions, quote eligibility/snapshots, fulfillment availability, exposure, and reconciliation projections.
 5. Use disposable clones for write parity, with explicit operator-approved target/write opt-in/no fallback. A neutral clone database name is acceptable when provenance is explicitly verified.

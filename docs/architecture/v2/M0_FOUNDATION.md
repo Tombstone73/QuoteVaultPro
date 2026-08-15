@@ -2,7 +2,7 @@
 
 ## Scope
 
-M0 creates the production V2 architectural floor only. It contains no commercial workflow and exposes no business-data mutation route. V1 remains the only writer for customers, catalog/PBV2, quotes, orders, artwork, production, fulfillment, invoices, and payments.
+M0 creates the production V2 architectural floor only. It contains no commercial workflow and exposes no business-data mutation route. V1 remains the only writer for customers, catalog/PBV2, quotes, orders, artwork, production, fulfillment, invoices, and payments in the existing V1 DEV and production business databases. Once later V2 modules exist, they are normal writers in their dedicated isolated V2 DEV database; this does not change M0's current no-business-route scope.
 
 Production V2 lives in the top-level `v2/` application so it can be independently built and deployed as a separate Railway service. It must not import `server/index.ts`, V1 route handlers, V1 business services, V1 workers, or `v2-poc/`. Selected V1 reuse is future-only and explicit: the PBV2 pure evaluator, stable value types, and reviewed infrastructure adapters—not a broad `server/**` allowance.
 

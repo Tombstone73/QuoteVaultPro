@@ -15,14 +15,22 @@ Build M1 as a staged **commercial spine**, not a single Create Order feature and
       -> Quote conversion
       -> shared Sales UI, shadow/parity, and a separate cutover decision
 
-**M1 clone/isolated-DEV implementation writing is not ready to begin now.** Two M0 closure gates remain open, and the remaining entry checklist in section 13 is intentionally NO until they and the listed contract decisions pass. It never authorizes shared-DB DEV or production writing, or the M6 Sales/Billing domain cutover.
+**M1 isolated-V2-DEV implementation writing is not ready to begin now.** Two M0 physical-migration closure gates remain open, and the remaining entry checklist in section 13 is intentionally NO until they and the listed contract decisions pass. Once they pass, V2 operations are normal production-designed writers against the dedicated isolated V2 DEV database and authorized disposable clones/tests. This never authorizes V2 writes to the existing V1 DEV or production business databases, or an M6 production cutover.
+
+**Do not add temporary reconstruction-only domain write blockers to V2.** Environment/database isolation provides reconstruction safety. Normal authorization, tenant scope, lifecycle validation, idempotency, and business invariants remain mandatory; a genuine capability such as `invoice.editIssued` is legitimate. A flag such as `V2_WRITE_ENABLED=false` merely because reconstruction is incomplete is not target architecture.
 
 ## 1. Open M0 preconditions
 
 1. `npm run db:migrations:v2:preflight` currently passes journal monotonicity but fails the protected migration-history integrity check. `server/db/migrations_v2/meta/_history-integrity.json` protects history through 0178 while the journal contains 0179 and M0 0180; the protected digest itself mismatches. It needs forensic reconciliation and an approved append/refresh policy, not a blind manifest refresh.
 2. M0 clone safety and catalog checks exist (`v2/infrastructure/persistence/cloneSafety.ts` and `physicalPostconditions.ts`), but no authorized fresh DEV-shaped clone has yet applied the immutable stream and proved real catalog postconditions. Unit/mock coverage is not clone evidence.
 
-Before commercial persistence or any M1 writer: resolve the integrity discrepancy; use an explicitly authorized disposable `TEST_DATABASE_URL` with `V2_M0_POSTGRES_INTEGRATION=1` and no other DB URL; apply the immutable migration stream; prove M0 physical catalog findings; then run transaction/idempotency/outbox failure tests. Inventory and suppress/sandbox every legacy worker, scheduled job, webhook, outbox consumer, provider credential, and external transport reachable from legacy commercial tables; clone evidence must assert that no external transport occurred.
+Before commercial persistence or any M1 writer: resolve the integrity discrepancy; use an explicitly authorized disposable `TEST_DATABASE_URL` with `V2_M0_POSTGRES_INTEGRATION=1` and no other DB URL; apply the immutable migration stream; prove M0 physical catalog findings; then run transaction/idempotency/outbox failure tests. These gates establish migration readiness; they do not justify structurally read-only domain modules. Provisioned V2 DEV must use an explicit V2 database configuration that fails closed rather than falling back to V1 DEV, V1 PROD, Railway V1, or an unknown shared URL. Inventory and sandbox/stub every provider credential and external transport; V2 DEV database writes are normal, but unsafe real-world effects are not.
+
+### Environment isolation contract
+
+Long-lived V2 DEV uses the existing `V2_DATABASE_URL` runtime contract only; it must fail startup/migration when legacy database variables are present or its provenance is not explicitly verified. It uses distinct credentials/role and network access from V1 DEV/PROD and carries a checked database/environment marker before writes or migrations. Disposable clones remain one-purpose and short-lived: `TEST_DATABASE_URL` plus `V2_M0_POSTGRES_INTEGRATION=1`, no other URL, destructive rehearsal only. A neutral clone name is allowed only with operator-verified provenance. Every new migration is rehearsed on a disposable clone before applying to V2 DEV.
+
+Compatibility repositories read the cloned compatible schema inside V2 DEV; they never call V1 HTTP routes, V1 services, V1 repositories, or remote V1 writers. V2 DEV may enqueue durable work, but workers use sandbox/stub/dev credentials, isolated queues/buckets/webhooks, and denied/absent production-provider egress. No V2 DEV data, replication, or transactional merge is ever a production cutover path.
 
 ## 2. Early dependency graph
 
@@ -62,7 +70,7 @@ Pricing work is the first implementation slice **inside M1** after M0 closure. D
 
 ### Permissions
 
-Use a constrained temporary compatibility adapter: server-side V1 organization membership maps to explicitly approved per-operation typed V2 Staff capabilities for contract work, clone writers, and limited Staff-only development. It resolves at request time, is feature-flagged/expiry-bound, has a named removal milestone and negative-scope/retirement tests, and is never accepted by shared-DB/cutover endpoints. It never accepts `users.isAdmin`, global role/platform flags, or UI claims as tenant authority. Normalized permission sets, assignment/effective-resolution revisions, and transactional lockout protection must exist before broad V2 writer/cutover. Portal, Service, and broad delegated-AI mutation wait for their explicit scope models.
+Use a constrained temporary compatibility adapter: server-side V1 organization membership maps to explicitly approved per-operation typed V2 Staff capabilities for early V2 DEV/test flows. It resolves at request time, is feature-flagged/expiry-bound, has a named removal milestone and negative-scope/retirement tests, and never accepts `users.isAdmin`, global role/platform flags, or UI claims as tenant authority. It does not block normal V2 DEV writing; normalized permission sets, assignment/effective-resolution revisions, and transactional lockout protection remain required before broader interface exposure and production cutover. Portal, Service, and broad delegated-AI mutation wait for their explicit scope models.
 
 ### Product and CRM
 
@@ -84,7 +92,7 @@ M1 must not postpone routable identity until Production. Before a routable V2 Or
 
 ## 7. UI and deployment sequence
 
-Do not deploy a cosmetic shell. The first useful `v2-dev.printershero.com` / `api-v2-dev.printershero.com` deployment follows stable Sales read DTOs, Pricing preview parity, and one thin Quote or Order vertical slice. In shared DEV it is side-by-side, read-only/shadow and clearly labeled; it cannot dual-write. Clone or explicitly isolated V2 DEV may exercise the writer. Shared V2 writes wait for a Sales/Billing single-writer cutover.
+Do not deploy a cosmetic shell. The first useful `v2-dev.printershero.com` / `api-v2-dev.printershero.com` deployment follows stable Sales read DTOs, Pricing preview parity, and one thin Quote or Order vertical slice. It operates against the dedicated isolated V2 DEV database and uses real V2 operations for normal test/development writes. Side-by-side validation compares V1 DEV and V2 DEV without shared transactional state; parity is a validation technique, not a V2 read-only mode. V2 DEV data is non-production and is never merged into production.
 
 Reuse the current React toolchain, app shell, selected layout/components, and semantic UI System tokens, but create a dedicated V2 route tree and V2 API/DTO client. Do not inject V2 mutations into the monolithic V1 `App.tsx` route tree or copy direct `/api/quotes/*` and `/api/orders` forms.
 
@@ -100,11 +108,11 @@ Likely additive persistence--only after M0 closure and detailed design--is: comm
 
 ## 9. Cutover model
 
-1. V2 scoped compatibility reads.
-2. Read-only Pricing/eligibility shadow comparisons and drift classification.
-3. Disposable-clone writer with distinct credentials, no external side effects, and rollback/failure/concurrency proof.
-4. Explicit isolated V2 DEV writer, with distinct configuration/credentials and no shared-DB fallback, for a gated V2 workflow only.
-5. M6 Sales/Billing cutover only: create a signed inventory of every V1 Sales/Invoice mutation route, Portal/Inbound/AI/admin/batch path, worker, webhook, and consumer; positively prove each legacy mutation path is denied/disabled before enabling V2 as sole writer.
+1. V2 scoped compatibility reads within the isolated V2 DEV database.
+2. Pricing/eligibility shadow comparisons and drift classification alongside normal isolated-V2-DEV writes.
+3. Disposable-clone migration/failure/concurrency rehearsal with distinct credentials and sandboxed external effects.
+4. Dedicated V2 DEV application writes normally to its isolated V2 DEV database; no application-level temporary write blocker or shared-DB fallback exists.
+5. M6 production cutover only: create a signed inventory of every V1 Sales/Invoice mutation route, Portal/Inbound/AI/admin/batch path, worker, webhook, and consumer; positively prove each conflicting V1 production mutation path is denied/disabled before enabling V2 against production PostgreSQL. Production initializes from approved current PROD schema/data plus additive migrations; rollback reconciles V2 PROD operations/outbox before restoring V1. V2 DEV data is irrelevant.
 6. Retain V1 historical reads as compatibility projections and reconcile M0 operation/outbox records.
 
 There is never uncontrolled dual writing of Orders, Draft Invoices, checkpoints, or route identity.
@@ -120,9 +128,9 @@ There is never uncontrolled dual writing of Orders, Draft Invoices, checkpoints,
 | 4 | Temporary Staff authority compatibility | Issuer mapping, capability/negative scope/retirement tests | No global admin fallback/Portal/Service | No; clone tests; no UI; high |
 | 5 | Permission-set foundation | Sets, assignments, revisions, effective authority, lockout contract | No switchboard/Portal self-admin | Likely additive; clone required; no UI; high |
 | 6 | Commercial persistence design | Checkpoint/linkage repositories and migration/postcondition design | No broad normalization/writer | Likely additive; clone required; no UI; high |
-| 7 | Quote vertical slice | Create/edit Quote, price decision/evidence, send checkpoint, audit/idempotency | Clone-only writer; no Order conversion UI | Possible prior migration; clone required; no UI; high |
+| 7 | Quote vertical slice | Create/edit Quote, price decision/evidence, send checkpoint, audit/idempotency | Real V2 writer in isolated V2 DEV/test; no Order conversion UI | Possible prior migration; clone rehearsal required; no UI; high |
 | 8 | Minimal Routing identity | Templates/revisions, Product Type validation, work item/instance creation port | No transition/reroute/operations UI | Likely additive; clone required; no UI; high |
-| 9 | Order + Draft Invoice | Atomic direct Order, Draft Invoice creation/sync, route instantiation, audit/outbox | No payment/refund/provider execution; clone-only writer | Possible prior migration; clone required; no UI; high |
+| 9 | Order + Draft Invoice | Atomic direct Order, Draft Invoice creation/sync, route instantiation, audit/outbox | No payment/refund/provider execution; real V2 writer in isolated V2 DEV/test | Possible prior migration; clone rehearsal required; no UI; high |
 | 10 | Quote conversion | Preserve Quote/checkpoint, no reprice, create Order/Draft/Route atomically | No alternatives UX; concurrency/idempotency proof | No new unless proven; clone required; no UI; high |
 | 11 | Shared Sales workspace and evidence | V2 DTOs/route tree/workspace, side-by-side read/shadow, clone E2E | No shared-DEV writer before cutover | No; clone E2E; useful separate DEV read UI; medium |
 
@@ -160,8 +168,9 @@ Clone/isolated-DEV M1 implementation writing is **YES** only when every item is 
 - [ ] Minimal Routing work-item/template/instance decision is approved.
 - [ ] M1 additive migration list and physical postconditions are approved.
 - [ ] Clone concurrency/failure/idempotency/tenant test plan is ready.
-- [ ] Legacy workers/webhooks/consumers/provider side effects are inventoried and suppressed in the writer environment.
-- [ ] V1/V2 single-writer cutover inventory and no-dual-write control are approved for the later M6 gate.
+- [ ] Dedicated V2 DEV database identity/configuration is explicit, fail-closed, isolated from V1 DEV/PROD, resettable/reclonable, and ready for additive V2 migrations.
+- [ ] V2 DEV provider integrations are sandboxed/stubbed/dev-configured; database writes cannot cause uncontrolled external effects.
+- [ ] V1/V2 production single-writer cutover inventory and no-dual-write control are approved for the later M6 gate.
 
 Until then the answer is **NO**. Contract/read-only work may proceed only within the earlier prompt boundaries.
 
