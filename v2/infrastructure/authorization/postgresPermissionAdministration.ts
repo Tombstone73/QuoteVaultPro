@@ -4,6 +4,8 @@ import type { StaffPrincipal } from "../../src/authorization/principals.js";
 import type { TransactionalClient } from "../persistence/types.js";
 
 type AuditTarget = Readonly<{ permissionSetId?: string; userId?: string; portalAccessId?: string; customerId?: string }>;
+/** Test-only integration seam; production composition never supplies it. */
+export type PermissionAdministrationTestHook = Readonly<{ afterMutation?: (eventType: string) => Promise<void> | void }>;
 const normalized = (name: string) => name.trim().toLocaleLowerCase();
 
 /**
@@ -12,7 +14,7 @@ const normalized = (name: string) => name.trim().toLocaleLowerCase();
  * change, writes one semantic audit event, and bumps the authority revision.
  */
 export class PostgresPermissionAdministration {
-  constructor(private readonly client: TransactionalClient) {}
+  constructor(private readonly client: TransactionalClient, private readonly testHook?: PermissionAdministrationTestHook) {}
   private require(actor: StaffPrincipal, capability: Capability): void {
     if (actor.authority.source !== "permission_set") throw new V2ApplicationError("FORBIDDEN", "Temporary authority cannot administer final permission sets.");
     if (!actor.authority.capabilities.includes(capability)) throw new V2ApplicationError("FORBIDDEN", `Missing ${capability}.`);
@@ -59,7 +61,7 @@ export class PostgresPermissionAdministration {
   private async mutate(actor: StaffPrincipal, organizationId: string, required: Capability, eventType: string, target: AuditTarget, detail: Record<string, unknown>, action: () => Promise<void>, needsFloor = true): Promise<void> {
     if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Permission administration is organization scoped.");
     this.require(actor, required); await this.client.query("BEGIN");
-    try { const currentRevision=await this.lock(organizationId); if (actor.authority.authorityRevision !== currentRevision) throw new V2ApplicationError("STALE_STATE","Permission authority must be re-issued before administration."); await action(); if (needsFloor) await this.floor(organizationId); await this.audit(actor,organizationId,eventType,target,detail); await this.client.query("COMMIT"); }
+    try { const currentRevision=await this.lock(organizationId); if (actor.authority.authorityRevision !== currentRevision) throw new V2ApplicationError("STALE_STATE","Permission authority must be re-issued before administration."); await action(); await this.testHook?.afterMutation?.(eventType); if (needsFloor) await this.floor(organizationId); await this.audit(actor,organizationId,eventType,target,detail); await this.client.query("COMMIT"); }
     catch (error) { try { await this.client.query("ROLLBACK"); } catch { /* preserve the original error */ } throw error; }
   }
   async createSet(actor: StaffPrincipal, input: { organizationId: string; name: string; description?: string; principalKind?: "staff" | "portal"; capabilities: readonly string[] }): Promise<string> {
