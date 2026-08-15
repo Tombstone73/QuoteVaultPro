@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import type { QuoteFormReadPort } from "../../src/interfaces/http/quoteRoutes.js";
+import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../shared/optionTreeV2Runtime.js";
+import type { OptionTreeV2 } from "../../../shared/optionTreeV2.js";
 
 /** Read-only, tenant-scoped selection projection for the Quote UI. */
 export class PostgresQuoteFormReads implements QuoteFormReadPort {
@@ -35,5 +37,23 @@ export class PostgresQuoteFormReads implements QuoteFormReadPort {
       [organizationId, `%${query.trim()}%`],
     );
     return result.rows.map((row) => ({ productId: row.id, displayName: row.name, measurementMode: row.measurement_mode, requiresDimensions: row.measurement_mode === "dimensions_required" }));
+  }
+  async configuration(organizationId: string, productId: string, selections: Record<string, unknown> = {}) {
+    const result = await this.pool.query<{ name: string; measurement_mode: "dimensions_required" | "quantity_only"; tree_json: unknown }>(
+      `SELECT p.name,p.measurement_mode,t.tree_json FROM products p JOIN pbv2_tree_versions t ON t.id=p.pbv2_active_tree_version_id AND t.organization_id=p.organization_id AND t.product_id=p.id AND t.status='ACTIVE' WHERE p.organization_id=$1 AND p.id=$2 AND p.is_active=TRUE`, [organizationId, productId]);
+    const row = result.rows[0];
+    if (!row || !validateOptionTreeV2(row.tree_json as OptionTreeV2).ok) return null;
+    const tree = row.tree_json as OptionTreeV2;
+    const visibility = resolveRuntimeVisibility(tree, selections as never);
+    return {
+      productId, displayName: row.name, measurementMode: row.measurement_mode,
+      requiresDimensions: row.measurement_mode === "dimensions_required", supportedDimensionUnits: ["in"],
+      effectiveSelections: visibility.effectiveSelections,
+      fields: visibility.visibleNodeIds.flatMap((id) => {
+        const node = tree.nodes[id];
+        if (!node || node.kind === "group" || !node.input) return [];
+        return [{ selectionKey: node.input.selectionKey, label: node.label, inputType: node.input.type, required: Boolean(node.input.required), defaultValue: node.input.defaultValue, choices: (node.choices ?? []).map((choice) => ({ value: choice.value, label: choice.label })) }];
+      }),
+    };
   }
 }

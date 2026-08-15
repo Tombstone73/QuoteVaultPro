@@ -22,6 +22,7 @@ export interface QuoteFormReadPort {
   customers(organizationId: string, query?: string): Promise<readonly Readonly<{ customerId: string; displayName: string }>[]>;
   contacts(organizationId: string, customerId: string): Promise<readonly Readonly<{ contactId: string; displayName: string }>[]>;
   products(organizationId: string, query?: string): Promise<readonly Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean }>[]>;
+  configuration(organizationId: string, productId: string, selections?: Record<string, unknown>): Promise<unknown | null>;
 }
 export type QuoteHttpDependencies = Readonly<{
   service: QuoteApplicationService;
@@ -179,6 +180,11 @@ export const createQuoteRouter = (
   router.get("/form/customers", (request, response) => readForm(request, response, () => dependencies.formReads.customers(String((request.params as Record<string, string>).organizationId), String(request.query.q ?? ""))));
   router.get("/form/customers/:customerId/contacts", (request, response) => readForm(request, response, () => dependencies.formReads.contacts(String((request.params as Record<string, string>).organizationId), request.params.customerId)));
   router.get("/form/products", (request, response) => readForm(request, response, () => dependencies.formReads.products(String((request.params as Record<string, string>).organizationId), String(request.query.q ?? ""))));
+  router.get("/form/products/:productId/configuration", (request, response) => readForm(request, response, async () => {
+    const value = await dependencies.formReads.configuration(String((request.params as Record<string, string>).organizationId), request.params.productId);
+    if (!value) throw new V2ApplicationError("NOT_FOUND", "Product configuration is unavailable.");
+    return value;
+  }));
   router.post("/", async (request, response) => {
     try {
       await send(
