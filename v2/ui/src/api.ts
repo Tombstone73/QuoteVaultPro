@@ -1,23 +1,37 @@
 export type ApiError = Readonly<{ code: string; message: string }>;
 export type QuoteLine = Readonly<{
   lineId: string;
+  position: number;
+  productId: string;
   description: string;
   quantity: number;
+  resolvedConfiguration: Readonly<Record<string, unknown>>;
+  calculatedUnitAmount: { cents: number; currency: string };
   calculatedLineAmount: { cents: number; currency: string };
+  sellingUnitAmount: { cents: number; currency: string };
   sellingLineAmount: { cents: number; currency: string };
-  sellingPriceDecision: { kind: string };
+  sellingPriceDecision: { kind: string; reason?: string };
 }>;
 export type QuoteRead = Readonly<{
   quote: {
     quoteId: string;
+    customerContact: { organizationId: string; customerId: string; contactId?: string };
     purchaseOrderNumber?: string;
     requestedDueDate?: string;
+    terms: { commercialNotes?: string };
+    currency: string;
     deliveryState: "not_sent" | "sent";
     acceptanceState: "not_accepted" | "accepted";
     lines: QuoteLine[];
   };
   number: { display: string; core: string };
   revision: string;
+  checkpoints: readonly { checkpointId: string; kind: string; occurredAt: string }[];
+  totals: {
+    currency: string;
+    calculatedLineAmount: { cents: number; currency: string };
+    sellingLineAmount: { cents: number; currency: string };
+  };
 }>;
 export type QuoteResult = Readonly<{ quote: QuoteRead; checkpointId?: string }>;
 export type UiBootstrap = Readonly<{

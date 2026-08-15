@@ -217,6 +217,15 @@ const QuoteWorkspace = ({
   const [product, setProduct] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [po, setPo] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [notes, setNotes] = useState("");
+  const [headerCustomer, setHeaderCustomer] = useState("");
+  const [headerContact, setHeaderContact] = useState("");
+  const [newProduct, setNewProduct] = useState("");
+  const [newQuantity, setNewQuantity] = useState("1");
+  const [newWidth, setNewWidth] = useState("");
+  const [newHeight, setNewHeight] = useState("");
+  const [newSelections, setNewSelections] = useState("{}");
   const requestIds = useRef<Record<string, { id: string; payload: string }>>({});
   const requestId = (operation: string, payload: unknown) => {
     const serialized = JSON.stringify(payload);
@@ -233,6 +242,10 @@ const QuoteWorkspace = ({
   };
   useEffect(() => {
     setPo(quote?.quote.purchaseOrderNumber ?? "");
+    setDueDate(quote?.quote.requestedDueDate ?? "");
+    setNotes(quote?.quote.terms.commercialNotes ?? "");
+    setHeaderCustomer(quote?.quote.customerContact.customerId ?? "");
+    setHeaderContact(quote?.quote.customerContact.contactId ?? "");
   }, [quote?.quote.quoteId]);
   const create = useMutation({
     mutationFn: () =>
@@ -258,14 +271,38 @@ const QuoteWorkspace = ({
         quoteId: quote!.quote.quoteId,
         revision: quote!.revision,
         po,
+        dueDate,
+        notes,
+        headerCustomer,
+        headerContact,
       }), {
         expectedRevision: quote!.revision,
-        patch: { purchaseOrderNumber: po.trim() || null },
+        patch: {
+          customerContact: {
+            organizationId: org,
+            customerId: headerCustomer,
+            ...(headerContact ? { contactId: headerContact } : {}),
+          },
+          purchaseOrderNumber: po.trim() || null,
+          requestedDueDate: dueDate || null,
+          terms: { commercialNotes: notes },
+        },
       }),
     onSuccess: (r) => {
       completeRequest("save");
       setNotice("Quote saved.");
       applyQuoteResult(r, org);
+    },
+  });
+  const lineChange = useMutation({
+    mutationFn: (lineChanges: unknown[]) =>
+      quoteApi.patch(org, quote!.quote.quoteId, requestId("line-change", {
+        org, quoteId: quote!.quote.quoteId, revision: quote!.revision, lineChanges,
+      }), { expectedRevision: quote!.revision, lineChanges }),
+    onSuccess: (r) => {
+      completeRequest("line-change");
+      applyQuoteResult(r, org);
+      setNotice("Quote line repriced by the server.");
     },
   });
   const action = useMutation({
@@ -289,7 +326,7 @@ const QuoteWorkspace = ({
       applyQuoteResult(r, org);
     },
   });
-  const err = error || create.error || save.error || action.error;
+  const err = error || create.error || save.error || action.error || lineChange.error;
   return (
     <section className="lab">
       <div className="card grid">
@@ -369,8 +406,24 @@ const QuoteWorkspace = ({
               />
             </label>
             <label className="field">
+              Customer ID
+              <input value={headerCustomer} onChange={(e) => setHeaderCustomer(e.target.value)} />
+            </label>
+            <label className="field">
+              Contact ID
+              <input value={headerContact} onChange={(e) => setHeaderContact(e.target.value)} />
+            </label>
+            <label className="field">
               PO
               <input value={po} onChange={(e) => setPo(e.target.value)} />
+            </label>
+            <label className="field">
+              Requested due date
+              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            </label>
+            <label className="field">
+              Commercial notes
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} />
             </label>
           </div>
           <div className="actions">
@@ -445,8 +498,9 @@ const QuoteWorkspace = ({
                   <tr>
                     <th>Line</th>
                     <th>Qty</th>
-                    <th>Calculated</th>
-                    <th>Selling</th>
+                    <th>Calculated unit / total</th>
+                    <th>Selling unit / total</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -462,13 +516,30 @@ const QuoteWorkspace = ({
                         )}
                       </td>
                       <td>{line.quantity}</td>
-                      <td>{money(line.calculatedLineAmount)}</td>
-                      <td className="price">{money(line.sellingLineAmount)}</td>
+                      <td>{money(line.calculatedUnitAmount)} / {money(line.calculatedLineAmount)}</td>
+                      <td className="price">{money(line.sellingUnitAmount)} / {money(line.sellingLineAmount)}</td>
+                      <td>
+                        <button className="button secondary" disabled={lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "update", lineId: line.lineId, line: { productId: line.productId, description: line.description, quantity: line.quantity + 1 } }])}>+ quantity</button>
+                        <button className="button danger" disabled={lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "remove", lineId: line.lineId }])}>Remove</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
+            <div className="grid">
+              <label className="field">Add Product ID<input value={newProduct} onChange={(e) => setNewProduct(e.target.value)} /></label>
+              <label className="field">Quantity<input type="number" min="1" value={newQuantity} onChange={(e) => setNewQuantity(e.target.value)} /></label>
+              <label className="field">Width (in)<input value={newWidth} onChange={(e) => setNewWidth(e.target.value)} /></label>
+              <label className="field">Height (in)<input value={newHeight} onChange={(e) => setNewHeight(e.target.value)} /></label>
+              <label className="field">Selections JSON<input value={newSelections} onChange={(e) => setNewSelections(e.target.value)} /></label>
+            </div>
+            <button className="button" disabled={!newProduct || lineChange.isPending || !csrfReady} onClick={() => {
+              let selections: unknown = undefined;
+              try { selections = JSON.parse(newSelections); } catch { setNotice("Selections must be valid JSON."); return; }
+              lineChange.mutate([{ kind: "add", line: { productId: newProduct, quantity: Number(newQuantity), ...(newWidth && newHeight ? { dimensions: { width: newWidth, height: newHeight, unit: "in" } } : {}), ...(selections && typeof selections === "object" ? { selections } : {}) } }]);
+            }}>Add line and price</button>
+            <div className="totals">Calculated total: {money(quote.totals.calculatedLineAmount)} · Selling total: {money(quote.totals.sellingLineAmount)}</div>
           </div>
         </div>
       )}
