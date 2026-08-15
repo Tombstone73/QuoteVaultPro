@@ -7,7 +7,9 @@ import {
   type ApiError,
   type QuoteRead,
   type QuoteResult,
+  type ProductConfiguration,
 } from "./api";
+import { useQuoteFormConfiguration, useQuoteFormContacts, useQuoteFormCustomers, useQuoteFormProducts } from "./quoteFormQueries";
 import type { AppearancePreference, ThemeId } from "./theme";
 
 const errorText = (error: unknown) => {
@@ -226,6 +228,12 @@ const QuoteWorkspace = ({
   const [newWidth, setNewWidth] = useState("");
   const [newHeight, setNewHeight] = useState("");
   const [newSelections, setNewSelections] = useState("{}");
+  const [resolvedForm, setResolvedForm] = useState<ProductConfiguration>();
+  const customers = useQuoteFormCustomers(org);
+  const contacts = useQuoteFormContacts(org, quote ? headerCustomer : customer);
+  const products = useQuoteFormProducts(org);
+  const selectedProduct = quote ? newProduct : product;
+  const configuration = useQuoteFormConfiguration(org, selectedProduct);
   const requestIds = useRef<Record<string, { id: string; payload: string }>>({});
   const requestId = (operation: string, payload: unknown) => {
     const serialized = JSON.stringify(payload);
@@ -247,6 +255,10 @@ const QuoteWorkspace = ({
     setHeaderCustomer(quote?.quote.customerContact.customerId ?? "");
     setHeaderContact(quote?.quote.customerContact.contactId ?? "");
   }, [quote?.quote.quoteId]);
+  useEffect(() => {
+    if (configuration.data) { setNewSelections(JSON.stringify(configuration.data.effectiveSelections)); setResolvedForm(configuration.data); }
+  }, [configuration.data?.productId]);
+  const resolveConfiguration = useMutation({ mutationFn: (selections: Record<string, unknown>) => quoteApi.resolveConfiguration(org, selectedProduct, selections), onSuccess: (value) => { setResolvedForm(value); setNewSelections(JSON.stringify(value.effectiveSelections)); } });
   const create = useMutation({
     mutationFn: () =>
       quoteApi.create(org, requestId("create", { org, customer, contact, product, quantity, po }), {
@@ -376,25 +388,26 @@ const QuoteWorkspace = ({
           </p>
           <div className="grid">
             <label className="field">
-              Customer ID
-              <input
+              Customer
+              <select
                 value={customer}
-                onChange={(e) => setCustomer(e.target.value)}
-              />
+                onChange={(e) => { setCustomer(e.target.value); setContact(""); }}
+              ><option value="">Select customer</option>{customers.data?.map((item) => <option key={item.customerId} value={item.customerId}>{item.displayName}</option>)}</select>
             </label>
             <label className="field">
-              Contact ID
-              <input
+              Contact
+              <select
                 value={contact}
                 onChange={(e) => setContact(e.target.value)}
-              />
+                disabled={!customer}
+              ><option value="">Select contact</option>{contacts.data?.map((item) => <option key={item.contactId} value={item.contactId}>{item.displayName}</option>)}</select>
             </label>
             <label className="field">
-              Product ID
-              <input
+              Product
+              <select
                 value={product}
                 onChange={(e) => setProduct(e.target.value)}
-              />
+              ><option value="">Select product</option>{products.data?.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select>
             </label>
             <label className="field">
               Quantity
@@ -406,12 +419,12 @@ const QuoteWorkspace = ({
               />
             </label>
             <label className="field">
-              Customer ID
-              <input value={headerCustomer} onChange={(e) => setHeaderCustomer(e.target.value)} />
+              Customer
+              <select value={headerCustomer} onChange={(e) => { setHeaderCustomer(e.target.value); setHeaderContact(""); }}><option value="">Select customer</option>{customers.data?.map((item) => <option key={item.customerId} value={item.customerId}>{item.displayName}</option>)}</select>
             </label>
             <label className="field">
-              Contact ID
-              <input value={headerContact} onChange={(e) => setHeaderContact(e.target.value)} />
+              Contact
+              <select value={headerContact} disabled={!headerCustomer} onChange={(e) => setHeaderContact(e.target.value)}><option value="">Select contact</option>{contacts.data?.map((item) => <option key={item.contactId} value={item.contactId}>{item.displayName}</option>)}</select>
             </label>
             <label className="field">
               PO
@@ -528,11 +541,10 @@ const QuoteWorkspace = ({
               </table>
             )}
             <div className="grid">
-              <label className="field">Add Product ID<input value={newProduct} onChange={(e) => setNewProduct(e.target.value)} /></label>
+              <label className="field">Add Product<select value={newProduct} onChange={(e) => { setNewProduct(e.target.value); setNewWidth(""); setNewHeight(""); }}><option value="">Select product</option>{products.data?.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select></label>
               <label className="field">Quantity<input type="number" min="1" value={newQuantity} onChange={(e) => setNewQuantity(e.target.value)} /></label>
-              <label className="field">Width (in)<input value={newWidth} onChange={(e) => setNewWidth(e.target.value)} /></label>
-              <label className="field">Height (in)<input value={newHeight} onChange={(e) => setNewHeight(e.target.value)} /></label>
-              <label className="field">Selections JSON<input value={newSelections} onChange={(e) => setNewSelections(e.target.value)} /></label>
+              {resolvedForm?.requiresDimensions && <><label className="field">Width ({resolvedForm.supportedDimensionUnits[0]})<input value={newWidth} onChange={(e) => setNewWidth(e.target.value)} /></label><label className="field">Height ({resolvedForm.supportedDimensionUnits[0]})<input value={newHeight} onChange={(e) => setNewHeight(e.target.value)} /></label></>}
+              {resolvedForm?.fields.map((field) => <label className="field" key={field.selectionKey}>{field.label}<select value={(JSON.parse(newSelections || "{}")[field.selectionKey] ?? "") as string} onChange={(e) => { const next = JSON.parse(newSelections || "{}"); next[field.selectionKey] = e.target.value; setNewSelections(JSON.stringify(next)); resolveConfiguration.mutate(next); }}><option value="">{field.required ? "Select required option" : "No selection"}</option>{field.choices.map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}</select></label>)}
             </div>
             <button className="button" disabled={!newProduct || lineChange.isPending || !csrfReady} onClick={() => {
               let selections: unknown = undefined;

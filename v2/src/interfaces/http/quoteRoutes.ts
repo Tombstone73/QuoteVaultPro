@@ -185,6 +185,12 @@ export const createQuoteRouter = (
     if (!value) throw new V2ApplicationError("NOT_FOUND", "Product configuration is unavailable.");
     return value;
   }));
+  router.post("/form/products/:productId/configuration/resolve", (request, response) => readForm(request, response, async () => {
+    const body = request.body as { selections?: Record<string, unknown> };
+    const value = await dependencies.formReads.configuration(String((request.params as Record<string, string>).organizationId), request.params.productId, body.selections ?? {});
+    if (!value) throw new V2ApplicationError("NOT_FOUND", "Product configuration is unavailable.");
+    return value;
+  }));
   router.post("/", async (request, response) => {
     try {
       await send(

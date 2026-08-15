@@ -39,6 +39,8 @@ export type UiBootstrap = Readonly<{
   csrfToken: string;
   capabilities: Readonly<{ quoteOverridePrice: boolean }>;
 }>;
+export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
+export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly string[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
 const csrfTokens = new Map<string, string>();
 export const newBusinessRequestId = () => crypto.randomUUID();
 const endpoint = (org: string, suffix = "") =>
@@ -65,6 +67,11 @@ export const quoteApi = {
     csrfTokens.set(organizationId, value.csrfToken);
     return value;
   },
+  customers: (organizationId: string) => request<readonly Selection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/customers`),
+  contacts: (organizationId: string, customerId: string) => request<readonly Selection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/customers/${encodeURIComponent(customerId)}/contacts`),
+  products: (organizationId: string) => request<readonly Selection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products`),
+  configuration: (organizationId: string, productId: string) => request<ProductConfiguration>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/configuration`),
+  resolveConfiguration: (organizationId: string, productId: string, selections: Record<string, unknown>) => request<ProductConfiguration>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/configuration/resolve`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" }, body: JSON.stringify({ selections }) }),
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
