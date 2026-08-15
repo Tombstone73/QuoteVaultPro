@@ -1,0 +1,665 @@
+import assert from "node:assert/strict";
+import React from "react";
+import { QueryClient } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  ProductConfigurationFields,
+  SellingPriceFields,
+} from "./QuoteLineEditor";
+import { SelectionField } from "./SelectionField";
+import {
+  quoteApi,
+  type ProductConfiguration,
+  type QuoteLine,
+  type QuoteResult,
+} from "./api";
+import {
+  applyAuthoritativeQuoteResult,
+  reconcileForbiddenQuoteMutation,
+} from "./quoteCache";
+import {
+  applyServerConfiguration,
+  assessPersistedConfiguration,
+  beginConfigurationSelectionResolution,
+  changeDraftProduct,
+  clearContactForCustomerChange,
+  configurationInputSupported,
+  draftFromQuoteLine,
+  emptyQuoteLineDraft,
+  markOverrideUnavailable,
+  quoteLineInputFromDraft,
+  sameEffectiveSelections,
+  sellingInstructionFromDraft,
+} from "./quoteFormModel";
+import {
+  quoteFormKeys,
+  quoteFormQueryOptions,
+  quoteKeys,
+} from "./quoteFormQueries";
+import { resolveTheme } from "./theme";
+
+const dimensionalConfiguration: ProductConfiguration = {
+  productId: "product-dimensional",
+  displayName: "13oz Banner",
+  measurementMode: "dimensions_required",
+  requiresDimensions: true,
+  supportedDimensionUnits: ["in"],
+  effectiveSelections: { finish: "hemmed", grommets: "corners" },
+  fields: [
+    {
+      selectionKey: "finish",
+      label: "Finish",
+      inputType: "select",
+      required: true,
+      choices: [
+        { value: "raw", label: "Raw" },
+        { value: "hemmed", label: "Hemmed" },
+      ],
+    },
+    {
+      selectionKey: "grommets",
+      label: "Grommets",
+      inputType: "select",
+      required: false,
+      choices: [
+        { value: "none", label: "None" },
+        { value: "corners", label: "Corners" },
+      ],
+    },
+  ],
+};
+
+const quantityConfiguration: ProductConfiguration = {
+  productId: "product-quantity",
+  displayName: "Service fee",
+  measurementMode: "quantity_only",
+  requiresDimensions: false,
+  supportedDimensionUnits: ["in"],
+  effectiveSelections: { color: "black" },
+  fields: [
+    {
+      selectionKey: "color",
+      label: "Color",
+      inputType: "select",
+      required: true,
+      choices: [{ value: "black", label: "Black" }],
+    },
+  ],
+};
+
+const persistedLine: QuoteLine = {
+  lineId: "line-1",
+  position: 1,
+  productId: "product-dimensional",
+  description: "Saved banner",
+  quantity: 7,
+  resolvedConfiguration: {
+    schemaVersion: 1,
+    selections: { finish: "raw", grommets: "none" },
+    dimensions: { width: "24", height: "18.5", unit: "in" },
+  },
+  calculatedUnitAmount: { cents: 500, currency: "USD" },
+  calculatedLineAmount: { cents: 3500, currency: "USD" },
+  sellingUnitAmount: { cents: 450, currency: "USD" },
+  sellingLineAmount: { cents: 3150, currency: "USD" },
+  sellingPriceDecision: {
+    kind: "total_override",
+    reason: "Approved concession",
+  },
+};
+
+const testQueryScopes = () => {
+  assert.notDeepEqual(
+    quoteFormKeys.customers("org-a"),
+    quoteFormKeys.customers("org-b"),
+  );
+  assert.notDeepEqual(
+    quoteFormKeys.products("org-a"),
+    quoteFormKeys.products("org-b"),
+  );
+  assert.notDeepEqual(
+    quoteFormKeys.contacts("org-a", "customer-a"),
+    quoteFormKeys.contacts("org-a", "customer-b"),
+  );
+  assert.notDeepEqual(
+    quoteFormKeys.configuration("org-a", "product-a"),
+    quoteFormKeys.configuration("org-a", "product-b"),
+  );
+  assert.notDeepEqual(
+    quoteKeys.quote("org-a", "quote-1"),
+    quoteKeys.quote("org-b", "quote-1"),
+  );
+  assert.equal(quoteFormQueryOptions.contacts("org-a", "").enabled, false);
+  assert.equal(quoteFormQueryOptions.configuration("", "product-a").enabled, false);
+};
+
+const testSelectorsAndContactReset = () => {
+  const customerMarkup = renderToStaticMarkup(
+    <SelectionField
+      label="Customer"
+      value="customer-a"
+      options={[{ customerId: "customer-a", displayName: "Acme" }]}
+      identity="customerId"
+      emptyLabel="Select Customer"
+      onChange={() => undefined}
+    />,
+  );
+  assert.match(customerMarkup, /aria-label="Customer"/);
+  assert.match(customerMarkup, /value="customer-a" selected=""/);
+  assert.match(customerMarkup, />Acme</);
+  const contactMarkup = renderToStaticMarkup(
+    <SelectionField
+      label="Contact"
+      value=""
+      options={[]}
+      identity="contactId"
+      emptyLabel="Select Contact"
+      disabled
+      onChange={() => undefined}
+    />,
+  );
+  assert.match(contactMarkup, /disabled=""/);
+  assert.deepEqual(clearContactForCustomerChange("customer-b"), {
+    customerId: "customer-b",
+    contactId: "",
+  });
+};
+
+const testCreateAndMeasurementPayloads = () => {
+  let dimensionalDraft = changeDraftProduct(
+    emptyQuoteLineDraft(),
+    dimensionalConfiguration.productId,
+  );
+  dimensionalDraft = applyServerConfiguration(
+    dimensionalDraft,
+    dimensionalConfiguration,
+  );
+  dimensionalDraft = {
+    ...dimensionalDraft,
+    quantity: "2",
+    dimensions: { width: "48", height: "24", unit: "in" },
+  };
+  const dimensionalInput = quoteLineInputFromDraft(
+    dimensionalDraft,
+    dimensionalConfiguration,
+  );
+  assert.deepEqual(dimensionalInput, {
+    productId: "product-dimensional",
+    quantity: 2,
+    selections: { finish: "hemmed", grommets: "corners" },
+    dimensions: { width: "48", height: "24", unit: "in" },
+    selling: { kind: "calculated" },
+  });
+
+  let quantityDraft = changeDraftProduct(
+    { ...dimensionalDraft, dimensions: { width: "99", height: "99", unit: "in" } },
+    quantityConfiguration.productId,
+  );
+  quantityDraft = applyServerConfiguration(quantityDraft, quantityConfiguration);
+  const quantityInput = quoteLineInputFromDraft(
+    { ...quantityDraft, quantity: "4" },
+    quantityConfiguration,
+  );
+  assert.equal("dimensions" in quantityInput, false);
+  assert.equal(quantityInput.quantity, 4);
+  assert.deepEqual(quantityInput.selections, { color: "black" });
+
+  const dimensionalMarkup = renderToStaticMarkup(
+    <ProductConfigurationFields
+      configuration={dimensionalConfiguration}
+      draft={dimensionalDraft}
+      onSelection={() => undefined}
+      onDimensions={() => undefined}
+    />,
+  );
+  assert.match(dimensionalMarkup, /Width \(in\)/);
+  assert.match(dimensionalMarkup, /Height \(in\)/);
+  const quantityMarkup = renderToStaticMarkup(
+    <ProductConfigurationFields
+      configuration={quantityConfiguration}
+      draft={quantityDraft}
+      onSelection={() => undefined}
+      onDimensions={() => undefined}
+    />,
+  );
+  assert.doesNotMatch(quantityMarkup, /Width \(/);
+  assert.doesNotMatch(quantityMarkup, /Height \(/);
+};
+
+const testPersistedLineAndDefinitionSafety = () => {
+  const draft = draftFromQuoteLine(persistedLine);
+  assert.equal(draft.productId, "product-dimensional");
+  assert.equal(draft.quantity, "7");
+  assert.deepEqual(draft.dimensions, {
+    width: "24",
+    height: "18.5",
+    unit: "in",
+  });
+  assert.deepEqual(draft.selections, { finish: "raw", grommets: "none" });
+  assert.deepEqual(draft.selling, {
+    mode: "total_override",
+    cents: "3150",
+    reason: "Approved concession",
+  });
+  const editablePersistedConfiguration: ProductConfiguration = {
+    ...dimensionalConfiguration,
+    effectiveSelections: { finish: "raw", grommets: "none" },
+  };
+  const updateInput = quoteLineInputFromDraft(
+    draft,
+    editablePersistedConfiguration,
+  );
+  assert.deepEqual(updateInput.selections, {
+    finish: "raw",
+    grommets: "none",
+  });
+  assert.deepEqual(updateInput.dimensions, {
+    width: "24",
+    height: "18.5",
+    unit: "in",
+  });
+  assert.deepEqual(updateInput.selling, {
+    kind: "total_override",
+    totalCents: 3150,
+    reason: "Approved concession",
+  });
+  assert.equal(
+    sameEffectiveSelections(draft.selections, {
+      finish: "raw",
+      grommets: "none",
+    }),
+    true,
+  );
+  assert.equal(
+    sameEffectiveSelections(draft.selections, {
+      finish: "raw",
+      grommets: "none",
+      newlyDefaulted: true,
+    }),
+    false,
+    "new current defaults must not silently rewrite persisted Quote truth",
+  );
+  const changedProduct = changeDraftProduct(draft, "product-new");
+  assert.deepEqual(changedProduct.selections, {});
+  assert.equal(changedProduct.dimensions.width, "");
+  assert.deepEqual(
+    changedProduct.selling,
+    draft.selling,
+    "an explicit Product replacement must not silently discard the Sales-owned selling decision",
+  );
+};
+
+const testServerResolutionRoundTrip = () => {
+  const initial = applyServerConfiguration(
+    changeDraftProduct(emptyQuoteLineDraft(), dimensionalConfiguration.productId),
+    dimensionalConfiguration,
+  );
+  const hiddenResponse: ProductConfiguration = {
+    ...dimensionalConfiguration,
+    effectiveSelections: { finish: "raw" },
+    fields: dimensionalConfiguration.fields.filter(
+      (field) => field.selectionKey === "finish",
+    ),
+  };
+  const firstRapidChange = beginConfigurationSelectionResolution(
+    initial,
+    "finish",
+    "raw",
+  );
+  const secondRapidChange = beginConfigurationSelectionResolution(
+    firstRapidChange.draft,
+    "grommets",
+    "none",
+  );
+  assert.deepEqual(secondRapidChange.requestedSelections, {
+    finish: "raw",
+    grommets: "none",
+  });
+  const hidden = applyServerConfiguration(initial, hiddenResponse);
+  assert.deepEqual(hidden.selections, { finish: "raw" });
+  assert.equal(
+    hiddenResponse.fields.some((field) => field.selectionKey === "grommets"),
+    false,
+  );
+  const visibleAgain = applyServerConfiguration(hidden, dimensionalConfiguration);
+  assert.deepEqual(visibleAgain.selections, {
+    finish: "hemmed",
+    grommets: "corners",
+  });
+
+  const persisted = draftFromQuoteLine(persistedLine);
+  const changedDefinition: ProductConfiguration = {
+    ...dimensionalConfiguration,
+    effectiveSelections: {
+      finish: "raw",
+      grommets: "none",
+      newCurrentDefault: true,
+    },
+  };
+  const assessment = assessPersistedConfiguration(
+    persisted,
+    changedDefinition,
+  );
+  assert.equal(assessment.compatible, false);
+  assert.deepEqual(assessment.draft.selections, {
+    finish: "raw",
+    grommets: "none",
+  });
+  const explicitlyAdopted = applyServerConfiguration(
+    assessment.draft,
+    changedDefinition,
+  );
+  assert.deepEqual(explicitlyAdopted.selections, {
+    finish: "raw",
+    grommets: "none",
+    newCurrentDefault: true,
+  });
+};
+
+const testAuthoritativeQuoteAndForbiddenCacheTransitions = async () => {
+  const queryClient = new QueryClient();
+  const organizationId = "org-a";
+  const quoteId = "quote-1";
+  const authoritativeLine = {
+    ...persistedLine,
+    sellingUnitAmount: { cents: 600, currency: "USD" },
+    sellingLineAmount: { cents: 4200, currency: "USD" },
+  };
+  const authoritativeResult = {
+    quote: {
+      quote: {
+        quoteId,
+        customerContact: { organizationId, customerId: "customer-a" },
+        terms: {},
+        currency: "USD",
+        deliveryState: "not_sent",
+        acceptanceState: "not_accepted",
+        lines: [authoritativeLine],
+      },
+      number: { display: "Q-1", core: "1" },
+      revision: "4",
+      checkpoints: [],
+      totals: {
+        currency: "USD",
+        calculatedLineAmount: { cents: 3500, currency: "USD" },
+        sellingLineAmount: { cents: 4200, currency: "USD" },
+      },
+    },
+  } as QuoteResult;
+  applyAuthoritativeQuoteResult(
+    queryClient,
+    organizationId,
+    authoritativeResult,
+  );
+  assert.equal(
+    queryClient.getQueryData<QuoteResult["quote"]>(
+      quoteKeys.quote(organizationId, quoteId),
+    )?.quote.lines[0]?.sellingLineAmount.cents,
+    4200,
+    "successful update must replace cached display state with the server projection",
+  );
+  queryClient.setQueryData(quoteKeys.bootstrap(organizationId), {
+    organizationId,
+    csrfToken: "opaque",
+    capabilities: { quoteOverridePrice: true },
+  });
+  await reconcileForbiddenQuoteMutation(queryClient, organizationId, quoteId);
+  assert.equal(
+    queryClient.getQueryData<{
+      capabilities: { quoteOverridePrice: boolean };
+    }>(quoteKeys.bootstrap(organizationId))?.capabilities.quoteOverridePrice,
+    false,
+  );
+  assert.equal(
+    queryClient.getQueryState(quoteKeys.bootstrap(organizationId))?.isInvalidated,
+    true,
+  );
+  assert.equal(
+    queryClient.getQueryState(quoteKeys.quote(organizationId, quoteId))
+      ?.isInvalidated,
+    true,
+    "a forbidden override must invalidate authoritative Quote state without writing false success",
+  );
+  queryClient.clear();
+};
+
+const testUnsupportedFieldFailsSafe = () => {
+  assert.equal(configurationInputSupported("file"), false);
+  const unsupported: ProductConfiguration = {
+    ...quantityConfiguration,
+    fields: [
+      {
+        selectionKey: "upload",
+        label: "Upload",
+        inputType: "file",
+        required: true,
+        choices: [],
+      },
+    ],
+  };
+  assert.throws(
+    () =>
+      quoteLineInputFromDraft(
+        applyServerConfiguration(
+          changeDraftProduct(emptyQuoteLineDraft(), unsupported.productId),
+          unsupported,
+        ),
+        unsupported,
+      ),
+    /cannot edit safely/,
+  );
+  const markup = renderToStaticMarkup(
+    <ProductConfigurationFields
+      configuration={unsupported}
+      draft={applyServerConfiguration(
+        changeDraftProduct(emptyQuoteLineDraft(), unsupported.productId),
+        unsupported,
+      )}
+      onSelection={() => undefined}
+      onDimensions={() => undefined}
+    />,
+  );
+  assert.match(markup, /unsupported/);
+};
+
+const testSellingPriceAndAuthority = () => {
+  assert.deepEqual(
+    sellingInstructionFromDraft({
+      mode: "unit_override",
+      cents: "425",
+      reason: "Manager approved",
+    }),
+    { kind: "unit_override", unitCents: 425, reason: "Manager approved" },
+  );
+  assert.deepEqual(
+    sellingInstructionFromDraft({
+      mode: "total_override",
+      cents: "3150",
+      reason: "Approved concession",
+    }),
+    {
+      kind: "total_override",
+      totalCents: 3150,
+      reason: "Approved concession",
+    },
+  );
+  assert.throws(
+    () =>
+      sellingInstructionFromDraft({
+        mode: "unit_override",
+        cents: "4.25",
+        reason: "invalid cents",
+      }),
+    /whole number of cents/,
+  );
+  const allowed = renderToStaticMarkup(
+    <SellingPriceFields
+      selling={{ mode: "calculated", cents: "", reason: "" }}
+      canOverridePrice
+      onChange={() => undefined}
+    />,
+  );
+  assert.match(allowed, /Selling price decision/);
+  assert.match(allowed, /Override unit price/);
+  const denied = renderToStaticMarkup(
+    <SellingPriceFields
+      selling={draftFromQuoteLine(persistedLine).selling}
+      canOverridePrice={false}
+      onChange={() => undefined}
+    />,
+  );
+  assert.match(denied, /visible but read-only/);
+  assert.doesNotMatch(denied, /<select/);
+  assert.equal(
+    markOverrideUnavailable({
+      organizationId: "org-a",
+      csrfToken: "opaque",
+      capabilities: { quoteOverridePrice: true },
+    })?.capabilities.quoteOverridePrice,
+    false,
+    "a forbidden response must immediately reconcile stale override capability",
+  );
+};
+
+const testTransportContracts = async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, init });
+    const data = url.endsWith("/ui-bootstrap")
+      ? {
+          organizationId: "org A",
+          csrfToken: "csrf-token",
+          capabilities: { quoteOverridePrice: true },
+        }
+      : url.endsWith("/configuration/resolve")
+        ? dimensionalConfiguration
+        : [];
+    return new Response(JSON.stringify({ ok: true, data }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await quoteApi.bootstrap("org A");
+    await quoteFormQueryOptions.customers("org A").queryFn();
+    await quoteFormQueryOptions.contacts("org A", "customer/1").queryFn();
+    await quoteFormQueryOptions.products("org A").queryFn();
+    await quoteFormQueryOptions.configuration("org A", "product/1").queryFn();
+    await quoteApi.resolveConfiguration("org A", "product/1", {
+      finish: "hemmed",
+    });
+    const createLine = quoteLineInputFromDraft(
+      {
+        ...applyServerConfiguration(
+          changeDraftProduct(
+            emptyQuoteLineDraft(),
+            dimensionalConfiguration.productId,
+          ),
+          dimensionalConfiguration,
+        ),
+        quantity: "2",
+        dimensions: { width: "48", height: "24", unit: "in" },
+      },
+      dimensionalConfiguration,
+    );
+    await quoteApi.create("org A", "business-create-1", {
+      customerContact: {
+        organizationId: "org A",
+        customerId: "customer/1",
+      },
+      lines: [createLine],
+    });
+    await quoteApi.patch("org A", "quote/1", "business-update-1", {
+      expectedRevision: "3",
+      lineChanges: [
+        {
+          kind: "update",
+          lineId: "line-1",
+          line: {
+            ...createLine,
+            selling: {
+              kind: "unit_override",
+              unitCents: 425,
+              reason: "Manager approved",
+            },
+          },
+        },
+      ],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [
+      "/v2/organizations/org%20A/ui-bootstrap",
+      "/v2/organizations/org%20A/quotes/form/customers",
+      "/v2/organizations/org%20A/quotes/form/customers/customer%2F1/contacts",
+      "/v2/organizations/org%20A/quotes/form/products",
+      "/v2/organizations/org%20A/quotes/form/products/product%2F1/configuration",
+      "/v2/organizations/org%20A/quotes/form/products/product%2F1/configuration/resolve",
+      "/v2/organizations/org%20A/quotes",
+      "/v2/organizations/org%20A/quotes/quote%2F1",
+    ],
+  );
+  const resolveCall = calls.at(-3)!;
+  assert.equal(resolveCall.init?.method, "POST");
+  assert.equal(
+    (resolveCall.init?.headers as Record<string, string>)["x-v2-csrf-token"],
+    "csrf-token",
+  );
+  assert.equal(resolveCall.init?.body, JSON.stringify({ selections: { finish: "hemmed" } }));
+  const createBody = JSON.parse(String(calls.at(-2)!.init?.body));
+  assert.equal(createBody.businessRequestId, "business-create-1");
+  assert.deepEqual(createBody.lines[0].dimensions, {
+    width: "48",
+    height: "24",
+    unit: "in",
+  });
+  assert.deepEqual(createBody.lines[0].selections, {
+    finish: "hemmed",
+    grommets: "corners",
+  });
+  const updateBody = JSON.parse(String(calls.at(-1)!.init?.body));
+  assert.deepEqual(updateBody.lineChanges[0].line.selling, {
+    kind: "unit_override",
+    unitCents: 425,
+    reason: "Manager approved",
+  });
+};
+
+const testThemeRegression = () => {
+  for (const themeId of ["printershero", "corporate", "industrial"] as const) {
+    const theme = resolveTheme(
+      themeId,
+      themeId === "industrial" ? "dark" : "light",
+    );
+    for (const token of [
+      theme.tokens.input,
+      theme.tokens.border,
+      theme.tokens.focus,
+      theme.tokens.primary,
+      theme.tokens.warning,
+      theme.tokens.destructive,
+    ])
+      assert.match(token, /^(#|rgb|hsl)/i);
+  }
+};
+
+const main = async () => {
+  testQueryScopes();
+  testSelectorsAndContactReset();
+  testCreateAndMeasurementPayloads();
+  testPersistedLineAndDefinitionSafety();
+  testServerResolutionRoundTrip();
+  await testAuthoritativeQuoteAndForbiddenCacheTransitions();
+  testUnsupportedFieldFailsSafe();
+  testSellingPriceAndAuthority();
+  await testTransportContracts();
+  testThemeRegression();
+  console.log("[v2-ui] Quote form integration tests passed");
+};
+
+await main();

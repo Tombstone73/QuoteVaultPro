@@ -95,6 +95,7 @@ main {
 }
 .field input:focus,
 .field textarea:focus,
+.field select:focus,
 button:focus-visible {
   outline: 3px solid var(--ph-focus);
   outline-offset: 2px;
@@ -170,6 +171,49 @@ button:focus-visible {
 .override {
   color: var(--ph-warning);
   font-size: 0.78rem;
+}
+.line-editor {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--ph-subtle-border);
+  border-radius: 10px;
+  background: var(--ph-elevated);
+}
+.editor-row:hover {
+  background: transparent !important;
+}
+.editor-row > td {
+  padding: 14px 0;
+}
+.inline-action {
+  margin-left: 10px;
+}
+.configuration-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 10px 0;
+}
+.configuration-facts dt {
+  font-weight: 700;
+}
+.configuration-facts dd {
+  margin: 0;
+}
+.checkbox-field {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+.checkbox-field input {
+  width: auto;
+}
+.totals {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ph-subtle-border);
+  font-weight: 750;
 }
 .lab {
   display: grid;

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   money,
   newBusinessRequestId,
@@ -7,26 +7,44 @@ import {
   type ApiError,
   type QuoteRead,
   type QuoteResult,
-  type ProductConfiguration,
 } from "./api";
-import { useQuoteFormConfiguration, useQuoteFormContacts, useQuoteFormCustomers, useQuoteFormProducts } from "./quoteFormQueries";
+import {
+  applyAuthoritativeQuoteResult,
+  reconcileForbiddenQuoteMutation,
+} from "./quoteCache";
+import { QuoteLineEditor } from "./QuoteLineEditor";
+import {
+  clearContactForCustomerChange,
+  draftFromQuoteLine,
+  emptyQuoteLineDraft,
+  type QuoteLineMutationInput,
+} from "./quoteFormModel";
+import {
+  quoteKeys,
+  useQuoteFormContacts,
+  useQuoteFormCustomers,
+  useQuoteFormProducts,
+} from "./quoteFormQueries";
+import { SelectionField } from "./SelectionField";
 import type { AppearancePreference, ThemeId } from "./theme";
 
 const errorText = (error: unknown) => {
-  const e = error as ApiError;
-  if (e?.code === "STALE_STATE")
+  const value = error as ApiError;
+  if (value?.code === "STALE_STATE")
     return "This Quote changed elsewhere. Reload it before saving your draft.";
-  if (e?.code === "FORBIDDEN")
+  if (value?.code === "FORBIDDEN")
     return "You do not have permission for that Quote action.";
-  if (e?.code === "NOT_FOUND")
+  if (value?.code === "NOT_FOUND")
     return "The Quote, customer, contact, or Product is unavailable in this organization.";
-  return e?.message ?? "The Quote service is unavailable.";
+  return value?.message ?? "The Quote service is unavailable.";
 };
+
 const Status = ({ value }: { value: string }) => (
   <span className={`badge ${value === "accepted" ? "success" : ""}`}>
     {value.replaceAll("_", " ")}
   </span>
 );
+
 export const App = ({
   theme,
   setTheme,
@@ -34,39 +52,45 @@ export const App = ({
   setAppearance,
 }: {
   theme: ThemeId;
-  setTheme: (v: ThemeId) => void;
+  setTheme: (value: ThemeId) => void;
   appearance: AppearancePreference;
-  setAppearance: (v: AppearancePreference) => void;
+  setAppearance: (value: AppearancePreference) => void;
 }) => {
   const [page, setPage] = useState<"quote" | "lab">("quote");
-  const [org, setOrg] = useState("");
-  const organizationRef = useRef(org);
+  const [organizationId, setOrganizationId] = useState("");
+  const organizationRef = useRef(organizationId);
   useEffect(() => {
-    organizationRef.current = org;
-  }, [org]);
+    organizationRef.current = organizationId;
+  }, [organizationId]);
   const [quoteId, setQuoteId] = useState("");
   const [notice, setNotice] = useState("");
   const queryClient = useQueryClient();
   const quote = useQuery({
-    queryKey: ["quote", org, quoteId],
-    queryFn: () => quoteApi.get(org, quoteId),
-    enabled: Boolean(org && quoteId),
+    queryKey: quoteKeys.quote(organizationId, quoteId),
+    queryFn: () => quoteApi.get(organizationId, quoteId),
+    enabled: Boolean(organizationId && quoteId),
   });
   const bootstrap = useQuery({
-    queryKey: ["ui-bootstrap", org],
-    queryFn: () => quoteApi.bootstrap(org),
-    enabled: Boolean(org),
+    queryKey: quoteKeys.bootstrap(organizationId),
+    queryFn: () => quoteApi.bootstrap(organizationId),
+    enabled: Boolean(organizationId),
     staleTime: 0,
   });
-  const load = (id: string) => {
-    setQuoteId(id);
-    setNotice("");
+  const applyQuoteResult = (result: QuoteResult, resultOrganizationId: string) => {
+    const id = applyAuthoritativeQuoteResult(
+      queryClient,
+      resultOrganizationId,
+      result,
+    );
+    if (organizationRef.current === resultOrganizationId) setQuoteId(id);
   };
-  const applyQuoteResult = (result: QuoteResult, organizationId: string) => {
-    const id = result.quote.quote.quoteId;
-    queryClient.setQueryData(["quote", organizationId, id], result.quote);
-    if (organizationRef.current === organizationId) setQuoteId(id);
-  };
+  const reconcileAuthority = () =>
+    reconcileForbiddenQuoteMutation(
+      queryClient,
+      organizationId,
+      quoteId || undefined,
+    );
+
   return (
     <div className="app">
       <nav className="nav">
@@ -96,7 +120,7 @@ export const App = ({
             <select
               aria-label="Theme"
               value={theme}
-              onChange={(e) => setTheme(e.target.value as ThemeId)}
+              onChange={(event) => setTheme(event.target.value as ThemeId)}
             >
               <option value="printershero">PrintersHero default</option>
               <option value="corporate">Clean corporate</option>
@@ -105,8 +129,8 @@ export const App = ({
             <select
               aria-label="Appearance"
               value={appearance}
-              onChange={(e) =>
-                setAppearance(e.target.value as AppearancePreference)
+              onChange={(event) =>
+                setAppearance(event.target.value as AppearancePreference)
               }
             >
               <option value="system">System</option>
@@ -119,21 +143,27 @@ export const App = ({
           <Lab />
         ) : (
           <QuoteWorkspace
-            org={org}
-            setOrg={setOrg}
+            organizationId={organizationId}
+            setOrganizationId={setOrganizationId}
             quote={quote.data}
             error={quote.error}
             loading={quote.isFetching}
-            load={load}
+            load={(id) => {
+              setQuoteId(id);
+              setNotice("");
+            }}
             reload={() =>
               queryClient.invalidateQueries({
-                queryKey: ["quote", org, quoteId],
+                queryKey: quoteKeys.quote(organizationId, quoteId),
               })
             }
             notice={notice}
             setNotice={setNotice}
             applyQuoteResult={applyQuoteResult}
-            canOverridePrice={bootstrap.data?.capabilities.quoteOverridePrice === true}
+            reconcileAuthority={reconcileAuthority}
+            canOverridePrice={
+              bootstrap.data?.capabilities.quoteOverridePrice === true
+            }
             csrfReady={bootstrap.isSuccess}
           />
         )}
@@ -141,6 +171,7 @@ export const App = ({
     </div>
   );
 };
+
 const Lab = () => (
   <section className="lab">
     <div className="card">
@@ -156,9 +187,6 @@ const Lab = () => (
         <select aria-label="Sample select">
           <option>Selection</option>
         </select>
-        <label>
-          <input type="checkbox" /> Checkbox
-        </label>
       </div>
     </div>
     <div className="card">
@@ -171,24 +199,28 @@ const Lab = () => (
         <span className="notice error">Validation error</span>
       </div>
     </div>
-    <div className="card">
-      <h2>Table, loading, empty</h2>
-      <div className="skeleton" />
-      <table className="table">
-        <tbody>
-          <tr>
-            <td>Selected row treatment</td>
-            <td className="price">$125.00</td>
-          </tr>
-        </tbody>
-      </table>
-      <p className="muted">No additional records — empty state.</p>
-    </div>
   </section>
 );
+
+type WorkspaceProps = Readonly<{
+  organizationId: string;
+  setOrganizationId: (value: string) => void;
+  quote?: QuoteRead;
+  error: unknown;
+  loading: boolean;
+  load: (quoteId: string) => void;
+  reload: () => void;
+  notice: string;
+  setNotice: (value: string) => void;
+  applyQuoteResult: (result: QuoteResult, organizationId: string) => void;
+  reconcileAuthority: () => Promise<void>;
+  canOverridePrice: boolean;
+  csrfReady: boolean;
+}>;
+
 const QuoteWorkspace = ({
-  org,
-  setOrg,
+  organizationId,
+  setOrganizationId,
   quote,
   error,
   loading,
@@ -197,44 +229,28 @@ const QuoteWorkspace = ({
   notice,
   setNotice,
   applyQuoteResult,
+  reconcileAuthority,
   canOverridePrice,
   csrfReady,
-}: {
-  org: string;
-  setOrg: (s: string) => void;
-  quote?: QuoteRead;
-  error: unknown;
-  loading: boolean;
-  load: (s: string) => void;
-  reload: () => void;
-  notice: string;
-  setNotice: (s: string) => void;
-  applyQuoteResult: (result: QuoteResult, organizationId: string) => void;
-  canOverridePrice: boolean;
-  csrfReady: boolean;
-}) => {
-  const [open, setOpen] = useState("");
-  const [customer, setCustomer] = useState("");
-  const [contact, setContact] = useState("");
-  const [product, setProduct] = useState("");
-  const [quantity, setQuantity] = useState("1");
-  const [po, setPo] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [notes, setNotes] = useState("");
-  const [headerCustomer, setHeaderCustomer] = useState("");
-  const [headerContact, setHeaderContact] = useState("");
-  const [newProduct, setNewProduct] = useState("");
-  const [newQuantity, setNewQuantity] = useState("1");
-  const [newWidth, setNewWidth] = useState("");
-  const [newHeight, setNewHeight] = useState("");
-  const [newSelections, setNewSelections] = useState("{}");
-  const [resolvedForm, setResolvedForm] = useState<ProductConfiguration>();
-  const customers = useQuoteFormCustomers(org);
-  const contacts = useQuoteFormContacts(org, quote ? headerCustomer : customer);
-  const products = useQuoteFormProducts(org);
-  const selectedProduct = quote ? newProduct : product;
-  const configuration = useQuoteFormConfiguration(org, selectedProduct);
+}: WorkspaceProps) => {
+  const [openQuoteId, setOpenQuoteId] = useState("");
+  const [customerId, setCustomerId] = useState("");
+  const [contactId, setContactId] = useState("");
+  const [purchaseOrderNumber, setPurchaseOrderNumber] = useState("");
+  const [requestedDueDate, setRequestedDueDate] = useState("");
+  const [commercialNotes, setCommercialNotes] = useState("");
+  const [headerCustomerId, setHeaderCustomerId] = useState("");
+  const [headerContactId, setHeaderContactId] = useState("");
+  const [editingLineId, setEditingLineId] = useState("");
+  const [addEditorVersion, setAddEditorVersion] = useState(0);
+  const customers = useQuoteFormCustomers(organizationId);
+  const contacts = useQuoteFormContacts(
+    organizationId,
+    quote ? headerCustomerId : customerId,
+  );
+  const products = useQuoteFormProducts(organizationId);
   const requestIds = useRef<Record<string, { id: string; payload: string }>>({});
+
   const requestId = (operation: string, payload: unknown) => {
     const serialized = JSON.stringify(payload);
     const existing = requestIds.current[operation];
@@ -248,130 +264,183 @@ const QuoteWorkspace = ({
   const completeRequest = (operation: string) => {
     delete requestIds.current[operation];
   };
+
   useEffect(() => {
-    setPo(quote?.quote.purchaseOrderNumber ?? "");
-    setDueDate(quote?.quote.requestedDueDate ?? "");
-    setNotes(quote?.quote.terms.commercialNotes ?? "");
-    setHeaderCustomer(quote?.quote.customerContact.customerId ?? "");
-    setHeaderContact(quote?.quote.customerContact.contactId ?? "");
+    setPurchaseOrderNumber(quote?.quote.purchaseOrderNumber ?? "");
+    setRequestedDueDate(quote?.quote.requestedDueDate ?? "");
+    setCommercialNotes(quote?.quote.terms.commercialNotes ?? "");
+    setHeaderCustomerId(quote?.quote.customerContact.customerId ?? "");
+    setHeaderContactId(quote?.quote.customerContact.contactId ?? "");
+    setEditingLineId("");
   }, [quote?.quote.quoteId]);
-  useEffect(() => {
-    if (configuration.data) { setNewSelections(JSON.stringify(configuration.data.effectiveSelections)); setResolvedForm(configuration.data); }
-  }, [configuration.data?.productId]);
-  const resolveConfiguration = useMutation({ mutationFn: (selections: Record<string, unknown>) => quoteApi.resolveConfiguration(org, selectedProduct, selections), onSuccess: (value) => { setResolvedForm(value); setNewSelections(JSON.stringify(value.effectiveSelections)); } });
+
+  const handleForbidden = (mutationError: unknown) => {
+    if ((mutationError as ApiError)?.code === "FORBIDDEN")
+      void reconcileAuthority();
+  };
+
   const create = useMutation({
-    mutationFn: () =>
-      quoteApi.create(org, requestId("create", { org, customer, contact, product, quantity, po }), {
-        customerContact: {
-          organizationId: org,
-          customerId: customer,
-          contactId: contact || undefined,
+    mutationFn: (line: QuoteLineMutationInput) => {
+      const payload = {
+        organizationId,
+        customerId,
+        contactId,
+        purchaseOrderNumber,
+        requestedDueDate,
+        commercialNotes,
+        line,
+      };
+      return quoteApi.create(
+        organizationId,
+        requestId("create", payload),
+        {
+          customerContact: {
+            organizationId,
+            customerId,
+            ...(contactId ? { contactId } : {}),
+          },
+          ...(purchaseOrderNumber.trim()
+            ? { purchaseOrderNumber: purchaseOrderNumber.trim() }
+            : {}),
+          ...(requestedDueDate ? { requestedDueDate } : {}),
+          ...(commercialNotes.trim()
+            ? { terms: { commercialNotes: commercialNotes.trim() } }
+            : {}),
+          lines: [line],
         },
-        purchaseOrderNumber: po || undefined,
-        lines: [{ productId: product, quantity: Number(quantity), ...(newSelections ? { selections: JSON.parse(newSelections) } : {}), ...(resolvedForm?.requiresDimensions ? { dimensions: { width: newWidth, height: newHeight, unit: "in" } } : {}) }],
-    }),
-    onSuccess: (r) => {
-      completeRequest("create");
-      applyQuoteResult(r, org);
-      setNotice("Quote created from authoritative Pricing.");
+      );
     },
+    onSuccess: (result) => {
+      completeRequest("create");
+      applyQuoteResult(result, organizationId);
+      setNotice("Quote created from authoritative Product resolution and Pricing.");
+    },
+    onError: handleForbidden,
   });
+
   const save = useMutation({
-    mutationFn: () =>
-      quoteApi.patch(org, quote!.quote.quoteId, requestId("save", {
-        org,
+    mutationFn: () => {
+      const payload = {
+        organizationId,
         quoteId: quote!.quote.quoteId,
         revision: quote!.revision,
-        po,
-        dueDate,
-        notes,
-        headerCustomer,
-        headerContact,
-      }), {
-        expectedRevision: quote!.revision,
-        patch: {
-          customerContact: {
-            organizationId: org,
-            customerId: headerCustomer,
-            ...(headerContact ? { contactId: headerContact } : {}),
-          },
-          purchaseOrderNumber: po.trim() || null,
-          requestedDueDate: dueDate || null,
-          terms: { commercialNotes: notes },
-        },
-      }),
-    onSuccess: (r) => {
-      completeRequest("save");
-      setNotice("Quote saved.");
-      applyQuoteResult(r, org);
-    },
-  });
-  const lineChange = useMutation({
-    mutationFn: (lineChanges: unknown[]) =>
-      quoteApi.patch(org, quote!.quote.quoteId, requestId("line-change", {
-        org, quoteId: quote!.quote.quoteId, revision: quote!.revision, lineChanges,
-      }), { expectedRevision: quote!.revision, lineChanges }),
-    onSuccess: (r) => {
-      completeRequest("line-change");
-      applyQuoteResult(r, org);
-      setNotice("Quote line repriced by the server.");
-    },
-  });
-  const action = useMutation({
-    mutationFn: (a: "send" | "accept") =>
-      quoteApi.action(
-        org,
+        purchaseOrderNumber,
+        requestedDueDate,
+        commercialNotes,
+        headerCustomerId,
+        headerContactId,
+      };
+      return quoteApi.patch(
+        organizationId,
         quote!.quote.quoteId,
-        a,
-        requestId(`action:${a}`, {
-          org,
+        requestId("save", payload),
+        {
+          expectedRevision: quote!.revision,
+          patch: {
+            customerContact: {
+              organizationId,
+              customerId: headerCustomerId,
+              ...(headerContactId ? { contactId: headerContactId } : {}),
+            },
+            purchaseOrderNumber: purchaseOrderNumber.trim() || null,
+            requestedDueDate: requestedDueDate || null,
+            terms: { commercialNotes },
+          },
+        },
+      );
+    },
+    onSuccess: (result) => {
+      completeRequest("save");
+      applyQuoteResult(result, organizationId);
+      setNotice("Quote saved.");
+    },
+    onError: handleForbidden,
+  });
+
+  const lineChange = useMutation({
+    mutationFn: (lineChanges: unknown[]) => {
+      const payload = {
+        organizationId,
+        quoteId: quote!.quote.quoteId,
+        revision: quote!.revision,
+        lineChanges,
+      };
+      return quoteApi.patch(
+        organizationId,
+        quote!.quote.quoteId,
+        requestId("line-change", payload),
+        { expectedRevision: quote!.revision, lineChanges },
+      );
+    },
+    onSuccess: (result) => {
+      completeRequest("line-change");
+      applyQuoteResult(result, organizationId);
+      setEditingLineId("");
+      setAddEditorVersion((value) => value + 1);
+      setNotice("Quote line repriced by the authoritative server.");
+    },
+    onError: handleForbidden,
+  });
+
+  const action = useMutation({
+    mutationFn: (kind: "send" | "accept") =>
+      quoteApi.action(
+        organizationId,
+        quote!.quote.quoteId,
+        kind,
+        requestId(`action:${kind}`, {
+          organizationId,
           quoteId: quote!.quote.quoteId,
-          action: a,
+          kind,
           revision: quote!.revision,
         }),
         quote!.revision,
       ),
-    onSuccess: (r) => {
+    onSuccess: (result) => {
       completeRequest("action:send");
       completeRequest("action:accept");
+      applyQuoteResult(result, organizationId);
       setNotice("Quote lifecycle updated.");
-      applyQuoteResult(r, org);
     },
+    onError: handleForbidden,
   });
-  const err = error || create.error || save.error || action.error || lineChange.error;
+
+  const mutationError =
+    error || create.error || save.error || action.error || lineChange.error;
+
   return (
     <section className="lab">
       <div className="card grid">
         <label className="field">
           Organization ID
           <input
-            value={org}
-            onChange={(e) => setOrg(e.target.value)}
+            value={organizationId}
+            onChange={(event) => setOrganizationId(event.target.value)}
             placeholder="Authenticated route scope"
           />
         </label>
         <label className="field">
           Open Quote ID
           <input
-            value={open}
-            onChange={(e) => setOpen(e.target.value)}
+            value={openQuoteId}
+            onChange={(event) => setOpenQuoteId(event.target.value)}
             placeholder="Known Quote ID"
           />
         </label>
         <div className="actions">
           <button
             className="button secondary"
-            onClick={() => load(open)}
-            disabled={!org || !open}
+            onClick={() => load(openQuoteId)}
+            disabled={!organizationId || !openQuoteId}
           >
             Open Quote
           </button>
         </div>
       </div>
-      {err && (
+      {Boolean(mutationError) && (
         <div className="notice error">
-          {errorText(err)}{" "}
-          {(err as ApiError).code === "STALE_STATE" && (
+          {errorText(mutationError)}{" "}
+          {(mutationError as ApiError).code === "STALE_STATE" && (
             <button className="button secondary" onClick={reload}>
               Reload current Quote
             </button>
@@ -383,73 +452,72 @@ const QuoteWorkspace = ({
         <div className="card">
           <h2>Create Quote</h2>
           <p className="muted">
-            M1.7 has no customer/product lookup yet; these authoritative IDs are
-            deliberate proof inputs.
+            Select authoritative CRM and Product records. Product configuration is
+            projected and resolved by the server before Sales persists the line.
           </p>
           <div className="grid">
-            <label className="field">
-              Customer
-              <select
-                value={customer}
-                onChange={(e) => { setCustomer(e.target.value); setContact(""); }}
-              ><option value="">Select customer</option>{customers.data?.map((item) => <option key={item.customerId} value={item.customerId}>{item.displayName}</option>)}</select>
-            </label>
-            <label className="field">
-              Contact
-              <select
-                value={contact}
-                onChange={(e) => setContact(e.target.value)}
-                disabled={!customer}
-              ><option value="">Select contact</option>{contacts.data?.map((item) => <option key={item.contactId} value={item.contactId}>{item.displayName}</option>)}</select>
-            </label>
-            <label className="field">
-              Product
-              <select
-                value={product}
-                onChange={(e) => setProduct(e.target.value)}
-              ><option value="">Select product</option>{products.data?.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select>
-            </label>
-            <label className="field">
-              Quantity
-              <input
-                type="number"
-                min="1"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
-            </label>
-            {resolvedForm?.requiresDimensions && <><label className="field">Width ({resolvedForm.supportedDimensionUnits[0]})<input value={newWidth} onChange={(e) => setNewWidth(e.target.value)} /></label><label className="field">Height ({resolvedForm.supportedDimensionUnits[0]})<input value={newHeight} onChange={(e) => setNewHeight(e.target.value)} /></label></>}
-            {resolvedForm?.fields.map((field) => <label className="field" key={`create-${field.selectionKey}`}>{field.label}<select value={(JSON.parse(newSelections || "{}")[field.selectionKey] ?? "") as string} onChange={(e) => { const next = JSON.parse(newSelections || "{}"); next[field.selectionKey] = e.target.value; setNewSelections(JSON.stringify(next)); resolveConfiguration.mutate(next); }}><option value="">{field.required ? "Select required option" : "No selection"}</option>{field.choices.map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}</select></label>)}
-            <label className="field">
-              Customer
-              <select value={headerCustomer} onChange={(e) => { setHeaderCustomer(e.target.value); setHeaderContact(""); }}><option value="">Select customer</option>{customers.data?.map((item) => <option key={item.customerId} value={item.customerId}>{item.displayName}</option>)}</select>
-            </label>
-            <label className="field">
-              Contact
-              <select value={headerContact} disabled={!headerCustomer} onChange={(e) => setHeaderContact(e.target.value)}><option value="">Select contact</option>{contacts.data?.map((item) => <option key={item.contactId} value={item.contactId}>{item.displayName}</option>)}</select>
-            </label>
+            <SelectionField
+              label="Customer"
+              value={customerId}
+              options={customers.data ?? []}
+              identity="customerId"
+              emptyLabel="Select Customer"
+              onChange={(value) => {
+                const next = clearContactForCustomerChange(value);
+                setCustomerId(next.customerId);
+                setContactId(next.contactId);
+              }}
+            />
+            <SelectionField
+              label="Contact"
+              value={contactId}
+              options={contacts.data ?? []}
+              identity="contactId"
+              emptyLabel="Select Contact"
+              disabled={!customerId}
+              onChange={setContactId}
+            />
             <label className="field">
               PO
-              <input value={po} onChange={(e) => setPo(e.target.value)} />
+              <input
+                value={purchaseOrderNumber}
+                onChange={(event) => setPurchaseOrderNumber(event.target.value)}
+              />
             </label>
             <label className="field">
               Requested due date
-              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              <input
+                type="date"
+                value={requestedDueDate}
+                onChange={(event) => setRequestedDueDate(event.target.value)}
+              />
             </label>
             <label className="field">
               Commercial notes
-              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <textarea
+                value={commercialNotes}
+                onChange={(event) => setCommercialNotes(event.target.value)}
+              />
             </label>
           </div>
-          <div className="actions">
-            <button
-              className="button"
-              disabled={create.isPending || !org || !customer || !product || !csrfReady}
-              onClick={() => create.mutate()}
-            >
-              Create Quote
-            </button>
-          </div>
+          <h3>Initial commercial line</h3>
+          <QuoteLineEditor
+            organizationId={organizationId}
+            draftKey={`create:${organizationId}`}
+            initialDraft={emptyQuoteLineDraft()}
+            products={products.data ?? []}
+            canOverridePrice={canOverridePrice}
+            csrfReady={csrfReady}
+            busy={create.isPending}
+            submitLabel="Create Quote"
+            onSubmit={(line) => {
+              if (!customerId) {
+                setNotice("Select a Customer before creating the Quote.");
+                return;
+              }
+              create.mutate(line);
+            }}
+          />
         </div>
       ) : (
         <div className="lab">
@@ -464,13 +532,51 @@ const QuoteWorkspace = ({
                 <Status value={quote.quote.acceptanceState} />
               </div>
             </div>
-            <label className="field">
-              PO
-              <input
-                value={po}
-                onChange={(e) => setPo(e.target.value)}
+            <div className="grid">
+              <SelectionField
+                label="Customer"
+                value={headerCustomerId}
+                options={customers.data ?? []}
+                identity="customerId"
+                emptyLabel="Select Customer"
+                onChange={(value) => {
+                  const next = clearContactForCustomerChange(value);
+                  setHeaderCustomerId(next.customerId);
+                  setHeaderContactId(next.contactId);
+                }}
               />
-            </label>
+              <SelectionField
+                label="Contact"
+                value={headerContactId}
+                options={contacts.data ?? []}
+                identity="contactId"
+                emptyLabel="Select Contact"
+                disabled={!headerCustomerId}
+                onChange={setHeaderContactId}
+              />
+              <label className="field">
+                PO
+                <input
+                  value={purchaseOrderNumber}
+                  onChange={(event) => setPurchaseOrderNumber(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                Requested due date
+                <input
+                  type="date"
+                  value={requestedDueDate}
+                  onChange={(event) => setRequestedDueDate(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                Commercial notes
+                <textarea
+                  value={commercialNotes}
+                  onChange={(event) => setCommercialNotes(event.target.value)}
+                />
+              </label>
+            </div>
             <div className="actions">
               <button
                 className="button secondary"
@@ -492,7 +598,7 @@ const QuoteWorkspace = ({
                 quote.quote.acceptanceState === "not_accepted" && (
                   <button
                     className="button"
-                  disabled={action.isPending || !csrfReady}
+                    disabled={action.isPending || !csrfReady}
                     onClick={() => action.mutate("accept")}
                   >
                     Accept Quote
@@ -503,7 +609,10 @@ const QuoteWorkspace = ({
           <div className="card">
             <h2>Commercial lines</h2>
             {!canOverridePrice && (
-              <p className="muted">Selling-price overrides are unavailable for this authenticated permission set.</p>
+              <p className="muted">
+                Existing selling-price differences remain visible. Override editing
+                is unavailable for this authenticated permission set.
+              </p>
             )}
             {loading ? (
               <div className="skeleton" />
@@ -520,40 +629,105 @@ const QuoteWorkspace = ({
                 </thead>
                 <tbody>
                   {quote.quote.lines.map((line) => (
-                    <tr key={line.lineId}>
-                      <td>
-                        {line.description}
-                        {line.sellingPriceDecision.kind !== "calculated" && (
-                          <div className="override">
-                            Selling-price decision:{" "}
-                            {line.sellingPriceDecision.kind}
-                          </div>
-                        )}
-                      </td>
-                      <td>{line.quantity}</td>
-                      <td>{money(line.calculatedUnitAmount)} / {money(line.calculatedLineAmount)}</td>
-                      <td className="price">{money(line.sellingUnitAmount)} / {money(line.sellingLineAmount)}</td>
-                      <td>
-                        <button className="button secondary" disabled={lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "update", lineId: line.lineId, line: { productId: line.productId, description: line.description, quantity: line.quantity + 1 } }])}>+ quantity</button>
-                        <button className="button danger" disabled={lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "remove", lineId: line.lineId }])}>Remove</button>
-                      </td>
-                    </tr>
+                    <Fragment key={line.lineId}>
+                      <tr>
+                        <td>
+                          {line.description}
+                          {line.sellingPriceDecision.kind !== "calculated" && (
+                            <div className="override">
+                              Selling-price decision: {line.sellingPriceDecision.kind}
+                              {line.sellingPriceDecision.reason
+                                ? ` — ${line.sellingPriceDecision.reason}`
+                                : ""}
+                            </div>
+                          )}
+                        </td>
+                        <td>{line.quantity}</td>
+                        <td>
+                          {money(line.calculatedUnitAmount)} /{" "}
+                          {money(line.calculatedLineAmount)}
+                        </td>
+                        <td className="price">
+                          {money(line.sellingUnitAmount)} /{" "}
+                          {money(line.sellingLineAmount)}
+                        </td>
+                        <td>
+                          <button
+                            className="button secondary"
+                            disabled={lineChange.isPending || !csrfReady}
+                            onClick={() => setEditingLineId(line.lineId)}
+                          >
+                            Edit configuration
+                          </button>
+                          <button
+                            className="button danger"
+                            disabled={lineChange.isPending || !csrfReady}
+                            onClick={() =>
+                              lineChange.mutate([
+                                { kind: "remove", lineId: line.lineId },
+                              ])
+                            }
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                      {editingLineId === line.lineId && (
+                        <tr className="editor-row">
+                          <td colSpan={5}>
+                            <h3>Edit {line.description}</h3>
+                            <p className="muted">
+                              The draft starts from this Quote line’s persisted
+                              configuration. Current Product defaults are not applied
+                              silently.
+                            </p>
+                            <QuoteLineEditor
+                              organizationId={organizationId}
+                              draftKey={`edit:${line.lineId}:${quote.revision}`}
+                              initialDraft={draftFromQuoteLine(line)}
+                              initializeFromPersistedLine
+                              products={products.data ?? []}
+                              canOverridePrice={canOverridePrice}
+                              csrfReady={csrfReady}
+                              busy={lineChange.isPending}
+                              submitLabel="Save and reprice line"
+                              onSubmit={(input) =>
+                                lineChange.mutate([
+                                  {
+                                    kind: "update",
+                                    lineId: line.lineId,
+                                    line: input,
+                                  },
+                                ])
+                              }
+                              onCancel={() => setEditingLineId("")}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
             )}
-            <div className="grid">
-              <label className="field">Add Product<select value={newProduct} onChange={(e) => { setNewProduct(e.target.value); setNewWidth(""); setNewHeight(""); }}><option value="">Select product</option>{products.data?.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select></label>
-              <label className="field">Quantity<input type="number" min="1" value={newQuantity} onChange={(e) => setNewQuantity(e.target.value)} /></label>
-              {resolvedForm?.requiresDimensions && <><label className="field">Width ({resolvedForm.supportedDimensionUnits[0]})<input value={newWidth} onChange={(e) => setNewWidth(e.target.value)} /></label><label className="field">Height ({resolvedForm.supportedDimensionUnits[0]})<input value={newHeight} onChange={(e) => setNewHeight(e.target.value)} /></label></>}
-              {resolvedForm?.fields.map((field) => <label className="field" key={field.selectionKey}>{field.label}<select value={(JSON.parse(newSelections || "{}")[field.selectionKey] ?? "") as string} onChange={(e) => { const next = JSON.parse(newSelections || "{}"); next[field.selectionKey] = e.target.value; setNewSelections(JSON.stringify(next)); resolveConfiguration.mutate(next); }}><option value="">{field.required ? "Select required option" : "No selection"}</option>{field.choices.map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}</select></label>)}
+            <h3>Add commercial line</h3>
+            <QuoteLineEditor
+              organizationId={organizationId}
+              draftKey={`add:${quote.quote.quoteId}:${addEditorVersion}`}
+              initialDraft={emptyQuoteLineDraft()}
+              products={products.data ?? []}
+              canOverridePrice={canOverridePrice}
+              csrfReady={csrfReady}
+              busy={lineChange.isPending}
+              submitLabel="Add line and price"
+              onSubmit={(input) =>
+                lineChange.mutate([{ kind: "add", line: input }])
+              }
+            />
+            <div className="totals">
+              Calculated total: {money(quote.totals.calculatedLineAmount)} · Selling
+              total: {money(quote.totals.sellingLineAmount)}
             </div>
-            <button className="button" disabled={!newProduct || lineChange.isPending || !csrfReady} onClick={() => {
-              let selections: unknown = undefined;
-              try { selections = JSON.parse(newSelections); } catch { setNotice("Selections must be valid JSON."); return; }
-              lineChange.mutate([{ kind: "add", line: { productId: newProduct, quantity: Number(newQuantity), ...(newWidth && newHeight ? { dimensions: { width: newWidth, height: newHeight, unit: "in" } } : {}), ...(selections && typeof selections === "object" ? { selections } : {}) } }]);
-            }}>Add line and price</button>
-            <div className="totals">Calculated total: {money(quote.totals.calculatedLineAmount)} · Selling total: {money(quote.totals.sellingLineAmount)}</div>
           </div>
         </div>
       )}

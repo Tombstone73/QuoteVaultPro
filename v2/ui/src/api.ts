@@ -1,4 +1,15 @@
 export type ApiError = Readonly<{ code: string; message: string }>;
+export type QuoteSellingInstruction = Readonly<
+  | { kind: "calculated" }
+  | { kind: "unit_override"; unitCents: number; reason: string }
+  | { kind: "total_override"; totalCents: number; reason: string }
+  | { kind: "discount"; discountBasisPoints: number; reason: string }
+>;
+export type QuoteSellingPriceDecision = Readonly<{
+  kind: "calculated" | "unit_override" | "total_override" | "discount" | "locked";
+  reason?: string;
+  discountBasisPoints?: number;
+}>;
 export type QuoteLine = Readonly<{
   lineId: string;
   position: number;
@@ -10,7 +21,7 @@ export type QuoteLine = Readonly<{
   calculatedLineAmount: { cents: number; currency: string };
   sellingUnitAmount: { cents: number; currency: string };
   sellingLineAmount: { cents: number; currency: string };
-  sellingPriceDecision: { kind: string; reason?: string };
+  sellingPriceDecision: QuoteSellingPriceDecision;
 }>;
 export type QuoteRead = Readonly<{
   quote: {
@@ -40,7 +51,7 @@ export type UiBootstrap = Readonly<{
   capabilities: Readonly<{ quoteOverridePrice: boolean }>;
 }>;
 export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
-export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly string[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
+export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly ("in" | "ft" | "mm")[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
 const csrfTokens = new Map<string, string>();
 export const newBusinessRequestId = () => crypto.randomUUID();
 const endpoint = (org: string, suffix = "") =>
