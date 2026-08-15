@@ -110,27 +110,27 @@ const persistedLine: QuoteLine = {
 
 const testQueryScopes = () => {
   assert.notDeepEqual(
-    quoteFormKeys.customers("org-a"),
-    quoteFormKeys.customers("org-b"),
+    quoteFormKeys.customers("scope-a", "org-a"),
+    quoteFormKeys.customers("scope-a", "org-b"),
   );
   assert.notDeepEqual(
-    quoteFormKeys.products("org-a"),
-    quoteFormKeys.products("org-b"),
+    quoteFormKeys.products("scope-a", "org-a"),
+    quoteFormKeys.products("scope-a", "org-b"),
   );
   assert.notDeepEqual(
-    quoteFormKeys.contacts("org-a", "customer-a"),
-    quoteFormKeys.contacts("org-a", "customer-b"),
+    quoteFormKeys.contacts("scope-a", "org-a", "customer-a"),
+    quoteFormKeys.contacts("scope-a", "org-a", "customer-b"),
   );
   assert.notDeepEqual(
-    quoteFormKeys.configuration("org-a", "product-a"),
-    quoteFormKeys.configuration("org-a", "product-b"),
+    quoteFormKeys.configuration("scope-a", "org-a", "product-a"),
+    quoteFormKeys.configuration("scope-a", "org-a", "product-b"),
   );
   assert.notDeepEqual(
-    quoteKeys.quote("org-a", "quote-1"),
-    quoteKeys.quote("org-b", "quote-1"),
+    quoteKeys.quote("scope-a", "org-a", "quote-1"),
+    quoteKeys.quote("scope-b", "org-b", "quote-1"),
   );
-  assert.equal(quoteFormQueryOptions.contacts("org-a", "").enabled, false);
-  assert.equal(quoteFormQueryOptions.configuration("", "product-a").enabled, false);
+  assert.equal(quoteFormQueryOptions.contacts("scope-a", "org-a", "").enabled, false);
+  assert.equal(quoteFormQueryOptions.configuration("", "org-a", "product-a").enabled, false);
 };
 
 const testSelectorsAndContactReset = () => {
@@ -388,34 +388,36 @@ const testAuthoritativeQuoteAndForbiddenCacheTransitions = async () => {
   } as QuoteResult;
   applyAuthoritativeQuoteResult(
     queryClient,
+    "scope-a",
     organizationId,
     authoritativeResult,
   );
   assert.equal(
     queryClient.getQueryData<QuoteResult["quote"]>(
-      quoteKeys.quote(organizationId, quoteId),
+      quoteKeys.quote("scope-a", organizationId, quoteId),
     )?.quote.lines[0]?.sellingLineAmount.cents,
     4200,
     "successful update must replace cached display state with the server projection",
   );
-  queryClient.setQueryData(quoteKeys.bootstrap(organizationId), {
+  queryClient.setQueryData(quoteKeys.bootstrap("scope-a", organizationId), {
     organizationId,
     csrfToken: "opaque",
+    sessionScope: "scope-a",
     capabilities: { quoteOverridePrice: true },
   });
-  await reconcileForbiddenQuoteMutation(queryClient, organizationId, quoteId);
+  await reconcileForbiddenQuoteMutation(queryClient, "scope-a", organizationId, quoteId);
   assert.equal(
     queryClient.getQueryData<{
       capabilities: { quoteOverridePrice: boolean };
-    }>(quoteKeys.bootstrap(organizationId))?.capabilities.quoteOverridePrice,
+    }>(quoteKeys.bootstrap("scope-a", organizationId))?.capabilities.quoteOverridePrice,
     false,
   );
   assert.equal(
-    queryClient.getQueryState(quoteKeys.bootstrap(organizationId))?.isInvalidated,
+    queryClient.getQueryState(quoteKeys.bootstrap("scope-a", organizationId))?.isInvalidated,
     true,
   );
   assert.equal(
-    queryClient.getQueryState(quoteKeys.quote(organizationId, quoteId))
+    queryClient.getQueryState(quoteKeys.quote("scope-a", organizationId, quoteId))
       ?.isInvalidated,
     true,
     "a forbidden override must invalidate authoritative Quote state without writing false success",
@@ -514,6 +516,7 @@ const testSellingPriceAndAuthority = () => {
     markOverrideUnavailable({
       organizationId: "org-a",
       csrfToken: "opaque",
+      sessionScope: "scope-a",
       capabilities: { quoteOverridePrice: true },
     })?.capabilities.quoteOverridePrice,
     false,
@@ -531,6 +534,7 @@ const testTransportContracts = async () => {
       ? {
           organizationId: "org A",
           csrfToken: "csrf-token",
+          sessionScope: "scope-a",
           capabilities: { quoteOverridePrice: true },
         }
       : url.endsWith("/configuration/resolve")
@@ -543,10 +547,10 @@ const testTransportContracts = async () => {
   }) as typeof fetch;
   try {
     await quoteApi.bootstrap("org A");
-    await quoteFormQueryOptions.customers("org A").queryFn();
-    await quoteFormQueryOptions.contacts("org A", "customer/1").queryFn();
-    await quoteFormQueryOptions.products("org A").queryFn();
-    await quoteFormQueryOptions.configuration("org A", "product/1").queryFn();
+    await quoteFormQueryOptions.customers("scope-a", "org A").queryFn();
+    await quoteFormQueryOptions.contacts("scope-a", "org A", "customer/1").queryFn();
+    await quoteFormQueryOptions.products("scope-a", "org A").queryFn();
+    await quoteFormQueryOptions.configuration("scope-a", "org A", "product/1").queryFn();
     await quoteApi.resolveConfiguration("org A", "product/1", {
       finish: "hemmed",
     });
@@ -609,6 +613,11 @@ const testTransportContracts = async () => {
   assert.equal(
     (resolveCall.init?.headers as Record<string, string>)["x-v2-csrf-token"],
     "csrf-token",
+  );
+  assert.equal(
+    (resolveCall.init?.headers as Record<string, string>)["content-type"],
+    "application/json",
+    "a CSRF header must not replace the JSON content type",
   );
   assert.equal(resolveCall.init?.body, JSON.stringify({ selections: { finish: "hemmed" } }));
   const createBody = JSON.parse(String(calls.at(-2)!.init?.body));

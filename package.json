@@ -22,6 +22,7 @@
     "v2:m1:permission-final": "tsx v2/scripts/runM15PermissionFinalValidation.ts",
     "v2:m1:commercial-persistence": "tsx v2/scripts/runM16CommercialPersistenceRehearsal.ts",
     "v2:m1:quote": "tsx v2/scripts/runM17QuoteRehearsal.ts",
+    "v2:m1:quote:browser": "playwright test --config v2/playwright.m175b.config.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:dotenv": "node -r dotenv/config ./node_modules/drizzle-kit/bin.cjs migrate",

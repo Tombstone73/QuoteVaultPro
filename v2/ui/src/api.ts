@@ -48,20 +48,32 @@ export type QuoteResult = Readonly<{ quote: QuoteRead; checkpointId?: string }>;
 export type UiBootstrap = Readonly<{
   organizationId: string;
   csrfToken: string;
+  /** Opaque session epoch, never a user/principal/capability claim. */
+  sessionScope: string;
   capabilities: Readonly<{ quoteOverridePrice: boolean }>;
 }>;
 export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
 export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly ("in" | "ft" | "mm")[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
 const csrfTokens = new Map<string, string>();
+let sessionScope: string | undefined;
+const csrfKey = (organizationId: string) => `${sessionScope ?? "unscoped"}:${organizationId}`;
 export const newBusinessRequestId = () => crypto.randomUUID();
 const endpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/quotes${suffix}`;
 const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, {
+    cache: "no-store",
     credentials: "include",
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
     ...init,
+    // init may carry only the CSRF header. Apply merged headers after init so
+    // a mutation is still parsed as JSON by the V2 HTTP boundary.
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
+  // Every authenticated Quote/form response carries the trusted host's opaque
+  // session epoch. Detect a replacement before its body can update the old
+  // session's React Query namespace.
+  const responseSessionScope = response.headers.get("x-v2-session-scope");
+  if (responseSessionScope) adoptSessionScope(responseSessionScope);
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.ok)
     throw (body.error ?? {
@@ -70,19 +82,32 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
     }) as ApiError;
   return body.data as T;
 };
+export const clearV2ApiSessionState = (): void => {
+  csrfTokens.clear();
+  sessionScope = undefined;
+};
+const adoptSessionScope = (nextScope: string): void => {
+  if (sessionScope && sessionScope !== nextScope) {
+    csrfTokens.clear();
+    if (typeof window !== "undefined")
+      window.dispatchEvent(new Event("v2:session-context-changed"));
+  }
+  sessionScope = nextScope;
+};
 export const quoteApi = {
   bootstrap: async (organizationId: string) => {
     const value = await request<UiBootstrap>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/ui-bootstrap`,
     );
-    csrfTokens.set(organizationId, value.csrfToken);
+    adoptSessionScope(value.sessionScope);
+    csrfTokens.set(csrfKey(organizationId), value.csrfToken);
     return value;
   },
   customers: (organizationId: string) => request<readonly Selection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/customers`),
   contacts: (organizationId: string, customerId: string) => request<readonly Selection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/customers/${encodeURIComponent(customerId)}/contacts`),
   products: (organizationId: string) => request<readonly Selection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products`),
   configuration: (organizationId: string, productId: string) => request<ProductConfiguration>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/configuration`),
-  resolveConfiguration: (organizationId: string, productId: string, selections: Record<string, unknown>) => request<ProductConfiguration>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/configuration/resolve`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" }, body: JSON.stringify({ selections }) }),
+  resolveConfiguration: (organizationId: string, productId: string, selections: Record<string, unknown>) => request<ProductConfiguration>(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/configuration/resolve`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ selections }) }),
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
@@ -94,7 +119,7 @@ export const quoteApi = {
   ) =>
     request<QuoteResult>(endpoint(organizationId), {
       method: "POST",
-      headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" },
+      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
       body: JSON.stringify({ ...input, businessRequestId }),
     }),
   patch: (
@@ -107,7 +132,7 @@ export const quoteApi = {
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
       {
         method: "PATCH",
-        headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" },
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
         body: JSON.stringify({
           ...input,
           businessRequestId,
@@ -126,7 +151,7 @@ export const quoteApi = {
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}/${action}`),
       {
         method: "POST",
-        headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" },
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
         body: JSON.stringify({ businessRequestId, expectedRevision }),
       },
     ),

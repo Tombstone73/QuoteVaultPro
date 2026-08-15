@@ -20,6 +20,7 @@ import { SelectionField } from "./SelectionField";
 
 type EditorProps = Readonly<{
   organizationId: string;
+  sessionScope: string;
   draftKey: string;
   initialDraft: QuoteLineDraft;
   initializeFromPersistedLine?: boolean;
@@ -278,6 +279,7 @@ export const SellingPriceFields = ({
 
 export const QuoteLineEditor = ({
   organizationId,
+  sessionScope,
   draftKey,
   initialDraft,
   initializeFromPersistedLine = false,
@@ -301,7 +303,11 @@ export const QuoteLineEditor = ({
   const appliedDefaults = useRef("");
   const validatedPersisted = useRef("");
   const resolutionSequence = useRef(0);
-  const definition = useQuoteFormConfiguration(organizationId, draft.productId);
+  const definition = useQuoteFormConfiguration(
+    sessionScope,
+    organizationId,
+    draft.productId,
+  );
   const replaceDraft = (
     value:
       | QuoteLineDraft

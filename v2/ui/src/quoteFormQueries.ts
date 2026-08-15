@@ -2,55 +2,57 @@ import { useQuery } from "@tanstack/react-query";
 import { quoteApi } from "./api";
 
 export const quoteKeys = {
-  quote: (organizationId: string, quoteId: string) =>
-    ["v2", organizationId, "quote", quoteId] as const,
-  bootstrap: (organizationId: string) =>
-    ["v2", organizationId, "ui-bootstrap"] as const,
+  quote: (sessionScope: string, organizationId: string, quoteId: string) =>
+    ["v2", sessionScope, organizationId, "quote", quoteId] as const,
+  bootstrap: (sessionScope: string, organizationId: string) =>
+    ["v2", sessionScope, organizationId, "ui-bootstrap"] as const,
 };
 
 export const quoteFormKeys = {
-  customers: (organizationId: string) =>
-    ["v2", organizationId, "quote-form", "customers"] as const,
-  contacts: (organizationId: string, customerId: string) =>
-    ["v2", organizationId, "quote-form", "contacts", customerId] as const,
-  products: (organizationId: string) =>
-    ["v2", organizationId, "quote-form", "products"] as const,
-  configuration: (organizationId: string, productId: string) =>
-    ["v2", organizationId, "quote-form", "configuration", productId] as const,
+  customers: (sessionScope: string, organizationId: string) =>
+    ["v2", sessionScope, organizationId, "quote-form", "customers"] as const,
+  contacts: (sessionScope: string, organizationId: string, customerId: string) =>
+    ["v2", sessionScope, organizationId, "quote-form", "contacts", customerId] as const,
+  products: (sessionScope: string, organizationId: string) =>
+    ["v2", sessionScope, organizationId, "quote-form", "products"] as const,
+  configuration: (sessionScope: string, organizationId: string, productId: string) =>
+    ["v2", sessionScope, organizationId, "quote-form", "configuration", productId] as const,
 };
 
 export const quoteFormQueryOptions = {
-  customers: (organizationId: string) => ({
-    queryKey: quoteFormKeys.customers(organizationId),
+  customers: (sessionScope: string, organizationId: string) => ({
+    queryKey: quoteFormKeys.customers(sessionScope, organizationId),
     queryFn: () => quoteApi.customers(organizationId),
-    enabled: Boolean(organizationId),
+    enabled: Boolean(sessionScope && organizationId),
   }),
-  contacts: (organizationId: string, customerId: string) => ({
-    queryKey: quoteFormKeys.contacts(organizationId, customerId),
+  contacts: (sessionScope: string, organizationId: string, customerId: string) => ({
+    queryKey: quoteFormKeys.contacts(sessionScope, organizationId, customerId),
     queryFn: () => quoteApi.contacts(organizationId, customerId),
-    enabled: Boolean(organizationId && customerId),
+    enabled: Boolean(sessionScope && organizationId && customerId),
   }),
-  products: (organizationId: string) => ({
-    queryKey: quoteFormKeys.products(organizationId),
+  products: (sessionScope: string, organizationId: string) => ({
+    queryKey: quoteFormKeys.products(sessionScope, organizationId),
     queryFn: () => quoteApi.products(organizationId),
-    enabled: Boolean(organizationId),
+    enabled: Boolean(sessionScope && organizationId),
   }),
-  configuration: (organizationId: string, productId: string) => ({
-    queryKey: quoteFormKeys.configuration(organizationId, productId),
+  configuration: (sessionScope: string, organizationId: string, productId: string) => ({
+    queryKey: quoteFormKeys.configuration(sessionScope, organizationId, productId),
     queryFn: () => quoteApi.configuration(organizationId, productId),
-    enabled: Boolean(organizationId && productId),
+    enabled: Boolean(sessionScope && organizationId && productId),
   }),
 };
 
-export const useQuoteFormCustomers = (organizationId: string) =>
-  useQuery(quoteFormQueryOptions.customers(organizationId));
+export const useQuoteFormCustomers = (sessionScope: string, organizationId: string) =>
+  useQuery(quoteFormQueryOptions.customers(sessionScope, organizationId));
 export const useQuoteFormContacts = (
+  sessionScope: string,
   organizationId: string,
   customerId: string,
-) => useQuery(quoteFormQueryOptions.contacts(organizationId, customerId));
-export const useQuoteFormProducts = (organizationId: string) =>
-  useQuery(quoteFormQueryOptions.products(organizationId));
+) => useQuery(quoteFormQueryOptions.contacts(sessionScope, organizationId, customerId));
+export const useQuoteFormProducts = (sessionScope: string, organizationId: string) =>
+  useQuery(quoteFormQueryOptions.products(sessionScope, organizationId));
 export const useQuoteFormConfiguration = (
+  sessionScope: string,
   organizationId: string,
   productId: string,
-) => useQuery(quoteFormQueryOptions.configuration(organizationId, productId));
+) => useQuery(quoteFormQueryOptions.configuration(sessionScope, organizationId, productId));

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "@jest/globals";
-import { requireV2M0CloneDatabaseUrl, UnsafeV2M0CloneError, V2_M0_WRITE_OPT_IN } from "../../infrastructure/persistence/cloneSafety";
+import {
+  requireV2BrowserCloneDatabaseUrl,
+  requireV2M0CloneDatabaseUrl,
+  UnsafeV2M0CloneError,
+  V2_BROWSER_WRITE_OPT_IN,
+  V2_M0_WRITE_OPT_IN,
+} from "../../infrastructure/persistence/cloneSafety";
 
 const cloneUrl = "postgresql://tester:secret@localhost:5432/neondb?sslmode=require";
 
@@ -27,5 +33,20 @@ describe("V2 M0 disposable clone safety", () => {
       [V2_M0_WRITE_OPT_IN]: "1",
       TEST_DATABASE_URL: cloneUrl,
     })).toContain("/neondb");
+  });
+});
+
+describe("V2 authenticated browser clone safety", () => {
+  test("requires its own explicit opt-in and never accepts application database fallbacks", () => {
+    expect(() => requireV2BrowserCloneDatabaseUrl({ TEST_DATABASE_URL: cloneUrl })).toThrow(UnsafeV2M0CloneError);
+    expect(requireV2BrowserCloneDatabaseUrl({
+      [V2_BROWSER_WRITE_OPT_IN]: "1",
+      TEST_DATABASE_URL: cloneUrl,
+    })).toBe(cloneUrl);
+    expect(() => requireV2BrowserCloneDatabaseUrl({
+      [V2_BROWSER_WRITE_OPT_IN]: "1",
+      TEST_DATABASE_URL: cloneUrl,
+      V2_DATABASE_URL: "postgresql://app:secret@localhost:5432/app",
+    })).toThrow(/other database connection URL/i);
   });
 });

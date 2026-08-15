@@ -4,6 +4,7 @@
  * or any V1 database runtime.
  */
 export const V2_M0_WRITE_OPT_IN = "V2_M0_POSTGRES_INTEGRATION";
+export const V2_BROWSER_WRITE_OPT_IN = "V2_POSTGRES_INTEGRATION";
 
 export class UnsafeV2M0CloneError extends Error {
   constructor(message: string) {
@@ -15,7 +16,7 @@ export class UnsafeV2M0CloneError extends Error {
 export type V2M0DatabaseEnvironment = Record<string, string | undefined>;
 
 const isDatabaseConnectionVariable = (key: string): boolean => {
-  if (key === "TEST_DATABASE_URL" || key === V2_M0_WRITE_OPT_IN) return false;
+  if (key === "TEST_DATABASE_URL" || key === V2_M0_WRITE_OPT_IN || key === V2_BROWSER_WRITE_OPT_IN) return false;
   // The integration harness must have one possible connection source only.
   // This intentionally also rejects libpq component variables (PGHOST, etc.)
   // and V2 runtime configuration: either could bypass TEST_DATABASE_URL.
@@ -24,9 +25,12 @@ const isDatabaseConnectionVariable = (key: string): boolean => {
     || /^DB(?:_|[A-Z])/i.test(key);
 };
 
-export function requireV2M0CloneDatabaseUrl(env: V2M0DatabaseEnvironment = process.env): string {
-  if (env[V2_M0_WRITE_OPT_IN] !== "1") {
-    throw new UnsafeV2M0CloneError(`${V2_M0_WRITE_OPT_IN} must explicitly equal 1.`);
+const requireV2CloneDatabaseUrl = (
+  writeOptIn: string,
+  env: V2M0DatabaseEnvironment,
+): string => {
+  if (env[writeOptIn] !== "1") {
+    throw new UnsafeV2M0CloneError(`${writeOptIn} must explicitly equal 1.`);
   }
 
   const url = env.TEST_DATABASE_URL?.trim();
@@ -49,4 +53,13 @@ export function requireV2M0CloneDatabaseUrl(env: V2M0DatabaseEnvironment = proce
     throw new UnsafeV2M0CloneError("The V2 M0 harness must not have any other database connection URL available.");
   }
   return url;
+};
+
+export function requireV2M0CloneDatabaseUrl(env: V2M0DatabaseEnvironment = process.env): string {
+  return requireV2CloneDatabaseUrl(V2_M0_WRITE_OPT_IN, env);
+}
+
+/** Browser validation has the same no-fallback safety contract with its own explicit gate. */
+export function requireV2BrowserCloneDatabaseUrl(env: V2M0DatabaseEnvironment = process.env): string {
+  return requireV2CloneDatabaseUrl(V2_BROWSER_WRITE_OPT_IN, env);
 }

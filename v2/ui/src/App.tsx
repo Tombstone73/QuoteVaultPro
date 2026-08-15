@@ -4,12 +4,14 @@ import {
   money,
   newBusinessRequestId,
   quoteApi,
+  clearV2ApiSessionState,
   type ApiError,
   type QuoteRead,
   type QuoteResult,
 } from "./api";
 import {
   applyAuthoritativeQuoteResult,
+  clearV2SessionQueryState,
   reconcileForbiddenQuoteMutation,
 } from "./quoteCache";
 import { QuoteLineEditor } from "./QuoteLineEditor";
@@ -58,6 +60,8 @@ export const App = ({
 }) => {
   const [page, setPage] = useState<"quote" | "lab">("quote");
   const [organizationId, setOrganizationId] = useState("");
+  const [sessionScope, setSessionScope] = useState("");
+  const sessionScopeRef = useRef(sessionScope);
   const organizationRef = useRef(organizationId);
   useEffect(() => {
     organizationRef.current = organizationId;
@@ -66,19 +70,33 @@ export const App = ({
   const [notice, setNotice] = useState("");
   const queryClient = useQueryClient();
   const quote = useQuery({
-    queryKey: quoteKeys.quote(organizationId, quoteId),
+    queryKey: quoteKeys.quote(sessionScope, organizationId, quoteId),
     queryFn: () => quoteApi.get(organizationId, quoteId),
-    enabled: Boolean(organizationId && quoteId),
+    enabled: Boolean(sessionScope && organizationId && quoteId),
   });
   const bootstrap = useQuery({
-    queryKey: quoteKeys.bootstrap(organizationId),
+    queryKey: quoteKeys.bootstrap(sessionScope, organizationId),
     queryFn: () => quoteApi.bootstrap(organizationId),
     enabled: Boolean(organizationId),
     staleTime: 0,
   });
-  const applyQuoteResult = (result: QuoteResult, resultOrganizationId: string) => {
+  useEffect(() => {
+    const nextScope = bootstrap.data?.sessionScope;
+    if (!nextScope) return;
+    if (sessionScopeRef.current && sessionScopeRef.current !== nextScope) {
+      clearV2SessionQueryState(queryClient);
+      setOrganizationId("");
+      setQuoteId("");
+      setNotice("");
+    }
+    sessionScopeRef.current = nextScope;
+    setSessionScope(nextScope);
+  }, [bootstrap.data?.sessionScope, queryClient]);
+  const applyQuoteResult = (result: QuoteResult, resultOrganizationId: string, resultSessionScope: string) => {
+    if (!resultSessionScope || sessionScopeRef.current !== resultSessionScope) return;
     const id = applyAuthoritativeQuoteResult(
       queryClient,
+      resultSessionScope,
       resultOrganizationId,
       result,
     );
@@ -87,9 +105,40 @@ export const App = ({
   const reconcileAuthority = () =>
     reconcileForbiddenQuoteMutation(
       queryClient,
+      sessionScope,
       organizationId,
       quoteId || undefined,
     );
+  useEffect(() => {
+    const resetForTrustedSessionChange = () => {
+      clearV2SessionQueryState(queryClient);
+      clearV2ApiSessionState();
+      sessionScopeRef.current = "";
+      setSessionScope("");
+      setOrganizationId("");
+      setQuoteId("");
+      setNotice("");
+    };
+    window.addEventListener(
+      "v2:session-context-changed",
+      resetForTrustedSessionChange,
+    );
+    return () =>
+      window.removeEventListener(
+        "v2:session-context-changed",
+        resetForTrustedSessionChange,
+      );
+  }, [queryClient]);
+  useEffect(() => {
+    const refreshTrustedBootstrap = () => {
+      if (organizationRef.current)
+        void queryClient.invalidateQueries({
+          queryKey: quoteKeys.bootstrap(sessionScopeRef.current, organizationRef.current),
+        });
+    };
+    window.addEventListener("focus", refreshTrustedBootstrap);
+    return () => window.removeEventListener("focus", refreshTrustedBootstrap);
+  }, [queryClient]);
 
   return (
     <div className="app">
@@ -144,9 +193,13 @@ export const App = ({
         ) : (
           <QuoteWorkspace
             organizationId={organizationId}
-            setOrganizationId={setOrganizationId}
+            setOrganizationId={(nextOrganizationId) => {
+              setOrganizationId(nextOrganizationId);
+              setQuoteId("");
+            }}
+            sessionScope={sessionScope}
             quote={quote.data}
-            error={quote.error}
+          error={quote.error ?? bootstrap.error}
             loading={quote.isFetching}
             load={(id) => {
               setQuoteId(id);
@@ -154,7 +207,7 @@ export const App = ({
             }}
             reload={() =>
               queryClient.invalidateQueries({
-                queryKey: quoteKeys.quote(organizationId, quoteId),
+                queryKey: quoteKeys.quote(sessionScope, organizationId, quoteId),
               })
             }
             notice={notice}
@@ -205,6 +258,7 @@ const Lab = () => (
 type WorkspaceProps = Readonly<{
   organizationId: string;
   setOrganizationId: (value: string) => void;
+  sessionScope: string;
   quote?: QuoteRead;
   error: unknown;
   loading: boolean;
@@ -212,7 +266,11 @@ type WorkspaceProps = Readonly<{
   reload: () => void;
   notice: string;
   setNotice: (value: string) => void;
-  applyQuoteResult: (result: QuoteResult, organizationId: string) => void;
+  applyQuoteResult: (
+    result: QuoteResult,
+    organizationId: string,
+    sessionScope: string,
+  ) => void;
   reconcileAuthority: () => Promise<void>;
   canOverridePrice: boolean;
   csrfReady: boolean;
@@ -221,6 +279,7 @@ type WorkspaceProps = Readonly<{
 const QuoteWorkspace = ({
   organizationId,
   setOrganizationId,
+  sessionScope,
   quote,
   error,
   loading,
@@ -243,12 +302,13 @@ const QuoteWorkspace = ({
   const [headerContactId, setHeaderContactId] = useState("");
   const [editingLineId, setEditingLineId] = useState("");
   const [addEditorVersion, setAddEditorVersion] = useState(0);
-  const customers = useQuoteFormCustomers(organizationId);
+  const customers = useQuoteFormCustomers(sessionScope, organizationId);
   const contacts = useQuoteFormContacts(
+    sessionScope,
     organizationId,
     quote ? headerCustomerId : customerId,
   );
-  const products = useQuoteFormProducts(organizationId);
+  const products = useQuoteFormProducts(sessionScope, organizationId);
   const requestIds = useRef<Record<string, { id: string; payload: string }>>({});
 
   const requestId = (operation: string, payload: unknown) => {
@@ -274,9 +334,16 @@ const QuoteWorkspace = ({
     setEditingLineId("");
   }, [quote?.quote.quoteId]);
 
-  const handleForbidden = (mutationError: unknown) => {
-    if ((mutationError as ApiError)?.code === "FORBIDDEN")
+  const handleMutationError = (mutationError: unknown) => {
+    const code = (mutationError as ApiError)?.code;
+    if (code === "FORBIDDEN")
       void reconcileAuthority();
+    if (code === "STALE_STATE") {
+      setNotice(
+        "This Quote changed elsewhere. Current server state is refreshing; review your retained draft before resubmitting.",
+      );
+      void reload();
+    }
   };
 
   const create = useMutation({
@@ -312,10 +379,10 @@ const QuoteWorkspace = ({
     },
     onSuccess: (result) => {
       completeRequest("create");
-      applyQuoteResult(result, organizationId);
+      applyQuoteResult(result, organizationId, sessionScope);
       setNotice("Quote created from authoritative Product resolution and Pricing.");
     },
-    onError: handleForbidden,
+    onError: handleMutationError,
   });
 
   const save = useMutation({
@@ -351,10 +418,10 @@ const QuoteWorkspace = ({
     },
     onSuccess: (result) => {
       completeRequest("save");
-      applyQuoteResult(result, organizationId);
+      applyQuoteResult(result, organizationId, sessionScope);
       setNotice("Quote saved.");
     },
-    onError: handleForbidden,
+    onError: handleMutationError,
   });
 
   const lineChange = useMutation({
@@ -374,12 +441,12 @@ const QuoteWorkspace = ({
     },
     onSuccess: (result) => {
       completeRequest("line-change");
-      applyQuoteResult(result, organizationId);
+      applyQuoteResult(result, organizationId, sessionScope);
       setEditingLineId("");
       setAddEditorVersion((value) => value + 1);
       setNotice("Quote line repriced by the authoritative server.");
     },
-    onError: handleForbidden,
+    onError: handleMutationError,
   });
 
   const action = useMutation({
@@ -399,14 +466,25 @@ const QuoteWorkspace = ({
     onSuccess: (result) => {
       completeRequest("action:send");
       completeRequest("action:accept");
-      applyQuoteResult(result, organizationId);
+      applyQuoteResult(result, organizationId, sessionScope);
       setNotice("Quote lifecycle updated.");
     },
-    onError: handleForbidden,
+    onError: handleMutationError,
   });
 
   const mutationError =
     error || create.error || save.error || action.error || lineChange.error;
+  const changeOrganization = (nextOrganizationId: string) => {
+    if (nextOrganizationId === organizationId) return;
+    requestIds.current = {};
+    setCustomerId("");
+    setContactId("");
+    setHeaderCustomerId("");
+    setHeaderContactId("");
+    setOpenQuoteId("");
+    setEditingLineId("");
+    setOrganizationId(nextOrganizationId);
+  };
 
   return (
     <section className="lab">
@@ -415,7 +493,7 @@ const QuoteWorkspace = ({
           Organization ID
           <input
             value={organizationId}
-            onChange={(event) => setOrganizationId(event.target.value)}
+            onChange={(event) => changeOrganization(event.target.value)}
             placeholder="Authenticated route scope"
           />
         </label>
@@ -503,6 +581,7 @@ const QuoteWorkspace = ({
           <h3>Initial commercial line</h3>
           <QuoteLineEditor
             organizationId={organizationId}
+            sessionScope={sessionScope}
             draftKey={`create:${organizationId}`}
             initialDraft={emptyQuoteLineDraft()}
             products={products.data ?? []}
@@ -683,6 +762,7 @@ const QuoteWorkspace = ({
                             </p>
                             <QuoteLineEditor
                               organizationId={organizationId}
+                              sessionScope={sessionScope}
                               draftKey={`edit:${line.lineId}:${quote.revision}`}
                               initialDraft={draftFromQuoteLine(line)}
                               initializeFromPersistedLine
@@ -713,6 +793,7 @@ const QuoteWorkspace = ({
             <h3>Add commercial line</h3>
             <QuoteLineEditor
               organizationId={organizationId}
+              sessionScope={sessionScope}
               draftKey={`add:${quote.quote.quoteId}:${addEditorVersion}`}
               initialDraft={emptyQuoteLineDraft()}
               products={products.data ?? []}

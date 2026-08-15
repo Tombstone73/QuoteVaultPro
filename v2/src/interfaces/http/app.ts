@@ -11,7 +11,7 @@ import {
   type QuoteHttpDependencies,
 } from "./quoteRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
-import { issueV2CsrfToken, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
+import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
 export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
 export type AuthenticatedQuoteRouteRuntime = Readonly<{
@@ -53,6 +53,10 @@ export const createV2HttpApp = (
       quote.trustedHostMiddleware,
       async (request, response) => {
         try {
+          // This opaque session epoch is intentionally not authority. Emit it
+          // before the capability decision so a safely denied old tenant
+          // request can still clear a browser session that was replaced.
+          response.setHeader("x-v2-session-scope", issueV2SessionScope(request));
           const organizationId = request.params.organizationId;
           const principal = await quote.dependencies.principals.principal(
             request,
@@ -66,6 +70,7 @@ export const createV2HttpApp = (
             data: {
               organizationId,
               csrfToken: issueV2CsrfToken(request),
+              sessionScope: issueV2SessionScope(request),
               capabilities: {
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
               },
@@ -80,6 +85,14 @@ export const createV2HttpApp = (
     app.use(
       "/v2/organizations/:organizationId/quotes",
       quote.trustedHostMiddleware,
+      (request, response, next) => {
+        try {
+          response.setHeader("x-v2-session-scope", issueV2SessionScope(request));
+        } catch {
+          // The principal provider remains responsible for the opaque auth denial.
+        }
+        next();
+      },
       requireV2CsrfToken,
       createQuoteRouter(quote.dependencies),
     );

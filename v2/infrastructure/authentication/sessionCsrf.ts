@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
 
 type SessionCarrier = Request & {
-  session?: { v2CsrfToken?: string };
+  session?: { v2CsrfToken?: string; v2SessionScope?: string };
 };
 
 /**
@@ -13,6 +13,13 @@ export const issueV2CsrfToken = (request: Request): string => {
   const session = (request as SessionCarrier).session;
   if (!session) throw new Error("A trusted host session is required for V2 CSRF.");
   return (session.v2CsrfToken ??= randomBytes(32).toString("base64url"));
+};
+
+/** Opaque browser-session epoch; it is neither identity nor authority. */
+export const issueV2SessionScope = (request: Request): string => {
+  const session = (request as SessionCarrier).session;
+  if (!session) throw new Error("A trusted host session is required for V2 session scope.");
+  return (session.v2SessionScope ??= randomBytes(24).toString("base64url"));
 };
 
 export const requireV2CsrfToken: RequestHandler = (request, response, next) => {
