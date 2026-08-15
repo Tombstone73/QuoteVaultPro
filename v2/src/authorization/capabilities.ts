@@ -4,6 +4,18 @@
  */
 export const capabilityIds = [
   "orders.create",
+  "quote.view",
+  "quote.create",
+  "quote.edit",
+  "quote.send",
+  "quote.convert",
+  "order.view",
+  "order.create",
+  "order.edit",
+  "order.cancel",
+  "invoice.view",
+  "invoice.editDraft",
+  "invoice.issue",
   "quotes.convert",
   "proof.respond",
   "fulfillment.pickup",
