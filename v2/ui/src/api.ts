@@ -1,0 +1,90 @@
+export type ApiError = Readonly<{ code: string; message: string }>;
+export type QuoteLine = Readonly<{
+  lineId: string;
+  description: string;
+  quantity: number;
+  calculatedLineAmount: { cents: number; currency: string };
+  sellingLineAmount: { cents: number; currency: string };
+  sellingPriceDecision: { kind: string };
+}>;
+export type QuoteRead = Readonly<{
+  quote: {
+    quoteId: string;
+    purchaseOrderNumber?: string;
+    requestedDueDate?: string;
+    deliveryState: "not_sent" | "sent";
+    acceptanceState: "not_accepted" | "accepted";
+    lines: QuoteLine[];
+  };
+  number: { display: string; core: string };
+  revision: string;
+}>;
+export type QuoteResult = Readonly<{ quote: QuoteRead; checkpointId?: string }>;
+export const newBusinessRequestId = () => crypto.randomUUID();
+const endpoint = (org: string, suffix = "") =>
+  `/v2/organizations/${encodeURIComponent(org)}/quotes${suffix}`;
+const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
+  const response = await fetch(url, {
+    credentials: "include",
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    ...init,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.ok)
+    throw (body.error ?? {
+      code: "INTERNAL_ERROR",
+      message: "The Quote service is unavailable.",
+    }) as ApiError;
+  return body.data as T;
+};
+export const quoteApi = {
+  get: (organizationId: string, quoteId: string) =>
+    request<QuoteRead>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
+    ),
+  create: (
+    organizationId: string,
+    businessRequestId: string,
+    input: Record<string, unknown>,
+  ) =>
+    request<QuoteResult>(endpoint(organizationId), {
+      method: "POST",
+      body: JSON.stringify({ ...input, businessRequestId }),
+    }),
+  patch: (
+    organizationId: string,
+    quoteId: string,
+    businessRequestId: string,
+    input: Record<string, unknown>,
+  ) =>
+    request<QuoteResult>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...input,
+          businessRequestId,
+          expectedRevision: input.expectedRevision,
+        }),
+      },
+    ),
+  action: (
+    organizationId: string,
+    quoteId: string,
+    action: "send" | "accept",
+    businessRequestId: string,
+    expectedRevision: string,
+  ) =>
+    request<QuoteResult>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/${action}`),
+      {
+        method: "POST",
+        body: JSON.stringify({ businessRequestId, expectedRevision }),
+      },
+    ),
+};
+export const money = (value: { cents: number; currency: string }) =>
+  new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: value.currency,
+  }).format(value.cents / 100);
