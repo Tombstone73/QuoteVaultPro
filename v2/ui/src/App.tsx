@@ -268,7 +268,7 @@ const QuoteWorkspace = ({
           contactId: contact || undefined,
         },
         purchaseOrderNumber: po || undefined,
-        lines: [{ productId: product, quantity: Number(quantity) }],
+        lines: [{ productId: product, quantity: Number(quantity), ...(newSelections ? { selections: JSON.parse(newSelections) } : {}), ...(resolvedForm?.requiresDimensions ? { dimensions: { width: newWidth, height: newHeight, unit: "in" } } : {}) }],
     }),
     onSuccess: (r) => {
       completeRequest("create");
@@ -418,6 +418,8 @@ const QuoteWorkspace = ({
                 onChange={(e) => setQuantity(e.target.value)}
               />
             </label>
+            {resolvedForm?.requiresDimensions && <><label className="field">Width ({resolvedForm.supportedDimensionUnits[0]})<input value={newWidth} onChange={(e) => setNewWidth(e.target.value)} /></label><label className="field">Height ({resolvedForm.supportedDimensionUnits[0]})<input value={newHeight} onChange={(e) => setNewHeight(e.target.value)} /></label></>}
+            {resolvedForm?.fields.map((field) => <label className="field" key={`create-${field.selectionKey}`}>{field.label}<select value={(JSON.parse(newSelections || "{}")[field.selectionKey] ?? "") as string} onChange={(e) => { const next = JSON.parse(newSelections || "{}"); next[field.selectionKey] = e.target.value; setNewSelections(JSON.stringify(next)); resolveConfiguration.mutate(next); }}><option value="">{field.required ? "Select required option" : "No selection"}</option>{field.choices.map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}</select></label>)}
             <label className="field">
               Customer
               <select value={headerCustomer} onChange={(e) => { setHeaderCustomer(e.target.value); setHeaderContact(""); }}><option value="">Select customer</option>{customers.data?.map((item) => <option key={item.customerId} value={item.customerId}>{item.displayName}</option>)}</select>
