@@ -10,6 +10,8 @@ import {
   createQuoteRouter,
   type QuoteHttpDependencies,
 } from "./quoteRoutes.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import { issueV2CsrfToken, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
 export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
 export type AuthenticatedQuoteRouteRuntime = Readonly<{
@@ -46,9 +48,39 @@ export const createV2HttpApp = (
     }
   });
   if (quote)
+    app.get(
+      "/v2/organizations/:organizationId/ui-bootstrap",
+      quote.trustedHostMiddleware,
+      async (request, response) => {
+        try {
+          const organizationId = request.params.organizationId;
+          const principal = await quote.dependencies.principals.principal(
+            request,
+            organizationId,
+          );
+          const policy = new AuthorityPolicy();
+          if (!policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed)
+            return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Quote access is unavailable." } });
+          return response.status(200).json({
+            ok: true,
+            data: {
+              organizationId,
+              csrfToken: issueV2CsrfToken(request),
+              capabilities: {
+                quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
+              },
+            },
+          });
+        } catch {
+          return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Authenticated access is required." } });
+        }
+      },
+    );
+  if (quote)
     app.use(
       "/v2/organizations/:organizationId/quotes",
       quote.trustedHostMiddleware,
+      requireV2CsrfToken,
       createQuoteRouter(quote.dependencies),
     );
 

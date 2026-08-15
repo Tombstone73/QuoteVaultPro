@@ -53,6 +53,28 @@ capability discovery, lookup/list reads, or all controlled line/price-override
 operations needed to demonstrate the complete edit model safely. This UI does
 not invent those backend contracts.
 
+## Browser security and Quote projection
+
+The V2 host issues a CSRF synchronizer token only after its trusted session has
+been resolved into a fresh V2 Principal for the selected organization. Browser
+mutations must send that session-bound token in `X-V2-CSRF-Token`; GET/HEAD do
+not require it. The token is separate from `businessRequestId`: CSRF proves the
+browser session, while the M0 coordinator makes a commercial command exactly
+once. The minimal bootstrap projection exposes only `quoteOverridePrice`, never
+roles, permission sets, or a browser-authoritative principal. Every mutation
+still reissues authority and enforces the capability in Sales.
+
+The Quote HTTP response is now an intentional browser projection rather than a
+persistence DTO: current commercial header, lifecycle/checkpoints, ordered
+lines, resolved configuration facts, calculated/selling amounts and decisions,
+and backend-projected calculated/selling document subtotals. React only renders
+these facts; it neither evaluates PBV2 nor calculates commercial money.
+
+The production composition remains same-origin and host-owned: an existing
+trusted Passport/session host supplies identity through
+`PassportSessionIdentitySource`; V2 re-resolves final M1.5 permission-set
+authority per request. The standalone V2 process remains fail-closed.
+
 ## Scope deliberately deferred
 
 M1.7.5 provides an app shell, UI Lab, theme resolver, semantic components, and

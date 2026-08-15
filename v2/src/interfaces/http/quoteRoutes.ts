@@ -7,6 +7,8 @@ import type {
   CreateQuoteInput,
   QuoteApplicationService,
   QuoteLifecycleInput,
+  QuoteOperationResult,
+  QuoteReadModel,
   UpdateQuoteInput,
 } from "../../modules/sales/quoteApplication.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
@@ -59,6 +61,56 @@ const requestId = (body: unknown): string => {
     );
   return value;
 };
+/** Browser projection: commercial facts only; no repository or PBV2 editor state. */
+const quoteForUi = (value: QuoteReadModel) => {
+  const lines = value.quote.lines.map((line, index) => ({
+    lineId: line.lineId,
+    position: index + 1,
+    productId: line.productId,
+    ...(line.productTypeId ? { productTypeId: line.productTypeId } : {}),
+    description: line.description,
+    quantity: line.quantity,
+    resolvedConfiguration: line.resolvedConfiguration,
+    calculatedUnitAmount: line.pricingResult.calculatedUnitAmount,
+    calculatedLineAmount: line.calculatedLineAmount,
+    sellingUnitAmount: line.sellingPriceDecision.resultingUnitAmount,
+    sellingLineAmount: line.sellingLineAmount,
+    sellingPriceDecision: line.sellingPriceDecision,
+  }));
+  const currency = value.quote.currency;
+  return {
+    quote: {
+      quoteId: value.quote.quoteId,
+      customerContact: value.quote.customerContact,
+      purchaseOrderNumber: value.quote.purchaseOrderNumber,
+      requestedDueDate: value.quote.requestedDueDate,
+      terms: value.quote.terms,
+      currency,
+      expiresAt: value.quote.expiresAt,
+      deliveryState: value.quote.deliveryState,
+      acceptanceState: value.quote.acceptanceState,
+      lines,
+    },
+    number: value.number,
+    revision: value.revision,
+    checkpoints: value.checkpoints,
+    totals: {
+      currency,
+      calculatedLineAmount: {
+        currency,
+        cents: lines.reduce((total, line) => total + line.calculatedLineAmount.cents, 0),
+      },
+      sellingLineAmount: {
+        currency,
+        cents: lines.reduce((total, line) => total + line.sellingLineAmount.cents, 0),
+      },
+    },
+  };
+};
+const uiResult = (value: QuoteOperationResult) => ({
+  quote: quoteForUi(value.quote),
+  ...(value.checkpointId ? { checkpointId: value.checkpointId } : {}),
+});
 const context = async (
   request: Request,
   dependencies: QuoteHttpDependencies,
@@ -98,7 +150,7 @@ const send = async (
     .type("application/json")
     .send(
       JSON.stringify(
-        { ok: true, data: result.value },
+        { ok: true, data: uiResult(result.value) },
         (_key, value: unknown) =>
           typeof value === "bigint" ? value.toString() : value,
       ),
@@ -134,7 +186,7 @@ export const createQuoteRouter = (
         .type("application/json")
         .send(
           JSON.stringify(
-            { ok: true, data: result.value },
+            { ok: true, data: quoteForUi(result.value) },
             (_key, value: unknown) =>
               typeof value === "bigint" ? value.toString() : value,
           ),

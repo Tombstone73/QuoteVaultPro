@@ -50,6 +50,12 @@ export const App = ({
     queryFn: () => quoteApi.get(org, quoteId),
     enabled: Boolean(org && quoteId),
   });
+  const bootstrap = useQuery({
+    queryKey: ["ui-bootstrap", org],
+    queryFn: () => quoteApi.bootstrap(org),
+    enabled: Boolean(org),
+    staleTime: 0,
+  });
   const load = (id: string) => {
     setQuoteId(id);
     setNotice("");
@@ -125,6 +131,8 @@ export const App = ({
             notice={notice}
             setNotice={setNotice}
             applyQuoteResult={applyQuoteResult}
+            canOverridePrice={bootstrap.data?.capabilities.quoteOverridePrice === true}
+            csrfReady={bootstrap.isSuccess}
           />
         )}
       </main>
@@ -187,6 +195,8 @@ const QuoteWorkspace = ({
   notice,
   setNotice,
   applyQuoteResult,
+  canOverridePrice,
+  csrfReady,
 }: {
   org: string;
   setOrg: (s: string) => void;
@@ -198,6 +208,8 @@ const QuoteWorkspace = ({
   notice: string;
   setNotice: (s: string) => void;
   applyQuoteResult: (result: QuoteResult, organizationId: string) => void;
+  canOverridePrice: boolean;
+  csrfReady: boolean;
 }) => {
   const [open, setOpen] = useState("");
   const [customer, setCustomer] = useState("");
@@ -364,7 +376,7 @@ const QuoteWorkspace = ({
           <div className="actions">
             <button
               className="button"
-              disabled={create.isPending || !org || !customer || !product}
+              disabled={create.isPending || !org || !customer || !product || !csrfReady}
               onClick={() => create.mutate()}
             >
               Create Quote
@@ -394,7 +406,7 @@ const QuoteWorkspace = ({
             <div className="actions">
               <button
                 className="button secondary"
-                disabled={save.isPending}
+                disabled={save.isPending || !csrfReady}
                 onClick={() => save.mutate()}
               >
                 Save
@@ -402,7 +414,7 @@ const QuoteWorkspace = ({
               {quote.quote.deliveryState === "not_sent" && (
                 <button
                   className="button"
-                  disabled={action.isPending}
+                  disabled={action.isPending || !csrfReady}
                   onClick={() => action.mutate("send")}
                 >
                   Send Quote
@@ -412,7 +424,7 @@ const QuoteWorkspace = ({
                 quote.quote.acceptanceState === "not_accepted" && (
                   <button
                     className="button"
-                    disabled={action.isPending}
+                  disabled={action.isPending || !csrfReady}
                     onClick={() => action.mutate("accept")}
                   >
                     Accept Quote
@@ -422,6 +434,9 @@ const QuoteWorkspace = ({
           </div>
           <div className="card">
             <h2>Commercial lines</h2>
+            {!canOverridePrice && (
+              <p className="muted">Selling-price overrides are unavailable for this authenticated permission set.</p>
+            )}
             {loading ? (
               <div className="skeleton" />
             ) : (

@@ -410,12 +410,14 @@ async function main() {
       [f.org, quoteId],
     );
     assert(audit.rowCount >= 3, "Semantic Audit was missing.");
+    const trustedSession: { v2CsrfToken?: string } = {};
     const trustedHostMiddleware = (req: any, _res: any, next: () => void) => {
       // Test host state is server-side and fixed. Request headers cannot select
       // a subject, organization, capability, or staff actor.
       req.isAuthenticated = () => true;
       req.user = { id: f.user };
       req.sessionID = "m17-trusted-session";
+      req.session = trustedSession;
       next();
     };
     const runtime = composeAuthenticatedQuoteRuntime({
@@ -440,8 +442,23 @@ async function main() {
       // This forged body identity must never be consulted.
       principal: { kind: "staff", userId: f.limited, organizationId: f.other },
     };
+    const bootstrap = await request(app)
+      .get(`/v2/organizations/${f.org}/ui-bootstrap`)
+      .expect(200);
+    const csrf = bootstrap.body.data.csrfToken as string;
+    assert(csrf && bootstrap.body.data.capabilities.quoteOverridePrice === true, "UI bootstrap did not issue scoped CSRF/capability projection.");
+    await request(app)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .send(routeInput)
+      .expect(403);
+    await request(app)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .set("x-v2-csrf-token", "invalid")
+      .send({ ...routeInput, businessRequestId: "m17-http-invalid-csrf" })
+      .expect(403);
     const httpCreate = await request(app)
       .post(`/v2/organizations/${f.org}/quotes`)
+      .set("x-v2-csrf-token", csrf)
       .send(routeInput);
     assert(
       httpCreate.status === 200,
@@ -451,12 +468,36 @@ async function main() {
     assert(httpQuoteId, "Authenticated Quote route did not create a Quote.");
     const httpReplay = await request(app)
       .post(`/v2/organizations/${f.org}/quotes`)
+      .set("x-v2-csrf-token", csrf)
       .send(routeInput)
       .expect(200);
     assert(
       httpReplay.body.data.quote.quote.quoteId === httpQuoteId,
       "Authenticated Quote route lost M0 replay semantics.",
     );
+    const otherSession: { v2CsrfToken?: string } = {};
+    const otherSessionRuntime = composeAuthenticatedQuoteRuntime({
+      pool,
+      trustedHostIdentity: new PassportSessionIdentitySource(),
+      trustedHostMiddleware: (req: any, _res, next) => {
+        req.isAuthenticated = () => true;
+        req.user = { id: f.user };
+        req.sessionID = "m17-other-session";
+        req.session = otherSession;
+        next();
+      },
+    });
+    const otherSessionApp = createV2HttpApp(
+      loadV2RuntimeConfig({ NODE_ENV: "test" }),
+      { log: () => undefined },
+      undefined,
+      otherSessionRuntime,
+    );
+    await request(otherSessionApp)
+      .post(`/v2/organizations/${f.org}/quotes`)
+      .set("x-v2-csrf-token", csrf)
+      .send({ ...routeInput, businessRequestId: "m17-http-cross-session-csrf" })
+      .expect(403);
     await request(app)
       .get(`/v2/organizations/${f.org}/quotes/${httpQuoteId}`)
       .set("x-forged-user", f.limited)
@@ -485,6 +526,7 @@ async function main() {
     );
     await request(unauthenticated)
       .post(`/v2/organizations/${f.org}/quotes`)
+      .set("x-v2-csrf-token", csrf)
       .send(routeInput)
       .expect(403);
     await client.query(
@@ -493,6 +535,7 @@ async function main() {
     );
     await request(app)
       .post(`/v2/organizations/${f.org}/quotes`)
+      .set("x-v2-csrf-token", csrf)
       .send({ ...routeInput, businessRequestId: "m17-http-capability-removed" })
       .expect(403);
     console.log("[m1.7] Quote application PostgreSQL rehearsal passed.");

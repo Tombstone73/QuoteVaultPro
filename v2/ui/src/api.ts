@@ -20,6 +20,12 @@ export type QuoteRead = Readonly<{
   revision: string;
 }>;
 export type QuoteResult = Readonly<{ quote: QuoteRead; checkpointId?: string }>;
+export type UiBootstrap = Readonly<{
+  organizationId: string;
+  csrfToken: string;
+  capabilities: Readonly<{ quoteOverridePrice: boolean }>;
+}>;
+const csrfTokens = new Map<string, string>();
 export const newBusinessRequestId = () => crypto.randomUUID();
 const endpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/quotes${suffix}`;
@@ -38,6 +44,13 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   return body.data as T;
 };
 export const quoteApi = {
+  bootstrap: async (organizationId: string) => {
+    const value = await request<UiBootstrap>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/ui-bootstrap`,
+    );
+    csrfTokens.set(organizationId, value.csrfToken);
+    return value;
+  },
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
@@ -49,6 +62,7 @@ export const quoteApi = {
   ) =>
     request<QuoteResult>(endpoint(organizationId), {
       method: "POST",
+      headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" },
       body: JSON.stringify({ ...input, businessRequestId }),
     }),
   patch: (
@@ -61,6 +75,7 @@ export const quoteApi = {
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
       {
         method: "PATCH",
+        headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" },
         body: JSON.stringify({
           ...input,
           businessRequestId,
@@ -79,6 +94,7 @@ export const quoteApi = {
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}/${action}`),
       {
         method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(organizationId) ?? "" },
         body: JSON.stringify({ businessRequestId, expectedRevision }),
       },
     ),
