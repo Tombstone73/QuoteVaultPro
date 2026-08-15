@@ -1,7 +1,11 @@
 import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
-import { loadV2RuntimeConfig, type V2RuntimeConfig } from "./config/runtimeConfig.js";
+import {
+  loadV2RuntimeConfig,
+  type V2RuntimeConfig,
+} from "./config/runtimeConfig.js";
 import { createV2HttpApp } from "./interfaces/http/app.js";
+import type { QuoteHttpDependencies } from "./interfaces/http/quoteRoutes.js";
 import { createConsoleLogger, type V2Logger } from "./observability/logger.js";
 
 export type RunningV2Server = Readonly<{
@@ -11,8 +15,9 @@ export type RunningV2Server = Readonly<{
 export const startV2Server = async (
   config: V2RuntimeConfig = loadV2RuntimeConfig(),
   logger: V2Logger = createConsoleLogger(),
+  dependencies: Readonly<{ quote?: QuoteHttpDependencies }> = {},
 ): Promise<RunningV2Server> => {
-  const app = createV2HttpApp(config, logger);
+  const app = createV2HttpApp(config, logger, undefined, dependencies.quote);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);
@@ -22,7 +27,9 @@ export const startV2Server = async (
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
     logger.log("info", "v2.stopped");
   };
 
@@ -30,13 +37,19 @@ export const startV2Server = async (
   return { close };
 };
 
-const installShutdownHandlers = (server: RunningV2Server, logger: V2Logger): void => {
+const installShutdownHandlers = (
+  server: RunningV2Server,
+  logger: V2Logger,
+): void => {
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.log("info", "v2.shutdown.requested", { operationId: signal });
-    void server.close().then(() => process.exit(0)).catch(() => process.exit(1));
+    void server
+      .close()
+      .then(() => process.exit(0))
+      .catch(() => process.exit(1));
   };
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));

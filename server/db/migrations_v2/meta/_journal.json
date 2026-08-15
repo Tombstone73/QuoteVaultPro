@@ -1310,6 +1310,13 @@
       "when": 1788048000038,
       "tag": "0191_v2_sales_subtype_and_terms_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1788048000039,
+      "tag": "0192_v2_quote_operation_audit_and_override_capability",
+      "breakpoints": true
     }
   ]
 }

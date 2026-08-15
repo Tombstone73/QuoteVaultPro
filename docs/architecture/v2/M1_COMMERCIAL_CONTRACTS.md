@@ -74,3 +74,10 @@ M1.6 realizes the approved additive physical foundation in [M1 Commercial Persis
 - Formula-library historical version policy and Recipe/BOM/physical-weight decisions.
 
 **Next milestone: M1.2 — Pricing Parity Adapter.** It adapts the approved pure evaluator behind `PricingPort` and executes the fixture catalog. It does not begin in M1.1.
+## M1.7 implementation note
+
+The Quote contract is now exercised by the narrowly bounded M1.7 vertical
+slice. See [M1_QUOTE_VERTICAL_SLICE.md](M1_QUOTE_VERTICAL_SLICE.md) for the
+runtime boundary, persistence mapping, audit/checkpoint behavior, and explicit
+exclusions. The M1.1 contracts remain the source of the commercial model; M1.7
+does not introduce Order, Billing, or Routing contracts beyond them.

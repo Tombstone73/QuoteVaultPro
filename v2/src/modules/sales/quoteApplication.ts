@@ -1,0 +1,949 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { OperationContext } from "../../application/operation.js";
+import { requireOperationPrincipalScope } from "../../application/operation.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import {
+  principalSubject,
+  staffActorId,
+} from "../../authorization/principals.js";
+import {
+  failure,
+  success,
+  type ApplicationResult,
+  V2ApplicationError,
+} from "../../errors/applicationError.js";
+import type {
+  CustomerContactReference,
+  CustomerPresentationIdentity,
+  CustomersReadPort,
+} from "../customers/contracts.js";
+import type { PricingPort } from "../pricing/contracts.js";
+import type {
+  ProductPricingCompatibilityPort,
+  ResolveActivePricingInput,
+} from "../products/contracts.js";
+import {
+  brandedId,
+  canonicalJson,
+  currencyCode,
+  freezeCheckpoint,
+  money,
+  percentageBasisPoints,
+  type Money,
+  type OrganizationId,
+  type QuoteCheckpointId,
+  type QuoteId,
+  type SalesLineId,
+} from "../shared/commercialValues.js";
+import {
+  assertSalesLineSnapshot,
+  type AttributionSnapshot,
+  type CommercialTerms,
+  type MeaningfulAuditChange,
+  type QuoteCheckpoint,
+  type QuoteCurrentState,
+  type SalesLineSnapshot,
+  type SellingPriceDecision,
+} from "./contracts.js";
+import {
+  toQuoteCheckpointPersistenceEnvelope,
+  toSalesDocumentTermsPersistence,
+  toSalesLinePersistenceEnvelope,
+  type SalesDocumentNumber,
+} from "./persistenceContracts.js";
+
+export type QuoteSellingInstruction = Readonly<
+  | { kind: "calculated" }
+  | { kind: "unit_override"; unitCents: number; reason: string }
+  | { kind: "total_override"; totalCents: number; reason: string }
+  | { kind: "discount"; discountBasisPoints: number; reason: string }
+>;
+export type QuoteLineInput = Readonly<{
+  productId: string;
+  description?: string;
+  quantity: number;
+  selections?: Readonly<Record<string, unknown>>;
+  dimensions?: ResolveActivePricingInput["dimensions"];
+  selling?: QuoteSellingInstruction;
+}>;
+export type CreateQuoteInput = Readonly<{
+  businessRequestId: string;
+  customerContact: CustomerContactReference;
+  purchaseOrderNumber?: string;
+  requestedDueDate?: string;
+  terms?: CommercialTerms;
+  expiresAt?: string;
+  lines: readonly QuoteLineInput[];
+}>;
+export type UpdateQuoteInput = Readonly<{
+  businessRequestId: string;
+  quoteId: QuoteId;
+  expectedRevision: string;
+  patch?: Readonly<{
+    customerContact?: CustomerContactReference;
+    purchaseOrderNumber?: string | null;
+    requestedDueDate?: string | null;
+    terms?: CommercialTerms;
+  }>;
+  lineChanges?: readonly (
+    | { kind: "add"; line: QuoteLineInput }
+    | { kind: "update"; lineId: SalesLineId; line: QuoteLineInput }
+    | { kind: "remove"; lineId: SalesLineId }
+  )[];
+}>;
+export type QuoteLifecycleInput = Readonly<{
+  businessRequestId: string;
+  quoteId: QuoteId;
+  expectedRevision: string;
+}>;
+export type QuoteReadModel = Readonly<{
+  quote: QuoteCurrentState;
+  number: SalesDocumentNumber;
+  revision: string;
+  checkpoints: readonly Readonly<{
+    checkpointId: QuoteCheckpointId;
+    kind: QuoteCheckpoint["kind"];
+    occurredAt: string;
+  }>[];
+}>;
+export type QuoteOperationResult = Readonly<{
+  quote: QuoteReadModel;
+  checkpointId?: QuoteCheckpointId;
+}>;
+
+export type QuoteOperationRequest = Readonly<{
+  id: string;
+  status:
+    "in_progress" | "succeeded" | "retryable_failure" | "permanent_failure";
+  resultJson: unknown | null;
+}>;
+export type QuoteReservation = Readonly<{
+  kind: "new" | "resumed" | "replay";
+  request: QuoteOperationRequest;
+}>;
+export type QuoteAuditEvent = Readonly<{
+  eventType: string;
+  resourceId: string;
+  changes: readonly MeaningfulAuditChange[];
+}>;
+export interface QuoteTransaction {
+  readonly customers: CustomersReadPort;
+  readonly products: ProductPricingCompatibilityPort;
+  readonly pricing: PricingPort;
+  reserve(
+    input: Readonly<{
+      organizationId: string;
+      operation: string;
+      businessRequestId: string;
+      payloadFingerprint: string;
+      principalKind: "staff" | "delegated_ai" | "portal" | "service";
+      principalSubject: string;
+      staffActorUserId?: string;
+    }>,
+  ): Promise<QuoteReservation>;
+  succeed(
+    organizationId: string,
+    requestId: string,
+    result: QuoteOperationResult,
+  ): Promise<void>;
+  attribute(
+    input: Readonly<{
+      organizationId: string;
+      requestId: string;
+      operation: string;
+      resourceType: string;
+      resourceId: string;
+      principalKind: "staff" | "delegated_ai" | "portal" | "service";
+      principalSubject: string;
+      staffActorUserId?: string;
+    }>,
+  ): Promise<void>;
+  audit(
+    input: Readonly<{
+      organizationId: string;
+      requestId: string;
+      operation: string;
+      event: QuoteAuditEvent;
+      principalKind: "staff" | "delegated_ai" | "portal" | "service";
+      principalSubject: string;
+      staffActorUserId?: string;
+    }>,
+  ): Promise<void>;
+  allocateNumber(organizationId: string): Promise<SalesDocumentNumber>;
+  create(
+    input: Readonly<{
+      quoteId: QuoteId;
+      organizationId: OrganizationId;
+      number: SalesDocumentNumber;
+      customerContact: CustomerContactReference;
+      purchaseOrderNumber?: string;
+      requestedDueDate?: string;
+      terms: CommercialTerms;
+      expiresAt?: string;
+      lines: readonly SalesLineSnapshot[];
+    }>,
+  ): Promise<void>;
+  read(
+    organizationId: OrganizationId,
+    quoteId: QuoteId,
+    forUpdate?: boolean,
+  ): Promise<QuoteReadModel | null>;
+  update(
+    input: Readonly<{
+      organizationId: OrganizationId;
+      quoteId: QuoteId;
+      expectedRevision: number;
+      customerContact: CustomerContactReference;
+      purchaseOrderNumber?: string;
+      requestedDueDate?: string;
+      terms: CommercialTerms;
+      lines: readonly SalesLineSnapshot[];
+    }>,
+  ): Promise<boolean>;
+  transition(
+    input: Readonly<{
+      organizationId: OrganizationId;
+      quoteId: QuoteId;
+      expectedRevision: number;
+      kind: "send" | "accept";
+      checkpoint: QuoteCheckpoint;
+      operationRequestId: string;
+    }>,
+  ): Promise<boolean>;
+}
+export interface QuoteTransactionRunner {
+  transaction<T>(
+    action: (transaction: QuoteTransaction) => Promise<T>,
+  ): Promise<T>;
+}
+
+const fingerprint = (value: unknown): string =>
+  `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+const toAttribution = (context: OperationContext): AttributionSnapshot =>
+  context.principal.kind === "delegated_ai"
+    ? {
+        principalKind: "delegated_ai",
+        subjectId: principalSubject(context.principal),
+        staffActorUserId: staffActorId(context.principal)!,
+      }
+    : {
+        principalKind: context.principal.kind,
+        subjectId: principalSubject(context.principal),
+      };
+const requireAllowed = (
+  policy: AuthorityPolicy,
+  context: OperationContext,
+  capability:
+    | "quote.view"
+    | "quote.create"
+    | "quote.edit"
+    | "quote.send"
+    | "quote.overridePrice",
+  customerId?: string,
+): void => {
+  const decision = policy.decide(context.principal, {
+    capability,
+    resource: { organizationId: context.organizationId, customerId },
+  });
+  if (!decision.allowed)
+    throw new V2ApplicationError(
+      "FORBIDDEN",
+      "The principal does not have authority for this Quote operation.",
+    );
+};
+const validateReference = async (
+  organizationId: string,
+  customers: CustomersReadPort,
+  reference: CustomerContactReference,
+): Promise<void> => {
+  if (reference.organizationId !== organizationId)
+    throw new V2ApplicationError(
+      "WRONG_TENANT",
+      "Customer or contact is unavailable in this organization.",
+    );
+  if (!(await customers.validateContactReference(reference)))
+    throw new V2ApplicationError(
+      "NOT_FOUND",
+      "Customer or contact is unavailable in this organization.",
+    );
+};
+const calculatedDecision = (
+  pricing: SalesLineSnapshot["pricingResult"],
+  instruction: QuoteSellingInstruction | undefined,
+  attribution: AttributionSnapshot,
+): SellingPriceDecision => {
+  const calculated = pricing.calculatedLineAmount;
+  const quantity = pricing.normalizedInput.quantity;
+  const assertCents = (value: number, name: string): number => {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new V2ApplicationError(
+        "VALIDATION_ERROR",
+        `${name} must be a non-negative integer-cent amount.`,
+      );
+    return value;
+  };
+  const base = {
+    pricingResultId: pricing.id,
+    calculatedUnitAmount: pricing.calculatedUnitAmount,
+    calculatedLineAmount: calculated,
+    decidedAt: new Date().toISOString(),
+    authorityReference: attribution,
+  };
+  if (!instruction || instruction.kind === "calculated")
+    return {
+      ...base,
+      kind: "calculated",
+      resultingUnitAmount: pricing.calculatedUnitAmount,
+      resultingLineAmount: calculated,
+    };
+  if (!instruction.reason.trim())
+    throw new V2ApplicationError(
+      "VALIDATION_ERROR",
+      "A selling-price override reason is required.",
+    );
+  if (
+    instruction.kind === "discount" &&
+    (instruction.discountBasisPoints < 0 ||
+      instruction.discountBasisPoints > 10_000)
+  )
+    throw new V2ApplicationError(
+      "VALIDATION_ERROR",
+      "Discount basis points must be between 0 and 10000.",
+    );
+  const total =
+    instruction.kind === "unit_override"
+      ? assertCents(instruction.unitCents, "Unit override") * quantity
+      : instruction.kind === "total_override"
+        ? assertCents(instruction.totalCents, "Total override")
+        : Math.round(
+            (calculated.cents *
+              (10_000 -
+                assertCents(
+                  instruction.discountBasisPoints,
+                  "Discount basis points",
+                ))) /
+              10_000,
+          );
+  if (!Number.isSafeInteger(total))
+    throw new V2ApplicationError(
+      "VALIDATION_ERROR",
+      "Selling price is outside safe money range.",
+    );
+  const resultingLineAmount = money(pricing.currency, total);
+  const resultingUnitAmount = money(
+    pricing.currency,
+    Math.round(total / quantity),
+  );
+  return instruction.kind === "unit_override"
+    ? {
+        ...base,
+        kind: "unit_override",
+        reason: instruction.reason,
+        resultingUnitAmount: money(pricing.currency, instruction.unitCents),
+        resultingLineAmount,
+      }
+    : instruction.kind === "total_override"
+      ? {
+          ...base,
+          kind: "total_override",
+          reason: instruction.reason,
+          resultingUnitAmount,
+          resultingLineAmount,
+        }
+      : {
+          ...base,
+          kind: "discount",
+          reason: instruction.reason,
+          discountBasisPoints: percentageBasisPoints(
+            instruction.discountBasisPoints,
+          ),
+          resultingUnitAmount,
+          resultingLineAmount,
+        };
+};
+
+export class QuoteApplicationService {
+  constructor(
+    private readonly runner: QuoteTransactionRunner,
+    private readonly authority = new AuthorityPolicy(),
+  ) {}
+  async create(
+    context: OperationContext,
+    input: CreateQuoteInput,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.mutate(
+      context,
+      "sales.quote.create.v1",
+      input,
+      "quote.create",
+      async (tx, request) => {
+        await validateReference(
+          context.organizationId,
+          tx.customers,
+          input.customerContact,
+        );
+        requireAllowed(
+          this.authority,
+          context,
+          "quote.create",
+          input.customerContact.customerId,
+        );
+        const lines = await this.buildLines(tx, context, input.lines, []);
+        const quoteId = brandedId<"QuoteId">(randomUUID());
+        const number = await tx.allocateNumber(context.organizationId);
+        await tx.create({
+          quoteId,
+          organizationId: brandedId<"OrganizationId">(context.organizationId),
+          number,
+          customerContact: input.customerContact,
+          purchaseOrderNumber: input.purchaseOrderNumber,
+          requestedDueDate: input.requestedDueDate,
+          terms: input.terms ?? {},
+          expiresAt: input.expiresAt,
+          lines,
+        });
+        const read = await tx.read(
+          brandedId<"OrganizationId">(context.organizationId),
+          quoteId,
+        );
+        if (!read) throw new Error("Created Quote could not be read.");
+        await this.history(tx, context, request.id, "sales.quote.create.v1", {
+          eventType: "quote_created",
+          resourceId: quoteId,
+          changes: [
+            {
+              group: "line",
+              kind: "line_added",
+              summary: `Quote created with ${lines.length} line(s).`,
+            },
+          ],
+        });
+        return { quote: read };
+      },
+    );
+  }
+  async read(
+    context: OperationContext,
+    quoteId: QuoteId,
+  ): Promise<ApplicationResult<QuoteReadModel>> {
+    try {
+      requireOperationPrincipalScope(context);
+      const result = await this.runner.transaction(async (tx) => {
+        const quote = await tx.read(
+          brandedId<"OrganizationId">(context.organizationId),
+          quoteId,
+        );
+        if (!quote)
+          throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        requireAllowed(
+          this.authority,
+          context,
+          "quote.view",
+          quote.quote.customerContact.customerId,
+        );
+        return quote;
+      });
+      return success(result);
+    } catch (error) {
+      return failure(this.error(error));
+    }
+  }
+  async update(
+    context: OperationContext,
+    input: UpdateQuoteInput,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.mutate(
+      context,
+      "sales.quote.edit.v1",
+      input,
+      "quote.edit",
+      async (tx, request) => {
+        const current = await tx.read(
+          brandedId<"OrganizationId">(context.organizationId),
+          input.quoteId,
+          true,
+        );
+        if (!current)
+          throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        requireAllowed(
+          this.authority,
+          context,
+          "quote.edit",
+          current.quote.customerContact.customerId,
+        );
+        if (current.revision !== input.expectedRevision)
+          throw new V2ApplicationError(
+            "STALE_STATE",
+            "Quote has changed; reload before editing.",
+          );
+        const patch = input.patch ?? {};
+        const reference =
+          patch.customerContact ?? current.quote.customerContact;
+        await validateReference(
+          context.organizationId,
+          tx.customers,
+          reference,
+        );
+        const lines = await this.applyLineChanges(
+          tx,
+          context,
+          input.lineChanges ?? [],
+          current.quote.lines,
+        );
+        const terms = patch.terms ?? current.quote.terms;
+        const purchaseOrderNumber =
+          patch.purchaseOrderNumber === null
+            ? undefined
+            : (patch.purchaseOrderNumber ?? current.quote.purchaseOrderNumber);
+        const requestedDueDate =
+          patch.requestedDueDate === null
+            ? undefined
+            : (patch.requestedDueDate ?? current.quote.requestedDueDate);
+        const headerUnchanged =
+          reference.customerId === current.quote.customerContact.customerId &&
+          reference.contactId === current.quote.customerContact.contactId &&
+          purchaseOrderNumber === current.quote.purchaseOrderNumber &&
+          requestedDueDate === current.quote.requestedDueDate &&
+          terms.termsCode === current.quote.terms.termsCode &&
+          terms.taxContextReference ===
+            current.quote.terms.taxContextReference &&
+          terms.salesRepresentativeId ===
+            current.quote.terms.salesRepresentativeId &&
+          terms.commercialNotes === current.quote.terms.commercialNotes;
+        // When a command does not change lines, preserve their persisted snapshots
+        // exactly rather than treating explanatory pricing evidence as comparison DTOs.
+        // Line-changing commands are necessarily meaningful commercial edits.
+        const unchanged =
+          headerUnchanged && (input.lineChanges?.length ?? 0) === 0;
+        if (unchanged) return { quote: current };
+        const applied = await tx.update({
+          organizationId: brandedId<"OrganizationId">(context.organizationId),
+          quoteId: input.quoteId,
+          expectedRevision: Number(current.revision),
+          customerContact: reference,
+          purchaseOrderNumber,
+          requestedDueDate,
+          terms,
+          lines,
+        });
+        if (!applied)
+          throw new V2ApplicationError(
+            "STALE_STATE",
+            "Quote has changed; reload before editing.",
+          );
+        const read = await tx.read(
+          brandedId<"OrganizationId">(context.organizationId),
+          input.quoteId,
+        );
+        if (!read) throw new Error("Updated Quote could not be read.");
+        const changes: MeaningfulAuditChange[] = [];
+        if (reference.customerId !== current.quote.customerContact.customerId)
+          changes.push({
+            group: "customer",
+            kind: "customer_changed",
+            summary: "Customer changed.",
+          });
+        if (reference.contactId !== current.quote.customerContact.contactId)
+          changes.push({
+            group: "customer",
+            kind: "contact_changed",
+            summary: "Contact changed.",
+          });
+        if (purchaseOrderNumber !== current.quote.purchaseOrderNumber)
+          changes.push({
+            group: "commercial_terms",
+            kind: "po_changed",
+            summary: "PO number updated.",
+          });
+        if (requestedDueDate !== current.quote.requestedDueDate)
+          changes.push({
+            group: "commercial_terms",
+            kind: "requested_due_date_changed",
+            summary: "Requested due date changed.",
+          });
+        if (terms.commercialNotes !== current.quote.terms.commercialNotes)
+          changes.push({
+            group: "notes",
+            kind: "notes_changed",
+            summary: "Commercial notes updated.",
+          });
+        if (
+          terms.termsCode !== current.quote.terms.termsCode ||
+          terms.taxContextReference !==
+            current.quote.terms.taxContextReference ||
+          terms.salesRepresentativeId !==
+            current.quote.terms.salesRepresentativeId
+        )
+          changes.push({
+            group: "commercial_terms",
+            kind: "terms_changed",
+            summary: "Commercial terms updated.",
+          });
+        for (const change of input.lineChanges ?? [])
+          changes.push({
+            group: "line",
+            kind:
+              change.kind === "add"
+                ? "line_added"
+                : change.kind === "remove"
+                  ? "line_removed"
+                  : "configuration_changed",
+            ...(change.kind === "update" ? { resourceId: change.lineId } : {}),
+            summary:
+              change.kind === "add"
+                ? "Quote line added."
+                : change.kind === "remove"
+                  ? "Quote line removed."
+                  : "Quote line updated.",
+          });
+        await this.history(tx, context, request.id, "sales.quote.edit.v1", {
+          eventType: "quote_updated",
+          resourceId: input.quoteId,
+          changes,
+        });
+        return { quote: read };
+      },
+    );
+  }
+  async send(
+    context: OperationContext,
+    input: QuoteLifecycleInput,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.lifecycle(
+      context,
+      input,
+      "send",
+      "quote.send",
+      "sales.quote.send.v1",
+    );
+  }
+  async accept(
+    context: OperationContext,
+    input: QuoteLifecycleInput,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.lifecycle(
+      context,
+      input,
+      "accept",
+      "quote.edit",
+      "sales.quote.accept.v1",
+    );
+  }
+  private async lifecycle(
+    context: OperationContext,
+    input: QuoteLifecycleInput,
+    kind: "send" | "accept",
+    capability: "quote.send" | "quote.edit",
+    operation: string,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.mutate(
+      context,
+      operation,
+      input,
+      capability,
+      async (tx, request) => {
+        const current = await tx.read(
+          brandedId<"OrganizationId">(context.organizationId),
+          input.quoteId,
+          true,
+        );
+        if (!current)
+          throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        requireAllowed(
+          this.authority,
+          context,
+          capability,
+          current.quote.customerContact.customerId,
+        );
+        if (current.revision !== input.expectedRevision)
+          throw new V2ApplicationError(
+            "STALE_STATE",
+            "Quote has changed; reload before transition.",
+          );
+        if (kind === "send" && current.quote.deliveryState !== "not_sent")
+          throw new V2ApplicationError(
+            "CONFLICT",
+            "Quote has already been sent.",
+          );
+        if (
+          kind === "accept" &&
+          (current.quote.deliveryState !== "sent" ||
+            current.quote.acceptanceState !== "not_accepted")
+        )
+          throw new V2ApplicationError(
+            "CONFLICT",
+            "Only a sent, unaccepted Quote can be accepted.",
+          );
+        const presentation = await tx.customers.getPresentationIdentity(
+          current.quote.customerContact,
+        );
+        const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
+        const checkpoint = this.checkpoint(
+          current.quote,
+          kind,
+          checkpointId,
+          presentation,
+          context,
+        );
+        const applied = await tx.transition({
+          organizationId: brandedId<"OrganizationId">(context.organizationId),
+          quoteId: input.quoteId,
+          expectedRevision: Number(current.revision),
+          kind,
+          checkpoint,
+          operationRequestId: request.id,
+        });
+        if (!applied)
+          throw new V2ApplicationError(
+            "STALE_STATE",
+            "Quote has changed; reload before transition.",
+          );
+        const read = await tx.read(
+          brandedId<"OrganizationId">(context.organizationId),
+          input.quoteId,
+        );
+        if (!read) throw new Error("Transitioned Quote could not be read.");
+        await this.history(tx, context, request.id, operation, {
+          eventType: kind === "send" ? "quote_sent" : "quote_accepted",
+          resourceId: input.quoteId,
+          changes: [],
+        });
+        return { quote: read, checkpointId };
+      },
+    );
+  }
+  private async mutate(
+    context: OperationContext,
+    operation: string,
+    command: unknown,
+    capability: "quote.create" | "quote.edit" | "quote.send",
+    work: (
+      tx: QuoteTransaction,
+      request: QuoteOperationRequest,
+    ) => Promise<QuoteOperationResult>,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!context.businessRequest)
+        throw new V2ApplicationError(
+          "VALIDATION_ERROR",
+          "A business request identity is required.",
+        );
+      if (
+        !command ||
+        typeof command !== "object" ||
+        (command as { businessRequestId?: unknown }).businessRequestId !==
+          context.businessRequest.id
+      )
+        throw new V2ApplicationError(
+          "VALIDATION_ERROR",
+          "The command business request identity does not match the operation context.",
+        );
+      return success(
+        await this.runner.transaction(async (tx) => {
+          const reservation = await tx.reserve({
+            organizationId: context.organizationId,
+            operation,
+            businessRequestId: context.businessRequest!.id,
+            payloadFingerprint: fingerprint(command),
+            principalKind: context.principal.kind,
+            principalSubject: principalSubject(context.principal),
+            ...(staffActorId(context.principal)
+              ? { staffActorUserId: staffActorId(context.principal) }
+              : {}),
+          });
+          if (reservation.kind === "replay")
+            return reservation.request.resultJson as QuoteOperationResult;
+          const result = await work(tx, reservation.request);
+          await tx.attribute({
+            organizationId: context.organizationId,
+            requestId: reservation.request.id,
+            operation,
+            resourceType: "quote",
+            resourceId: result.quote.quote.quoteId,
+            principalKind: context.principal.kind,
+            principalSubject: principalSubject(context.principal),
+            ...(staffActorId(context.principal)
+              ? { staffActorUserId: staffActorId(context.principal) }
+              : {}),
+          });
+          await tx.succeed(
+            context.organizationId,
+            reservation.request.id,
+            result,
+          );
+          return result;
+        }),
+      );
+    } catch (error) {
+      return failure(this.error(error));
+    }
+  }
+  private async history(
+    tx: QuoteTransaction,
+    context: OperationContext,
+    requestId: string,
+    operation: string,
+    event: QuoteAuditEvent,
+  ): Promise<void> {
+    await tx.audit({
+      organizationId: context.organizationId,
+      requestId,
+      operation,
+      event,
+      principalKind: context.principal.kind,
+      principalSubject: principalSubject(context.principal),
+      ...(staffActorId(context.principal)
+        ? { staffActorUserId: staffActorId(context.principal) }
+        : {}),
+    });
+  }
+  private async buildLines(
+    tx: QuoteTransaction,
+    context: OperationContext,
+    inputs: readonly QuoteLineInput[],
+    existing: readonly SalesLineSnapshot[],
+  ): Promise<SalesLineSnapshot[]> {
+    const lines: SalesLineSnapshot[] = [];
+    for (const [index, input] of inputs.entries()) {
+      if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0)
+        throw new V2ApplicationError(
+          "VALIDATION_ERROR",
+          "Line quantity must be a positive integer.",
+        );
+      if (input.selling && input.selling.kind !== "calculated")
+        requireAllowed(this.authority, context, "quote.overridePrice");
+      const resolved = await tx.products.resolveActivePricingInput({
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        productId: brandedId<"ProductId">(input.productId),
+        quantity: input.quantity,
+        ...(input.selections ? { selections: input.selections as never } : {}),
+        ...(input.dimensions ? { dimensions: input.dimensions } : {}),
+      });
+      if (!resolved.ok) throw resolved.error;
+      const pricing = await tx.pricing.calculate({
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        sellableProduct: resolved.value.sellableProduct,
+        resolvedConfiguration: resolved.value.resolvedConfiguration,
+        pricingContext: {
+          channel:
+            context.principal.kind === "staff"
+              ? "staff"
+              : context.principal.kind === "portal"
+                ? "portal"
+                : context.principal.kind === "service"
+                  ? "service"
+                  : "ai",
+          effectiveAt: new Date().toISOString(),
+        },
+        rules: resolved.value.rules,
+        ...(resolved.value.nestingEstimate
+          ? { nestingEstimate: resolved.value.nestingEstimate }
+          : {}),
+      });
+      const decision = calculatedDecision(
+        pricing,
+        input.selling,
+        toAttribution(context),
+      );
+      const prior = existing[index];
+      const line: SalesLineSnapshot = {
+        lineId: prior?.lineId ?? brandedId<"SalesLineId">(randomUUID()),
+        productId: resolved.value.sellableProduct.productId,
+        ...(resolved.value.sellableProduct.productTypeId
+          ? { productTypeId: resolved.value.sellableProduct.productTypeId }
+          : {}),
+        description:
+          input.description?.trim() ||
+          resolved.value.sellableProduct.displayName,
+        quantity: input.quantity,
+        resolvedConfiguration: resolved.value.resolvedConfiguration,
+        pricingResult: pricing,
+        sellingPriceDecision: decision,
+        calculatedLineAmount: pricing.calculatedLineAmount,
+        sellingLineAmount: decision.resultingLineAmount,
+      };
+      assertSalesLineSnapshot(line);
+      lines.push(line);
+    }
+    return lines;
+  }
+  private async applyLineChanges(
+    tx: QuoteTransaction,
+    context: OperationContext,
+    changes: NonNullable<UpdateQuoteInput["lineChanges"]>,
+    current: readonly SalesLineSnapshot[],
+  ): Promise<SalesLineSnapshot[]> {
+    const next = [...current];
+    for (const change of changes) {
+      if (change.kind === "remove") {
+        const index = next.findIndex((line) => line.lineId === change.lineId);
+        if (index < 0)
+          throw new V2ApplicationError(
+            "NOT_FOUND",
+            "Quote line was not found.",
+          );
+        next.splice(index, 1);
+        continue;
+      }
+      if (change.kind === "add") {
+        next.push(...(await this.buildLines(tx, context, [change.line], [])));
+        continue;
+      }
+      const index = next.findIndex((line) => line.lineId === change.lineId);
+      if (index < 0)
+        throw new V2ApplicationError("NOT_FOUND", "Quote line was not found.");
+      const replacement = await this.buildLines(
+        tx,
+        context,
+        [change.line],
+        [next[index]!],
+      );
+      next[index] = replacement[0]!;
+    }
+    return next;
+  }
+  private checkpoint(
+    quote: QuoteCurrentState,
+    kind: "send" | "accept",
+    checkpointId: QuoteCheckpointId,
+    presentation: CustomerPresentationIdentity,
+    context: OperationContext,
+  ): QuoteCheckpoint {
+    const raw = {
+      schemaVersion: 1 as const,
+      checkpointId,
+      evidenceFingerprint: "",
+      organizationId: quote.organizationId,
+      occurredAt: new Date().toISOString(),
+      principal: toAttribution(context),
+      customerPresentation: presentation,
+      commercial: {
+        currency: quote.currency,
+        terms: quote.terms,
+        lines: quote.lines,
+        ...(quote.purchaseOrderNumber
+          ? { purchaseOrderNumber: quote.purchaseOrderNumber }
+          : {}),
+        ...(quote.requestedDueDate
+          ? { requestedDueDate: quote.requestedDueDate }
+          : {}),
+      },
+      kind:
+        kind === "send" ? ("quote_sent" as const) : ("quote_accepted" as const),
+      sourceDocument: { quoteId: quote.quoteId },
+    };
+    return freezeCheckpoint({
+      ...raw,
+      evidenceFingerprint: fingerprint(raw),
+    }) as QuoteCheckpoint;
+  }
+  private error(error: unknown): V2ApplicationError {
+    return error instanceof V2ApplicationError
+      ? error
+      : new V2ApplicationError(
+          "INTERNAL_ERROR",
+          "Quote operation could not be completed.",
+        );
+  }
+}
