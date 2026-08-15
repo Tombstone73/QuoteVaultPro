@@ -16,11 +16,11 @@ describe("V2 M0 foundation migration", () => {
     expect(migration).toContain("UNIQUE (organization_id, event_type, aggregate_type, aggregate_id, idempotency_key)");
   });
 
-  test("is the next strictly appended journal entry", () => {
+  test("remains an immutable, strictly ordered journal entry", () => {
     const journal = JSON.parse(read("server/db/migrations_v2/meta/_journal.json")) as { entries: Array<{ idx: number; when: number; tag: string }> };
-    const last = journal.entries.at(-1);
-    const previous = journal.entries.at(-2);
-    expect(last).toMatchObject({ idx: 181, when: 1788048000027, tag: "0180_v2_foundation_persistence" });
-    expect(last!.when).toBeGreaterThan(previous!.when);
+    const foundation = journal.entries.find((entry) => entry.tag === "0180_v2_foundation_persistence");
+    const following = journal.entries.find((entry) => entry.idx === (foundation?.idx ?? -1) + 1);
+    expect(foundation).toMatchObject({ idx: 181, when: 1788048000027, tag: "0180_v2_foundation_persistence" });
+    expect(following!.when).toBeGreaterThan(foundation!.when);
   });
 });

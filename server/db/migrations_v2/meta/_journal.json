@@ -1275,6 +1275,41 @@
       "when": 1788048000033,
       "tag": "0186_permission_admin_floor_serialization",
       "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1788048000034,
+      "tag": "0187_v2_sales_commercial_persistence",
+      "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1788048000035,
+      "tag": "0188_v2_sales_customer_contact_reference_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1788048000036,
+      "tag": "0189_v2_sales_document_and_conversion_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1788048000037,
+      "tag": "0190_v2_sales_terms_single_owner",
+      "breakpoints": true
+    },
+    {
+      "idx": 192,
+      "version": "7",
+      "when": 1788048000038,
+      "tag": "0191_v2_sales_subtype_and_terms_hardening",
+      "breakpoints": true
     }
   ]
 }

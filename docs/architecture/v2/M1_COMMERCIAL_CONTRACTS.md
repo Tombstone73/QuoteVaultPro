@@ -65,6 +65,8 @@ V1 evidence is characterization only: `PricingService.goldenRegression`, matrix/
 
 ## Open decisions and next milestone
 
+M1.6 realizes the approved additive physical foundation in [M1 Commercial Persistence](M1_COMMERCIAL_PERSISTENCE.md). It preserves these contracts as the application boundary and does not expose a commercial writer.
+
 - Whether an unsent Quote may convert, and exact alternatives/revision UX.
 - Legal/accounting definition of issued/finalized and post-issued correction semantics.
 - Exact one-Draft persistence invariant and temporary Tax compatibility adapter versioning.
