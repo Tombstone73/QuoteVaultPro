@@ -1254,6 +1254,13 @@
       "when": 1788048000030,
       "tag": "0183_permission_set_assignment_kind_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1788048000031,
+      "tag": "0184_permission_set_kind_immutability",
+      "breakpoints": true
     }
   ]
 }

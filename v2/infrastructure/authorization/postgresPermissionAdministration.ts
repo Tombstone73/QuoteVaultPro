@@ -26,10 +26,20 @@ export class PostgresPermissionAdministration {
     }
     return [...new Set(result)].sort();
   }
-  private async lock(organizationId: string): Promise<void> {
+  /** A set is grantable only when every current capability in it is already held by the administrator. */
+  private async assertSetGrantCeiling(actor: StaffPrincipal, organizationId: string, permissionSetId: string, kind?: "staff" | "portal"): Promise<void> {
+    const set = await this.client.query<{ capability_id: string | null }>(`SELECT c.capability_id FROM v2_permission_sets s
+      LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id
+      WHERE s.id=$1 AND s.organization_id=$2${kind ? ` AND s.principal_kind='${kind}'` : ""} FOR UPDATE OF s`, [permissionSetId, organizationId]);
+    if (set.rowCount === 0) throw new V2ApplicationError("NOT_FOUND", "Scoped permission set was not found.");
+    this.ensureGrantCeiling(actor, set.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []));
+  }
+  private async lock(organizationId: string): Promise<string> {
     const result = await this.client.query("SELECT id FROM organizations WHERE id = $1 FOR UPDATE", [organizationId]);
     if (result.rowCount !== 1) throw new V2ApplicationError("NOT_FOUND", "Organization was not found.");
     await this.client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES ($1) ON CONFLICT DO NOTHING", [organizationId]);
+    const state=await this.client.query<{authority_revision:string}>("SELECT authority_revision FROM v2_permission_organization_state WHERE organization_id=$1 FOR UPDATE",[organizationId]);
+    return state.rows[0].authority_revision;
   }
   private async floor(organizationId: string): Promise<void> {
     const result = await this.client.query<{ user_id: string }>(`SELECT a.user_id FROM v2_staff_permission_set_assignments a
@@ -48,7 +58,7 @@ export class PostgresPermissionAdministration {
   private async mutate(actor: StaffPrincipal, organizationId: string, required: Capability, eventType: string, target: AuditTarget, detail: Record<string, unknown>, action: () => Promise<void>, needsFloor = true): Promise<void> {
     if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Permission administration is organization scoped.");
     this.require(actor, required); await this.client.query("BEGIN");
-    try { await this.lock(organizationId); await action(); if (needsFloor) await this.floor(organizationId); await this.audit(actor,organizationId,eventType,target,detail); await this.client.query("COMMIT"); }
+    try { const currentRevision=await this.lock(organizationId); if (actor.authority.authorityRevision !== currentRevision) throw new V2ApplicationError("STALE_STATE","Permission authority must be re-issued before administration."); await action(); if (needsFloor) await this.floor(organizationId); await this.audit(actor,organizationId,eventType,target,detail); await this.client.query("COMMIT"); }
     catch (error) { try { await this.client.query("ROLLBACK"); } catch { /* preserve the original error */ } throw error; }
   }
   async createSet(actor: StaffPrincipal, input: { organizationId: string; name: string; description?: string; principalKind?: "staff" | "portal"; capabilities: readonly string[] }): Promise<string> {
@@ -68,10 +78,10 @@ export class PostgresPermissionAdministration {
     });
   }
   async setActive(actor: StaffPrincipal, organizationId: string, permissionSetId: string, active: boolean): Promise<void> {
-    await this.mutate(actor,organizationId,"permissions.manageSets","permission_set_activation_changed",{permissionSetId},{active},async()=>{const updated=await this.client.query("UPDATE v2_permission_sets SET active=$3,revision=revision+1,updated_at=now() WHERE id=$1 AND organization_id=$2",[permissionSetId,organizationId,active]);if(updated.rowCount!==1)throw new V2ApplicationError("NOT_FOUND","Permission set was not found.");});
+    await this.mutate(actor,organizationId,"permissions.manageSets","permission_set_activation_changed",{permissionSetId},{active},async()=>{if(active)await this.assertSetGrantCeiling(actor,organizationId,permissionSetId);const updated=await this.client.query("UPDATE v2_permission_sets SET active=$3,revision=revision+1,updated_at=now() WHERE id=$1 AND organization_id=$2",[permissionSetId,organizationId,active]);if(updated.rowCount!==1)throw new V2ApplicationError("NOT_FOUND","Permission set was not found.");});
   }
   async assignStaff(actor: StaffPrincipal, organizationId: string, userId: string, permissionSetId: string): Promise<void> {
-    await this.mutate(actor,organizationId,"permissions.assignStaff","staff_permission_set_assigned",{userId,permissionSetId},{},async()=>{const inserted=await this.client.query(`INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id)
+    await this.mutate(actor,organizationId,"permissions.assignStaff","staff_permission_set_assigned",{userId,permissionSetId},{},async()=>{await this.assertSetGrantCeiling(actor,organizationId,permissionSetId,"staff");const inserted=await this.client.query(`INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id)
       SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM user_organizations WHERE user_id=$2 AND organization_id=$1 AND is_active) AND EXISTS(SELECT 1 FROM v2_permission_sets WHERE id=$3 AND organization_id=$1 AND principal_kind='staff')
       ON CONFLICT(organization_id,user_id,permission_set_id) DO UPDATE SET active=true,updated_at=now()`,[organizationId,userId,permissionSetId]);if(inserted.rowCount!==1)throw new V2ApplicationError("NOT_FOUND","Scoped Staff membership or Staff permission set was not found.");});
   }
@@ -79,7 +89,7 @@ export class PostgresPermissionAdministration {
     await this.mutate(actor,organizationId,"permissions.assignStaff","staff_permission_set_removed",{userId,permissionSetId},{},async()=>{const updated=await this.client.query("UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=$1 AND user_id=$2 AND permission_set_id=$3 AND active=true",[organizationId,userId,permissionSetId]);if(updated.rowCount!==1)throw new V2ApplicationError("NOT_FOUND","Active scoped Staff assignment was not found.");});
   }
   async assignPortal(actor: StaffPrincipal, organizationId: string, portalAccessId: string, permissionSetId: string): Promise<void> {
-    await this.mutate(actor,organizationId,"permissions.assignPortal","portal_permission_set_assigned",{portalAccessId,permissionSetId},{},async()=>{const inserted=await this.client.query(`INSERT INTO v2_portal_permission_set_assignments(organization_id,portal_access_id,permission_set_id)
+    await this.mutate(actor,organizationId,"permissions.assignPortal","portal_permission_set_assigned",{portalAccessId,permissionSetId},{},async()=>{await this.assertSetGrantCeiling(actor,organizationId,permissionSetId,"portal");const inserted=await this.client.query(`INSERT INTO v2_portal_permission_set_assignments(organization_id,portal_access_id,permission_set_id)
       SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM customer_portal_access WHERE id=$2 AND organization_id=$1) AND EXISTS(SELECT 1 FROM v2_permission_sets WHERE id=$3 AND organization_id=$1 AND principal_kind='portal')
       ON CONFLICT(organization_id,portal_access_id,permission_set_id) DO UPDATE SET active=true,updated_at=now()`,[organizationId,portalAccessId,permissionSetId]);if(inserted.rowCount!==1)throw new V2ApplicationError("NOT_FOUND","Scoped Portal access or Portal permission set was not found.");},false);
   }

@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 179,
+  "entryCount": 180,
   "immutableThrough": {
-    "idx": 184,
-    "when": 1788048000030,
-    "tag": "0183_permission_set_assignment_kind_hardening"
+    "idx": 185,
+    "when": 1788048000031,
+    "tag": "0184_permission_set_kind_immutability"
   },
-  "canonicalSha256": "84aa80436c9a07765c5ed6cbb4ae24fde9309e91f6d2763e4973dc41096dff26"
+  "canonicalSha256": "f8dfc6d7c14204094404b578cb2ce7df9e61bfb3172aa81df73073e59539d163"
 }
