@@ -33,3 +33,7 @@ Structured V2 context carries operation ID, business request ID, organization, p
 ## Boundary and M1 gate
 
 Automated boundary tests prohibit adapters importing raw DB/repositories/V1 routes or services; prohibit policy persistence; prohibit repository imports from interface code; and prohibit every production V2 import from `v2-poc/`. M0 is ready for M1 only when the V2 shell, contracts, migration/postconditions, clone safety, tests, and independent build are green; a fresh DEV-shaped clone has rehearsed the migration when an operator-approved target is available.
+
+## Physical readiness
+
+**PASS — guarded clone rehearsal completed.** The rehearsal uses only explicit `TEST_DATABASE_URL` plus `V2_M0_POSTGRES_INTEGRATION=1`, verifies the physical catalog, and rolls back its atomicity fixture. It also exercises PostgreSQL operation-request contention, principal-neutral replay and conflict behavior, Staff/delegated-AI/Portal/Service attribution, organization isolation, outbox deduplication and concurrent claims, lease expiry/stale-worker rejection, retry, completion, and dead-letter transitions. The rehearsal-only pool has three connections: one held creator transaction and two concurrent contenders; the primary verifier is released before that concurrent phase.

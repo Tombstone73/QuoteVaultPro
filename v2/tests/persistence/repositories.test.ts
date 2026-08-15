@@ -52,7 +52,7 @@ describe("Postgres outbox repository", () => {
       payload: {}, status: "processing", attempt_count: 1, available_at: new Date(), claimed_by: "worker-1", lease_expires_at: new Date(), last_error: null,
     })] });
     const repository = new PostgresOutboxRepository();
-    const claimed = await repository.claim(client, "worker-1", 30, 10);
+    const claimed = await repository.claim(client, "org-1", "worker-1", 30, 10);
     expect(claimed).toHaveLength(1);
     const query = (client.query as unknown as jest.Mock).mock.calls[0][0] as string;
     expect(query).toMatch(/FOR UPDATE SKIP LOCKED/);
@@ -61,6 +61,6 @@ describe("Postgres outbox repository", () => {
 
   test("only the active lease holder may complete work", async () => {
     const client = clientWith({ rows: [], rowCount: 0 });
-    await expect(new PostgresOutboxRepository().complete(client, "outbox-1", "other-worker")).resolves.toBe(false);
+    await expect(new PostgresOutboxRepository().complete(client, "org-1", "outbox-1", "other-worker")).resolves.toBe(false);
   });
 });

@@ -38,6 +38,7 @@ describe("V2 M0 operation request and attribution contracts", () => {
 
     expect(result).toMatchObject({ kind: "new", request: { organizationId: "org-1", businessRequestId: "request-key", principalKind: "portal" } });
     expect(mock.queries[1]?.text).toContain("INSERT INTO v2_operation_requests");
+    expect(mock.queries[1]?.text).toContain("ON CONFLICT (organization_id, operation, business_request_id) DO NOTHING");
     expect(mock.queries[1]?.values).toEqual(expect.arrayContaining(["org-1", "neutral.operation", "request-key", "fingerprint-a", "portal", "portal-subject"]));
   });
 
@@ -77,26 +78,40 @@ describe("V2 M0 outbox contracts", () => {
       idempotencyKey: "event-key", payload: { fixture: true },
     })).resolves.toMatchObject({ id: "outbox-1", status: "pending" });
     expect(mock.queries[0]?.text).toContain("ON CONFLICT (organization_id, event_type, aggregate_type, aggregate_id, idempotency_key)");
-    await expect(repository.claim(mock.client, "worker-1", 0, 1)).rejects.toThrow(/leaseSeconds/i);
-    await expect(repository.claim(mock.client, "worker-1", 30, 0)).rejects.toThrow(/limit/i);
+    await expect(repository.claim(mock.client, "org-1", "worker-1", 0, 1)).rejects.toThrow(/leaseSeconds/i);
+    await expect(repository.claim(mock.client, "org-1", "worker-1", 30, 0)).rejects.toThrow(/limit/i);
   });
 
   test("claims with SKIP LOCKED and only completes an active worker lease", async () => {
     const claimed = { ...outboxRow, status: "processing", attempt_count: 1, claimed_by: "worker-1", lease_expires_at: new Date("2026-01-02") };
     const mock = queueClient({ rows: [claimed] }, { rows: [], rowCount: 1 });
     const repository = new PostgresOutboxRepository();
-    await expect(repository.claim(mock.client, "worker-1", 30, 1)).resolves.toMatchObject([{ status: "processing", claimedBy: "worker-1", attemptCount: 1 }]);
+    await expect(repository.claim(mock.client, "org-1", "worker-1", 30, 1)).resolves.toMatchObject([{ status: "processing", claimedBy: "worker-1", attemptCount: 1 }]);
     expect(mock.queries[0]?.text).toContain("FOR UPDATE SKIP LOCKED");
-    await expect(repository.complete(mock.client, "outbox-1", "worker-1")).resolves.toBe(true);
-    expect(mock.queries[1]?.text).toContain("claimed_by = $2 AND lease_expires_at > now()");
+    expect(mock.queries[0]?.text).toContain("organization_id = $1");
+    await expect(repository.complete(mock.client, "org-1", "outbox-1", "worker-1")).resolves.toBe(true);
+    expect(mock.queries[1]?.text).toContain("organization_id = $1 AND id = $2");
+    expect(mock.queries[1]?.text).toContain("claimed_by = $3 AND lease_expires_at > now()");
   });
 
   test("rejects blank worker identities and redacts accidental credential text from durable diagnostics", async () => {
     const mock = queueClient({ rows: [], rowCount: 1 });
     const repository = new PostgresOutboxRepository();
-    await expect(repository.claim(mock.client, " ", 30, 1)).rejects.toThrow(/workerId/i);
-    await repository.retry(mock.client, "outbox-1", "worker-1", new Date("2026-01-02"), "postgresql://user:password@host/db password=hunter2");
-    expect(mock.queries[0]?.values?.[3]).toBe("postgresql://[redacted]@host/db password=[redacted]");
+    await expect(repository.claim(mock.client, "org-1", " ", 30, 1)).rejects.toThrow(/workerId/i);
+    await repository.retry(mock.client, "org-1", "outbox-1", "worker-1", new Date("2026-01-02"), "postgresql://user:password@host/db password=hunter2");
+    expect(mock.queries[0]?.values?.[4]).toBe("postgresql://[redacted]@host/db password=[redacted]");
+  });
+
+  test("requires organization scope for every durable-work mutation", async () => {
+    const mock = queueClient({ rows: [], rowCount: 0 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 });
+    const repository = new PostgresOutboxRepository();
+    await repository.complete(mock.client, "org-1", "outbox-1", "worker-1");
+    await repository.retry(mock.client, "org-1", "outbox-1", "worker-1", new Date("2026-01-02"), "safe");
+    await repository.deadLetter(mock.client, "org-1", "outbox-1", "worker-1", "safe");
+    for (const query of mock.queries) {
+      expect(query.text).toContain("organization_id = $1 AND id = $2");
+      expect(query.values?.slice(0, 2)).toEqual(["org-1", "outbox-1"]);
+    }
   });
 });
 
