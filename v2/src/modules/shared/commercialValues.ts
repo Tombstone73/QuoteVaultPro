@@ -20,6 +20,9 @@ export type RouteTemplateId = Brand<string, "RouteTemplateId">;
 export type RouteTemplateStepId = Brand<string, "RouteTemplateStepId">;
 export type RouteInstanceId = Brand<string, "RouteInstanceId">;
 export type RouteInstanceStepId = Brand<string, "RouteInstanceStepId">;
+/** Artwork owns file identity; these never imply a separate customer/production file universe. */
+export type ArtworkFileId = Brand<string, "ArtworkFileId">;
+export type ArtworkAssignmentId = Brand<string, "ArtworkAssignmentId">;
 export type CommercialCheckpointId = Brand<string, "CommercialCheckpointId">;
 
 export type CurrencyCode = Brand<string, "CurrencyCode">;
