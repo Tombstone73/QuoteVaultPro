@@ -44,7 +44,7 @@ export type OrderPersistenceTestHooks = Readonly<{
   afterRoute?: () => Promise<void>;
   afterAudit?: () => Promise<void>;
 }>;
-class PostgresOrderTransaction implements OrderTransaction {
+export class PostgresOrderTransaction implements OrderTransaction {
   readonly customers;
   readonly products;
   readonly pricing = new V2PricingParityAdapter();
@@ -119,11 +119,16 @@ class PostgresOrderTransaction implements OrderTransaction {
       ? { organizationId, customerId: brandedId<"CustomerId">(row.customer_id), ...(row.contact_id ? { contactId: brandedId<"ContactId">(row.contact_id) } : {}) }
       : { organizationId, contactId: brandedId<"ContactId">(row.contact_id!) };
     const draftInvoice = await this.billing.readDraftForOrder(organizationId, orderId);
+    const conversion = await this.client.query<{ quote_document_id: string; source_checkpoint_id: string }>(
+      "SELECT quote_document_id,source_checkpoint_id FROM v2_sales_quote_conversions WHERE organization_id=$1 AND order_document_id=$2",
+      [organizationId, orderId],
+    );
     const orderCurrency = currencyCode(row.currency);
     const order: OrderCurrentState = { organizationId, orderId, customerContact, currency: orderCurrency,
       ...(row.purchase_order_number ? {purchaseOrderNumber: row.purchase_order_number} : {}), ...(row.requested_due_date ? {requestedDueDate: row.requested_due_date} : {}),
       terms: {...(terms.termsCode ? {termsCode:terms.termsCode}: {}), ...(row.tax_context_reference ? {taxContextReference:row.tax_context_reference}: {}), ...(row.sales_representative_id ? {salesRepresentativeId:row.sales_representative_id}: {}), ...(row.commercial_notes ? {commercialNotes:row.commercial_notes}: {})},
       lines, commercialState: row.commercial_state, ...(draftInvoice ? {billingInvoiceReference: draftInvoice.invoiceId} : {}),
+      ...(conversion.rows[0] ? { sourceQuoteId: brandedId<"QuoteId">(conversion.rows[0].quote_document_id), sourceQuoteCheckpointId: brandedId<"QuoteCheckpointId">(conversion.rows[0].source_checkpoint_id) } : {}),
     };
     const routes = (await Promise.all(lines.map((line) => this.routing.readRouteForWork(organizationId, brandedId<"OrderLineId">(line.lineId))))).filter((route) => route !== null);
     if (draftInvoice && draftInvoice.lifecycle !== "draft") throw new Error("Draft Invoice read returned a non-Draft lifecycle.");

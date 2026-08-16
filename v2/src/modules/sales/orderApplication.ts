@@ -116,6 +116,19 @@ export type OrderOperationResult = Readonly<{
   routeInstances: readonly InstantiateRouteResult["routeInstance"][];
 }>;
 
+/**
+ * A frozen commercial source is deliberately smaller than a Quote checkpoint:
+ * it contains only the facts Sales owns that can seed a new Order.  Callers
+ * must supply new line ids; a source document's line ids are never reused.
+ */
+export type FrozenOrderCommercialSource = Readonly<{
+  customerContact: CustomerContactReference;
+  purchaseOrderNumber?: string;
+  requestedDueDate?: string;
+  terms: CommercialTerms;
+  lines: readonly SalesLineSnapshot[];
+}>;
+
 export type OrderOperationRequest = Readonly<{
   id: string;
   status: "in_progress" | "succeeded" | "retryable_failure" | "permanent_failure";
@@ -333,49 +346,67 @@ export class OrderApplicationService {
       if (!lines.length)
         throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
 
-      const orderId = brandedId<"OrderId">(randomUUID());
-      const number = await tx.allocateNumber(context.organizationId);
-      await tx.create({
-        orderId,
-        organizationId: brandedId<"OrganizationId">(context.organizationId),
-        number,
+      return this.createFromCommercialSnapshot(tx, context, request.id, {
         customerContact: input.customerContact,
         purchaseOrderNumber: input.purchaseOrderNumber,
         requestedDueDate: input.requestedDueDate,
         terms: input.terms ?? {},
         lines,
-      });
-
-      const draft = await tx.billing.createDraftInvoice(this.draftInput(
-        context.organizationId,
-        orderId,
-        request.id,
-        input.customerContact,
-        input.purchaseOrderNumber,
-        input.terms ?? {},
-        lines,
-        "1",
-      ));
-      if (draft.status !== "created") {
-        if (draft.status === "not_editable") asDraftFailure(draft);
-        throw new V2ApplicationError("CONFLICT", "The Order already has a Draft Invoice projection.");
-      }
-
-      const routeInstances = await this.instantiateRoutes(tx, context, orderId, lines);
-      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), orderId);
-      if (!order) throw new Error("Created Order could not be read.");
-      const result: OrderOperationResult = {
-        order,
-        draftInvoiceId: draft.invoiceId,
-        routeInstances,
-      };
-      await this.history(tx, context, request.id, "sales.order.create.v1", {
-        eventType: "order_created",
-        resourceId: orderId,
-        changes: [{ group: "line", kind: "line_added", summary: `Order created with ${lines.length} line(s).` }],
-      });
-      return result;
+      }, "sales.order.create.v1");
     });
+  }
+
+  /**
+   * Canonical Order creation choreography shared by direct entry and Quote
+   * conversion.  It intentionally performs no M0 reservation/attribution:
+   * the enclosing operation owns those facts.  In particular it never calls
+   * Pricing, so a conversion can persist accepted commercial evidence intact.
+   */
+  async createFromCommercialSnapshot(
+    tx: OrderTransaction,
+    context: OperationContext,
+    operationRequestId: string,
+    source: FrozenOrderCommercialSource,
+    auditOperation: string,
+  ): Promise<OrderOperationResult> {
+    await validateReference(context.organizationId, tx.customers, source.customerContact);
+    if (!source.lines.length)
+      throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
+    for (const line of source.lines) assertSalesLineSnapshot(line);
+    const currency = source.lines[0]!.pricingResult.currency;
+    if (source.lines.some((line) => line.pricingResult.currency !== currency))
+      throw new V2ApplicationError("VALIDATION_ERROR", "Order lines must share one currency.");
+    // Pricing/configuration are frozen above.  Only the Product Type route
+    // policy is deliberately resolved at Order-creation time.
+    const lines = await Promise.all(source.lines.map(async (line) => {
+      const current = await tx.products.resolveCurrentRoutingProduct(
+        brandedId<"OrganizationId">(context.organizationId), line.productId,
+      );
+      if (!current)
+        throw new V2ApplicationError("CONFLICT", "The Product or its current routing policy is unavailable.");
+      return Object.freeze({ ...line, productTypeId: current.productTypeId });
+    }));
+    const orderId = brandedId<"OrderId">(randomUUID());
+    const number = await tx.allocateNumber(context.organizationId);
+    await tx.create({ orderId, organizationId: brandedId<"OrganizationId">(context.organizationId), number,
+      customerContact: source.customerContact, purchaseOrderNumber: source.purchaseOrderNumber,
+      requestedDueDate: source.requestedDueDate, terms: source.terms, lines });
+    const draft = await tx.billing.createDraftInvoice(this.draftInput(
+      context.organizationId, orderId, operationRequestId, source.customerContact,
+      source.purchaseOrderNumber, source.terms, lines, "1",
+    ));
+    if (draft.status !== "created") {
+      if (draft.status === "not_editable") asDraftFailure(draft);
+      throw new V2ApplicationError("CONFLICT", "The Order already has a Draft Invoice projection.");
+    }
+    const routeInstances = await this.instantiateRoutes(tx, context, orderId, lines);
+    const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), orderId);
+    if (!order) throw new Error("Created Order could not be read.");
+    await this.history(tx, context, operationRequestId, auditOperation, {
+      eventType: "order_created", resourceId: orderId,
+      changes: [{ group: "line", kind: "line_added", summary: `Order created with ${source.lines.length} line(s).` }],
+    });
+    return { order, draftInvoiceId: draft.invoiceId, routeInstances };
   }
 
   async read(

@@ -12,6 +12,8 @@ import type {
   QuoteReadModel,
   UpdateQuoteInput,
 } from "../../modules/sales/quoteApplication.js";
+import type { QuoteConversionApplicationService } from "../../modules/sales/quoteConversionApplication.js";
+import type { ConvertQuoteCommand } from "../../modules/sales/contracts.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 
 /** Authentication is injected by the real V2 host; routes never trust headers or body principal claims. */
@@ -26,6 +28,7 @@ export interface QuoteFormReadPort {
 }
 export type QuoteHttpDependencies = Readonly<{
   service: QuoteApplicationService;
+  conversion?: QuoteConversionApplicationService;
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
 }>;
@@ -97,6 +100,7 @@ const quoteForUi = (value: QuoteReadModel) => {
       expiresAt: value.quote.expiresAt,
       deliveryState: value.quote.deliveryState,
       acceptanceState: value.quote.acceptanceState,
+      convertedOrderId: value.quote.convertedOrderId,
       lines,
     },
     number: value.number,
@@ -264,5 +268,24 @@ export const createQuoteRouter = (
         error(response, cause);
       }
     });
+  router.post("/:quoteId/convert", async (request, response) => {
+    try {
+      if (!dependencies.conversion)
+        throw new V2ApplicationError("INTERNAL_ERROR", "Quote conversion runtime is unavailable.");
+      const sourceCheckpointId = (request.body as { sourceCheckpointId?: unknown }).sourceCheckpointId;
+      if (typeof sourceCheckpointId !== "string" || !sourceCheckpointId.trim())
+        throw new V2ApplicationError("VALIDATION_ERROR", "sourceCheckpointId is required.");
+      const body: ConvertQuoteCommand = {
+        organizationId: brandedId<"OrganizationId">(String((request.params as Record<string, string>).organizationId)),
+        quoteId: brandedId<"QuoteId">(request.params.quoteId),
+        sourceCheckpointId: brandedId<"QuoteCheckpointId">(sourceCheckpointId),
+        businessRequestId: brandedId<"BusinessRequestId">(requestId(request.body)),
+        expectedStateToken: String((request.body as { expectedRevision?: unknown }).expectedRevision ?? ""),
+      };
+      const result = await dependencies.conversion.convert(await context(request, dependencies, true), body);
+      if (!result.ok) return error(response, result.error);
+      response.status(200).json({ ok: true, data: result.value });
+    } catch (cause) { error(response, cause); }
+  });
   return router;
 };

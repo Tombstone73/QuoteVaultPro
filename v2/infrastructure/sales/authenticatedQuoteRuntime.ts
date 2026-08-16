@@ -4,11 +4,15 @@ import { PostgresPermissionAuthorityReader } from "../authorization/postgresPerm
 import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets.js";
 import type { QuoteHttpDependencies } from "../../src/interfaces/http/quoteRoutes.js";
 import { QuoteApplicationService } from "../../src/modules/sales/quoteApplication.js";
+import { QuoteConversionApplicationService } from "../../src/modules/sales/quoteConversionApplication.js";
+import { OrderApplicationService } from "../../src/modules/sales/orderApplication.js";
 import {
   IssuedV2PrincipalProvider,
   type TrustedHostIdentitySource,
 } from "../authentication/trustedHostPrincipalProvider.js";
 import { PostgresQuoteTransactionRunner } from "./postgresQuoteTransaction.js";
+import { PostgresOrderTransactionRunner } from "./postgresOrderTransaction.js";
+import { PostgresQuoteConversionTransactionRunner } from "./postgresQuoteConversionTransaction.js";
 import { PostgresQuoteFormReads } from "./postgresQuoteFormReads.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
@@ -33,6 +37,10 @@ export const composeAuthenticatedQuoteRuntime = (
     dependencies: {
       service: new QuoteApplicationService(
         new PostgresQuoteTransactionRunner(input.pool),
+      ),
+      conversion: new QuoteConversionApplicationService(
+        new PostgresQuoteConversionTransactionRunner(input.pool),
+        new OrderApplicationService(new PostgresOrderTransactionRunner(input.pool)),
       ),
       principals: new IssuedV2PrincipalProvider(
         input.trustedHostIdentity,

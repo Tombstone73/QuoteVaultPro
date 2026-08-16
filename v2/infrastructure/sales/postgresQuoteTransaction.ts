@@ -10,6 +10,7 @@ import type {
   QuoteReservation,
   QuoteTransaction,
   QuoteTransactionRunner,
+  QuoteConversionPersistencePort,
   QuoteReadModel,
 } from "../../src/modules/sales/quoteApplication.js";
 import {
@@ -23,6 +24,7 @@ import {
   money,
   type OrganizationId,
   type QuoteId,
+  type OrderId,
   type SalesLineId,
 } from "../../src/modules/shared/commercialValues.js";
 import type {
@@ -67,6 +69,7 @@ type CheckpointRow = {
   checkpoint_kind: QuoteCheckpoint["kind"];
   occurred_at: Date;
 };
+type CheckpointPayloadRow = CheckpointRow & { payload: unknown };
 
 /** Operation-request results are JSONB. Preserve the bigint document-number core
  * explicitly so an idempotent replay rehydrates the same public value type. */
@@ -106,8 +109,10 @@ export type QuotePersistenceTestHooks = Readonly<{
   afterDocument?: () => Promise<void>;
   afterLines?: () => Promise<void>;
   afterAudit?: () => Promise<void>;
+  afterConvertedCheckpoint?: () => Promise<void>;
+  afterConversionLineage?: () => Promise<void>;
 }>;
-class PostgresQuoteTransaction implements QuoteTransaction {
+export class PostgresQuoteTransaction implements QuoteConversionPersistencePort {
   readonly customers;
   readonly products;
   readonly pricing = new V2PricingParityAdapter();
@@ -142,6 +147,18 @@ class PostgresQuoteTransaction implements QuoteTransaction {
       resourceType: "quote",
       resourceId: result.quote.quote.quoteId,
       resultJson: operationResultForStorage(result),
+    });
+  }
+  async succeedConversion(
+    organizationId: string,
+    requestId: string,
+    quoteId: QuoteId,
+    result: unknown,
+  ): Promise<void> {
+    await this.requests.succeed(this.client, organizationId, requestId, {
+      resourceType: "quote",
+      resourceId: quoteId,
+      resultJson: result,
     });
   }
   async attribute(
@@ -227,6 +244,10 @@ class PostgresQuoteTransaction implements QuoteTransaction {
       "SELECT id,checkpoint_kind,occurred_at FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 ORDER BY checkpoint_sequence",
       [organizationId, quoteId],
     );
+    const conversion = await this.client.query<{ order_document_id: string }>(
+      "SELECT order_document_id FROM v2_sales_quote_conversions WHERE organization_id=$1 AND quote_document_id=$2",
+      [organizationId, quoteId],
+    );
     const terms = asObject<{ termsCode?: string }>(row.terms_json);
     const salesLines: SalesLineSnapshot[] = lines.rows.map((line) => {
       const pricing = asObject<SalesLineSnapshot["pricingResult"]>(
@@ -296,6 +317,9 @@ class PostgresQuoteTransaction implements QuoteTransaction {
         : {}),
       deliveryState: row.delivery_state,
       acceptanceState: row.acceptance_state,
+      ...(conversion.rows[0]
+        ? { convertedOrderId: brandedId<"OrderId">(conversion.rows[0].order_document_id) }
+        : {}),
     };
     return {
       quote,
@@ -394,6 +418,40 @@ class PostgresQuoteTransaction implements QuoteTransaction {
       ],
     );
     return true;
+  }
+  async readCheckpoint(
+    organizationId: OrganizationId,
+    quoteId: QuoteId,
+    checkpointId: import("../../src/modules/shared/commercialValues.js").QuoteCheckpointId,
+  ): Promise<QuoteCheckpoint | null> {
+    const result = await this.client.query<CheckpointPayloadRow>(
+      "SELECT id,checkpoint_kind,occurred_at,payload FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 AND id=$3",
+      [organizationId, quoteId, checkpointId],
+    );
+    return result.rows[0] ? asObject<QuoteCheckpoint>(result.rows[0].payload) : null;
+  }
+  async appendConvertedCheckpoint(
+    input: Parameters<QuoteConversionPersistencePort["appendConvertedCheckpoint"]>[0],
+  ): Promise<void> {
+    const count = await this.client.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2",
+      [input.organizationId, input.quoteId],
+    );
+    const cp = toQuoteCheckpointPersistenceEnvelope(input.checkpoint);
+    await this.client.query(
+      `INSERT INTO v2_sales_quote_checkpoints(id,organization_id,quote_document_id,checkpoint_sequence,checkpoint_kind,schema_version,occurred_at,principal_kind,principal_subject,staff_actor_user_id,operation_request_id,source_checkpoint_id,evidence_fingerprint,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)`,
+      [cp.checkpointId,input.organizationId,input.quoteId,count.rows[0]!.count + 1,cp.checkpointKind,cp.schemaVersion,cp.occurredAt,input.checkpoint.principal.principalKind,input.checkpoint.principal.subjectId,"staffActorUserId" in input.checkpoint.principal ? input.checkpoint.principal.staffActorUserId : null,input.operationRequestId,cp.sourceCheckpointId ?? null,cp.evidenceFingerprint,cp.canonicalPayload],
+    );
+    await this.hooks?.afterConvertedCheckpoint?.();
+  }
+  async createConversionLineage(
+    input: Parameters<QuoteConversionPersistencePort["createConversionLineage"]>[0],
+  ): Promise<void> {
+    await this.client.query(
+      "INSERT INTO v2_sales_quote_conversions(organization_id,quote_document_id,source_checkpoint_id,order_document_id,conversion_checkpoint_id,operation_request_id) VALUES($1,$2,$3,$4,$5,$6)",
+      [input.organizationId,input.quoteId,input.sourceCheckpointId,input.orderId,input.convertedCheckpointId,input.operationRequestId],
+    );
+    await this.hooks?.afterConversionLineage?.();
   }
   private async writeLines(
     organizationId: OrganizationId,

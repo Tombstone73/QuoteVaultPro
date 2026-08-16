@@ -41,6 +41,17 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
     return Boolean(await this.activeRow(organizationId, productId));
   }
 
+  async resolveCurrentRoutingProduct(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ productTypeId: ProductTypeId }> | null> {
+    // Deliberately does not join PBV2: route policy is current operational
+    // policy and must not make Quote conversion depend on current pricing.
+    const result = await this.client.query<{ product_type_id: string | null }>(
+      "SELECT product_type_id FROM products WHERE organization_id=$1 AND id=$2 AND is_active=TRUE",
+      [organizationId, productId],
+    );
+    const row = result.rows[0];
+    return row?.product_type_id ? { productTypeId: brandedId<"ProductTypeId">(row.product_type_id) } : null;
+  }
+
   async resolveActivePricingInput(input: ResolveActivePricingInput): Promise<ApplicationResult<ResolvedPricingInput>> {
     const row = await this.activeRow(input.organizationId, input.productId);
     if (!row) return failure(new V2ApplicationError("NOT_FOUND", "Sellable product or active pricing configuration was not found."));

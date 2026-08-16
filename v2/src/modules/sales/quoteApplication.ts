@@ -211,6 +211,36 @@ export interface QuoteTransaction {
     }>,
   ): Promise<boolean>;
 }
+
+/** Conversion-only persistence operations.  They are intentionally separate
+ * from normal Quote editing so direct Quote code cannot manufacture lineage. */
+export interface QuoteConversionPersistencePort extends QuoteTransaction {
+  readCheckpoint(
+    organizationId: OrganizationId,
+    quoteId: QuoteId,
+    checkpointId: QuoteCheckpointId,
+  ): Promise<QuoteCheckpoint | null>;
+  appendConvertedCheckpoint(input: Readonly<{
+    organizationId: OrganizationId;
+    quoteId: QuoteId;
+    checkpoint: QuoteCheckpoint;
+    operationRequestId: string;
+  }>): Promise<void>;
+  createConversionLineage(input: Readonly<{
+    organizationId: OrganizationId;
+    quoteId: QuoteId;
+    sourceCheckpointId: QuoteCheckpointId;
+    convertedCheckpointId: QuoteCheckpointId;
+    orderId: import("../shared/commercialValues.js").OrderId;
+    operationRequestId: string;
+  }>): Promise<void>;
+  succeedConversion(
+    organizationId: string,
+    requestId: string,
+    quoteId: QuoteId,
+    result: unknown,
+  ): Promise<void>;
+}
 export interface QuoteTransactionRunner {
   transaction<T>(
     action: (transaction: QuoteTransaction) => Promise<T>,
@@ -465,6 +495,10 @@ export class QuoteApplicationService {
         );
         if (!current)
           throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        if (current.quote.convertedOrderId)
+          throw new V2ApplicationError("CONFLICT", "A converted Quote cannot be edited.");
+        if (current.quote.acceptanceState === "accepted")
+          throw new V2ApplicationError("CONFLICT", "An accepted Quote is an immutable commercial source.");
         requireAllowed(
           this.authority,
           context,
@@ -649,6 +683,8 @@ export class QuoteApplicationService {
         );
         if (!current)
           throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        if (current.quote.convertedOrderId)
+          throw new V2ApplicationError("CONFLICT", "A converted Quote cannot transition.");
         requireAllowed(
           this.authority,
           context,

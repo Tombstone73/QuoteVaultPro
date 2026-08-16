@@ -24,6 +24,9 @@ export interface ProductsReadPort {
   resolveProductType(organizationId: OrganizationId, productTypeId: ProductTypeId): Promise<Readonly<{ id: ProductTypeId; routePolicy: ProductTypeRoutePolicy }> | null>;
   getActivePricingConfiguration(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ id: PricingConfigurationId; version: string; contentHash: string }> | null>;
   validateSellableProduct(organizationId: OrganizationId, productId: ProductId): Promise<boolean>;
+  /** Routing policy is current operational policy, intentionally independent
+   * of the active PBV2 tree used by Pricing. */
+  resolveCurrentRoutingProduct(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ productTypeId: ProductTypeId }> | null>;
 }
 
 /** Explicit input for the normal active-configuration pricing path; callers cannot select a tree id. */
