@@ -4,7 +4,7 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type ArtworkAssignmentId, type OrderId, type OrderLineId, type OrganizationId, type ProofVersionId, type ProofWorkId } from "../shared/commercialValues.js";
-import { type CreateProofVersionInput, type ProofResponse, type ProofVersion, type ProofVersionProjection, type ProofWork, type ProofWorkProjection, type RespondToProofInput, type StartProofWorkInput, type IssueProofVersionInput, validateProofComment } from "./contracts.js";
+import { type CreateProofVersionInput, type ProofResponse, type ProofVersion, type ProofVersionProjection, type ProofWork, type ProofWorkProjection, type ProofWorkQueueItem, type RespondToProofInput, type StartProofWorkInput, type IssueProofVersionInput, validateProofComment } from "./contracts.js";
 
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
@@ -19,6 +19,7 @@ export interface ProofingTransaction {
   lockWork(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofWork | null>;
   createOrGetWork(input: Readonly<{ id: ProofWorkId; organizationId: OrganizationId; orderId: OrderId; orderLineId: OrderLineId } & Actor>): Promise<ProofWork>;
   readWork(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofWorkProjection | null>;
+  listWorkQueue(organizationId: OrganizationId, limit: number): Promise<readonly ProofWorkQueueItem[]>;
   latestVersion(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofVersionProjection | null>;
   findVersion(organizationId: OrganizationId, proofVersionId: ProofVersionId): Promise<ProofVersionProjection | null>;
   createVersion(input: Readonly<{ id: ProofVersionId; organizationId: OrganizationId; proofWorkId: ProofWorkId; sequence: number; artworkAssignmentIds: readonly ArtworkAssignmentId[] } & Actor>): Promise<ProofVersion>;
@@ -35,6 +36,9 @@ export class ProofingApplicationService {
   constructor(private readonly runner: ProofingTransactionRunner, private readonly authority = new AuthorityPolicy()) {}
   async getWork(context: OperationContext, proofWorkId: ProofWorkId): Promise<ApplicationResult<ProofWorkProjection>> {
     try { requireOperationPrincipalScope(context); this.require(context, "proof.view"); const value = await this.runner.transaction((tx) => tx.readWork(brandedId<"OrganizationId">(context.organizationId), proofWorkId)); if (!value) throw new V2ApplicationError("NOT_FOUND", "Proof work was not found."); return success(value); } catch (error) { return failure(this.error(error)); }
+  }
+  async listWorkQueue(context: OperationContext, limit = 50): Promise<ApplicationResult<readonly ProofWorkQueueItem[]>> {
+    try { requireOperationPrincipalScope(context); this.require(context, "proof.view"); if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new V2ApplicationError("VALIDATION_ERROR", "Proof queue limit must be between 1 and 100."); return success(await this.runner.transaction((tx) => tx.listWorkQueue(brandedId<"OrganizationId">(context.organizationId), limit))); } catch (error) { return failure(this.error(error)); }
   }
   async start(context: OperationContext, input: StartProofWorkInput): Promise<ApplicationResult<ProofingMutationResult>> {
     return this.mutate(context, "proof.start.v1", input, "proof.prepare", "proof_work_started", "Proof work started for OrderLine.", async (tx) => ({ work: await tx.createOrGetWork({ id: brandedId<"ProofWorkId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), orderId: input.orderId, orderLineId: input.orderLineId, ...actor(context) }) }));

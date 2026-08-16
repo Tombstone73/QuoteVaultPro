@@ -58,6 +58,7 @@ export type UiBootstrap = Readonly<{
     quoteSend?: boolean; quoteConvert?: boolean; orderView?: boolean;
     orderEdit?: boolean; orderOverridePrice?: boolean; invoiceView?: boolean;
     artworkView?: boolean; artworkAssign?: boolean;
+    proofView?: boolean; proofPrepare?: boolean; proofIssue?: boolean; proofRespond?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
@@ -99,6 +100,10 @@ export type ArtworkOrderProjection = Readonly<{
   assignment: Readonly<{ id: string; artworkFileId: string; orderId: string; orderLineId: string; purpose: "customer_supplied" | "production" | "proof" | "reference"; side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; createdAt: string }>;
   file: Readonly<{ id: string; originalFilename: string; displayFilename: string; contentType: string; byteSize: number; source: "customer_upload" | "prepress_derived" | "imported"; pageCount?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number; derivedFromArtworkFileId?: string; createdAt: string }>;
 }>;
+export type ProofResponse = Readonly<{ proofResponseId:string; proofVersionId:string; outcome:"approved"|"revision_requested"; comment?:string; origin:"direct"|"staff_recorded_customer"; respondedAt:string; responderPrincipalSubject:string }>;
+export type ProofVersion = Readonly<{ proofVersionId:string; proofWorkId:string; sequence:number; artwork:readonly Readonly<{position:number;artworkAssignmentId:string;artworkFileId:string}>[]; createdAt:string; issuedAt?:string; issuedPrincipalSubject?:string }>;
+export type ProofWorkProjection = Readonly<{ work:Readonly<{proofWorkId:string;orderId:string;orderLineId:string;createdAt:string}>; versions:readonly Readonly<{version:ProofVersion;response?:ProofResponse}>[] }>;
+export type ProofQueueItem = Readonly<{work:ProofWorkProjection["work"];orderNumber:string;customerDisplayName:string;lineDescription:string;latest?:Readonly<{sequence:number;issuedAt?:string;outcome?:"approved"|"revision_requested"}>}>;
 export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
 export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly ("in" | "ft" | "mm")[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
 const csrfTokens = new Map<string, string>();
@@ -265,6 +270,16 @@ export const invoiceApi = {
 export const artworkApi = {
   forOrder: (organizationId: string, orderId: string) => request<readonly ArtworkOrderProjection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`),
   assign: (organizationId: string, artworkFileId: string, businessRequestId: string, usage: Record<string, unknown>) => request<Readonly<{ artworkFile: ArtworkOrderProjection["file"]; assignment: ArtworkOrderProjection["assignment"] }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(artworkFileId)}/assign`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, usage }) }),
+};
+const proofEndpoint=(org:string,suffix="")=>`/v2/organizations/${encodeURIComponent(org)}/proofing${suffix}`;
+const proofMutation=<T>(org:string,suffix:string,businessRequestId:string,input:Record<string,unknown>)=>request<T>(proofEndpoint(org,suffix),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({...input,businessRequestId})});
+export const proofingApi={
+  list:(org:string)=>request<readonly ProofQueueItem[]>(proofEndpoint(org,"/works?limit=50")),
+  get:(org:string,proofWorkId:string)=>request<ProofWorkProjection>(proofEndpoint(org,`/works/${encodeURIComponent(proofWorkId)}`)),
+  start:(org:string,businessRequestId:string,orderId:string,orderLineId:string)=>proofMutation<unknown>(org,"/works",businessRequestId,{orderId,orderLineId}),
+  createVersion:(org:string,proofWorkId:string,businessRequestId:string,artworkAssignmentIds:readonly string[])=>proofMutation<unknown>(org,`/works/${encodeURIComponent(proofWorkId)}/versions`,businessRequestId,{artworkAssignmentIds}),
+  issue:(org:string,proofVersionId:string,businessRequestId:string)=>proofMutation<unknown>(org,`/versions/${encodeURIComponent(proofVersionId)}/issue`,businessRequestId,{}),
+  respond:(org:string,proofVersionId:string,businessRequestId:string,outcome:"approved"|"revision_requested",comment?:string)=>proofMutation<unknown>(org,`/versions/${encodeURIComponent(proofVersionId)}/respond`,businessRequestId,{outcome,...(comment?.trim()?{comment:comment.trim()}: {})}),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

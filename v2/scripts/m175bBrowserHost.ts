@@ -24,6 +24,7 @@ import { composeAuthenticatedQuoteRuntime } from "../infrastructure/sales/authen
 import { composeAuthenticatedOrderRuntime } from "../infrastructure/sales/authenticatedOrderRuntime.js";
 import { composeAuthenticatedBillingRuntime } from "../infrastructure/billing/authenticatedBillingRuntime.js";
 import { composeAuthenticatedArtworkRuntime } from "../infrastructure/artwork/authenticatedArtworkRuntime.js";
+import { composeAuthenticatedProofingRuntime } from "../infrastructure/proofing/authenticatedProofingRuntime.js";
 import { ArtworkApplicationService } from "../src/modules/artwork/artworkApplication.js";
 import { PostgresArtworkTransactionRunner } from "../infrastructure/artwork/postgresArtworkTransaction.js";
 import { OrderApplicationService } from "../src/modules/sales/orderApplication.js";
@@ -73,9 +74,9 @@ const createFixture = async (client: PoolClient): Promise<BrowserFixture> => {
     await client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1),($2)", [f.organizationA, f.organizationB]);
     await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$2,'Sales','sales','staff'),($3,$2,'Limited','limited','staff'),($4,$5,'Sales','sales','staff')", [f.salesSetA, f.organizationA, limitedSet, salesSetB, f.organizationB]);
     for (const [org, set] of [[f.organizationA, f.salesSetA], [f.organizationB, salesSetB]] as const)
-      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign"])
+      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond"])
         await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [org, set, capability]);
-    for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "order.view", "order.edit", "invoice.view", "artwork.view"])
+    for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "order.view", "order.edit", "invoice.view", "artwork.view", "proof.view"])
       await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [f.organizationA, limitedSet, capability]);
     await client.query("INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id) VALUES($1,$2,$3),($1,$4,$5),($6,$7,$8)", [f.organizationA, f.staffA, f.salesSetA, f.limitedA, limitedSet, f.organizationB, f.staffB, salesSetB]);
     await client.query("INSERT INTO customers(id,organization_id,company_name,display_name,is_active,status) VALUES($1,$2,'Browser A','Browser A',true,'active'),($3,$4,'Browser B','Browser B',true,'active')", [f.customerA, f.organizationA, f.customerB, f.organizationB]);
@@ -188,6 +189,7 @@ const main = async () => {
     const billingRuntime = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
     const artworkService = new ArtworkApplicationService(new PostgresArtworkTransactionRunner(pool));
     const artworkRuntime = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: artworkService });
+    const proofingRuntime = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
     /**
      * Test-only seed that exercises the real Artwork application service. The
      * production UI deliberately has no browser upload/adoption adapter yet;
@@ -223,8 +225,22 @@ const main = async () => {
         response.json({ ok: true, data: { assignments: assignments.rows, audit: audit.rows.map((row) => ({ ...row, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })), operations: operations.rows } });
       } catch (error) { next(error); }
     });
+    /** Test-only PostgreSQL readback validates that standard Proofing HTTP writes stayed atomic and attributable. */
+    app.get("/_v2-browser-test/proof-readback/:proofWorkId", fixtureAdmin, async (request, response, next) => {
+      try {
+        const organizationId = fixture!.organizationA, proofWorkId = request.params.proofWorkId;
+        const [work, versions, responses, audit, operations] = await Promise.all([
+          pool.query("SELECT id,order_document_id,order_line_id FROM v2_proof_works WHERE organization_id=$1 AND id=$2", [organizationId, proofWorkId]),
+          pool.query("SELECT id,sequence,issued_at FROM v2_proof_versions WHERE organization_id=$1 AND proof_work_id=$2 ORDER BY sequence", [organizationId, proofWorkId]),
+          pool.query("SELECT r.proof_version_id,r.outcome,r.comment,r.response_origin,r.responder_staff_actor_user_id AS staff_actor_user_id FROM v2_proof_responses r JOIN v2_proof_versions v ON v.organization_id=r.organization_id AND v.id=r.proof_version_id WHERE r.organization_id=$1 AND v.proof_work_id=$2 ORDER BY r.responded_at", [organizationId, proofWorkId]),
+          pool.query("SELECT event_type,resource_id,staff_actor_user_id FROM v2_audit_events WHERE organization_id=$1 AND resource_type IN ('proof_work','proof_version','proof_response') AND resource_id IN (SELECT id FROM v2_proof_works WHERE organization_id=$1 AND id=$2 UNION SELECT id FROM v2_proof_versions WHERE organization_id=$1 AND proof_work_id=$2 UNION SELECT r.id FROM v2_proof_responses r JOIN v2_proof_versions v ON v.organization_id=r.organization_id AND v.id=r.proof_version_id WHERE r.organization_id=$1 AND v.proof_work_id=$2) ORDER BY created_at", [organizationId, proofWorkId]),
+          pool.query("SELECT operation,business_request_id,status,result_resource_id FROM v2_operation_requests WHERE organization_id=$1 AND result_resource_type IN ('proof_work','proof_version','proof_response') AND result_resource_id IN (SELECT id FROM v2_proof_works WHERE organization_id=$1 AND id=$2 UNION SELECT id FROM v2_proof_versions WHERE organization_id=$1 AND proof_work_id=$2 UNION SELECT r.id FROM v2_proof_responses r JOIN v2_proof_versions v ON v.organization_id=r.organization_id AND v.id=r.proof_version_id WHERE r.organization_id=$1 AND v.proof_work_id=$2) ORDER BY created_at", [organizationId, proofWorkId]),
+        ]);
+        response.json({ ok: true, data: { work: work.rows[0] ?? null, versions: versions.rows, responses: responses.rows.map((row) => ({ ...row, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })), audit: audit.rows.map((row) => ({ ...row, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })), operations: operations.rows } });
+      } catch (error) { next(error); }
+    });
     app.use(express.static(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../dist-v2-ui"), { index: "index.html" }));
-    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime, artworkRuntime));
+    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime, artworkRuntime, proofingRuntime));
     const port = Number(process.env.V2_M175B_PORT ?? "4174");
     const server = app.listen(port, "127.0.0.1", () => console.log(`[m175b] ready on ${port}`));
     const close = async () => { server.close(); if (fixture) { await pool.query("DELETE FROM organizations WHERE id=ANY($1::text[])", [[fixture.organizationA, fixture.organizationB]]); await pool.query("DELETE FROM users WHERE id=ANY($1::text[])", [[fixture.staffA, fixture.limitedA, fixture.staffB]]); } client.release(); await pool.end(); };

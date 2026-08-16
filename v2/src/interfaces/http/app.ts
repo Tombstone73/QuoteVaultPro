@@ -16,6 +16,7 @@ import {
 } from "./orderRoutes.js";
 import { createInvoiceRouter, type InvoiceHttpDependencies } from "./invoiceRoutes.js";
 import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRoutes.js";
+import { createProofingRouter, type ProofingHttpDependencies } from "./proofingRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -30,6 +31,7 @@ export type AuthenticatedOrderRouteRuntime = Readonly<{
 }>;
 export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -39,6 +41,7 @@ export const createV2HttpApp = (
   order?: AuthenticatedOrderRouteRuntime,
   billing?: AuthenticatedBillingRouteRuntime,
   artwork?: AuthenticatedArtworkRouteRuntime,
+  proofing?: AuthenticatedProofingRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -98,6 +101,10 @@ export const createV2HttpApp = (
                 invoiceView: policy.decide(principal, { capability: "invoice.view", resource: { organizationId } }).allowed,
                 artworkView: policy.decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed,
                 artworkAssign: policy.decide(principal, { capability: "artwork.assign", resource: { organizationId } }).allowed,
+                proofView: policy.decide(principal, { capability: "proof.view", resource: { organizationId } }).allowed,
+                proofPrepare: policy.decide(principal, { capability: "proof.prepare", resource: { organizationId } }).allowed,
+                proofIssue: policy.decide(principal, { capability: "proof.issue", resource: { organizationId } }).allowed,
+                proofRespond: policy.decide(principal, { capability: "proof.respond", resource: { organizationId } }).allowed,
               },
             },
           });
@@ -151,6 +158,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createArtworkRouter(artwork.dependencies),
+    );
+  if (proofing)
+    app.use(
+      "/v2/organizations/:organizationId/proofing",
+      proofing.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createProofingRouter(proofing.dependencies),
     );
 
   app.use((_request, response) =>

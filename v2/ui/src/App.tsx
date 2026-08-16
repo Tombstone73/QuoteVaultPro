@@ -36,6 +36,7 @@ import { SelectionField } from "./SelectionField";
 import { AppearanceWorkspace } from "./AppearanceWorkspace";
 import type { VisualAppearance } from "./appearance";
 import { V2VisualShell, type V2VisualPage } from "./VisualShell";
+import { ProofingWorkspace } from "./ProofingWorkspace";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -150,7 +151,7 @@ export const App = ({
   };
   return (
     <V2VisualShell page={page} onNavigate={navigate} appearance={appearance} setAppearance={setAppearance}>
-      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : <>
+      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : <>
         {page === "orders" ? (
           <OrdersPage
             organizationId={organizationId}

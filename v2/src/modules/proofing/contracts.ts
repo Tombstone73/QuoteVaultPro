@@ -24,6 +24,11 @@ export type ProofResponse = Readonly<{
 }>;
 export type ProofVersionProjection = Readonly<{ version: ProofVersion; response?: ProofResponse }>;
 export type ProofWorkProjection = Readonly<{ work: ProofWork; versions: readonly ProofVersionProjection[] }>;
+/** Bounded operational projection; Sales owns the displayed Order/line facts. */
+export type ProofWorkQueueItem = Readonly<{
+  work: ProofWork; orderNumber: string; customerDisplayName: string; lineDescription: string;
+  latest?: Readonly<{ sequence: number; issuedAt?: string; outcome?: ProofOutcome }>;
+}>;
 
 export type StartProofWorkInput = Readonly<{ businessRequestId: string; orderId: OrderId; orderLineId: OrderLineId }>;
 export type CreateProofVersionInput = Readonly<{ businessRequestId: string; proofWorkId: ProofWorkId; artworkAssignmentIds: readonly ArtworkAssignmentId[] }>;

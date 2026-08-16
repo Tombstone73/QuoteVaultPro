@@ -1,0 +1,11 @@
+import type { RequestHandler } from "express";
+import type { Pool } from "pg";
+import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
+import { IssuedV2PrincipalProvider, type TrustedHostIdentitySource } from "../authentication/trustedHostPrincipalProvider.js";
+import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets.js";
+import { ProofingApplicationService } from "../../src/modules/proofing/proofingApplication.js";
+import type { ProofingHttpDependencies } from "../../src/interfaces/http/proofingRoutes.js";
+import { PostgresProofingTransactionRunner } from "./postgresProofingTransaction.js";
+export type AuthenticatedProofingRuntimeDependencies=Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;trustedHostMiddleware:RequestHandler;service?:ProofingApplicationService}>;
+export type AuthenticatedProofingRuntime=Readonly<{dependencies:ProofingHttpDependencies;trustedHostMiddleware:RequestHandler}>;
+export const composeAuthenticatedProofingRuntime=(input:AuthenticatedProofingRuntimeDependencies):AuthenticatedProofingRuntime=>({dependencies:{service:input.service??new ProofingApplicationService(new PostgresProofingTransactionRunner(input.pool)),principals:new IssuedV2PrincipalProvider(input.trustedHostIdentity,new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)))},trustedHostMiddleware:input.trustedHostMiddleware});
