@@ -150,8 +150,17 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
     await expect(page.getByLabel("Width (in)")).toHaveCount(0);
     await page.getByLabel("Quantity").first().fill("3");
     await expect(page.getByLabel("Selling price decision")).toHaveCount(0);
-    for (const theme of ["printershero", "corporate", "industrial"]) {
-      await page.getByLabel("Theme").selectOption(theme);
+    for (const theme of [
+      "Modern Light",
+      "Modern Dark",
+      "Command Center",
+      "High Contrast",
+      "Low Glare",
+      "Warm Neutral",
+    ]) {
+      await page.getByRole("button", { name: "Themes / Appearance" }).click();
+      await page.getByRole("button", { name: `Select ${theme} theme` }).click();
+      await page.getByRole("button", { name: "Quotes" }).click();
       await expect(page.getByLabel("Customer").first()).toBeVisible();
       await expect(page.getByLabel("Product").first()).toBeVisible();
     }
@@ -368,10 +377,14 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
   });
 
   test("shared Sales workspace converts a Quote, edits the resulting Order, and shows Billing and Routing truth", async ({ page, browser }) => {
+    test.setTimeout(90_000);
     await login(page.context().request, "staff-a");
     const f = await fixture(page.context().request);
     await openOrganization(page, f.organizationA);
     const quoteId = await createDimensionalQuote(page, f);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: "C:\\tmp\\m2ui-visual\\v2-quote-detail-1440.png" });
     await page.getByRole("button", { name: "Send Quote" }).click();
     await expect(page.getByRole("button", { name: "Accept Quote" })).toBeVisible();
     await page.getByRole("button", { name: "Accept Quote" }).click();
@@ -385,7 +398,9 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
     await expect(page.getByRole("button", { name: "Open converted Order" })).toBeVisible();
     await page.getByRole("button", { name: "Open converted Order" }).click();
     await expect(page.getByText("Draft Invoice")).toBeVisible();
-    await expect(page.getByText(/proofing.*prepress.*production.*fulfillment/i)).toBeVisible();
+    await expect(page.locator(".route-summary").filter({ hasText: /proofing.*prepress.*production.*fulfillment/i })).toBeVisible();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: "C:\\tmp\\m2ui-visual\\v2-order-detail-1440.png" });
     await page.getByRole("button", { name: "Edit configuration" }).click();
     const editor = page.locator("tr.editor-row");
     await expect(editor.getByLabel("Product")).toBeDisabled();
@@ -425,17 +440,19 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
       await login(limited.request, "limited-a");
       const limitedPage = await limited.newPage();
       await limitedPage.goto("/");
-      await limitedPage.getByRole("button", { name: "Sales / Orders" }).click();
+      await limitedPage.getByRole("button", { name: "Orders", exact: true }).click();
       await limitedPage.getByLabel("Organization ID").fill(f.organizationA);
       await limitedPage.getByRole("button", { name: orderNumber }).click();
       await limitedPage.getByRole("button", { name: "Edit configuration" }).click();
       await expect(limitedPage.getByLabel("Selling price decision")).toHaveCount(0);
       await expect(limitedPage.getByText(/Existing selling-price decision: total override/i)).toBeVisible();
-    } finally { await limited.close(); }
-    for (const theme of ["printershero", "corporate", "industrial"]) {
-      await page.getByLabel("Theme").selectOption(theme);
+    } finally { void limited.close(); }
+    for (const theme of ["Modern Light", "Command Center", "High Contrast"]) {
+      await page.getByRole("button", { name: "Themes / Appearance" }).click();
+      await page.getByRole("button", { name: `Select ${theme} theme` }).click();
+      await page.getByRole("button", { name: "Orders", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Draft Invoice" })).toBeVisible();
-      await expect(page.getByText(/proofing.*prepress/i)).toBeVisible();
+      await expect(page.locator(".route-summary").filter({ hasText: /proofing.*prepress/i })).toBeVisible();
     }
   });
 
@@ -460,7 +477,7 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
       await login(other.request, "limited-a");
       const pageB = await other.newPage();
       await pageB.goto("/");
-      await pageB.getByRole("button", { name: "Sales / Orders" }).click();
+      await pageB.getByRole("button", { name: "Orders", exact: true }).click();
       await pageB.getByLabel("Organization ID").fill(f.organizationA);
       await expect(pageB.getByRole("button", { name: orderNumber })).toBeVisible();
       await pageB.getByRole("button", { name: orderNumber }).click();
@@ -511,10 +528,10 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
     const foreign = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationB)}/orders?limit=1`);
     expect(foreign.status()).toBe(404);
     await page.goto("/");
-    await page.getByRole("button", { name: "Sales / Quotes" }).click();
+    await page.getByRole("button", { name: "Quotes" }).click();
     await page.getByLabel("Sales organization").fill(f.organizationA);
     await expect(page.getByRole("heading", { name: "Quotes" }).last()).toBeVisible();
-    await page.getByRole("button", { name: "Sales / Orders" }).click();
+    await page.getByRole("button", { name: "Orders", exact: true }).click();
     await page.getByLabel("Organization ID").fill(f.organizationA);
     await expect(page.getByRole("heading", { name: "Orders" }).last()).toBeVisible();
   });

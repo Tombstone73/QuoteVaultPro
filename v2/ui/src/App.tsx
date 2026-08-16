@@ -33,7 +33,9 @@ import {
   useSalesQuotes,
 } from "./quoteFormQueries";
 import { SelectionField } from "./SelectionField";
-import type { AppearancePreference, ThemeId } from "./theme";
+import { AppearanceWorkspace } from "./AppearanceWorkspace";
+import type { VisualAppearance } from "./appearance";
+import { V2VisualShell, type V2VisualPage } from "./VisualShell";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -49,17 +51,13 @@ const errorText = (error: unknown) => {
 const Status = LifecycleBadge;
 
 export const App = ({
-  theme,
-  setTheme,
   appearance,
   setAppearance,
 }: {
-  theme: ThemeId;
-  setTheme: (value: ThemeId) => void;
-  appearance: AppearancePreference;
-  setAppearance: (value: AppearancePreference) => void;
+  appearance: VisualAppearance;
+  setAppearance: (patch: Partial<VisualAppearance>) => void;
 }) => {
-  const [page, setPage] = useState<"quotes" | "orders" | "lab">("quotes");
+  const [page, setPage] = useState<V2VisualPage>("quotes");
   const [organizationId, setOrganizationId] = useState("");
   const [sessionScope, setSessionScope] = useState("");
   const sessionScopeRef = useRef(sessionScope);
@@ -145,63 +143,15 @@ export const App = ({
     return () => window.removeEventListener("focus", refreshTrustedBootstrap);
   }, [queryClient]);
 
+  const navigate = (nextPage: V2VisualPage) => {
+    setPage(nextPage);
+    if (nextPage === "quotes") setOrderId("");
+    if (nextPage === "orders") setQuoteId("");
+  };
   return (
-    <div className="app">
-      <nav className="nav">
-        <div className="brand">PrintersHero V2</div>
-        <button
-          aria-current={page === "quotes" || undefined}
-          onClick={() => { setPage("quotes"); setOrderId(""); }}
-        >
-          Sales / Quotes
-        </button>
-        <button
-          aria-current={page === "orders" || undefined}
-          onClick={() => { setPage("orders"); setQuoteId(""); }}
-        >
-          Sales / Orders
-        </button>
-        <button
-          aria-current={page === "lab" || undefined}
-          onClick={() => setPage("lab")}
-        >
-          UI Lab
-        </button>
-      </nav>
-      <main>
-        <div className="header">
-          <div>
-            <h1>{page === "quotes" ? "Quotes" : page === "orders" ? "Orders" : "UI system lab"}</h1>
-            <p className="muted">
-              M1.7.5 proof — semantic components and authenticated server state.
-            </p>
-          </div>
-          <div className="actions">
-            <select
-              aria-label="Theme"
-              value={theme}
-              onChange={(event) => setTheme(event.target.value as ThemeId)}
-            >
-              <option value="printershero">PrintersHero default</option>
-              <option value="corporate">Clean corporate</option>
-              <option value="industrial">Industrial dark</option>
-            </select>
-            <select
-              aria-label="Appearance"
-              value={appearance}
-              onChange={(event) =>
-                setAppearance(event.target.value as AppearancePreference)
-              }
-            >
-              <option value="system">System</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
-          </div>
-        </div>
-        {page === "lab" ? (
-          <Lab />
-        ) : page === "orders" ? (
+    <V2VisualShell page={page} onNavigate={navigate} appearance={appearance} setAppearance={setAppearance}>
+      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : <>
+        {page === "orders" ? (
           <OrdersPage
             organizationId={organizationId}
             setOrganizationId={(next) => { setOrganizationId(next); setOrderId(""); }}
@@ -243,8 +193,8 @@ export const App = ({
             openOrder={(id) => { setOrderId(id); setPage("orders"); }}
           />
         )}
-      </main>
-    </div>
+      </>}
+    </V2VisualShell>
   );
 };
 
@@ -298,9 +248,9 @@ const SalesPagination = ({ cursor, nextCursor, setCursor }: Readonly<{ cursor: s
 const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
   const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
   const list = useSalesQuotes(props.sessionScope, props.organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
-  return <section className="lab">
+  return <section className="lab v2-sales-workspace">
     <div className="card grid"><label className="field">Sales organization<input value={props.organizationId} onChange={(event) => { setCursor(""); props.setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Quotes<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="draft">Draft</option><option value="sent">Sent</option><option value="accepted">Accepted</option><option value="converted">Converted</option></select></label></div>
-    {props.organizationId && <><SalesList kind="Quote" items={list.data?.items ?? []} onOpen={props.setQuoteId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}
+    {props.organizationId && !props.quoteId && <><SalesList kind="Quote" items={list.data?.items ?? []} onOpen={props.setQuoteId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}
     <QuoteWorkspace {...props} />
   </section>;
 };
@@ -309,7 +259,7 @@ const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, 
   const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
   const list = useSalesOrders(sessionScope, organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
   if (orderId) return <OrderWorkspace organizationId={organizationId} sessionScope={sessionScope} orderId={orderId} canEdit={bootstrap?.capabilities.orderEdit === true} canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true} canViewInvoice={bootstrap?.capabilities.invoiceView === true} csrfReady={Boolean(bootstrap)} onBack={() => setOrderId("")} />;
-  return <section className="lab"><div className="card grid"><label className="field">Organization ID<input value={organizationId} onChange={(event) => { setCursor(""); setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Orders<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="open">Open</option><option value="cancelled">Cancelled</option></select></label></div>{organizationId && <><SalesList kind="Order" items={list.data?.items ?? []} onOpen={setOrderId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}</section>;
+  return <section className="lab v2-sales-workspace"><div className="card grid"><label className="field">Organization ID<input value={organizationId} onChange={(event) => { setCursor(""); setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Orders<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="open">Open</option><option value="cancelled">Cancelled</option></select></label></div>{organizationId && <><SalesList kind="Order" items={list.data?.items ?? []} onOpen={setOrderId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}</section>;
 };
 
 type WorkspaceProps = Readonly<{
@@ -569,7 +519,7 @@ const QuoteWorkspace = ({
   };
 
   return (
-    <section className="lab">
+    <section className="lab v2-sales-workspace v2-quote-workspace">
       <div className="card grid">
         <label className="field">
           Organization ID
@@ -682,18 +632,21 @@ const QuoteWorkspace = ({
         </div>
       ) : (
         <div className="lab">
-          <div className="card">
-            <div className="header">
+          <div className="card v2-sales-document-card">
+            <div className="header v2-document-header">
               <div>
                 <h2>{quote.number.display}</h2>
                 <p className="muted">Revision {quote.revision}</p>
               </div>
-              <div className="actions">
+              <div className="actions v2-document-status">
                 <Status value={quote.quote.deliveryState} />
                 <Status value={quote.quote.acceptanceState} />
               </div>
             </div>
-            <div className="grid">
+            <div className="v2-document-tabs" aria-label="Quote workspace sections">
+              <span className="active">Items</span><span>Artwork</span><span>Notes</span><span>History</span>
+            </div>
+            <div className="grid v2-document-meta">
               <SelectionField
                 label="Customer"
                 value={headerCustomerId}
@@ -738,7 +691,7 @@ const QuoteWorkspace = ({
                 />
               </label>
             </div>
-            <div className="actions">
+            <div className="actions v2-document-actions">
               <button
                 className="button secondary"
                 disabled={!canEdit || save.isPending || !csrfReady || Boolean(quote.quote.convertedOrderId)}

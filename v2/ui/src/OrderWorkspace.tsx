@@ -82,19 +82,20 @@ export const OrderWorkspace = (props: Readonly<{
   const routeFor = (lineId: string) => current.routes.find((route) => route.work.orderLineId === lineId);
   const editable = props.canEdit && current.order.commercialState === "open";
   const change = (lineChanges: unknown[]) => update.mutate({ expectedRevision: current.revision, patch: {}, lineChanges });
-  return <section className="lab">
+  return <section className="lab v2-sales-workspace v2-order-workspace">
     <div className="actions"><button className="button secondary" onClick={props.onBack}>Back to Orders</button></div>
     {notice && <div className="notice">{notice}</div>}
-    <div className="card">
-      <div className="header"><div><h2>{current.number.display}</h2><p className="muted">Revision {current.revision}{current.order.sourceQuoteId ? " · converted from Quote" : ""}</p></div><LifecycleBadge value={current.order.commercialState} /></div>
-      <div className="grid">
+    <div className="card v2-sales-document-card">
+      <div className="header v2-document-header"><div><h2>{current.number.display}</h2><p className="muted">Revision {current.revision}{current.order.sourceQuoteId ? " · converted from Quote" : ""}</p></div><LifecycleBadge value={current.order.commercialState} /></div>
+      <div className="v2-document-tabs" aria-label="Order workspace sections"><span className="active">Items</span><span>Artwork</span><span>Notes</span><span>History</span></div>
+      <div className="grid v2-document-meta">
         <SelectionField label="Customer" value={customerId} options={customers.data ?? []} identity="customerId" emptyLabel="Select Customer" disabled={!editable} onChange={(value) => { const next = clearContactForCustomerChange(value); setCustomerId(next.customerId); setContactId(next.contactId); }} />
         <SelectionField label="Contact" value={contactId} options={contacts.data ?? []} identity="contactId" emptyLabel="Select Contact" disabled={!editable || !customerId} onChange={setContactId} />
         <label className="field">PO<input value={po} disabled={!editable} onChange={(event) => setPo(event.target.value)} /></label>
         <label className="field">Requested due date<input type="date" value={dueDate} disabled={!editable} onChange={(event) => setDueDate(event.target.value)} /></label>
         <label className="field">Commercial notes<textarea value={notes} disabled={!editable} onChange={(event) => setNotes(event.target.value)} /></label>
       </div>
-      <div className="actions"><button className="button secondary" disabled={!editable || saveHeader.isPending || !props.csrfReady} onClick={() => saveHeader.mutate()}>Save Order</button></div>
+      <div className="actions v2-document-actions"><button className="button secondary" disabled={!editable || saveHeader.isPending || !props.csrfReady} onClick={() => saveHeader.mutate()}>Save Order</button></div>
     </div>
     <DraftInvoiceSummary invoice={current.draftInvoice} detail={invoice.data} />
     <div className="card"><h2>Commercial lines</h2>

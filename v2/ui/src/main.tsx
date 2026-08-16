@@ -3,71 +3,43 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useMemo, useState } from "react";
 import { App } from "./App";
 import {
+  applyVisualAppearance,
+  browserVisualAppearancePreferences,
+  type VisualAppearance,
+} from "./appearance";
+import {
   resolveTheme,
   type AppearancePreference,
-  type AppearancePreferenceProvider,
   type OrganizationBrandingProvider,
-  type ThemeId,
 } from "./theme";
 import "./styles.css";
 
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
 });
-const browserAppearancePreferences: AppearancePreferenceProvider = {
-  read: () => {
-    try {
-      return {
-        theme: (localStorage.getItem("ph.v2.theme") as ThemeId | null) ??
-          "printershero",
-        appearance:
-          (localStorage.getItem("ph.v2.appearance") as AppearancePreference | null) ??
-          "system",
-      };
-    } catch {
-      return { theme: "printershero", appearance: "system" };
-    }
-  },
-  write: ({ theme, appearance }) => {
-    try {
-      localStorage.setItem("ph.v2.theme", theme);
-      localStorage.setItem("ph.v2.appearance", appearance);
-    } catch {
-      // Preferences are non-authoritative; failure does not affect the workspace.
-    }
-  },
-};
 const currentOrganizationBranding: OrganizationBrandingProvider = {
   current: () => undefined,
 };
 const Root = () => {
-  const [initial] = useState(() => browserAppearancePreferences.read());
-  const [theme, setTheme] = useState<ThemeId>(initial.theme);
-  const [appearance, setAppearance] = useState<AppearancePreference>(
-    initial.appearance,
-  );
-  const [systemDark, setSystemDark] = useState(() =>
-    matchMedia("(prefers-color-scheme: dark)").matches,
-  );
+  const [initial] = useState(() => browserVisualAppearancePreferences.read());
+  const [appearance, setAppearance] = useState<VisualAppearance>(initial);
+  const legacyTheme = appearance.theme === "dark" || appearance.theme === "command" || appearance.theme === "lowglare"
+    ? "industrial"
+    : "printershero";
+  const legacyAppearance: AppearancePreference = legacyTheme === "industrial" ? "dark" : "light";
   const resolved = useMemo(
     () =>
       resolveTheme(
-        theme,
-        appearance,
+        legacyTheme,
+        legacyAppearance,
         currentOrganizationBranding.current(),
-        systemDark,
       ),
-    [theme, appearance, systemDark],
+    [legacyTheme, legacyAppearance],
   );
   useEffect(() => {
-    browserAppearancePreferences.write({ theme, appearance });
-  }, [theme, appearance]);
-  useEffect(() => {
-    const media = matchMedia("(prefers-color-scheme: dark)");
-    const onChange = (event: MediaQueryListEvent) => setSystemDark(event.matches);
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, []);
+    browserVisualAppearancePreferences.write(appearance);
+    applyVisualAppearance(appearance);
+  }, [appearance]);
   useEffect(() => {
     const root = document.documentElement;
     Object.entries(resolved.tokens).forEach(([key, value]) =>
@@ -89,10 +61,10 @@ const Root = () => {
   }, [resolved]);
   return (
     <App
-      theme={theme}
-      setTheme={setTheme}
       appearance={appearance}
-      setAppearance={setAppearance}
+      setAppearance={(patch) =>
+        setAppearance((current) => ({ ...current, ...patch }))
+      }
     />
   );
 };
