@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { Pool } from "pg";
+import { PostgresPrepressTransactionRunner } from "../infrastructure/prepress/postgresPrepressTransaction.js";
+import { assertV2PrepressPhysicalPostconditions } from "../infrastructure/prepress/prepressPhysicalPostconditions.js";
+import { requireV2M0CloneDatabaseUrl } from "../infrastructure/persistence/cloneSafety.js";
+import { PrepressApplicationService } from "../src/modules/prepress/prepressApplication.js";
+import { brandedId } from "../src/modules/shared/commercialValues.js";
+import type { Capability } from "../src/authorization/capabilities.js";
+
+const migrationsFolder=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../server/db/migrations_v2");
+const staff=(organizationId:string,userId:string,id:string,capabilities:readonly Capability[]=["prepress.view","prepress.work","prepress.complete"])=>({organizationId,operationId:`m22:${id}`,businessRequest:{id,payloadFingerprint:"m22"},principal:{kind:"staff" as const,organizationId,userId,authority:{membershipId:`m22-${userId}`,capabilities}}});
+async function count(client:{query:Function},sql:string,values:unknown[]){const r=await client.query<{n:string}>(sql,values);return Number(r.rows[0]!.n);}
+
+async function main(){
+  const pool=new Pool({connectionString:requireV2M0CloneDatabaseUrl(),max:8,application_name:"m22-prepress-rehearsal"});
+  try {
+    await migrate(drizzle({client:pool}),{migrationsFolder,migrationsTable:"__drizzle_migrations_v2",migrationsSchema:"public"});
+    const client=await pool.connect();
+    try {
+      await assertV2PrepressPhysicalPostconditions(client);
+      const suffix=randomUUID(), org=`m22-${suffix}`, other=`m22-other-${suffix}`, user=`m22-user-${suffix}`, customer=`m22-customer-${suffix}`, type=`m22-type-${suffix}`, product=`m22-product-${suffix}`, order=`m22-order-${suffix}`, quote=`m22-quote-${suffix}`, line=`m22-line-${suffix}`, proofLine=`m22-proof-line-${suffix}`, productionLine=`m22-production-line-${suffix}`, file=`m22-file-${suffix}`, front=`m22-front-${suffix}`, back=`m22-back-${suffix}`, layer=`m22-layer-${suffix}`, rollbackArt=`m22-rollback-${suffix}`, customerArt=`m22-customer-art-${suffix}`, proofArt=`m22-proof-art-${suffix}`, productionArt=`m22-production-art-${suffix}`, template=`m22-template-${suffix}`, route=`m22-route-${suffix}`, prepressStep=`m22-prepress-${suffix}`, productionStep=`m22-production-${suffix}`, proofRoute=`m22-proof-route-${suffix}`, proofStep=`m22-proof-step-${suffix}`, onlyProductionRoute=`m22-production-route-${suffix}`, onlyProductionStep=`m22-production-only-${suffix}`;
+      await client.query("BEGIN");
+      await client.query("INSERT INTO organizations(id,name,slug) VALUES($1,'M22',$2),($3,'M22 Other',$4)",[org,`m22-${suffix}`,other,`m22-other-${suffix}`]);
+      await client.query("INSERT INTO users(id,email,role) VALUES($1,$2,'owner')",[user,`${user}@test`]);
+      await client.query("INSERT INTO customers(id,organization_id,company_name,display_name,is_active,status) VALUES($1,$2,'M22','M22',true,'active')",[customer,org]);
+      await client.query("INSERT INTO product_types(id,organization_id,name,routing_mode) VALUES($1,$2,'M22','no_route')",[type,org]);
+      await client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,product_type_id) VALUES($1,$2,'M22','M22',true,'quantity_only',$3)",[product,org,type]);
+      for(const [document,kind,number] of [[order,"order",`ORD-${suffix}`],[quote,"quote",`QUO-${suffix}`]] as const) await client.query("INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,currency,terms_json) VALUES($1,$2,$3,1,$4,$5,'USD','{}')",[document,org,kind,number,customer]);
+      await client.query("INSERT INTO v2_sales_order_details(document_id,organization_id) VALUES($1,$2)",[order,org]);
+      await client.query("INSERT INTO v2_sales_quote_details(document_id,organization_id) VALUES($1,$2)",[quote,org]);
+      for(const [id,document,position] of [[line,order,0],[proofLine,order,1],[productionLine,order,2]] as const) await client.query("INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision) VALUES($1,$2,$3,$4,$5,'M22',1,'USD',1,1,1,1,'m22','sha256:m22','{}','{}','{}')",[id,org,document,position,product]);
+      await client.query("INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision) VALUES($1,$2,$3,0,$4,'quote',1,'USD',1,1,1,1,'m22','sha256:m22','{}','{}','{}')",[`m22-quote-line-${suffix}`,org,quote,product]);
+      await client.query("INSERT INTO v2_artwork_files(id,organization_id,storage_provider,object_key,original_filename,display_filename,content_type,byte_size,source_kind,page_count) VALUES($1,$2,'clone',$3,'print.pdf','print.pdf','application/pdf',1,'customer_upload',2)",[file,org,`m22/${suffix}`]);
+      for(const [id,targetLine,purpose,side,page,key,orderNo,fingerprint] of [[front,line,"production","front",0,"ink",0,"a"],[back,line,"production","back",1,"ink",1,"b"],[layer,line,"production","front",0,"white",0,"c"],[rollbackArt,line,"production","front",0,"cut",2,"d"],[customerArt,line,"customer_supplied","front",0,"customer",0,"e"],[proofArt,proofLine,"production","front",0,"ink",0,"f"],[productionArt,productionLine,"production","front",0,"ink",0,"a"]] as const) await client.query("INSERT INTO v2_artwork_assignments(id,organization_id,artwork_file_id,order_document_id,order_line_id,purpose,side,source_page_index,layer_key,layer_order,identity_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",[id,org,file,order,targetLine,purpose,side,page,key,orderNo,`sha256:${fingerprint.repeat(64)}`]);
+      await client.query("INSERT INTO v2_route_templates(id,organization_id,name,normalized_name,definition_fingerprint) VALUES($1,$2,'M22','m22','m22')",[template,org]);
+      for(const [id,work,current] of [[route,line,prepressStep],[proofRoute,proofLine,proofStep],[onlyProductionRoute,productionLine,onlyProductionStep]] as const) await client.query("INSERT INTO v2_route_instances(id,organization_id,order_document_id,order_line_id,source_template_id,source_template_revision,source_template_fingerprint,route_state,current_step_id) VALUES($1,$2,$3,$4,$5,1,'m22','active',$6)",[id,org,order,work,template,current]);
+      await client.query("INSERT INTO v2_route_instance_steps(id,organization_id,route_instance_id,position,step_kind) VALUES($1,$2,$3,0,'prepress'),($4,$2,$3,1,'production'),($5,$2,$6,0,'proofing'),($7,$2,$8,0,'production')",[prepressStep,org,route,productionStep,proofStep,proofRoute,onlyProductionStep,onlyProductionRoute]);
+      await client.query("COMMIT");
+      console.log("[m2.2] clone fixtures ready");
+      const routeBefore=await client.query("SELECT revision,route_state,current_step_id FROM v2_route_instances WHERE organization_id=$1 AND id=$2",[org,route]);
+      const service=new PrepressApplicationService(new PostgresPrepressTransactionRunner(pool));
+      await assert.rejects(client.query("INSERT INTO v2_prepress_units(organization_id,order_document_id,order_line_id,artwork_assignment_id,artwork_file_id,created_principal_kind,created_principal_subject) VALUES($1,$2,$3,$4,$5,'staff','bad')",[other,order,line,front,file]),/(foreign key|Prepress Unit)/i);
+      await assert.rejects(client.query("INSERT INTO v2_prepress_units(organization_id,order_document_id,order_line_id,artwork_assignment_id,artwork_file_id,created_principal_kind,created_principal_subject) VALUES($1,$2,$3,$4,$5,'staff','bad')",[org,order,line,customerArt,file]),/production Artwork/i);
+      await assert.rejects(client.query("INSERT INTO v2_prepress_units(organization_id,order_document_id,order_line_id,artwork_assignment_id,artwork_file_id,created_principal_kind,created_principal_subject) VALUES($1,$2,$3,$4,$5,'staff','bad')",[org,quote,`m22-quote-line-${suffix}`,front,file]),/(foreign key|Prepress Unit)/i);
+      const frontResults=await Promise.all([service.open(staff(org,user,"front-a"),{businessRequestId:"front-a",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(front)}),service.open(staff(org,user,"front-b"),{businessRequestId:"front-b",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(front)})]);
+      assert(frontResults.every((x)=>x.ok)&&frontResults[0]!.ok&&frontResults[1]!.ok&&frontResults[0]!.value.unit.prepressUnitId===frontResults[1]!.value.unit.prepressUnitId,"concurrent unit creation did not converge");
+      const frontUnit=frontResults[0]!.value.unit;
+      const replay=await Promise.all([service.open(staff(org,user,"front-replay"),{businessRequestId:"front-replay",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(front)}),service.open(staff(org,user,"front-replay"),{businessRequestId:"front-replay",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(front)})]);
+      assert(replay.every((x)=>x.ok)&&replay[0]!.ok&&replay[1]!.ok&&replay[0]!.value.unit.prepressUnitId===frontUnit.prepressUnitId,"M0 replay did not converge");
+      const backOpen=await service.open(staff(org,user,"back"),{businessRequestId:"back",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(back)}); const layerOpen=await service.open(staff(org,user,"layer"),{businessRequestId:"layer",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(layer)}); assert(backOpen.ok&&layerOpen.ok); if(!backOpen.ok||!layerOpen.ok)return;
+      assert.deepEqual([frontUnit.side,frontUnit.sourcePageIndex,frontUnit.layerKey,backOpen.value.unit.side,backOpen.value.unit.sourcePageIndex,layerOpen.value.unit.layerKey],["front",0,"ink","back",1,"white"],"side/page/layer snapshots were not preserved");
+      const proofRouteResult=await service.open(staff(org,user,"proof-route"),{businessRequestId:"proof-route",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(proofArt)}); assert(!proofRouteResult.ok,"Proofing current step incorrectly allowed Prepress before Routing advances.");
+      const routeWithoutPrepress=await service.open(staff(org,user,"production-route"),{businessRequestId:"production-route",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(productionArt)}); assert(!routeWithoutPrepress.ok,"Route without a current Prepress step incorrectly created Prepress work.");
+      assert(!(await service.open(staff(org,user,"non-production"),{businessRequestId:"non-production",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(customerArt)})).ok,"non-production Artwork was incorrectly eligible");
+      assert((await service.start(staff(org,user,"start-front"),{businessRequestId:"start-front",prepressUnitId:frontUnit.prepressUnitId})).ok);
+      assert((await service.start(staff(org,user,"start-back"),{businessRequestId:"start-back",prepressUnitId:backOpen.value.unit.prepressUnitId})).ok);
+      const completes=await Promise.all([service.complete(staff(org,user,"complete-front"),{businessRequestId:"complete-front",prepressUnitId:frontUnit.prepressUnitId}),service.complete(staff(org,user,"complete-back"),{businessRequestId:"complete-back",prepressUnitId:backOpen.value.unit.prepressUnitId})]); assert(completes.every((x)=>x.ok));
+      const listed=await service.listOrderLineUnits(staff(org,user,"list"),brandedId<"OrderLineId">(line)); assert(listed.ok&&listed.value.length===3&&listed.value.filter((x)=>x.completedAt).length===2,"Front and Back did not progress independently");
+      const duplicateComplete=await Promise.all([service.complete(staff(org,user,"complete-replay"),{businessRequestId:"complete-replay",prepressUnitId:frontUnit.prepressUnitId}),service.complete(staff(org,user,"complete-replay"),{businessRequestId:"complete-replay",prepressUnitId:frontUnit.prepressUnitId})]); assert(duplicateComplete.every((x)=>x.ok));
+      const routeAfter=await client.query("SELECT revision,route_state,current_step_id FROM v2_route_instances WHERE organization_id=$1 AND id=$2",[org,route]); assert.deepEqual(routeAfter.rows,routeBefore.rows,"Prepress mutated frozen Routing");
+      assert.equal(await count(client,"SELECT count(*) n FROM v2_audit_events WHERE organization_id=$1 AND event_type LIKE 'prepress_%'",[org])>=7,true); assert.equal(await count(client,"SELECT count(*) n FROM v2_principal_attributions WHERE organization_id=$1 AND resource_type='prepress_unit'",[org])>=7,true);
+      await assert.rejects(client.query("UPDATE v2_prepress_units SET side='back' WHERE organization_id=$1 AND id=$2",[org,frontUnit.prepressUnitId]),/(immutable|Prepress Unit)/i); await assert.rejects(client.query("DELETE FROM v2_prepress_units WHERE organization_id=$1 AND id=$2",[org,frontUnit.prepressUnitId]),/immutable/i);
+      const unitsBefore=await count(client,"SELECT count(*) n FROM v2_prepress_units WHERE organization_id=$1",[org]), auditBefore=await count(client,"SELECT count(*) n FROM v2_audit_events WHERE organization_id=$1 AND event_type='prepress_unit_opened'",[org]), requestsBefore=await count(client,"SELECT count(*) n FROM v2_operation_requests WHERE organization_id=$1 AND business_request_id='rollback'",[org]);
+      const rolled=await new PrepressApplicationService(new PostgresPrepressTransactionRunner(pool,{afterUnit:async()=>{throw Error("rollback");}})).open(staff(org,user,"rollback"),{businessRequestId:"rollback",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(rollbackArt)}); assert(!rolled.ok); assert.equal(await count(client,"SELECT count(*) n FROM v2_prepress_units WHERE organization_id=$1",[org]),unitsBefore); assert.equal(await count(client,"SELECT count(*) n FROM v2_audit_events WHERE organization_id=$1 AND event_type='prepress_unit_opened'",[org]),auditBefore); assert.equal(await count(client,"SELECT count(*) n FROM v2_operation_requests WHERE organization_id=$1 AND business_request_id='rollback'",[org]),requestsBefore);
+      const denied=await service.open(staff(org,user,"denied",[]),{businessRequestId:"denied",artworkAssignmentId:brandedId<"ArtworkAssignmentId">(front)}); assert(!denied.ok); assert.equal(await count(client,"SELECT count(*) n FROM v2_operation_requests WHERE organization_id=$1 AND business_request_id='denied'",[org]),0);
+      console.log("[m2.2] Prepress PostgreSQL clone rehearsal passed (30 assertions).");
+    } finally {client.release();}
+  } finally {await pool.end();}
+}
+main().catch((error)=>{console.error(`[m2.2] rehearsal failed: ${error instanceof Error ? error.stack??error.message:String(error)}`);process.exitCode=1;});

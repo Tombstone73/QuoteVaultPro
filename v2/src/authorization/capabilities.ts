@@ -10,6 +10,7 @@ export const capabilityIds = [
   "route.view", "route.reroute", "route.skipStep", "route.manageTemplates",
   "artwork.view", "artwork.adopt", "artwork.assign",
   "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.pickup",
+  "prepress.view", "prepress.work", "prepress.complete",
 ] as const;
 
 export type Capability = (typeof capabilityIds)[number];
