@@ -23,6 +23,9 @@ export type RouteInstanceStepId = Brand<string, "RouteInstanceStepId">;
 /** Artwork owns file identity; these never imply a separate customer/production file universe. */
 export type ArtworkFileId = Brand<string, "ArtworkFileId">;
 export type ArtworkAssignmentId = Brand<string, "ArtworkAssignmentId">;
+export type ProofWorkId = Brand<string, "ProofWorkId">;
+export type ProofVersionId = Brand<string, "ProofVersionId">;
+export type ProofResponseId = Brand<string, "ProofResponseId">;
 export type CommercialCheckpointId = Brand<string, "CommercialCheckpointId">;
 
 export type CurrencyCode = Brand<string, "CurrencyCode">;

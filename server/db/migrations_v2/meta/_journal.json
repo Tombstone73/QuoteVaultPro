@@ -1359,6 +1359,20 @@
       "when": 1788048000045,
       "tag": "0198_v2_artwork_storage_identity_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1788048000046,
+      "tag": "0199_v2_proofing_domain_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 201,
+      "version": "7",
+      "when": 1788048000047,
+      "tag": "0200_v2_proof_issued_evidence_hardening",
+      "breakpoints": true
     }
   ]
 }
