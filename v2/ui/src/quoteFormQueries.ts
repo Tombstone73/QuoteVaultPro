@@ -1,11 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
-import { quoteApi } from "./api";
+import { orderApi, quoteApi } from "./api";
 
 export const quoteKeys = {
   quote: (sessionScope: string, organizationId: string, quoteId: string) =>
     ["v2", sessionScope, organizationId, "quote", quoteId] as const,
   bootstrap: (sessionScope: string, organizationId: string) =>
     ["v2", sessionScope, organizationId, "ui-bootstrap"] as const,
+};
+
+export const salesKeys = {
+  quotes: (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
+    ["v2", sessionScope, organizationId, "sales", "quotes", query.q ?? "", query.lifecycle ?? "", query.cursor ?? ""] as const,
+  orders: (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
+    ["v2", sessionScope, organizationId, "sales", "orders", query.q ?? "", query.lifecycle ?? "", query.cursor ?? ""] as const,
+  order: (sessionScope: string, organizationId: string, orderId: string) =>
+    ["v2", sessionScope, organizationId, "order", orderId] as const,
 };
 
 export const quoteFormKeys = {
@@ -51,6 +60,10 @@ export const useQuoteFormContacts = (
 ) => useQuery(quoteFormQueryOptions.contacts(sessionScope, organizationId, customerId));
 export const useQuoteFormProducts = (sessionScope: string, organizationId: string) =>
   useQuery(quoteFormQueryOptions.products(sessionScope, organizationId));
+export const useSalesQuotes = (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
+  useQuery({ queryKey: salesKeys.quotes(sessionScope, organizationId, query), queryFn: () => quoteApi.list(organizationId, query), enabled: Boolean(sessionScope && organizationId) });
+export const useSalesOrders = (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
+  useQuery({ queryKey: salesKeys.orders(sessionScope, organizationId, query), queryFn: () => orderApi.list(organizationId, query), enabled: Boolean(sessionScope && organizationId) });
 export const useQuoteFormConfiguration = (
   sessionScope: string,
   organizationId: string,

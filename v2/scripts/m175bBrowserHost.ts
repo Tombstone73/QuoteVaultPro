@@ -21,6 +21,10 @@ import { requireV2BrowserCloneDatabaseUrl } from "../infrastructure/persistence/
 import { assertV2M0PhysicalPostconditions, checkV2M0PhysicalPostconditions } from "../infrastructure/persistence/physicalPostconditions.js";
 import { assertV2CommercialPhysicalPostconditions, checkV2CommercialPhysicalPostconditions } from "../infrastructure/sales/commercialPhysicalPostconditions.js";
 import { composeAuthenticatedQuoteRuntime } from "../infrastructure/sales/authenticatedQuoteRuntime.js";
+import { composeAuthenticatedOrderRuntime } from "../infrastructure/sales/authenticatedOrderRuntime.js";
+import { composeAuthenticatedBillingRuntime } from "../infrastructure/billing/authenticatedBillingRuntime.js";
+import { OrderApplicationService } from "../src/modules/sales/orderApplication.js";
+import { PostgresOrderTransactionRunner } from "../infrastructure/sales/postgresOrderTransaction.js";
 import { loadV2RuntimeConfig } from "../src/config/runtimeConfig.js";
 import { createV2HttpApp } from "../src/interfaces/http/app.js";
 
@@ -29,6 +33,7 @@ type BrowserFixture = Readonly<{
   staffA: string; limitedA: string; staffB: string;
   customerA: string; contactA: string; customerB: string; contactB: string;
   dimensionalProductA: string; quantityProductA: string; productB: string;
+  serviceProductA: string;
   salesSetA: string;
 }>;
 type PublicBrowserFixture = Omit<BrowserFixture, "staffA" | "limitedA" | "staffB" | "salesSetA">;
@@ -51,11 +56,12 @@ const createFixture = async (client: PoolClient): Promise<BrowserFixture> => {
     staffA: `m175b-staff-a-${id}`, limitedA: `m175b-limited-a-${id}`, staffB: `m175b-staff-b-${id}`,
     customerA: `m175b-customer-a-${id}`, contactA: `m175b-contact-a-${id}`,
     customerB: `m175b-customer-b-${id}`, contactB: `m175b-contact-b-${id}`,
-    dimensionalProductA: `m175b-dim-a-${id}`, quantityProductA: `m175b-qty-a-${id}`, productB: `m175b-product-b-${id}`,
+    dimensionalProductA: `m175b-dim-a-${id}`, quantityProductA: `m175b-qty-a-${id}`, productB: `m175b-product-b-${id}`, serviceProductA: `m175b-service-a-${id}`,
     salesSetA: `m175b-sales-a-${id}`,
   } as const;
   const limitedSet = `m175b-limited-${id}`, salesSetB = `m175b-sales-b-${id}`;
-  const dimTree = `m175b-tree-dim-${id}`, quantityTree = `m175b-tree-qty-${id}`, productBTree = `m175b-tree-b-${id}`;
+  const dimTree = `m175b-tree-dim-${id}`, quantityTree = `m175b-tree-qty-${id}`, productBTree = `m175b-tree-b-${id}`, serviceTree = `m175b-tree-service-${id}`;
+  const routeTemplate = `m175b-route-${id}`, printedType = `m175b-printed-${id}`, serviceType = `m175b-service-type-${id}`;
   await client.query("BEGIN");
   try {
     await client.query("INSERT INTO organizations(id,name,slug) VALUES($1,'M175B A',$2),($3,'M175B B',$4)", [f.organizationA, `m175b-a-${id}`, f.organizationB, `m175b-b-${id}`]);
@@ -64,17 +70,20 @@ const createFixture = async (client: PoolClient): Promise<BrowserFixture> => {
     await client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1),($2)", [f.organizationA, f.organizationB]);
     await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$2,'Sales','sales','staff'),($3,$2,'Limited','limited','staff'),($4,$5,'Sales','sales','staff')", [f.salesSetA, f.organizationA, limitedSet, salesSetB, f.organizationB]);
     for (const [org, set] of [[f.organizationA, f.salesSetA], [f.organizationB, salesSetB]] as const)
-      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.overridePrice"])
+      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view"])
         await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [org, set, capability]);
-    for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send"])
+    for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "order.view", "order.edit", "invoice.view"])
       await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [f.organizationA, limitedSet, capability]);
     await client.query("INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id) VALUES($1,$2,$3),($1,$4,$5),($6,$7,$8)", [f.organizationA, f.staffA, f.salesSetA, f.limitedA, limitedSet, f.organizationB, f.staffB, salesSetB]);
     await client.query("INSERT INTO customers(id,organization_id,company_name,display_name,is_active,status) VALUES($1,$2,'Browser A','Browser A',true,'active'),($3,$4,'Browser B','Browser B',true,'active')", [f.customerA, f.organizationA, f.customerB, f.organizationB]);
     await client.query("INSERT INTO customer_contacts(id,organization_id,first_name,last_name,status) VALUES($1,$2,'A','Contact','active'),($3,$4,'B','Contact','active')", [f.contactA, f.organizationA, f.contactB, f.organizationB]);
     await client.query("INSERT INTO customer_contact_links(organization_id,customer_id,contact_id,status) VALUES($1,$2,$3,'active'),($4,$5,$6,'active')", [f.organizationA, f.customerA, f.contactA, f.organizationB, f.customerB, f.contactB]);
-    await client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode) VALUES($1,$2,'Browser dimensional','Fixture',true,'dimensions_required'),($3,$2,'Browser quantity-only','Fixture',true,'quantity_only'),($4,$5,'Browser B product','Fixture',true,'dimensions_required')", [f.dimensionalProductA, f.organizationA, f.quantityProductA, f.productB, f.organizationB]);
-    await client.query("INSERT INTO pbv2_tree_versions(id,organization_id,product_id,status,schema_version,tree_json,published_at) VALUES($1,$2,$3,'ACTIVE',2,$4::jsonb,now()),($5,$2,$6,'ACTIVE',2,$7::jsonb,now()),($8,$9,$10,'ACTIVE',2,$11::jsonb,now())", [dimTree, f.organizationA, f.dimensionalProductA, JSON.stringify(tree("dimensions_required")), quantityTree, f.quantityProductA, JSON.stringify(tree("quantity_only", "basic")), productBTree, f.organizationB, f.productB, JSON.stringify(tree("dimensions_required", "standard"))]);
-    await client.query("UPDATE products SET pbv2_active_tree_version_id=CASE id WHEN $1 THEN $2 WHEN $3 THEN $4 WHEN $5 THEN $6 END WHERE (organization_id=$7 AND id IN($1,$3)) OR (organization_id=$8 AND id=$5)", [f.dimensionalProductA, dimTree, f.quantityProductA, quantityTree, f.productB, productBTree, f.organizationA, f.organizationB]);
+    await client.query("INSERT INTO v2_route_templates(id,organization_id,name,normalized_name,definition_fingerprint) VALUES($1,$2,'Browser printed','browser-printed','sha256:m175b')", [routeTemplate, f.organizationA]);
+    for (const [position, kind] of ["proofing", "prepress", "production", "fulfillment"].entries()) await client.query("INSERT INTO v2_route_template_steps(id,organization_id,route_template_id,position,step_kind) VALUES($1,$2,$3,$4,$5)", [randomUUID(), f.organizationA, routeTemplate, position, kind]);
+    await client.query("INSERT INTO product_types(id,organization_id,name,routing_mode,default_route_template_id) VALUES($1,$2,'Browser Printed','route_required',$3),($4,$2,'Browser Service','no_route',NULL)", [printedType, f.organizationA, routeTemplate, serviceType]);
+    await client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,product_type_id) VALUES($1,$2,'Browser dimensional','Fixture',true,'dimensions_required',$3),($4,$2,'Browser quantity-only','Fixture',true,'quantity_only',$5),($6,$2,'Browser Service','Fixture',true,'quantity_only',$5),($7,$8,'Browser B product','Fixture',true,'dimensions_required',NULL)", [f.dimensionalProductA, f.organizationA, printedType, f.quantityProductA, serviceType, f.serviceProductA, f.productB, f.organizationB]);
+    await client.query("INSERT INTO pbv2_tree_versions(id,organization_id,product_id,status,schema_version,tree_json,published_at) VALUES($1,$2,$3,'ACTIVE',2,$4::jsonb,now()),($5,$2,$6,'ACTIVE',2,$7::jsonb,now()),($8,$2,$9,'ACTIVE',2,$10::jsonb,now()),($11,$12,$13,'ACTIVE',2,$14::jsonb,now())", [dimTree, f.organizationA, f.dimensionalProductA, JSON.stringify(tree("dimensions_required")), quantityTree, f.quantityProductA, JSON.stringify(tree("quantity_only", "basic")), serviceTree, f.serviceProductA, JSON.stringify(tree("quantity_only", "service")), productBTree, f.organizationB, f.productB, JSON.stringify(tree("dimensions_required", "standard"))]);
+    await client.query("UPDATE products SET pbv2_active_tree_version_id=CASE id WHEN $1 THEN $2 WHEN $3 THEN $4 WHEN $5 THEN $6 WHEN $7 THEN $8 END WHERE (organization_id=$9 AND id IN($1,$3,$5)) OR (organization_id=$10 AND id=$7)", [f.dimensionalProductA, dimTree, f.quantityProductA, quantityTree, f.serviceProductA, serviceTree, f.productB, productBTree, f.organizationA, f.organizationB]);
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; }
   return f;
@@ -154,9 +163,28 @@ const main = async () => {
         response.json({ ok: true, data: { document: document.rows[0], lines: lines.rows, checkpoints: attributedCheckpoints, audit: attributedAudit, operations: operations.rows } });
       } catch (error) { next(error); }
     });
-    const runtime = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity: new PassportSessionIdentitySource(), trustedHostMiddleware: (_request, _response, next) => next() });
+    /** Test-only authoritative readback for an Order created through Quote conversion. */
+    app.get("/_v2-browser-test/order-readback/:orderId", fixtureAdmin, async (request, response, next) => {
+      try {
+        const orderId = request.params.orderId, organizationId = fixture!.organizationA;
+        const [document, lines, invoice, routes, conversion, audit] = await Promise.all([
+          pool.query("SELECT id,organization_id,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,commercial_notes,revision FROM v2_sales_documents WHERE organization_id=$1 AND id=$2 AND document_kind='order'", [organizationId, orderId]),
+          pool.query("SELECT id,product_id,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId, orderId]),
+          pool.query("SELECT id,invoice_state,total_cents,source_sales_state_token FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2", [organizationId, orderId]),
+          pool.query("SELECT r.order_line_id,r.route_state,array_agg(s.step_kind ORDER BY s.position) AS steps FROM v2_route_instances r JOIN v2_route_instance_steps s ON s.organization_id=r.organization_id AND s.route_instance_id=r.id WHERE r.organization_id=$1 AND r.order_document_id=$2 GROUP BY r.order_line_id,r.route_state", [organizationId, orderId]),
+          pool.query("SELECT quote_document_id,source_checkpoint_id,conversion_checkpoint_id FROM v2_sales_quote_conversions WHERE organization_id=$1 AND order_document_id=$2", [organizationId, orderId]),
+          pool.query("SELECT event_type,staff_actor_user_id FROM v2_audit_events WHERE organization_id=$1 AND resource_id=$2 ORDER BY created_at", [organizationId, orderId]),
+        ]);
+        if (!document.rows[0]) return response.status(404).json({ ok: false });
+        response.json({ ok: true, data: { document: document.rows[0], lines: lines.rows, invoice: invoice.rows[0] ?? null, routes: routes.rows, conversion: conversion.rows[0] ?? null, audit: audit.rows.map((row) => ({ event_type: row.event_type, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })) } });
+      } catch (error) { next(error); }
+    });
+    const trustedHostIdentity = new PassportSessionIdentitySource(), trustedHostMiddleware = (_request: express.Request, _response: express.Response, next: express.NextFunction) => next();
+    const runtime = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+    const orderRuntime = composeAuthenticatedOrderRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new OrderApplicationService(new PostgresOrderTransactionRunner(pool)) });
+    const billingRuntime = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
     app.use(express.static(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../dist-v2-ui"), { index: "index.html" }));
-    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime));
+    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime));
     const port = Number(process.env.V2_M175B_PORT ?? "4174");
     const server = app.listen(port, "127.0.0.1", () => console.log(`[m175b] ready on ${port}`));
     const close = async () => { server.close(); if (fixture) { await pool.query("DELETE FROM organizations WHERE id=ANY($1::text[])", [[fixture.organizationA, fixture.organizationB]]); await pool.query("DELETE FROM users WHERE id=ANY($1::text[])", [[fixture.staffA, fixture.limitedA, fixture.staffB]]); } client.release(); await pool.end(); };

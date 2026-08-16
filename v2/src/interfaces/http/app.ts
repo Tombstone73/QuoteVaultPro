@@ -85,6 +85,14 @@ export const createV2HttpApp = (
               sessionScope: issueV2SessionScope(request),
               capabilities: {
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
+                quoteCreate: policy.decide(principal, { capability: "quote.create", resource: { organizationId } }).allowed,
+                quoteEdit: policy.decide(principal, { capability: "quote.edit", resource: { organizationId } }).allowed,
+                quoteSend: policy.decide(principal, { capability: "quote.send", resource: { organizationId } }).allowed,
+                quoteConvert: policy.decide(principal, { capability: "quote.convert", resource: { organizationId } }).allowed,
+                orderView: policy.decide(principal, { capability: "order.view", resource: { organizationId } }).allowed,
+                orderEdit: policy.decide(principal, { capability: "order.edit", resource: { organizationId } }).allowed,
+                orderOverridePrice: policy.decide(principal, { capability: "order.overridePrice", resource: { organizationId } }).allowed,
+                invoiceView: policy.decide(principal, { capability: "invoice.view", resource: { organizationId } }).allowed,
               },
             },
           });

@@ -24,6 +24,8 @@ type EditorProps = Readonly<{
   draftKey: string;
   initialDraft: QuoteLineDraft;
   initializeFromPersistedLine?: boolean;
+  /** Existing routed Order lines retain their Product identity. */
+  productEditable?: boolean;
   products: readonly Selection[];
   canOverridePrice: boolean;
   csrfReady: boolean;
@@ -283,6 +285,7 @@ export const QuoteLineEditor = ({
   draftKey,
   initialDraft,
   initializeFromPersistedLine = false,
+  productEditable = true,
   products,
   canOverridePrice,
   csrfReady,
@@ -466,6 +469,7 @@ export const QuoteLineEditor = ({
           options={productOptions}
           identity="productId"
           emptyLabel="Select Product"
+          disabled={!productEditable}
           onChange={productChanged}
         />
         <label className="field">
@@ -597,3 +601,6 @@ export const QuoteLineEditor = ({
     </div>
   );
 };
+
+/** Shared Sales editor. The historical name remains as a compatibility export. */
+export const SalesLineEditor = QuoteLineEditor;

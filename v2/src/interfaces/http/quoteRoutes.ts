@@ -15,6 +15,7 @@ import type {
 import type { QuoteConversionApplicationService } from "../../modules/sales/quoteConversionApplication.js";
 import type { ConvertQuoteCommand } from "../../modules/sales/contracts.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
+import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
 
 /** Authentication is injected by the real V2 host; routes never trust headers or body principal claims. */
 export interface VerifiedV2PrincipalProvider {
@@ -31,6 +32,7 @@ export type QuoteHttpDependencies = Readonly<{
   conversion?: QuoteConversionApplicationService;
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
+  workspace?: SalesWorkspaceReadPort;
 }>;
 
 const status = (code: string): number =>
@@ -207,6 +209,23 @@ export const createQuoteRouter = (
     } catch (cause) {
       error(response, cause);
     }
+  });
+  router.get("/", async (request, response) => {
+    try {
+      if (!dependencies.workspace)
+        throw new V2ApplicationError("INTERNAL_ERROR", "Quote list runtime is unavailable.");
+      const operation = await context(request, dependencies);
+      if (!new AuthorityPolicy().decide(operation.principal, { capability: "quote.view", resource: { organizationId: operation.organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "Quote access is unavailable.");
+      const limit = Number(request.query.limit ?? 25);
+      const data = await dependencies.workspace.listQuotes(brandedId<"OrganizationId">(operation.organizationId), {
+        ...(Number.isFinite(limit) ? { limit } : {}),
+        ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
+        ...(typeof request.query.q === "string" ? { search: request.query.q } : {}),
+        ...(typeof request.query.lifecycle === "string" ? { lifecycle: request.query.lifecycle } : {}),
+      });
+      response.status(200).json({ ok: true, data });
+    } catch (cause) { error(response, cause); }
   });
   router.get("/:quoteId", async (request, response) => {
     try {

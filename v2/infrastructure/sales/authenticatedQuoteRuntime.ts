@@ -14,6 +14,7 @@ import { PostgresQuoteTransactionRunner } from "./postgresQuoteTransaction.js";
 import { PostgresOrderTransactionRunner } from "./postgresOrderTransaction.js";
 import { PostgresQuoteConversionTransactionRunner } from "./postgresQuoteConversionTransaction.js";
 import { PostgresQuoteFormReads } from "./postgresQuoteFormReads.js";
+import { PostgresSalesWorkspaceReads } from "./postgresSalesWorkspaceReads.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -47,6 +48,7 @@ export const composeAuthenticatedQuoteRuntime = (
         principalIssuer,
       ),
       formReads: new PostgresQuoteFormReads(input.pool),
+      workspace: new PostgresSalesWorkspaceReads(input.pool),
     },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };

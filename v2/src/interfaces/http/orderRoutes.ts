@@ -7,6 +7,8 @@ import {
   V2ApplicationError,
 } from "../../errors/applicationError.js";
 import { brandedId, type OrderId } from "../../modules/shared/commercialValues.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
 
 /**
  * HTTP is deliberately an adapter over a future Order application service.
@@ -37,6 +39,7 @@ export interface VerifiedV2OrderPrincipalProvider {
 export type OrderHttpDependencies = Readonly<{
   service: OrderHttpService;
   principals: VerifiedV2OrderPrincipalProvider;
+  workspace?: SalesWorkspaceReadPort;
 }>;
 
 const status = (code: string): number =>
@@ -159,6 +162,24 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
     } catch (cause) {
       error(response, cause);
     }
+  });
+
+  router.get("/", async (request, response) => {
+    try {
+      if (!dependencies.workspace)
+        throw new V2ApplicationError("INTERNAL_ERROR", "Order list runtime is unavailable.");
+      const operation = await context(request, dependencies);
+      if (!new AuthorityPolicy().decide(operation.principal, { capability: "order.view", resource: { organizationId: operation.organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "Order access is unavailable.");
+      const limit = Number(request.query.limit ?? 25);
+      const data = await dependencies.workspace.listOrders(brandedId<"OrganizationId">(operation.organizationId), {
+        ...(Number.isFinite(limit) ? { limit } : {}),
+        ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
+        ...(typeof request.query.q === "string" ? { search: request.query.q } : {}),
+        ...(typeof request.query.lifecycle === "string" ? { lifecycle: request.query.lifecycle } : {}),
+      });
+      response.status(200).json({ ok: true, data });
+    } catch (cause) { error(response, cause); }
   });
 
   router.get("/:orderId", async (request, response) => {

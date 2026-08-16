@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 
 type Fixture = Readonly<{
   organizationA: string; organizationB: string; customerA: string; contactA: string;
-  customerB: string; contactB: string; dimensionalProductA: string; quantityProductA: string; productB: string;
+  customerB: string; contactB: string; dimensionalProductA: string; quantityProductA: string; serviceProductA: string; productB: string;
 }>;
 const login = async (api: APIRequestContext, actor: "staff-a" | "limited-a" | "staff-b") => {
   const response = await api.post("/_v2-browser-test/session", { data: { actor } });
@@ -44,6 +44,11 @@ const readback = async (page: Page, quoteId: string) => {
     checkpoints: Array<Record<string, unknown>>; audit: Array<Record<string, unknown>>;
     operations: Array<Record<string, unknown>>;
   };
+};
+const orderReadback = async (page: Page, orderId: string) => {
+  const response = await page.context().request.get(`/_v2-browser-test/order-readback/${encodeURIComponent(orderId)}`);
+  expect(response.ok()).toBeTruthy();
+  return (await response.json()).data as { document: Record<string, unknown>; lines: Array<Record<string, unknown>>; invoice: Record<string, unknown> | null; routes: Array<Record<string, unknown>>; conversion: Record<string, unknown> | null; audit: Array<Record<string, unknown>> };
 };
 
 test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
@@ -343,11 +348,11 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
     const acceptedPayload = JSON.parse((await acceptRequest).postData() ?? "{}") as { businessRequestId: string; expectedRevision: string };
     const acceptedReplay = await page.context().request.post(`/v2/organizations/${encodeURIComponent(f.organizationA)}/quotes/${encodeURIComponent(quoteId)}/accept`, { headers: { "x-v2-csrf-token": csrf }, data: acceptedPayload });
     expect(acceptedReplay.status()).toBe(200);
-    await expect(page.getByText("accepted", { exact: true })).toBeVisible();
+    await expect(page.getByText("accepted", { exact: true }).last()).toBeVisible();
     const db = await readback(page, quoteId);
     expect(db.checkpoints.map((checkpoint) => checkpoint.checkpoint_kind)).toEqual(["quote_sent", "quote_accepted"]);
     await page.reload(); await page.getByLabel("Organization ID").fill(f.organizationA); await page.getByLabel("Open Quote ID").fill(quoteId); await page.getByRole("button", { name: "Open Quote" }).click();
-    await expect(page.getByText("accepted", { exact: true })).toBeVisible();
+    await expect(page.getByText("accepted", { exact: true }).last()).toBeVisible();
   });
 
   test("a Product definition change never silently rewrites a persisted Quote line", async ({ page }) => {
@@ -360,5 +365,157 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
     await page.getByRole("button", { name: "Edit configuration" }).click();
     await expect(page.getByText(/persisted Quote configuration remains unchanged/i)).toBeVisible();
     await expect(page.getByText("legacy")).toBeVisible();
+  });
+
+  test("shared Sales workspace converts a Quote, edits the resulting Order, and shows Billing and Routing truth", async ({ page, browser }) => {
+    await login(page.context().request, "staff-a");
+    const f = await fixture(page.context().request);
+    await openOrganization(page, f.organizationA);
+    const quoteId = await createDimensionalQuote(page, f);
+    await page.getByRole("button", { name: "Send Quote" }).click();
+    await expect(page.getByRole("button", { name: "Accept Quote" })).toBeVisible();
+    await page.getByRole("button", { name: "Accept Quote" }).click();
+    await expect(page.getByRole("button", { name: "Convert to Order" })).toBeVisible();
+    page.once("dialog", (dialog) => dialog.accept());
+    const converted = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/quotes/${quoteId}/convert`) && response.status() === 200);
+    await page.getByRole("button", { name: "Convert to Order" }).click();
+    const conversion = await (await converted).json();
+    const orderId = conversion.data.orderId as string;
+    const orderNumber = conversion.data.orderNumber as string;
+    await expect(page.getByRole("button", { name: "Open converted Order" })).toBeVisible();
+    await page.getByRole("button", { name: "Open converted Order" }).click();
+    await expect(page.getByText("Draft Invoice")).toBeVisible();
+    await expect(page.getByText(/proofing.*prepress.*production.*fulfillment/i)).toBeVisible();
+    await page.getByRole("button", { name: "Edit configuration" }).click();
+    const editor = page.locator("tr.editor-row");
+    await expect(editor.getByLabel("Product")).toBeDisabled();
+    await expect(editor.getByLabel("Selling price decision")).toBeVisible();
+    await editor.getByLabel("Selling price decision").selectOption("total_override");
+    await editor.getByLabel("Selling line total (cents)").fill("1234");
+    await editor.getByLabel("Override reason").fill("Order browser approval");
+    const overridden = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 200);
+    await editor.getByRole("button", { name: "Save and reprice line" }).click(); await overridden;
+    await expect(page.getByText(/Selling-price decision: total_override/i)).toBeVisible();
+    await page.getByRole("button", { name: "Edit configuration" }).click();
+    const repricingEditor = page.locator("tr.editor-row");
+    await repricingEditor.getByLabel("Width (in)").fill("36");
+    await repricingEditor.getByLabel("Quantity").fill("3");
+    const repriced = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 200);
+    await repricingEditor.getByRole("button", { name: "Save and reprice line" }).click(); await repriced;
+    await expect(page.getByText(/Draft Invoice synchronized/i)).toBeVisible();
+    const product = page.getByLabel("Product").last();
+    await product.selectOption(f.serviceProductA);
+    await page.getByLabel("Quantity").last().fill("2");
+    const added = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 200);
+    await page.getByRole("button", { name: "Add line and price" }).click(); await added;
+    await expect(page.getByText("No route required")).toBeVisible();
+    await expect(page.getByText(/Cannot remove after routing has been created/i)).toBeVisible();
+    const removed = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 200);
+    await page.getByRole("button", { name: "Remove Line" }).click(); await removed;
+    const db = await orderReadback(page, orderId);
+    expect(db.document.organization_id).toBe(f.organizationA);
+    expect(db.document.purchase_order_number).toBe("Browser PO");
+    expect(db.lines).toHaveLength(1);
+    expect(db.invoice?.invoice_state).toBe("draft");
+    expect(db.routes).toHaveLength(1);
+    expect(db.conversion?.quote_document_id).toBe(quoteId);
+    expect(db.audit).toEqual(expect.arrayContaining([expect.objectContaining({ event_type: "order_updated", staffActorVerified: true })]));
+    const limited = await browser.newContext({ baseURL: "http://127.0.0.1:4174" });
+    try {
+      await login(limited.request, "limited-a");
+      const limitedPage = await limited.newPage();
+      await limitedPage.goto("/");
+      await limitedPage.getByRole("button", { name: "Sales / Orders" }).click();
+      await limitedPage.getByLabel("Organization ID").fill(f.organizationA);
+      await limitedPage.getByRole("button", { name: orderNumber }).click();
+      await limitedPage.getByRole("button", { name: "Edit configuration" }).click();
+      await expect(limitedPage.getByLabel("Selling price decision")).toHaveCount(0);
+      await expect(limitedPage.getByText(/Existing selling-price decision: total override/i)).toBeVisible();
+    } finally { await limited.close(); }
+    for (const theme of ["printershero", "corporate", "industrial"]) {
+      await page.getByLabel("Theme").selectOption(theme);
+      await expect(page.getByRole("heading", { name: "Draft Invoice" })).toBeVisible();
+      await expect(page.getByText(/proofing.*prepress/i)).toBeVisible();
+    }
+  });
+
+  test("a stale Order browser save preserves the committed Order, Draft Invoice, and Routing state", async ({ page, browser }) => {
+    await login(page.context().request, "staff-a");
+    const f = await fixture(page.context().request);
+    await openOrganization(page, f.organizationA);
+    const quoteId = await createDimensionalQuote(page, f);
+    await page.getByRole("button", { name: "Send Quote" }).click();
+    await page.getByRole("button", { name: "Accept Quote" }).click();
+    page.once("dialog", (dialog) => dialog.accept());
+    const converted = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/quotes/${quoteId}/convert`) && response.status() === 200);
+    await page.getByRole("button", { name: "Convert to Order" }).click();
+    const conversion = await (await converted).json();
+    const orderId = conversion.data.orderId as string;
+    const orderNumber = conversion.data.orderNumber as string;
+    await page.getByRole("button", { name: "Open converted Order" }).click();
+    await expect(page.getByRole("button", { name: "Save Order" })).toBeVisible();
+
+    const other = await browser.newContext({ baseURL: "http://127.0.0.1:4174" });
+    try {
+      await login(other.request, "limited-a");
+      const pageB = await other.newPage();
+      await pageB.goto("/");
+      await pageB.getByRole("button", { name: "Sales / Orders" }).click();
+      await pageB.getByLabel("Organization ID").fill(f.organizationA);
+      await expect(pageB.getByRole("button", { name: orderNumber })).toBeVisible();
+      await pageB.getByRole("button", { name: orderNumber }).click();
+      await pageB.getByLabel("PO").fill("B-order-wins");
+      const bSaved = pageB.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 200);
+      await pageB.getByRole("button", { name: "Save Order" }).click();
+      await bSaved;
+      await expect(pageB.getByText("Order and Draft Invoice saved.")).toBeVisible();
+
+      await page.getByLabel("PO").fill("A-order-stale");
+      const stale = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 409);
+      await page.getByRole("button", { name: "Save Order" }).click();
+      await stale;
+      await expect(page.getByText(/Order changed elsewhere/i)).toBeVisible();
+      await expect(page.getByText("Revision 2", { exact: false })).toBeVisible();
+      await expect(page.getByLabel("PO")).toHaveValue("A-order-stale");
+      let db = await orderReadback(page, orderId);
+      expect(db.document.purchase_order_number).toBe("B-order-wins");
+      expect(db.invoice?.invoice_state).toBe("draft");
+      expect(db.routes).toHaveLength(1);
+      expect(db.audit.filter((event) => event.event_type === "order_updated")).toHaveLength(1);
+
+      const reapplied = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith(`/orders/${orderId}`) && response.status() === 200);
+      await page.getByRole("button", { name: "Save Order" }).click();
+      await reapplied;
+      db = await orderReadback(page, orderId);
+      expect(db.document.purchase_order_number).toBe("A-order-stale");
+      expect(db.routes).toHaveLength(1);
+    } finally { await other.close(); }
+  });
+
+  test("Sales list projections are bounded, cursor-continuable, and tenant-scoped in the authenticated browser session", async ({ page }) => {
+    await login(page.context().request, "staff-a");
+    const f = await fixture(page.context().request);
+    const quoteFirst = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationA)}/quotes?limit=1`);
+    expect(quoteFirst.ok()).toBeTruthy();
+    const quotePage = (await quoteFirst.json()).data as { items: readonly { quoteId: string }[]; nextCursor?: string };
+    expect(quotePage.items).toHaveLength(1);
+    expect(quotePage.nextCursor).toBeTruthy();
+    const quoteSecond = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationA)}/quotes?limit=1&cursor=${encodeURIComponent(quotePage.nextCursor!)}`);
+    expect(quoteSecond.ok()).toBeTruthy();
+    expect((await quoteSecond.json()).data.items[0].quoteId).not.toBe(quotePage.items[0].quoteId);
+    const orderFirst = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationA)}/orders?limit=1`);
+    expect(orderFirst.ok()).toBeTruthy();
+    const orderPage = (await orderFirst.json()).data as { items: readonly { orderId: string }[]; nextCursor?: string };
+    expect(orderPage.items).toHaveLength(1);
+    expect(orderPage.nextCursor).toBeTruthy();
+    const foreign = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationB)}/orders?limit=1`);
+    expect(foreign.status()).toBe(404);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Sales / Quotes" }).click();
+    await page.getByLabel("Sales organization").fill(f.organizationA);
+    await expect(page.getByRole("heading", { name: "Quotes" }).last()).toBeVisible();
+    await page.getByRole("button", { name: "Sales / Orders" }).click();
+    await page.getByLabel("Organization ID").fill(f.organizationA);
+    await expect(page.getByRole("heading", { name: "Orders" }).last()).toBeVisible();
   });
 });

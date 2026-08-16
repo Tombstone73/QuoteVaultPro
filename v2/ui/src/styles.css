@@ -165,6 +165,18 @@ button:focus-visible {
 .table tr:hover {
   background: var(--ph-hover);
 }
+.clickable-row {
+  cursor: pointer;
+}
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ph-primary);
+  cursor: pointer;
+  font-weight: 750;
+  text-decoration: underline;
+}
 .price {
   font-weight: 750;
 }
@@ -214,6 +226,32 @@ button:focus-visible {
   padding-top: 14px;
   border-top: 1px solid var(--ph-subtle-border);
   font-weight: 750;
+}
+.compact-summary {
+  max-width: 360px;
+}
+.compact-summary h3 {
+  margin-top: 0;
+}
+.route-summary {
+  font-size: 0.82rem;
+  max-width: 320px;
+}
+.checkpoint-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ph-subtle-border);
+}
+.checkpoint-summary h3 {
+  margin: 0;
+}
+.checkpoint {
+  color: var(--ph-muted);
+  font-size: 0.82rem;
 }
 .lab {
   display: grid;
