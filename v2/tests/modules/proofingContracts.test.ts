@@ -18,7 +18,15 @@ const response: ProofResponse = {
   proofResponseId: brandedId<"ProofResponseId">("response"), organizationId: version.organizationId, proofVersionId: version.proofVersionId,
   outcome: "revision_requested", origin: "staff_recorded_customer", recordedCustomerId: brandedId<"CustomerId">("customer"), respondedAt: "2026-08-16T00:01:00.000Z", responderPrincipalKind: "staff", responderPrincipalSubject: "staff", responderStaffActorUserId: "staff",
 };
+const portalResponse: ProofResponse = {
+  proofResponseId: brandedId<"ProofResponseId">("portal-response"), organizationId: version.organizationId, proofVersionId: version.proofVersionId,
+  outcome: "approved", origin: "direct", respondedAt: "2026-08-16T00:02:00.000Z", responderPrincipalKind: "portal", responderPrincipalSubject: "portal-customer",
+};
 assert.equal(version.sequence, 2, "Proof Versions are immutable ordered evidence, not an overwritten draft.");
 assert.equal(response.proofVersionId, version.proofVersionId, "A response is tied to one exact proof version.");
+assert.equal(response.origin, "staff_recorded_customer", "Staff-recorded customer responses remain explicitly attributable to Staff.");
+assert.deepEqual([portalResponse.origin, portalResponse.responderPrincipalKind, portalResponse.recordedCustomerId], ["direct", "portal", undefined], "A future Portal response is direct and never impersonates Staff.");
+assert.equal("deliveredAt" in version, false, "Proof issuance is not a delivery fact.");
+assert.equal("releasedToPrepress" in version, false, "Proof approval/issuance does not create Prepress or Routing state.");
 assert.deepEqual(["proof.view", "proof.prepare", "proof.issue", "proof.respond"].every((capability) => capabilityIds.includes(capability as typeof capabilityIds[number])), true, "Proofing uses narrow Permission Set capabilities.");
-console.log("[m2.1] Proofing contract tests passed (9 assertions).");
+console.log("[m2.1] Proofing contract tests passed (13 assertions).");
