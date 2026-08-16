@@ -52,6 +52,8 @@ export class QuoteConversionApplicationService {
   ): Promise<ApplicationResult<QuoteConversionOperationResult>> {
     try {
       requireOperationPrincipalScope(context);
+      if (input.organizationId !== context.organizationId)
+        throw new V2ApplicationError("WRONG_TENANT", "Quote is unavailable in this organization.");
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId)
         throw new V2ApplicationError("VALIDATION_ERROR", "The command business request identity does not match the operation context.");
       return success(await this.runner.transaction(async ({ quote, order }) => {
