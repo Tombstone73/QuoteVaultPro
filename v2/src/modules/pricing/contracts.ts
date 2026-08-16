@@ -3,6 +3,7 @@ import type {
   PricingConfigurationId, PricingResultId, ProductId, ProductTypeId,
 } from "../shared/commercialValues.js";
 import type { SellableProductConfiguration } from "../products/contracts.js";
+import type { ProductionRequirementSnapshot } from "../shared/productionRequirements.js";
 
 export type DimensionInput = Readonly<{ width: DecimalText; height: DecimalText; unit: "in" | "ft" | "mm" }>;
 
@@ -19,6 +20,8 @@ export type ResolvedProductConfiguration = Readonly<{
   selections: Readonly<Record<string, JsonValue>>;
   derivedFacts: Readonly<Record<string, JsonValue>>;
   productFacts: Readonly<Record<string, JsonValue>>;
+  /** Frozen configured Product/PBV2 output requirements; absent only for pre-M2.2.1 history. */
+  productionRequirements?: ProductionRequirementSnapshot;
 }>;
 
 export type NestingEstimateEvidence = Readonly<{

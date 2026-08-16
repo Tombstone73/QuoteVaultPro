@@ -7,6 +7,7 @@ import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBas
 import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../../shared/optionTreeV2Runtime.js";
 import type { OptionTreeV2, PricingImpact, PricingV2Tier } from "../../../../shared/optionTreeV2.js";
 import type { ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "./contracts.js";
+import { resolveProductionRequirementSnapshot } from "../shared/productionRequirements.js";
 
 export type ActivePbv2CompatibilityRecord = Readonly<{
   id: string;
@@ -142,6 +143,9 @@ export const resolveActivePbv2PricingInput = (
   const resolvedOptionImpacts = optionImpacts(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedOptionImpacts.ok) return resolvedOptionImpacts;
   const formulaVariables = (record(meta.formulaVariables) ?? record(meta.pricingFormulaVariables) ?? {}) as Record<string, JsonValue>;
+  let productionRequirements;
+  try { productionRequirements=resolveProductionRequirementSnapshot(meta.productionUnitSpecification,visibility.effectiveSelections as Record<string,JsonValue>); }
+  catch { return validation("The active production-unit specification is invalid."); }
   const rules: PricingRules = {
     base: {
       ...(typeof base.perPieceCents === "number" ? { perPieceCents: Math.round(base.perPieceCents) } : {}),
@@ -176,6 +180,7 @@ export const resolveActivePbv2PricingInput = (
       selections: visibility.effectiveSelections as Record<string, JsonValue>,
       derivedFacts: quantityOnly ? { measurementMode: "quantity_only" } as Record<string, JsonValue> : {} as Record<string, JsonValue>,
       productFacts: { measurementMode: quantityOnly ? "quantity_only" : "dimensions_required", pricingProfileKey: source.productPricingProfileKey ?? "default" },
+      productionRequirements,
     },
     rules,
     warnings: [],

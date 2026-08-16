@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import type { PrepressTransaction, PrepressTransactionRunner } from "../../src/modules/prepress/prepressApplication.js";
-import type { PrepressUnit } from "../../src/modules/prepress/contracts.js";
+import type { OrderLinePrepressCoverage, PrepressUnit } from "../../src/modules/prepress/contracts.js";
+import type { ProductionUnitRequirement } from "../../src/modules/shared/productionRequirements.js";
 import { brandedId, type ArtworkAssignmentId, type OrderLineId, type OrganizationId, type PrepressUnitId } from "../../src/modules/shared/commercialValues.js";
 
 type UnitRow = {
@@ -29,6 +30,17 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
   async findUnit(org:OrganizationId,id:PrepressUnitId){const r=await this.client.query<UnitRow>("SELECT * FROM v2_prepress_units WHERE organization_id=$1 AND id=$2",[org,id]);return r.rows[0]?unit(r.rows[0]):null;}
   async lockUnit(org:OrganizationId,id:PrepressUnitId){const r=await this.client.query<UnitRow>("SELECT * FROM v2_prepress_units WHERE organization_id=$1 AND id=$2 FOR UPDATE",[org,id]);return r.rows[0]?unit(r.rows[0]):null;}
   async listUnits(org:OrganizationId,line:OrderLineId){const r=await this.client.query<UnitRow>("SELECT * FROM v2_prepress_units WHERE organization_id=$1 AND order_line_id=$2 ORDER BY created_at,id",[org,line]);return r.rows.map(unit);}
+  async coverage(org:OrganizationId,line:OrderLineId):Promise<OrderLinePrepressCoverage>{
+    const state=await this.client.query<{production_requirement_state:"configured"|"unconfigured"}>("SELECT production_requirement_state FROM v2_sales_document_lines WHERE organization_id=$1 AND id=$2",[org,line]);
+    if(!state.rows[0]||state.rows[0].production_requirement_state==="unconfigured")return {state:"unconfigured",requirements:[],productionArtworkComplete:false,allRequiredPrepressUnitsComplete:false};
+    const requirements=await this.client.query<{requirement_key:string;side:"front"|"back"|null;source_page_index:number|null;layer_key:string|null;layer_order:number|null}>("SELECT requirement_key,side,source_page_index,layer_key,layer_order FROM v2_sales_line_production_requirements WHERE organization_id=$1 AND order_line_id=$2 ORDER BY requirement_key",[org,line]);
+    const evidence=await this.client.query<UnitRow & {requirement_key:string; artwork_assignment_id:string}>(`SELECT r.requirement_key,pu.*,a.id artwork_assignment_id FROM v2_sales_line_production_requirements r
+      LEFT JOIN v2_artwork_assignments a ON a.organization_id=r.organization_id AND a.order_line_id=r.order_line_id AND a.purpose='production' AND a.side IS NOT DISTINCT FROM r.side AND a.source_page_index IS NOT DISTINCT FROM r.source_page_index AND a.layer_key IS NOT DISTINCT FROM r.layer_key AND a.layer_order IS NOT DISTINCT FROM r.layer_order
+      LEFT JOIN v2_prepress_units pu ON pu.organization_id=a.organization_id AND pu.artwork_assignment_id=a.id
+      WHERE r.organization_id=$1 AND r.order_line_id=$2`,[org,line]);
+    const entries=requirements.rows.map((r)=>{const requirement:ProductionUnitRequirement={key:r.requirement_key,...(r.side?{side:r.side}:{}),...(r.source_page_index===null?{}:{sourcePageIndex:r.source_page_index}),...(r.layer_key===null?{}:{layerKey:r.layer_key,layerOrder:r.layer_order!})};const matches=evidence.rows.filter((e)=>e.requirement_key===r.requirement_key&&Boolean(e.artwork_assignment_id));const ids=matches.map((m)=>brandedId<"ArtworkAssignmentId">(m.artwork_assignment_id));const units=matches.filter((m)=>m.id).map(unit);return {requirement,artworkAssignmentIds:ids,prepressUnits:units,productionArtworkCovered:ids.length>0,prepressComplete:ids.length>0&&units.some((u)=>Boolean(u.completedAt))};});
+    return {state:"configured",requirements:entries,productionArtworkComplete:entries.every((entry)=>entry.productionArtworkCovered),allRequiredPrepressUnitsComplete:entries.every((entry)=>entry.prepressComplete)};
+  }
   async eligibleProductionAssignment(org:OrganizationId,assignment:ArtworkAssignmentId){const r=await this.client.query<{valid:boolean}>(`SELECT EXISTS(
       SELECT 1 FROM v2_artwork_assignments a JOIN v2_route_instances ri ON ri.organization_id=a.organization_id AND ri.order_document_id=a.order_document_id AND ri.order_line_id=a.order_line_id
       JOIN v2_route_instance_steps rs ON rs.organization_id=ri.organization_id AND rs.route_instance_id=ri.id AND rs.id=ri.current_step_id

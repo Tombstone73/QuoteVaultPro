@@ -18,6 +18,7 @@ import {
   toSalesDocumentTermsPersistence,
   toSalesLinePersistenceEnvelope,
 } from "../../src/modules/sales/persistenceContracts.js";
+import { removeProductionRequirementsForAbsentLines, synchronizeProductionRequirements } from "./postgresProductionRequirements.js";
 import {
   brandedId,
   currencyCode,
@@ -460,16 +461,19 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     oldIds: readonly string[],
   ): Promise<void> {
     const ids = lines.map((l) => l.lineId);
-    if (ids.length)
+    if (ids.length) {
+      await removeProductionRequirementsForAbsentLines(this.client, organizationId, quoteId, ids);
       await this.client.query(
         "DELETE FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 AND id <> ALL($3::text[])",
         [organizationId, quoteId, ids],
       );
-    else if (oldIds.length)
+    } else if (oldIds.length) {
+      await removeProductionRequirementsForAbsentLines(this.client, organizationId, quoteId, []);
       await this.client.query(
         "DELETE FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2",
         [organizationId, quoteId],
       );
+    }
     for (const [position, line] of lines.entries()) {
       const e = toSalesLinePersistenceEnvelope(line);
       await this.client.query(
@@ -495,6 +499,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
           e.canonicalSellingPriceDecision,
         ],
       );
+      await synchronizeProductionRequirements(this.client, organizationId, quoteId, line);
     }
   }
 }

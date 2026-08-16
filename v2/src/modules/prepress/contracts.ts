@@ -1,6 +1,7 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkAssignmentId, ArtworkFileId, OrderId, OrderLineId, OrganizationId, PrepressUnitId } from "../shared/commercialValues.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
+import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
 
 /** One independently prepared, explicitly selected production-Artwork usage. */
 export type PrepressUnit = Readonly<{
@@ -36,3 +37,14 @@ export type OpenPrepressUnitInput = Readonly<{ businessRequestId: string; artwor
 export type StartPrepressUnitInput = Readonly<{ businessRequestId: string; prepressUnitId: PrepressUnitId }>;
 export type CompletePrepressUnitInput = Readonly<{ businessRequestId: string; prepressUnitId: PrepressUnitId }>;
 
+/** Derived cross-owner read: no missing/aggregate state is persisted in Prepress. */
+export type ProductionRequirementCoverage = Readonly<{
+  requirement: ProductionUnitRequirement;
+  artworkAssignmentIds: readonly ArtworkAssignmentId[];
+  prepressUnits: readonly PrepressUnit[];
+  productionArtworkCovered: boolean;
+  prepressComplete: boolean;
+}>;
+export type OrderLinePrepressCoverage =
+  | Readonly<{ state:"unconfigured"; requirements:readonly []; productionArtworkComplete:false; allRequiredPrepressUnitsComplete:false }>
+  | Readonly<{ state:"configured"; requirements:readonly ProductionRequirementCoverage[]; productionArtworkComplete:boolean; allRequiredPrepressUnitsComplete:boolean }>;

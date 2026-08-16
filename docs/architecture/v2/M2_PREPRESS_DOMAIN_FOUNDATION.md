@@ -48,13 +48,9 @@ PrepressUnit completed (one explicit production assignment)
 
 That preserves partial progression: Production can later consume Front completion while Back remains in Prepress when the future Routing/Production policy permits it. The coarse route step must not be completed on the first unit; its eventual completion must be calculated from required units, not current uploads.
 
-## Required production units — architecture decision required
+## Required production units
 
-V2 currently has PBV2 options that may describe print sides for pricing, but no authoritative, normalized Product/PBV2 contract that resolves an OrderLine into required production units (Front/Back/pages/layers). Product Type routing policy contains only `route_required`, `no_route`, or `unconfigured`.
-
-M2.2 therefore does **not** infer required units from present Artwork assignments. It creates a unit only for explicitly selected `production` Artwork. This is correct for existing production evidence, but it cannot truthfully report that a Back is missing merely because no Back assignment exists.
-
-**ARCHITECTURE DECISION REQUIRED:** Products/PBV2 should own a typed required-production-unit specification, resolved and frozen with the OrderLine's commercial configuration. The specification should express required side/page/layer units without depending on filenames or currently uploaded Artwork. Artwork would satisfy those requirements; Prepress would consume the resolved requirement projection; Routing would use it when deciding whether its coarse Prepress step is complete. Prepress must not become the owner of that product definition.
+M2.2.1 closes this gap. Products/PBV2 now resolves a typed production-unit specification from configured selections, and Sales freezes it with Quote/Order line evidence. Prepress consumes the bounded coverage projection; it still never infers requirements from present Artwork. See [M2_REQUIRED_PRODUCTION_UNIT_SPECIFICATION.md](M2_REQUIRED_PRODUCTION_UNIT_SPECIFICATION.md).
 
 ## Production-Art selection and history
 

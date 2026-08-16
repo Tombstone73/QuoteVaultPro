@@ -4,7 +4,7 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type ArtworkAssignmentId, type OrganizationId, type OrderLineId, type PrepressUnitId } from "../shared/commercialValues.js";
-import type { CompletePrepressUnitInput, OpenPrepressUnitInput, PrepressUnit, StartPrepressUnitInput } from "./contracts.js";
+import type { CompletePrepressUnitInput, OpenPrepressUnitInput, OrderLinePrepressCoverage, PrepressUnit, StartPrepressUnitInput } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
@@ -18,6 +18,7 @@ export interface PrepressTransaction {
   findUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
   lockUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
   listUnits(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<readonly PrepressUnit[]>;
+  coverage(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<OrderLinePrepressCoverage>;
   /** Routing remains owner of this current-step eligibility projection. */
   eligibleProductionAssignment(organizationId: OrganizationId, artworkAssignmentId: ArtworkAssignmentId): Promise<boolean>;
   createOrGetUnit(input: Readonly<{ id: PrepressUnitId; organizationId: OrganizationId; artworkAssignmentId: ArtworkAssignmentId } & Actor>): Promise<PrepressUnit>;
@@ -36,6 +37,9 @@ export class PrepressApplicationService {
   }
   async listOrderLineUnits(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<readonly PrepressUnit[]>> {
     try { requireOperationPrincipalScope(context); this.require(context, "prepress.view"); return success(await this.runner.transaction((tx) => tx.listUnits(brandedId<"OrganizationId">(context.organizationId), orderLineId))); } catch (error) { return failure(this.error(error)); }
+  }
+  async getOrderLineCoverage(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<OrderLinePrepressCoverage>> {
+    try { requireOperationPrincipalScope(context); this.require(context, "prepress.view"); return success(await this.runner.transaction((tx) => tx.coverage(brandedId<"OrganizationId">(context.organizationId), orderLineId))); } catch (error) { return failure(this.error(error)); }
   }
   async open(context: OperationContext, input: OpenPrepressUnitInput): Promise<ApplicationResult<PrepressMutationResult>> {
     return this.mutate(context, "prepress.unit.open.v1", input, "prepress.work", "prepress_unit_opened", "Prepress unit opened for production Artwork.", async (tx) => {

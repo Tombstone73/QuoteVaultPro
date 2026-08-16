@@ -8,6 +8,7 @@ import { PostgresSalesDocumentNumberAllocator } from "./postgresCommercialPrimit
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter.js";
 import { summarizeOrderTotals, type OrderOperationResult, type OrderReadModel, type OrderReservation, type OrderTransaction, type OrderTransactionRunner } from "../../src/modules/sales/orderApplication.js";
 import { toSalesDocumentTermsPersistence, toSalesLinePersistenceEnvelope } from "../../src/modules/sales/persistenceContracts.js";
+import { removeProductionRequirementsForAbsentLines, synchronizeProductionRequirements } from "./postgresProductionRequirements.js";
 import { brandedId, currencyCode, money, type OrderId, type OrganizationId, type SalesLineId } from "../../src/modules/shared/commercialValues.js";
 import type { OrderCurrentState, SalesLineSnapshot } from "../../src/modules/sales/contracts.js";
 import type { BillingPort, BillingReadPort } from "../../src/modules/billing/contracts.js";
@@ -156,6 +157,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
     return true;
   }
   async removeLinesNotIn(organizationId: OrganizationId, orderId: OrderId, retainedLineIds: readonly SalesLineId[]): Promise<void> {
+    await removeProductionRequirementsForAbsentLines(this.client, organizationId, orderId, retainedLineIds);
     await this.client.query(
       "DELETE FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 AND id <> ALL($3::text[])",
       [organizationId, orderId, retainedLineIds],
@@ -168,6 +170,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
   private async writeLines(organizationId: OrganizationId, orderId: OrderId, lines: readonly SalesLineSnapshot[], replace = false): Promise<void> {
     if (replace) {
       const ids = lines.map((line) => line.lineId);
+      await removeProductionRequirementsForAbsentLines(this.client, organizationId, orderId, ids);
       await this.client.query(
         ids.length
           ? "DELETE FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 AND id <> ALL($3::text[])"
@@ -181,6 +184,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
         "INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id",
         [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision],
       );
+      await synchronizeProductionRequirements(this.client, organizationId, orderId, line);
     }
   }
 }
