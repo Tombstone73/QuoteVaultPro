@@ -15,6 +15,7 @@ import {
   type OrderHttpDependencies,
 } from "./orderRoutes.js";
 import { createInvoiceRouter, type InvoiceHttpDependencies } from "./invoiceRoutes.js";
+import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -28,6 +29,7 @@ export type AuthenticatedOrderRouteRuntime = Readonly<{
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -36,6 +38,7 @@ export const createV2HttpApp = (
   quote?: AuthenticatedQuoteRouteRuntime,
   order?: AuthenticatedOrderRouteRuntime,
   billing?: AuthenticatedBillingRouteRuntime,
+  artwork?: AuthenticatedArtworkRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -93,6 +96,8 @@ export const createV2HttpApp = (
                 orderEdit: policy.decide(principal, { capability: "order.edit", resource: { organizationId } }).allowed,
                 orderOverridePrice: policy.decide(principal, { capability: "order.overridePrice", resource: { organizationId } }).allowed,
                 invoiceView: policy.decide(principal, { capability: "invoice.view", resource: { organizationId } }).allowed,
+                artworkView: policy.decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed,
+                artworkAssign: policy.decide(principal, { capability: "artwork.assign", resource: { organizationId } }).allowed,
               },
             },
           });
@@ -138,6 +143,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createInvoiceRouter(billing.dependencies),
+    );
+  if (artwork)
+    app.use(
+      "/v2/organizations/:organizationId/artwork",
+      artwork.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createArtworkRouter(artwork.dependencies),
     );
 
   app.use((_request, response) =>

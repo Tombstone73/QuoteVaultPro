@@ -592,8 +592,9 @@ button:focus-visible {
 .v2-sales-document-card .v2-document-header .muted { margin: 2px 0 0; font-size: 12px; }
 .v2-document-status { margin-left: auto; }
 .v2-document-tabs { display: flex; align-items: end; gap: 2px; margin: 0 -16px; border-bottom: 1px solid var(--color-border); padding: 0 16px; }
-.v2-document-tabs span { display: inline-flex; min-height: 32px; align-items: center; padding: 0 10px; color: var(--color-muted-foreground); font-size: 13px; }
-.v2-document-tabs span.active { border: 1px solid var(--color-border); border-bottom-color: var(--color-surface); border-radius: var(--radius) var(--radius) 0 0; background: var(--color-surface-2); color: var(--color-foreground); font-weight: 600; }
+.v2-document-tabs span, .v2-document-tabs button { display: inline-flex; min-height: 32px; align-items: center; border: 0; padding: 0 10px; background: transparent; color: var(--color-muted-foreground); font-size: 13px; }
+.v2-document-tabs button { cursor: pointer; }
+.v2-document-tabs span.active, .v2-document-tabs button.active { border: 1px solid var(--color-border); border-bottom-color: var(--color-surface); border-radius: var(--radius) var(--radius) 0 0; background: var(--color-surface-2); color: var(--color-foreground); font-weight: 600; }
 .v2-sales-document-card .v2-document-meta { grid-template-columns: 1.45fr .9fr .8fr .85fr; gap: 8px 14px; padding: 12px 0 8px; }
 .v2-sales-document-card .v2-document-meta .field:nth-child(1) { grid-column: span 1; }
 .v2-sales-document-card .v2-document-meta .field:nth-child(2) { grid-column: span 1; }
@@ -604,6 +605,16 @@ button:focus-visible {
 .v2-sales-document-card .v2-document-actions { position: absolute; top: 14px; right: 16px; }
 .v2-sales-document-card .v2-document-actions .button { min-width: 96px; }
 .v2-order-workspace > .card:nth-of-type(2) { max-width: 360px; }
+.v2-artwork-chain { padding: 0; overflow: hidden; }
+.v2-artwork-chain > h2 { margin: 0; border-bottom: 1px solid var(--color-border); padding: 12px 14px; }
+.v2-artwork-chain ul { margin: 0; padding: 0; list-style: none; }
+.v2-artwork-chain li { display: flex; align-items: center; gap: 10px; min-height: 58px; border-top: 1px solid var(--color-border); padding: 8px 14px; }
+.v2-artwork-chain li:first-child { border-top: 0; }
+.v2-artwork-thumb { display: flex; width: 30px; height: 30px; align-items: center; justify-content: center; border-radius: calc(var(--radius) * .7); background: var(--color-secondary); color: var(--color-muted-foreground); font-size: 10px; font-weight: 700; }
+.v2-artwork-line { min-width: 160px; font-size: 13px; }
+.v2-artwork-files { display: flex; flex: 1; flex-wrap: wrap; gap: 8px; }
+.v2-artwork-files > span { display: flex; flex-direction: column; min-width: 150px; color: var(--color-foreground); font-size: 12px; }
+.v2-artwork-files small { color: var(--color-muted-foreground); font-size: 11px; }
 @media (max-width: 980px) {
   .v2-sales-document-card .v2-document-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .v2-sales-document-card .v2-document-meta .field:nth-child(5) { grid-column: span 2; }

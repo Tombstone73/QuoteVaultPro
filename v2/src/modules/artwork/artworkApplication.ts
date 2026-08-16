@@ -23,6 +23,7 @@ export interface ArtworkTransaction {
   audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added"; resourceId: string; changes: readonly Readonly<{ kind: string; summary: string }>[]; principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
   findFile(organizationId: OrganizationId, artworkFileId: ArtworkFileId): Promise<ArtworkFile | null>;
   findOrderLineArtwork(organizationId: OrganizationId, orderLineId: string): Promise<readonly OrderLineArtworkProjection[]>;
+  findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]>;
   createOrGetFile(input: Readonly<{ id: ArtworkFileId; organizationId: OrganizationId; file: ArtworkFileInput; derivedFromArtworkFileId?: ArtworkFileId }>): Promise<ArtworkFile>;
   createOrGetAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: AdoptArtworkInput["usage"] }>): Promise<ArtworkAssignment>;
 }
@@ -66,6 +67,13 @@ export class ArtworkApplicationService {
     try {
       requireOperationPrincipalScope(context); this.require(context, "artwork.view");
       return success(await this.runner.transaction((tx) => tx.findOrderLineArtwork(brandedId<"OrganizationId">(context.organizationId), orderLineId)));
+    } catch (error) { return failure(this.error(error)); }
+  }
+
+  async listForOrder(context: OperationContext, orderId: string): Promise<ApplicationResult<readonly OrderLineArtworkProjection[]>> {
+    try {
+      requireOperationPrincipalScope(context); this.require(context, "artwork.view");
+      return success(await this.runner.transaction((tx) => tx.findOrderArtwork(brandedId<"OrganizationId">(context.organizationId), orderId)));
     } catch (error) { return failure(this.error(error)); }
   }
 

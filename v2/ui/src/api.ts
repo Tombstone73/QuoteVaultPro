@@ -57,6 +57,7 @@ export type UiBootstrap = Readonly<{
     quoteOverridePrice: boolean; quoteCreate?: boolean; quoteEdit?: boolean;
     quoteSend?: boolean; quoteConvert?: boolean; orderView?: boolean;
     orderEdit?: boolean; orderOverridePrice?: boolean; invoiceView?: boolean;
+    artworkView?: boolean; artworkAssign?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
@@ -93,6 +94,10 @@ export type InvoiceRead = Readonly<{
   invoiceId: string; organizationId: string; sourceOrderId: string; lifecycle: "draft" | "issued" | "void";
   currency: string; lines: readonly Readonly<{ sourceOrderLineId: string; productId: string; description: string; quantity: number; sellingUnitAmount: { cents: number; currency: string }; lineAmount: { cents: number; currency: string } }>[];
   subtotal: { cents: number; currency: string }; taxTotal: { cents: number; currency: string }; total: { cents: number; currency: string };
+}>;
+export type ArtworkOrderProjection = Readonly<{
+  assignment: Readonly<{ id: string; artworkFileId: string; orderId: string; orderLineId: string; purpose: "customer_supplied" | "production" | "proof" | "reference"; side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; createdAt: string }>;
+  file: Readonly<{ id: string; originalFilename: string; displayFilename: string; contentType: string; byteSize: number; source: "customer_upload" | "prepress_derived" | "imported"; pageCount?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number; derivedFromArtworkFileId?: string; createdAt: string }>;
 }>;
 export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
 export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly ("in" | "ft" | "mm")[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
@@ -256,6 +261,10 @@ export const orderApi = {
 export const invoiceApi = {
   get: (organizationId: string, invoiceId: string) =>
     request<InvoiceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}`),
+};
+export const artworkApi = {
+  forOrder: (organizationId: string, orderId: string) => request<readonly ArtworkOrderProjection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`),
+  assign: (organizationId: string, artworkFileId: string, businessRequestId: string, usage: Record<string, unknown>) => request<Readonly<{ artworkFile: ArtworkOrderProjection["file"]; assignment: ArtworkOrderProjection["assignment"] }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(artworkFileId)}/assign`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, usage }) }),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

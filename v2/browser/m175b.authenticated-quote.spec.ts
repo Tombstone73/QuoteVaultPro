@@ -509,6 +509,83 @@ test.describe.serial("M1.7.5B authenticated Quote browser proof", () => {
     } finally { await other.close(); }
   });
 
+  test("real Order Artwork is tenant-scoped, usage-based, idempotent, and leaves frozen Routing unchanged", async ({ page, browser }) => {
+    test.setTimeout(90_000);
+    await login(page.context().request, "staff-a");
+    const f = await fixture(page.context().request);
+    await openOrganization(page, f.organizationA);
+    const quoteId = await createDimensionalQuote(page, f);
+    await page.getByRole("button", { name: "Send Quote" }).click();
+    await page.getByRole("button", { name: "Accept Quote" }).click();
+    page.once("dialog", (dialog) => dialog.accept());
+    const converted = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/quotes/${quoteId}/convert`) && response.status() === 200);
+    await page.getByRole("button", { name: "Convert to Order" }).click();
+    const conversion = await (await converted).json();
+    const orderId = conversion.data.orderId as string, orderNumber = conversion.data.orderNumber as string;
+    const orderBefore = await orderReadback(page, orderId);
+    const orderLineId = String(orderBefore.lines[0]?.id);
+    expect(orderLineId).toBeTruthy();
+    const seeded = await page.context().request.post("/_v2-browser-test/seed-artwork", { data: { orderId, orderLineId } });
+    expect(seeded.ok()).toBeTruthy();
+    const seed = (await seeded.json()).data as { artworkFile: { id: string }; assignment: { id: string } };
+    const bootstrap = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationA)}/ui-bootstrap`);
+    const csrf = (await bootstrap.json()).data.csrfToken as string;
+    const assignUrl = `/v2/organizations/${encodeURIComponent(f.organizationA)}/artwork/files/${encodeURIComponent(seed.artworkFile.id)}/assign`;
+    const productionFront = { businessRequestId: `m205-production-front-${orderId}`, usage: { orderId, orderLineId, purpose: "production", side: "front", sourcePageIndex: 0, layerKey: "white", layerOrder: 0 } };
+    const first = await page.context().request.post(assignUrl, { headers: { "x-v2-csrf-token": csrf }, data: productionFront });
+    expect(first.status()).toBe(200);
+    const firstBody = (await first.json()).data as { artworkFile: { id: string }; assignment: { id: string } };
+    const replay = await page.context().request.post(assignUrl, { headers: { "x-v2-csrf-token": csrf }, data: productionFront });
+    expect(replay.status()).toBe(200);
+    expect((await replay.json()).data.assignment.id).toBe(firstBody.assignment.id);
+    const productionBack = await page.context().request.post(assignUrl, { headers: { "x-v2-csrf-token": csrf }, data: { businessRequestId: `m205-production-back-${orderId}`, usage: { orderId, orderLineId, purpose: "production", side: "back", sourcePageIndex: 1, layerKey: "ink", layerOrder: 1 } } });
+    expect(productionBack.status()).toBe(200);
+    await page.getByRole("button", { name: "Open converted Order" }).click();
+    const artworkTab = page.locator(".v2-document-tabs").getByRole("button", { name: "Artwork", exact: true });
+    await artworkTab.click();
+    await expect(page.getByRole("heading", { name: "Artwork chain" })).toBeVisible();
+    await expect(page.getByText("customer-art.pdf")).toHaveCount(3);
+    await expect(page.getByText(/customer supplied · front · page 1 · layer white/i)).toBeVisible();
+    await expect(page.getByText(/production · front · page 1 · layer white/i)).toBeVisible();
+    await expect(page.getByText(/production · back · page 2 · layer ink/i)).toBeVisible();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: "C:\\tmp\\m205-visual\\v2-order-artwork-1440.png" });
+    const artwork = await page.context().request.get(`/v2/organizations/${encodeURIComponent(f.organizationA)}/artwork/orders/${encodeURIComponent(orderId)}`);
+    expect(artwork.status()).toBe(200);
+    const entries = (await artwork.json()).data as Array<{ file: { id: string }; assignment: { purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string } }>;
+    expect(entries).toHaveLength(3);
+    expect(new Set(entries.map((entry) => entry.file.id))).toEqual(new Set([seed.artworkFile.id]));
+    const persisted = await page.context().request.get(`/_v2-browser-test/artwork-readback/${encodeURIComponent(orderId)}`);
+    const persistedData = (await persisted.json()).data as { assignments: Array<{ purpose: string; side: string; source_page_index: number; layer_key: string }>; audit: Array<{ event_type: string; staffActorVerified: boolean }>; operations: Array<{ business_request_id: string; status: string }> };
+    expect(persistedData.assignments).toHaveLength(3);
+    expect(persistedData.audit).toEqual(expect.arrayContaining([expect.objectContaining({ event_type: "artwork_file_adopted", staffActorVerified: true }), expect.objectContaining({ event_type: "artwork_assignment_added", staffActorVerified: true })]));
+    expect(persistedData.operations.filter((operation) => operation.business_request_id === productionFront.businessRequestId)).toHaveLength(1);
+    const orderAfter = await orderReadback(page, orderId);
+    expect(orderAfter.routes).toEqual(orderBefore.routes);
+    const limited = await browser.newContext({ baseURL: "http://127.0.0.1:4174" });
+    const foreign = await browser.newContext({ baseURL: "http://127.0.0.1:4174" });
+    try {
+      await login(limited.request, "limited-a");
+      const limitedBootstrap = await limited.request.get(`/v2/organizations/${encodeURIComponent(f.organizationA)}/ui-bootstrap`);
+      const limitedCsrf = (await limitedBootstrap.json()).data.csrfToken as string;
+      const denied = await limited.request.post(assignUrl, { headers: { "x-v2-csrf-token": limitedCsrf }, data: { ...productionFront, businessRequestId: `m205-denied-${orderId}` } });
+      expect(denied.status()).toBe(403);
+      await login(foreign.request, "staff-b");
+      const foreignBootstrap = await foreign.request.get(`/v2/organizations/${encodeURIComponent(f.organizationB)}/ui-bootstrap`);
+      const foreignCsrf = (await foreignBootstrap.json()).data.csrfToken as string;
+      const crossTenant = await foreign.request.post(`/v2/organizations/${encodeURIComponent(f.organizationB)}/artwork/files/${encodeURIComponent(seed.artworkFile.id)}/assign`, { headers: { "x-v2-csrf-token": foreignCsrf }, data: { businessRequestId: `m205-foreign-${orderId}`, usage: { orderId, orderLineId, purpose: "production", side: "front" } } });
+      expect(crossTenant.status()).toBe(404);
+    } finally { await limited.close(); await foreign.close(); }
+    const unchanged = await page.context().request.get(`/_v2-browser-test/artwork-readback/${encodeURIComponent(orderId)}`);
+    expect((await unchanged.json()).data.assignments).toHaveLength(3);
+    await page.reload();
+    await page.getByRole("button", { name: "Orders", exact: true }).click();
+    await page.getByLabel("Organization ID").fill(f.organizationA);
+    await page.getByRole("button", { name: orderNumber }).click();
+    await page.locator(".v2-document-tabs").getByRole("button", { name: "Artwork", exact: true }).click();
+    await expect(page.getByText(/production · back · page 2 · layer ink/i)).toBeVisible();
+  });
+
   test("Sales list projections are bounded, cursor-continuable, and tenant-scoped in the authenticated browser session", async ({ page }) => {
     await login(page.context().request, "staff-a");
     const f = await fixture(page.context().request);

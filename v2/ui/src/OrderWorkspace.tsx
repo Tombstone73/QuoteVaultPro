@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { invoiceApi, money, newBusinessRequestId, orderApi, type ApiError, type OrderRead, type OrderResult } from "./api";
+import { artworkApi, invoiceApi, money, newBusinessRequestId, orderApi, type ApiError, type ArtworkOrderProjection, type OrderRead, type OrderResult } from "./api";
 import { QuoteLineEditor } from "./QuoteLineEditor";
 import { clearContactForCustomerChange, draftFromQuoteLine, emptyQuoteLineDraft, type QuoteLineMutationInput } from "./quoteFormModel";
 import { quoteFormKeys, salesKeys, useQuoteFormContacts, useQuoteFormCustomers, useQuoteFormProducts } from "./quoteFormQueries";
@@ -25,6 +25,7 @@ export const OrderWorkspace = (props: Readonly<{
   const [notice, setNotice] = useState("");
   const [editingLineId, setEditingLineId] = useState("");
   const [addVersion, setAddVersion] = useState(0);
+  const [activeTab, setActiveTab] = useState<"items" | "artwork">("items");
   const [customerId, setCustomerId] = useState(""); const [contactId, setContactId] = useState("");
   const [po, setPo] = useState(""); const [dueDate, setDueDate] = useState(""); const [notes, setNotes] = useState("");
   const requests = useRef<Record<string, { payload: string; id: string }>>({});
@@ -38,6 +39,7 @@ export const OrderWorkspace = (props: Readonly<{
   const contacts = useQuoteFormContacts(props.sessionScope, props.organizationId, customerId);
   const products = useQuoteFormProducts(props.sessionScope, props.organizationId);
   const invoice = useQuery({ queryKey: ["v2", props.sessionScope, props.organizationId, "invoice", current?.draftInvoice?.invoiceId], queryFn: () => invoiceApi.get(props.organizationId, current!.draftInvoice!.invoiceId), enabled: Boolean(props.canViewInvoice && current?.draftInvoice?.invoiceId) });
+  const artwork = useQuery({ queryKey: ["v2", props.sessionScope, props.organizationId, "artwork", "order", props.orderId], queryFn: () => artworkApi.forOrder(props.organizationId, props.orderId), enabled: Boolean(props.organizationId && props.sessionScope && current) });
 
   useEffect(() => {
     if (!current) return;
@@ -87,7 +89,7 @@ export const OrderWorkspace = (props: Readonly<{
     {notice && <div className="notice">{notice}</div>}
     <div className="card v2-sales-document-card">
       <div className="header v2-document-header"><div><h2>{current.number.display}</h2><p className="muted">Revision {current.revision}{current.order.sourceQuoteId ? " · converted from Quote" : ""}</p></div><LifecycleBadge value={current.order.commercialState} /></div>
-      <div className="v2-document-tabs" aria-label="Order workspace sections"><span className="active">Items</span><span>Artwork</span><span>Notes</span><span>History</span></div>
+      <div className="v2-document-tabs" aria-label="Order workspace sections"><button type="button" className={activeTab === "items" ? "active" : ""} onClick={() => setActiveTab("items")}>Items</button><button type="button" className={activeTab === "artwork" ? "active" : ""} onClick={() => setActiveTab("artwork")}>Artwork</button><span>Notes</span><span>History</span></div>
       <div className="grid v2-document-meta">
         <SelectionField label="Customer" value={customerId} options={customers.data ?? []} identity="customerId" emptyLabel="Select Customer" disabled={!editable} onChange={(value) => { const next = clearContactForCustomerChange(value); setCustomerId(next.customerId); setContactId(next.contactId); }} />
         <SelectionField label="Contact" value={contactId} options={contacts.data ?? []} identity="contactId" emptyLabel="Select Contact" disabled={!editable || !customerId} onChange={setContactId} />
@@ -97,6 +99,7 @@ export const OrderWorkspace = (props: Readonly<{
       </div>
       <div className="actions v2-document-actions"><button className="button secondary" disabled={!editable || saveHeader.isPending || !props.csrfReady} onClick={() => saveHeader.mutate()}>Save Order</button></div>
     </div>
+    {activeTab === "artwork" ? <OrderArtworkPanel lines={current.order.lines} artwork={artwork.data ?? []} loading={artwork.isLoading} /> : <>
     <DraftInvoiceSummary invoice={current.draftInvoice} detail={invoice.data} />
     <div className="card"><h2>Commercial lines</h2>
       <table className="table"><thead><tr><th>Line</th><th>Qty</th><th>Calculated / Selling</th><th>Routing</th><th>Actions</th></tr></thead><tbody>
@@ -106,5 +109,13 @@ export const OrderWorkspace = (props: Readonly<{
       {editable && <><h3>Add commercial line</h3><QuoteLineEditor organizationId={props.organizationId} sessionScope={props.sessionScope} draftKey={`order:add:${current.order.orderId}:${addVersion}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={props.canOverridePrice} csrfReady={props.csrfReady} busy={update.isPending} submitLabel="Add line and price" onSubmit={(line: QuoteLineMutationInput) => change([{ kind: "add", line }])} /></>}
       <SalesTotals calculated={current.totals.calculated} selling={current.totals.selling} />
     </div>
+    </>}
   </section>;
 };
+
+const bytes = (value: number) => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+const artworkRole = (value: ArtworkOrderProjection) => [value.assignment.purpose.replaceAll("_", " "), value.assignment.side, value.assignment.sourcePageIndex !== undefined ? `page ${value.assignment.sourcePageIndex + 1}` : undefined, value.assignment.layerKey ? `layer ${value.assignment.layerKey}` : undefined].filter(Boolean).join(" · ");
+const OrderArtworkPanel = ({ lines, artwork, loading }: Readonly<{ lines: readonly { lineId: string; description: string }[]; artwork: readonly ArtworkOrderProjection[]; loading: boolean }>) => <div className="card v2-artwork-chain"><h2>Artwork chain</h2>{loading ? <div className="skeleton" /> : <ul>{lines.map((line) => {
+  const entries = artwork.filter((entry) => entry.assignment.orderLineId === line.lineId);
+  return <li key={line.lineId}><div className="v2-artwork-thumb">{line.description.slice(0, 2)}</div><span className="v2-artwork-line">{line.description}</span>{entries.length ? <span className="v2-artwork-files">{entries.map((entry) => <span key={entry.assignment.id}><strong>{entry.file.displayFilename}</strong><small>{artworkRole(entry)} · {bytes(entry.file.byteSize)}{entry.file.derivedFromArtworkFileId ? " · derived" : ""}</small></span>)}</span> : null}</li>;
+})}</ul>}</div>;
