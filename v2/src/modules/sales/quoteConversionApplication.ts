@@ -18,6 +18,8 @@ export interface QuoteConversionTransactionRunner {
   transaction<T>(action: (transaction: QuoteConversionTransaction) => Promise<T>): Promise<T>;
 }
 export type QuoteConversionOperationResult = Readonly<ConvertQuoteResult & { orderNumber: string }>;
+/** Test-only deterministic barriers; production composition never supplies them. */
+export type QuoteConversionTestHooks = Readonly<{ afterQuoteLocked?: () => Promise<void> }>;
 
 const fingerprint = (value: unknown): string =>
   `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
@@ -41,6 +43,7 @@ export class QuoteConversionApplicationService {
     private readonly runner: QuoteConversionTransactionRunner,
     private readonly orders: OrderApplicationService,
     private readonly authority = new AuthorityPolicy(),
+    private readonly hooks?: QuoteConversionTestHooks,
   ) {}
 
   async convert(
@@ -61,6 +64,7 @@ export class QuoteConversionApplicationService {
         if (reservation.kind === "replay") return reservation.request.resultJson as QuoteConversionOperationResult;
         const current = await quote.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
         if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        await this.hooks?.afterQuoteLocked?.();
         if (!this.authority.decide(context.principal, { capability: "quote.convert", resource: { organizationId: context.organizationId, customerId: current.quote.customerContact.customerId } }).allowed)
           throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to convert this Quote.");
         if (current.revision !== input.expectedStateToken)
