@@ -14,6 +14,12 @@ export type InvoiceId = Brand<string, "InvoiceId">;
 export type InvoiceCheckpointId = Brand<string, "InvoiceCheckpointId">;
 export type BusinessRequestId = Brand<string, "BusinessRequestId">;
 export type SalesLineId = Brand<string, "SalesLineId">;
+/** An Order line is a distinct future work-owner reference; a Quote line cannot be routed. */
+export type OrderLineId = Brand<string, "OrderLineId">;
+export type RouteTemplateId = Brand<string, "RouteTemplateId">;
+export type RouteTemplateStepId = Brand<string, "RouteTemplateStepId">;
+export type RouteInstanceId = Brand<string, "RouteInstanceId">;
+export type RouteInstanceStepId = Brand<string, "RouteInstanceStepId">;
 export type CommercialCheckpointId = Brand<string, "CommercialCheckpointId">;
 
 export type CurrencyCode = Brand<string, "CurrencyCode">;

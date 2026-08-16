@@ -1317,6 +1317,20 @@
       "when": 1788048000039,
       "tag": "0192_v2_quote_operation_audit_and_override_capability",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1788048000040,
+      "tag": "0193_v2_routing_identity_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 195,
+      "version": "7",
+      "when": 1788048000041,
+      "tag": "0194_v2_route_completed_current_step_repair",
+      "breakpoints": true
     }
   ]
 }

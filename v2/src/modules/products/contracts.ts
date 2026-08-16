@@ -1,4 +1,4 @@
-import type { CurrencyCode, DecimalText, JsonValue, OrganizationId, PricingConfigurationId, ProductId, ProductTypeId } from "../shared/commercialValues.js";
+import type { CurrencyCode, DecimalText, JsonValue, OrganizationId, PricingConfigurationId, ProductId, ProductTypeId, RouteTemplateId } from "../shared/commercialValues.js";
 import type { DimensionInput, NestingEstimateEvidence, PricingRules, ResolvedProductConfiguration } from "../pricing/contracts.js";
 import type { ApplicationResult } from "../../errors/applicationError.js";
 
@@ -13,9 +13,15 @@ export type SellableProductConfiguration = Readonly<{
   pricingCurrency: CurrencyCode;
 }>;
 
+/** Products owns the selection policy; Routing owns every template and route fact. */
+export type ProductTypeRoutePolicy =
+  | Readonly<{ kind: "route_required"; defaultRouteTemplateId: RouteTemplateId }>
+  | Readonly<{ kind: "no_route" }>
+  | Readonly<{ kind: "unconfigured" }>;
+
 export interface ProductsReadPort {
   getSellableProduct(organizationId: OrganizationId, productId: ProductId): Promise<SellableProductConfiguration | null>;
-  resolveProductType(organizationId: OrganizationId, productTypeId: ProductTypeId): Promise<Readonly<{ id: ProductTypeId; routingRequired: boolean; defaultRouteTemplateRevisionId?: string }> | null>;
+  resolveProductType(organizationId: OrganizationId, productTypeId: ProductTypeId): Promise<Readonly<{ id: ProductTypeId; routePolicy: ProductTypeRoutePolicy }> | null>;
   getActivePricingConfiguration(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ id: PricingConfigurationId; version: string; contentHash: string }> | null>;
   validateSellableProduct(organizationId: OrganizationId, productId: ProductId): Promise<boolean>;
 }

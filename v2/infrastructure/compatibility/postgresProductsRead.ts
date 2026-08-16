@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { TransactionalClient } from "../persistence/types.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../src/errors/applicationError.js";
 import { canonicalJson, brandedId, currencyCode, type JsonValue, type OrganizationId, type PricingConfigurationId, type ProductId, type ProductTypeId } from "../../src/modules/shared/commercialValues.js";
-import type { HistoricalPricingConfigurationReference, ProductPricingCompatibilityPort, ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "../../src/modules/products/contracts.js";
+import type { HistoricalPricingConfigurationReference, ProductPricingCompatibilityPort, ProductTypeRoutePolicy, ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "../../src/modules/products/contracts.js";
 import { resolveActivePbv2PricingInput, type ActivePbv2CompatibilityRecord } from "../../src/modules/products/pbv2CompatibilityResolution.js";
 
 type ProductRow = {
@@ -22,9 +22,14 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
     return row ? this.sellable(organizationId, row) : null;
   }
 
-  async resolveProductType(organizationId: OrganizationId, productTypeId: ProductTypeId): Promise<Readonly<{ id: ProductTypeId; routingRequired: boolean; defaultRouteTemplateRevisionId?: string }> | null> {
-    const result = await this.client.query<{ id: string }>("SELECT id FROM product_types WHERE organization_id = $1 AND id = $2", [organizationId, productTypeId]);
-    return result.rows[0] ? { id: brandedId<"ProductTypeId">(result.rows[0].id), routingRequired: false } : null;
+  async resolveProductType(organizationId: OrganizationId, productTypeId: ProductTypeId): Promise<Readonly<{ id: ProductTypeId; routePolicy: ProductTypeRoutePolicy }> | null> {
+    const result = await this.client.query<{ id: string; routing_mode: "route_required" | "no_route" | "unconfigured"; default_route_template_id: string | null }>("SELECT id,routing_mode,default_route_template_id FROM product_types WHERE organization_id = $1 AND id = $2", [organizationId, productTypeId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const routePolicy: ProductTypeRoutePolicy = row.routing_mode === "route_required" && row.default_route_template_id
+      ? { kind: "route_required", defaultRouteTemplateId: brandedId<"RouteTemplateId">(row.default_route_template_id) }
+      : row.routing_mode === "no_route" ? { kind: "no_route" } : { kind: "unconfigured" };
+    return { id: brandedId<"ProductTypeId">(row.id), routePolicy };
   }
 
   async getActivePricingConfiguration(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ id: PricingConfigurationId; version: string; contentHash: string }> | null> {
