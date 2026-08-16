@@ -1,0 +1,760 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { OperationContext } from "../../application/operation.js";
+import { requireOperationPrincipalScope } from "../../application/operation.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import { principalSubject, staffActorId } from "../../authorization/principals.js";
+import {
+  failure,
+  success,
+  type ApplicationResult,
+  V2ApplicationError,
+} from "../../errors/applicationError.js";
+import type {
+  BillingPort,
+  BillingReadPort,
+  DraftInvoiceSynchronizationInput,
+  DraftInvoiceSynchronizationResult,
+} from "../billing/contracts.js";
+import type { CustomerContactReference, CustomersReadPort } from "../customers/contracts.js";
+import type { PricingPort } from "../pricing/contracts.js";
+import type {
+  ProductPricingCompatibilityPort,
+  ResolveActivePricingInput,
+} from "../products/contracts.js";
+import type { InstantiateRouteResult, RouteInstance, RoutingPort } from "../routing/contracts.js";
+import {
+  brandedId,
+  canonicalJson,
+  money,
+  type CurrencyCode,
+  type InvoiceId,
+  type Money,
+  type OrderId,
+  type OrderLineId,
+  type OrganizationId,
+  type SalesLineId,
+} from "../shared/commercialValues.js";
+import {
+  assertSalesLineSnapshot,
+  type AttributionSnapshot,
+  type CommercialTerms,
+  type MeaningfulAuditChange,
+  type OrderCurrentState,
+  type SalesLineSnapshot,
+  type SellingPriceDecision,
+} from "./contracts.js";
+import type { SalesDocumentNumber } from "./persistenceContracts.js";
+
+/**
+ * This is the server-side Order-entry input. It deliberately contains neither
+ * a PBV2 tree nor caller-authored pricing evidence: Products resolves the
+ * current configuration and Pricing produces the calculated evidence below.
+ */
+export type OrderLineInput = Readonly<{
+  productId: string;
+  description?: string;
+  quantity: number;
+  selections?: Readonly<Record<string, unknown>>;
+  dimensions?: ResolveActivePricingInput["dimensions"];
+  selling?: OrderSellingInstruction;
+}>;
+
+export type OrderSellingInstruction = Readonly<
+  | { kind: "calculated" }
+  | { kind: "unit_override"; unitCents: number; reason: string }
+  | { kind: "total_override"; totalCents: number; reason: string }
+>;
+
+export type CreateOrderInput = Readonly<{
+  businessRequestId: string;
+  customerContact: CustomerContactReference;
+  purchaseOrderNumber?: string;
+  requestedDueDate?: string;
+  terms?: CommercialTerms;
+  lines: readonly OrderLineInput[];
+}>;
+
+/** Header-only in M1.9: line/routing edits require a later named coordination operation. */
+export type UpdateOrderInput = Readonly<{
+  businessRequestId: string;
+  orderId: OrderId;
+  expectedRevision: string;
+  patch: Readonly<{
+    customerContact?: CustomerContactReference;
+    purchaseOrderNumber?: string | null;
+    requestedDueDate?: string | null;
+    terms?: CommercialTerms;
+  }>;
+  lineChanges?: readonly (
+    | Readonly<{ kind: "add"; line: OrderLineInput }>
+    | Readonly<{ kind: "update"; lineId: SalesLineId; line: OrderLineInput }>
+    | Readonly<{ kind: "remove"; lineId: SalesLineId }>
+  )[];
+}>;
+
+export type OrderReadModel = Readonly<{
+  order: OrderCurrentState;
+  number: SalesDocumentNumber;
+  revision: string;
+  totals: Readonly<{
+    calculated: Money;
+    selling: Money;
+  }>;
+  draftInvoice?: Readonly<{
+    invoiceId: InvoiceId;
+    lifecycle: "draft";
+    synchronizationVersion: string;
+    lineCount: number;
+    total: Money;
+  }>;
+  routes: readonly RouteInstance[];
+}>;
+
+export type OrderOperationResult = Readonly<{
+  order: OrderReadModel;
+  draftInvoiceId: InvoiceId;
+  routeInstances: readonly InstantiateRouteResult["routeInstance"][];
+}>;
+
+export type OrderOperationRequest = Readonly<{
+  id: string;
+  status: "in_progress" | "succeeded" | "retryable_failure" | "permanent_failure";
+  resultJson: unknown | null;
+}>;
+
+export type OrderReservation = Readonly<{
+  kind: "new" | "resumed" | "replay";
+  request: OrderOperationRequest;
+}>;
+
+export type OrderAuditEvent = Readonly<{
+  eventType: "order_created" | "order_updated";
+  resourceId: OrderId;
+  changes: readonly MeaningfulAuditChange[];
+}>;
+
+/**
+ * A transaction-scoped composition port. Its concrete M1.9 implementation is
+ * constructed around one caller-owned PostgreSQL client: Sales, Billing and
+ * Routing must never independently begin or commit a transaction here.
+ */
+export interface OrderTransaction {
+  readonly customers: CustomersReadPort;
+  readonly products: ProductPricingCompatibilityPort;
+  readonly pricing: PricingPort;
+  readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder">;
+  readonly routing: RoutingPort;
+  reserve(input: Readonly<{
+    organizationId: string;
+    operation: string;
+    businessRequestId: string;
+    payloadFingerprint: string;
+    principalKind: "staff" | "delegated_ai" | "portal" | "service";
+    principalSubject: string;
+    staffActorUserId?: string;
+  }>): Promise<OrderReservation>;
+  succeed(
+    organizationId: string,
+    requestId: string,
+    result: OrderOperationResult,
+  ): Promise<void>;
+  attribute(input: Readonly<{
+    organizationId: string;
+    requestId: string;
+    operation: string;
+    resourceType: "order";
+    resourceId: OrderId;
+    principalKind: "staff" | "delegated_ai" | "portal" | "service";
+    principalSubject: string;
+    staffActorUserId?: string;
+  }>): Promise<void>;
+  audit(input: Readonly<{
+    organizationId: string;
+    requestId: string;
+    operation: string;
+    event: OrderAuditEvent;
+    principalKind: "staff" | "delegated_ai" | "portal" | "service";
+    principalSubject: string;
+    staffActorUserId?: string;
+  }>): Promise<void>;
+  allocateNumber(organizationId: string): Promise<SalesDocumentNumber>;
+  create(input: Readonly<{
+    orderId: OrderId;
+    organizationId: OrganizationId;
+    number: SalesDocumentNumber;
+    customerContact: CustomerContactReference;
+    purchaseOrderNumber?: string;
+    requestedDueDate?: string;
+    terms: CommercialTerms;
+    lines: readonly SalesLineSnapshot[];
+  }>): Promise<void>;
+  read(
+    organizationId: OrganizationId,
+    orderId: OrderId,
+    forUpdate?: boolean,
+  ): Promise<OrderReadModel | null>;
+  update(input: Readonly<{
+    organizationId: OrganizationId;
+    orderId: OrderId;
+    expectedRevision: number;
+    customerContact: CustomerContactReference;
+    purchaseOrderNumber?: string;
+    requestedDueDate?: string;
+    terms: CommercialTerms;
+    lines: readonly SalesLineSnapshot[];
+  }>): Promise<boolean>;
+  removeLinesNotIn(organizationId: OrganizationId, orderId: OrderId, retainedLineIds: readonly SalesLineId[]): Promise<void>;
+  hasRoute(organizationId: OrganizationId, orderId: OrderId, lineId: SalesLineId): Promise<boolean>;
+}
+
+export interface OrderTransactionRunner {
+  transaction<T>(action: (transaction: OrderTransaction) => Promise<T>): Promise<T>;
+}
+
+const fingerprint = (value: unknown): string =>
+  `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+
+export const summarizeOrderTotals = (
+  lines: readonly SalesLineSnapshot[],
+  currency: CurrencyCode,
+): OrderReadModel["totals"] => {
+  let calculatedCents = 0;
+  let sellingCents = 0;
+  for (const line of lines) {
+    if (line.calculatedLineAmount.currency !== currency || line.sellingLineAmount.currency !== currency)
+      throw new V2ApplicationError("INTERNAL_ERROR", "Order lines do not share the Order currency.");
+    calculatedCents += line.calculatedLineAmount.cents;
+    sellingCents += line.sellingLineAmount.cents;
+    if (!Number.isSafeInteger(calculatedCents) || !Number.isSafeInteger(sellingCents))
+      throw new V2ApplicationError("INTERNAL_ERROR", "Order totals are outside the safe money range.");
+  }
+  return { calculated: money(currency, calculatedCents), selling: money(currency, sellingCents) };
+};
+
+const attribution = (context: OperationContext): AttributionSnapshot =>
+  context.principal.kind === "delegated_ai"
+    ? {
+        principalKind: "delegated_ai",
+        subjectId: principalSubject(context.principal),
+        staffActorUserId: staffActorId(context.principal)!,
+      }
+    : { principalKind: context.principal.kind, subjectId: principalSubject(context.principal) };
+
+const requireAllowed = (
+  policy: AuthorityPolicy,
+  context: OperationContext,
+  capability: "order.view" | "order.create" | "order.edit" | "order.overridePrice",
+  customerId?: string,
+): void => {
+  const decision = policy.decide(context.principal, {
+    capability,
+    resource: { organizationId: context.organizationId, customerId },
+  });
+  if (!decision.allowed)
+    throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Order operation.");
+};
+
+const validateReference = async (
+  organizationId: string,
+  customers: CustomersReadPort,
+  reference: CustomerContactReference,
+): Promise<void> => {
+  if (reference.organizationId !== organizationId || !(await customers.validateContactReference(reference)))
+    throw new V2ApplicationError("NOT_FOUND", "Customer or contact is unavailable in this organization.");
+};
+
+const calculatedDecision = (
+  pricing: SalesLineSnapshot["pricingResult"],
+  context: OperationContext,
+  instruction?: OrderSellingInstruction,
+): SellingPriceDecision => {
+  const quantity = pricing.normalizedInput.quantity;
+  const cents = (value: number, name: string): number => {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new V2ApplicationError("VALIDATION_ERROR", `${name} must be a non-negative integer-cent amount.`);
+    return value;
+  };
+  const base = {
+    pricingResultId: pricing.id,
+    calculatedUnitAmount: pricing.calculatedUnitAmount,
+    calculatedLineAmount: pricing.calculatedLineAmount,
+    decidedAt: new Date().toISOString(),
+    authorityReference: attribution(context),
+  };
+  if (!instruction || instruction.kind === "calculated")
+    return { ...base, kind: "calculated", resultingUnitAmount: pricing.calculatedUnitAmount, resultingLineAmount: pricing.calculatedLineAmount };
+  if (!instruction.reason.trim())
+    throw new V2ApplicationError("VALIDATION_ERROR", "A selling-price override reason is required.");
+  const total = instruction.kind === "unit_override"
+    ? cents(instruction.unitCents, "Unit override") * quantity
+    : cents(instruction.totalCents, "Total override");
+  if (!Number.isSafeInteger(total)) throw new V2ApplicationError("VALIDATION_ERROR", "Selling price is outside safe money range.");
+  const resultingLineAmount = money(pricing.currency, total);
+  const resultingUnitAmount = instruction.kind === "unit_override"
+    ? money(pricing.currency, instruction.unitCents)
+    : money(pricing.currency, Math.round(total / quantity));
+  return instruction.kind === "unit_override"
+    ? { ...base, kind: "unit_override", reason: instruction.reason, resultingUnitAmount, resultingLineAmount }
+    : { ...base, kind: "total_override", reason: instruction.reason, resultingUnitAmount, resultingLineAmount };
+};
+
+const asDraftFailure = (
+  result: Extract<DraftInvoiceSynchronizationResult, { status: "not_editable" }>,
+): never => {
+  throw new V2ApplicationError(
+    "CONFLICT",
+    result.reason === "multiple_active_invoices"
+      ? "The Order has multiple active Draft Invoices."
+      : result.reason === "invoice_missing"
+        ? "The Order Draft Invoice is missing."
+        : "The Draft Invoice cannot be synchronized.",
+  );
+};
+
+/**
+ * The M1.9 Sales application boundary. It owns Order commercial facts and
+ * only orchestrates Billing and Routing through their typed ports. It never
+ * writes Invoice or Routing persistence directly.
+ */
+export class OrderApplicationService {
+  constructor(
+    private readonly runner: OrderTransactionRunner,
+    private readonly authority = new AuthorityPolicy(),
+  ) {}
+
+  async create(
+    context: OperationContext,
+    input: CreateOrderInput,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.create.v1", input, "order.create", async (tx, request) => {
+      await validateReference(context.organizationId, tx.customers, input.customerContact);
+      requireAllowed(this.authority, context, "order.create", input.customerContact.customerId);
+      const lines = await this.buildLines(tx, context, input.lines);
+      if (!lines.length)
+        throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
+
+      const orderId = brandedId<"OrderId">(randomUUID());
+      const number = await tx.allocateNumber(context.organizationId);
+      await tx.create({
+        orderId,
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        number,
+        customerContact: input.customerContact,
+        purchaseOrderNumber: input.purchaseOrderNumber,
+        requestedDueDate: input.requestedDueDate,
+        terms: input.terms ?? {},
+        lines,
+      });
+
+      const draft = await tx.billing.createDraftInvoice(this.draftInput(
+        context.organizationId,
+        orderId,
+        request.id,
+        input.customerContact,
+        input.purchaseOrderNumber,
+        input.terms ?? {},
+        lines,
+        "1",
+      ));
+      if (draft.status !== "created") {
+        if (draft.status === "not_editable") asDraftFailure(draft);
+        throw new V2ApplicationError("CONFLICT", "The Order already has a Draft Invoice projection.");
+      }
+
+      const routeInstances = await this.instantiateRoutes(tx, context, orderId, lines);
+      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), orderId);
+      if (!order) throw new Error("Created Order could not be read.");
+      const result: OrderOperationResult = {
+        order,
+        draftInvoiceId: draft.invoiceId,
+        routeInstances,
+      };
+      await this.history(tx, context, request.id, "sales.order.create.v1", {
+        eventType: "order_created",
+        resourceId: orderId,
+        changes: [{ group: "line", kind: "line_added", summary: `Order created with ${lines.length} line(s).` }],
+      });
+      return result;
+    });
+  }
+
+  async read(
+    context: OperationContext,
+    orderId: OrderId,
+  ): Promise<ApplicationResult<OrderReadModel>> {
+    try {
+      requireOperationPrincipalScope(context);
+      const result = await this.runner.transaction(async (tx) => {
+        const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), orderId);
+        if (!order) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+        requireAllowed(this.authority, context, "order.view", order.order.customerContact.customerId);
+        return order;
+      });
+      return success(result);
+    } catch (error) {
+      return failure(this.error(error));
+    }
+  }
+
+  /** Commercial edits keep frozen route identity stable; routed lines cannot be removed or retargeted. */
+  async update(
+    context: OperationContext,
+    input: UpdateOrderInput,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.edit.v1", input, "order.edit", async (tx, request) => {
+      const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+      requireAllowed(this.authority, context, "order.edit", current.order.customerContact.customerId);
+      if (current.order.commercialState !== "open")
+        throw new V2ApplicationError("CONFLICT", "A cancelled Order cannot be edited.");
+      if (current.revision !== input.expectedRevision)
+        throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before editing.");
+
+      const patch = input.patch;
+      const customerContact = patch.customerContact ?? current.order.customerContact;
+      await validateReference(context.organizationId, tx.customers, customerContact);
+      requireAllowed(this.authority, context, "order.edit", customerContact.customerId);
+      const purchaseOrderNumber = patch.purchaseOrderNumber === null ? undefined : (patch.purchaseOrderNumber ?? current.order.purchaseOrderNumber);
+      const requestedDueDate = patch.requestedDueDate === null ? undefined : (patch.requestedDueDate ?? current.order.requestedDueDate);
+      const terms = patch.terms ?? current.order.terms;
+      const lines = await this.applyLineChanges(tx, context, current, input.lineChanges ?? []);
+      const unchanged = customerContact.customerId === current.order.customerContact.customerId
+        && customerContact.contactId === current.order.customerContact.contactId
+        && purchaseOrderNumber === current.order.purchaseOrderNumber
+        && requestedDueDate === current.order.requestedDueDate
+        && terms.termsCode === current.order.terms.termsCode
+        && terms.taxContextReference === current.order.terms.taxContextReference
+        && terms.salesRepresentativeId === current.order.terms.salesRepresentativeId
+        && terms.commercialNotes === current.order.terms.commercialNotes
+        && canonicalJson(lines) === canonicalJson(current.order.lines);
+      if (unchanged) {
+        const invoiceId = current.order.billingInvoiceReference;
+        if (!invoiceId) throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice is missing.");
+        return { order: current, draftInvoiceId: invoiceId, routeInstances: [] };
+      }
+
+      const applied = await tx.update({
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        orderId: input.orderId,
+        expectedRevision: Number(current.revision),
+        customerContact,
+        purchaseOrderNumber,
+        requestedDueDate,
+        terms,
+        lines,
+      });
+      if (!applied) throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before editing.");
+      const draft = await tx.billing.synchronizeDraftInvoice(this.draftInput(
+        context.organizationId,
+        input.orderId,
+        request.id,
+        customerContact,
+        purchaseOrderNumber,
+        terms,
+        lines,
+        String(Number(current.revision) + 1),
+      ));
+      // Until an explicit Billing correction operation exists, an issued or
+      // void Invoice is an atomic commercial boundary: do not let Sales
+      // commit a header that its Billing Draft cannot truthfully project.
+      if (draft.status === "not_editable") {
+        asDraftFailure(draft);
+      }
+      if (!("invoiceId" in draft)) {
+        throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice is missing.");
+      }
+      await tx.removeLinesNotIn(brandedId<"OrganizationId">(context.organizationId), input.orderId, lines.map((line) => line.lineId));
+      const added = lines.filter((line) => !current.order.lines.some((prior) => prior.lineId === line.lineId));
+      const routeInstances = await this.instantiateRoutes(tx, context, input.orderId, added);
+      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (!order) throw new Error("Updated Order could not be read.");
+      const changes = [...this.headerChanges(current.order, order.order), ...this.lineChanges(current.order.lines, order.order.lines)];
+      await this.history(tx, context, request.id, "sales.order.edit.v1", {
+        eventType: "order_updated", resourceId: input.orderId, changes,
+      });
+      return { order, draftInvoiceId: draft.invoiceId, routeInstances };
+    });
+  }
+
+  private async buildLines(
+    tx: OrderTransaction,
+    context: OperationContext,
+    inputs: readonly OrderLineInput[],
+    existing: readonly SalesLineSnapshot[] = [],
+  ): Promise<SalesLineSnapshot[]> {
+    const lines: SalesLineSnapshot[] = [];
+    for (const [index, input] of inputs.entries()) {
+      if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0)
+        throw new V2ApplicationError("VALIDATION_ERROR", "Line quantity must be a positive integer.");
+      if (input.selling && input.selling.kind !== "calculated")
+        requireAllowed(this.authority, context, "order.overridePrice");
+      const resolved = await tx.products.resolveActivePricingInput({
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        productId: brandedId<"ProductId">(input.productId),
+        quantity: input.quantity,
+        ...(input.selections ? { selections: input.selections as never } : {}),
+        ...(input.dimensions ? { dimensions: input.dimensions } : {}),
+      });
+      if (!resolved.ok) throw resolved.error;
+      const pricing = await tx.pricing.calculate({
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        sellableProduct: resolved.value.sellableProduct,
+        resolvedConfiguration: resolved.value.resolvedConfiguration,
+        pricingContext: {
+          channel: context.principal.kind === "staff" ? "staff" : context.principal.kind === "portal" ? "portal" : context.principal.kind === "service" ? "service" : "ai",
+          effectiveAt: new Date().toISOString(),
+        },
+        rules: resolved.value.rules,
+        ...(resolved.value.nestingEstimate ? { nestingEstimate: resolved.value.nestingEstimate } : {}),
+      });
+      const prior = existing[index];
+      const inherited = !input.selling && prior && prior.sellingPriceDecision.kind !== "calculated"
+        ? this.sellingInstruction(prior.sellingPriceDecision)
+        : input.selling;
+      if (inherited && inherited.kind !== "calculated") requireAllowed(this.authority, context, "order.overridePrice");
+      const freshDecision = calculatedDecision(pricing, context, inherited);
+      const decision = !input.selling && prior && prior.sellingPriceDecision.kind !== "calculated"
+        ? { ...freshDecision, decidedAt: prior.sellingPriceDecision.decidedAt, authorityReference: prior.sellingPriceDecision.authorityReference }
+        : freshDecision;
+      const line: SalesLineSnapshot = {
+        lineId: prior?.lineId ?? brandedId<"SalesLineId">(randomUUID()),
+        productId: resolved.value.sellableProduct.productId,
+        ...(resolved.value.sellableProduct.productTypeId ? { productTypeId: resolved.value.sellableProduct.productTypeId } : {}),
+        description: input.description?.trim() || resolved.value.sellableProduct.displayName,
+        quantity: input.quantity,
+        resolvedConfiguration: resolved.value.resolvedConfiguration,
+        pricingResult: pricing,
+        sellingPriceDecision: decision,
+        calculatedLineAmount: pricing.calculatedLineAmount,
+        sellingLineAmount: decision.resultingLineAmount,
+      };
+      assertSalesLineSnapshot(line);
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  private async applyLineChanges(
+    tx: OrderTransaction,
+    context: OperationContext,
+    current: OrderReadModel,
+    changes: NonNullable<UpdateOrderInput["lineChanges"]>,
+  ): Promise<SalesLineSnapshot[]> {
+    const lines = [...current.order.lines];
+    for (const change of changes) {
+      if (change.kind === "add") {
+        lines.push((await this.buildLines(tx, context, [change.line]))[0]!);
+        continue;
+      }
+      const index = lines.findIndex((line) => line.lineId === change.lineId);
+      if (index < 0) throw new V2ApplicationError("NOT_FOUND", "Order line was not found in this Order.");
+      const prior = lines[index]!;
+      const routed = await tx.hasRoute(current.order.organizationId, current.order.orderId, prior.lineId);
+      if (change.kind === "remove") {
+        if (routed) throw new V2ApplicationError("CONFLICT", "A routed Order line cannot be removed without an explicit Routing operation.");
+        lines.splice(index, 1);
+        continue;
+      }
+      const intended: OrderLineInput = {
+        ...change.line,
+        description: change.line.description ?? prior.description,
+        selections: change.line.selections ?? prior.resolvedConfiguration.selections,
+        dimensions: change.line.dimensions ?? prior.resolvedConfiguration.dimensions,
+      };
+      const replacement = (await this.buildLines(tx, context, [intended], [prior]))[0]!;
+      if (replacement.productId !== prior.productId)
+        throw new V2ApplicationError("CONFLICT", "An existing Order line cannot be retargeted to another Product; remove/add or use a future Routing operation.");
+      if (replacement.productTypeId !== prior.productTypeId)
+        throw new V2ApplicationError("CONFLICT", "Changing an existing line's Product Type requires an explicit Routing operation.");
+      const explicitConfiguration = change.line.selections !== undefined || change.line.dimensions !== undefined;
+      if (!explicitConfiguration) {
+        const before = prior.resolvedConfiguration, after = replacement.resolvedConfiguration;
+        const stable = before.pricingConfigurationId === after.pricingConfigurationId
+          && before.pricingConfigurationVersion === after.pricingConfigurationVersion
+          && before.pricingConfigurationContentHash === after.pricingConfigurationContentHash
+          && canonicalJson(before.selections) === canonicalJson(after.selections)
+          && canonicalJson(before.dimensions ?? null) === canonicalJson(after.dimensions ?? null);
+        if (!stable) throw new V2ApplicationError("CONFLICT", "The Product definition changed; explicitly review and adopt the current configuration before repricing.");
+      }
+      lines[index] = replacement;
+    }
+    if (!lines.length) throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
+    return lines;
+  }
+
+  private sellingInstruction(decision: SellingPriceDecision): OrderSellingInstruction {
+    if (decision.kind === "unit_override") return { kind: "unit_override", unitCents: decision.resultingUnitAmount.cents, reason: decision.reason };
+    if (decision.kind === "total_override") return { kind: "total_override", totalCents: decision.resultingLineAmount.cents, reason: decision.reason };
+    return { kind: "calculated" };
+  }
+
+  private lineChanges(before: readonly SalesLineSnapshot[], after: readonly SalesLineSnapshot[]): MeaningfulAuditChange[] {
+    const changes: MeaningfulAuditChange[] = [];
+    for (const line of after) {
+      const prior = before.find((candidate) => candidate.lineId === line.lineId);
+      if (!prior) changes.push({ group: "line", kind: "line_added", resourceId: line.lineId, summary: "Order line added." });
+      else {
+        if (prior.quantity !== line.quantity) changes.push({ group: "line", kind: "quantity_changed", resourceId: line.lineId, summary: "Order line quantity changed." });
+        if (canonicalJson(prior.resolvedConfiguration) !== canonicalJson(line.resolvedConfiguration)) changes.push({ group: "line", kind: "configuration_changed", resourceId: line.lineId, summary: "Order line configuration changed." });
+        if (canonicalJson(prior.sellingPriceDecision) !== canonicalJson(line.sellingPriceDecision)) changes.push({ group: "price", kind: "selling_price_changed", resourceId: line.lineId, summary: "Order line selling price changed." });
+      }
+    }
+    for (const line of before) if (!after.some((candidate) => candidate.lineId === line.lineId))
+      changes.push({ group: "line", kind: "line_removed", resourceId: line.lineId, summary: "Order line removed." });
+    return changes;
+  }
+
+  private async instantiateRoutes(
+    tx: OrderTransaction,
+    context: OperationContext,
+    orderId: OrderId,
+    lines: readonly SalesLineSnapshot[],
+  ): Promise<InstantiateRouteResult["routeInstance"][]> {
+    const routes: InstantiateRouteResult["routeInstance"][] = [];
+    for (const line of lines) {
+      if (!line.productTypeId)
+        throw new V2ApplicationError("CONFLICT", "The Product Type routing policy is not configured for this Order line.");
+      const productType = await tx.products.resolveProductType(
+        brandedId<"OrganizationId">(context.organizationId),
+        line.productTypeId,
+      );
+      if (!productType || productType.routePolicy.kind === "unconfigured")
+        throw new V2ApplicationError("CONFLICT", "The Product Type routing policy is not configured for this Order line.");
+      if (productType.routePolicy.kind === "no_route") continue;
+      const route = await tx.routing.instantiateRoute({
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        work: {
+          kind: "sales_order_line",
+          organizationId: brandedId<"OrganizationId">(context.organizationId),
+          orderId,
+          orderLineId: brandedId<"OrderLineId">(line.lineId),
+        },
+        routeTemplateId: productType.routePolicy.defaultRouteTemplateId,
+      });
+      routes.push(route.routeInstance);
+    }
+    return routes;
+  }
+
+  private draftInput(
+    organizationId: string,
+    orderId: OrderId,
+    businessRequestId: string,
+    customerContact: CustomerContactReference,
+    purchaseOrderNumber: string | undefined,
+    terms: CommercialTerms,
+    lines: readonly SalesLineSnapshot[],
+    sourceSalesStateToken: string,
+  ): DraftInvoiceSynchronizationInput {
+    const currency = lines[0]?.pricingResult.currency;
+    if (!currency) throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
+    return {
+      organizationId: brandedId<"OrganizationId">(organizationId),
+      orderId,
+      businessRequestId: brandedId<"BusinessRequestId">(businessRequestId),
+      customerContact,
+      ...(purchaseOrderNumber ? { purchaseOrderNumber } : {}),
+      currency,
+      ...(terms.termsCode ? { termsCode: terms.termsCode } : {}),
+      salesLines: lines.map((line) => ({
+        lineId: line.lineId,
+        productId: line.productId,
+        description: line.description,
+        quantity: line.quantity,
+        sellingUnitAmount: line.sellingPriceDecision.resultingUnitAmount,
+        sellingLineAmount: line.sellingLineAmount,
+        salesPricingEvidenceFingerprint: line.pricingResult.evidenceFingerprint,
+      })),
+      taxInput: {
+        ...(terms.taxContextReference ? { taxContextReference: terms.taxContextReference } : {}),
+      },
+      sourceSalesStateToken,
+    };
+  }
+
+  private headerChanges(before: OrderCurrentState, after: OrderCurrentState): MeaningfulAuditChange[] {
+    const changes: MeaningfulAuditChange[] = [];
+    if (before.customerContact.customerId !== after.customerContact.customerId)
+      changes.push({ group: "customer", kind: "customer_changed", summary: "Customer changed." });
+    if (before.customerContact.contactId !== after.customerContact.contactId)
+      changes.push({ group: "customer", kind: "contact_changed", summary: "Contact changed." });
+    if (before.purchaseOrderNumber !== after.purchaseOrderNumber)
+      changes.push({ group: "commercial_terms", kind: "po_changed", summary: "PO number updated." });
+    if (before.requestedDueDate !== after.requestedDueDate)
+      changes.push({ group: "commercial_terms", kind: "requested_due_date_changed", summary: "Requested due date changed." });
+    if (before.terms.commercialNotes !== after.terms.commercialNotes)
+      changes.push({ group: "notes", kind: "notes_changed", summary: "Commercial notes updated." });
+    if (before.terms.termsCode !== after.terms.termsCode
+      || before.terms.taxContextReference !== after.terms.taxContextReference
+      || before.terms.salesRepresentativeId !== after.terms.salesRepresentativeId)
+      changes.push({ group: "commercial_terms", kind: "terms_changed", summary: "Commercial terms updated." });
+    return changes;
+  }
+
+  private async mutate(
+    context: OperationContext,
+    operation: "sales.order.create.v1" | "sales.order.edit.v1",
+    command: CreateOrderInput | UpdateOrderInput,
+    capability: "order.create" | "order.edit",
+    work: (tx: OrderTransaction, request: OrderOperationRequest) => Promise<OrderOperationResult>,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!context.businessRequest)
+        throw new V2ApplicationError("VALIDATION_ERROR", "A business request identity is required.");
+      if (command.businessRequestId !== context.businessRequest.id)
+        throw new V2ApplicationError("VALIDATION_ERROR", "The command business request identity does not match the operation context.");
+      return success(await this.runner.transaction(async (tx) => {
+        const reservation = await tx.reserve({
+          organizationId: context.organizationId,
+          operation,
+          businessRequestId: context.businessRequest!.id,
+          payloadFingerprint: fingerprint(command),
+          principalKind: context.principal.kind,
+          principalSubject: principalSubject(context.principal),
+          ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),
+        });
+        if (reservation.kind === "replay") return reservation.request.resultJson as OrderOperationResult;
+        const result = await work(tx, reservation.request);
+        await tx.attribute({
+          organizationId: context.organizationId,
+          requestId: reservation.request.id,
+          operation,
+          resourceType: "order",
+          resourceId: result.order.order.orderId,
+          principalKind: context.principal.kind,
+          principalSubject: principalSubject(context.principal),
+          ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),
+        });
+        await tx.succeed(context.organizationId, reservation.request.id, result);
+        return result;
+      }));
+    } catch (error) {
+      return failure(this.error(error));
+    }
+  }
+
+  private async history(
+    tx: OrderTransaction,
+    context: OperationContext,
+    requestId: string,
+    operation: string,
+    event: OrderAuditEvent,
+  ): Promise<void> {
+    await tx.audit({
+      organizationId: context.organizationId,
+      requestId,
+      operation,
+      event,
+      principalKind: context.principal.kind,
+      principalSubject: principalSubject(context.principal),
+      ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),
+    });
+  }
+
+  private error(error: unknown): V2ApplicationError {
+    return error instanceof V2ApplicationError
+      ? error
+      : new V2ApplicationError("INTERNAL_ERROR", "Order operation could not be completed.");
+  }
+}

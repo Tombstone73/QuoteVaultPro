@@ -25,6 +25,8 @@
     "v2:m1:quote:browser": "playwright test --config v2/playwright.m175b.config.ts",
     "v2:m1:routing:contracts": "tsx v2/tests/modules/routingContracts.test.ts",
     "v2:m1:routing": "tsx v2/scripts/runM18RoutingRehearsal.ts",
+    "v2:m1:order:contracts": "jest --runInBand v2/tests/modules/orderContracts.test.ts",
+    "v2:m1:order": "tsx v2/scripts/runM19OrderRehearsal.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:dotenv": "node -r dotenv/config ./node_modules/drizzle-kit/bin.cjs migrate",

@@ -16,7 +16,7 @@ const assert = (value: unknown, message: string): asserts value => { if (!value)
 const code = (error: unknown): string | undefined => error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : undefined;
 const kinds = ["proofing", "prepress", "production", "fulfillment"] as const;
 type StepKind = (typeof kinds)[number];
-type Fixture = Readonly<{ organizationA: string; organizationB: string; templateA: string; templateB: string; printedType: string; serviceType: string }>;
+type Fixture = Readonly<{ organizationA: string; organizationB: string; templateA: string; templateB: string; printedType: string; serviceType: string; productA: string; productB: string }>;
 
 const normalize = (name: string) => name.toLowerCase();
 async function template(client: PoolClient, organizationId: string, name: string, steps: readonly StepKind[], revision = 1): Promise<string> {
@@ -35,13 +35,28 @@ async function replaceTemplateSteps(client: PoolClient, organizationId: string, 
 }
 async function fixture(client: PoolClient): Promise<Fixture> {
   const suffix = randomUUID();
-  const f = { organizationA: `m18-org-a-${suffix}`, organizationB: `m18-org-b-${suffix}`, templateA: "", templateB: "", printedType: `m18-type-printed-${suffix}`, serviceType: `m18-type-service-${suffix}` };
+  const f = { organizationA: `m18-org-a-${suffix}`, organizationB: `m18-org-b-${suffix}`, templateA: "", templateB: "", printedType: `m18-type-printed-${suffix}`, serviceType: `m18-type-service-${suffix}`, productA: `m18-product-a-${suffix}`, productB: `m18-product-b-${suffix}` };
   await client.query("BEGIN");
   try {
     await client.query("INSERT INTO organizations(id,name,slug) VALUES($1,'M18 A',$2),($3,'M18 B',$4)", [f.organizationA, `m18-a-${suffix}`, f.organizationB, `m18-b-${suffix}`]);
     f.templateA = await template(client, f.organizationA, "Printed", kinds);
     f.templateB = await template(client, f.organizationB, "Fulfillment", ["fulfillment"]);
     await client.query("INSERT INTO product_types(id,organization_id,name,routing_mode,default_route_template_id) VALUES($1,$2,'Printed','route_required',$3),($4,$2,'Service','no_route',NULL)", [f.printedType, f.organizationA, f.templateA, f.serviceType]);
+    const customerA = `m18-customer-a-${suffix}`, customerB = `m18-customer-b-${suffix}`;
+    await client.query("INSERT INTO customers(id,organization_id,company_name,display_name,is_active,status) VALUES($1,$2,'M18 A','M18 A',true,'active'),($3,$4,'M18 B','M18 B',true,'active')", [customerA,f.organizationA,customerB,f.organizationB]);
+    await client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,product_type_id) VALUES($1,$2,'M18 Product A','Fixture',true,'quantity_only',$3),($4,$5,'M18 Product B','Fixture',true,'quantity_only',NULL)", [f.productA,f.organizationA,f.printedType,f.productB,f.organizationB]);
+    const seeds = [
+      [f.organizationA,f.productA,f.printedType,customerA,"a"], [f.organizationA,f.productA,f.printedType,customerA,"b"],
+      [f.organizationA,f.productA,f.printedType,customerA,"revision-conflict"], [f.organizationA,f.productA,f.printedType,customerA,"static"],
+      [f.organizationA,f.productA,f.printedType,customerA,"rollback"], [f.organizationA,f.productA,f.printedType,customerA,"concurrent"],
+      [f.organizationB,f.productB,null,customerB,"foreign-work"], [f.organizationB,f.productB,null,customerB,"foreign-template"],
+    ] as const;
+    for (const [org,product,type,customer,label] of seeds) {
+      const order = `m18-order-${label}`, line = `m18-order-line-${label}`, number = seeds.indexOf(seeds.find((entry) => entry[4] === label)!) + 1;
+      await client.query("INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,currency) VALUES($1,$2,'order',$3,$4,$5,'USD')", [order,org,number,`ORD-M18-${label}`,customer]);
+      await client.query("INSERT INTO v2_sales_order_details(document_id,organization_id) VALUES($1,$2)", [order,org]);
+      await client.query("INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision) VALUES($1,$2,$3,0,$4,$5,'Fixture',1,'USD',100,100,100,100,$6,'sha256:m18','{}'::jsonb,'{}'::jsonb,'{}'::jsonb)", [line,org,order,product,type,`m18-price-${label}`]);
+    }
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; }
   return f;
@@ -57,9 +72,14 @@ async function cleanup(url: string, f: Fixture): Promise<void> {
       // direction a future organization-retirement workflow would use.
       await client.query("DELETE FROM v2_route_instance_steps WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
       await client.query("DELETE FROM v2_route_instances WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
+      await client.query("DELETE FROM v2_sales_document_lines WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
+      await client.query("DELETE FROM v2_sales_order_details WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
+      await client.query("DELETE FROM v2_sales_documents WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
+      await client.query("DELETE FROM products WHERE id=ANY($1::text[])", [[f.productA, f.productB]]);
       await client.query("DELETE FROM product_types WHERE id=ANY($1::text[])", [[f.printedType, f.serviceType]]);
       await client.query("DELETE FROM v2_route_template_steps WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
       await client.query("DELETE FROM v2_route_templates WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
+      await client.query("DELETE FROM customers WHERE organization_id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
       await client.query("DELETE FROM organizations WHERE id=ANY($1::text[])", [[f.organizationA, f.organizationB]]);
       await client.query("COMMIT");
     } catch (error) {

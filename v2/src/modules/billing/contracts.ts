@@ -1,7 +1,7 @@
 import type { CustomerContactReference } from "../customers/contracts.js";
 import type { CustomerPresentationIdentity } from "../customers/contracts.js";
 import type { PrincipalKind } from "../../authorization/principals.js";
-import type { BusinessRequestId, CurrencyCode, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrganizationId, PercentageBasisPoints, ProductId, SalesLineId } from "../shared/commercialValues.js";
+import type { BusinessRequestId, CurrencyCode, CustomerId, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrderLineId, OrganizationId, PercentageBasisPoints, ProductId, SalesLineId } from "../shared/commercialValues.js";
 
 /** Sales supplies a projection; Billing owns any resulting Invoice row, math, and lifecycle. */
 export type DraftInvoiceSynchronizationInput = Readonly<{
@@ -9,14 +9,32 @@ export type DraftInvoiceSynchronizationInput = Readonly<{
   orderId: OrderId;
   businessRequestId: BusinessRequestId;
   customerContact: CustomerContactReference;
+  /** Sales-owned commercial header fact projected into Billing's current Draft. */
+  purchaseOrderNumber?: string;
   currency: CurrencyCode;
   termsCode?: string;
-  salesLines: readonly Readonly<{ lineId: SalesLineId; productId: ProductId; description: string; quantity: number; sellingLineAmount: Money }>[];
-  taxInput: Readonly<{ taxContextReference?: string; compatibilityCalculatorVersion?: string }>;
+  /**
+   * Billing receives final Sales selling amounts and evidence. It must never
+   * invoke Pricing or reconstruct a SellingPriceDecision from these values.
+   */
+  salesLines: readonly Readonly<{
+    lineId: SalesLineId;
+    productId: ProductId;
+    description: string;
+    quantity: number;
+    sellingUnitAmount: Money;
+    sellingLineAmount: Money;
+    salesPricingEvidenceFingerprint: string;
+  }>[];
+  /** Sales may identify the commercial tax context; Billing owns calculator/version evidence. */
+  taxInput: Readonly<{ taxContextReference?: string }>;
   sourceSalesStateToken: string;
 }>;
 export type CreateDraftInvoiceInput = DraftInvoiceSynchronizationInput;
-export type DraftInvoiceSynchronizationResult = Readonly<{ invoiceId: InvoiceId; status: "created" | "synchronized" | "unchanged" | "not_editable"; reason?: "invoice_issued" | "invoice_void" | "invoice_missing" | "multiple_active_invoices"; synchronizationVersion?: string }>;
+export type DraftInvoiceSynchronizationResult =
+  | Readonly<{ invoiceId: InvoiceId; status: "created" | "synchronized" | "unchanged"; synchronizationVersion: string }>
+  | Readonly<{ invoiceId: InvoiceId; status: "not_editable"; reason: "invoice_issued" | "invoice_void" | "multiple_active_invoices"; synchronizationVersion?: string }>
+  | Readonly<{ status: "not_editable"; reason: "invoice_missing" }>;
 export type IssueInvoiceInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; businessRequestId: BusinessRequestId }>;
 export type BillingAttributionSnapshot =
   | Readonly<{ principalKind: Exclude<PrincipalKind, "delegated_ai">; subjectId: string; staffActorUserId?: never }>
@@ -40,4 +58,32 @@ export type IssuedInvoiceBoundary = Readonly<{ invoiceId: InvoiceId; status: "is
 export interface BillingPort {
   createDraftInvoice(input: CreateDraftInvoiceInput): Promise<DraftInvoiceSynchronizationResult>;
   synchronizeDraftInvoice(input: DraftInvoiceSynchronizationInput): Promise<DraftInvoiceSynchronizationResult>;
+}
+
+export type DraftInvoiceReadLine = Readonly<{
+  sourceOrderLineId: OrderLineId;
+  productId: ProductId;
+  description: string;
+  quantity: number;
+  sellingUnitAmount: Money;
+  lineAmount: Money;
+}>;
+export type DraftInvoiceReadModel = Readonly<{
+  invoiceId: InvoiceId;
+  organizationId: OrganizationId;
+  sourceOrderId: OrderId;
+  customerId?: CustomerId;
+  lifecycle: "draft" | "issued" | "void";
+  currency: CurrencyCode;
+  synchronizationVersion: string;
+  lines: readonly DraftInvoiceReadLine[];
+  subtotal: Money;
+  taxTotal: Money;
+  total: Money;
+  createdAt: string;
+  updatedAt: string;
+}>;
+export interface BillingReadPort {
+  readInvoice(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<DraftInvoiceReadModel | null>;
+  readDraftForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null>;
 }

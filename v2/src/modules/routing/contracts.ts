@@ -77,6 +77,7 @@ export interface RoutingPort {
   resolveRouteTemplate(organizationId: OrganizationId, routeTemplateId: RouteTemplateId): Promise<RouteTemplate | null>;
   instantiateRoute(input: InstantiateRouteInput): Promise<InstantiateRouteResult>;
   readRouteInstance(organizationId: OrganizationId, routeInstanceId: RouteInstanceId): Promise<RouteInstance | null>;
+  readRouteForWork(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<RouteInstance | null>;
 }
 
 /** Future named operations only; M1.8 deliberately implements none of them. */

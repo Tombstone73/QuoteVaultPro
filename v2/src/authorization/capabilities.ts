@@ -1,7 +1,7 @@
 /** A reviewed operation vocabulary; no broad administrator wildcard exists. */
 export const capabilityIds = [
   "quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice",
-  "order.view", "order.create", "order.edit", "order.cancel",
+  "order.view", "order.create", "order.edit", "order.cancel", "order.overridePrice",
   "customer.view", "customer.edit", "product.view", "product.edit",
   "pricing.preview", "pricing.configure", "pricing.publish",
   "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue",

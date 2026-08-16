@@ -10,6 +10,11 @@ import {
   createQuoteRouter,
   type QuoteHttpDependencies,
 } from "./quoteRoutes.js";
+import {
+  createOrderRouter,
+  type OrderHttpDependencies,
+} from "./orderRoutes.js";
+import { createInvoiceRouter, type InvoiceHttpDependencies } from "./invoiceRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -18,12 +23,19 @@ export type AuthenticatedQuoteRouteRuntime = Readonly<{
   dependencies: QuoteHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
+export type AuthenticatedOrderRouteRuntime = Readonly<{
+  dependencies: OrderHttpDependencies;
+  trustedHostMiddleware: RequestHandler;
+}>;
+export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
   logger: V2Logger,
   readinessProbe: ReadinessProbe = async () => ({ ready: true }),
   quote?: AuthenticatedQuoteRouteRuntime,
+  order?: AuthenticatedOrderRouteRuntime,
+  billing?: AuthenticatedBillingRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -95,6 +107,29 @@ export const createV2HttpApp = (
       },
       requireV2CsrfToken,
       createQuoteRouter(quote.dependencies),
+    );
+  if (order)
+    app.use(
+      "/v2/organizations/:organizationId/orders",
+      order.trustedHostMiddleware,
+      (request, response, next) => {
+        try {
+          response.setHeader("x-v2-session-scope", issueV2SessionScope(request));
+        } catch {
+          // The principal provider remains responsible for opaque auth denial.
+        }
+        next();
+      },
+      requireV2CsrfToken,
+      createOrderRouter(order.dependencies),
+    );
+  if (billing)
+    app.use(
+      "/v2/organizations/:organizationId/invoices",
+      billing.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createInvoiceRouter(billing.dependencies),
     );
 
   app.use((_request, response) =>

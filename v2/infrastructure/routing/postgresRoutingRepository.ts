@@ -104,7 +104,7 @@ export class PostgresRoutingRepository {
       [routeInstanceId, input.organizationId, input.work.orderId, input.work.orderLineId, definition.routeTemplateId, definition.revision, definition.definitionFingerprint, currentStepId],
     );
     if (!inserted.rows[0]) {
-      const existing = await this.findByWork(input.organizationId, input.work.orderLineId);
+      const existing = await this.readRouteForWork(input.organizationId, input.work.orderLineId);
       if (!existing) throw new Error("Route instance conflict did not return an existing scoped route.");
       if (existing.sourceTemplate.routeTemplateId !== definition.routeTemplateId
         || existing.sourceTemplate.revision !== definition.revision
@@ -146,7 +146,7 @@ export class PostgresRoutingRepository {
     };
   }
 
-  private async findByWork(organizationId: OrganizationId, orderLineId: string): Promise<RouteInstance | null> {
+  async readRouteForWork(organizationId: OrganizationId, orderLineId: string): Promise<RouteInstance | null> {
     const result = await this.client.query<{ id: string }>(
       "SELECT id FROM v2_route_instances WHERE organization_id=$1 AND work_kind='sales_order_line' AND order_line_id=$2",
       [organizationId, orderLineId],

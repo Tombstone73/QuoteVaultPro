@@ -8,6 +8,7 @@ const constraints = [
   "v2_route_template_steps_position_chk", "v2_route_template_steps_kind_chk", "v2_route_template_steps_template_tenant_fk",
   "product_types_routing_mode_chk", "product_types_routing_policy_chk", "product_types_default_route_template_tenant_fk",
   "v2_route_instances_work_kind_chk", "v2_route_instances_state_chk", "v2_route_instances_current_position_chk", "v2_route_instances_source_template_tenant_fk", "v2_route_instances_current_step_instance_fk",
+  "v2_route_instances_order_tenant_fk", "v2_route_instances_order_line_tenant_fk",
   "v2_route_instance_steps_position_chk", "v2_route_instance_steps_kind_chk", "v2_route_instance_steps_instance_tenant_fk",
 ] as const;
 const indexes = [

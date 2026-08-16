@@ -9,7 +9,12 @@ import {
   composeAuthenticatedQuoteRuntime,
   type AuthenticatedQuoteRuntimeDependencies,
 } from "../infrastructure/sales/authenticatedQuoteRuntime.js";
+import {
+  composeAuthenticatedOrderRuntime,
+  type AuthenticatedOrderRuntimeDependencies,
+} from "../infrastructure/sales/authenticatedOrderRuntime.js";
 import { createConsoleLogger, type V2Logger } from "./observability/logger.js";
+import { composeAuthenticatedBillingRuntime, type AuthenticatedBillingRuntimeDependencies } from "../infrastructure/billing/authenticatedBillingRuntime.js";
 
 export type RunningV2Server = Readonly<{
   close: () => Promise<void>;
@@ -20,12 +25,18 @@ export const startV2Server = async (
   logger: V2Logger = createConsoleLogger(),
   dependencies: Readonly<{
     authenticatedQuote?: AuthenticatedQuoteRuntimeDependencies;
+    authenticatedOrder?: AuthenticatedOrderRuntimeDependencies;
+    authenticatedBilling?: AuthenticatedBillingRuntimeDependencies;
   }> = {},
 ): Promise<RunningV2Server> => {
   const quote = dependencies.authenticatedQuote
     ? composeAuthenticatedQuoteRuntime(dependencies.authenticatedQuote)
     : undefined;
-  const app = createV2HttpApp(config, logger, undefined, quote);
+  const order = dependencies.authenticatedOrder
+    ? composeAuthenticatedOrderRuntime(dependencies.authenticatedOrder)
+    : undefined;
+  const billing = dependencies.authenticatedBilling ? composeAuthenticatedBillingRuntime(dependencies.authenticatedBilling) : undefined;
+  const app = createV2HttpApp(config, logger, undefined, quote, order, billing);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);
