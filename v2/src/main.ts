@@ -17,6 +17,7 @@ import { createConsoleLogger, type V2Logger } from "./observability/logger.js";
 import { composeAuthenticatedBillingRuntime, type AuthenticatedBillingRuntimeDependencies } from "../infrastructure/billing/authenticatedBillingRuntime.js";
 import { composeAuthenticatedArtworkRuntime, type AuthenticatedArtworkRuntimeDependencies } from "../infrastructure/artwork/authenticatedArtworkRuntime.js";
 import { composeAuthenticatedProofingRuntime, type AuthenticatedProofingRuntimeDependencies } from "../infrastructure/proofing/authenticatedProofingRuntime.js";
+import { composeAuthenticatedPrepressRuntime, type AuthenticatedPrepressRuntimeDependencies } from "../infrastructure/prepress/authenticatedPrepressRuntime.js";
 
 export type RunningV2Server = Readonly<{
   close: () => Promise<void>;
@@ -31,6 +32,7 @@ export const startV2Server = async (
     authenticatedBilling?: AuthenticatedBillingRuntimeDependencies;
     authenticatedArtwork?: AuthenticatedArtworkRuntimeDependencies;
     authenticatedProofing?: AuthenticatedProofingRuntimeDependencies;
+    authenticatedPrepress?: AuthenticatedPrepressRuntimeDependencies;
   }> = {},
 ): Promise<RunningV2Server> => {
   const quote = dependencies.authenticatedQuote
@@ -42,7 +44,8 @@ export const startV2Server = async (
   const billing = dependencies.authenticatedBilling ? composeAuthenticatedBillingRuntime(dependencies.authenticatedBilling) : undefined;
   const artwork = dependencies.authenticatedArtwork ? composeAuthenticatedArtworkRuntime(dependencies.authenticatedArtwork) : undefined;
   const proofing = dependencies.authenticatedProofing ? composeAuthenticatedProofingRuntime(dependencies.authenticatedProofing) : undefined;
-  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing);
+  const prepress = dependencies.authenticatedPrepress ? composeAuthenticatedPrepressRuntime(dependencies.authenticatedPrepress) : undefined;
+  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);

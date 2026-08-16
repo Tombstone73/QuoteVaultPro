@@ -59,6 +59,7 @@ export type UiBootstrap = Readonly<{
     orderEdit?: boolean; orderOverridePrice?: boolean; invoiceView?: boolean;
     artworkView?: boolean; artworkAssign?: boolean;
     proofView?: boolean; proofPrepare?: boolean; proofIssue?: boolean; proofRespond?: boolean;
+    prepressView?: boolean; prepressWork?: boolean; prepressComplete?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
@@ -104,6 +105,10 @@ export type ProofResponse = Readonly<{ proofResponseId:string; proofVersionId:st
 export type ProofVersion = Readonly<{ proofVersionId:string; proofWorkId:string; sequence:number; artwork:readonly Readonly<{position:number;artworkAssignmentId:string;artworkFileId:string}>[]; createdAt:string; issuedAt?:string; issuedPrincipalSubject?:string }>;
 export type ProofWorkProjection = Readonly<{ work:Readonly<{proofWorkId:string;orderId:string;orderLineId:string;createdAt:string}>; versions:readonly Readonly<{version:ProofVersion;response?:ProofResponse}>[] }>;
 export type ProofQueueItem = Readonly<{work:ProofWorkProjection["work"];orderNumber:string;customerDisplayName:string;lineDescription:string;latest?:Readonly<{sequence:number;issuedAt?:string;outcome?:"approved"|"revision_requested"}>}>;
+export type PrepressUnit = Readonly<{prepressUnitId:string;organizationId:string;orderId:string;orderLineId:string;artworkAssignmentId:string;artworkFileId:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number;createdAt:string;startedAt?:string;completedAt?:string}>;
+export type ProductionRequirementCoverage = Readonly<{requirement:Readonly<{key:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number}>;artworkAssignmentIds:readonly string[];prepressUnits:readonly PrepressUnit[];productionArtworkCovered:boolean;prepressComplete:boolean}>;
+export type OrderLinePrepressCoverage = Readonly<{state:"unconfigured"|"configured";requirements:readonly ProductionRequirementCoverage[];productionArtworkComplete:boolean;allRequiredPrepressUnitsComplete:boolean}>;
+export type PrepressQueueItem = Readonly<{orderId:string;orderNumber:string;customerDisplayName:string;orderLineId:string;lineDescription:string;quantity:number;requestedDueDate?:string;routingStepKind?:"proofing"|"prepress"|"production"|"fulfillment";coverage:OrderLinePrepressCoverage}>;
 export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
 export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly ("in" | "ft" | "mm")[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
 const csrfTokens = new Map<string, string>();
@@ -280,6 +285,15 @@ export const proofingApi={
   createVersion:(org:string,proofWorkId:string,businessRequestId:string,artworkAssignmentIds:readonly string[])=>proofMutation<unknown>(org,`/works/${encodeURIComponent(proofWorkId)}/versions`,businessRequestId,{artworkAssignmentIds}),
   issue:(org:string,proofVersionId:string,businessRequestId:string)=>proofMutation<unknown>(org,`/versions/${encodeURIComponent(proofVersionId)}/issue`,businessRequestId,{}),
   respond:(org:string,proofVersionId:string,businessRequestId:string,outcome:"approved"|"revision_requested",comment?:string)=>proofMutation<unknown>(org,`/versions/${encodeURIComponent(proofVersionId)}/respond`,businessRequestId,{outcome,...(comment?.trim()?{comment:comment.trim()}: {})}),
+};
+const prepressEndpoint=(org:string,suffix="")=>`/v2/organizations/${encodeURIComponent(org)}/prepress${suffix}`;
+const prepressMutation=<T>(org:string,suffix:string,businessRequestId:string,input:Record<string,unknown>)=>request<T>(prepressEndpoint(org,suffix),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({...input,businessRequestId})});
+export const prepressApi={
+  list:(org:string)=>request<readonly PrepressQueueItem[]>(prepressEndpoint(org,"/queue?limit=50")),
+  coverage:(org:string,lineId:string)=>request<OrderLinePrepressCoverage>(prepressEndpoint(org,`/lines/${encodeURIComponent(lineId)}/coverage`)),
+  open:(org:string,businessRequestId:string,artworkAssignmentId:string)=>prepressMutation<{unit:PrepressUnit}>(org,"/units",businessRequestId,{artworkAssignmentId}),
+  start:(org:string,prepressUnitId:string,businessRequestId:string)=>prepressMutation<{unit:PrepressUnit}>(org,`/units/${encodeURIComponent(prepressUnitId)}/start`,businessRequestId,{}),
+  complete:(org:string,prepressUnitId:string,businessRequestId:string)=>prepressMutation<{unit:PrepressUnit}>(org,`/units/${encodeURIComponent(prepressUnitId)}/complete`,businessRequestId,{}),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

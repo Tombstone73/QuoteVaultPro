@@ -17,6 +17,7 @@ import {
 import { createInvoiceRouter, type InvoiceHttpDependencies } from "./invoiceRoutes.js";
 import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRoutes.js";
 import { createProofingRouter, type ProofingHttpDependencies } from "./proofingRoutes.js";
+import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -32,6 +33,7 @@ export type AuthenticatedOrderRouteRuntime = Readonly<{
 export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -42,6 +44,7 @@ export const createV2HttpApp = (
   billing?: AuthenticatedBillingRouteRuntime,
   artwork?: AuthenticatedArtworkRouteRuntime,
   proofing?: AuthenticatedProofingRouteRuntime,
+  prepress?: AuthenticatedPrepressRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -105,6 +108,9 @@ export const createV2HttpApp = (
                 proofPrepare: policy.decide(principal, { capability: "proof.prepare", resource: { organizationId } }).allowed,
                 proofIssue: policy.decide(principal, { capability: "proof.issue", resource: { organizationId } }).allowed,
                 proofRespond: policy.decide(principal, { capability: "proof.respond", resource: { organizationId } }).allowed,
+                prepressView: policy.decide(principal, { capability: "prepress.view", resource: { organizationId } }).allowed,
+                prepressWork: policy.decide(principal, { capability: "prepress.work", resource: { organizationId } }).allowed,
+                prepressComplete: policy.decide(principal, { capability: "prepress.complete", resource: { organizationId } }).allowed,
               },
             },
           });
@@ -166,6 +172,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createProofingRouter(proofing.dependencies),
+    );
+  if (prepress)
+    app.use(
+      "/v2/organizations/:organizationId/prepress",
+      prepress.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createPrepressRouter(prepress.dependencies),
     );
 
   app.use((_request, response) =>

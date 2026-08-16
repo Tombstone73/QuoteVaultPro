@@ -37,6 +37,7 @@ import { AppearanceWorkspace } from "./AppearanceWorkspace";
 import type { VisualAppearance } from "./appearance";
 import { V2VisualShell, type V2VisualPage } from "./VisualShell";
 import { ProofingWorkspace } from "./ProofingWorkspace";
+import { PrepressWorkspace } from "./PrepressWorkspace";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -151,7 +152,7 @@ export const App = ({
   };
   return (
     <V2VisualShell page={page} onNavigate={navigate} appearance={appearance} setAppearance={setAppearance}>
-      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : <>
+      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : <>
         {page === "orders" ? (
           <OrdersPage
             organizationId={organizationId}

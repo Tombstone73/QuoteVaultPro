@@ -32,6 +32,7 @@
     "v2:m2:proofing": "tsx v2/scripts/runM21ProofingRehearsal.ts",
     "v2:m2:prepress:contracts": "tsx v2/tests/modules/prepressContracts.test.ts",
     "v2:m2:prepress": "tsx v2/scripts/runM22PrepressRehearsal.ts",
+    "v2:m2:prepress:browser": "playwright test --config v2/playwright.m225.config.ts",
     "v2:m2:production-requirements:contracts": "tsx v2/tests/modules/productionRequirementsContracts.test.ts",
     "v2:m2:production-requirements": "tsx v2/scripts/runM221ProductionRequirementsRehearsal.ts",
     "v2:m1:quote-conversion:contracts": "jest --runInBand v2/tests/modules/quoteConversionContracts.test.ts",

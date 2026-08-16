@@ -48,3 +48,20 @@ export type ProductionRequirementCoverage = Readonly<{
 export type OrderLinePrepressCoverage =
   | Readonly<{ state:"unconfigured"; requirements:readonly []; productionArtworkComplete:false; allRequiredPrepressUnitsComplete:false }>
   | Readonly<{ state:"configured"; requirements:readonly ProductionRequirementCoverage[]; productionArtworkComplete:boolean; allRequiredPrepressUnitsComplete:boolean }>;
+
+/**
+ * Bounded operational projection. Sales owns the order and line labels;
+ * Routing contributes only its current coarse step; the coverage itself stays
+ * derived from frozen requirements, Artwork, and Prepress evidence.
+ */
+export type PrepressQueueItem = Readonly<{
+  orderId: OrderId;
+  orderNumber: string;
+  customerDisplayName: string;
+  orderLineId: OrderLineId;
+  lineDescription: string;
+  quantity: number;
+  requestedDueDate?: string;
+  routingStepKind?: "proofing" | "prepress" | "production" | "fulfillment";
+  coverage: OrderLinePrepressCoverage;
+}>;
