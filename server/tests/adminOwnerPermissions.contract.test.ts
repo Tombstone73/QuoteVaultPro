@@ -24,6 +24,14 @@ describe("admin and owner permission contract", () => {
     expect(routes).toContain("Organization Admin or Owner role required.");
   });
 
+  test("Settings route registrations retain the owner/admin membership guard", () => {
+    const routes = read("server/routes.ts");
+
+    expect(routes).toContain("registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });");
+    expect(routes).toContain("registerCatalogSettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, requireOrgOwnerAdmin });");
+    expect(routes).toContain("registerAdminStorageRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, requireOrgOwnerAdmin });");
+  });
+
   test("Admin Tools danger-zone endpoints are owner-only after tenant role resolution", () => {
     const routes = read("server/routes/organization.routes.ts");
 

@@ -11,6 +11,7 @@ export interface OrgSummary {
   name: string;
   slug: string;
   role: string;
+  isDefault?: boolean;
 }
 
 export interface MyOrgsResult {
