@@ -214,7 +214,7 @@ class PostgresQuoteTransaction implements QuoteTransaction {
     forUpdate = false,
   ): Promise<QuoteReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
       [organizationId, quoteId],
     );
     const row = header.rows[0];

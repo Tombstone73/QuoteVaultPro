@@ -386,6 +386,13 @@ export const QuoteLineEditor = ({
   ]);
 
   const resolveSelection = (selectionKey: string, value: unknown) => {
+    // An explicit operator selection supersedes the asynchronous persisted-line
+    // compatibility assessment.  Without this, an assessment queued by the
+    // initial definition load can arrive after the selection and restore the
+    // historical value over the operator's current intent.
+    validatedPersisted.current = `${draftKey}:${draftRef.current.productId}`;
+    appliedDefaults.current = `${draftKey}:${draftRef.current.productId}`;
+    setOrigin("fresh");
     const transition = beginConfigurationSelectionResolution(
       draftRef.current,
       selectionKey,

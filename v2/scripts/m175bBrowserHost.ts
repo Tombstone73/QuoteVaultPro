@@ -39,7 +39,7 @@ const assert = (value: unknown, message: string): asserts value => { if (!value)
 const tree = (measurementMode: "dimensions_required" | "quantity_only", choice = "legacy") => ({
   schemaVersion: 2,
   rootNodeIds: ["finish"],
-  nodes: { finish: { id: "finish", kind: "question", label: "Finish", input: { type: "select", selectionKey: "finish", defaultValue: choice, required: true }, choices: [{ value: choice, label: choice }] } },
+  nodes: { finish: { id: "finish", kind: "question", label: "Finish", input: { type: "select", selectionKey: "finish", defaultValue: choice, required: true }, choices: [{ value: choice, label: choice }, { value: `${choice}-alternate`, label: `${choice} alternate` }] } },
   meta: { pricingV2: { base: measurementMode === "dimensions_required" ? { perSqftCents: 100 } : { perPieceCents: 250 } } },
 });
 
@@ -133,6 +133,26 @@ const main = async () => {
         await pool.query("UPDATE products SET pbv2_active_tree_version_id=$1 WHERE organization_id=$2 AND id=$3", [changedTree, fixture!.organizationA, fixture!.dimensionalProductA]);
         await pool.query("COMMIT"); response.status(204).end();
       } catch (error) { await pool.query("ROLLBACK").catch(() => undefined); next(error); }
+    });
+    /** Test-only, staff-A-gated authoritative PostgreSQL verification for a browser-created Quote. */
+    app.get("/_v2-browser-test/readback/:quoteId", fixtureAdmin, async (request, response, next) => {
+      try {
+        const quoteId = request.params.quoteId;
+        const organizationId = fixture!.organizationA;
+        const [document, lines, checkpoints, audit, operations] = await Promise.all([
+          pool.query("SELECT id,organization_id,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,terms_json,commercial_notes,revision FROM v2_sales_documents WHERE organization_id=$1 AND id=$2 AND document_kind='quote'", [organizationId, quoteId]),
+          pool.query("SELECT id,product_id,quantity,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId, quoteId]),
+          pool.query("SELECT checkpoint_kind,principal_subject,staff_actor_user_id,operation_request_id FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 ORDER BY checkpoint_sequence", [organizationId, quoteId]),
+          pool.query("SELECT event_type,principal_subject,staff_actor_user_id,operation_request_id,changes FROM v2_audit_events WHERE organization_id=$1 AND resource_type='quote' AND resource_id=$2 ORDER BY created_at", [organizationId, quoteId]),
+          pool.query("SELECT id,operation,business_request_id,status,result_resource_type,result_resource_id FROM v2_operation_requests WHERE organization_id=$1 AND result_resource_type='quote' AND result_resource_id=$2 ORDER BY created_at", [organizationId, quoteId]),
+        ]);
+        if (!document.rows[0]) return response.status(404).json({ ok: false });
+        // Do not expose actor identifiers to the browser—not even from this
+        // test-only readback. Return only server-verified attribution facts.
+        const attributedCheckpoints = checkpoints.rows.map((row) => ({ checkpoint_kind: row.checkpoint_kind, staffActorVerified: row.staff_actor_user_id === fixture!.staffA, operation_request_id: row.operation_request_id }));
+        const attributedAudit = audit.rows.map((row) => ({ event_type: row.event_type, staffActorVerified: row.staff_actor_user_id === fixture!.staffA, operation_request_id: row.operation_request_id, changes: row.changes }));
+        response.json({ ok: true, data: { document: document.rows[0], lines: lines.rows, checkpoints: attributedCheckpoints, audit: attributedAudit, operations: operations.rows } });
+      } catch (error) { next(error); }
     });
     const runtime = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity: new PassportSessionIdentitySource(), trustedHostMiddleware: (_request, _response, next) => next() });
     app.use(express.static(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../dist-v2-ui"), { index: "index.html" }));
