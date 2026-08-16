@@ -28,6 +28,9 @@ export type ProofVersionId = Brand<string, "ProofVersionId">;
 export type ProofResponseId = Brand<string, "ProofResponseId">;
 /** Prepress owns independently executable preparation units, never Artwork files. */
 export type PrepressUnitId = Brand<string, "PrepressUnitId">;
+/** Production work is anchored to a frozen required production unit, not an Order status. */
+export type ProductionWorkId = Brand<string, "ProductionWorkId">;
+export type ProductionAttemptId = Brand<string, "ProductionAttemptId">;
 export type CommercialCheckpointId = Brand<string, "CommercialCheckpointId">;
 
 export type CurrencyCode = Brand<string, "CurrencyCode">;

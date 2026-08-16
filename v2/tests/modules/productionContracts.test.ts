@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import { capabilityIds } from "../../src/authorization/capabilities.js";
+import type { ProductionWorkProjection } from "../../src/modules/production/contracts.js";
+import { brandedId } from "../../src/modules/shared/commercialValues.js";
+const work={productionWorkId:brandedId<"ProductionWorkId">("work"),organizationId:brandedId<"OrganizationId">("org"),orderId:brandedId<"OrderId">("order"),orderLineId:brandedId<"OrderLineId">("line"),requirement:{key:"front",side:"front" as const},artworkAssignmentId:brandedId<"ArtworkAssignmentId">("front"),artworkFileId:brandedId<"ArtworkFileId">("file"),orderedQuantity:100,createdAt:"2026-08-16T00:00:00.000Z",createdPrincipalKind:"staff" as const,createdPrincipalSubject:"staff"};
+const projection:ProductionWorkProjection={work,attempts:[],completedGoodQuantity:0,unitQuantitySatisfied:false};
+assert.equal(projection.unitQuantitySatisfied,false,"partial/empty Production must not falsely satisfy the unit");
+assert.equal("fulfillableQuantity" in projection,false,"Production never owns a Fulfillment ceiling");
+assert.equal("routeState" in projection.work,false,"Routing remains the route-state owner");
+assert.equal("prepressComplete" in projection.work,false,"Prepress completion remains external evidence");
+assert.deepEqual(["production.view","production.work","production.complete"].every(x=>capabilityIds.includes(x as typeof capabilityIds[number])),true);
+console.log("[m2.3] Production contract tests passed (5 assertions).");

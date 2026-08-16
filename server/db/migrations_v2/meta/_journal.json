@@ -1394,6 +1394,13 @@
       "when": 1788048000050,
       "tag": "0203_v2_production_requirement_count_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1788048000051,
+      "tag": "0204_v2_production_domain_foundation",
+      "breakpoints": true
     }
   ]
 }
