@@ -21,7 +21,7 @@ const createVerifier = (): V2StaffCredentialVerifier & { revoked: boolean; organ
   async eligibleOrganizations() { return this.revoked ? [] : this.organizations; },
 });
 
-const appFor = (verifier = createVerifier(), config = loadV2StandaloneAuthConfig({ V2_SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" })) => {
+const appFor = (verifier = createVerifier(), config = loadV2StandaloneAuthConfig({ SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" })) => {
   const app = express(); app.use(express.json());
   const auth = createStandaloneStaffAuthentication({
     verifier,
@@ -78,10 +78,10 @@ describe("standalone V2 Staff authentication", () => {
   });
 
   test("uses secure, host-only, SameSite=Lax cookies in production and rejects an untrusted origin", async () => {
-    const config = loadV2StandaloneAuthConfig({ NODE_ENV: "production", V2_SESSION_SECRET: "x".repeat(32), V2_PUBLIC_WEB_ORIGIN: "https://v2-dev.printershero.com" });
-    expect(config).toMatchObject({ secureCookies: true, publicWebOrigin: "https://v2-dev.printershero.com" });
+    const config = loadV2StandaloneAuthConfig({ NODE_ENV: "production", SESSION_SECRET: "x".repeat(32), APP_PUBLIC_WEB_ORIGIN: "https://dev.printershero.com" });
+    expect(config).toMatchObject({ secureCookies: true, publicWebOrigin: "https://dev.printershero.com" });
     const { app } = appFor(createVerifier(), config);
     await request(app).post("/v2/auth/login").set("origin", "https://attacker.invalid").send({ email: staff.email, password: "correct-password" }).expect(403);
-    expect(() => loadV2StandaloneAuthConfig({ NODE_ENV: "production", V2_SESSION_SECRET: "short" })).toThrow(/V2_SESSION_SECRET/);
+    expect(() => loadV2StandaloneAuthConfig({ NODE_ENV: "production", SESSION_SECRET: "short" })).toThrow(/SESSION_SECRET/);
   });
 });

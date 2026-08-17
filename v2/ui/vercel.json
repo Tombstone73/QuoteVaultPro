@@ -6,7 +6,7 @@
   "rewrites": [
     {
       "source": "/v2/:path*",
-      "destination": "https://api-v2-dev.printershero.com/v2/:path*"
+      "destination": "https://api-dev.printershero.com/v2/:path*"
     },
     {
       "source": "/:path*",

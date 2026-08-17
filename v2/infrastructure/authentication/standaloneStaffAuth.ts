@@ -54,16 +54,16 @@ export type V2StandaloneAuthConfig = Readonly<{
 export const loadV2StandaloneAuthConfig = (
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): V2StandaloneAuthConfig => {
-  const secret = environment.V2_SESSION_SECRET?.trim() ?? "";
-  if (secret.length < 32) throw new Error("V2_SESSION_SECRET must contain at least 32 characters.");
+  const secret = environment.SESSION_SECRET?.trim() ?? "";
+  if (secret.length < 32) throw new Error("SESSION_SECRET must contain at least 32 characters.");
   const production = environment.NODE_ENV === "production";
-  const requestedOrigin = environment.V2_PUBLIC_WEB_ORIGIN?.trim();
-  if (production && !requestedOrigin) throw new Error("V2_PUBLIC_WEB_ORIGIN is required in production.");
+  const requestedOrigin = environment.APP_PUBLIC_WEB_ORIGIN?.trim();
+  if (production && !requestedOrigin) throw new Error("APP_PUBLIC_WEB_ORIGIN is required in production.");
   if (requestedOrigin) {
     let origin: URL;
-    try { origin = new URL(requestedOrigin); } catch { throw new Error("V2_PUBLIC_WEB_ORIGIN must be an absolute URL."); }
+    try { origin = new URL(requestedOrigin); } catch { throw new Error("APP_PUBLIC_WEB_ORIGIN must be an absolute URL."); }
     if (origin.origin !== requestedOrigin.replace(/\/$/, "") || (production && origin.protocol !== "https:")) {
-      throw new Error("V2_PUBLIC_WEB_ORIGIN must be an exact HTTPS origin in production.");
+      throw new Error("APP_PUBLIC_WEB_ORIGIN must be an exact HTTPS origin in production.");
     }
   }
   return { sessionSecret: secret, publicWebOrigin: requestedOrigin?.replace(/\/$/, ""), secureCookies: production };

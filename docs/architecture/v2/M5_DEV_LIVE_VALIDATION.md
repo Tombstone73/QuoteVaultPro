@@ -1,66 +1,78 @@
 # M5 DEV live-validation record
 
-**Decision:** `DEV LIVE VALIDATION NOT READY`
+**Current decision:** `DEV CUTOVER PLUMBING READY`
 
 **Validation date:** 2026-08-17  
-**Authoritative source at preflight:** `v2/reconstruction` / `24dd26af` (`feat(v2): add standalone staff authentication`)
+**Authoritative source before this correction:** `v2/reconstruction` /
+`c470bb85`
 
-## Scope and safeguards
+## Corrected architecture
 
-This is a pre-deployment record, not a claim of a live V2 deployment. The V1 DEV endpoints (`dev.printershero.com` and `api-dev.printershero.com`) were not changed. The known local-review-only changes in `v2/scripts/m175bBrowserHost.ts` and `v2/ui/src/App.tsx` were preserved, unstaged, and excluded from this record.
+The former parallel V2 DEV assumption was superseded by the owner-approved
+cutover model. DEV will replace V1 in place: `dev.printershero.com` becomes the
+V2 UI and `api-dev.printershero.com` becomes the V2 backend. The existing DEV
+database, canonical Staff identity records, session secret, and web-origin
+configuration are reused. MAIN/production remains V1 and untouched.
 
-## Git and source preflight
+No parallel V2 domains, database, Railway service, or Vercel project are
+required. The former `v2-dev.printershero.com` and
+`api-v2-dev.printershero.com` discovery findings are therefore not deployment
+blockers and are retained only as historical pre-correction evidence.
 
-- `origin/dev` and `origin/main` resolved to `80c453fc` during preflight.
-- `origin/dev` is an ancestor of `v2/reconstruction`; the source was 60 commits ahead and could be promoted by a normal fast-forward once infrastructure is ready.
-- No merge was active. No source, DEV, or MAIN push was performed during this blocked validation.
-- The source has not yet been published to `origin/v2/reconstruction`; it must be preserved remotely before the eventual DEV promotion.
+## Verified existing DEV contract
 
-## Provider and DNS preflight
+The authenticated Railway context is `PrintersHero-DEV` / `Development` /
+`Printershero-DEV`. Names-only inspection verified existing canonical variables
+including `DATABASE_URL`, `SESSION_SECRET`, `APP_PUBLIC_WEB_ORIGIN`, Railway
+environment metadata, and the current storage/runtime configuration. No secret
+value was displayed or changed.
 
-- The authenticated Railway context is the `PrintersHero-DEV` project, Development environment. It currently has one online legacy service, `Printershero-DEV`, with the V1 DEV API domain. No V2 Railway service was created or changed.
-- The authenticated Vercel team is `dale-hensleys-projects`. Its existing `printershero-development` project serves the V1 DEV frontend. No V2 Vercel project was created or changed.
-- `v2-dev.printershero.com` and `api-v2-dev.printershero.com` did not resolve at preflight. No DNS-provider credentials or exact provider-generated targets were available, so no DNS record was changed.
+The V2 cutover entrypoint now accepts `DATABASE_URL` only when the explicit
+Railway DEV project/environment markers and `NODE_ENV=production` are present.
+It rejects a production or otherwise unrecognised target before a database
+connection is opened. Standalone V2 auth now uses the existing `SESSION_SECRET`
+and exact `APP_PUBLIC_WEB_ORIGIN`; it keeps the separate `v2.sid` session
+cookie and canonical identity/permission checks.
 
-### 2026-08-17 recheck: existing V2 Railway environment authorization
+## Planned remote cutover (not performed)
 
-The subsequently authorized deployment path was rechecked against the authenticated Railway account without displaying secret values. The intended `PrintersHero-DEV` / `Development` context still contains exactly one service: the legacy `Printershero-DEV` service attached to `api-dev.printershero.com`. Its 46 configured variable names include legacy `DATABASE_URL`, but do **not** include `V2_DATABASE_URL`, `V2_SESSION_SECRET`, or `V2_PUBLIC_WEB_ORIGIN`; no optional V2 service/release/storage variable was present either.
+- Fast-forward `dev` from the exact `v2/reconstruction` source.
+- Switch `Printershero-DEV` to the V2 server build/start commands.
+- Switch `printershero-development` to Vercel root directory `v2/ui` and its
+  V2 project-scoped configuration.
+- Apply the immutable, additive V2 migration stream to the existing DEV
+  database and verify the V2 ledger.
+- Validate real Staff authentication, session/CSRF, V2 API rewrite, SPA routes,
+  representative workflows, visual appearance, and responsive behavior.
 
-The authenticated Railway account contains only `PrintersHero-PRODUCTION`, `PrintersHero-DEV`, and `prepresshero`; the current intended DEV project has no dedicated V2 service. The authenticated Vercel team likewise has no dedicated V2 project, and neither V2 DEV hostname resolves. No secrets, service configuration, database, DNS record, Vercel project, or Git deployment branch was changed during this recheck.
+No remote database migration, provider configuration change, DEV promotion,
+deployment, or live browser validation has been performed by this correction.
 
-### 2026-08-17 full Railway account/environment/scope discovery
+## Historical migration status
 
-The Railway public API was then used for the account-wide, names-only discovery required by the deployment instruction. Each accessible environment reported by the account and every shared and service variable scope was inspected. The exact scopes were:
+Repository migration preflight previously passed: the immutable V2 journal has
+204 entries ending `0208_v2_payment_history_capability`. The remote DEV
+migration status has not been queried or changed in this repository-only task.
 
-- `PrintersHero-PRODUCTION` / `production`: shared; `PrintersHero-PRODUCTION` service.
-- `PrintersHero-DEV` / `Development`: shared; `Printershero-DEV` service.
-- `prepresshero` / `production`: shared; `gotenberg`, `Redis`, `prepresshero`, and `prepresshero-workers` services.
+## Local cutover-plumbing validation
 
-`V2_DATABASE_URL`, `V2_SESSION_SECRET`, and `V2_PUBLIC_WEB_ORIGIN` were absent from every inspected scope. No related `V2_*` variable name appeared. This includes the production scopes, which were inspected only to satisfy the search and were not used or changed. Railway reported no additional accessible projects or environments, and no dormant or dedicated V2 service.
+The following repository-only checks passed for this correction:
 
-## Database provenance and migration status
+- focused deployment, runtime-configuration, and standalone-auth/session tests;
+- V2 server and UI TypeScript checks and production builds;
+- V2 UI tests and import-boundary validation;
+- migration journal and immutable-history integrity checks;
+- M5 commercial, operational, and financial parity suites.
 
-The deployment contract requires a distinct `V2_DATABASE_URL` and explicitly rejects a legacy `DATABASE_URL` fallback. The local environment contained neither a V2 database URL nor a Neon/provider credential. The inspected Railway DEV project contains no managed database resource; its V1 service database is externally managed. Safe metadata sufficient to prove that external source is specifically V1 DEV, and provider access necessary to create an isolated branch/clone, were not available.
+The focused deployment evidence proves canonical `DATABASE_URL` acceptance only
+for the exact Railway DEV project/environment, rejection of production and
+unrecognised deployment contexts, exact DEV browser-origin validation, V2 API
+rewrite precedence, and exclusion of test-only authentication. These local
+results do not claim a remote migration, DEV deployment, or live validation.
 
-Therefore no database was created, cloned, linked, or migrated. No V1 or production database was queried or modified.
+## Next action
 
-The repository-only migration preflight passed:
-
-- journal: 204 immutable V2 entries, ending `0208_v2_payment_history_capability`;
-- migration-history integrity: passed.
-
-## Completed local validation
-
-The exact reconstruction source previously passed the V2 static checks, server and UI production builds, UI tests, focused standalone-auth/deployment tests, import-boundary checks, and M5 commercial, operational, and financial parity checks. These are local evidence only; they do not replace database, deployment, authentication, browser, routing, workflow, visual, appearance, or responsive live validation.
-
-## Unperformed live validation
-
-The following remain deliberately unperformed: isolated database provisioning and identity/permission bootstrap; V2 migrations; V2 Railway and Vercel service/project setup; V2 DNS/TLS; DEV promotion and deployment; real Staff login/session/CSRF/logout; SPA/API rewrite and deep-link checks; tenant data sanity; commercial/operational/finance workflows; and authenticated visual, appearance, and responsive checks.
-
-## Exact blocker and next required input
-
-**V2 VARIABLES NOT FOUND AFTER FULL ACCOUNT/ENVIRONMENT/SERVICE SEARCH**
-
-Reconcile the project owner's known V2 configuration with this authenticated Railway account, or provide a Railway login/workspace/project/environment/service context that contains the existing V2-only `V2_DATABASE_URL`, `V2_SESSION_SECRET`, and `V2_PUBLIC_WEB_ORIGIN` variables. No legacy `DATABASE_URL` will be substituted, and no V1 or production resource will be changed.
-
-No DEV live validation has been claimed.
+Promote the exact V2 source to DEV, switch the existing DEV Railway/Vercel
+deployments to the V2 build targets, apply V2 migrations to the existing DEV
+database, and perform live DEV validation. Do not begin M6 before that work is
+complete.

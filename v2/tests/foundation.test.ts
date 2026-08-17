@@ -49,16 +49,16 @@ describe("V2 M0 AuthorityPolicy", () => {
 });
 
 describe("V2 M0 runtime configuration", () => {
-  test("does not read V1 or test database URL variables as V2 runtime configuration", () => {
-    const config = loadV2RuntimeConfig({ NODE_ENV: "test", DATABASE_URL: "postgresql://legacy:secret@legacy.example/db", TEST_DATABASE_URL: "postgresql://test:secret@test.example/db" });
-    expect(config.databaseUrl).toBeUndefined();
-    expect(() => requireV2RuntimeDatabaseUrl(config)).toThrow(V2ConfigurationError);
+  test("uses the canonical runtime database URL while keeping disposable test URLs separate", () => {
+    const config = loadV2RuntimeConfig({ NODE_ENV: "test", DATABASE_URL: "postgresql://dev:secret@dev.example/db", TEST_DATABASE_URL: "postgresql://test:secret@test.example/db" });
+    expect(requireV2RuntimeDatabaseUrl(config)).toBe("postgresql://dev:secret@dev.example/db");
+    expect(loadV2RuntimeConfig({ NODE_ENV: "test", TEST_DATABASE_URL: "postgresql://test:secret@test.example/db" }).databaseUrl).toBeUndefined();
   });
 
-  test("validates the V2-only runtime configuration without exposing its URL", () => {
-    const config = loadV2RuntimeConfig({ NODE_ENV: "production", V2_PORT: "8181", V2_DATABASE_URL: "postgresql://v2:secret@v2.example/db" });
+  test("validates canonical runtime configuration without exposing its URL", () => {
+    const config = loadV2RuntimeConfig({ NODE_ENV: "production", V2_PORT: "8181", DATABASE_URL: "postgresql://dev:secret@dev.example/db" });
     expect(config).toMatchObject({ environment: "production", port: 8181 });
-    expect(requireV2RuntimeDatabaseUrl(config)).toBe("postgresql://v2:secret@v2.example/db");
+    expect(requireV2RuntimeDatabaseUrl(config)).toBe("postgresql://dev:secret@dev.example/db");
     expect(() => loadV2RuntimeConfig({ V2_PORT: "0" })).toThrow(/V2_PORT/);
   });
 });
