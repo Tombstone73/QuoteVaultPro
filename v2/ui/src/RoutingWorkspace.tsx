@@ -1,0 +1,16 @@
+import { useQuery } from "@tanstack/react-query";
+import { routingApi } from "./api";
+
+const steps = (values: readonly Readonly<{ position: number; kind: string }>[], current?: string, ids?: readonly Readonly<{ routeInstanceStepId: string }>[]) => <ol className="v2-routing-steps">{values.map((step, index) => <li key={ids?.[index]?.routeInstanceStepId ?? `${step.position}:${step.kind}`} className={current && ids?.[index]?.routeInstanceStepId === current ? "current" : ""}><b>{step.position}</b>{step.kind}</li>)}</ol>;
+
+/** Read-first adapter over Routing-owned templates and frozen instances. */
+export const RoutingWorkspace = ({ organizationId, sessionScope, canView, openOrder }: Readonly<{ organizationId: string; sessionScope: string; canView: boolean; openOrder: (id: string) => void }>) => {
+  const workspace = useQuery({ queryKey: ["v2", sessionScope, organizationId, "routing", "workspace"], queryFn: () => routingApi.workspace(organizationId), enabled: Boolean(organizationId && sessionScope && canView) });
+  if (!organizationId) return <section className="v2-routing"><p className="v2-proof-empty">Enter an authenticated organization before opening Routing.</p></section>;
+  if (!canView) return <section className="v2-routing"><p className="v2-proof-empty">You do not have permission to view Routing.</p></section>;
+  return <section className="v2-routing"><header className="v2-routing-heading"><div><p>Operations / Routing</p><h1>Routing</h1><span>Read-only canonical templates and frozen Order-line routes.</span></div></header>
+    <section className="v2-routing-note"><b>Routing owns internal position.</b> Template mutation, rerouting, skipping, and progression require named Routing-owned operations and are intentionally unavailable.</section>
+    <section><h2>Route templates</h2><div className="v2-routing-templates">{workspace.data?.templates.map((template) => <article key={template.routeTemplateId}><header><b>{template.name}</b><span>{template.active ? "Active" : "Inactive"}</span></header>{steps(template.steps)}<small>Revision {template.revision} · {template.routeTemplateId}</small></article>)}{workspace.isSuccess && !workspace.data.templates.length && <p className="v2-proof-empty">No canonical Route Templates are available.</p>}</div></section>
+    <section className="v2-routing-instances"><header><h2>Route instances</h2><p>Each instance freezes its template identity and ordered steps when Sales creates the Order-line work.</p></header><div className="v2-routing-table-wrap"><table><thead><tr><th>Order / line</th><th>Current position</th><th>State</th><th>Frozen route</th></tr></thead><tbody>{workspace.data?.instances.map((instance) => <tr key={instance.routeInstanceId}><td><button onClick={() => openOrder(instance.orderId)}>Order {instance.orderNumber}</button><small>{instance.lineDescription}</small></td><td>{steps(instance.steps, instance.currentStepId, instance.steps)}</td><td>{instance.state}</td><td><small>{instance.sourceTemplate.routeTemplateId} · rev {instance.sourceTemplate.revision}</small></td></tr>)}{workspace.isSuccess && !workspace.data.instances.length && <tr><td colSpan={4}>No canonical Route Instances are available.</td></tr>}</tbody></table></div></section>
+  </section>;
+};

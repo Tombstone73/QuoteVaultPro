@@ -93,6 +93,7 @@ export type UiBootstrap = Readonly<{
     fulfillmentView?: boolean;
     fulfillmentPickup?: boolean;
     fulfillmentShip?: boolean;
+    routeView?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{
@@ -1120,6 +1121,13 @@ export const fulfillmentApi = {
     allocations: readonly { orderLineId: string; quantity: number }[],
   ) =>
     fulfillmentMutation(org, orderId, method, businessRequestId, allocations),
+};
+export type RoutingWorkspaceRead = Readonly<{
+  templates: readonly Readonly<{ routeTemplateId: string; name: string; active: boolean; revision: string; definitionFingerprint: string; steps: readonly Readonly<{ position: number; kind: string }>[] }> [];
+  instances: readonly Readonly<{ routeInstanceId: string; state: string; currentStepId?: string; sourceTemplate: Readonly<{ routeTemplateId: string; revision: string; definitionFingerprint: string }>; orderId: string; orderNumber: string; orderLineId: string; lineDescription: string; steps: readonly Readonly<{ routeInstanceStepId: string; position: number; kind: string }>[] }> [];
+}>;
+export const routingApi = {
+  workspace: (org: string) => request<RoutingWorkspaceRead>(`/v2/organizations/${encodeURIComponent(org)}/routing/workspace`),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

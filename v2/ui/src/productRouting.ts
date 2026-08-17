@@ -1,7 +1,7 @@
 export type ProductLocation = Readonly<{ productId?: string }>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "payments" | "artwork" | "proofing" | "prepress" }>;
+export type WorkspaceLocation = Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "routing" | "payments" | "artwork" | "proofing" | "prepress" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -73,7 +73,7 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   const production = readProductionLocation(pathname);
   if (production) return { page: "production", ...production };
   const page = pathname.replace(/^\/+|\/+$/gu, "");
-  return page === "payments" || page === "artwork" || page === "proofing" || page === "prepress" ? { page } : null;
+  return page === "routing" || page === "payments" || page === "artwork" || page === "proofing" || page === "prepress" ? { page } : null;
 };
 export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
 export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));
@@ -87,5 +87,5 @@ export const fulfillmentPath = (orderId?: string) => orderId ? `/fulfillment/ord
 export const pushFulfillmentLocation = (orderId?: string) => window.history.pushState({}, "", fulfillmentPath(orderId));
 export const productionPath = (station?: "flatbed" | "roll") => station ? `/production/${station}` : "/production";
 export const pushProductionLocation = (station?: "flatbed" | "roll") => window.history.pushState({}, "", productionPath(station));
-export const workspacePath = (page: "payments" | "artwork" | "proofing" | "prepress") => `/${page}`;
-export const pushWorkspaceLocation = (page: "payments" | "artwork" | "proofing" | "prepress") => window.history.pushState({}, "", workspacePath(page));
+export const workspacePath = (page: "routing" | "payments" | "artwork" | "proofing" | "prepress") => `/${page}`;
+export const pushWorkspaceLocation = (page: "routing" | "payments" | "artwork" | "proofing" | "prepress") => window.history.pushState({}, "", workspacePath(page));

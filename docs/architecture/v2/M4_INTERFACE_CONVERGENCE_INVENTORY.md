@@ -114,6 +114,13 @@ workspace is real, mock, mixed, or not applicable (N/A).
 
 ## Contract disposition
 
+## M4 Routing / Inbound / Portal / AI adapter update
+
+* **Routing — PARTIAL:** `/routing` is now a tenant-scoped, capability-checked (`route.view`) read-first workspace backed by canonical Route Template and frozen Route Instance persistence. It displays ordered template steps, frozen source revision/fingerprint, current Routing-owned position, and canonical Order links. Template editing, reroute, skip, and route progression remain unavailable because the Routing module deliberately exposes no corresponding named operation.
+* **Inbound — DOMAIN CAPABILITY REQUIRED:** canonical, authenticated internal ingestion/review records and an existing staff workspace exist in the legacy `server/`/`client/` composition, but no V2-owned adapter delegates final candidate submission through the V2 Customer/Sales/Artwork operations. No V2 `/inbound` route is added until that narrow integration boundary is defined; mock acceptance state is not reproduced.
+* **Portal / Service — DOMAIN CAPABILITY REQUIRED:** V2 has Portal Principal/permission-set/ceiling authority foundations, but has no Portal session runtime, safe customer-scoped storefront read DTO, canonical storefront slug, or customer-facing Product/Pricing/Sales composition. No public/storefront route is added and Staff APIs are not reused as a portal substitute.
+* **AI Assistant — DOMAIN CAPABILITY REQUIRED:** V2 has delegated-AI authority revalidation and canonical-operation attribution foundations, but no named AI read/tool map, command integration, durable Plan/GO confirmation record, assistant runtime, or staff API. No `/assistant` route is added; the Lovable local mock plan/GO behavior is not persisted or imitated.
+
 The matrix distinguishes missing UI from missing backend:
 
 | Disposition | Items | Result |

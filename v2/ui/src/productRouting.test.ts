@@ -37,3 +37,5 @@ assert.deepEqual(readWorkspaceLocation("/production/roll"), { page: "production"
 assert.equal(productionPath("flatbed"), "/production/flatbed");
 assert.deepEqual(readWorkspaceLocation("/payments"), { page: "payments" });
 assert.equal(workspacePath("payments"), "/payments");
+assert.deepEqual(readWorkspaceLocation("/routing"), { page: "routing" });
+assert.equal(workspacePath("routing"), "/routing");

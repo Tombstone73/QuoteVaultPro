@@ -20,6 +20,7 @@ import { composeAuthenticatedProofingRuntime, type AuthenticatedProofingRuntimeD
 import { composeAuthenticatedPrepressRuntime, type AuthenticatedPrepressRuntimeDependencies } from "../infrastructure/prepress/authenticatedPrepressRuntime.js";
 import { composeAuthenticatedProductionRuntime, type AuthenticatedProductionRuntimeDependencies } from "../infrastructure/production/authenticatedProductionRuntime.js";
 import { composeAuthenticatedFulfillmentRuntime, type AuthenticatedFulfillmentRuntimeDependencies } from "../infrastructure/fulfillment/authenticatedFulfillmentRuntime.js";
+import { composeAuthenticatedRoutingRuntime, type AuthenticatedRoutingRuntimeDependencies } from "../infrastructure/routing/authenticatedRoutingRuntime.js";
 
 export type RunningV2Server = Readonly<{
   close: () => Promise<void>;
@@ -37,6 +38,7 @@ export const startV2Server = async (
     authenticatedPrepress?: AuthenticatedPrepressRuntimeDependencies;
     authenticatedProduction?: AuthenticatedProductionRuntimeDependencies;
     authenticatedFulfillment?: AuthenticatedFulfillmentRuntimeDependencies;
+    authenticatedRouting?: AuthenticatedRoutingRuntimeDependencies;
   }> = {},
 ): Promise<RunningV2Server> => {
   const quote = dependencies.authenticatedQuote
@@ -51,7 +53,8 @@ export const startV2Server = async (
   const prepress = dependencies.authenticatedPrepress ? composeAuthenticatedPrepressRuntime(dependencies.authenticatedPrepress) : undefined;
   const production = dependencies.authenticatedProduction ? composeAuthenticatedProductionRuntime(dependencies.authenticatedProduction) : undefined;
   const fulfillment = dependencies.authenticatedFulfillment ? composeAuthenticatedFulfillmentRuntime(dependencies.authenticatedFulfillment) : undefined;
-  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress, production, fulfillment);
+  const routing = dependencies.authenticatedRouting ? composeAuthenticatedRoutingRuntime(dependencies.authenticatedRouting) : undefined;
+  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress, production, fulfillment, routing);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);
