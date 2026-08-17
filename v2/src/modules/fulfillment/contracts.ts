@@ -1,0 +1,30 @@
+import type { PrincipalKind } from "../../authorization/principals.js";
+import type { ContactId, CustomerId, FulfillmentHandoffId, FulfillmentHandoffLineId, OrderId, OrderLineId, OrganizationId } from "../shared/commercialValues.js";
+
+export type FulfillmentMethod = "pickup" | "shipment";
+
+/** Immutable completed customer-handoff fact. Carrier mechanics deliberately are not modeled here. */
+export type FulfillmentHandoff = Readonly<{
+  handoffId: FulfillmentHandoffId; organizationId: OrganizationId; orderId: OrderId; method: FulfillmentMethod;
+  completedAt: string; customerId?: CustomerId; contactId?: ContactId;
+  completedPrincipalKind: PrincipalKind; completedPrincipalSubject: string; completedStaffActorUserId?: string;
+}>;
+
+export type FulfillmentHandoffLine = Readonly<{
+  handoffLineId: FulfillmentHandoffLineId; organizationId: OrganizationId; handoffId: FulfillmentHandoffId;
+  orderId: OrderId; orderLineId: OrderLineId; quantity: number;
+}>;
+
+export type FulfillmentAvailability = Readonly<{
+  orderId: OrderId; orderLineId: OrderLineId; orderedQuantity: number; completedPickupQuantity: number;
+  completedShipmentQuantity: number; completedFulfillmentQuantity: number; remainingFulfillmentQuantity: number;
+}>;
+
+export type CompleteFulfillmentInput = Readonly<{
+  businessRequestId: string; orderId: OrderId; allocations: readonly Readonly<{ orderLineId: OrderLineId; quantity: number }> [];
+  customerId?: CustomerId; contactId?: ContactId;
+}>;
+
+export type FulfillmentTerminalResult = Readonly<{
+  handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; availability: readonly FulfillmentAvailability[];
+}>;

@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+const sql=readFileSync(path.resolve("server/db/migrations_v2/0205_v2_fulfillment_domain_foundation.sql"),"utf8");
+assert.match(sql,/CREATE TABLE v2_fulfillment_handoffs/);
+assert.match(sql,/CREATE TABLE v2_fulfillment_handoff_lines/);
+assert.match(sql,/handoff_method IN \('pickup','shipment'\)/);
+assert.match(sql,/v2_fulfillment_handoff_lines_handoff_tenant_fk/);
+assert.match(sql,/v2_fulfillment_handoff_lines_order_line_tenant_fk/);
+assert.match(sql,/ON DELETE RESTRICT/);
+assert.match(sql,/v2_fulfillment_handoff_immutable_trigger/);
+assert.match(sql,/v2_fulfillment_handoff_line_immutable_trigger/);
+assert.doesNotMatch(sql,/v2_production_|v2_route_|v2_billing_/);
+console.log("[m3.1] Fulfillment migration contract tests passed (9 assertions).");

@@ -9,7 +9,7 @@ export const capabilityIds = [
   "permissions.view", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal",
   "route.view", "route.reroute", "route.skipStep", "route.manageTemplates",
   "artwork.view", "artwork.adopt", "artwork.assign",
-  "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.pickup",
+  "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship",
   "prepress.view", "prepress.work", "prepress.complete",
   "production.view", "production.work", "production.complete",
 ] as const;
