@@ -44,7 +44,7 @@ import { FinanceWorkspace } from "./FinanceWorkspace";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import { ProductWorkspace } from "./ProductWorkspace";
 import { ArtworkWorkspace } from "./ArtworkWorkspace";
-import { pushCustomerLocation, pushOrderLocation, pushProductLocation, pushQuoteLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
+import { pushCustomerLocation, pushFulfillmentLocation, pushInvoiceLocation, pushOrderLocation, pushProductLocation, pushProductionLocation, pushQuoteLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -91,6 +91,9 @@ export const App = ({
   const [orderId, setOrderId] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [productId, setProductId] = useState("");
+  const [invoiceId, setInvoiceId] = useState("");
+  const [fulfillmentOrderId, setFulfillmentOrderId] = useState("");
+  const [productionStation, setProductionStation] = useState<"flatbed" | "roll" | undefined>();
   const [notice, setNotice] = useState("");
   const queryClient = useQueryClient();
   const quote = useQuery({
@@ -114,6 +117,9 @@ export const App = ({
       setOrderId("");
       setCustomerId("");
       setProductId("");
+      setInvoiceId("");
+      setFulfillmentOrderId("");
+      setProductionStation(undefined);
       setNotice("");
     }
     sessionScopeRef.current = nextScope;
@@ -148,6 +154,9 @@ export const App = ({
       setOrderId("");
       setCustomerId("");
       setProductId("");
+      setInvoiceId("");
+      setFulfillmentOrderId("");
+      setProductionStation(undefined);
       setNotice("");
     };
     window.addEventListener(
@@ -169,6 +178,9 @@ export const App = ({
       else if (location.page === "customers") setCustomerId(location.customerId ?? "");
       else if (location.page === "quotes") setQuoteId(location.quoteId ?? "");
       else if (location.page === "orders") setOrderId(location.orderId ?? "");
+      else if (location.page === "invoices") setInvoiceId(location.invoiceId ?? "");
+      else if (location.page === "fulfillment") setFulfillmentOrderId(location.orderId ?? "");
+      else if (location.page === "production") setProductionStation(location.station);
     };
     applyBrowserLocation();
     window.addEventListener("popstate", applyBrowserLocation);
@@ -196,14 +208,17 @@ export const App = ({
     }
     if (nextPage === "quotes") { pushQuoteLocation(); setQuoteId(""); }
     if (nextPage === "orders") { pushOrderLocation(); setOrderId(""); }
-    if (nextPage === "artwork" || nextPage === "proofing" || nextPage === "prepress") pushWorkspaceLocation(nextPage);
+    if (nextPage === "invoices") { pushInvoiceLocation(); setInvoiceId(""); }
+    if (nextPage === "fulfillment") { pushFulfillmentLocation(); setFulfillmentOrderId(""); }
+    if (nextPage === "production") { pushProductionLocation(); setProductionStation(undefined); }
+    if (nextPage === "payments" || nextPage === "artwork" || nextPage === "proofing" || nextPage === "prepress") pushWorkspaceLocation(nextPage);
     setPage(nextPage);
     if (nextPage === "quotes") setOrderId("");
     if (nextPage === "orders") setQuoteId("");
   };
   return (
     <V2VisualShell page={page} onNavigate={navigate} appearance={appearance} setAppearance={setAppearance}>
-      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "customers" ? <CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} canView={bootstrap.data?.capabilities.customerView === true} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); }} backToCatalog={() => { pushCustomerLocation(); setCustomerId(""); }} /> : page === "products" ? <ProductWorkspace organizationId={organizationId} sessionScope={sessionScope} productId={productId} canView={bootstrap.data?.capabilities.productView === true} openProduct={(id) => { pushProductLocation(id); setProductId(id); }} backToCatalog={() => { pushProductLocation(); setProductId(""); }} /> : page === "artwork" ? <ArtworkWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.artworkView === true} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : page === "production" ? <ProductionWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.productionView === true} canWork={bootstrap.data?.capabilities.productionWork === true} canComplete={bootstrap.data?.capabilities.productionComplete === true} /> : page === "fulfillment" ? <FulfillmentWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.fulfillmentView === true} canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true} canShip={bootstrap.data?.capabilities.fulfillmentShip === true} csrfReady={Boolean(bootstrap)} /> : page === "invoices" || page === "payments" ? <FinanceWorkspace mode={page === "payments" ? "ledger" : "invoices"} organizationId={organizationId} sessionScope={sessionScope} canIssue={bootstrap.data?.capabilities.invoiceIssue === true} canPaymentView={bootstrap.data?.capabilities.paymentView === true} canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true} canRefundIssue={bootstrap.data?.capabilities.refundIssue === true} csrfReady={Boolean(bootstrap)} openOrder={(id) => { pushOrderLocation(id); setOrderId(id); setPage("orders"); }} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }} /> : <>
+      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "customers" ? <CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} canView={bootstrap.data?.capabilities.customerView === true} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); }} backToCatalog={() => { pushCustomerLocation(); setCustomerId(""); }} /> : page === "products" ? <ProductWorkspace organizationId={organizationId} sessionScope={sessionScope} productId={productId} canView={bootstrap.data?.capabilities.productView === true} openProduct={(id) => { pushProductLocation(id); setProductId(id); }} backToCatalog={() => { pushProductLocation(); setProductId(""); }} /> : page === "artwork" ? <ArtworkWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.artworkView === true} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : page === "production" ? <ProductionWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.productionView === true} canWork={bootstrap.data?.capabilities.productionWork === true} canComplete={bootstrap.data?.capabilities.productionComplete === true} station={productionStation} onStationChange={(station) => { pushProductionLocation(station); setProductionStation(station); }} /> : page === "fulfillment" ? <FulfillmentWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.fulfillmentView === true} canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true} canShip={bootstrap.data?.capabilities.fulfillmentShip === true} csrfReady={Boolean(bootstrap)} orderId={fulfillmentOrderId} openOrder={(id) => { pushOrderLocation(id); setOrderId(id); setPage("orders"); }} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }} onSelectOrder={(id) => { pushFulfillmentLocation(id); setFulfillmentOrderId(id); }} /> : page === "invoices" || page === "payments" ? <FinanceWorkspace mode={page === "payments" ? "ledger" : "invoices"} organizationId={organizationId} sessionScope={sessionScope} invoiceId={invoiceId} onSelectInvoice={(id) => { pushInvoiceLocation(id); setInvoiceId(id); }} backToInvoices={() => { pushInvoiceLocation(); setInvoiceId(""); }} canIssue={bootstrap.data?.capabilities.invoiceIssue === true} canPaymentView={bootstrap.data?.capabilities.paymentView === true} canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true} canRefundIssue={bootstrap.data?.capabilities.refundIssue === true} csrfReady={Boolean(bootstrap)} openOrder={(id) => { pushOrderLocation(id); setOrderId(id); setPage("orders"); }} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }} /> : <>
         {page === "orders" ? (
           <OrdersPage
             organizationId={organizationId}
@@ -213,6 +228,7 @@ export const App = ({
             setOrderId={(id) => { pushOrderLocation(id || undefined); setOrderId(id); }}
             bootstrap={bootstrap.data}
             openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }}
+            openFulfillment={(id) => { pushFulfillmentLocation(id); setFulfillmentOrderId(id); setPage("fulfillment"); }}
           />
         ) : (
           <QuotesPage
@@ -311,10 +327,10 @@ const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuote
   </section>;
 };
 
-const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void }>) => {
+const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer, openFulfillment }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void; openFulfillment: (orderId: string) => void }>) => {
   const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
   const list = useSalesOrders(sessionScope, organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
-  if (orderId) return <OrderWorkspace organizationId={organizationId} sessionScope={sessionScope} orderId={orderId} canEdit={bootstrap?.capabilities.orderEdit === true} canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true} canViewInvoice={bootstrap?.capabilities.invoiceView === true} csrfReady={Boolean(bootstrap)} onBack={() => setOrderId("")} openCustomer={openCustomer} />;
+  if (orderId) return <OrderWorkspace organizationId={organizationId} sessionScope={sessionScope} orderId={orderId} canEdit={bootstrap?.capabilities.orderEdit === true} canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true} canViewInvoice={bootstrap?.capabilities.invoiceView === true} csrfReady={Boolean(bootstrap)} onBack={() => setOrderId("")} openCustomer={openCustomer} openFulfillment={openFulfillment} />;
   return <section className="lab v2-sales-workspace"><header className="v2-sales-page-heading"><div><p className="eyebrow">Sales / Orders</p><h1>Orders</h1><p>Frozen commercial truth, Billing relationship, and Routing context.</p></div><span>Read and write</span></header><div className="card grid"><label className="field">Organization ID<input value={organizationId} onChange={(event) => { setCursor(""); setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Orders<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="open">Open</option><option value="cancelled">Cancelled</option></select></label></div>{organizationId && <><SalesList kind="Order" items={list.data?.items ?? []} onOpen={setOrderId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}</section>;
 };
 

@@ -105,6 +105,13 @@ workspace is real, mock, mixed, or not applicable (N/A).
 * **Orders — PARTIAL:** `/orders` and `/orders/:orderId` now use the shared client route adapter. The existing canonical list, frozen commercial detail, Draft Invoice projection, read-only Routing context, Artwork context, and approved Sales mutations remain unchanged. Billing settlement/detail, mutable Routing controls, and mock Notes/History/activity remain deliberately absent.
 * These routes retain active organization only in client session storage after authenticated bootstrap; it is never authority. Production static hosting still needs SPA history fallback for direct refresh.
 
+## M4 Finance / Fulfillment / Production implementation update
+
+* **Finance — PARTIAL:** `/invoices`, `/invoices/:invoiceId`, and `/payments` are now restored by the shared client route adapter. Invoice selection is URL-addressable, and the existing canonical Invoice detail retains lines, totals, derived settlement, immutable Payment/Refund history, Issue, Take Payment, and Refund operations. Invoice and ledger rows now route to the canonical Invoice; Invoice links to canonical Order and Customer routes. Provider references, human invoice numbers, Void, PDF, delivery, credits, rebills, and adjustments remain deferred.
+* **Fulfillment — PARTIAL:** `/fulfillment` and `/fulfillment/orders/:orderId` now provide stable destinations for the existing authenticated order projection, partial pickup/shipment operations, and immutable handoff history. Order-to-Fulfillment navigation is canonical. Remaining quantity remains ordered quantity minus completed legitimate handoffs; Production output is explicitly context only, never an authorization ceiling. Carrier purchase, labels, tracking, and external transport remain deferred.
+* **Production Overview / Flatbed / Roll — PARTIAL:** `/production`, `/production/flatbed`, and `/production/roll` restore the real overview and selected station composition. Flatbed/Roll retain Next up, station-selected first start, immutable attempts, partial output, completion, reprints, and exact Artwork evidence. Scheduling, machine reservations/load, Kanban movement, pause, waste, notes, and print-ticket lifecycle remain unavailable rather than browser-local mock state.
+* The existing Vercel catch-all rewrite already supplies SPA history fallback for these client routes; no deployment configuration was changed.
+
 ## Contract disposition
 
 The matrix distinguishes missing UI from missing backend:

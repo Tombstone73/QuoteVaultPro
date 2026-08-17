@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { customerPath, orderPath, productPath, quotePath, readCustomerLocation, readOrderLocation, readProductLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { customerPath, fulfillmentPath, invoicePath, orderPath, productPath, productionPath, quotePath, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductLocation, readProductionLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.deepEqual(readProductLocation("/products/product-a"), { productId: "product-a" });
@@ -23,3 +23,17 @@ assert.deepEqual(readWorkspaceLocation("/quotes/quote-a"), { page: "quotes", quo
 assert.deepEqual(readWorkspaceLocation("/orders/order-a"), { page: "orders", orderId: "order-a" });
 assert.equal(quotePath("quote a"), "/quotes/quote%20a");
 assert.equal(orderPath("order a"), "/orders/order%20a");
+assert.deepEqual(readInvoiceLocation("/invoices/invoice-a"), { invoiceId: "invoice-a" });
+assert.deepEqual(readWorkspaceLocation("/invoices"), { page: "invoices" });
+assert.deepEqual(readWorkspaceLocation("/invoices/invoice-a"), { page: "invoices", invoiceId: "invoice-a" });
+assert.equal(invoicePath("invoice a"), "/invoices/invoice%20a");
+assert.deepEqual(readFulfillmentLocation("/fulfillment/orders/order-a"), { orderId: "order-a" });
+assert.deepEqual(readWorkspaceLocation("/fulfillment"), { page: "fulfillment" });
+assert.deepEqual(readWorkspaceLocation("/fulfillment/orders/order-a"), { page: "fulfillment", orderId: "order-a" });
+assert.equal(fulfillmentPath("order a"), "/fulfillment/orders/order%20a");
+assert.deepEqual(readProductionLocation("/production/flatbed"), { station: "flatbed" });
+assert.deepEqual(readWorkspaceLocation("/production"), { page: "production" });
+assert.deepEqual(readWorkspaceLocation("/production/roll"), { page: "production", station: "roll" });
+assert.equal(productionPath("flatbed"), "/production/flatbed");
+assert.deepEqual(readWorkspaceLocation("/payments"), { page: "payments" });
+assert.equal(workspacePath("payments"), "/payments");

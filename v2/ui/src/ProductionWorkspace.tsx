@@ -51,12 +51,16 @@ export const ProductionWorkspace = ({
   canView,
   canWork,
   canComplete,
+  station: routedStation,
+  onStationChange,
 }: {
   organizationId: string;
   sessionScope: string;
   canView: boolean;
   canWork: boolean;
   canComplete: boolean;
+  station?: Station;
+  onStationChange: (station?: Station) => void;
 }) => {
   const [station, setStation] = useState<Station>("flatbed");
   const [view, setView] = useState<ProductionView>("overview");
@@ -79,6 +83,12 @@ export const ProductionWorkspace = ({
     () => ({ flatbed: flatbedQueue.data ?? [], roll: rollQueue.data ?? [] }),
     [flatbedQueue.data, rollQueue.data],
   );
+  useEffect(() => {
+    if (!routedStation) return;
+    setStation(routedStation);
+    setView("stations");
+    setSelectedWorkId("");
+  }, [routedStation]);
 
   useEffect(() => {
     if (!selectedWorkId && queue.data?.[0]) setSelectedWorkId(queue.data[0].work.productionWorkId);
@@ -121,6 +131,7 @@ export const ProductionWorkspace = ({
     setStation(nextStation);
     setSelectedWorkId("");
     setView("stations");
+    onStationChange(nextStation);
     // A station can receive work from another authenticated operator while this
     // workspace remains open. Selecting the station is an intentional refresh
     // point, so the queue stays an authoritative projection rather than a
@@ -149,7 +160,7 @@ export const ProductionWorkspace = ({
         </div>
         <div className="v2-production-view-toggle" aria-label="Production view">
           {(["overview", "board", "calendar", "stations"] as const).map((option) => (
-            <button key={option} type="button" className={view === option ? "active" : ""} onClick={() => setView(option)}>
+            <button key={option} type="button" className={view === option ? "active" : ""} onClick={() => { setView(option); if (option === "overview") onStationChange(undefined); }}>
               {option[0]!.toUpperCase()}{option.slice(1)}
             </button>
           ))}

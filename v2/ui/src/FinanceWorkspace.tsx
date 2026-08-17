@@ -236,6 +236,9 @@ export const FinanceWorkspace = ({
   mode,
   organizationId,
   sessionScope,
+  invoiceId,
+  onSelectInvoice,
+  backToInvoices,
   canIssue,
   canPaymentView,
   canPaymentRecord,
@@ -247,6 +250,9 @@ export const FinanceWorkspace = ({
   mode: "invoices" | "ledger";
   organizationId: string;
   sessionScope: string;
+  invoiceId: string;
+  onSelectInvoice: (invoiceId: string) => void;
+  backToInvoices: () => void;
   canIssue: boolean;
   canPaymentView: boolean;
   canPaymentRecord: boolean;
@@ -256,7 +262,7 @@ export const FinanceWorkspace = ({
   openCustomer: (customerId: string) => void;
 }>) => {
   const client = useQueryClient();
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(invoiceId);
   const [notice, setNotice] = useState("");
   const [dialog, setDialog] = useState<"payment" | "refund" | "">("");
   const [amount, setAmount] = useState("");
@@ -267,10 +273,15 @@ export const FinanceWorkspace = ({
     queryFn: () => financeApi.overview(organizationId),
     enabled: Boolean(organizationId && sessionScope && canPaymentView),
   });
+  useEffect(() => { setSelected(invoiceId); }, [invoiceId]);
   useEffect(() => {
-    if (!selected && overview.data?.items[0])
+    if (!selected && overview.data?.items[0] && !invoiceId)
       setSelected(overview.data.items[0].invoiceId);
-  }, [overview.data, selected]);
+  }, [invoiceId, overview.data, selected]);
+  const selectInvoice = (id: string) => {
+    setSelected(id);
+    onSelectInvoice(id);
+  };
   const detail = useQuery({
     queryKey: [
       "v2",
@@ -398,7 +409,7 @@ export const FinanceWorkspace = ({
       render: (row) => (
         <button
           className="v2-finance-link"
-          onClick={() => setSelected(row.invoiceId)}
+          onClick={() => selectInvoice(row.invoiceId)}
         >
           Order {row.sourceOrderNumber}
         </button>
@@ -481,7 +492,7 @@ export const FinanceWorkspace = ({
         <button
           className="v2-finance-link"
           onClick={() => {
-            setSelected(row.invoiceId);
+            selectInvoice(row.invoiceId);
           }}
         >{`Order ${row.sourceOrderNumber}`}</button>
       ),
@@ -491,6 +502,12 @@ export const FinanceWorkspace = ({
       label: "Customer",
       value: (row) => row.customerName ?? "",
       render: (row) => row.customerId ? <button className="v2-finance-link" onClick={() => openCustomer(row.customerId!)}>{row.customerName ?? "Customer"}</button> : row.customerName ?? "Customer unavailable",
+    },
+    {
+      id: "order",
+      label: "Order",
+      value: (row) => row.sourceOrderNumber,
+      render: (row) => <button className="v2-finance-link" onClick={() => openOrder(row.sourceOrderId)}>Order {row.sourceOrderNumber}</button>,
     },
     {
       id: "method",
@@ -563,6 +580,7 @@ export const FinanceWorkspace = ({
         <article className="v2-finance-detail">
           <header>
             <div>
+              <button className="v2-finance-link" onClick={backToInvoices}>← All invoices</button>
               <span className={`v2-invoice-state ${invoice.lifecycle}`}>
                 {invoice.lifecycle}
               </span>
