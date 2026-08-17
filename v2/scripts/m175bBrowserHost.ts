@@ -27,6 +27,7 @@ import { composeAuthenticatedArtworkRuntime } from "../infrastructure/artwork/au
 import { composeAuthenticatedProofingRuntime } from "../infrastructure/proofing/authenticatedProofingRuntime.js";
 import { composeAuthenticatedPrepressRuntime } from "../infrastructure/prepress/authenticatedPrepressRuntime.js";
 import { composeAuthenticatedProductionRuntime } from "../infrastructure/production/authenticatedProductionRuntime.js";
+import { composeAuthenticatedFulfillmentRuntime } from "../infrastructure/fulfillment/authenticatedFulfillmentRuntime.js";
 import { ArtworkApplicationService } from "../src/modules/artwork/artworkApplication.js";
 import { PostgresArtworkTransactionRunner } from "../infrastructure/artwork/postgresArtworkTransaction.js";
 import { OrderApplicationService } from "../src/modules/sales/orderApplication.js";
@@ -76,7 +77,7 @@ const createFixture = async (client: PoolClient): Promise<BrowserFixture> => {
     await client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1),($2)", [f.organizationA, f.organizationB]);
     await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$2,'Sales','sales','staff'),($3,$2,'Limited','limited','staff'),($4,$5,'Sales','sales','staff')", [f.salesSetA, f.organizationA, limitedSet, salesSetB, f.organizationB]);
     for (const [org, set] of [[f.organizationA, f.salesSetA], [f.organizationB, salesSetB]] as const)
-      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete", "production.view", "production.work", "production.complete"])
+      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete", "production.view", "production.work", "production.complete", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship"])
         await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [org, set, capability]);
     for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "order.view", "order.edit", "invoice.view", "artwork.view", "proof.view"])
       await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [f.organizationA, limitedSet, capability]);
@@ -185,6 +186,21 @@ const main = async () => {
         response.json({ ok: true, data: { document: document.rows[0], lines: lines.rows, invoice: invoice.rows[0] ?? null, routes: routes.rows, conversion: conversion.rows[0] ?? null, audit: audit.rows.map((row) => ({ event_type: row.event_type, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })) } });
       } catch (error) { next(error); }
     });
+    /** Test-only authoritative verification for browser-created customer handoffs. */
+    app.get("/_v2-browser-test/fulfillment-readback/:orderId", fixtureAdmin, async (request, response, next) => {
+      try {
+        const orderId=request.params.orderId, organizationId=fixture!.organizationA;
+        const [handoffs, allocations, audit, operations, route, invoice]=await Promise.all([
+          pool.query("SELECT id,handoff_method,completed_at,completed_staff_actor_user_id FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2 ORDER BY completed_at,id",[organizationId,orderId]),
+          pool.query("SELECT handoff_id,order_line_id,quantity FROM v2_fulfillment_handoff_lines WHERE organization_id=$1 AND order_document_id=$2 ORDER BY handoff_id,order_line_id",[organizationId,orderId]),
+          pool.query("SELECT event_type,staff_actor_user_id FROM v2_audit_events WHERE organization_id=$1 AND resource_type='fulfillment_handoff' AND resource_id IN (SELECT id FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2) ORDER BY created_at",[organizationId,orderId]),
+          pool.query("SELECT operation,business_request_id,status FROM v2_operation_requests WHERE organization_id=$1 AND result_resource_type='fulfillment_handoff' AND result_resource_id IN (SELECT id FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2) ORDER BY created_at",[organizationId,orderId]),
+          pool.query("SELECT r.order_line_id,r.route_state,array_agg(s.step_kind ORDER BY s.position) AS steps FROM v2_route_instances r JOIN v2_route_instance_steps s ON s.organization_id=r.organization_id AND s.route_instance_id=r.id WHERE r.organization_id=$1 AND r.order_document_id=$2 GROUP BY r.order_line_id,r.route_state ORDER BY r.order_line_id",[organizationId,orderId]),
+          pool.query("SELECT id,invoice_state,total_cents,source_sales_state_token FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2",[organizationId,orderId]),
+        ]);
+        response.json({ok:true,data:{handoffs:handoffs.rows.map((row)=>({...row,staffActorVerified:row.completed_staff_actor_user_id===fixture!.staffA})),allocations:allocations.rows,audit:audit.rows.map((row)=>({event_type:row.event_type,staffActorVerified:row.staff_actor_user_id===fixture!.staffA})),operations:operations.rows,route:route.rows,invoice:invoice.rows[0]??null}});
+      } catch(error){next(error);}
+    });
     const trustedHostIdentity = new PassportSessionIdentitySource(), trustedHostMiddleware = (_request: express.Request, _response: express.Response, next: express.NextFunction) => next();
     const runtime = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
     const orderRuntime = composeAuthenticatedOrderRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new OrderApplicationService(new PostgresOrderTransactionRunner(pool)) });
@@ -193,6 +209,7 @@ const main = async () => {
     const artworkRuntime = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: artworkService });
     const proofingRuntime = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
     const prepressRuntime = composeAuthenticatedPrepressRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+    const fulfillmentRuntime = composeAuthenticatedFulfillmentRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
     /**
      * Test-only seed that exercises the real Artwork application service. The
      * production UI deliberately has no browser upload/adoption adapter yet;
@@ -286,7 +303,7 @@ const main = async () => {
     });
     app.use(express.static(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../dist-v2-ui"), { index: "index.html" }));
     const productionRuntime=composeAuthenticatedProductionRuntime({pool,trustedHostIdentity,trustedHostMiddleware});
-    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime, artworkRuntime, proofingRuntime, prepressRuntime, productionRuntime));
+    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime, artworkRuntime, proofingRuntime, prepressRuntime, productionRuntime, fulfillmentRuntime));
     const port = Number(process.env.V2_M175B_PORT ?? "4174");
     const server = app.listen(port, "127.0.0.1", () => console.log(`[m175b] ready on ${port}`));
     const close = async () => { server.close(); if (fixture) { await pool.query("DELETE FROM organizations WHERE id=ANY($1::text[])", [[fixture.organizationA, fixture.organizationB]]); await pool.query("DELETE FROM users WHERE id=ANY($1::text[])", [[fixture.staffA, fixture.limitedA, fixture.staffB]]); } client.release(); await pool.end(); };

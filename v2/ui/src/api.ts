@@ -61,9 +61,14 @@ export type UiBootstrap = Readonly<{
     proofView?: boolean; proofPrepare?: boolean; proofIssue?: boolean; proofRespond?: boolean;
     prepressView?: boolean; prepressWork?: boolean; prepressComplete?: boolean;
     productionView?: boolean; productionWork?: boolean; productionComplete?: boolean;
+    fulfillmentView?: boolean; fulfillmentPickup?: boolean; fulfillmentShip?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
+export type FulfillmentMethod = "pickup" | "shipment";
+export type FulfillmentAvailability = Readonly<{ orderId:string; orderLineId:string; orderedQuantity:number; completedPickupQuantity:number; completedShipmentQuantity:number; completedFulfillmentQuantity:number; remainingFulfillmentQuantity:number }>;
+export type FulfillmentWorkspaceOrder = Readonly<{ orderId:string; number:string; commercialState:"open"|"cancelled"; customerName:string; customerId?:string; contactId?:string; requestedDueDate?:string; lines:readonly Readonly<{description:string}&FulfillmentAvailability>[]; handoffs:readonly Readonly<{handoff:Readonly<{handoffId:string;method:FulfillmentMethod;completedAt:string;completedPrincipalSubject:string}>;allocations:readonly Readonly<{orderLineId:string;quantity:number}>[]}>[] }>;
+export type FulfillmentTerminalResult = Readonly<{ handoff:Readonly<{handoffId:string;method:FulfillmentMethod;completedAt:string}>; allocations:readonly Readonly<{orderLineId:string;quantity:number}>[]; availability:readonly FulfillmentAvailability[] }>;
 export type QuoteListItem = Readonly<{
   quoteId: string; number: string; customerDisplayName: string;
   lifecycle: "draft" | "sent" | "accepted" | "converted";
@@ -307,6 +312,13 @@ export const productionApi={
  start:(org:string,workId:string,businessRequestId:string,stationKey:"flatbed"|"roll",kind:"initial"|"reprint"|"correction")=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/attempts`,businessRequestId,{stationKey,kind}),
  output:(org:string,attemptId:string,businessRequestId:string,goodQuantityDelta:number)=>productionMutation<unknown>(org,`/attempts/${encodeURIComponent(attemptId)}/output`,businessRequestId,{goodQuantityDelta}),
  complete:(org:string,attemptId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/attempts/${encodeURIComponent(attemptId)}/complete`,businessRequestId,{}),
+};
+const fulfillmentEndpoint=(org:string,suffix="")=>`/v2/organizations/${encodeURIComponent(org)}/fulfillment${suffix}`;
+const fulfillmentMutation=(org:string,orderId:string,method:FulfillmentMethod,businessRequestId:string,allocations:readonly {orderLineId:string;quantity:number}[])=>request<FulfillmentTerminalResult>(fulfillmentEndpoint(org,`/orders/${encodeURIComponent(orderId)}/${method==="pickup"?"pickups":"shipments"}`),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,allocations})});
+export const fulfillmentApi={
+ list:(org:string,query?:Readonly<{q?:string;cursor?:string;limit?:number}>)=>request<SalesListPage<FulfillmentWorkspaceOrder>>(withSearch(fulfillmentEndpoint(org),query)),
+ get:(org:string,orderId:string)=>request<FulfillmentWorkspaceOrder>(fulfillmentEndpoint(org,`/orders/${encodeURIComponent(orderId)}`)),
+ complete:(org:string,orderId:string,method:FulfillmentMethod,businessRequestId:string,allocations:readonly {orderLineId:string;quantity:number}[])=>fulfillmentMutation(org,orderId,method,businessRequestId,allocations),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

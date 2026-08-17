@@ -19,6 +19,7 @@ import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRout
 import { createProofingRouter, type ProofingHttpDependencies } from "./proofingRoutes.js";
 import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
+import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -36,6 +37,7 @@ export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkH
 export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProductionRouteRuntime = Readonly<{ dependencies: ProductionHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedFulfillmentRouteRuntime = Readonly<{ dependencies: FulfillmentHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -48,6 +50,7 @@ export const createV2HttpApp = (
   proofing?: AuthenticatedProofingRouteRuntime,
   prepress?: AuthenticatedPrepressRouteRuntime,
   production?: AuthenticatedProductionRouteRuntime,
+  fulfillment?: AuthenticatedFulfillmentRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -117,6 +120,9 @@ export const createV2HttpApp = (
                 productionView: policy.decide(principal, { capability: "production.view", resource: { organizationId } }).allowed,
                 productionWork: policy.decide(principal, { capability: "production.work", resource: { organizationId } }).allowed,
                 productionComplete: policy.decide(principal, { capability: "production.complete", resource: { organizationId } }).allowed,
+                fulfillmentView: policy.decide(principal, { capability: "fulfillment.view", resource: { organizationId } }).allowed,
+                fulfillmentPickup: policy.decide(principal, { capability: "fulfillment.pickup", resource: { organizationId } }).allowed,
+                fulfillmentShip: policy.decide(principal, { capability: "fulfillment.ship", resource: { organizationId } }).allowed,
               },
             },
           });
@@ -189,6 +195,8 @@ export const createV2HttpApp = (
     );
   if (production)
     app.use("/v2/organizations/:organizationId/production",production.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createProductionRouter(production.dependencies));
+  if (fulfillment)
+    app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFulfillmentRouter(fulfillment.dependencies));
 
   app.use((_request, response) =>
     response.status(404).json({ code: "NOT_FOUND" }),

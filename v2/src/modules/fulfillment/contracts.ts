@@ -28,3 +28,17 @@ export type CompleteFulfillmentInput = Readonly<{
 export type FulfillmentTerminalResult = Readonly<{
   handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; availability: readonly FulfillmentAvailability[];
 }>;
+
+/** Bounded operator projection; Sales supplies commercial context, Fulfillment supplies quantities/history. */
+export type FulfillmentOrderWorkspace = Readonly<{
+  orderId: OrderId; number: string; commercialState: "open" | "cancelled"; customerName: string; customerId?: CustomerId; contactId?: ContactId;
+  requestedDueDate?: string; lines: readonly Readonly<{ orderLineId: OrderLineId; description: string } & FulfillmentAvailability>[];
+  handoffs: readonly Readonly<{ handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[] }> [];
+}>;
+
+export type FulfillmentWorkspacePage = Readonly<{ items: readonly FulfillmentOrderWorkspace[]; nextCursor?: string }>;
+
+export interface FulfillmentWorkspaceReadPort {
+  list(organizationId: OrganizationId, request: Readonly<{ limit?: number; search?: string; cursor?: string }>): Promise<FulfillmentWorkspacePage>;
+  get(organizationId: OrganizationId, orderId: OrderId): Promise<FulfillmentOrderWorkspace | null>;
+}

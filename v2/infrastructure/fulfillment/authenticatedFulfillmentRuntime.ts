@@ -1,0 +1,12 @@
+import type { RequestHandler } from "express";
+import type { Pool } from "pg";
+import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
+import { IssuedV2PrincipalProvider, type TrustedHostIdentitySource } from "../authentication/trustedHostPrincipalProvider.js";
+import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets.js";
+import { FulfillmentApplicationService } from "../../src/modules/fulfillment/fulfillmentApplication.js";
+import type { FulfillmentHttpDependencies } from "../../src/interfaces/http/fulfillmentRoutes.js";
+import { PostgresFulfillmentTransactionRunner } from "./postgresFulfillmentTransaction.js";
+import { PostgresFulfillmentWorkspaceReads } from "./postgresFulfillmentWorkspaceReads.js";
+export type AuthenticatedFulfillmentRuntimeDependencies=Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;trustedHostMiddleware:RequestHandler;service?:FulfillmentApplicationService}>;
+export type AuthenticatedFulfillmentRuntime=Readonly<{dependencies:FulfillmentHttpDependencies;trustedHostMiddleware:RequestHandler}>;
+export const composeAuthenticatedFulfillmentRuntime=(input:AuthenticatedFulfillmentRuntimeDependencies):AuthenticatedFulfillmentRuntime=>{const principals=new IssuedV2PrincipalProvider(input.trustedHostIdentity,new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)));return {dependencies:{service:input.service??new FulfillmentApplicationService(new PostgresFulfillmentTransactionRunner(input.pool)),principals,workspace:new PostgresFulfillmentWorkspaceReads(input.pool)},trustedHostMiddleware:input.trustedHostMiddleware};};
