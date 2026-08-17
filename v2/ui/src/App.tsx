@@ -31,10 +31,10 @@ import {
   useQuoteFormCustomers,
   useQuoteFormProducts,
   useSalesOrders,
-  useSalesQuotes,
 } from "./quoteFormQueries";
 import { SelectionField } from "./SelectionField";
 import { AppearanceWorkspace } from "./AppearanceWorkspace";
+import { QuotesList } from "./QuotesList";
 import type { VisualAppearance } from "./appearance";
 import { V2VisualShell, type V2VisualPage } from "./VisualShell";
 import { ProofingWorkspace } from "./ProofingWorkspace";
@@ -261,6 +261,7 @@ export const App = ({
             canOverridePrice={
               bootstrap.data?.capabilities.quoteOverridePrice === true
             }
+            canCreate={bootstrap.data?.capabilities.quoteCreate === true}
             canEdit={bootstrap.data?.capabilities.quoteEdit === true}
             canSend={bootstrap.data?.capabilities.quoteSend === true}
             canConvert={bootstrap.data?.capabilities.quoteConvert === true}
@@ -327,14 +328,12 @@ const SalesPagination = ({ cursor, nextCursor, setCursor }: Readonly<{ cursor: s
   </div>
 );
 
-const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
-  const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
-  const list = useSalesQuotes(props.sessionScope, props.organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
-  return <section className="lab v2-sales-workspace"><header className="v2-sales-page-heading"><div><p className="eyebrow">Sales / Quotes</p><h1>Quotes</h1><p>Pricing and lifecycle actions remain authoritative server operations.</p></div><span>Read and write</span></header>
-    <div className="card grid"><label className="field">Sales organization<input value={props.organizationId} onChange={(event) => { setCursor(""); props.setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Quotes<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="draft">Draft</option><option value="sent">Sent</option><option value="accepted">Accepted</option><option value="converted">Converted</option></select></label></div>
-    {props.organizationId && !props.quoteId && <><SalesList kind="Quote" organizationId={props.organizationId} items={list.data?.items ?? []} onOpen={props.setQuoteId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}
-    <QuoteWorkspace {...props} />
-  </section>;
+const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canCreate: boolean; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
+  const [creating, setCreating] = useState(false);
+  if (props.quoteId || creating) {
+    return <section className="lab v2-sales-workspace v2-quote-editor"><button className="link-button" onClick={() => { setCreating(false); props.setQuoteId(""); }}>← Quotes</button><QuoteWorkspace {...props} /></section>;
+  }
+  return <QuotesList organizationId={props.organizationId} sessionScope={props.sessionScope} canCreate={props.canCreate} onCreate={() => setCreating(true)} onOpenV2={props.setQuoteId} />;
 };
 
 const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer, openFulfillment }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void; openFulfillment: (orderId: string) => void }>) => {

@@ -153,6 +153,8 @@ export type QuoteListItem = Readonly<{
   quoteId: string;
   number: string;
   customerDisplayName: string;
+  purchaseOrderNumber?: string;
+  lineCount?: number;
   lifecycle: string;
   sellingTotalCents: number;
   currency: string;
