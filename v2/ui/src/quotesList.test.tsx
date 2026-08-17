@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -29,5 +30,9 @@ assert.match(markup, /Total/);
 for (const filter of ["All", "Draft", "Sent", "Accepted", "Converted"]) assert.match(markup, new RegExp(`>${filter}<`));
 assert.match(markup, /New Quote/);
 assert.doesNotMatch(markup, /Organization ID|Authenticated route scope|Sales organization/);
+
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+assert.match(styles, /\.v2-workspace\s*\{[^}]*width:\s*100%[^}]*max-width:\s*none[^}]*margin:\s*0[^}]*padding:\s*0[^}]*\}/s);
+assert.doesNotMatch(styles, /(?:^|\n)main\s*\{[^}]*max-width:/s, "operational main must not inherit a fixed-width legacy container");
 
 console.log("Quotes list visual contract tests passed.");
