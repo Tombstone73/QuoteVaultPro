@@ -68,6 +68,13 @@ export const createV2HttpApp = (
     response.status(200).json({ status: "ok", service: config.serviceName });
   });
 
+  app.get("/version", (_request: Request, response: Response) => {
+    response.status(200).json({
+      service: config.serviceName,
+      version: config.releaseVersion ?? "unresolved",
+    });
+  });
+
   app.get("/ready", async (_request: Request, response: Response) => {
     try {
       const readiness = await readinessProbe();

@@ -8,6 +8,8 @@ export type V2RuntimeConfig = Readonly<{
   port: number;
   /** V2-only runtime URL. It is never read from V1 or test variable names. */
   databaseUrl?: string;
+  /** Immutable build identifier, when the deployment platform provides one. */
+  releaseVersion?: string;
 }>;
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -37,8 +39,14 @@ export const loadV2RuntimeConfig = (environment: Environment = process.env): V2R
   return {
     environment: requestedEnvironment as V2RuntimeConfig["environment"],
     serviceName: optionalValue(environment, "V2_SERVICE_NAME") ?? "printershero-v2",
-    port: parsePort(optionalValue(environment, "V2_PORT")),
+    // Railway assigns PORT. V2_PORT remains useful for an intentional local
+    // override, but must never make a Railway process listen on the wrong port.
+    port: parsePort(optionalValue(environment, "PORT") ?? optionalValue(environment, "V2_PORT")),
     databaseUrl: optionalValue(environment, "V2_DATABASE_URL"),
+    releaseVersion:
+      optionalValue(environment, "V2_RELEASE_VERSION") ??
+      optionalValue(environment, "RAILWAY_GIT_COMMIT_SHA") ??
+      optionalValue(environment, "GIT_COMMIT_SHA"),
   };
 };
 
@@ -48,4 +56,29 @@ export const requireV2RuntimeDatabaseUrl = (config: V2RuntimeConfig): string => 
     throw new V2ConfigurationError("V2_DATABASE_URL is required for database-backed V2 runtime work.");
   }
   return config.databaseUrl;
+};
+
+/**
+ * Deployment-only guard. The V2 process has no DATABASE_URL fallback: a
+ * legacy URL may be present in a shared shell but it must not be its target.
+ */
+export const requireV2DeploymentDatabaseUrl = (
+  environment: Environment = process.env,
+): string => {
+  const config = loadV2RuntimeConfig(environment);
+  const databaseUrl = requireV2RuntimeDatabaseUrl(config);
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new V2ConfigurationError("V2_DATABASE_URL must be a valid PostgreSQL connection URL.");
+  }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new V2ConfigurationError("V2_DATABASE_URL must use the postgres or postgresql protocol.");
+  }
+  const legacyDatabaseUrl = optionalValue(environment, "DATABASE_URL");
+  if (legacyDatabaseUrl && legacyDatabaseUrl === databaseUrl) {
+    throw new V2ConfigurationError("V2_DATABASE_URL must not equal legacy DATABASE_URL.");
+  }
+  return databaseUrl;
 };
