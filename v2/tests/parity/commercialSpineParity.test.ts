@@ -47,8 +47,8 @@ const createFixtureRuntime = () => {
   let quoteRead: QuoteReadModel | undefined;
   const checkpoints = new Map<string, QuoteCheckpoint>();
   const audits: string[] = [];
-  let createdOrder: { orderId: string; lines: readonly SalesLineSnapshot[] } | undefined;
-  let invoiceInput: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[] } | undefined;
+  let createdOrder: { orderId: string; lines: readonly SalesLineSnapshot[]; terms: { taxContextReference?: string } } | undefined;
+  let invoiceInput: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } } | undefined;
   const routes: string[] = [];
   const products = {
     resolveActivePricingInput: async (input: { productId: string; quantity: number; selections?: Record<string, unknown>; dimensions?: { width: string; height: string; unit: "in" } }) => ({ ok: true as const, value: productInput(input.productId, input.quantity, input.selections, input.dimensions) }),
@@ -68,7 +68,7 @@ const createFixtureRuntime = () => {
     attribute: async () => undefined,
     audit: async (input: { event: { eventType: string } }) => { audits.push(input.event.eventType); },
     allocateNumber: async () => ({ kind: "quote" as const, core: 501n, display: "Q-501" }),
-    create: async (input: { quoteId: QuoteCurrentState["quoteId"]; number: QuoteReadModel["number"]; customerContact: typeof customerContact; purchaseOrderNumber?: string; terms: {}; lines: readonly SalesLineSnapshot[] }) => {
+    create: async (input: { quoteId: QuoteCurrentState["quoteId"]; number: QuoteReadModel["number"]; customerContact: typeof customerContact; purchaseOrderNumber?: string; terms: { taxContextReference?: string }; lines: readonly SalesLineSnapshot[] }) => {
       quoteRead = { quote: { quoteId: input.quoteId, organizationId, customerContact: input.customerContact, purchaseOrderNumber: input.purchaseOrderNumber, currency: usd, terms: input.terms, lines: input.lines, deliveryState: "not_sent", acceptanceState: "not_accepted" }, number: input.number, revision: "1", checkpoints: [] };
     },
     read: async () => quoteRead ?? null,
@@ -85,7 +85,7 @@ const createFixtureRuntime = () => {
     products,
     pricing,
     billing: {
-      createDraftInvoice: async (input: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[] }) => { invoiceInput = input; return { invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "created" as const, synchronizationVersion: "1" }; },
+      createDraftInvoice: async (input: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } }) => { invoiceInput = input; return { invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "created" as const, synchronizationVersion: "1" }; },
       synchronizeDraftInvoice: async () => ({ invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "unchanged" as const, synchronizationVersion: "1" }),
       readDraftForOrder: async () => null,
     },
@@ -93,8 +93,8 @@ const createFixtureRuntime = () => {
       instantiateRoute: async (input: { work: { orderLineId: string } }) => { routes.push(input.work.orderLineId); return { created: true, routeInstance: { routeInstanceId: brandedId<"RouteInstanceId">(`route-${input.work.orderLineId}`), organizationId, work: { kind: "sales_order_line" as const, organizationId, orderId: brandedId<"OrderId">("dynamic"), orderLineId: brandedId<"OrderLineId">(input.work.orderLineId) }, sourceTemplate: { routeTemplateId: brandedId<"RouteTemplateId">("print-template"), revision: "1", definitionFingerprint: "sha256:route" }, state: "pending" as const, revision: "1", steps: [] } }; },
     },
     allocateNumber: async () => ({ kind: "order" as const, core: 601n, display: "O-601" }),
-    create: async (input: { orderId: string; lines: readonly SalesLineSnapshot[] }) => { createdOrder = input; },
-    read: async (): Promise<OrderReadModel | null> => createdOrder ? ({ order: { orderId: brandedId<"OrderId">(createdOrder.orderId), organizationId, customerContact, currency: usd, terms: {}, lines: createdOrder.lines, commercialState: "open", billingInvoiceReference: brandedId<"InvoiceId">("draft-invoice") }, number: { kind: "order", core: 601n, display: "O-601" }, revision: "1", totals: summarizeOrderTotals(createdOrder.lines, usd), draftInvoice: { invoiceId: brandedId<"InvoiceId">("draft-invoice"), lifecycle: "draft", synchronizationVersion: "1", lineCount: createdOrder.lines.length, total: summarizeOrderTotals(createdOrder.lines, usd).selling }, routes: [] }) : null,
+    create: async (input: { orderId: string; lines: readonly SalesLineSnapshot[]; terms: { taxContextReference?: string } }) => { createdOrder = input; },
+    read: async (): Promise<OrderReadModel | null> => createdOrder ? ({ order: { orderId: brandedId<"OrderId">(createdOrder.orderId), organizationId, customerContact, currency: usd, terms: createdOrder.terms, lines: createdOrder.lines, commercialState: "open", billingInvoiceReference: brandedId<"InvoiceId">("draft-invoice") }, number: { kind: "order", core: 601n, display: "O-601" }, revision: "1", totals: summarizeOrderTotals(createdOrder.lines, usd), draftInvoice: { invoiceId: brandedId<"InvoiceId">("draft-invoice"), lifecycle: "draft", synchronizationVersion: "1", lineCount: createdOrder.lines.length, total: summarizeOrderTotals(createdOrder.lines, usd).selling }, routes: [] }) : null,
     audit: async () => undefined,
   };
   const conversionQuote = {
@@ -142,7 +142,7 @@ describe("M5 commercial spine parity baseline", () => {
 
   test("replays captured V1 commercial fixture through V2 Quote lifecycle and conversion", async () => {
     const runtime = createFixtureRuntime();
-    const created = await runtime.quote.create(context("quote-create"), { businessRequestId: "quote-create", customerContact, purchaseOrderNumber: "PO-M5-001", lines: [
+    const created = await runtime.quote.create(context("quote-create"), { businessRequestId: "quote-create", customerContact, purchaseOrderNumber: "PO-M5-001", terms: { taxContextReference: "tax-context-m5" }, lines: [
       { productId: "banner", quantity: 1, dimensions: { width: "36", height: "42", unit: "in" }, selections: { polePocket: "yes" } },
       { productId: "yard-sign", quantity: 6, selling: { kind: "total_override", totalCents: 525, reason: "approved fixture adjustment" } },
     ] });
@@ -164,7 +164,7 @@ describe("M5 commercial spine parity baseline", () => {
       productLines: quote.lines.map((line) => ({ productId: line.productId, quantity: line.quantity, dimensions: line.resolvedConfiguration.dimensions, selections: line.resolvedConfiguration.selections, calculatedLineCents: line.calculatedLineAmount.cents, sellingLineCents: line.sellingLineAmount.cents })),
       quote: { deliveryState: quote.deliveryState, acceptanceState: quote.acceptanceState, lineCount: quote.lines.length, calculatedTotalCents: summarizeOrderTotals(quote.lines, usd).calculated.cents, sellingTotalCents: summarizeOrderTotals(quote.lines, usd).selling.cents },
       order: { lineCount: runtime.invoiceInput!.salesLines.length, sellingTotalCents: invoiceSubtotal },
-      draftInvoice: { lineCount: runtime.invoiceInput!.salesLines.length, subtotalCents: invoiceSubtotal, taxCents: 0, totalCents: invoiceSubtotal },
+      draftInvoice: { lineCount: runtime.invoiceInput!.salesLines.length, taxContextReference: runtime.invoiceInput!.taxInput.taxContextReference, subtotalCents: invoiceSubtotal, taxCents: 0, totalCents: invoiceSubtotal },
       routing: { requiredProductIds: quote.lines.filter((line) => line.productId === "banner").map((line) => line.productId), instantiatedCount: runtime.routes.length },
     };
     const v1Captured = {
@@ -175,7 +175,7 @@ describe("M5 commercial spine parity baseline", () => {
       ],
       quote: { deliveryState: "sent", acceptanceState: "accepted", lineCount: 2, calculatedTotalCents: 2513, sellingTotalCents: 2438 },
       order: { lineCount: 2, sellingTotalCents: 2438 },
-      draftInvoice: { lineCount: 2, subtotalCents: 2438, taxCents: 0, totalCents: 2438 },
+      draftInvoice: { lineCount: 2, taxContextReference: "tax-context-m5", subtotalCents: 2438, taxCents: 0, totalCents: 2438 },
       routing: { requiredProductIds: ["banner"], instantiatedCount: 1 },
     };
     const parity = compareParity({ domain: "Commercial spine", fixture: "banner-and-yard-sign-conversion", v1: v1Captured, v2, normalization: { unorderedArrayPaths: ["$.productLines"] } });
