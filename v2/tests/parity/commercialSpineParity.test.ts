@@ -115,6 +115,8 @@ describe("M5 commercial spine parity baseline", () => {
     expect(drift).toMatchObject({ classification: "UNCLASSIFIED_DRIFT", drifts: [{ path: "totalCents", v1: 12500, v2: 12750 }] });
     const identityDrift = compareParity({ domain: "Customer", fixture: "identity-guard", v1: { customer: { id: "acme" } }, v2: { customer: { id: "other" } } });
     expect(identityDrift).toMatchObject({ classification: "UNCLASSIFIED_DRIFT", drifts: [{ path: "customer.id", v1: "acme", v2: "other" }] });
+    const reviewedDifference = compareParity({ domain: "Fulfillment", fixture: "reviewed-difference-guard", v1: { legacyCapAllowed: false }, v2: { legacyCapAllowed: true }, classificationWhenDrift: "INTENTIONAL_DIFFERENCE" });
+    expect(reviewedDifference).toMatchObject({ classification: "INTENTIONAL_DIFFERENCE", drifts: [{ path: "legacyCapAllowed", v1: false, v2: true }] });
   });
 
   test.each([

@@ -7,6 +7,7 @@ export const parityClassifications = [
   "NOT_COMPARABLE",
   "DEFERRED",
   "INSUFFICIENT_EVIDENCE",
+  "DOMAIN_DECISION_REQUIRED",
 ] as const;
 
 export type ParityClassification = (typeof parityClassifications)[number];
@@ -72,6 +73,8 @@ export const compareParity = (input: Readonly<{
   v2: ParityValue;
   normalization?: NormalizationRules;
   classificationWhenEqual?: ParityClassification;
+  /** A reviewed, material difference remains in `drifts`; it is never normalized away. */
+  classificationWhenDrift?: Exclude<ParityClassification, "PARITY">;
 }>): ParityResult => {
   const v1 = normalizeParityValue(input.v1, input.normalization);
   const v2 = normalizeParityValue(input.v2, input.normalization);
@@ -79,7 +82,7 @@ export const compareParity = (input: Readonly<{
   return {
     domain: input.domain,
     fixture: input.fixture,
-    classification: drifts.length ? "UNCLASSIFIED_DRIFT" : input.classificationWhenEqual ?? "PARITY",
+    classification: drifts.length ? input.classificationWhenDrift ?? "UNCLASSIFIED_DRIFT" : input.classificationWhenEqual ?? "PARITY",
     drifts,
   };
 };
