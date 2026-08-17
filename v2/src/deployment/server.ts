@@ -1,5 +1,4 @@
 import type { Server } from "node:http";
-import type { RequestHandler } from "express";
 import { Pool } from "pg";
 import {
   loadV2RuntimeConfig,
@@ -8,7 +7,13 @@ import {
 } from "../config/runtimeConfig.js";
 import { createV2HttpApp } from "../interfaces/http/app.js";
 import { createConsoleLogger, type V2Logger } from "../observability/logger.js";
-import type { TrustedHostIdentitySource } from "../../infrastructure/authentication/trustedHostPrincipalProvider.js";
+import {
+  createStandaloneStaffAuthentication,
+  createV2SessionMiddleware,
+  loadV2StandaloneAuthConfig,
+  PostgresStandaloneStaffCredentialVerifier,
+  type StandaloneStaffAuthentication,
+} from "../../infrastructure/authentication/standaloneStaffAuth.js";
 import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/authenticatedQuoteRuntime.js";
 import { composeAuthenticatedOrderRuntime } from "../../infrastructure/sales/authenticatedOrderRuntime.js";
 import { OrderApplicationService } from "../modules/sales/orderApplication.js";
@@ -21,31 +26,13 @@ import { composeAuthenticatedProductionRuntime } from "../../infrastructure/prod
 import { composeAuthenticatedFulfillmentRuntime } from "../../infrastructure/fulfillment/authenticatedFulfillmentRuntime.js";
 import { composeAuthenticatedRoutingRuntime } from "../../infrastructure/routing/authenticatedRoutingRuntime.js";
 
-const authConfigurationRequired: RequestHandler = (_request, response) => {
-  response.status(503).json({
-    code: "AUTH_CONFIGURATION_REQUIRED",
-    message: "V2 authentication is not configured for this deployment.",
-  });
-};
-
-/**
- * A standalone process must not assume the legacy Passport session. Until a
- * dedicated V2 session/auth adapter exists, every business route remains
- * closed; this is deliberately not a fixture login or a staff impersonation.
- */
-class StandaloneAuthUnavailable implements TrustedHostIdentitySource {
-  async authenticatedIdentity(): Promise<null> {
-    return null;
-  }
-}
-
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
   pool: Pool,
   logger: V2Logger,
+  authentication: StandaloneStaffAuthentication,
 ) => {
-  const trustedHostIdentity = new StandaloneAuthUnavailable();
-  const trustedHostMiddleware = authConfigurationRequired;
+  const { trustedHostIdentity, trustedHostMiddleware } = authentication;
   const quote = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const order = composeAuthenticatedOrderRuntime({
     pool,
@@ -67,7 +54,7 @@ export const createV2DeploymentApp = (
     async () => {
       try {
         await pool.query("SELECT 1");
-        return { ready: false };
+        return { ready: true };
       } catch {
         return { ready: false };
       }
@@ -81,6 +68,7 @@ export const createV2DeploymentApp = (
     production,
     fulfillment,
     routing,
+    authentication.install,
   );
 };
 
@@ -92,8 +80,14 @@ export const startV2DeploymentServer = async (
 ): Promise<RunningV2DeploymentServer> => {
   const databaseUrl = requireV2DeploymentDatabaseUrl(environment);
   const config = loadV2RuntimeConfig(environment);
+  const authConfig = loadV2StandaloneAuthConfig(environment);
   const pool = new Pool({ connectionString: databaseUrl });
-  const app = createV2DeploymentApp(config, pool, logger);
+  const authentication = createStandaloneStaffAuthentication({
+    verifier: new PostgresStandaloneStaffCredentialVerifier(pool),
+    config: authConfig,
+    sessionMiddleware: createV2SessionMiddleware(databaseUrl, authConfig),
+  });
+  const app = createV2DeploymentApp(config, pool, logger, authentication);
   let server: Server | undefined;
   try {
     server = await new Promise<Server>((resolve, reject) => {

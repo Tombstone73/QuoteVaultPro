@@ -59,10 +59,12 @@ export const createV2HttpApp = (
   production?: AuthenticatedProductionRouteRuntime,
   fulfillment?: AuthenticatedFulfillmentRouteRuntime,
   routing?: AuthenticatedRoutingRouteRuntime,
+  configure?: (app: Express) => void,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "1mb" }));
+  configure?.(app);
 
   app.get("/health", (_request: Request, response: Response) => {
     response.status(200).json({ status: "ok", service: config.serviceName });

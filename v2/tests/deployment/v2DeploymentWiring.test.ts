@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import fs from "node:fs";
 import path from "node:path";
 import request from "supertest";
+import session from "express-session";
 import {
   loadV2RuntimeConfig,
   requireV2DeploymentDatabaseUrl,
@@ -9,6 +10,7 @@ import {
 } from "../../src/config/runtimeConfig";
 import { createV2DeploymentApp } from "../../src/deployment/server";
 import type { V2Logger } from "../../src/observability/logger";
+import { createStandaloneStaffAuthentication, loadV2StandaloneAuthConfig } from "../../infrastructure/authentication/standaloneStaffAuth";
 
 const repoRoot = process.cwd();
 const logger: V2Logger = { log: () => undefined };
@@ -22,15 +24,25 @@ describe("V2 independent DEV deployment wiring", () => {
     expect(requireV2DeploymentDatabaseUrl({ V2_DATABASE_URL: "postgresql://v2.example/v2", DATABASE_URL: "postgresql://legacy.example/v1" })).toBe("postgresql://v2.example/v2");
   });
 
-  test("keeps all V2 business routes closed without a dedicated standalone auth adapter", async () => {
+  test("requires the dedicated standalone auth adapter before opening V2 business routes", async () => {
+    const authentication = createStandaloneStaffAuthentication({
+      verifier: {
+        authenticate: async () => null,
+        currentStaff: async () => null,
+        eligibleOrganizations: async () => [],
+      },
+      config: loadV2StandaloneAuthConfig({ V2_SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" }),
+      sessionMiddleware: session({ name: "v2.sid", secret: "x".repeat(32), resave: false, saveUninitialized: false }),
+    });
     const app = createV2DeploymentApp(
       loadV2RuntimeConfig({ V2_SERVICE_NAME: "v2-deployment-test", V2_RELEASE_VERSION: "test-sha" }),
       {} as never,
       logger,
+      authentication,
     );
     await request(app).get("/health").expect(200, { status: "ok", service: "v2-deployment-test" });
     await request(app).get("/version").expect(200, { service: "v2-deployment-test", version: "test-sha" });
-    await request(app).get("/v2/organizations/org-a/ui-bootstrap").expect(503, { code: "AUTH_CONFIGURATION_REQUIRED", message: "V2 authentication is not configured for this deployment." });
+    await request(app).get("/v2/organizations/org-a/ui-bootstrap").expect(401, { ok: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid credentials." } });
     await request(app).get("/ready").expect(503);
   });
 
@@ -41,5 +53,11 @@ describe("V2 independent DEV deployment wiring", () => {
     expect(v2Vercel.rewrites[0]).toEqual({ source: "/v2/:path*", destination: "https://api-v2-dev.printershero.com/v2/:path*" });
     expect(v2Vercel.rewrites[1]).toEqual({ source: "/:path*", destination: "/index.html" });
     expect(JSON.stringify(v2Vercel)).not.toContain("api-dev.printershero.com");
+  });
+
+  test("does not make the browser fixture flag part of the deployed runtime", () => {
+    const deploymentSource = fs.readFileSync(path.join(repoRoot, "v2", "src", "deployment", "server.ts"), "utf8");
+    const authSource = fs.readFileSync(path.join(repoRoot, "v2", "infrastructure", "authentication", "standaloneStaffAuth.ts"), "utf8");
+    expect(`${deploymentSource}\n${authSource}`).not.toContain("V2_M175B_BROWSER_TEST");
   });
 });
