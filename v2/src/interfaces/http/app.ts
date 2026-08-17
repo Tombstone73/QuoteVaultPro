@@ -21,12 +21,14 @@ import { createProofingRouter, type ProofingHttpDependencies } from "./proofingR
 import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
 import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
+import { createCustomerRouter, type CustomerHttpDependencies } from "./customerRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
 export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
 export type AuthenticatedQuoteRouteRuntime = Readonly<{
   dependencies: QuoteHttpDependencies;
+  customerDependencies: CustomerHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -100,6 +102,7 @@ export const createV2HttpApp = (
               csrfToken: issueV2CsrfToken(request),
               sessionScope: issueV2SessionScope(request),
               capabilities: {
+                customerView: policy.decide(principal, { capability: "customer.view", resource: { organizationId } }).allowed,
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
                 quoteCreate: policy.decide(principal, { capability: "quote.create", resource: { organizationId } }).allowed,
                 quoteEdit: policy.decide(principal, { capability: "quote.edit", resource: { organizationId } }).allowed,
@@ -150,6 +153,14 @@ export const createV2HttpApp = (
       },
       requireV2CsrfToken,
       createQuoteRouter(quote.dependencies),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/customers",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createCustomerRouter(quote.customerDependencies),
     );
   if (order)
     app.use(

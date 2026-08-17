@@ -38,6 +38,8 @@ const invoices = (organizationId: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(organizationId)}/invoices${suffix}`;
 const finance = (organizationId: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(organizationId)}/finance${suffix}`;
+const customers = (organizationId: string, customerId: string) =>
+  `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`;
 const createOrder = async (page: Page, f: Fixture) => {
   await page.goto("/");
   await page.getByLabel("Organization ID").fill(f.organizationA);
@@ -100,6 +102,10 @@ test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints",
   expect(access.capabilities.paymentView).toBe(true);
   expect(access.capabilities.paymentRecord).toBe(true);
   expect(access.capabilities.refundIssue).toBe(true);
+  expect(access.capabilities.customerView).toBe(true);
+  const customerRead = await api.get(customers(f.organizationA, f.customerA));
+  expect(customerRead.ok()).toBeTruthy();
+  expect((await customerRead.json()).data).toMatchObject({ customerId: f.customerA, displayName: "Browser A" });
   const draft = await api.get(
     invoices(f.organizationA, `/${encodeURIComponent(invoiceId)}`),
   );
@@ -249,6 +255,15 @@ test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints",
       "Global transaction ledger derived from immutable Payment and Refund facts.",
     ),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Browser A", exact: true }).first().click();
+  await expect(page.getByRole("heading", { name: "Browser A", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Customer workspace")).toContainText(f.customerA);
+  await page.getByRole("button", { name: "Invoices", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Invoices" })).toBeVisible();
+  await page.getByRole("button", { name: "Open source Order" }).click();
+  await expect(page.getByRole("button", { name: "Back to Orders", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Invoices", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Invoices" })).toBeVisible();
   const replay = await api.post(
     invoices(f.organizationA, `/${encodeURIComponent(invoiceId)}/issue`),
     { headers: { "x-v2-csrf-token": access.csrfToken }, data: requestPayload },
@@ -305,6 +320,8 @@ test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints",
     expect(limitedAccess.capabilities.paymentView).toBe(false);
     expect(limitedAccess.capabilities.paymentRecord).toBe(false);
     expect(limitedAccess.capabilities.refundIssue).toBe(false);
+    expect(limitedAccess.capabilities.customerView).toBe(false);
+    expect((await limited.request.get(customers(f.organizationA, f.customerA))).status()).toBe(403);
     expect(
       (
         await limited.request.get(finance(f.organizationA, "/overview"))
@@ -329,6 +346,7 @@ test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints",
         )
       ).status(),
     ).toBe(404);
+    expect((await foreign.request.get(customers(f.organizationB, f.customerA))).status()).toBe(404);
   } finally {
     await limited.close();
     await foreign.close();

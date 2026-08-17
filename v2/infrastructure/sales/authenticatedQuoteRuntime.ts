@@ -15,6 +15,8 @@ import { PostgresOrderTransactionRunner } from "./postgresOrderTransaction.js";
 import { PostgresQuoteConversionTransactionRunner } from "./postgresQuoteConversionTransaction.js";
 import { PostgresQuoteFormReads } from "./postgresQuoteFormReads.js";
 import { PostgresSalesWorkspaceReads } from "./postgresSalesWorkspaceReads.js";
+import { PostgresCustomerWorkspaceReader } from "../compatibility/postgresCustomerWorkspaceRead.js";
+import type { CustomerHttpDependencies } from "../../src/interfaces/http/customerRoutes.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -24,6 +26,7 @@ export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
 
 export type AuthenticatedQuoteRuntime = Readonly<{
   dependencies: QuoteHttpDependencies;
+  customerDependencies: CustomerHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 
@@ -34,6 +37,7 @@ export const composeAuthenticatedQuoteRuntime = (
   const principalIssuer = new PermissionSetPrincipalIssuer(
     new PostgresPermissionAuthorityReader(input.pool),
   );
+  const principals = new IssuedV2PrincipalProvider(input.trustedHostIdentity, principalIssuer);
   return {
     dependencies: {
       service: new QuoteApplicationService(
@@ -43,13 +47,11 @@ export const composeAuthenticatedQuoteRuntime = (
         new PostgresQuoteConversionTransactionRunner(input.pool),
         new OrderApplicationService(new PostgresOrderTransactionRunner(input.pool)),
       ),
-      principals: new IssuedV2PrincipalProvider(
-        input.trustedHostIdentity,
-        principalIssuer,
-      ),
+      principals,
       formReads: new PostgresQuoteFormReads(input.pool),
       workspace: new PostgresSalesWorkspaceReads(input.pool),
     },
+    customerDependencies: { customers: new PostgresCustomerWorkspaceReader(input.pool), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

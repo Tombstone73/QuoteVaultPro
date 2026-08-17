@@ -26,6 +26,7 @@ type GridColumn<T> = Readonly<{
 type GridPreference = Readonly<{
   order: string[];
   widths: Record<string, number>;
+  sorting?: { id: string; direction: "asc" | "desc" };
 }>;
 const errorText = (error: unknown) =>
   (error as ApiError)?.message ?? "The finance service is unavailable.";
@@ -38,6 +39,8 @@ const centsFromInput = (text: string): number | null => {
   const cents = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
   return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
 };
+const centsForInput = (cents: number) =>
+  `${Math.trunc(cents / 100)}.${String(Math.abs(cents % 100)).padStart(2, "0")}`;
 const sortRows = <T,>(
   rows: readonly T[],
   column: GridColumn<T> | undefined,
@@ -80,7 +83,7 @@ const FinanceGrid = <T,>({
   const [sorting, setSorting] = useState<{
     id: string;
     direction: "asc" | "desc";
-  }>({ id: "", direction: "asc" });
+  }>(preference.sorting ?? { id: "", direction: "asc" });
   useEffect(() => {
     localStorage.setItem(key, JSON.stringify(preference));
   }, [key, preference]);
@@ -154,15 +157,20 @@ const FinanceGrid = <T,>({
                 <button
                   type="button"
                   onClick={() =>
-                    setSorting((current) =>
-                      current.id === column.id
-                        ? {
-                            id: column.id,
-                            direction:
-                              current.direction === "asc" ? "desc" : "asc",
-                          }
-                        : { id: column.id, direction: "asc" },
-                    )
+                    setSorting((current) => {
+                      const next =
+                        current.id === column.id
+                          ? {
+                              id: column.id,
+                              direction:
+                                current.direction === "asc"
+                                  ? ("desc" as const)
+                                  : ("asc" as const),
+                            }
+                          : { id: column.id, direction: "asc" as const };
+                      setPreference((saved) => ({ ...saved, sorting: next }));
+                      return next;
+                    })
                   }
                 >
                   {column.label}
@@ -234,6 +242,7 @@ export const FinanceWorkspace = ({
   canRefundIssue,
   csrfReady,
   openOrder,
+  openCustomer,
 }: Readonly<{
   mode: "invoices" | "ledger";
   organizationId: string;
@@ -244,6 +253,7 @@ export const FinanceWorkspace = ({
   canRefundIssue: boolean;
   csrfReady: boolean;
   openOrder: (orderId: string) => void;
+  openCustomer: (customerId: string) => void;
 }>) => {
   const client = useQueryClient();
   const [selected, setSelected] = useState("");
@@ -398,13 +408,32 @@ export const FinanceWorkspace = ({
       id: "customer",
       label: "Customer",
       value: (row) => row.customerName ?? "",
-      render: (row) => row.customerName ?? "Customer unavailable",
+      render: (row) => row.customerId ? <button className="v2-finance-link" onClick={() => openCustomer(row.customerId!)}>{row.customerName ?? "Customer"}</button> : row.customerName ?? "Customer unavailable",
+    },
+    {
+      id: "issued",
+      label: "Issued",
+      value: (row) => row.issuedAt ?? "",
+      render: (row) =>
+        row.issuedAt ? new Date(row.issuedAt).toLocaleDateString() : "—",
+    },
+    {
+      id: "due",
+      label: "Due",
+      value: () => "",
+      render: () => "—",
     },
     {
       id: "status",
       label: "Invoice status",
       value: (row) => row.lifecycle,
       render: (row) => row.lifecycle,
+    },
+    {
+      id: "settlement",
+      label: "Settlement",
+      value: (row) => row.settlement ?? "",
+      render: (row) => row.settlement?.replace("_", " ") ?? "—",
     },
     {
       id: "total",
@@ -461,7 +490,7 @@ export const FinanceWorkspace = ({
       id: "customer",
       label: "Customer",
       value: (row) => row.customerName ?? "",
-      render: (row) => row.customerName ?? "Customer unavailable",
+      render: (row) => row.customerId ? <button className="v2-finance-link" onClick={() => openCustomer(row.customerId!)}>{row.customerName ?? "Customer"}</button> : row.customerName ?? "Customer unavailable",
     },
     {
       id: "method",
@@ -539,9 +568,11 @@ export const FinanceWorkspace = ({
               </span>
               <h2>Order {invoice.sourceOrderNumber ?? "Invoice"}</h2>
               <p>
-                {invoice.customerPresentation?.customerDisplayName ??
-                  invoice.customerPresentation?.companyName ??
-                  "Customer unavailable"}
+                <button className="v2-finance-link" onClick={() => invoice.customerId && openCustomer(invoice.customerId)} disabled={!invoice.customerId}>
+                  {invoice.customerPresentation?.customerDisplayName ??
+                    invoice.customerPresentation?.companyName ??
+                    "Customer unavailable"}
+                </button>
               </p>
               <button
                 className="v2-finance-link"
@@ -564,7 +595,10 @@ export const FinanceWorkspace = ({
                 <button
                   className="v2-invoice-issue"
                   disabled={!csrfReady}
-                  onClick={() => setDialog("payment")}
+                  onClick={() => {
+                    setAmount(centsForInput(settlement.balance.cents));
+                    setDialog("payment");
+                  }}
                 >
                   Take Payment
                 </button>
@@ -585,6 +619,50 @@ export const FinanceWorkspace = ({
               )}
             </div>
           </header>
+          <section className="v2-invoice-document">
+            <div className="v2-invoice-document-title">
+              <h2>Invoice</h2>
+              <p>
+                {invoice.lifecycle === "issued"
+                  ? "Issued Billing checkpoint; commercial content is immutable."
+                  : "Draft Billing projection from the source Order."}
+              </p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Description</th>
+                  <th>Qty</th>
+                  <th>Unit</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoice.lines.map((line) => (
+                  <tr key={line.sourceOrderLineId}>
+                    <td>{line.description}</td>
+                    <td>{line.quantity}</td>
+                    <td>{money(line.sellingUnitAmount)}</td>
+                    <td>{money(line.lineAmount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <dl className="v2-invoice-totals">
+              <div>
+                <dt>Subtotal</dt>
+                <dd>{money(invoice.subtotal)}</dd>
+              </div>
+              <div>
+                <dt>Tax</dt>
+                <dd>{money(invoice.taxTotal)}</dd>
+              </div>
+              <div className="total">
+                <dt>Total</dt>
+                <dd>{money(invoice.total)}</dd>
+              </div>
+            </dl>
+          </section>
           <div className="v2-finance-metrics">
             <div>
               <small>Total</small>
