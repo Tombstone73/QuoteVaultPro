@@ -263,6 +263,7 @@ export const FinanceWorkspace = ({
 }>) => {
   const client = useQueryClient();
   const [selected, setSelected] = useState(invoiceId);
+  const [selectedSource, setSelectedSource] = useState<"v2" | "legacy">("v2");
   const [notice, setNotice] = useState("");
   const [dialog, setDialog] = useState<"payment" | "refund" | "">("");
   const [amount, setAmount] = useState("");
@@ -273,14 +274,15 @@ export const FinanceWorkspace = ({
     queryFn: () => financeApi.overview(organizationId),
     enabled: Boolean(organizationId && sessionScope && canPaymentView),
   });
-  useEffect(() => { setSelected(invoiceId); }, [invoiceId]);
+  useEffect(() => { setSelected(invoiceId); setSelectedSource("v2"); }, [invoiceId]);
   useEffect(() => {
     if (!selected && overview.data?.items[0] && !invoiceId)
-      setSelected(overview.data.items[0].invoiceId);
+      { setSelected(overview.data.items[0].invoiceId); setSelectedSource(overview.data.items[0].source); }
   }, [invoiceId, overview.data, selected]);
-  const selectInvoice = (id: string) => {
+  const selectInvoice = (id: string, source: "v2" | "legacy" = "v2") => {
     setSelected(id);
-    onSelectInvoice(id);
+    setSelectedSource(source);
+    if (source === "v2") onSelectInvoice(id);
   };
   const detail = useQuery({
     queryKey: [
@@ -289,9 +291,10 @@ export const FinanceWorkspace = ({
       organizationId,
       "finance",
       "invoice",
+      selectedSource,
       selected,
     ],
-    queryFn: () => financeApi.invoice(organizationId, selected),
+    queryFn: () => selectedSource === "legacy" ? financeApi.legacyInvoice(organizationId, selected) : financeApi.invoice(organizationId, selected),
     enabled: Boolean(selected && canPaymentView),
   });
   const ledger = useQuery({
@@ -403,13 +406,19 @@ export const FinanceWorkspace = ({
     settlement = detail.data?.settlement;
   const invoiceColumns: readonly GridColumn<FinancialInvoiceListItem>[] = [
     {
+      id: "source",
+      label: "Source",
+      value: (row) => row.source,
+      render: (row) => <span className="badge">{row.source === "legacy" ? "Legacy (read-only)" : "V2"}</span>,
+    },
+    {
       id: "invoice",
       label: "Invoice",
       value: (row) => row.sourceOrderNumber,
       render: (row) => (
         <button
           className="v2-finance-link"
-          onClick={() => selectInvoice(row.invoiceId)}
+          onClick={() => selectInvoice(row.invoiceId, row.source)}
         >
           Order {row.sourceOrderNumber}
         </button>
@@ -473,6 +482,12 @@ export const FinanceWorkspace = ({
   ];
   const ledgerColumns: readonly GridColumn<FinancialLedgerEntry>[] = [
     {
+      id: "source",
+      label: "Source",
+      value: (row) => row.recordSource,
+      render: (row) => <span className="badge">{row.recordSource === "legacy" ? "Legacy (read-only)" : "V2"}</span>,
+    },
+    {
       id: "date",
       label: "Date",
       value: (row) => row.occurredAt,
@@ -492,7 +507,7 @@ export const FinanceWorkspace = ({
         <button
           className="v2-finance-link"
           onClick={() => {
-            selectInvoice(row.invoiceId);
+            selectInvoice(row.invoiceId, row.recordSource);
           }}
         >{`Order ${row.sourceOrderNumber}`}</button>
       ),
@@ -600,7 +615,7 @@ export const FinanceWorkspace = ({
               </button>
             </div>
             <div className="v2-finance-actions">
-              {invoice.lifecycle === "draft" && canIssue && (
+              {invoice.source !== "legacy" && invoice.lifecycle === "draft" && canIssue && (
                 <button
                   className="v2-invoice-issue"
                   disabled={!csrfReady || issue.isPending}
@@ -609,7 +624,7 @@ export const FinanceWorkspace = ({
                   Issue Invoice
                 </button>
               )}
-              {invoice.lifecycle === "issued" && canPaymentRecord && (
+              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canPaymentRecord && (
                 <button
                   className="v2-invoice-issue"
                   disabled={!csrfReady}
@@ -621,7 +636,7 @@ export const FinanceWorkspace = ({
                   Take Payment
                 </button>
               )}
-              {invoice.lifecycle === "issued" && canRefundIssue && (
+              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && (
                 <button
                   className="v2-quiet-button"
                   disabled={
@@ -641,7 +656,7 @@ export const FinanceWorkspace = ({
             <div className="v2-invoice-document-title">
               <h2>Invoice</h2>
               <p>
-                {invoice.lifecycle === "issued"
+                {invoice.source === "legacy" ? "Legacy financial record; read-only in V2." : invoice.lifecycle === "issued"
                   ? "Issued Billing checkpoint; commercial content is immutable."
                   : "Draft Billing projection from the source Order."}
               </p>

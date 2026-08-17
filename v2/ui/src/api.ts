@@ -148,10 +148,12 @@ export type FulfillmentTerminalResult = Readonly<{
   availability: readonly FulfillmentAvailability[];
 }>;
 export type QuoteListItem = Readonly<{
+  source: "v2" | "legacy";
+  recordId: string;
   quoteId: string;
   number: string;
   customerDisplayName: string;
-  lifecycle: "draft" | "sent" | "accepted" | "converted";
+  lifecycle: string;
   sellingTotalCents: number;
   currency: string;
   requestedDueDate?: string;
@@ -160,16 +162,19 @@ export type QuoteListItem = Readonly<{
   convertedOrderNumber?: string;
 }>;
 export type OrderListItem = Readonly<{
+  source: "v2" | "legacy";
+  recordId: string;
   orderId: string;
   number: string;
   customerDisplayName: string;
-  lifecycle: "open" | "cancelled";
+  lifecycle: string;
   sellingTotalCents: number;
   currency: string;
   requestedDueDate?: string;
   updatedAt: string;
   draftInvoice?: { invoiceId: string; lifecycle: "draft"; totalCents: number };
   routing: "routed" | "no_route";
+  activeRecordClassification?: "CLOSED_HISTORY" | "ACTIVE_BUT_CAN_REMAIN_LEGACY" | "ACTIVE_REQUIRES_CUTOVER_STRATEGY" | "AMBIGUOUS";
 }>;
 export type OrderRead = Readonly<{
   order: Readonly<{
@@ -219,6 +224,8 @@ export type OrderResult = Readonly<{
   draftInvoiceId: string;
 }>;
 export type InvoiceRead = Readonly<{
+  source?: "v2" | "legacy";
+  readOnly?: true;
   invoiceId: string;
   organizationId: string;
   sourceOrderId: string;
@@ -292,6 +299,8 @@ export type FinancialInvoiceRead = Readonly<{
   history: readonly FinancialHistoryEntry[];
 }>;
 export type FinancialInvoiceListItem = Readonly<{
+  source: "v2" | "legacy";
+  recordId: string;
   invoiceId: string;
   sourceOrderId: string;
   sourceOrderNumber: string;
@@ -309,6 +318,8 @@ export type FinancialInvoiceListItem = Readonly<{
 }>;
 export type FinancialLedgerEntry = FinancialHistoryEntry &
   Readonly<{
+    recordSource: "v2" | "legacy";
+    recordId: string;
     invoiceId: string;
     sourceOrderId: string;
     sourceOrderNumber: string;
@@ -589,6 +600,7 @@ export const quoteApi = {
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
     ),
+  legacy: (organizationId: string, recordId: string) => request<LegacyCommercialDetail>(endpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`)),
   list: (
     organizationId: string,
     query?: Readonly<{
@@ -734,6 +746,7 @@ export const orderApi = {
         orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}`),
       ),
     ),
+  legacy: (organizationId: string, recordId: string) => request<LegacyCommercialDetail>(orderEndpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`)),
   patch: async (
     organizationId: string,
     orderId: string,
@@ -753,6 +766,19 @@ export const orderApi = {
     return { ...raw, order: orderForUi(raw.order) };
   },
 };
+export type LegacyCommercialDetail = Readonly<{
+  source: "legacy";
+  recordId: string;
+  number: string;
+  customerDisplayName: string;
+  lifecycle: string;
+  sellingTotalCents: number;
+  currency: string;
+  requestedDueDate?: string;
+  updatedAt: string;
+  readOnly: true;
+  activeRecordClassification?: "CLOSED_HISTORY" | "ACTIVE_BUT_CAN_REMAIN_LEGACY" | "ACTIVE_REQUIRES_CUTOVER_STRATEGY" | "AMBIGUOUS";
+}>;
 export const invoiceApi = {
   list: (
     organizationId: string,
@@ -836,6 +862,10 @@ export const financeApi = {
         organizationId,
         `/invoices/${encodeURIComponent(invoiceId)}`,
       ),
+    ),
+  legacyInvoice: (organizationId: string, invoiceId: string) =>
+    request<FinancialInvoiceRead>(
+      financeEndpoint(organizationId, `/invoices/legacy/${encodeURIComponent(invoiceId)}`),
     ),
   recordPayment: (
     organizationId: string,

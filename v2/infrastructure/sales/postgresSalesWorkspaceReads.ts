@@ -1,121 +1,46 @@
 import type { Pool, PoolClient } from "pg";
-import {
-  brandedId,
-  type OrganizationId,
-} from "../../src/modules/shared/commercialValues.js";
-import type {
-  OrderListItem,
-  QuoteListItem,
-  SalesWorkspacePage,
-  SalesWorkspacePageRequest,
-  SalesWorkspaceReadPort,
-} from "../../src/modules/sales/workspaceReads.js";
+import { brandedId, type OrganizationId } from "../../src/modules/shared/commercialValues.js";
+import type { LegacyCommercialDetail, OrderListItem, QuoteListItem, SalesWorkspacePage, SalesWorkspacePageRequest, SalesWorkspaceReadPort } from "../../src/modules/sales/workspaceReads.js";
 
-type Cursor = Readonly<{ updatedAt: string; id: string }>;
-const boundedLimit = (value: number | undefined): number =>
-  Number.isInteger(value) ? Math.max(1, Math.min(value!, 50)) : 25;
-const decodeCursor = (value: string | undefined): Cursor | undefined => {
-  if (!value) return undefined;
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
-    return typeof parsed.updatedAt === "string" && typeof parsed.id === "string" ? parsed : undefined;
-  } catch { return undefined; }
-};
-const encodeCursor = (value: Cursor): string =>
-  Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-const page = <T extends { updatedAt: string; quoteId?: string; orderId?: string }>(items: readonly T[], limit: number): SalesWorkspacePage<T> => {
-  const visible = items.slice(0, limit);
-  const last = visible.at(-1);
-  const id = last?.quoteId ?? last?.orderId;
-  return {
-    items: visible,
-    ...(items.length > limit && last && id ? { nextCursor: encodeCursor({ updatedAt: last.updatedAt, id }) } : {}),
-  };
+type Source = "v2" | "legacy";
+type Cursor = Readonly<{ updatedAt: string; source: Source; id: string }>;
+type Common = Readonly<{ source: Source; id: string; number: string; customer_display_name: string; lifecycle: string; selling_total_cents: string; currency: string; requested_due_date: string | null; updated_at: Date }>;
+const limitFor = (value: number | undefined) => Number.isInteger(value) ? Math.max(1, Math.min(value!, 50)) : 25;
+const decode = (value?: string): Cursor | undefined => { try { const row = JSON.parse(Buffer.from(value ?? "", "base64url").toString("utf8")); return row && typeof row.updatedAt === "string" && (row.source === "v2" || row.source === "legacy") && typeof row.id === "string" ? row : undefined; } catch { return undefined; } };
+const encode = (value: Cursor) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+const cmp = (a: Common, b: Common) => b.updated_at.getTime() - a.updated_at.getTime() || b.source.localeCompare(a.source) || b.id.localeCompare(a.id);
+const after = (row: Common, cursor?: Cursor) => !cursor || row.updated_at.toISOString() < cursor.updatedAt || (row.updated_at.toISOString() === cursor.updatedAt && (row.source < cursor.source || (row.source === cursor.source && row.id < cursor.id)));
+export const classifyLegacyOrder = (row: Readonly<{ status: string; state: string; canonical_state: string | null; fulfillment_status: string; payment_status: string; production_open: string; balance_due_cents: string }>): NonNullable<OrderListItem["activeRecordClassification"]> => {
+  const closed = ["canceled", "closed"].includes(row.status) || ["canceled", "closed"].includes(row.state) || row.canonical_state === "canceled" || (row.fulfillment_status === "delivered" && Number(row.balance_due_cents) <= 0);
+  if (closed) return "CLOSED_HISTORY";
+  if (Number(row.production_open) > 0 || ["in_production", "ready_for_shipment"].includes(row.status) || row.fulfillment_status === "packed") return "ACTIVE_REQUIRES_CUTOVER_STRATEGY";
+  if (row.status === "new" && row.state === "open" && row.payment_status === "unpaid") return "ACTIVE_BUT_CAN_REMAIN_LEGACY";
+  return "AMBIGUOUS";
 };
 
-/** PostgreSQL implementation of the intentionally compact Sales workspace read boundary. */
+/** Read-only, tenant-qualified compatibility projection. It never materializes V2 records from legacy rows. */
 export class PostgresSalesWorkspaceReads implements SalesWorkspaceReadPort {
   constructor(private readonly pool: Pool) {}
-
-  private async read<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-      const result = await work(client);
-      await client.query("COMMIT");
-      return result;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally { client.release(); }
-  }
-
-  async listQuotes(organizationId: OrganizationId, request: SalesWorkspacePageRequest): Promise<SalesWorkspacePage<QuoteListItem>> {
-    return this.read(async (client) => {
-      const limit = boundedLimit(request.limit), cursor = decodeCursor(request.cursor);
-      const rows = await client.query<{
-        id: string; display_number: string; customer_display_name: string; lifecycle: QuoteListItem["lifecycle"];
-        selling_total_cents: string; currency: string; requested_due_date: string | null; updated_at: Date;
-        order_id: string | null; order_number: string | null;
-      }>(`
-        SELECT d.id,d.display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') AS customer_display_name,
-          CASE WHEN conversion.order_document_id IS NOT NULL THEN 'converted'
-               WHEN q.acceptance_state='accepted' THEN 'accepted'
-               WHEN q.delivery_state='sent' THEN 'sent' ELSE 'draft' END AS lifecycle,
-          COALESCE((SELECT SUM(l.selling_line_cents) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id),0) AS selling_total_cents,
-          d.currency,d.requested_due_date::text,d.updated_at,conversion.order_document_id AS order_id,converted.display_number AS order_number
-        FROM v2_sales_documents d
-        JOIN v2_sales_quote_details q ON q.organization_id=d.organization_id AND q.document_id=d.id
-        LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id
-        LEFT JOIN v2_sales_quote_conversions conversion ON conversion.organization_id=d.organization_id AND conversion.quote_document_id=d.id
-        LEFT JOIN v2_sales_documents converted ON converted.organization_id=d.organization_id AND converted.id=conversion.order_document_id
-        WHERE d.organization_id=$1 AND d.document_kind='quote'
-          AND ($2::text IS NULL OR d.display_number ILIKE '%' || $2 || '%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%' || $2 || '%')
-          AND ($3::text IS NULL OR (CASE WHEN conversion.order_document_id IS NOT NULL THEN 'converted' WHEN q.acceptance_state='accepted' THEN 'accepted' WHEN q.delivery_state='sent' THEN 'sent' ELSE 'draft' END)=$3)
-          AND ($4::timestamptz IS NULL OR (d.updated_at,d.id) < ($4::timestamptz,$5::text))
-        ORDER BY d.updated_at DESC,d.id DESC LIMIT $6`,
-        [organizationId, request.search?.trim() || null, request.lifecycle ?? null, cursor?.updatedAt ?? null, cursor?.id ?? null, limit + 1],
-      );
-      return page(rows.rows.map((row) => ({
-        quoteId: brandedId<"QuoteId">(row.id), number: row.display_number, customerDisplayName: row.customer_display_name,
-        lifecycle: row.lifecycle, sellingTotalCents: Number(row.selling_total_cents), currency: row.currency,
-        ...(row.requested_due_date ? { requestedDueDate: row.requested_due_date } : {}), updatedAt: row.updated_at.toISOString(),
-        ...(row.order_id ? { convertedOrderId: brandedId<"OrderId">(row.order_id) } : {}),
-        ...(row.order_number ? { convertedOrderNumber: row.order_number } : {}),
-      })), limit);
-    });
-  }
-
-  async listOrders(organizationId: OrganizationId, request: SalesWorkspacePageRequest): Promise<SalesWorkspacePage<OrderListItem>> {
-    return this.read(async (client) => {
-      const limit = boundedLimit(request.limit), cursor = decodeCursor(request.cursor);
-      const rows = await client.query<{
-        id: string; display_number: string; customer_display_name: string; commercial_state: "open" | "cancelled";
-        selling_total_cents: string; currency: string; requested_due_date: string | null; updated_at: Date;
-        invoice_id: string | null; invoice_total_cents: string | null; route_count: string;
-      }>(`
-        SELECT d.id,d.display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') AS customer_display_name,o.commercial_state,
-          COALESCE((SELECT SUM(l.selling_line_cents) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id),0) AS selling_total_cents,
-          d.currency,d.requested_due_date::text,d.updated_at,invoice.id AS invoice_id,invoice.total_cents::text AS invoice_total_cents,
-          (SELECT count(*) FROM v2_route_instances r WHERE r.organization_id=d.organization_id AND r.order_document_id=d.id)::text AS route_count
-        FROM v2_sales_documents d
-        JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id
-        LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id
-        LEFT JOIN v2_billing_invoices invoice ON invoice.organization_id=d.organization_id AND invoice.sales_order_document_id=d.id AND invoice.invoice_state='draft'
-        WHERE d.organization_id=$1 AND d.document_kind='order'
-          AND ($2::text IS NULL OR d.display_number ILIKE '%' || $2 || '%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%' || $2 || '%')
-          AND ($3::text IS NULL OR o.commercial_state=$3)
-          AND ($4::timestamptz IS NULL OR (d.updated_at,d.id) < ($4::timestamptz,$5::text))
-        ORDER BY d.updated_at DESC,d.id DESC LIMIT $6`,
-        [organizationId, request.search?.trim() || null, request.lifecycle ?? null, cursor?.updatedAt ?? null, cursor?.id ?? null, limit + 1],
-      );
-      return page(rows.rows.map((row) => ({
-        orderId: brandedId<"OrderId">(row.id), number: row.display_number, customerDisplayName: row.customer_display_name,
-        lifecycle: row.commercial_state, sellingTotalCents: Number(row.selling_total_cents), currency: row.currency,
-        ...(row.requested_due_date ? { requestedDueDate: row.requested_due_date } : {}), updatedAt: row.updated_at.toISOString(),
-        ...(row.invoice_id ? { draftInvoice: { invoiceId: brandedId<"InvoiceId">(row.invoice_id), lifecycle: "draft" as const, totalCents: Number(row.invoice_total_cents) } } : {}),
-        routing: Number(row.route_count) > 0 ? "routed" : "no_route",
-      })), limit);
-    });
-  }
+  private async read<T>(work: (client: PoolClient) => Promise<T>): Promise<T> { const client = await this.pool.connect(); try { await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"); const value = await work(client); await client.query("COMMIT"); return value; } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
+  private page<T extends Common>(rows: readonly T[], request: SalesWorkspacePageRequest): SalesWorkspacePage<T> { const limit = limitFor(request.limit), cursor = decode(request.cursor), visible = rows.filter((row) => after(row, cursor)).sort(cmp).slice(0, limit + 1), items = visible.slice(0, limit), last = items.at(-1); return { items, ...(visible.length > limit && last ? { nextCursor: encode({ updatedAt: last.updated_at.toISOString(), source: last.source, id: last.id }) } : {}) }; }
+  async listQuotes(organizationId: OrganizationId, request: SalesWorkspacePageRequest): Promise<SalesWorkspacePage<QuoteListItem>> { return this.read(async (client) => {
+    const limit = limitFor(request.limit) + 1, search = request.search?.trim() || null, lifecycle = request.lifecycle ?? null;
+    const [native, legacy] = await Promise.all([
+      client.query<Common & { order_id: string | null; order_number: string | null }>(`SELECT 'v2' source,d.id,d.display_number number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_display_name,CASE WHEN conversion.order_document_id IS NOT NULL THEN 'converted' WHEN q.acceptance_state='accepted' THEN 'accepted' WHEN q.delivery_state='sent' THEN 'sent' ELSE 'draft' END lifecycle,COALESCE((SELECT SUM(l.selling_line_cents) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id),0)::text selling_total_cents,d.currency,d.requested_due_date::text,d.updated_at,conversion.order_document_id order_id,converted.display_number order_number FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.organization_id=d.organization_id AND q.document_id=d.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN v2_sales_quote_conversions conversion ON conversion.organization_id=d.organization_id AND conversion.quote_document_id=d.id LEFT JOIN v2_sales_documents converted ON converted.organization_id=d.organization_id AND converted.id=conversion.order_document_id WHERE d.organization_id=$1 AND d.document_kind='quote' AND ($2::text IS NULL OR d.display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') AND ($3::text IS NULL OR (CASE WHEN conversion.order_document_id IS NOT NULL THEN 'converted' WHEN q.acceptance_state='accepted' THEN 'accepted' WHEN q.delivery_state='sent' THEN 'sent' ELSE 'draft' END)=$3) ORDER BY d.updated_at DESC,d.id DESC LIMIT $4`, [organizationId, search, lifecycle, limit]),
+      client.query<Common>(`SELECT 'legacy' source,q.id,COALESCE(q.display_number,'Q-'||q.quote_number::text) number,COALESCE(c.display_name,c.company_name,q.customer_name,'Customer unavailable') customer_display_name,q.status::text lifecycle,ROUND(COALESCE(q.total_price,0)*100)::bigint::text selling_total_cents,'USD' currency,q.requested_due_date::text,COALESCE(q.created_at,now()) updated_at FROM quotes q LEFT JOIN customers c ON c.organization_id=q.organization_id AND c.id=q.customer_id WHERE q.organization_id=$1 AND ($2::text IS NULL OR COALESCE(q.display_number,'Q-'||q.quote_number::text) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,q.customer_name,'') ILIKE '%'||$2||'%') AND ($3::text IS NULL OR q.status::text=$3) ORDER BY COALESCE(q.created_at,now()) DESC,q.id DESC LIMIT $4`, [organizationId, search, lifecycle, limit]),
+    ]);
+    const mapped = [...native.rows.map((row): QuoteListItem & Common => ({ ...row, source: "v2", recordId: row.id, quoteId: brandedId<"QuoteId">(row.id), number: row.number, customerDisplayName: row.customer_display_name, lifecycle: row.lifecycle, sellingTotalCents: Number(row.selling_total_cents), currency: row.currency, ...(row.requested_due_date ? { requestedDueDate: row.requested_due_date } : {}), updatedAt: row.updated_at.toISOString(), ...(row.order_id ? { convertedOrderId: brandedId<"OrderId">(row.order_id) } : {}), ...(row.order_number ? { convertedOrderNumber: row.order_number } : {}) })), ...legacy.rows.map((row): QuoteListItem & Common => ({ ...row, source: "legacy", recordId: row.id, quoteId: brandedId<"QuoteId">(row.id), number: row.number, customerDisplayName: row.customer_display_name, lifecycle: row.lifecycle, sellingTotalCents: Number(row.selling_total_cents), currency: row.currency, ...(row.requested_due_date ? { requestedDueDate: row.requested_due_date } : {}), updatedAt: row.updated_at.toISOString() }))];
+    const result = this.page(mapped.map((r) => ({ ...r, updated_at: r.updated_at instanceof Date ? r.updated_at : new Date(r.updatedAt), id: r.recordId, customer_display_name: r.customerDisplayName, selling_total_cents: String(r.sellingTotalCents), requested_due_date: r.requestedDueDate ?? null })) as (QuoteListItem & Common)[], request); return { ...result, items: result.items.map(({ id: _id, customer_display_name: _customer, selling_total_cents: _total, requested_due_date: _due, updated_at: _updated, ...item }) => item) };
+  }); }
+  async listOrders(organizationId: OrganizationId, request: SalesWorkspacePageRequest): Promise<SalesWorkspacePage<OrderListItem>> { return this.read(async (client) => {
+    const limit = limitFor(request.limit) + 1, search = request.search?.trim() || null, lifecycle = request.lifecycle ?? null;
+    const [native, legacy] = await Promise.all([
+      client.query<Common & { invoice_id: string | null; invoice_total_cents: string | null; route_count: string }>(`SELECT 'v2' source,d.id,d.display_number number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_display_name,o.commercial_state lifecycle,COALESCE((SELECT SUM(l.selling_line_cents) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id),0)::text selling_total_cents,d.currency,d.requested_due_date::text,d.updated_at,invoice.id invoice_id,invoice.total_cents::text invoice_total_cents,(SELECT count(*) FROM v2_route_instances r WHERE r.organization_id=d.organization_id AND r.order_document_id=d.id)::text route_count FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN v2_billing_invoices invoice ON invoice.organization_id=d.organization_id AND invoice.sales_order_document_id=d.id AND invoice.invoice_state='draft' WHERE d.organization_id=$1 AND d.document_kind='order' AND ($2::text IS NULL OR d.display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') AND ($3::text IS NULL OR o.commercial_state=$3) ORDER BY d.updated_at DESC,d.id DESC LIMIT $4`, [organizationId, search, lifecycle, limit]),
+      client.query<Common & { status: string; state: string; canonical_state: string | null; fulfillment_status: string; payment_status: string; production_open: string; balance_due_cents: string }>(`SELECT 'legacy' source,o.id,COALESCE(o.display_number,o.order_number) number,COALESCE(c.display_name,c.company_name,o.bill_to_name,'Customer unavailable') customer_display_name,COALESCE(o.canonical_state::text,o.state::text,o.status::text) lifecycle,ROUND(COALESCE(o.total,0)*100)::bigint::text selling_total_cents,'USD' currency,o.requested_due_date::text,COALESCE(o.updated_at,o.created_at,now()) updated_at,o.status::text status,o.state::text state,o.canonical_state::text canonical_state,o.fulfillment_status::text fulfillment_status,o.payment_status::text payment_status,(SELECT count(*) FROM production_jobs p WHERE p.organization_id=o.organization_id AND p.order_id=o.id AND COALESCE(p.status::text,'') NOT IN ('completed','canceled'))::text production_open,COALESCE((SELECT ROUND(SUM(i.balance_due)*100)::bigint FROM invoices i WHERE i.organization_id=o.organization_id AND i.order_id=o.id),0)::text balance_due_cents FROM orders o LEFT JOIN customers c ON c.organization_id=o.organization_id AND c.id=o.customer_id WHERE o.organization_id=$1 AND ($2::text IS NULL OR COALESCE(o.display_number,o.order_number) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,o.bill_to_name,'') ILIKE '%'||$2||'%') AND ($3::text IS NULL OR COALESCE(o.canonical_state::text,o.state::text,o.status::text)=$3) ORDER BY COALESCE(o.updated_at,o.created_at,now()) DESC,o.id DESC LIMIT $4`, [organizationId, search, lifecycle, limit]),
+    ]);
+    const all = [...native.rows.map((row): OrderListItem & Common => ({ ...row, source: "v2", recordId: row.id, orderId: brandedId<"OrderId">(row.id), number: row.number, customerDisplayName: row.customer_display_name, lifecycle: row.lifecycle, sellingTotalCents: Number(row.selling_total_cents), currency: row.currency, ...(row.requested_due_date ? { requestedDueDate: row.requested_due_date } : {}), updatedAt: row.updated_at.toISOString(), ...(row.invoice_id ? { draftInvoice: { invoiceId: brandedId<"InvoiceId">(row.invoice_id), lifecycle: "draft" as const, totalCents: Number(row.invoice_total_cents) } } : {}), routing: Number(row.route_count) > 0 ? "routed" as const : "no_route" as const })), ...legacy.rows.map((row): OrderListItem & Common => ({ ...row, source: "legacy", recordId: row.id, orderId: brandedId<"OrderId">(row.id), number: row.number, customerDisplayName: row.customer_display_name, lifecycle: row.lifecycle, sellingTotalCents: Number(row.selling_total_cents), currency: row.currency, ...(row.requested_due_date ? { requestedDueDate: row.requested_due_date } : {}), updatedAt: row.updated_at.toISOString(), routing: "no_route" as const, activeRecordClassification: classifyLegacyOrder(row) }))];
+    const result = this.page(all.map((r) => ({ ...r, updated_at: r.updated_at instanceof Date ? r.updated_at : new Date(r.updatedAt), id: r.recordId, customer_display_name: r.customerDisplayName, selling_total_cents: String(r.sellingTotalCents), requested_due_date: r.requestedDueDate ?? null })) as (OrderListItem & Common)[], request); return { ...result, items: result.items.map(({ id: _id, customer_display_name: _customer, selling_total_cents: _total, requested_due_date: _due, updated_at: _updated, ...item }) => item) };
+  }); }
+  async readLegacyQuote(organizationId: OrganizationId, recordId: string): Promise<LegacyCommercialDetail | null> { return this.read(async (client) => { const r = await client.query<Common>(`SELECT 'legacy' source,q.id,COALESCE(q.display_number,'Q-'||q.quote_number::text) number,COALESCE(c.display_name,c.company_name,q.customer_name,'Customer unavailable') customer_display_name,q.status lifecycle,ROUND(COALESCE(q.total_price,0)*100)::bigint::text selling_total_cents,'USD' currency,q.requested_due_date::text,COALESCE(q.created_at,now()) updated_at FROM quotes q LEFT JOIN customers c ON c.organization_id=q.organization_id AND c.id=q.customer_id WHERE q.organization_id=$1 AND q.id=$2`, [organizationId, recordId]); const x=r.rows[0]; return x ? { source:"legacy", recordId:x.id, number:x.number, customerDisplayName:x.customer_display_name, lifecycle:x.lifecycle, sellingTotalCents:Number(x.selling_total_cents), currency:x.currency, ...(x.requested_due_date ? { requestedDueDate:x.requested_due_date } : {}), updatedAt:x.updated_at.toISOString(), readOnly:true } : null; }); }
+  async readLegacyOrder(organizationId: OrganizationId, recordId: string): Promise<LegacyCommercialDetail | null> { return this.read(async (client) => { const r = await client.query<Common & { status:string; state:string; canonical_state:string|null; fulfillment_status:string; payment_status:string; production_open:string; balance_due_cents:string }>(`SELECT 'legacy' source,o.id,COALESCE(o.display_number,o.order_number) number,COALESCE(c.display_name,c.company_name,o.bill_to_name,'Customer unavailable') customer_display_name,COALESCE(o.canonical_state,o.state,o.status) lifecycle,ROUND(COALESCE(o.total,0)*100)::bigint::text selling_total_cents,'USD' currency,o.requested_due_date::text,COALESCE(o.updated_at,o.created_at,now()) updated_at,o.status,o.state,o.canonical_state,o.fulfillment_status,o.payment_status,(SELECT count(*) FROM production_jobs p WHERE p.organization_id=o.organization_id AND p.order_id=o.id AND COALESCE(p.status,'') NOT IN ('completed','canceled'))::text production_open,COALESCE((SELECT ROUND(SUM(i.balance_due)*100)::bigint FROM invoices i WHERE i.organization_id=o.organization_id AND i.order_id=o.id),0)::text balance_due_cents FROM orders o LEFT JOIN customers c ON c.organization_id=o.organization_id AND c.id=o.customer_id WHERE o.organization_id=$1 AND o.id=$2`, [organizationId, recordId]); const x=r.rows[0]; return x ? { source:"legacy", recordId:x.id, number:x.number, customerDisplayName:x.customer_display_name, lifecycle:x.lifecycle, sellingTotalCents:Number(x.selling_total_cents), currency:x.currency, ...(x.requested_due_date ? { requestedDueDate:x.requested_due_date } : {}), updatedAt:x.updated_at.toISOString(), readOnly:true, activeRecordClassification:classifyLegacyOrder(x) } : null; }); }
 }

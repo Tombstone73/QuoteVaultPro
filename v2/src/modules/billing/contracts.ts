@@ -70,6 +70,8 @@ export type DraftInvoiceReadLine = Readonly<{
   lineAmount: Money;
 }>;
 export type DraftInvoiceReadModel = Readonly<{
+  source?: "v2" | "legacy";
+  readOnly?: true;
   invoiceId: InvoiceId;
   organizationId: OrganizationId;
   sourceOrderId: OrderId;

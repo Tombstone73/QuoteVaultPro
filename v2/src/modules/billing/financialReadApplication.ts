@@ -23,7 +23,7 @@ export type FinancialHistoryEntry = Readonly<{
   paymentId?: PaymentId;
   amount: Money;
   method?: PaymentMethod;
-  source: "manual" | "provider";
+  source: "manual" | "provider" | "legacy";
   occurredAt: string;
   recordedAt: string;
   /** Derived by the read model from immutable allocation facts, never supplied by the browser. */
@@ -40,6 +40,8 @@ export type FinancialInvoiceRead = Readonly<{
   history: readonly FinancialHistoryEntry[];
 }>;
 export type FinancialInvoiceListItem = Readonly<{
+  source: "v2" | "legacy";
+  recordId: string;
   invoiceId: InvoiceId;
   sourceOrderId: string;
   sourceOrderNumber: string;
@@ -58,6 +60,8 @@ export type FinancialInvoiceListItem = Readonly<{
 }>;
 export type FinancialLedgerEntry = FinancialHistoryEntry &
   Readonly<{
+    recordSource: "v2" | "legacy";
+    recordId: string;
     invoiceId: InvoiceId;
     sourceOrderId: string;
     sourceOrderNumber: string;
@@ -67,6 +71,10 @@ export type FinancialLedgerEntry = FinancialHistoryEntry &
 
 export interface FinancialReadPort {
   readFinancialInvoice(
+    organizationId: OrganizationId,
+    invoiceId: InvoiceId,
+  ): Promise<FinancialInvoiceRead | null>;
+  readLegacyFinancialInvoice(
     organizationId: OrganizationId,
     invoiceId: InvoiceId,
   ): Promise<FinancialInvoiceRead | null>;
@@ -117,6 +125,16 @@ export class FinancialReadApplicationService {
             ),
       );
     }
+  }
+
+  async readLegacyInvoice(context: OperationContext, invoiceId: InvoiceId): Promise<ApplicationResult<FinancialInvoiceRead>> {
+    try {
+      requireOperationPrincipalScope(context);
+      const value = await this.runner.read((port) => port.readLegacyFinancialInvoice(brandedId<"OrganizationId">(context.organizationId), invoiceId));
+      if (!value) throw new V2ApplicationError("NOT_FOUND", "Legacy invoice financial history was not found.");
+      this.assertFinancialView(context, value.invoice.customerId);
+      return success(value);
+    } catch (error) { return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Legacy invoice financial history could not be read.")); }
   }
 
   async listInvoices(

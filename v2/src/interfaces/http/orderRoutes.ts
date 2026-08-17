@@ -182,6 +182,18 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
     } catch (cause) { error(response, cause); }
   });
 
+  router.get("/legacy/:recordId", async (request, response) => {
+    try {
+      if (!dependencies.workspace) throw new V2ApplicationError("INTERNAL_ERROR", "Order list runtime is unavailable.");
+      const operation = await context(request, dependencies);
+      if (!new AuthorityPolicy().decide(operation.principal, { capability: "order.view", resource: { organizationId: operation.organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "Order access is unavailable.");
+      const value = await dependencies.workspace.readLegacyOrder(brandedId<"OrganizationId">(operation.organizationId), request.params.recordId);
+      if (!value) throw new V2ApplicationError("NOT_FOUND", "Legacy Order was not found.");
+      response.status(200).json({ ok: true, data: value });
+    } catch (cause) { error(response, cause); }
+  });
+
   router.get("/:orderId", async (request, response) => {
     try {
       send(

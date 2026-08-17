@@ -227,6 +227,17 @@ export const createQuoteRouter = (
       response.status(200).json({ ok: true, data });
     } catch (cause) { error(response, cause); }
   });
+  router.get("/legacy/:recordId", async (request, response) => {
+    try {
+      if (!dependencies.workspace) throw new V2ApplicationError("INTERNAL_ERROR", "Quote list runtime is unavailable.");
+      const operation = await context(request, dependencies);
+      if (!new AuthorityPolicy().decide(operation.principal, { capability: "quote.view", resource: { organizationId: operation.organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "Quote access is unavailable.");
+      const value = await dependencies.workspace.readLegacyQuote(brandedId<"OrganizationId">(operation.organizationId), request.params.recordId);
+      if (!value) throw new V2ApplicationError("NOT_FOUND", "Legacy Quote was not found.");
+      response.status(200).json({ ok: true, data: value });
+    } catch (cause) { error(response, cause); }
+  });
   router.get("/:quoteId", async (request, response) => {
     try {
       const result = await dependencies.service.read(

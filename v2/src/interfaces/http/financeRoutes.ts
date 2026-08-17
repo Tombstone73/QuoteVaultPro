@@ -34,6 +34,10 @@ export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
     try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.readInvoice(context(principal, organizationId, `http:GET:${request.path}`), brandedId<"InvoiceId">(request.params.invoiceId)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
     catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
   });
+  router.get("/invoices/legacy/:invoiceId", async (request, response) => {
+    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.readLegacyInvoice(context(principal, organizationId, `http:GET:${request.path}`), brandedId<"InvoiceId">(request.params.invoiceId)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
+    catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
+  });
   router.post("/invoices/:invoiceId/payments", async (request, response) => {
     try {
       const organizationId = organization(request), businessRequestId = requestId(request.body?.businessRequestId), amountCents = cents(request.body?.amountCents), code = currency(request.body?.currency), when = occurredAt(request.body?.occurredAt), method = request.body?.method;
