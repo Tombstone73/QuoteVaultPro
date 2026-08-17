@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 203,
+  "entryCount": 204,
   "immutableThrough": {
-    "idx": 208,
-    "when": 1788048000054,
-    "tag": "0207_v2_payments_refunds_foundation"
+    "idx": 209,
+    "when": 1788048000055,
+    "tag": "0208_v2_payment_history_capability"
   },
-  "canonicalSha256": "cef0bd3a74c575d7cacfd2f19e64ccb15f046d5fa74c3ef43f122a836e1e6485"
+  "canonicalSha256": "9e2516bdb861f327e2db327029bd986419426cecc1429b710721079896587094"
 }

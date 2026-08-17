@@ -57,6 +57,7 @@ export type UiBootstrap = Readonly<{
     quoteOverridePrice: boolean; quoteCreate?: boolean; quoteEdit?: boolean;
     quoteSend?: boolean; quoteConvert?: boolean; orderView?: boolean;
     orderEdit?: boolean; orderOverridePrice?: boolean; invoiceView?: boolean; invoiceIssue?: boolean;
+    paymentView?: boolean; paymentRecord?: boolean; refundIssue?: boolean;
     artworkView?: boolean; artworkAssign?: boolean;
     proofView?: boolean; proofPrepare?: boolean; proofIssue?: boolean; proofRespond?: boolean;
     prepressView?: boolean; prepressWork?: boolean; prepressComplete?: boolean;
@@ -106,6 +107,10 @@ export type InvoiceRead = Readonly<{
   subtotal: { cents: number; currency: string }; taxTotal: { cents: number; currency: string }; total: { cents: number; currency: string };
 }>;
 export type InvoiceListItem = Readonly<{ invoiceId: string; sourceOrderId: string; sourceOrderNumber: string; customerId?: string; lifecycle: InvoiceRead["lifecycle"]; customerPresentation?: InvoiceRead["customerPresentation"]; currency: string; total: InvoiceRead["total"]; issuedAt?: string; updatedAt: string }>;
+export type FinancialHistoryEntry = Readonly<{ kind: "payment" | "refund"; id: string; paymentId?: string; amount: { cents: number; currency: string }; method?: string; source: "manual" | "provider"; occurredAt: string; recordedAt: string; balanceAfter: { cents: number; currency: string } }>;
+export type FinancialInvoiceRead = Readonly<{ invoice: InvoiceRead; settlement: { gross: InvoiceRead["total"]; paid: InvoiceRead["total"]; refunded: InvoiceRead["total"]; balance: InvoiceRead["total"] }; history: readonly FinancialHistoryEntry[] }>;
+export type FinancialInvoiceListItem = Readonly<{ invoiceId: string; sourceOrderId: string; sourceOrderNumber: string; customerId?: string; customerName?: string; lifecycle: InvoiceRead["lifecycle"]; currency: string; gross: InvoiceRead["total"]; paid: InvoiceRead["total"]; refunded: InvoiceRead["total"]; balance: InvoiceRead["total"]; issuedAt?: string; updatedAt: string }>;
+export type FinancialLedgerEntry = FinancialHistoryEntry & Readonly<{ invoiceId: string; sourceOrderId: string; sourceOrderNumber: string; customerId?: string; customerName?: string }>;
 export type ArtworkOrderProjection = Readonly<{
   assignment: Readonly<{ id: string; artworkFileId: string; orderId: string; orderLineId: string; purpose: "customer_supplied" | "production" | "proof" | "reference"; side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; createdAt: string }>;
   file: Readonly<{ id: string; originalFilename: string; displayFilename: string; contentType: string; byteSize: number; source: "customer_upload" | "prepress_derived" | "imported"; pageCount?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number; derivedFromArtworkFileId?: string; createdAt: string }>;
@@ -284,6 +289,14 @@ export const invoiceApi = {
   get: (organizationId: string, invoiceId: string) =>
     request<InvoiceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}`),
   issue: (organizationId: string, invoiceId: string, businessRequestId: string) => request<Readonly<{ invoice: InvoiceRead }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}/issue`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId }) }),
+};
+const financeEndpoint = (org: string, suffix = "") => `/v2/organizations/${encodeURIComponent(org)}/finance${suffix}`;
+export const financeApi = {
+  overview: (organizationId: string) => request<{ items: readonly FinancialInvoiceListItem[] }>(financeEndpoint(organizationId, "/overview")),
+  ledger: (organizationId: string) => request<{ items: readonly FinancialLedgerEntry[] }>(financeEndpoint(organizationId, "/ledger")),
+  invoice: (organizationId: string, invoiceId: string) => request<FinancialInvoiceRead>(financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}`)),
+  recordPayment: (organizationId: string, invoiceId: string, businessRequestId: string, input: Readonly<{ amountCents: number; currency: string; method: "cash" | "check" | "external"; occurredAt: string }>) => request<unknown>(financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/payments`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ ...input, businessRequestId }) }),
+  recordRefund: (organizationId: string, invoiceId: string, businessRequestId: string, input: Readonly<{ paymentId: string; amountCents: number; currency: string; occurredAt: string }>) => request<unknown>(financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/refunds`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ ...input, businessRequestId }) }),
 };
 export const artworkApi = {
   forOrder: (organizationId: string, orderId: string) => request<readonly ArtworkOrderProjection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`),

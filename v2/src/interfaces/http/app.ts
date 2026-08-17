@@ -15,6 +15,7 @@ import {
   type OrderHttpDependencies,
 } from "./orderRoutes.js";
 import { createInvoiceRouter, type InvoiceHttpDependencies } from "./invoiceRoutes.js";
+import { createFinanceRouter, type FinanceHttpDependencies } from "./financeRoutes.js";
 import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRoutes.js";
 import { createProofingRouter, type ProofingHttpDependencies } from "./proofingRoutes.js";
 import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
@@ -32,7 +33,7 @@ export type AuthenticatedOrderRouteRuntime = Readonly<{
   dependencies: OrderHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
-export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies & FinanceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
@@ -109,6 +110,9 @@ export const createV2HttpApp = (
                 orderOverridePrice: policy.decide(principal, { capability: "order.overridePrice", resource: { organizationId } }).allowed,
                 invoiceView: policy.decide(principal, { capability: "invoice.view", resource: { organizationId } }).allowed,
                 invoiceIssue: policy.decide(principal, { capability: "invoice.issue", resource: { organizationId } }).allowed,
+                paymentView: policy.decide(principal, { capability: "payment.view", resource: { organizationId } }).allowed,
+                paymentRecord: policy.decide(principal, { capability: "payment.record", resource: { organizationId } }).allowed,
+                refundIssue: policy.decide(principal, { capability: "refund.issue", resource: { organizationId } }).allowed,
                 artworkView: policy.decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed,
                 artworkAssign: policy.decide(principal, { capability: "artwork.assign", resource: { organizationId } }).allowed,
                 proofView: policy.decide(principal, { capability: "proof.view", resource: { organizationId } }).allowed,
@@ -169,6 +173,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createInvoiceRouter(billing.dependencies),
+    );
+  if (billing)
+    app.use(
+      "/v2/organizations/:organizationId/finance",
+      billing.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createFinanceRouter(billing.dependencies),
     );
   if (artwork)
     app.use(
