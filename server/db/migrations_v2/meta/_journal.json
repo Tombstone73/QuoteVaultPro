@@ -1415,6 +1415,13 @@
       "when": 1788048000053,
       "tag": "0206_v2_invoice_lifecycle_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1788048000054,
+      "tag": "0207_v2_payments_refunds_foundation",
+      "breakpoints": true
     }
   ]
 }

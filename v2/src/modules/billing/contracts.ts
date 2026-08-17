@@ -1,7 +1,7 @@
 import type { CustomerContactReference } from "../customers/contracts.js";
 import type { CustomerPresentationIdentity } from "../customers/contracts.js";
 import type { PrincipalKind } from "../../authorization/principals.js";
-import type { BusinessRequestId, CurrencyCode, CustomerId, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrderLineId, OrganizationId, PercentageBasisPoints, ProductId, SalesLineId } from "../shared/commercialValues.js";
+import type { BusinessRequestId, CurrencyCode, CustomerId, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrderLineId, OrganizationId, PaymentId, PercentageBasisPoints, ProductId, ProviderFinancialOperationId, RefundId, SalesLineId } from "../shared/commercialValues.js";
 
 /** Sales supplies a projection; Billing owns any resulting Invoice row, math, and lifecycle. */
 export type DraftInvoiceSynchronizationInput = Readonly<{
@@ -110,3 +110,15 @@ export interface BillingReadPort {
   readDraftForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null>;
   listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]>;
 }
+
+export type PaymentMethod = "cash" | "check" | "external" | "card" | "ach" | "other";
+export type ProviderReconciliationState = "pending" | "succeeded" | "failed" | "uncertain";
+export type RecordManualPaymentInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; amount: Money; method: Exclude<PaymentMethod, "card" | "ach">; occurredAt: string; businessRequestId: BusinessRequestId }>;
+export type RecordRefundInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; paymentId: PaymentId; amount: Money; occurredAt: string; businessRequestId: BusinessRequestId }>;
+export type BeginProviderFinancialOperationInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amount: Money; provider: string; providerIdempotencyKey: string; businessRequestId: BusinessRequestId }>;
+export type ProviderFinancialOperation = Readonly<{ providerOperationId: ProviderFinancialOperationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amount: Money; provider: string; providerIdempotencyKey: string; providerTransactionId?: string; reconciliationState: ProviderReconciliationState }>;
+export type ConfirmProviderPaymentInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;
+export type ConfirmProviderRefundInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; paymentId: PaymentId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;
+export type PaymentFact = Readonly<{ paymentId: PaymentId; invoiceId: InvoiceId; amount: Money; method: PaymentMethod; source: "manual" | "provider"; providerOperationId?: ProviderFinancialOperationId; providerTransactionId?: string; occurredAt: string }>;
+export type RefundFact = Readonly<{ refundId: RefundId; invoiceId: InvoiceId; paymentId: PaymentId; amount: Money; source: "manual" | "provider"; providerOperationId?: ProviderFinancialOperationId; providerTransactionId?: string; occurredAt: string }>;
+export type InvoiceSettlement = Readonly<{ invoiceId: InvoiceId; gross: Money; successfulPayments: Money; successfulRefunds: Money; collectibleBalance: Money }>;

@@ -2,15 +2,15 @@ import type { TransactionalClient } from "../persistence/types.js";
 
 export type BillingPhysicalPostcondition = Readonly<{ id: string; passed: boolean; detail: string }>;
 
-const tables = ["v2_billing_invoices", "v2_billing_invoice_lines", "v2_billing_invoice_checkpoints"] as const;
+const tables = ["v2_billing_invoices", "v2_billing_invoice_lines", "v2_billing_invoice_checkpoints", "v2_billing_payments", "v2_billing_payment_allocations", "v2_billing_refunds", "v2_billing_refund_allocations", "v2_billing_provider_financial_operations", "v2_billing_provider_events"] as const;
 const constraints = [
   "v2_billing_invoices_order_tenant_fk", "v2_billing_invoices_customer_tenant_fk",
   "v2_billing_invoices_contact_tenant_fk", "v2_billing_invoices_total_chk",
   "v2_billing_invoice_lines_invoice_tenant_fk", "v2_billing_invoice_lines_source_sales_line_tenant_fk",
-  "v2_billing_invoice_checkpoints_invoice_tenant_fk", "v2_billing_invoices_issued_actor_chk",
+  "v2_billing_invoice_checkpoints_invoice_tenant_fk", "v2_billing_invoices_issued_actor_chk", "v2_billing_payments_invoice_fk", "v2_billing_payment_allocations_payment_fk", "v2_billing_refunds_invoice_fk", "v2_billing_refund_allocations_payment_fk", "v2_billing_provider_ops_invoice_fk",
 ] as const;
-const indexes = ["v2_billing_invoices_one_draft_per_order_uidx", "v2_billing_invoice_lines_invoice_position_uidx", "v2_billing_invoice_checkpoints_invoice_org_uidx"] as const;
-const triggers = ["v2_billing_invoice_lifecycle_immutable_trigger", "v2_billing_invoice_line_lifecycle_immutable_trigger", "v2_billing_invoice_checkpoint_immutable_trigger"] as const;
+const indexes = ["v2_billing_invoices_one_draft_per_order_uidx", "v2_billing_invoice_lines_invoice_position_uidx", "v2_billing_invoice_checkpoints_invoice_org_uidx", "v2_billing_payments_invoice_idx", "v2_billing_refunds_invoice_idx", "v2_billing_provider_ops_external_tx_uidx"] as const;
+const triggers = ["v2_billing_invoice_lifecycle_immutable_trigger", "v2_billing_invoice_line_lifecycle_immutable_trigger", "v2_billing_invoice_checkpoint_immutable_trigger", "v2_billing_payments_immutable_trigger", "v2_billing_payment_allocations_immutable_trigger", "v2_billing_refunds_immutable_trigger", "v2_billing_refund_allocations_immutable_trigger", "v2_billing_provider_events_immutable_trigger"] as const;
 
 /** Physical checks deliberately prove Billing's separate ownership and order-scoped draft uniqueness. */
 export async function checkV2BillingPhysicalPostconditions(client: TransactionalClient): Promise<BillingPhysicalPostcondition[]> {
