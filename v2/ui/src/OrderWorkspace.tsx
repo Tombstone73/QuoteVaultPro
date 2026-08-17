@@ -17,7 +17,7 @@ const message = (error: unknown): string => {
 
 export const OrderWorkspace = (props: Readonly<{
   organizationId: string; sessionScope: string; orderId: string; canEdit: boolean; canOverridePrice: boolean; canViewInvoice: boolean; csrfReady: boolean;
-  onBack: () => void;
+  onBack: () => void; openCustomer?: (customerId: string) => void;
 }>) => {
   const queryClient = useQueryClient();
   const order = useQuery({ queryKey: salesKeys.order(props.sessionScope, props.organizationId, props.orderId), queryFn: () => orderApi.get(props.organizationId, props.orderId), enabled: Boolean(props.organizationId && props.sessionScope && props.orderId) });
@@ -97,7 +97,7 @@ export const OrderWorkspace = (props: Readonly<{
         <label className="field">Requested due date<input type="date" value={dueDate} disabled={!editable} onChange={(event) => setDueDate(event.target.value)} /></label>
         <label className="field">Commercial notes<textarea value={notes} disabled={!editable} onChange={(event) => setNotes(event.target.value)} /></label>
       </div>
-      <div className="actions v2-document-actions"><button className="button secondary" disabled={!editable || saveHeader.isPending || !props.csrfReady} onClick={() => saveHeader.mutate()}>Save Order</button></div>
+      <div className="actions v2-document-actions"><button className="button secondary" onClick={() => props.openCustomer?.(current.order.customerContact.customerId)}>Open Customer</button><button className="button secondary" disabled={!editable || saveHeader.isPending || !props.csrfReady} onClick={() => saveHeader.mutate()}>Save Order</button></div>
     </div>
     {activeTab === "artwork" ? <OrderArtworkPanel lines={current.order.lines} artwork={artwork.data ?? []} loading={artwork.isLoading} /> : <>
     <DraftInvoiceSummary invoice={current.draftInvoice} detail={invoice.data} />

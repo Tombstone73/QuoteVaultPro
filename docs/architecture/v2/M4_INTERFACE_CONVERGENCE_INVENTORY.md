@@ -99,6 +99,12 @@ workspace is real, mock, mixed, or not applicable (N/A).
 * **Proofing — PARTIAL:** `/proofing` is now restored by the shared client route adapter. Its existing real queue, immutable ordered ProofVersions, exact Artwork evidence, feedback history, and strict Proofing-only decision boundary remain intact. Renditions, recipients, delivery/viewed state, and Communications history are deferred.
 * **Prepress — PARTIAL:** `/prepress` is now restored by the shared client route adapter. Its existing frozen required units, exact production-Assignment coverage, missing-unit presentation, and unit-scoped operations remain intact. Preview, notes/flags, material, planning, and Production alerts remain explicitly unavailable/deferred.
 
+## M4 Quotes / Orders implementation update
+
+* **Quotes — PARTIAL:** `/quotes` and `/quotes/:quoteId` now use the shared client route adapter. The existing server-side search, lifecycle filters, cursor pagination, authenticated detail/editor, Product/PBV2 configuration, Pricing, authorized overrides, stale-state refresh, Send, Accept, and conversion operations remain unchanged. The catalog/detail hierarchy now identifies the Sales workspace and keeps those operations server-authoritative.
+* **Orders — PARTIAL:** `/orders` and `/orders/:orderId` now use the shared client route adapter. The existing canonical list, frozen commercial detail, Draft Invoice projection, read-only Routing context, Artwork context, and approved Sales mutations remain unchanged. Billing settlement/detail, mutable Routing controls, and mock Notes/History/activity remain deliberately absent.
+* These routes retain active organization only in client session storage after authenticated bootstrap; it is never authority. Production static hosting still needs SPA history fallback for direct refresh.
+
 ## Contract disposition
 
 The matrix distinguishes missing UI from missing backend:

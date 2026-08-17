@@ -575,6 +575,7 @@ button:focus-visible {
   letter-spacing: .05em;
   text-transform: uppercase;
 }
+.v2-sales-page-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid var(--color-border);padding-bottom:12px}.v2-sales-page-heading h1{margin:2px 0;font-size:21px}.v2-sales-page-heading p{margin:0;color:var(--color-muted-foreground);font-size:12px}.v2-sales-page-heading>span{border:1px solid var(--color-border);border-radius:999px;color:var(--color-muted-foreground);font-size:10px;padding:4px 7px;text-transform:uppercase}
 .v2-sales-workspace .table {
   margin-top: 0;
   font-size: 13px;

@@ -44,7 +44,7 @@ import { FinanceWorkspace } from "./FinanceWorkspace";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import { ProductWorkspace } from "./ProductWorkspace";
 import { ArtworkWorkspace } from "./ArtworkWorkspace";
-import { pushCustomerLocation, pushProductLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
+import { pushCustomerLocation, pushOrderLocation, pushProductLocation, pushQuoteLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -167,6 +167,8 @@ export const App = ({
       setPage(location.page);
       if (location.page === "products") setProductId(location.productId ?? "");
       else if (location.page === "customers") setCustomerId(location.customerId ?? "");
+      else if (location.page === "quotes") setQuoteId(location.quoteId ?? "");
+      else if (location.page === "orders") setOrderId(location.orderId ?? "");
     };
     applyBrowserLocation();
     window.addEventListener("popstate", applyBrowserLocation);
@@ -192,6 +194,8 @@ export const App = ({
       pushCustomerLocation();
       setCustomerId("");
     }
+    if (nextPage === "quotes") { pushQuoteLocation(); setQuoteId(""); }
+    if (nextPage === "orders") { pushOrderLocation(); setOrderId(""); }
     if (nextPage === "artwork" || nextPage === "proofing" || nextPage === "prepress") pushWorkspaceLocation(nextPage);
     setPage(nextPage);
     if (nextPage === "quotes") setOrderId("");
@@ -199,15 +203,16 @@ export const App = ({
   };
   return (
     <V2VisualShell page={page} onNavigate={navigate} appearance={appearance} setAppearance={setAppearance}>
-      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "customers" ? <CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} canView={bootstrap.data?.capabilities.customerView === true} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); }} backToCatalog={() => { pushCustomerLocation(); setCustomerId(""); }} /> : page === "products" ? <ProductWorkspace organizationId={organizationId} sessionScope={sessionScope} productId={productId} canView={bootstrap.data?.capabilities.productView === true} openProduct={(id) => { pushProductLocation(id); setProductId(id); }} backToCatalog={() => { pushProductLocation(); setProductId(""); }} /> : page === "artwork" ? <ArtworkWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.artworkView === true} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : page === "production" ? <ProductionWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.productionView === true} canWork={bootstrap.data?.capabilities.productionWork === true} canComplete={bootstrap.data?.capabilities.productionComplete === true} /> : page === "fulfillment" ? <FulfillmentWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.fulfillmentView === true} canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true} canShip={bootstrap.data?.capabilities.fulfillmentShip === true} csrfReady={Boolean(bootstrap)} /> : page === "invoices" || page === "payments" ? <FinanceWorkspace mode={page === "payments" ? "ledger" : "invoices"} organizationId={organizationId} sessionScope={sessionScope} canIssue={bootstrap.data?.capabilities.invoiceIssue === true} canPaymentView={bootstrap.data?.capabilities.paymentView === true} canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true} canRefundIssue={bootstrap.data?.capabilities.refundIssue === true} csrfReady={Boolean(bootstrap)} openOrder={(id) => { setOrderId(id); setPage("orders"); }} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }} /> : <>
+      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "customers" ? <CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} canView={bootstrap.data?.capabilities.customerView === true} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); }} backToCatalog={() => { pushCustomerLocation(); setCustomerId(""); }} /> : page === "products" ? <ProductWorkspace organizationId={organizationId} sessionScope={sessionScope} productId={productId} canView={bootstrap.data?.capabilities.productView === true} openProduct={(id) => { pushProductLocation(id); setProductId(id); }} backToCatalog={() => { pushProductLocation(); setProductId(""); }} /> : page === "artwork" ? <ArtworkWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.artworkView === true} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : page === "production" ? <ProductionWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.productionView === true} canWork={bootstrap.data?.capabilities.productionWork === true} canComplete={bootstrap.data?.capabilities.productionComplete === true} /> : page === "fulfillment" ? <FulfillmentWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.fulfillmentView === true} canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true} canShip={bootstrap.data?.capabilities.fulfillmentShip === true} csrfReady={Boolean(bootstrap)} /> : page === "invoices" || page === "payments" ? <FinanceWorkspace mode={page === "payments" ? "ledger" : "invoices"} organizationId={organizationId} sessionScope={sessionScope} canIssue={bootstrap.data?.capabilities.invoiceIssue === true} canPaymentView={bootstrap.data?.capabilities.paymentView === true} canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true} canRefundIssue={bootstrap.data?.capabilities.refundIssue === true} csrfReady={Boolean(bootstrap)} openOrder={(id) => { pushOrderLocation(id); setOrderId(id); setPage("orders"); }} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }} /> : <>
         {page === "orders" ? (
           <OrdersPage
             organizationId={organizationId}
             setOrganizationId={(next) => { setOrganizationId(next); setOrderId(""); }}
             sessionScope={sessionScope}
             orderId={orderId}
-            setOrderId={setOrderId}
+            setOrderId={(id) => { pushOrderLocation(id || undefined); setOrderId(id); }}
             bootstrap={bootstrap.data}
+            openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }}
           />
         ) : (
           <QuotesPage
@@ -215,11 +220,12 @@ export const App = ({
             setOrganizationId={(nextOrganizationId) => { setOrganizationId(nextOrganizationId); setQuoteId(""); }}
             sessionScope={sessionScope}
             quoteId={quoteId}
-            setQuoteId={setQuoteId}
+            setQuoteId={(id) => { pushQuoteLocation(id || undefined); setQuoteId(id); }}
             quote={quote.data}
           error={quote.error ?? bootstrap.error}
             loading={quote.isFetching}
             load={(id) => {
+              pushQuoteLocation(id);
               setQuoteId(id);
               setNotice("");
             }}
@@ -239,7 +245,8 @@ export const App = ({
             canSend={bootstrap.data?.capabilities.quoteSend === true}
             canConvert={bootstrap.data?.capabilities.quoteConvert === true}
             csrfReady={bootstrap.isSuccess}
-            openOrder={(id) => { setOrderId(id); setPage("orders"); }}
+            openOrder={(id) => { pushOrderLocation(id); setOrderId(id); setPage("orders"); }}
+            openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }}
           />
         )}
       </>}
@@ -297,18 +304,18 @@ const SalesPagination = ({ cursor, nextCursor, setCursor }: Readonly<{ cursor: s
 const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
   const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
   const list = useSalesQuotes(props.sessionScope, props.organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
-  return <section className="lab v2-sales-workspace">
+  return <section className="lab v2-sales-workspace"><header className="v2-sales-page-heading"><div><p className="eyebrow">Sales / Quotes</p><h1>Quotes</h1><p>Pricing and lifecycle actions remain authoritative server operations.</p></div><span>Read and write</span></header>
     <div className="card grid"><label className="field">Sales organization<input value={props.organizationId} onChange={(event) => { setCursor(""); props.setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Quotes<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="draft">Draft</option><option value="sent">Sent</option><option value="accepted">Accepted</option><option value="converted">Converted</option></select></label></div>
     {props.organizationId && !props.quoteId && <><SalesList kind="Quote" items={list.data?.items ?? []} onOpen={props.setQuoteId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}
     <QuoteWorkspace {...props} />
   </section>;
 };
 
-const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap }>) => {
+const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void }>) => {
   const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
   const list = useSalesOrders(sessionScope, organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
-  if (orderId) return <OrderWorkspace organizationId={organizationId} sessionScope={sessionScope} orderId={orderId} canEdit={bootstrap?.capabilities.orderEdit === true} canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true} canViewInvoice={bootstrap?.capabilities.invoiceView === true} csrfReady={Boolean(bootstrap)} onBack={() => setOrderId("")} />;
-  return <section className="lab v2-sales-workspace"><div className="card grid"><label className="field">Organization ID<input value={organizationId} onChange={(event) => { setCursor(""); setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Orders<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="open">Open</option><option value="cancelled">Cancelled</option></select></label></div>{organizationId && <><SalesList kind="Order" items={list.data?.items ?? []} onOpen={setOrderId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}</section>;
+  if (orderId) return <OrderWorkspace organizationId={organizationId} sessionScope={sessionScope} orderId={orderId} canEdit={bootstrap?.capabilities.orderEdit === true} canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true} canViewInvoice={bootstrap?.capabilities.invoiceView === true} csrfReady={Boolean(bootstrap)} onBack={() => setOrderId("")} openCustomer={openCustomer} />;
+  return <section className="lab v2-sales-workspace"><header className="v2-sales-page-heading"><div><p className="eyebrow">Sales / Orders</p><h1>Orders</h1><p>Frozen commercial truth, Billing relationship, and Routing context.</p></div><span>Read and write</span></header><div className="card grid"><label className="field">Organization ID<input value={organizationId} onChange={(event) => { setCursor(""); setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Orders<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="open">Open</option><option value="cancelled">Cancelled</option></select></label></div>{organizationId && <><SalesList kind="Order" items={list.data?.items ?? []} onOpen={setOrderId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}</section>;
 };
 
 type WorkspaceProps = Readonly<{
@@ -334,6 +341,7 @@ type WorkspaceProps = Readonly<{
   canConvert?: boolean;
   csrfReady: boolean;
   openOrder?: (orderId: string) => void;
+  openCustomer?: (customerId: string) => void;
 }>;
 
 const QuoteWorkspace = ({
@@ -355,6 +363,7 @@ const QuoteWorkspace = ({
   canConvert = false,
   csrfReady,
   openOrder,
+  openCustomer,
 }: WorkspaceProps) => {
   const queryClient = useQueryClient();
   const [openQuoteId, setOpenQuoteId] = useState("");
@@ -741,6 +750,7 @@ const QuoteWorkspace = ({
               </label>
             </div>
             <div className="actions v2-document-actions">
+              <button className="button secondary" onClick={() => openCustomer?.(quote.quote.customerContact.customerId)}>Open Customer</button>
               <button
                 className="button secondary"
                 disabled={!canEdit || save.isPending || !csrfReady || Boolean(quote.quote.convertedOrderId)}
