@@ -1,6 +1,6 @@
 # M5 DEV live-validation record
 
-**Decision:** `M5.1 BLOCKED`
+**Decision:** `M5.1 NOT READY`
 **Validation date:** 2026-08-17  
 **Authoritative source / deployed DEV commit:** `v2/reconstruction` and `dev` at
 `85f9bca0b72e6d01035b35221e4f31c5a02c38bf`.
@@ -48,6 +48,62 @@ resume M5.1 at authenticated compatibility reads; do not begin storage work.
 Commercial tax parity remains `INSUFFICIENT_EVIDENCE`. Supabase Storage was
 not changed or used, and file-backed Artwork/Proofing/Prepress validation
 remains unperformed.
+
+## M5.1A real-account authority and legacy-data convergence
+
+**Date:** 2026-08-17
+**Source / deployed DEV commit:** `5b8320ab9981923dceb9efe14535ec26b8457bca`
+
+The real active Owner session on the clone was audited without exposing user,
+session, credential, or customer data. It had an active legacy `owner`
+membership, an active `owner` template-backed V2 permission-set assignment,
+and an active organization set. Its 33 effective capabilities included
+Customer, Sales, Invoice, Routing, and limited Fulfillment authority, but it
+lacked all later Artwork, Proofing, Prepress, Production, Fulfillment view/ship,
+and `payment.view` capabilities.
+
+This was a permission-convergence defect: later domain migrations extended
+the shared templates but intentionally did not copy those grants into already
+created template-backed organization sets. Migration
+`0209_v2_template_permission_convergence` synchronizes only managed sets with
+non-null `source_template_key` from their declared template; custom sets are
+not touched. It advances the owning organization authority revision only when
+new grants are inserted. The migration applied successfully on the clone,
+advanced the V2 ledger to 204 rows, and passed all 55 release checks.
+
+After the repair, the active Owner resolves all 49 active current capabilities,
+including every previously missing operational and financial capability. Live
+DEV requests to Artwork, Proofing, Prepress, Production, Fulfillment, and
+Finance now return authenticated successful empty states. This proves fresh,
+permission-set-based issuance; no legacy-role fallback or Owner bypass was
+introduced.
+
+| Workspace | V1 data exists? | V2 data exists? | Current V2 read source / live result | Classification | Required action |
+| --- | --- | --- | --- | --- | --- |
+| Customers | 295 | Compatibility source | `customers`/contact links; live API returns paged records | COMPATIBLE | None for M5.1A |
+| Contacts | 302 | Customer-detail projection | Shown in Customer detail; no standalone navigation/page | UI_MISSING | Add bounded Contacts workspace later |
+| Products | 20 active; 19 sellable PBV2 | Compatibility source | active Product + matching ACTIVE PBV2 tree; live API returns 19 | COMPATIBLE | Investigate only if the UI again disagrees with API |
+| Quotes | 15 | 0 | `v2_sales_documents` + quote details only; live empty | LEGACY_PROJECTION_MISSING | Choose deliberate historical-read/archive strategy |
+| Orders | 108 | 0 | `v2_sales_documents` + order details only; live empty | LEGACY_PROJECTION_MISSING | Do not bulk-convert in M5.1 |
+| Artwork | 448 Order attachments, 12 Quote attachments | 0 | V2 Artwork files/assignments only; live empty | LEGACY_PROJECTION_MISSING | Defer with Storage alignment |
+| Proofing | No dedicated legacy proof table identified | 0 | V2 proof work/version history only; live empty | INTENTIONALLY_DEFERRED | Defer file-backed workflow validation |
+| Prepress | 479 legacy line-item files | 0 | V2 prepress units only; live empty | LEGACY_PROJECTION_MISSING | Defer with Artwork/Storage strategy |
+| Production | 192 jobs | 0 | V2 ProductionWork/Attempt only; live empty | LEGACY_PROJECTION_MISSING | Define historical operational archive/projection |
+| Routing | Historical order context exists | 0 | V2 route templates/instances only; live empty | V2_NEW_DATA_ONLY | Do not infer route position from legacy state |
+| Fulfillment | 52 events, 3 shipments | 0 | V2 immutable handoffs only; live empty | LEGACY_PROJECTION_MISSING | Define read/archive boundary |
+| Invoices | 41 | 0 | V2 Billing-owned invoices only; live empty | LEGACY_PROJECTION_MISSING | Preserve history; no bulk migration in M5.1 |
+| Payments | 3 | 0 | V2 immutable payment/refund allocations only; live empty | LEGACY_PROJECTION_MISSING | Preserve history; no bulk migration in M5.1 |
+
+The appropriate historical commercial direction remains an explicit
+read-only/archive compatibility strategy followed by V2-only new transactional
+records. A bulk copy into V2 commercial tables would require a separate safety
+case for immutable snapshots, Quote-to-Order lineage, numbering, tax, Billing
+ownership, payments, artwork, routing, operations, idempotency, and tenancy.
+
+M5.1 remains incomplete because the controlled new V2 Quote -> Order -> Draft
+Invoice proof has not yet been performed. No customer communication, payment,
+accounting, carrier, workflow, hot-folder, webhook, Supabase object, or MAIN
+mutation occurred in M5.1A.
 
 ## Pre-cutover rollback state
 
