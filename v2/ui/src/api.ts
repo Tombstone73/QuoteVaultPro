@@ -796,8 +796,16 @@ export type CustomerWorkspaceRead = Readonly<{
     billingAddress?: Readonly<{ lines: readonly string[]; city?: string; region?: string; postalCode?: string; countryCode?: string }>;
     shippingAddress?: Readonly<{ lines: readonly string[]; city?: string; region?: string; postalCode?: string; countryCode?: string }>;
   }>;
+  contacts: readonly Readonly<{ contactId: string; displayName: string; email?: string; phone?: string }>[];
+}>;
+export type CustomerCatalogItem = Readonly<{
+  customerId: string; displayName: string; companyName: string; email?: string; phone?: string;
+  primaryContact?: Readonly<{ contactId: string; displayName: string; email?: string; phone?: string }>;
 }>;
 export const customerApi = {
+  list: (organizationId: string, query = "") => request<{ items: readonly CustomerCatalogItem[] }>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/customers${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+  ),
   get: (organizationId: string, customerId: string) =>
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,

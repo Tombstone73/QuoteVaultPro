@@ -1,4 +1,6 @@
 export type ProductLocation = Readonly<{ productId?: string }>;
+export type CustomerLocation = Readonly<{ customerId?: string }>;
+export type WorkspaceLocation = Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -16,3 +18,18 @@ export const readProductLocation = (pathname = window.location.pathname): Produc
 };
 export const productPath = (id?: string) => id ? `/products/${encodeURIComponent(id)}` : "/products";
 export const pushProductLocation = (id?: string) => window.history.pushState({}, "", productPath(id));
+export const readCustomerLocation = (pathname = window.location.pathname): CustomerLocation | null => {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 1 && parts[0] === "customers") return {};
+  if (parts.length === 2 && parts[0] === "customers") return productId(parts[1]) ? { customerId: productId(parts[1]) } : null;
+  return null;
+};
+/** Extend the Product slice's one small history adapter; unrelated shell destinations stay state-driven. */
+export const readWorkspaceLocation = (pathname = window.location.pathname): WorkspaceLocation | null => {
+  const product = readProductLocation(pathname);
+  if (product) return { page: "products", ...product };
+  const customer = readCustomerLocation(pathname);
+  return customer ? { page: "customers", ...customer } : null;
+};
+export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
+export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));

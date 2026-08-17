@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { productPath, readProductLocation } from "./productRouting";
+import { customerPath, productPath, readCustomerLocation, readProductLocation, readWorkspaceLocation } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.deepEqual(readProductLocation("/products/product-a"), { productId: "product-a" });
@@ -7,3 +7,9 @@ assert.deepEqual(readProductLocation("/products/product%2Da"), { productId: "pro
 assert.equal(readProductLocation("/products/%2Fwrong"), null);
 assert.equal(readProductLocation("/quotes"), null);
 assert.equal(productPath("product a"), "/products/product%20a");
+assert.deepEqual(readCustomerLocation("/customers"), {});
+assert.deepEqual(readCustomerLocation("/customers/customer-a"), { customerId: "customer-a" });
+assert.equal(readCustomerLocation("/customers/%2Fwrong"), null);
+assert.deepEqual(readWorkspaceLocation("/customers/customer-a"), { page: "customers", customerId: "customer-a" });
+assert.deepEqual(readWorkspaceLocation("/products/product-a"), { page: "products", productId: "product-a" });
+assert.equal(customerPath("customer a"), "/customers/customer%20a");

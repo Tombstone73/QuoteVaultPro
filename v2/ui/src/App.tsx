@@ -43,7 +43,7 @@ import { FulfillmentWorkspace } from "./FulfillmentWorkspace";
 import { FinanceWorkspace } from "./FinanceWorkspace";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import { ProductWorkspace } from "./ProductWorkspace";
-import { pushProductLocation, readProductLocation } from "./productRouting";
+import { pushCustomerLocation, pushProductLocation, readWorkspaceLocation } from "./productRouting";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -161,10 +161,11 @@ export const App = ({
   }, [queryClient]);
   useEffect(() => {
     const applyBrowserLocation = () => {
-      const location = readProductLocation();
+      const location = readWorkspaceLocation();
       if (!location) return;
-      setPage("products");
-      setProductId(location.productId ?? "");
+      setPage(location.page);
+      if (location.page === "products") setProductId(location.productId ?? "");
+      else setCustomerId(location.customerId ?? "");
     };
     applyBrowserLocation();
     window.addEventListener("popstate", applyBrowserLocation);
@@ -186,13 +187,17 @@ export const App = ({
       pushProductLocation();
       setProductId("");
     }
+    if (nextPage === "customers") {
+      pushCustomerLocation();
+      setCustomerId("");
+    }
     setPage(nextPage);
     if (nextPage === "quotes") setOrderId("");
     if (nextPage === "orders") setQuoteId("");
   };
   return (
     <V2VisualShell page={page} onNavigate={navigate} appearance={appearance} setAppearance={setAppearance}>
-      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "customers" ? <CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} canView={bootstrap.data?.capabilities.customerView === true} /> : page === "products" ? <ProductWorkspace organizationId={organizationId} sessionScope={sessionScope} productId={productId} canView={bootstrap.data?.capabilities.productView === true} openProduct={(id) => { pushProductLocation(id); setProductId(id); }} backToCatalog={() => { pushProductLocation(); setProductId(""); }} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : page === "production" ? <ProductionWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.productionView === true} canWork={bootstrap.data?.capabilities.productionWork === true} canComplete={bootstrap.data?.capabilities.productionComplete === true} /> : page === "fulfillment" ? <FulfillmentWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.fulfillmentView === true} canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true} canShip={bootstrap.data?.capabilities.fulfillmentShip === true} csrfReady={Boolean(bootstrap)} /> : page === "invoices" || page === "payments" ? <FinanceWorkspace mode={page === "payments" ? "ledger" : "invoices"} organizationId={organizationId} sessionScope={sessionScope} canIssue={bootstrap.data?.capabilities.invoiceIssue === true} canPaymentView={bootstrap.data?.capabilities.paymentView === true} canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true} canRefundIssue={bootstrap.data?.capabilities.refundIssue === true} csrfReady={Boolean(bootstrap)} openOrder={(id) => { setOrderId(id); setPage("orders"); }} openCustomer={(id) => { setCustomerId(id); setPage("customers"); }} /> : <>
+      {page === "appearance" ? <AppearanceWorkspace appearance={appearance} setAppearance={setAppearance} /> : page === "customers" ? <CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} canView={bootstrap.data?.capabilities.customerView === true} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); }} backToCatalog={() => { pushCustomerLocation(); setCustomerId(""); }} /> : page === "products" ? <ProductWorkspace organizationId={organizationId} sessionScope={sessionScope} productId={productId} canView={bootstrap.data?.capabilities.productView === true} openProduct={(id) => { pushProductLocation(id); setProductId(id); }} backToCatalog={() => { pushProductLocation(); setProductId(""); }} /> : page === "proofing" ? <ProofingWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.proofView === true} /> : page === "prepress" ? <PrepressWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.prepressView === true} canWork={bootstrap.data?.capabilities.prepressWork === true} canComplete={bootstrap.data?.capabilities.prepressComplete === true} /> : page === "production" ? <ProductionWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.productionView === true} canWork={bootstrap.data?.capabilities.productionWork === true} canComplete={bootstrap.data?.capabilities.productionComplete === true} /> : page === "fulfillment" ? <FulfillmentWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.fulfillmentView === true} canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true} canShip={bootstrap.data?.capabilities.fulfillmentShip === true} csrfReady={Boolean(bootstrap)} /> : page === "invoices" || page === "payments" ? <FinanceWorkspace mode={page === "payments" ? "ledger" : "invoices"} organizationId={organizationId} sessionScope={sessionScope} canIssue={bootstrap.data?.capabilities.invoiceIssue === true} canPaymentView={bootstrap.data?.capabilities.paymentView === true} canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true} canRefundIssue={bootstrap.data?.capabilities.refundIssue === true} csrfReady={Boolean(bootstrap)} openOrder={(id) => { setOrderId(id); setPage("orders"); }} openCustomer={(id) => { pushCustomerLocation(id); setCustomerId(id); setPage("customers"); }} /> : <>
         {page === "orders" ? (
           <OrdersPage
             organizationId={organizationId}
