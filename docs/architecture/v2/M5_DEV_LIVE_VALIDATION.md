@@ -28,6 +28,16 @@ The subsequently authorized deployment path was rechecked against the authentica
 
 The authenticated Railway account contains only `PrintersHero-PRODUCTION`, `PrintersHero-DEV`, and `prepresshero`; the current intended DEV project has no dedicated V2 service. The authenticated Vercel team likewise has no dedicated V2 project, and neither V2 DEV hostname resolves. No secrets, service configuration, database, DNS record, Vercel project, or Git deployment branch was changed during this recheck.
 
+### 2026-08-17 full Railway account/environment/scope discovery
+
+The Railway public API was then used for the account-wide, names-only discovery required by the deployment instruction. Each accessible environment reported by the account and every shared and service variable scope was inspected. The exact scopes were:
+
+- `PrintersHero-PRODUCTION` / `production`: shared; `PrintersHero-PRODUCTION` service.
+- `PrintersHero-DEV` / `Development`: shared; `Printershero-DEV` service.
+- `prepresshero` / `production`: shared; `gotenberg`, `Redis`, `prepresshero`, and `prepresshero-workers` services.
+
+`V2_DATABASE_URL`, `V2_SESSION_SECRET`, and `V2_PUBLIC_WEB_ORIGIN` were absent from every inspected scope. No related `V2_*` variable name appeared. This includes the production scopes, which were inspected only to satisfy the search and were not used or changed. Railway reported no additional accessible projects or environments, and no dormant or dedicated V2 service.
+
 ## Database provenance and migration status
 
 The deployment contract requires a distinct `V2_DATABASE_URL` and explicitly rejects a legacy `DATABASE_URL` fallback. The local environment contained neither a V2 database URL nor a Neon/provider credential. The inspected Railway DEV project contains no managed database resource; its V1 service database is externally managed. Safe metadata sufficient to prove that external source is specifically V1 DEV, and provider access necessary to create an isolated branch/clone, were not available.
@@ -49,8 +59,8 @@ The following remain deliberately unperformed: isolated database provisioning an
 
 ## Exact blocker and next required input
 
-**REQUIRED EXISTING RAILWAY V2 ENVIRONMENT VARIABLES NOT FOUND**
+**V2 VARIABLES NOT FOUND AFTER FULL ACCOUNT/ENVIRONMENT/SERVICE SEARCH**
 
-Before the approved V2 deployment can continue, make the already-provisioned V2 environment/service identifiable in the authenticated `PrintersHero-DEV` project, or provide its exact Railway project/environment/service context. It must contain V2-only `V2_DATABASE_URL`, `V2_SESSION_SECRET`, and `V2_PUBLIC_WEB_ORIGIN`. No legacy `DATABASE_URL` will be substituted, and no V1 or production resource will be inspected or changed.
+Reconcile the project owner's known V2 configuration with this authenticated Railway account, or provide a Railway login/workspace/project/environment/service context that contains the existing V2-only `V2_DATABASE_URL`, `V2_SESSION_SECRET`, and `V2_PUBLIC_WEB_ORIGIN` variables. No legacy `DATABASE_URL` will be substituted, and no V1 or production resource will be changed.
 
 No DEV live validation has been claimed.
