@@ -14,9 +14,11 @@ import { assertV2BillingPhysicalPostconditions, checkV2BillingPhysicalPostcondit
 import { assertV2RoutingPhysicalPostconditions, checkV2RoutingPhysicalPostconditions } from "../infrastructure/routing/routingPhysicalPostconditions.js";
 import { PostgresOrderTransactionRunner } from "../infrastructure/sales/postgresOrderTransaction.js";
 import { PostgresBillingReadRunner } from "../infrastructure/billing/postgresBillingRead.js";
+import { PostgresBillingInvoiceTransactionRunner } from "../infrastructure/billing/postgresBillingInvoiceTransaction.js";
 import { PostgresPermissionAuthorityReader } from "../infrastructure/authorization/postgresPermissionAuthorityRead.js";
 import { PermissionSetPrincipalIssuer } from "../src/authorization/permissionSets.js";
 import { OrderApplicationService } from "../src/modules/sales/orderApplication.js";
+import { BillingApplicationService } from "../src/modules/billing/billingApplication.js";
 import { brandedId } from "../src/modules/shared/commercialValues.js";
 import { loadV2RuntimeConfig } from "../src/config/runtimeConfig.js";
 import { createV2HttpApp } from "../src/interfaces/http/app.js";
@@ -66,7 +68,7 @@ async function main() {
       await client.query("INSERT INTO user_organizations(user_id,organization_id,role,is_active) VALUES($1,$3,'owner',true),($2,$3,'member',true)", [user,limited,org]);
       await client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1)", [org]);
       await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$3,'Order','order','staff'),($2,$3,'Limited','limited','staff')", [set,limitedSet,org]);
-      for (const cap of ["order.view","order.create","order.edit","order.overridePrice","invoice.view"]) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)",[org,set,cap]);
+      for (const cap of ["order.view","order.create","order.edit","order.overridePrice","invoice.view","invoice.issue"]) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)",[org,set,cap]);
       for (const cap of ["order.view","order.create","order.edit","invoice.view"]) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)",[org,limitedSet,cap]);
       await client.query("INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id) VALUES($1,$2,$3),($1,$4,$5)",[org,user,set,limited,limitedSet]);
       await client.query("INSERT INTO customers(id,organization_id,company_name,display_name,is_active,status) VALUES($1,$2,'M19 Customer','M19 Customer',true,'active')",[customer,org]);
@@ -244,7 +246,8 @@ async function main() {
       const purchaseOrderBeforeIssue = winner.value.order.order.purchaseOrderNumber;
       const routesBeforeIssue = JSON.stringify(winner.value.order.routes);
       const auditBeforeIssue = await client.query<{count:number}>("SELECT count(*)::int count FROM v2_audit_events WHERE organization_id=$1 AND resource_id=$2",[org,created.value.order.order.orderId]);
-      await client.query("UPDATE v2_billing_invoices SET invoice_state='issued',issued_at=now() WHERE organization_id=$1 AND id=$2",[org,created.value.draftInvoiceId]);
+      const issued=await new BillingApplicationService(new PostgresBillingReadRunner(pool),undefined,new PostgresBillingInvoiceTransactionRunner(pool)).issueInvoice(context(staff,org,`m19-issue-${x}`),{organizationId:brandedId<"OrganizationId">(org),invoiceId:brandedId<"InvoiceId">(created.value.draftInvoiceId),businessRequestId:brandedId<"BusinessRequestId">(`m19-issue-${x}`)});
+      assert(issued.ok,"canonical Invoice issuance failed before non-Draft guard proof");
       const blocked=await service.update(context(staff,org,`m19-issued-${x}`),{businessRequestId:`m19-issued-${x}`,orderId:created.value.order.order.orderId,expectedRevision:beforeIssue,patch:{purchaseOrderNumber:"MUST-ROLLBACK"}});
       assert(!blocked.ok && blocked.error.code==="CONFLICT","non-Draft Invoice allowed Order divergence");
       const afterBlocked=await service.read(context(staff,org,`m19-read-${x}`),created.value.order.order.orderId);

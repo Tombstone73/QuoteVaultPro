@@ -54,6 +54,7 @@ export type IssuedInvoiceCheckpoint = Readonly<{
   lines: readonly InvoiceIssuedLineSnapshot[];
 }>;
 export type IssuedInvoiceBoundary = Readonly<{ invoiceId: InvoiceId; status: "issued"; checkpointId: InvoiceCheckpointId; silentOrderSynchronization: false }>;
+export type IssuedInvoiceResult = Readonly<{ invoice: DraftInvoiceReadModel; checkpoint: IssuedInvoiceCheckpoint; boundary: IssuedInvoiceBoundary }>;
 
 export interface BillingPort {
   createDraftInvoice(input: CreateDraftInvoiceInput): Promise<DraftInvoiceSynchronizationResult>;
