@@ -649,9 +649,12 @@ export class OrderApplicationService {
         brandedId<"OrganizationId">(context.organizationId),
         line.productTypeId,
       );
-      if (!productType || productType.routePolicy.kind === "unconfigured")
+      if (!productType)
         throw new V2ApplicationError("CONFLICT", "The Product Type routing policy is not configured for this Order line.");
-      if (productType.routePolicy.kind === "no_route") continue;
+      // A Product Type that is explicitly unconfigured has no Routing
+      // instruction. Preserve that truthful state by creating no synthetic
+      // route; only a missing Product Type is an integrity conflict.
+      if (productType.routePolicy.kind === "no_route" || productType.routePolicy.kind === "unconfigured") continue;
       const route = await tx.routing.instantiateRoute({
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         work: {

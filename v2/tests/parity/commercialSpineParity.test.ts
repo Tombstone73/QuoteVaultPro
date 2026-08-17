@@ -42,7 +42,7 @@ const productInput = (productId: string, quantity: number, selections: Readonly<
 };
 
 /** In-memory transaction adapters exercise V2 applications without a shared database. */
-const createFixtureRuntime = () => {
+const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "unconfigured" }> = {}) => {
   const pricing = new V2PricingParityAdapter();
   let quoteRead: QuoteReadModel | undefined;
   const checkpoints = new Map<string, QuoteCheckpoint>();
@@ -53,7 +53,7 @@ const createFixtureRuntime = () => {
   const products = {
     resolveActivePricingInput: async (input: { productId: string; quantity: number; selections?: Record<string, unknown>; dimensions?: { width: string; height: string; unit: "in" } }) => ({ ok: true as const, value: productInput(input.productId, input.quantity, input.selections, input.dimensions) }),
     resolveCurrentRoutingProduct: async (_org: OrganizationId, productId: string) => ({ productTypeId: brandedId<"ProductTypeId">(productId === "banner" ? "print-route" : "stock-no-route") }),
-    resolveProductType: async (_org: OrganizationId, productTypeId: string) => ({ id: brandedId<"ProductTypeId">(productTypeId), routePolicy: productTypeId === "print-route" ? { kind: "route_required" as const, defaultRouteTemplateId: brandedId<"RouteTemplateId">("print-template") } : { kind: "no_route" as const } }),
+    resolveProductType: async (_org: OrganizationId, productTypeId: string) => ({ id: brandedId<"ProductTypeId">(productTypeId), routePolicy: productTypeId === "print-route" ? { kind: "route_required" as const, defaultRouteTemplateId: brandedId<"RouteTemplateId">("print-template") } : options.yardRouting === "unconfigured" ? { kind: "unconfigured" as const } : { kind: "no_route" as const } }),
   };
   const customers = {
     validateContactReference: async () => true,
@@ -183,5 +183,36 @@ describe("M5 commercial spine parity baseline", () => {
     expect(parity.classification).toBe("PARITY");
     expect(runtime.audits).toEqual(expect.arrayContaining(["quote_created", "quote_sent", "quote_accepted"]));
     expect(normalizeParityValue(v2)).toEqual(normalizeParityValue(v1Captured));
+  });
+
+  test("converts an accepted Quote without synthesizing Routing when its Product Type is unconfigured", async () => {
+    const runtime = createFixtureRuntime({ yardRouting: "unconfigured" });
+    const created = await runtime.quote.create(context("unconfigured-create"), {
+      businessRequestId: "unconfigured-create", customerContact,
+      lines: [{ productId: "yard-sign", quantity: 1 }],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw created.error;
+    const sent = await runtime.quote.send(context("unconfigured-send"), {
+      businessRequestId: "unconfigured-send", quoteId: created.value.quote.quote.quoteId,
+      expectedRevision: created.value.quote.revision,
+    });
+    expect(sent.ok).toBe(true);
+    if (!sent.ok) throw sent.error;
+    const accepted = await runtime.quote.accept(context("unconfigured-accept"), {
+      businessRequestId: "unconfigured-accept", quoteId: created.value.quote.quote.quoteId,
+      expectedRevision: sent.value.quote.revision,
+    });
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) throw accepted.error;
+    const converted = await runtime.conversion.convert(context("unconfigured-convert"), {
+      organizationId, quoteId: created.value.quote.quote.quoteId,
+      sourceCheckpointId: accepted.value.checkpointId!,
+      businessRequestId: brandedId<"BusinessRequestId">("unconfigured-convert"),
+      expectedStateToken: accepted.value.quote.revision,
+    });
+    expect(converted.ok).toBe(true);
+    expect(runtime.routes).toEqual([]);
+    expect(runtime.invoiceInput?.salesLines).toHaveLength(1);
   });
 });
