@@ -17,6 +17,8 @@ import { PostgresQuoteFormReads } from "./postgresQuoteFormReads.js";
 import { PostgresSalesWorkspaceReads } from "./postgresSalesWorkspaceReads.js";
 import { PostgresCustomerWorkspaceReader } from "../compatibility/postgresCustomerWorkspaceRead.js";
 import type { CustomerHttpDependencies } from "../../src/interfaces/http/customerRoutes.js";
+import { PostgresProductWorkspaceReads } from "../products/postgresProductWorkspaceReads.js";
+import type { ProductHttpDependencies } from "../../src/interfaces/http/productRoutes.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -27,6 +29,7 @@ export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
 export type AuthenticatedQuoteRuntime = Readonly<{
   dependencies: QuoteHttpDependencies;
   customerDependencies: CustomerHttpDependencies;
+  productDependencies: ProductHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 
@@ -52,6 +55,7 @@ export const composeAuthenticatedQuoteRuntime = (
       workspace: new PostgresSalesWorkspaceReads(input.pool),
     },
     customerDependencies: { customers: new PostgresCustomerWorkspaceReader(input.pool), principals },
+    productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

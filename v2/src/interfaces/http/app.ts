@@ -22,6 +22,7 @@ import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressR
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
 import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
 import { createCustomerRouter, type CustomerHttpDependencies } from "./customerRoutes.js";
+import { createProductRouter, type ProductHttpDependencies } from "./productRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -29,6 +30,7 @@ export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
 export type AuthenticatedQuoteRouteRuntime = Readonly<{
   dependencies: QuoteHttpDependencies;
   customerDependencies: CustomerHttpDependencies;
+  productDependencies: ProductHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -93,8 +95,10 @@ export const createV2HttpApp = (
             organizationId,
           );
           const policy = new AuthorityPolicy();
-          if (!policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed)
-            return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Quote access is unavailable." } });
+          const quoteView = policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed;
+          const productView = policy.decide(principal, { capability: "product.view", resource: { organizationId } }).allowed;
+          if (!quoteView && !productView)
+            return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "V2 workspace access is unavailable." } });
           return response.status(200).json({
             ok: true,
             data: {
@@ -103,6 +107,7 @@ export const createV2HttpApp = (
               sessionScope: issueV2SessionScope(request),
               capabilities: {
                 customerView: policy.decide(principal, { capability: "customer.view", resource: { organizationId } }).allowed,
+                productView,
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
                 quoteCreate: policy.decide(principal, { capability: "quote.create", resource: { organizationId } }).allowed,
                 quoteEdit: policy.decide(principal, { capability: "quote.edit", resource: { organizationId } }).allowed,
@@ -161,6 +166,13 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createCustomerRouter(quote.customerDependencies),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/products",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      createProductRouter(quote.productDependencies),
     );
   if (order)
     app.use(

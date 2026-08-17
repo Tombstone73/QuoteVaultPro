@@ -64,6 +64,7 @@ export type UiBootstrap = Readonly<{
   sessionScope: string;
   capabilities: Readonly<{
     customerView?: boolean;
+    productView?: boolean;
     quoteOverridePrice: boolean;
     quoteCreate?: boolean;
     quoteEdit?: boolean;
@@ -97,6 +98,14 @@ export type UiBootstrap = Readonly<{
 export type SalesListPage<T> = Readonly<{
   items: readonly T[];
   nextCursor?: string;
+}>;
+export type ProductCatalogItem = Readonly<{
+  productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean;
+  pricingConfiguration: Readonly<{ id: string; version: string; contentHash: string }>;
+}>;
+export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & {
+  productTypeId?: string; routePolicy: "route_required" | "no_route" | "unconfigured";
+  activeConfiguration: Readonly<{ schemaVersion: number; publishedAt?: string; fields: ReadonlyArray<Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; choices: ReadonlyArray<Readonly<{ value: string | number | boolean; label: string }>>; }>>; }>;
 }>;
 export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentAvailability = Readonly<{
@@ -793,6 +802,14 @@ export const customerApi = {
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,
     ),
+};
+export const productApi = {
+  list: (organizationId: string, query = "") => request<{ items: readonly ProductCatalogItem[] }>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/products${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+  ),
+  get: (organizationId: string, productId: string) => request<ProductWorkspaceDetail>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,
+  ),
 };
 export const financeApi = {
   overview: (organizationId: string) =>
