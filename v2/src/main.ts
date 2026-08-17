@@ -18,6 +18,7 @@ import { composeAuthenticatedBillingRuntime, type AuthenticatedBillingRuntimeDep
 import { composeAuthenticatedArtworkRuntime, type AuthenticatedArtworkRuntimeDependencies } from "../infrastructure/artwork/authenticatedArtworkRuntime.js";
 import { composeAuthenticatedProofingRuntime, type AuthenticatedProofingRuntimeDependencies } from "../infrastructure/proofing/authenticatedProofingRuntime.js";
 import { composeAuthenticatedPrepressRuntime, type AuthenticatedPrepressRuntimeDependencies } from "../infrastructure/prepress/authenticatedPrepressRuntime.js";
+import { composeAuthenticatedProductionRuntime, type AuthenticatedProductionRuntimeDependencies } from "../infrastructure/production/authenticatedProductionRuntime.js";
 
 export type RunningV2Server = Readonly<{
   close: () => Promise<void>;
@@ -33,6 +34,7 @@ export const startV2Server = async (
     authenticatedArtwork?: AuthenticatedArtworkRuntimeDependencies;
     authenticatedProofing?: AuthenticatedProofingRuntimeDependencies;
     authenticatedPrepress?: AuthenticatedPrepressRuntimeDependencies;
+    authenticatedProduction?: AuthenticatedProductionRuntimeDependencies;
   }> = {},
 ): Promise<RunningV2Server> => {
   const quote = dependencies.authenticatedQuote
@@ -45,7 +47,8 @@ export const startV2Server = async (
   const artwork = dependencies.authenticatedArtwork ? composeAuthenticatedArtworkRuntime(dependencies.authenticatedArtwork) : undefined;
   const proofing = dependencies.authenticatedProofing ? composeAuthenticatedProofingRuntime(dependencies.authenticatedProofing) : undefined;
   const prepress = dependencies.authenticatedPrepress ? composeAuthenticatedPrepressRuntime(dependencies.authenticatedPrepress) : undefined;
-  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress);
+  const production = dependencies.authenticatedProduction ? composeAuthenticatedProductionRuntime(dependencies.authenticatedProduction) : undefined;
+  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress, production);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);

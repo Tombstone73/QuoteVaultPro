@@ -33,6 +33,7 @@
     "v2:m2:prepress:contracts": "tsx v2/tests/modules/prepressContracts.test.ts",
     "v2:m2:prepress": "tsx v2/scripts/runM22PrepressRehearsal.ts",
     "v2:m2:prepress:browser": "playwright test --config v2/playwright.m225.config.ts",
+    "v2:m2:production:browser": "playwright test --config v2/playwright.m235.config.ts",
     "v2:m2:production-requirements:contracts": "tsx v2/tests/modules/productionRequirementsContracts.test.ts",
     "v2:m2:production-requirements": "tsx v2/scripts/runM221ProductionRequirementsRehearsal.ts",
     "v2:m2:production:contracts": "tsx v2/tests/modules/productionContracts.test.ts",

@@ -1,0 +1,11 @@
+import type { RequestHandler } from "express";
+import type { Pool } from "pg";
+import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
+import { IssuedV2PrincipalProvider, type TrustedHostIdentitySource } from "../authentication/trustedHostPrincipalProvider.js";
+import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets.js";
+import { ProductionApplicationService } from "../../src/modules/production/productionApplication.js";
+import type { ProductionHttpDependencies } from "../../src/interfaces/http/productionRoutes.js";
+import { PostgresProductionTransactionRunner } from "./postgresProductionTransaction.js";
+export type AuthenticatedProductionRuntimeDependencies=Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;trustedHostMiddleware:RequestHandler;service?:ProductionApplicationService}>;
+export type AuthenticatedProductionRuntime=Readonly<{dependencies:ProductionHttpDependencies;trustedHostMiddleware:RequestHandler}>;
+export const composeAuthenticatedProductionRuntime=(input:AuthenticatedProductionRuntimeDependencies):AuthenticatedProductionRuntime=>({dependencies:{service:input.service??new ProductionApplicationService(new PostgresProductionTransactionRunner(input.pool)),principals:new IssuedV2PrincipalProvider(input.trustedHostIdentity,new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)))},trustedHostMiddleware:input.trustedHostMiddleware});

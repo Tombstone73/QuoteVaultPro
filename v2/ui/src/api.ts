@@ -60,6 +60,7 @@ export type UiBootstrap = Readonly<{
     artworkView?: boolean; artworkAssign?: boolean;
     proofView?: boolean; proofPrepare?: boolean; proofIssue?: boolean; proofRespond?: boolean;
     prepressView?: boolean; prepressWork?: boolean; prepressComplete?: boolean;
+    productionView?: boolean; productionWork?: boolean; productionComplete?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
@@ -109,6 +110,8 @@ export type PrepressUnit = Readonly<{prepressUnitId:string;organizationId:string
 export type ProductionRequirementCoverage = Readonly<{requirement:Readonly<{key:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number}>;artworkAssignmentIds:readonly string[];prepressUnits:readonly PrepressUnit[];productionArtworkCovered:boolean;prepressComplete:boolean}>;
 export type OrderLinePrepressCoverage = Readonly<{state:"unconfigured"|"configured";requirements:readonly ProductionRequirementCoverage[];productionArtworkComplete:boolean;allRequiredPrepressUnitsComplete:boolean}>;
 export type PrepressQueueItem = Readonly<{orderId:string;orderNumber:string;customerDisplayName:string;orderLineId:string;lineDescription:string;quantity:number;requestedDueDate?:string;routingStepKind?:"proofing"|"prepress"|"production"|"fulfillment";coverage:OrderLinePrepressCoverage}>;
+export type ProductionAttempt=Readonly<{productionAttemptId:string;productionWorkId:string;sequence:number;kind:"initial"|"reprint"|"correction";stationKey:"flatbed"|"roll";goodQuantity:number;wasteQuantity:number;startedAt:string;completedAt?:string}>;
+export type ProductionWorkProjection=Readonly<{work:Readonly<{productionWorkId:string;orderId:string;orderLineId:string;requirement:ProductionRequirementCoverage["requirement"];artworkAssignmentId:string;artworkFileId:string;prepressUnitId?:string;orderedQuantity:number}>;attempts:readonly ProductionAttempt[];completedGoodQuantity:number;unitQuantitySatisfied:boolean}>;
 export type Selection = Readonly<{ customerId?: string; contactId?: string; productId?: string; displayName: string; measurementMode?: "dimensions_required" | "quantity_only"; requiresDimensions?: boolean }>;
 export type ProductConfiguration = Readonly<{ productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean; supportedDimensionUnits: readonly ("in" | "ft" | "mm")[]; effectiveSelections: Record<string, unknown>; fields: readonly Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; defaultValue?: unknown; choices: readonly Readonly<{ value: string | number | boolean; label: string }>[] }>[] }>;
 const csrfTokens = new Map<string, string>();
@@ -294,6 +297,16 @@ export const prepressApi={
   open:(org:string,businessRequestId:string,artworkAssignmentId:string)=>prepressMutation<{unit:PrepressUnit}>(org,"/units",businessRequestId,{artworkAssignmentId}),
   start:(org:string,prepressUnitId:string,businessRequestId:string)=>prepressMutation<{unit:PrepressUnit}>(org,`/units/${encodeURIComponent(prepressUnitId)}/start`,businessRequestId,{}),
   complete:(org:string,prepressUnitId:string,businessRequestId:string)=>prepressMutation<{unit:PrepressUnit}>(org,`/units/${encodeURIComponent(prepressUnitId)}/complete`,businessRequestId,{}),
+};
+const productionEndpoint=(org:string,suffix="")=>`/v2/organizations/${encodeURIComponent(org)}/production${suffix}`;
+const productionMutation=<T>(org:string,suffix:string,businessRequestId:string,input:Record<string,unknown>)=>request<T>(productionEndpoint(org,suffix),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({...input,businessRequestId})});
+export const productionApi={
+ queue:(org:string,station:"flatbed"|"roll")=>request<readonly ProductionWorkProjection[]>(productionEndpoint(org,`/stations/${station}/queue?limit=50`)),
+ get:(org:string,id:string)=>request<ProductionWorkProjection>(productionEndpoint(org,`/works/${encodeURIComponent(id)}`)),
+ open:(org:string,businessRequestId:string,artworkAssignmentId:string)=>productionMutation<{work:ProductionWorkProjection["work"]}>(org,"/works",businessRequestId,{artworkAssignmentId}),
+ start:(org:string,workId:string,businessRequestId:string,stationKey:"flatbed"|"roll",kind:"initial"|"reprint"|"correction")=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/attempts`,businessRequestId,{stationKey,kind}),
+ output:(org:string,attemptId:string,businessRequestId:string,goodQuantityDelta:number)=>productionMutation<unknown>(org,`/attempts/${encodeURIComponent(attemptId)}/output`,businessRequestId,{goodQuantityDelta}),
+ complete:(org:string,attemptId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/attempts/${encodeURIComponent(attemptId)}/complete`,businessRequestId,{}),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

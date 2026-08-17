@@ -26,6 +26,7 @@ import { composeAuthenticatedBillingRuntime } from "../infrastructure/billing/au
 import { composeAuthenticatedArtworkRuntime } from "../infrastructure/artwork/authenticatedArtworkRuntime.js";
 import { composeAuthenticatedProofingRuntime } from "../infrastructure/proofing/authenticatedProofingRuntime.js";
 import { composeAuthenticatedPrepressRuntime } from "../infrastructure/prepress/authenticatedPrepressRuntime.js";
+import { composeAuthenticatedProductionRuntime } from "../infrastructure/production/authenticatedProductionRuntime.js";
 import { ArtworkApplicationService } from "../src/modules/artwork/artworkApplication.js";
 import { PostgresArtworkTransactionRunner } from "../infrastructure/artwork/postgresArtworkTransaction.js";
 import { OrderApplicationService } from "../src/modules/sales/orderApplication.js";
@@ -75,7 +76,7 @@ const createFixture = async (client: PoolClient): Promise<BrowserFixture> => {
     await client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1),($2)", [f.organizationA, f.organizationB]);
     await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$2,'Sales','sales','staff'),($3,$2,'Limited','limited','staff'),($4,$5,'Sales','sales','staff')", [f.salesSetA, f.organizationA, limitedSet, salesSetB, f.organizationB]);
     for (const [org, set] of [[f.organizationA, f.salesSetA], [f.organizationB, salesSetB]] as const)
-      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete"])
+      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete", "production.view", "production.work", "production.complete"])
         await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [org, set, capability]);
     for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "order.view", "order.edit", "invoice.view", "artwork.view", "proof.view"])
       await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [f.organizationA, limitedSet, capability]);
@@ -242,6 +243,33 @@ const main = async () => {
         return response.status(204).end();
       } catch (error) { next(error); }
     });
+    app.post("/_v2-browser-test/enter-production", fixtureAdmin, async (request, response, next) => { try { const orderId=String(request.body?.orderId??""),orderLineId=String(request.body?.orderLineId??""); const step=await pool.query<{id:string}>("SELECT s.id FROM v2_route_instances r JOIN v2_route_instance_steps s ON s.organization_id=r.organization_id AND s.route_instance_id=r.id WHERE r.organization_id=$1 AND r.order_document_id=$2 AND r.order_line_id=$3 AND s.step_kind='production'",[fixture!.organizationA,orderId,orderLineId]);if(!step.rows[0])return response.status(404).end();await pool.query("UPDATE v2_route_instances SET route_state='active',current_step_id=$4 WHERE organization_id=$1 AND order_document_id=$2 AND order_line_id=$3",[fixture!.organizationA,orderId,orderLineId,step.rows[0].id]);response.status(204).end();}catch(error){next(error);} });
+    /** Test-only authoritative Production readback. It returns only immutable
+     * work/attempt evidence and server-verified attribution, never sessions or
+     * credentials. The route snapshot proves Production does not mutate Routing. */
+    app.get("/_v2-browser-test/production-readback/:productionWorkId", fixtureAdmin, async (request, response, next) => {
+      try {
+        const organizationId = fixture!.organizationA, productionWorkId = request.params.productionWorkId;
+        const [work, attempts, route, invoice, operations, audit] = await Promise.all([
+          pool.query("SELECT id,order_document_id,order_line_id,requirement_key,side,source_page_index,layer_key,layer_order,artwork_assignment_id,artwork_file_id,prepress_unit_id,ordered_quantity FROM v2_production_works WHERE organization_id=$1 AND id=$2", [organizationId, productionWorkId]),
+          pool.query("SELECT id,sequence,attempt_kind,station_key,good_quantity,waste_quantity,started_at,completed_at,started_staff_actor_user_id,completed_staff_actor_user_id FROM v2_production_attempts WHERE organization_id=$1 AND production_work_id=$2 ORDER BY sequence", [organizationId, productionWorkId]),
+          pool.query("SELECT r.id,r.route_state,r.current_step_id,array_agg(json_build_object('id',s.id,'position',s.position,'kind',s.step_kind) ORDER BY s.position) AS steps FROM v2_production_works w JOIN v2_route_instances r ON r.organization_id=w.organization_id AND r.order_document_id=w.order_document_id AND r.order_line_id=w.order_line_id JOIN v2_route_instance_steps s ON s.organization_id=r.organization_id AND s.route_instance_id=r.id WHERE w.organization_id=$1 AND w.id=$2 GROUP BY r.id,r.route_state,r.current_step_id", [organizationId, productionWorkId]),
+          pool.query("SELECT i.id,i.invoice_state,i.total_cents FROM v2_production_works w LEFT JOIN v2_billing_invoices i ON i.organization_id=w.organization_id AND i.sales_order_document_id=w.order_document_id WHERE w.organization_id=$1 AND w.id=$2", [organizationId, productionWorkId]),
+          pool.query("SELECT operation,business_request_id,status,result_resource_type,result_resource_id FROM v2_operation_requests WHERE organization_id=$1 AND result_resource_type IN ('production_work','production_attempt') AND result_resource_id IN (SELECT id FROM v2_production_works WHERE organization_id=$1 AND id=$2 UNION SELECT id FROM v2_production_attempts WHERE organization_id=$1 AND production_work_id=$2) ORDER BY created_at", [organizationId, productionWorkId]),
+          pool.query("SELECT event_type,resource_id,staff_actor_user_id FROM v2_audit_events WHERE organization_id=$1 AND resource_type IN ('production_work','production_attempt') AND resource_id IN (SELECT id FROM v2_production_works WHERE organization_id=$1 AND id=$2 UNION SELECT id FROM v2_production_attempts WHERE organization_id=$1 AND production_work_id=$2) ORDER BY created_at", [organizationId, productionWorkId]),
+        ]);
+        const current = work.rows[0];
+        if (!current) return response.status(404).json({ ok: false });
+        response.json({ ok: true, data: {
+          work: current,
+          attempts: attempts.rows.map((row) => ({ ...row, startedStaffActorVerified: row.started_staff_actor_user_id === fixture!.staffA, completedStaffActorVerified: row.completed_at ? row.completed_staff_actor_user_id === fixture!.staffA : undefined })),
+          route: route.rows[0] ?? null,
+          invoice: invoice.rows[0] ?? null,
+          operations: operations.rows,
+          audit: audit.rows.map((row) => ({ event_type: row.event_type, resource_id: row.resource_id, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })),
+        } });
+      } catch (error) { next(error); }
+    });
     /** Test-only PostgreSQL readback validates that standard Proofing HTTP writes stayed atomic and attributable. */
     app.get("/_v2-browser-test/proof-readback/:proofWorkId", fixtureAdmin, async (request, response, next) => {
       try {
@@ -257,7 +285,8 @@ const main = async () => {
       } catch (error) { next(error); }
     });
     app.use(express.static(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../dist-v2-ui"), { index: "index.html" }));
-    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime, artworkRuntime, proofingRuntime, prepressRuntime));
+    const productionRuntime=composeAuthenticatedProductionRuntime({pool,trustedHostIdentity,trustedHostMiddleware});
+    app.use(createV2HttpApp(loadV2RuntimeConfig({ NODE_ENV: "test", V2_PORT: process.env.V2_M175B_PORT ?? "4174" }), { log: () => undefined }, undefined, runtime, orderRuntime, billingRuntime, artworkRuntime, proofingRuntime, prepressRuntime, productionRuntime));
     const port = Number(process.env.V2_M175B_PORT ?? "4174");
     const server = app.listen(port, "127.0.0.1", () => console.log(`[m175b] ready on ${port}`));
     const close = async () => { server.close(); if (fixture) { await pool.query("DELETE FROM organizations WHERE id=ANY($1::text[])", [[fixture.organizationA, fixture.organizationB]]); await pool.query("DELETE FROM users WHERE id=ANY($1::text[])", [[fixture.staffA, fixture.limitedA, fixture.staffB]]); } client.release(); await pool.end(); };

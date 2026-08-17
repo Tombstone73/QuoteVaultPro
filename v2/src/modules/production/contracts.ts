@@ -26,6 +26,13 @@ export type ProductionAttempt = Readonly<{
 export type ProductionWorkProjection = Readonly<{
   work: ProductionWork; attempts: readonly ProductionAttempt[]; completedGoodQuantity: number; unitQuantitySatisfied: boolean;
 }>;
+/**
+ * Bounded station projection. Attempted work derives its station from the
+ * durable attempt; an untouched eligible work appears as Next up in either
+ * station until its first attempt selects one. No pre-assigned station state
+ * or Kanban column is persisted.
+ */
+export type ProductionStationQueueItem = ProductionWorkProjection;
 export type OpenProductionWorkInput = Readonly<{ businessRequestId: string; artworkAssignmentId: ArtworkAssignmentId }>;
 export type StartProductionAttemptInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; stationKey: ProductionStationKey; kind: ProductionAttemptKind }>;
 export type RecordProductionOutputInput = Readonly<{ businessRequestId: string; productionAttemptId: ProductionAttemptId; goodQuantityDelta: number; wasteQuantityDelta?: number }>;
