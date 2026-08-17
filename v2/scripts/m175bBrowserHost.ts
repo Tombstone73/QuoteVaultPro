@@ -77,7 +77,7 @@ const createFixture = async (client: PoolClient): Promise<BrowserFixture> => {
     await client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1),($2)", [f.organizationA, f.organizationB]);
     await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,principal_kind) VALUES($1,$2,'Sales','sales','staff'),($3,$2,'Limited','limited','staff'),($4,$5,'Sales','sales','staff')", [f.salesSetA, f.organizationA, limitedSet, salesSetB, f.organizationB]);
     for (const [org, set] of [[f.organizationA, f.salesSetA], [f.organizationB, salesSetB]] as const)
-      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete", "production.view", "production.work", "production.complete", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship"])
+      for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "quote.convert", "quote.overridePrice", "order.view", "order.edit", "order.overridePrice", "invoice.view", "invoice.issue", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete", "production.view", "production.work", "production.complete", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship"])
         await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [org, set, capability]);
     for (const capability of ["quote.view", "quote.create", "quote.edit", "quote.send", "order.view", "order.edit", "invoice.view", "artwork.view", "proof.view"])
       await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [f.organizationA, limitedSet, capability]);
@@ -184,6 +184,21 @@ const main = async () => {
         ]);
         if (!document.rows[0]) return response.status(404).json({ ok: false });
         response.json({ ok: true, data: { document: document.rows[0], lines: lines.rows, invoice: invoice.rows[0] ?? null, routes: routes.rows, conversion: conversion.rows[0] ?? null, audit: audit.rows.map((row) => ({ event_type: row.event_type, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })) } });
+      } catch (error) { next(error); }
+    });
+    /** Test-only authoritative verification for an Invoice issued through the real HTTP/UI boundary. */
+    app.get("/_v2-browser-test/invoice-readback/:invoiceId", fixtureAdmin, async (request, response, next) => {
+      try {
+        const invoiceId = request.params.invoiceId, organizationId = fixture!.organizationA;
+        const [invoice, lines, checkpoints, audit, operations, handoffs] = await Promise.all([
+          pool.query("SELECT id,sales_order_document_id,invoice_state,total_cents,source_sales_state_token,issued_at,issued_principal_kind,issued_staff_actor_user_id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2", [organizationId, invoiceId]),
+          pool.query("SELECT source_sales_line_id,description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 ORDER BY position", [organizationId, invoiceId]),
+          pool.query("SELECT id,checkpoint_json FROM v2_billing_invoice_checkpoints WHERE organization_id=$1 AND invoice_id=$2", [organizationId, invoiceId]),
+          pool.query("SELECT event_type,staff_actor_user_id FROM v2_audit_events WHERE organization_id=$1 AND resource_type='invoice' AND resource_id=$2 ORDER BY created_at", [organizationId, invoiceId]),
+          pool.query("SELECT operation,business_request_id,status FROM v2_operation_requests WHERE organization_id=$1 AND result_resource_type='invoice' AND result_resource_id=$2 ORDER BY created_at", [organizationId, invoiceId]),
+          pool.query("SELECT id FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=(SELECT sales_order_document_id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2)", [organizationId, invoiceId]),
+        ]);
+        response.json({ ok: true, data: { invoice: invoice.rows[0] ?? null, lines: lines.rows, checkpoints: checkpoints.rows, audit: audit.rows.map((row) => ({ event_type: row.event_type, staffActorVerified: row.staff_actor_user_id === fixture!.staffA })), operations: operations.rows, fulfillmentHandoffCount: handoffs.rowCount } });
       } catch (error) { next(error); }
     });
     /** Test-only authoritative verification for browser-created customer handoffs. */

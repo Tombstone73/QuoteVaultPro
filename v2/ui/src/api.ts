@@ -56,7 +56,7 @@ export type UiBootstrap = Readonly<{
   capabilities: Readonly<{
     quoteOverridePrice: boolean; quoteCreate?: boolean; quoteEdit?: boolean;
     quoteSend?: boolean; quoteConvert?: boolean; orderView?: boolean;
-    orderEdit?: boolean; orderOverridePrice?: boolean; invoiceView?: boolean;
+    orderEdit?: boolean; orderOverridePrice?: boolean; invoiceView?: boolean; invoiceIssue?: boolean;
     artworkView?: boolean; artworkAssign?: boolean;
     proofView?: boolean; proofPrepare?: boolean; proofIssue?: boolean; proofRespond?: boolean;
     prepressView?: boolean; prepressWork?: boolean; prepressComplete?: boolean;
@@ -99,10 +99,13 @@ export type OrderRead = Readonly<{
 }>;
 export type OrderResult = Readonly<{ order: OrderRead; draftInvoiceId: string }>;
 export type InvoiceRead = Readonly<{
-  invoiceId: string; organizationId: string; sourceOrderId: string; lifecycle: "draft" | "issued" | "void";
+  invoiceId: string; organizationId: string; sourceOrderId: string; sourceOrderNumber?: string; customerId?: string;
+  customerPresentation?: { customerDisplayName?: string; contactDisplayName?: string; companyName?: string; email?: string; phone?: string; billingAddress?: { lines: readonly string[]; city?: string; region?: string; postalCode?: string; countryCode?: string } };
+  lifecycle: "draft" | "issued" | "void"; synchronizationVersion: string; purchaseOrderNumber?: string; termsCode?: string; issuedAt?: string; createdAt: string; updatedAt: string;
   currency: string; lines: readonly Readonly<{ sourceOrderLineId: string; productId: string; description: string; quantity: number; sellingUnitAmount: { cents: number; currency: string }; lineAmount: { cents: number; currency: string } }>[];
   subtotal: { cents: number; currency: string }; taxTotal: { cents: number; currency: string }; total: { cents: number; currency: string };
 }>;
+export type InvoiceListItem = Readonly<{ invoiceId: string; sourceOrderId: string; sourceOrderNumber: string; customerId?: string; lifecycle: InvoiceRead["lifecycle"]; customerPresentation?: InvoiceRead["customerPresentation"]; currency: string; total: InvoiceRead["total"]; issuedAt?: string; updatedAt: string }>;
 export type ArtworkOrderProjection = Readonly<{
   assignment: Readonly<{ id: string; artworkFileId: string; orderId: string; orderLineId: string; purpose: "customer_supplied" | "production" | "proof" | "reference"; side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; createdAt: string }>;
   file: Readonly<{ id: string; originalFilename: string; displayFilename: string; contentType: string; byteSize: number; source: "customer_upload" | "prepress_derived" | "imported"; pageCount?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number; derivedFromArtworkFileId?: string; createdAt: string }>;
@@ -277,8 +280,10 @@ export const orderApi = {
   },
 };
 export const invoiceApi = {
+  list: (organizationId: string, query?: Readonly<{ q?: string; lifecycle?: InvoiceRead["lifecycle"] }>) => request<SalesListPage<InvoiceListItem>>(withSearch(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices`, query)),
   get: (organizationId: string, invoiceId: string) =>
     request<InvoiceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}`),
+  issue: (organizationId: string, invoiceId: string, businessRequestId: string) => request<Readonly<{ invoice: InvoiceRead }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}/issue`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId }) }),
 };
 export const artworkApi = {
   forOrder: (organizationId: string, orderId: string) => request<readonly ArtworkOrderProjection[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`),

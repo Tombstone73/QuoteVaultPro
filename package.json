@@ -41,6 +41,7 @@
     "v2:m3:fulfillment": "tsx v2/scripts/runM3FulfillmentRehearsal.ts",
     "v2:m3:billing": "tsx v2/scripts/runM3BillingInvoiceRehearsal.ts",
     "v2:m3:fulfillment:browser": "playwright test --config v2/playwright.m3.config.ts",
+    "v2:m3:billing:browser": "playwright test --config v2/playwright.m34.config.ts",
     "v2:m1:quote-conversion:contracts": "jest --runInBand v2/tests/modules/quoteConversionContracts.test.ts",
     "v2:m1:quote-conversion": "tsx v2/scripts/runM110QuoteConversionRehearsal.ts",
     "db:push": "drizzle-kit push",

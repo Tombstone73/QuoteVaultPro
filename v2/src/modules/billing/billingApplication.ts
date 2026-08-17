@@ -7,7 +7,7 @@ import { brandedId, type InvoiceCheckpointId, type OrganizationId } from "../sha
 import { canonicalJson, type BusinessRequestId } from "../shared/commercialValues.js";
 import { createHash, randomUUID } from "node:crypto";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
-import type { BillingReadPort, DraftInvoiceReadModel, IssuedInvoiceCheckpoint, IssuedInvoiceResult, IssueInvoiceInput } from "./contracts.js";
+import type { BillingReadPort, DraftInvoiceReadModel, InvoiceListRequest, InvoiceListItem, IssuedInvoiceCheckpoint, IssuedInvoiceResult, IssueInvoiceInput } from "./contracts.js";
 
 export interface BillingReadRunner { read<T>(action: (port: BillingReadPort) => Promise<T>): Promise<T>; }
 type Actor=Readonly<{principalKind:OperationContext["principal"]["kind"];principalSubject:string;staffActorUserId?:string}>;
@@ -42,6 +42,18 @@ export class BillingApplicationService {
       return success(invoice);
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Invoice could not be read."));
+    }
+  }
+  async listInvoices(context: OperationContext, request: InvoiceListRequest): Promise<ApplicationResult<readonly InvoiceListItem[]>> {
+    try {
+      requireOperationPrincipalScope(context);
+      const visible = await this.runner.read((port) => port.listInvoices(brandedId<"OrganizationId">(context.organizationId), request));
+      const invoices = visible.filter((invoice) => this.authority.decide(context.principal, { capability: "invoice.view", resource: { organizationId: context.organizationId, customerId: invoice.customerId } }).allowed);
+      if (!invoices.length && !this.authority.decide(context.principal, { capability: "invoice.view", resource: { organizationId: context.organizationId, customerId: context.principal.kind === "portal" ? context.principal.customerId : undefined } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "The principal cannot view Invoices.");
+      return success(invoices);
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Invoices could not be listed."));
     }
   }
   async issueInvoice(context:OperationContext,input:IssueInvoiceInput):Promise<ApplicationResult<IssuedInvoiceResult>>{

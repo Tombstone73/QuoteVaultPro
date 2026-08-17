@@ -4,6 +4,9 @@ import type {
   BillingPort,
   BillingReadPort,
   DraftInvoiceReadModel,
+  InvoiceListItem,
+  InvoiceListRequest,
+  IssuedInvoiceCheckpoint,
   CreateDraftInvoiceInput,
   DraftInvoiceSynchronizationInput,
   DraftInvoiceSynchronizationResult,
@@ -158,12 +161,37 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     return this.readModel("i.sales_order_document_id=$2 AND i.invoice_state='draft'", organizationId, orderId);
   }
 
+  async listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]> {
+    const limit = Number.isInteger(request.limit) ? Math.max(1, Math.min(request.limit!, 50)) : 25;
+    const rows = await this.client.query<{ id: string; sales_order_document_id: string; display_number: string; invoice_state: InvoiceState; currency: string; customer_id: string | null; total_cents: string; issued_at: Date | null; updated_at: Date; customer_display_name: string | null }>(
+      `SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_state,i.currency,i.customer_id,i.total_cents,i.issued_at,i.updated_at,
+        COALESCE(c.display_name,c.company_name) AS customer_display_name
+       FROM v2_billing_invoices i
+       JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
+       LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
+       WHERE i.organization_id=$1
+         AND ($2::text IS NULL OR d.display_number ILIKE '%' || $2 || '%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%' || $2 || '%')
+         AND ($3::text IS NULL OR i.invoice_state=$3)
+       ORDER BY i.updated_at DESC,i.id DESC LIMIT $4`,
+      [organizationId, request.query?.trim() || null, request.lifecycle ?? null, limit],
+    );
+    return rows.rows.map((row) => {
+      const currency = currencyCode(row.currency);
+      return {
+        invoiceId: brandedId<"InvoiceId">(row.id), sourceOrderId: brandedId<"OrderId">(row.sales_order_document_id), sourceOrderNumber: row.display_number, ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}),
+        lifecycle: row.invoice_state, currency, total: money(currency, Number(row.total_cents)), updatedAt: row.updated_at.toISOString(),
+        ...(row.customer_display_name ? { customerPresentation: { customerDisplayName: row.customer_display_name } } : {}),
+        ...(row.issued_at ? { issuedAt: row.issued_at.toISOString() } : {}),
+      };
+    });
+  }
+
   private async readModel(predicate: string, organizationId: OrganizationId, identity: string): Promise<DraftInvoiceReadModel | null> {
     const result = await this.client.query<{
-      id: string; sales_order_document_id: string; invoice_state: InvoiceState; currency: string; customer_id: string | null;
+      id: string; sales_order_document_id: string; display_number: string; invoice_state: InvoiceState; currency: string; customer_id: string | null;
       synchronization_version: string; subtotal_cents: string; tax_total_cents: string; total_cents: string;
-      created_at: Date; updated_at: Date;
-    }>(`SELECT i.id,i.sales_order_document_id,i.invoice_state,i.currency,i.customer_id,i.synchronization_version,i.subtotal_cents,i.tax_total_cents,i.total_cents,i.created_at,i.updated_at FROM v2_billing_invoices i WHERE i.organization_id=$1 AND ${predicate}`, [organizationId, identity]);
+      purchase_order_number: string | null; terms_code: string | null; issued_at: Date | null; created_at: Date; updated_at: Date; customer_display_name: string | null;
+    }>(`SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_state,i.currency,i.customer_id,i.synchronization_version,i.subtotal_cents,i.tax_total_cents,i.total_cents,i.purchase_order_number,i.terms_code,i.issued_at,i.created_at,i.updated_at,COALESCE(c.display_name,c.company_name) AS customer_display_name FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND ${predicate}`, [organizationId, identity]);
     const invoice = result.rows[0];
     if (!invoice) return null;
     const currency = currencyCode(invoice.currency);
@@ -171,13 +199,18 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       "SELECT source_sales_line_id,product_id,description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 AND sales_order_document_id=$3 ORDER BY position",
       [organizationId, invoice.id, invoice.sales_order_document_id],
     );
+    const checkpoint = invoice.invoice_state === "issued" ? await this.client.query<{ checkpoint_json: IssuedInvoiceCheckpoint }>("SELECT checkpoint_json FROM v2_billing_invoice_checkpoints WHERE organization_id=$1 AND invoice_id=$2", [organizationId, invoice.id]) : undefined;
+    const currentPresentation = invoice.customer_display_name ? { customerDisplayName: invoice.customer_display_name } : undefined;
+    const issuedCheckpoint = checkpoint?.rows[0]?.checkpoint_json;
     return {
       invoiceId: brandedId<"InvoiceId">(invoice.id), organizationId,
-      sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), lifecycle: invoice.invoice_state,
+      sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), sourceOrderNumber: invoice.display_number, lifecycle: invoice.invoice_state,
       ...(invoice.customer_id ? { customerId: brandedId<"CustomerId">(invoice.customer_id) } : {}),
+      ...(issuedCheckpoint ? { customerPresentation: issuedCheckpoint.customerPresentation, issuedCheckpoint } : currentPresentation ? { customerPresentation: currentPresentation } : {}),
       currency, synchronizationVersion: invoice.synchronization_version,
       lines: lines.rows.map((line) => ({ sourceOrderLineId: brandedId<"OrderLineId">(line.source_sales_line_id), productId: brandedId<"ProductId">(line.product_id), description: line.description, quantity: line.quantity, sellingUnitAmount: money(currency, Number(line.selling_unit_cents)), lineAmount: money(currency, Number(line.selling_line_cents)) })),
       subtotal: money(currency, Number(invoice.subtotal_cents)), taxTotal: money(currency, Number(invoice.tax_total_cents)), total: money(currency, Number(invoice.total_cents)),
+      ...(invoice.purchase_order_number ? { purchaseOrderNumber: invoice.purchase_order_number } : {}), ...(invoice.terms_code ? { termsCode: invoice.terms_code } : {}), ...(invoice.issued_at ? { issuedAt: invoice.issued_at.toISOString() } : {}),
       createdAt: invoice.created_at.toISOString(), updatedAt: invoice.updated_at.toISOString(),
     };
   }

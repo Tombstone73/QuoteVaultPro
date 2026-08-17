@@ -73,7 +73,10 @@ export type DraftInvoiceReadModel = Readonly<{
   invoiceId: InvoiceId;
   organizationId: OrganizationId;
   sourceOrderId: OrderId;
+  /** The Sales-owned Order number is context, never an invented Invoice number. */
+  sourceOrderNumber?: string;
   customerId?: CustomerId;
+  customerPresentation?: CustomerPresentationIdentity;
   lifecycle: "draft" | "issued" | "void";
   currency: CurrencyCode;
   synchronizationVersion: string;
@@ -81,10 +84,29 @@ export type DraftInvoiceReadModel = Readonly<{
   subtotal: Money;
   taxTotal: Money;
   total: Money;
+  purchaseOrderNumber?: string;
+  termsCode?: string;
+  issuedAt?: string;
+  /** Billing's immutable issued document snapshot; absent while the Invoice tracks the Order. */
+  issuedCheckpoint?: IssuedInvoiceCheckpoint;
   createdAt: string;
+  updatedAt: string;
+}>;
+export type InvoiceListRequest = Readonly<{ query?: string; lifecycle?: DraftInvoiceReadModel["lifecycle"]; limit?: number }>;
+export type InvoiceListItem = Readonly<{
+  invoiceId: InvoiceId;
+  sourceOrderId: OrderId;
+  sourceOrderNumber: string;
+  customerId?: CustomerId;
+  lifecycle: DraftInvoiceReadModel["lifecycle"];
+  customerPresentation?: CustomerPresentationIdentity;
+  currency: CurrencyCode;
+  total: Money;
+  issuedAt?: string;
   updatedAt: string;
 }>;
 export interface BillingReadPort {
   readInvoice(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<DraftInvoiceReadModel | null>;
   readDraftForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null>;
+  listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]>;
 }
