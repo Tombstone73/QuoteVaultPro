@@ -4,13 +4,15 @@ import type { OperationContext } from "../../application/operation.js";
 import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { ArtworkFileId } from "../../modules/shared/commercialValues.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import type { ArtworkWorkspaceItem } from "../../../infrastructure/artwork/postgresArtworkWorkspaceReads.js";
 
 export interface ArtworkHttpService {
   listForOrder(context: OperationContext, orderId: string): Promise<ApplicationResult<unknown>>;
   assign(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
 }
 export interface VerifiedV2ArtworkPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
-export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; principals: VerifiedV2ArtworkPrincipalProvider }>;
+export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
 
 const status = (code: string): number => code === "VALIDATION_ERROR" ? 400 : code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" || code === "WRONG_TENANT" ? 404 : code === "CONFLICT" || code === "STALE_STATE" || code === "IDEMPOTENCY_CONFLICT" ? 409 : code === "RETRYABLE_FAILURE" ? 503 : 500;
 const send = (response: Response, result: ApplicationResult<unknown>): void => {
@@ -33,6 +35,16 @@ const context = async (request: Request, dependencies: ArtworkHttpDependencies, 
 /** HTTP transport for bounded Artwork reads and safe existing-file usage assignment. */
 export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Router => {
   const router = expressRouter({ mergeParams: true });
+  router.get("/workspace", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      if (!new AuthorityPolicy().decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed)
+        return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Artwork access is unavailable." } });
+      const query = typeof request.query.q === "string" ? request.query.q : "";
+      return response.status(200).json({ ok: true, data: { items: await dependencies.workspace.list(organizationId, query) } });
+    } catch { return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Authenticated access is required." } }); }
+  });
   router.get("/orders/:orderId", async (request, response) => {
     try { send(response, await dependencies.service.listForOrder(await context(request, dependencies), request.params.orderId)); }
     catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Artwork read is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }

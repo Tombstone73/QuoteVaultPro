@@ -6,11 +6,12 @@ import { PermissionSetPrincipalIssuer } from "../../src/authorization/permission
 import { ArtworkApplicationService } from "../../src/modules/artwork/artworkApplication.js";
 import type { ArtworkHttpDependencies } from "../../src/interfaces/http/artworkRoutes.js";
 import { PostgresArtworkTransactionRunner } from "./postgresArtworkTransaction.js";
+import { PostgresArtworkWorkspaceReads } from "./postgresArtworkWorkspaceReads.js";
 
 export type AuthenticatedArtworkRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; service?: ArtworkApplicationService }>;
 export type AuthenticatedArtworkRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const composeAuthenticatedArtworkRuntime = (input: AuthenticatedArtworkRuntimeDependencies): AuthenticatedArtworkRuntime => ({
-  dependencies: { service: input.service ?? new ArtworkApplicationService(new PostgresArtworkTransactionRunner(input.pool)), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
+  dependencies: { service: input.service ?? new ArtworkApplicationService(new PostgresArtworkTransactionRunner(input.pool)), workspace: new PostgresArtworkWorkspaceReads(input.pool), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
   trustedHostMiddleware: input.trustedHostMiddleware,
 });

@@ -93,6 +93,12 @@ workspace is real, mock, mixed, or not applicable (N/A).
 | Service/Storefront | Approved `/storefront/$slug`; no V2 UI route. | No audited Portal/Service DTO adapter. | Mock customers/products/checkout. | MISSING interface adapter, with Product/Customer/Sales dependencies. Portal must not implement alternate pricing, proof, billing or authority rules. | Later M4; not first slice. `storefront.$slug.tsx`. |
 | Settings, users, integrations, bug reports | Approved `/settings`, `/users`, `/integrations`, `/bugs`; no V2 routes. | No audited V2 UI contracts for these screens. | Lovable mock/local state. | MOCK-ONLY except shell placement. Settings/Authentication/Integrations/Bug Reporting are named owners but their staff adapters are later work. | Excluded from immediate convergence. respective reference routes. |
 
+## M4 Artwork / Proofing / Prepress implementation update
+
+* **Artwork — PARTIAL:** `/artwork` now exposes a bounded, authenticated, tenant-scoped catalog of canonical Artwork files through their real typed assignments. It shows file identity, Order/line context, purpose, side/page/layer, and derived-file lineage without creating a duplicate file or queue table. Upload, replacement, and assignment controls remain absent because their complete approved placement is not established.
+* **Proofing — PARTIAL:** `/proofing` is now restored by the shared client route adapter. Its existing real queue, immutable ordered ProofVersions, exact Artwork evidence, feedback history, and strict Proofing-only decision boundary remain intact. Renditions, recipients, delivery/viewed state, and Communications history are deferred.
+* **Prepress — PARTIAL:** `/prepress` is now restored by the shared client route adapter. Its existing frozen required units, exact production-Assignment coverage, missing-unit presentation, and unit-scoped operations remain intact. Preview, notes/flags, material, planning, and Production alerts remain explicitly unavailable/deferred.
+
 ## Contract disposition
 
 The matrix distinguishes missing UI from missing backend:

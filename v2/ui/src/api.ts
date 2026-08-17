@@ -885,6 +885,9 @@ export const financeApi = {
     ),
 };
 export const artworkApi = {
+  workspace: (organizationId: string, query = "") => request<{ items: readonly (ArtworkOrderProjection & Readonly<{ orderNumber: string; customerDisplayName: string; lineDescription: string }>)[] }>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+  ),
   forOrder: (organizationId: string, orderId: string) =>
     request<readonly ArtworkOrderProjection[]>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`,

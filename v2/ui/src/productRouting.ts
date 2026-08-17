@@ -1,6 +1,6 @@
 export type ProductLocation = Readonly<{ productId?: string }>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }>;
+export type WorkspaceLocation = Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "artwork" | "proofing" | "prepress" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -29,7 +29,11 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   const product = readProductLocation(pathname);
   if (product) return { page: "products", ...product };
   const customer = readCustomerLocation(pathname);
-  return customer ? { page: "customers", ...customer } : null;
+  if (customer) return { page: "customers", ...customer };
+  const page = pathname.replace(/^\/+|\/+$/gu, "");
+  return page === "artwork" || page === "proofing" || page === "prepress" ? { page } : null;
 };
 export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
 export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));
+export const workspacePath = (page: "artwork" | "proofing" | "prepress") => `/${page}`;
+export const pushWorkspaceLocation = (page: "artwork" | "proofing" | "prepress") => window.history.pushState({}, "", workspacePath(page));

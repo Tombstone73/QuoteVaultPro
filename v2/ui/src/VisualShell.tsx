@@ -47,7 +47,7 @@ import {
 import { useState } from "react";
 import type { VisualAppearance, VisualTheme } from "./appearance";
 
-export type V2VisualPage = "quotes" | "orders" | "customers" | "products" | "proofing" | "prepress" | "production" | "fulfillment" | "invoices" | "payments" | "appearance";
+export type V2VisualPage = "quotes" | "orders" | "customers" | "products" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "invoices" | "payments" | "appearance";
 
 type NavigationItem = Readonly<{
   page?: V2VisualPage;
@@ -88,7 +88,7 @@ const sections: readonly NavigationSection[] = [
     id: "ops",
     label: "Operations",
     items: [
-      { label: "Artwork", icon: Image },
+      { page: "artwork", label: "Artwork", icon: Image },
       { label: "Design", icon: PenTool },
       { page: "proofing", label: "Proofing", icon: Stamp },
       { page: "prepress", label: "Prepress", icon: Ruler },
