@@ -22,6 +22,12 @@ This is a pre-deployment record, not a claim of a live V2 deployment. The V1 DEV
 - The authenticated Vercel team is `dale-hensleys-projects`. Its existing `printershero-development` project serves the V1 DEV frontend. No V2 Vercel project was created or changed.
 - `v2-dev.printershero.com` and `api-v2-dev.printershero.com` did not resolve at preflight. No DNS-provider credentials or exact provider-generated targets were available, so no DNS record was changed.
 
+### 2026-08-17 recheck: existing V2 Railway environment authorization
+
+The subsequently authorized deployment path was rechecked against the authenticated Railway account without displaying secret values. The intended `PrintersHero-DEV` / `Development` context still contains exactly one service: the legacy `Printershero-DEV` service attached to `api-dev.printershero.com`. Its 46 configured variable names include legacy `DATABASE_URL`, but do **not** include `V2_DATABASE_URL`, `V2_SESSION_SECRET`, or `V2_PUBLIC_WEB_ORIGIN`; no optional V2 service/release/storage variable was present either.
+
+The authenticated Railway account contains only `PrintersHero-PRODUCTION`, `PrintersHero-DEV`, and `prepresshero`; the current intended DEV project has no dedicated V2 service. The authenticated Vercel team likewise has no dedicated V2 project, and neither V2 DEV hostname resolves. No secrets, service configuration, database, DNS record, Vercel project, or Git deployment branch was changed during this recheck.
+
 ## Database provenance and migration status
 
 The deployment contract requires a distinct `V2_DATABASE_URL` and explicitly rejects a legacy `DATABASE_URL` fallback. The local environment contained neither a V2 database URL nor a Neon/provider credential. The inspected Railway DEV project contains no managed database resource; its V1 service database is externally managed. Safe metadata sufficient to prove that external source is specifically V1 DEV, and provider access necessary to create an isolated branch/clone, were not available.
@@ -43,8 +49,8 @@ The following remain deliberately unperformed: isolated database provisioning an
 
 ## Exact blocker and next required input
 
-**V2 DEV DATABASE SOURCE NOT SAFELY VERIFIED**
+**REQUIRED EXISTING RAILWAY V2 ENVIRONMENT VARIABLES NOT FOUND**
 
-Provide authenticated access to the database provider (or an already-provisioned, independently identified V2 DEV database connection stored through the intended secret channel) and metadata demonstrating that the intended clone source is V1 DEV rather than production. The provider context must also permit creating a separate V2 DEV branch/database. After that is available, configure its V2-only secret in the dedicated service, apply the checked-in migrations, provision the existing canonical Staff identity and V2 permission assignment, and continue the approved parallel deployment.
+Before the approved V2 deployment can continue, make the already-provisioned V2 environment/service identifiable in the authenticated `PrintersHero-DEV` project, or provide its exact Railway project/environment/service context. It must contain V2-only `V2_DATABASE_URL`, `V2_SESSION_SECRET`, and `V2_PUBLIC_WEB_ORIGIN`. No legacy `DATABASE_URL` will be substituted, and no V1 or production resource will be inspected or changed.
 
 No DEV live validation has been claimed.
