@@ -100,7 +100,8 @@ export const createV2HttpApp = (
           const policy = new AuthorityPolicy();
           const quoteView = policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed;
           const productView = policy.decide(principal, { capability: "product.view", resource: { organizationId } }).allowed;
-          if (!quoteView && !productView)
+          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "fulfillment.view", "route.view"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
+          if (!anyWorkspaceView)
             return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "V2 workspace access is unavailable." } });
           return response.status(200).json({
             ok: true,
@@ -109,6 +110,7 @@ export const createV2HttpApp = (
               csrfToken: issueV2CsrfToken(request),
               sessionScope: issueV2SessionScope(request),
               capabilities: {
+                quoteView,
                 customerView: policy.decide(principal, { capability: "customer.view", resource: { organizationId } }).allowed,
                 productView,
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,

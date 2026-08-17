@@ -47,7 +47,7 @@ import {
 import { useState } from "react";
 import type { VisualAppearance, VisualTheme } from "./appearance";
 
-export type V2VisualPage = "quotes" | "orders" | "customers" | "products" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "appearance";
+export type V2VisualPage = "home" | "quotes" | "orders" | "customers" | "products" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "appearance";
 
 type NavigationItem = Readonly<{
   page?: V2VisualPage;
@@ -61,7 +61,7 @@ type NavigationSection = Readonly<{
 }>;
 
 const sections: readonly NavigationSection[] = [
-  { id: "home", label: "Home", items: [{ label: "Command Center", icon: LayoutDashboard }] },
+  { id: "home", label: "Home", items: [{ page: "home", label: "Command Center", icon: LayoutDashboard }] },
   {
     id: "sales",
     label: "Sales",
@@ -215,7 +215,7 @@ export const V2VisualShell = ({
                   </button>
                 )}
                 {!isClosed &&
-                  section.items.map(({ page: target, label, icon: Icon }) => (
+                  section.items.filter(({ page }) => Boolean(page)).map(({ page: target, label, icon: Icon }) => (
                     <button
                       key={label}
                       type="button"
@@ -232,16 +232,10 @@ export const V2VisualShell = ({
             );
           })}
         </nav>
-        <div className="v2-sidebar-footer">
-          <button type="button" className="v2-nav-item" title="Customer Storefront">
-            <CreditCard aria-hidden />
-            {!collapsed && <span>Customer Storefront</span>}
-          </button>
-        </div>
       </aside>
       <div className="v2-shell-main">
         <header className="v2-topbar">
-          <button type="button" className="v2-search-button" aria-label="Search V2 workspace">
+          <button type="button" className="v2-search-button" aria-label="Search V2 workspace" disabled title="Search requires a future canonical read model">
             <Search aria-hidden />
             <span>Search customers, quotes, orders, invoicesâ€¦</span>
             <kbd>Ctrl K</kbd>
@@ -259,7 +253,7 @@ export const V2VisualShell = ({
             >
               <ThemeIcon aria-hidden />
             </button>
-            <button type="button" className="v2-quiet-button" title="Report a problem">
+            <button type="button" className="v2-quiet-button" title="Bug reporting is not yet a V2 workspace" disabled>
               <Bug aria-hidden /> <span>Report a Problem</span>
             </button>
             <div className="v2-session-identity" aria-label="Authenticated V2 staff session">

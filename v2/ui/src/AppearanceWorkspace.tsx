@@ -5,6 +5,7 @@ import type {
   VisualDensity,
   VisualFont,
   VisualTheme,
+  VisualColorVision,
 } from "./appearance";
 
 const themes: readonly Readonly<{ id: VisualTheme; label: string; hint: string }>[] = [
@@ -30,6 +31,7 @@ const fonts: readonly Readonly<{ id: VisualFont; label: string }>[] = [
   { id: "roboto-condensed", label: "Roboto Condensed" },
   { id: "atkinson", label: "Atkinson Hyperlegible" },
 ];
+const colorVision: readonly Readonly<{ id: VisualColorVision; label: string }>[] = [{ id: "standard", label: "Standard" }, { id: "protan", label: "Protan" }, { id: "deutan", label: "Deutan" }, { id: "tritan", label: "Tritan" }];
 
 export const AppearanceWorkspace = ({
   appearance,
@@ -118,6 +120,12 @@ export const AppearanceWorkspace = ({
             </button>
           ))}
         </div>
+        <h2 className="v2-subhead">Text scale</h2>
+        <input aria-label="Text scale" type="range" min="0.875" max="1.125" step="0.025" value={appearance.fontScale} onChange={(event) => setAppearance({ fontScale: Number(event.target.value) })} />
+        <h2 className="v2-subhead">Color vision</h2>
+        <Segmented value={appearance.colorVision} onChange={(colorVision) => setAppearance({ colorVision })} options={colorVision} />
+        <h2 className="v2-subhead">Status emphasis</h2>
+        <label><input type="checkbox" checked={appearance.statusBoost} onChange={(event) => setAppearance({ statusBoost: event.target.checked })} /> Increase status contrast</label>
       </section>
     </div>
   </section>

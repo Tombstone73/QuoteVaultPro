@@ -63,6 +63,7 @@ export type UiBootstrap = Readonly<{
   /** Opaque session epoch, never a user/principal/capability claim. */
   sessionScope: string;
   capabilities: Readonly<{
+    quoteView?: boolean;
     customerView?: boolean;
     productView?: boolean;
     quoteOverridePrice: boolean;
