@@ -1,9 +1,53 @@
 # M5 DEV live-validation record
 
-**Decision:** `DEV LIVE VALIDATION NOT READY`
+**Decision:** `M5.1 BLOCKED`
 **Validation date:** 2026-08-17  
 **Authoritative source / deployed DEV commit:** `v2/reconstruction` and `dev` at
 `85f9bca0b72e6d01035b35221e4f31c5a02c38bf`.
+
+## M5.1 clone-backed continuation
+
+The existing DEV Railway service's canonical `DATABASE_URL` was observed, in
+the approved `PrintersHero-DEV` / `Development` context, to contain
+production-derived commercial volume rather than the prior empty QA tenant.
+The connection value was never recorded. This is the approved sanitized
+topology: **MAIN PostgreSQL -> isolated writable clone -> DEV V2**. MAIN was
+not connected to, read, or mutated.
+
+The clone initially held 179 V2-ledger rows through the pre-V2 timestamp
+boundary. The approved `v2:migrations:apply` runner applied the remaining V2
+stream; it completed successfully, reached ledger max id 203, and passed all
+55 release verification checks. The subsequent status runner reported 203
+applied rows in `public.__drizzle_migrations_v2`. No reset, table recreation,
+or V1 commercial-table destructive migration was run.
+
+Static composition review of the deployed runtime found PostgreSQL-only
+authenticated compositions for Sales, Billing, Artwork, Proofing, Prepress,
+Production, Fulfillment, and Routing. The mounted Billing routes only record
+database-local manual payment/refund facts; provider adapters are not composed.
+Invoice and financial events enqueue only PostgreSQL outbox records, with no
+dispatcher composed by the deployment server. No reachable V2 route was found
+to deliver customer email/SMS/proofs/invoices, charge a provider, write
+QuickBooks, buy shipping, invoke n8n/webhooks/hot folders, or mutate Supabase
+objects. This is source-audit evidence, not an external-system test.
+
+**Blocking authentication finding:** the Railway-configured DEV QA account is
+not an identity in the clone. Its existence, password, and membership checks
+all returned false/zero without exposing account data. Consequently no
+authenticated tenant-safe Customer, Product/PBV2, Quote, Order, Invoice, or
+historical-record read has been demonstrated through deployed V2, and no
+DEV-only commercial write was attempted. No compatibility defect in V2 has
+been established; this is a clone access/data-readiness blocker.
+
+**Required operator action:** provision or designate an approved clone-local
+Staff account with a password identity, active organization membership, and
+active V2 permission-set authority, then provide its DEV-only access through
+the established QA mechanism. Do not use MAIN credentials. After that action,
+resume M5.1 at authenticated compatibility reads; do not begin storage work.
+
+Commercial tax parity remains `INSUFFICIENT_EVIDENCE`. Supabase Storage was
+not changed or used, and file-backed Artwork/Proofing/Prepress validation
+remains unperformed.
 
 ## Pre-cutover rollback state
 
