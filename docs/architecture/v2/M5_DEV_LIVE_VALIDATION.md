@@ -1,6 +1,6 @@
 # M5 DEV live-validation record
 
-**Decision:** `DEV LIVE VALIDATION PASS - READY TO PROCEED`  
+**Decision:** `DEV LIVE VALIDATION PASS - READY TO PROCEED`
 **Validation date:** 2026-08-17  
 **Authoritative source / deployed DEV commit:** `v2/reconstruction` and `dev` at
 `85f9bca0b72e6d01035b35221e4f31c5a02c38bf`.
