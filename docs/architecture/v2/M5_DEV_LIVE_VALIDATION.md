@@ -1,9 +1,9 @@
 # M5 DEV live-validation record
 
-**Decision:** `M5.1 NOT READY`
+**Decision:** `M5.1 PASS`
 **Validation date:** 2026-08-17  
 **Authoritative source / deployed DEV commit:** `v2/reconstruction` and `dev` at
-`85f9bca0b72e6d01035b35221e4f31c5a02c38bf`.
+`8612773c401e5e37c50ca440c49edb5fb0a10877`.
 
 ## M5.1 clone-backed continuation
 
@@ -104,6 +104,63 @@ M5.1 remains incomplete because the controlled new V2 Quote -> Order -> Draft
 Invoice proof has not yet been performed. No customer communication, payment,
 accounting, carrier, workflow, hot-folder, webhook, Supabase object, or MAIN
 mutation occurred in M5.1A.
+
+## M5.1B controlled DEV commercial lifecycle proof
+
+**Date:** 2026-08-17
+**Source / deployed DEV commit:** `8612773c401e5e37c50ca440c49edb5fb0a10877`
+
+One authenticated, real Owner DEV-only lifecycle used an existing active
+Customer and associated Contact plus the existing sellable PBV2 `Retractable
+Banner` Product. Customer/contact IDs and names are intentionally omitted. The
+new V2 records are `QT-1000` and `ORD-1000`; the commercial note is explicitly
+marked `M5.1B DEV CLONE VALIDATION - DO NOT FULFILL`.
+
+The pre-write V2 baseline for the Owner organization was zero Quotes, Orders,
+lines, Quote/Order details, conversions, Invoices, and Route instances. The
+postcondition was exactly `+1` Quote, `+1` Order, `+2` Sales lines, `+1`
+conversion, `+1` Draft Invoice, and zero Routes. The two lines are the frozen
+Quote and frozen Order copies, respectively.
+
+| Stage | Result |
+| --- | --- |
+| Server-authoritative Quote pricing | PASS — one line, quantity 1, calculated/selling total `$75.00` USD |
+| Internal Send | PASS — `not_sent` -> `sent`; source review confirms this path is a database-only state transition, not delivery |
+| Accept | PASS — `not_accepted` -> `accepted`; commercial total remained `$75.00` |
+| Quote -> Order | PASS — exactly one conversion produced `ORD-1000`; the Quote became immutable commercial history |
+| Billing | PASS — exactly one Billing-owned Invoice, `draft`, `$75.00` subtotal, `$0.00` tax, `$75.00` total |
+| Routing | PASS — selected Product Type policy is `unconfigured`; no Route was manufactured and the UI truthfully displays `No route` |
+| UI readback | PASS — `QT-1000` appears in Quotes, `ORD-1000` appears in Orders, and the Draft Invoice is projected in Finance |
+
+Two non-mutating Product-selection attempts were rejected before persistence:
+Banner has an unsupported selected choice pricing override, and Coroplast has
+an unsupported active formula compatibility function. The selected
+Retractable Banner Product priced successfully through the normal server path.
+Those two product-definition compatibility findings are out-of-scope catalog
+follow-up work; no master data was changed.
+
+The initial conversion attempt exposed a lifecycle defect: the deployed code
+treated an explicitly `unconfigured` Product Type as a conversion failure,
+even though M5.1B requires that such a policy create no synthetic Route.
+`8612773c` changes only that behavior: a missing Product Type still conflicts,
+while an existing `unconfigured` Type converts without a route. Focused
+commercial-parity coverage proves that conversion retains the exactly-one
+Draft Invoice invariant and produces no Route for this policy.
+
+Sanitized postcondition readback found one Quote conversion, one Order, one
+Draft Invoice, zero transaction payments, zero refunds, and four successful
+durable V2 operation requests (create, send, accept, convert). A raw
+server-to-server replay was deliberately stopped before its POST when it could
+not authenticate as the active browser Owner; no session fallback or bypass was
+used. Live exactly-once evidence is therefore the durable request record plus
+the single persisted conversion/Invoice, supplemented by focused automated
+conversion coverage.
+
+Tax classification remains `INSUFFICIENT_EVIDENCE`: this transaction is
+mathematically consistent (`7500 = 7500 + 0` cents) but does not establish V1
+tax parity. No Payment, Invoice issuance, Refund, external communication,
+accounting write, carrier purchase, workflow/webhook, hot-folder, storage, or
+MAIN mutation occurred.
 
 ## Pre-cutover rollback state
 
@@ -210,6 +267,9 @@ a workflow blocker.
 | DEV visual / responsive | passed: desktop collision fixed; narrow no-overflow sanity check |
 | MAIN validation | unchanged; MAIN was not touched |
 
-**Next action:** provide or identify approved QA customer, product, and
-commercial records in the existing DEV tenant, then repeat the controlled
-Quote-to-Order and downstream read validation. Do not begin M6.
+**Current M5.1 outcome:** PASS. The controlled real Owner lifecycle has now
+created and read back V2-native commercial records while leaving MAIN and all
+external integrations untouched.
+
+**Next action:** define one bounded historical V1 data compatibility/archive
+strategy for commercial history. Do not begin M6 automatically.
