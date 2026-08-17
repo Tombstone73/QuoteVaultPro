@@ -1,6 +1,6 @@
 # M5 DEV live-validation record
 
-**Decision:** `DEV LIVE VALIDATION PASS - READY TO PROCEED`
+**Decision:** `DEV LIVE VALIDATION NOT READY`
 **Validation date:** 2026-08-17  
 **Authoritative source / deployed DEV commit:** `v2/reconstruction` and `dev` at
 `85f9bca0b72e6d01035b35221e4f31c5a02c38bf`.
@@ -73,6 +73,11 @@ therefore full Quote-to-Refund execution is recorded as a **TEST_DATA_LIMITATION
 not evidence of a runtime or business-integrity failure. V2 continues to retain
 M5's V1 tax-parity status of `INSUFFICIENT_EVIDENCE`.
 
+This is the readiness blocker: the cutover runbook requires a representative
+live Quote-to-Order workflow before a PASS can be issued. DEV was intentionally
+left on the healthy V2 deployment; rollback is not warranted because the
+blocker is missing approved QA records rather than a V2 failure.
+
 ## Visual, appearance, and responsive validation
 
 The authenticated V2 Command Center, Quotes, Products, and Appearance screens
@@ -105,5 +110,6 @@ a workflow blocker.
 | DEV visual / responsive | passed: desktop collision fixed; narrow no-overflow sanity check |
 | MAIN validation | unchanged; MAIN was not touched |
 
-**Next action:** inspect the reconstruction master plan and identify the next
-milestone; do not start it in this validation task.
+**Next action:** provide or identify approved QA customer, product, and
+commercial records in the existing DEV tenant, then repeat the controlled
+Quote-to-Order and downstream read validation. Do not begin M6.
