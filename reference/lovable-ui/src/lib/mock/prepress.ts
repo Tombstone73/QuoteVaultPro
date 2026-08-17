@@ -22,7 +22,6 @@ export interface ArtFile {
   uploaded: string;
   kind: "Customer" | "Production";
 }
-
 export interface PrepressJob {
   id: string;
   order: string;

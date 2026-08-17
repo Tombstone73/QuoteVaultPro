@@ -4,7 +4,8 @@
 export type DocumentType = "Quote" | "Order";
 export type QuoteStatus = "Draft" | "Sent" | "Accepted" | "Converted" | "Declined" | "Expired";
 export type OrderStatus = "Open" | "In Production" | "Ready" | "Shipped" | "Complete" | "Cancelled";
-export type InvoiceStatus = "Draft" | "Issued" | "Partially Paid" | "Paid" | "Voided";
+export type InvoiceStatus = "Draft" | "Issued";
+export type Settlement = "Unpaid" | "Partially Paid" | "Paid";
 export type RouteStepKey = "Proofing" | "Prepress" | "Production" | "Finishing" | "Fulfillment";
 export type ArtworkStatus = "Needs Artwork" | "Proof Pending" | "Approved" | "Production Ready";
 
@@ -106,6 +107,17 @@ export interface Payment {
   method: string;
   ref: string;
   amount: number;
+  by?: string | undefined;
+}
+
+export interface Refund {
+  id: string;
+  paymentId: string;
+  date: string;
+  method: string;
+  ref: string;
+  amount: number;
+  by?: string | undefined;
 }
 
 export interface Invoice {
@@ -118,6 +130,7 @@ export interface Invoice {
   dueDate?: string | undefined;
   terms: string;
   payments: Payment[];
+  refunds: Refund[];
 }
 
 export interface Material {
@@ -333,9 +346,24 @@ export const salesDocs: SalesDoc[] = [
 ];
 
 export const invoices: Invoice[] = [
-  { id: "i1", number: "INV-10671", orderId: "d2", customerId: "c1", status: "Issued", issueDate: "Aug 14, 2026", dueDate: "Sep 13, 2026", terms: "Net 30", payments: [{ id: "pay1", date: "Aug 15, 2026", method: "ACH", ref: "TRN-88213", amount: 500 }] },
-  { id: "i2", number: "INV-10672", orderId: "d3", customerId: "c5", status: "Draft", terms: "Net 45", payments: [] },
-  { id: "i3", number: "INV-10673", orderId: "d4", customerId: "c2", status: "Paid", issueDate: "Aug 12, 2026", dueDate: "Aug 27, 2026", terms: "Net 15", payments: [{ id: "pay2", date: "Aug 14, 2026", method: "Credit Card", ref: "ch_3PqL", amount: 203.52 }] },
+  {
+    id: "i1", number: "INV-10671", orderId: "d2", customerId: "c1", status: "Issued",
+    issueDate: "Aug 14, 2026", dueDate: "Sep 13, 2026", terms: "Net 30",
+    payments: [
+      { id: "pay1", date: "Aug 15, 2026", method: "ACH", ref: "TRN-88213", amount: 500, by: "Dale" },
+      { id: "pay1b", date: "Aug 16, 2026", method: "Card / Electronic", ref: "ch_3PqLm2", amount: 250, by: "Dale" },
+    ],
+    refunds: [
+      { id: "ref1", paymentId: "pay1b", date: "Aug 17, 2026", method: "Card / Electronic", ref: "re_3PqLm2", amount: 100, by: "Dale" },
+    ],
+  },
+  { id: "i2", number: "INV-10672", orderId: "d3", customerId: "c5", status: "Draft", terms: "Net 45", payments: [], refunds: [] },
+  {
+    id: "i3", number: "INV-10673", orderId: "d4", customerId: "c2", status: "Issued",
+    issueDate: "Aug 12, 2026", dueDate: "Aug 27, 2026", terms: "Net 15",
+    payments: [{ id: "pay2", date: "Aug 14, 2026", method: "Credit Card", ref: "ch_3PqL", amount: 203.52, by: "Renee" }],
+    refunds: [],
+  },
 ];
 
 export const routeTemplates = [
@@ -495,3 +523,13 @@ export const docTotal = (d: SalesDoc) => d.lines.reduce((s, l) => s + lineTotal(
 export const docTax = (d: SalesDoc) => docTotal(d) * 0.07;
 export const docGrand = (d: SalesDoc) => docTotal(d) + docTax(d);
 export const invoicePaid = (i: Invoice) => i.payments.reduce((s, p) => s + p.amount, 0);
+
+export const invoiceRefunded = (i: Invoice) => i.refunds.reduce((s, r) => s + r.amount, 0);
+export const invoiceNetPaid = (i: Invoice) => invoicePaid(i) - invoiceRefunded(i);
+export const paymentRefunded = (i: Invoice, paymentId: string) =>
+  i.refunds.filter((r) => r.paymentId === paymentId).reduce((s, r) => s + r.amount, 0);
+export const invoiceSettlement = (i: Invoice, total: number): Settlement => {
+  const net = invoiceNetPaid(i);
+  if (net <= 0.005) return "Unpaid";
+  return net >= total - 0.005 ? "Paid" : "Partially Paid";
+};

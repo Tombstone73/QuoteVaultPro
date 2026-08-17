@@ -42,6 +42,7 @@ import { Route as ShellUsersRouteImport } from './routes/_shell.users'
 import { Route as StorefrontSlugRouteImport } from './routes/storefront.$slug'
 import { Route as ShellCustomersIndexRouteImport } from './routes/_shell.customers.index'
 import { Route as ShellCustomersIdRouteImport } from './routes/_shell.customers.$id'
+import { Route as ShellInvoicesIndexRouteImport } from './routes/_shell.invoices.index'
 import { Route as ShellInvoicesIdRouteImport } from './routes/_shell.invoices.$id'
 import { Route as ShellProductsIdRouteImport } from './routes/_shell.products.$id'
 import { Route as ShellSalesIdRouteImport } from './routes/_shell.sales.$id'
@@ -210,6 +211,11 @@ const ShellCustomersIdRoute = ShellCustomersIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ShellCustomersRoute,
 } as any)
+const ShellInvoicesIndexRoute = ShellInvoicesIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ShellInvoicesRoute,
+} as any)
 const ShellInvoicesIdRoute = ShellInvoicesIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -262,6 +268,7 @@ export interface FileRoutesByFullPath {
   '/products/$id': typeof ShellProductsIdRoute
   '/sales/$id': typeof ShellSalesIdRoute
   '/customers/': typeof ShellCustomersIndexRoute
+  '/invoices/': typeof ShellInvoicesIndexRoute
 }
 export interface FileRoutesByTo {
   '/appearance': typeof ShellAppearanceRoute
@@ -274,7 +281,6 @@ export interface FileRoutesByTo {
   '/inbound': typeof ShellInboundRoute
   '/integrations': typeof ShellIntegrationsRoute
   '/inventory': typeof ShellInventoryRoute
-  '/invoices': typeof ShellInvoicesRouteWithChildren
   '/materials': typeof ShellMaterialsRoute
   '/nesting': typeof ShellNestingRoute
   '/orders': typeof ShellOrdersRoute
@@ -298,6 +304,7 @@ export interface FileRoutesByTo {
   '/products/$id': typeof ShellProductsIdRoute
   '/sales/$id': typeof ShellSalesIdRoute
   '/customers': typeof ShellCustomersIndexRoute
+  '/invoices': typeof ShellInvoicesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -337,6 +344,7 @@ export interface FileRoutesById {
   '/_shell/products/$id': typeof ShellProductsIdRoute
   '/_shell/sales/$id': typeof ShellSalesIdRoute
   '/_shell/customers/': typeof ShellCustomersIndexRoute
+  '/_shell/invoices/': typeof ShellInvoicesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -376,6 +384,7 @@ export interface FileRouteTypes {
     | '/products/$id'
     | '/sales/$id'
     | '/customers/'
+    | '/invoices/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/appearance'
@@ -388,7 +397,6 @@ export interface FileRouteTypes {
     | '/inbound'
     | '/integrations'
     | '/inventory'
-    | '/invoices'
     | '/materials'
     | '/nesting'
     | '/orders'
@@ -412,6 +420,7 @@ export interface FileRouteTypes {
     | '/products/$id'
     | '/sales/$id'
     | '/customers'
+    | '/invoices'
   id:
     | '__root__'
     | '/_shell'
@@ -450,6 +459,7 @@ export interface FileRouteTypes {
     | '/_shell/products/$id'
     | '/_shell/sales/$id'
     | '/_shell/customers/'
+    | '/_shell/invoices/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -690,6 +700,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellCustomersIdRouteImport
       parentRoute: typeof ShellCustomersRoute
     }
+    '/_shell/invoices/': {
+      id: '/_shell/invoices/'
+      path: '/'
+      fullPath: '/invoices/'
+      preLoaderRoute: typeof ShellInvoicesIndexRouteImport
+      parentRoute: typeof ShellInvoicesRoute
+    }
     '/_shell/invoices/$id': {
       id: '/_shell/invoices/$id'
       path: '/$id'
@@ -730,10 +747,12 @@ const ShellCustomersRouteWithChildren = ShellCustomersRoute._addFileChildren(
 
 interface ShellInvoicesRouteChildren {
   ShellInvoicesIdRoute: typeof ShellInvoicesIdRoute
+  ShellInvoicesIndexRoute: typeof ShellInvoicesIndexRoute
 }
 
 const ShellInvoicesRouteChildren: ShellInvoicesRouteChildren = {
   ShellInvoicesIdRoute: ShellInvoicesIdRoute,
+  ShellInvoicesIndexRoute: ShellInvoicesIndexRoute,
 }
 
 const ShellInvoicesRouteWithChildren = ShellInvoicesRoute._addFileChildren(

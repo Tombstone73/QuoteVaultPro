@@ -1,4 +1,4 @@
-import { CheckCircle, AlertTriangle, XCircle, Ban, Info, Circle } from "lucide-react";
+import { CheckCircle, AlertTriangle, XCircle, Ban, Info, Circle, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -17,7 +17,7 @@ const toneClass: Record<Tone, string> = {
 const STATUS_TONE: Record<string, Tone> = {
   Draft: "neutral", Sent: "info", Accepted: "ok", Converted: "accent", Declined: "late", Expired: "neutral",
   Open: "info", "In Production": "accent", Ready: "ok", Shipped: "ok", Complete: "neutral", Cancelled: "late",
-  Issued: "info", Paid: "ok", "Partially Paid": "warn", Voided: "late",
+  Issued: "info", Paid: "ok", "Partially Paid": "warn", Unpaid: "neutral", Voided: "late",
   Queued: "neutral", "In Progress": "accent",
   "Needs Artwork": "warn", "Proof Pending": "warn", Approved: "ok", "Production Ready": "ok",
   Connected: "ok", "Not Connected": "neutral", Error: "late",
@@ -154,3 +154,14 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
 
 export const th = "sticky top-0 z-10 bg-surface-2 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
 export const td = "px-3 py-0 align-middle text-[13px]";
+
+export function TxType({ type }: { type: "Payment" | "Refund" }) {
+  const refund = type === "Refund";
+  const Icon = refund ? ArrowUpRight : ArrowDownLeft;
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-[12px] font-medium", refund ? "text-warn" : "text-ok")}>
+      <Icon className="size-3.5" aria-hidden />
+      {type}
+    </span>
+  );
+}

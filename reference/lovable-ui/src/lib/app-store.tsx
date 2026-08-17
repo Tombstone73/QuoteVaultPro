@@ -62,7 +62,8 @@ interface Store {
   logHistory: (docId: string, what: string, kind?: "revision" | "convert" | "edit" | "status") => void;
   convertToOrder: (docId: string) => string | undefined;
   advanceLine: (docId: string, lineId: string) => void;
-  recordPayment: (invoiceId: string, amount: number, method: string) => void;
+  recordPayment: (invoiceId: string, amount: number, method: string, ref?: string) => void;
+  recordRefund: (invoiceId: string, paymentId: string, amount: number, ref?: string) => void;
   issueInvoice: (invoiceId: string) => void;
   grants: Record<string, string[]>;
   toggleGrant: (setId: string, item: string) => void;
@@ -192,7 +193,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       };
       setInvoices((inv) => [
         ...inv,
-        { id: invId, number: `INV-${newNumber}`, orderId, customerId: quote.customerId, status: "Draft", terms: "Net 30", payments: [] },
+        { id: invId, number: `INV-${newNumber}`, orderId, customerId: quote.customerId, status: "Draft", terms: "Net 30", payments: [], refunds: [] },
       ]);
       return [
         ...ds.map((d) =>
@@ -230,7 +231,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const recordPayment: Store["recordPayment"] = useCallback((invoiceId, amount, method) => {
+  const recordPayment: Store["recordPayment"] = useCallback((invoiceId, amount, method, ref) => {
     setInvoices((inv) =>
       inv.map((i) =>
         i.id === invoiceId
@@ -238,11 +239,35 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
               ...i,
               payments: [
                 ...i.payments,
-                { id: `pay-${Date.now()}`, date: "Today", method, ref: `REF-${Math.floor(Math.random() * 90000 + 10000)}`, amount },
+                { id: `pay-${Date.now()}`, date: "Today", method, ref: ref || `REF-${Math.floor(Math.random() * 90000 + 10000)}`, amount, by: "Dale" },
               ],
             }
           : i,
       ),
+    );
+  }, []);
+
+  const recordRefund: Store["recordRefund"] = useCallback((invoiceId, paymentId, amount, ref) => {
+    setInvoices((inv) =>
+      inv.map((i) => {
+        if (i.id !== invoiceId) return i;
+        const src = i.payments.find((p) => p.id === paymentId);
+        return {
+          ...i,
+          refunds: [
+            ...i.refunds,
+            {
+              id: `ref-${Date.now()}`,
+              paymentId,
+              date: "Today",
+              method: src?.method ?? "Card / Electronic",
+              ref: ref || `re_${Math.floor(Math.random() * 900000 + 100000)}`,
+              amount,
+              by: "Dale",
+            },
+          ],
+        };
+      }),
     );
   }, []);
 
@@ -277,12 +302,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<Store>(
     () => ({
       appearance, setAppearance, docs, invoices, getDoc, getInvoice, updateLine, addLine,
-      removeLine, patchDoc, logHistory, convertToOrder, advanceLine, recordPayment, issueInvoice,
+      removeLine, patchDoc, logHistory, convertToOrder, advanceLine, recordPayment, recordRefund, issueInvoice,
       grants, toggleGrant, aiOpen, setAiOpen, paletteOpen, setPaletteOpen, bugOpen, setBugOpen,
       customers: seedCustomers,
     }),
     [appearance, setAppearance, docs, invoices, getDoc, getInvoice, updateLine, addLine, removeLine,
-      patchDoc, logHistory, convertToOrder, advanceLine, recordPayment, issueInvoice, grants,
+      patchDoc, logHistory, convertToOrder, advanceLine, recordPayment, recordRefund, issueInvoice, grants,
       toggleGrant, aiOpen, paletteOpen, bugOpen],
   );
 
