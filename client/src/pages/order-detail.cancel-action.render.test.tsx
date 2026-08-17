@@ -12,7 +12,13 @@ const OrderDetail = require("./order-detail").default as typeof import("./order-
 
 let mockUser: any = { role: "admin", isAdmin: true };
 let mockOrder: any;
-let mockOrgMemberships: any = null;
+let mockOrgMemberships: any = {
+  success: true,
+  data: {
+    orgs: [{ id: "org-1", name: "Acme", slug: "acme", role: "admin" }],
+    lastActiveOrgId: "org-1",
+  },
+};
 let latestLineItemsProps: any = null;
 let mockEligibility: any = { canCancel: true, code: null, message: null, details: null };
 const mockCancelOrder = jest.fn(async () => ({ success: true }));
@@ -264,7 +270,13 @@ afterEach(() => {
   document.body.innerHTML = "";
   jest.clearAllMocks();
   mockUser = { role: "admin", isAdmin: true };
-  mockOrgMemberships = null;
+  mockOrgMemberships = {
+    success: true,
+    data: {
+      orgs: [{ id: "org-1", name: "Acme", slug: "acme", role: "admin" }],
+      lastActiveOrgId: "org-1",
+    },
+  };
   latestLineItemsProps = null;
   mockEligibility = { canCancel: true, code: null, message: null, details: null };
 });
@@ -277,6 +289,23 @@ describe("OrderDetail cancellation action rendering", () => {
       success: true,
       data: {
         orgs: [{ id: "org-1", name: "Acme", slug: "acme", role: "admin" }],
+        lastActiveOrgId: "org-1",
+      },
+    };
+
+    const { root } = renderOrderDetail();
+
+    expect(latestLineItemsProps?.readOnly).toBe(false);
+    act(() => root.unmount());
+  });
+
+  test("uses the active organization Owner role for saved-line editing", () => {
+    mockOrder = baseOrder();
+    mockUser = { role: "employee", isAdmin: false };
+    mockOrgMemberships = {
+      success: true,
+      data: {
+        orgs: [{ id: "org-1", name: "Acme", slug: "acme", role: "owner" }],
         lastActiveOrgId: "org-1",
       },
     };

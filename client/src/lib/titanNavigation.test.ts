@@ -11,6 +11,10 @@ function itemIds(sectionKey: string, role: string, isPlatformAdmin = false, isPl
 }
 
 describe("Titan navigation platform placement", () => {
+  test("shows the Admin Settings entries for the organization Admin role", () => {
+    expect(itemIds("system", "admin")).toEqual(expect.arrayContaining(["settings", "users", "customer-portal"]));
+  });
+
   test("places Customer Portal in System settings rather than Sales and preserves its admin/owner restriction", () => {
     expect(itemIds("sales", "admin")).not.toContain("customer-portal");
     expect(itemIds("system", "admin")).toContain("customer-portal");

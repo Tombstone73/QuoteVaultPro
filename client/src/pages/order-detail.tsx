@@ -33,6 +33,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow, useOrderCancellationEligibility } from "@/hooks/useOrders";
 import { useBillInvoice, useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
@@ -84,10 +85,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
 import { isCanceledOrder } from "@shared/operationalState";
-import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { ROUTES } from "@/config/routes";
-import { getApiUrl } from "@/lib/apiConfig";
-import { fetchMyOrgs, type MyOrgsResult } from "@/lib/api/me";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
 import { hasEnteredShipToAddress, resolveCustomerShipTo } from "@/lib/customerShipTo";
@@ -238,12 +236,7 @@ const ORDER_DETAIL_DEV_DIAGNOSTICS =
 
 export default function OrderDetail() {
   const { user } = useAuth();
-  const { data: orgMemberships } = useQuery<MyOrgsResult>({
-    queryKey: [getApiUrl("/api/me/orgs")],
-    queryFn: fetchMyOrgs,
-    enabled: Boolean(user),
-    staleTime: 60_000,
-  });
+  const { activeOrg: activeOrganization, role, isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { preferences } = useOrgPreferences();
   const inventoryPolicy = resolveInventoryPolicyFromOrgPreferences(preferences);
   const inventoryReservationsEnabled = inventoryPolicy.mode !== "off";
@@ -725,17 +718,9 @@ export default function OrderDetail() {
     },
   });
 
-  const activeOrganization = (() => {
-    const orgs = orgMemberships?.data?.orgs ?? [];
-    const activeOrganizationId = orgMemberships?.data?.lastActiveOrgId;
-    return orgs.find((organization) => organization.id === activeOrganizationId) ?? (orgs.length === 1 ? orgs[0] : null);
-  })();
   // This only controls the saved-order editor affordance. The PATCH endpoint
   // independently authorizes the same active organization membership.
-  const isAdminOrOwner = activeOrganization
-    ? hasAdminOrOwnerOperationalRole(activeOrganization.role)
-    : hasAdminOrOwnerOperationalRole(user);
-  const isManagerOrHigher = isAdminOrOwner || user?.role === 'manager';
+  const isManagerOrHigher = isAdminOrOwner || role === "manager";
   const proofApprovalPolicyOverride = String((order as any)?.proofApprovalPolicyOverride || "inherit_default");
   const proofBypassed = proofApprovalPolicyOverride === "bypass";
   

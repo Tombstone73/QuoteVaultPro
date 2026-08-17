@@ -16,6 +16,7 @@ import { db } from "../db";
 import { users, userOrganizations, organizations } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { writePlatformAuditLog } from "../services/platformAuditLogService";
+import { resolveActiveOrganization } from "@shared/activeOrganization";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ export function registerMeRoutes(app: Express) {
           slug: organizations.slug,
           isArchived: organizations.isArchived,
           role: userOrganizations.role,
+          isDefault: userOrganizations.isDefault,
         })
         .from(userOrganizations)
         .innerJoin(
@@ -70,11 +72,15 @@ export function registerMeRoutes(app: Express) {
         .where(eq(users.id, userId))
         .limit(1);
 
+      const activeOrganization = resolveActiveOrganization(memberships, userRow?.lastActiveOrgId);
+
       return res.json({
         success: true,
         data: {
           orgs: memberships,
-          lastActiveOrgId: userRow?.lastActiveOrgId ?? null,
+          // Return the same effective membership tenantContext will use when a
+          // legacy session has not yet persisted an active organization.
+          lastActiveOrgId: activeOrganization?.id ?? null,
         },
       });
     } catch (err) {

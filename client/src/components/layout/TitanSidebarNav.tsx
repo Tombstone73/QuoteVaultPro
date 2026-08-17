@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useInboundEmailIntakeSettings } from "@/hooks/useInboundEmailIntakeSettings";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useQuery } from "@tanstack/react-query";
@@ -236,19 +237,17 @@ interface TitanSidebarNavProps {
 
 export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: TitanSidebarNavProps) {
   const { user } = useAuth();
+  const { role, isApprover } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { preferences } = useOrgPreferences();
   const inboundEmailSettingsQuery = useInboundEmailIntakeSettings();
   const location = useLocation();
   const { guardedNavigate } = useNavigationGuard();
-  const role = user?.role ?? null;
   const navPreferences = {
     ...preferences,
     inboundEmail: inboundEmailSettingsQuery.data,
   };
   const filteredSections = filterNavByRole(NAV_CONFIG, role, navPreferences, user?.isPlatformAdmin ?? false, user?.isPlatformDeveloper ?? false);
 
-  const roleLower = String(role || '').toLowerCase();
-  const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(roleLower);
   const requireApproval = preferences?.quotes?.requireApproval === true;
 
   // Sidebar badge toggle — default ON (true when unset)
