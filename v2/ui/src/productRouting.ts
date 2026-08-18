@@ -1,7 +1,8 @@
 export type ProductLocation = Readonly<{ productId?: string }>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
+export type ContactLocation = Readonly<{ contactId?: string }>;
 export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -23,6 +24,12 @@ export const readCustomerLocation = (pathname = window.location.pathname): Custo
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "customers") return {};
   if (parts.length === 2 && parts[0] === "customers") return productId(parts[1]) ? { customerId: productId(parts[1]) } : null;
+  return null;
+};
+export const readContactLocation = (pathname = window.location.pathname): ContactLocation | null => {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 1 && parts[0] === "contacts") return {};
+  if (parts.length === 2 && parts[0] === "contacts") return productId(parts[1]) ? { contactId: productId(parts[1]) } : null;
   return null;
 };
 export const readQuoteLocation = (pathname = window.location.pathname): SalesLocation | null => {
@@ -63,6 +70,8 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   if (product) return { page: "products", ...product };
   const customer = readCustomerLocation(pathname);
   if (customer) return { page: "customers", ...customer };
+  const contact = readContactLocation(pathname);
+  if (contact) return { page: "contacts", ...contact };
   const quote = readQuoteLocation(pathname);
   if (quote) return { page: "quotes", ...quote };
   const order = readOrderLocation(pathname);
@@ -78,6 +87,8 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
 };
 export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
 export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));
+export const contactPath = (id?: string) => id ? `/contacts/${encodeURIComponent(id)}` : "/contacts";
+export const pushContactLocation = (id?: string) => window.history.pushState({}, "", contactPath(id));
 export const quotePath = (id?: string) => id ? `/quotes/${encodeURIComponent(id)}` : "/quotes";
 export const pushQuoteLocation = (id?: string) => window.history.pushState({}, "", quotePath(id));
 export const orderPath = (id?: string) => id ? `/orders/${encodeURIComponent(id)}` : "/orders";

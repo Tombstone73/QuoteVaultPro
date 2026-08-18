@@ -22,6 +22,7 @@ import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressR
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
 import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
 import { createCustomerRouter, type CustomerHttpDependencies } from "./customerRoutes.js";
+import { createContactRouter, type ContactHttpDependencies } from "./contactRoutes.js";
 import { createProductRouter, type ProductHttpDependencies } from "./productRoutes.js";
 import { createRoutingRouter, type RoutingHttpDependencies } from "./routingRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
@@ -31,6 +32,7 @@ export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
 export type AuthenticatedQuoteRouteRuntime = Readonly<{
   dependencies: QuoteHttpDependencies;
   customerDependencies: CustomerHttpDependencies;
+  contactDependencies: ContactHttpDependencies;
   productDependencies: ProductHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
@@ -181,6 +183,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createCustomerRouter(quote.customerDependencies),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/contacts",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createContactRouter(quote.contactDependencies),
     );
   if (quote)
     app.use(

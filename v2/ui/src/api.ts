@@ -848,6 +848,27 @@ export const customerApi = {
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,
     ),
 };
+export type ContactCatalogItem = Readonly<{
+  contactId: string;
+  displayName: string;
+  email?: string;
+  phone?: string;
+  customerId: string;
+  customerName: string;
+  primary: boolean;
+}>;
+export type ContactWorkspaceRead = ContactCatalogItem & Readonly<{
+  customerPresentation: CustomerWorkspaceRead["presentation"];
+  relatedContacts: readonly ContactCatalogItem[];
+}>;
+export const contactApi = {
+  list: (organizationId: string, query = "") => request<{ items: readonly ContactCatalogItem[]; total: number; accounts: number }>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/contacts${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+  ),
+  get: (organizationId: string, contactId: string) => request<ContactWorkspaceRead>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/contacts/${encodeURIComponent(contactId)}`,
+  ),
+};
 export const productApi = {
   list: (organizationId: string, query = "") => request<{ items: readonly ProductCatalogItem[] }>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products${query ? `?q=${encodeURIComponent(query)}` : ""}`,
