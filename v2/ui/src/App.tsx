@@ -65,6 +65,9 @@ const errorText = (error: unknown) => {
 
 const Status = LifecycleBadge;
 
+const dateInputValue = (value?: string): string =>
+  /^\d{4}-\d{2}-\d{2}/u.exec(value ?? "")?.[0] ?? "";
+
 export const App = ({
   appearance,
   setAppearance,
@@ -477,7 +480,7 @@ const QuoteWorkspace = ({
 
   useEffect(() => {
     setPurchaseOrderNumber(quote?.quote.purchaseOrderNumber ?? "");
-    setRequestedDueDate(quote?.quote.requestedDueDate ?? "");
+    setRequestedDueDate(dateInputValue(quote?.quote.requestedDueDate));
     setCommercialNotes(quote?.quote.terms.commercialNotes ?? "");
     setHeaderCustomerId(quote?.quote.customerContact.customerId ?? "");
     setHeaderContactId(quote?.quote.customerContact.contactId ?? "");
