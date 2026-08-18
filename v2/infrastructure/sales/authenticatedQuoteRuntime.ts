@@ -20,7 +20,7 @@ import type { CustomerHttpDependencies } from "../../src/interfaces/http/custome
 import { PostgresContactWorkspaceReader } from "../compatibility/postgresContactWorkspaceRead.js";
 import type { ContactHttpDependencies } from "../../src/interfaces/http/contactRoutes.js";
 import { PostgresProductWorkspaceReads } from "../products/postgresProductWorkspaceReads.js";
-import { PostgresProductDraftGeneralReader, PostgresProductDraftOptionsReader, PostgresProductDraftPricingPreview, PostgresProductDraftPricingReader, PostgresProductVersionTransactionRunner } from "../products/postgresProductVersionLifecycle.js";
+import { PostgresProductDraftGeneralReader, PostgresProductDraftOptionsReader, PostgresProductDraftPricingMatrixReader, PostgresProductDraftPricingPreview, PostgresProductDraftPricingReader, PostgresProductVersionTransactionRunner } from "../products/postgresProductVersionLifecycle.js";
 import type { ProductHttpDependencies } from "../../src/interfaces/http/productRoutes.js";
 import { ProductVersionLifecycleApplicationService } from "../../src/modules/products/productVersionLifecycle.js";
 
@@ -61,7 +61,7 @@ export const composeAuthenticatedQuoteRuntime = (
     },
     customerDependencies: { customers: new PostgresCustomerWorkspaceReader(input.pool), principals },
     contactDependencies: { contacts: new PostgresContactWorkspaceReader(input.pool), principals },
-    productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), draftGeneral: new PostgresProductDraftGeneralReader(input.pool), draftOptions: new PostgresProductDraftOptionsReader(input.pool), draftPricing: new PostgresProductDraftPricingReader(input.pool), draftPreview: new PostgresProductDraftPricingPreview(input.pool), lifecycle: new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(input.pool)), principals },
+    productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), draftGeneral: new PostgresProductDraftGeneralReader(input.pool), draftOptions: new PostgresProductDraftOptionsReader(input.pool), draftPricing: new PostgresProductDraftPricingReader(input.pool), draftMatrix: new PostgresProductDraftPricingMatrixReader(input.pool), draftPreview: new PostgresProductDraftPricingPreview(input.pool), lifecycle: new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(input.pool)), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };
