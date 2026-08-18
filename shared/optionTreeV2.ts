@@ -259,6 +259,18 @@ export type OptionTreeV2 = {
     pricingV2?: PricingV2;
     shippingConfig?: ShippingConfig;
     productImages?: ProductImage[];
+    /** Staged commercial presentation and workflow settings. P3 reads this only
+     * from a DRAFT tree; normal Sales resolution deliberately ignores it. */
+    general?: {
+      displayName: string;
+      category: string | null;
+      description: string | null;
+      storefrontVisible: boolean;
+      measurementMode: "dimensions_required" | "quantity_only";
+      workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
+      requiresProofApproval: boolean;
+      requiresProductionJob: boolean;
+    };
     requiresDimensions?: boolean; // Default true if missing (product requires W x H)
     fixedDimensions?: {
       widthIn: number;
