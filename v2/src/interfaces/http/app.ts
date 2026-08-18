@@ -124,6 +124,7 @@ export const createV2HttpApp = (
                 quoteView,
                 customerView: policy.decide(principal, { capability: "customer.view", resource: { organizationId } }).allowed,
                 productView,
+                productEdit: policy.decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed,
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
                 quoteCreate: policy.decide(principal, { capability: "quote.create", resource: { organizationId } }).allowed,
                 quoteEdit: policy.decide(principal, { capability: "quote.edit", resource: { organizationId } }).allowed,
@@ -197,6 +198,7 @@ export const createV2HttpApp = (
       "/v2/organizations/:organizationId/products",
       quote.trustedHostMiddleware,
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
       createProductRouter(quote.productDependencies),
     );
   if (order)

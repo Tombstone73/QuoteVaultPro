@@ -66,6 +66,7 @@ export type UiBootstrap = Readonly<{
     quoteView?: boolean;
     customerView?: boolean;
     productView?: boolean;
+    productEdit?: boolean;
     quoteOverridePrice: boolean;
     quoteCreate?: boolean;
     quoteEdit?: boolean;
@@ -108,7 +109,9 @@ export type SalesListPage<T> = Readonly<{
 }>;
 export type ProductLifecycle = "active" | "inactive" | "draft" | "active_with_draft";
 export type ProductCatalogItem = Readonly<{ productId:string; displayName:string; category?:string; lifecycle:ProductLifecycle; measurementMode:"dimensions_required"|"quantity_only"; pricingSummary:string; productType?:Readonly<{displayName:string;routePolicy:"route_required"|"no_route"|"unconfigured"}>; primaryMaterialName?:string; activeVersion?:Readonly<{label:string;publishedAt?:string}>; hasDraft:boolean }>;
-export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number }>;
+export type ProductVersionSummary = Readonly<{status:"active"|"draft"|"deprecated"|"archived";createdAt:string;updatedAt:string;publishedAt?:string;editable:boolean}>;
+export type ProductVersionLifecycle = Readonly<{active?:ProductVersionSummary;draft?:ProductVersionSummary;history:readonly ProductVersionSummary[];historyLimit:number;historyHasMore:boolean;canCreateDraft:boolean}>;
+export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;versions:ProductVersionLifecycle }>;
 export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
 export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentAvailability = Readonly<{
@@ -871,6 +874,10 @@ export const productApi = {
   ),
   get: (organizationId: string, productId: string) => request<ProductWorkspaceDetail>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,
+  ),
+  createDraft: (organizationId:string,productId:string,businessRequestId:string,expectedActiveVersionUpdatedAt:string) => request<ProductVersionLifecycle>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/drafts`,
+    {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,expectedActiveVersionUpdatedAt})},
   ),
 };
 export const financeApi = {

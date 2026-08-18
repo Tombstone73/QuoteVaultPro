@@ -30,12 +30,13 @@ const ownerAdminCommercial: readonly Capability[] = [
   ...managerCommercial,
   "order.cancel",
   "invoice.issue",
+  "product.edit",
 ];
 
 /**
  * Explicit early-M1 ceiling. The current V1 membership enum has no employee
  * role; every unknown value fails closed rather than inheriting global role or
- * administrator flags. This deliberately grants no product editing, payment,
+ * administrator flags. This deliberately grants no payment,
  * refund, production, routing, integration, or settings authority.
  */
 const temporaryLegacyRoleCapabilityMap: Readonly<Record<LegacyMembershipRole, readonly Capability[]>> = Object.freeze({
