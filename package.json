@@ -14,7 +14,7 @@
     "v2:server:start": "node dist-v2/server.js",
     "v2:ui:check": "tsc -p v2/ui/tsconfig.json",
     "v2:ui:build": "vite build --config v2/ui/vite.config.ts",
-    "v2:ui:test": "tsx v2/ui/src/theme.test.ts && tsx v2/ui/src/appearance.test.ts && tsx v2/ui/src/quoteForm.test.tsx && tsx v2/ui/src/productRouting.test.ts && tsx v2/ui/src/quotesList.test.tsx && tsx v2/ui/src/ordersList.test.tsx && tsx v2/ui/src/salesDocumentWorkspace.test.tsx && tsx v2/ui/src/customerWorkspace.test.tsx && tsx v2/ui/src/contactsWorkspace.test.tsx",
+    "v2:ui:test": "tsx v2/ui/src/theme.test.ts && tsx v2/ui/src/appearance.test.ts && tsx v2/ui/src/quoteForm.test.tsx && tsx v2/ui/src/productRouting.test.ts && tsx v2/ui/src/quotesList.test.tsx && tsx v2/ui/src/ordersList.test.tsx && tsx v2/ui/src/salesDocumentWorkspace.test.tsx && tsx v2/ui/src/customerWorkspace.test.tsx && tsx v2/ui/src/contactsWorkspace.test.tsx && tsx v2/ui/src/productWorkspace.test.tsx",
     "v2:start": "node dist-v2/main.js",
     "v2:migrations:status": "tsx v2/scripts/v2MigrationStatus.ts",
     "v2:migrations:apply": "tsx v2/scripts/applyV2Migrations.ts",

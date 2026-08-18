@@ -1,31 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
 import { PostgresProductWorkspaceReads } from "../../infrastructure/products/postgresProductWorkspaceReads";
-
-const tree = {
-  schemaVersion: 2, rootNodeIds: ["size"], nodes: {
-    size: { id: "size", kind: "question", label: "Size", input: { type: "select", selectionKey: "size", required: true, defaultValue: "small" }, choices: [{ value: "small", label: "Small" }, { value: "large", label: "Large" }] },
-  }, meta: {},
-};
-const row = {
-  product_id: "product-a", product_name: "Rigid Sign", product_type_id: "type-a", measurement_mode: "dimensions_required" as const,
-  tree_id: "tree-a", tree_schema_version: 2, tree_published_at: new Date("2026-08-17T00:00:00.000Z"), tree_json: tree,
-  routing_mode: "route_required" as const, default_route_template_id: "route-a",
-};
-
-describe("M4 Product workspace PostgreSQL projection", () => {
-  test("binds organization and active Product/PBV2 state for the bounded catalog", async () => {
-    const calls: { text: string; values?: readonly unknown[] }[] = [];
-    const reader = new PostgresProductWorkspaceReads({ query: async <T>(text: string, values?: readonly unknown[]) => { calls.push({ text, values }); return { rows: [row] as T[] }; } } as any);
-    await expect(reader.list("org-a", "Rigid")).resolves.toMatchObject([{ productId: "product-a", displayName: "Rigid Sign", requiresDimensions: true, pricingConfiguration: { id: "tree-a" } }]);
-    expect(calls[0]!.text).toContain("p.organization_id=$1 AND p.is_active=TRUE");
-    expect(calls[0]!.text).toContain("t.id=p.pbv2_active_tree_version_id");
-    expect(calls[0]!.text).toContain("t.status='ACTIVE'");
-    expect(calls[0]!.values).toEqual(["org-a", "%Rigid%"]);
-  });
-  test("maps only real PBV2 option structure and returns no foreign/missing detail", async () => {
-    const reader = new PostgresProductWorkspaceReads({ query: async <T>() => ({ rows: [row] as T[] }) } as any);
-    await expect(reader.get("org-a", "product-a")).resolves.toMatchObject({ productId: "product-a", routePolicy: "route_required", activeConfiguration: { schemaVersion: 2, fields: [{ selectionKey: "size", label: "Size", choices: [{ value: "small", label: "Small" }, { value: "large", label: "Large" }] }] } });
-    const missing = new PostgresProductWorkspaceReads({ query: async <T>() => ({ rows: [] as T[] }) } as any);
-    await expect(missing.get("org-b", "product-a")).resolves.toBeNull();
-  });
-});
+const tree={nodes:{size:{kind:"question",type:"INPUT"}},meta:{pricingV2:{base:{perSqftCents:475}}}};
+const row={product_id:"product-a",product_name:"Rigid Sign",description:"Durable sign",category:"Signs",measurement_mode:"dimensions_required" as const,workflow_intent:"standard_production" as const,requires_production_job:true,requires_proof_approval:false,is_active:true,pricing_engine:"pricingProfile",pricing_profile_key:"flat_goods",product_type_name:"Flatbed",routing_mode:"route_required" as const,default_route_template_id:"route-a",material_name:"Coroplast",active_tree_id:"tree-a",active_published_at:new Date("2026-08-17T00:00:00.000Z"),active_tree_json:tree,draft_tree_id:"draft-a",draft_updated_at:new Date(),total_count:"101"};
+describe("P1 Product workspace PostgreSQL projection",()=>{test("uses tenant-scoped server search, explicit bounds, exact count and continuation",async()=>{const calls:any[]=[];const reader=new PostgresProductWorkspaceReads({query:async<T>(text:string,values?:readonly unknown[])=>{calls.push({text,values});return{rows:(text.includes("SELECT count(*)")?[{total:"101"}]:[row])as T[]};}}as any);await expect(reader.list("org-a",{query:"Rigid",page:2,pageSize:50})).resolves.toMatchObject({total:101,page:2,pageSize:50,hasMore:true,items:[{productId:"product-a",category:"Signs",lifecycle:"active_with_draft",pricingSummary:"Per sq ft",primaryMaterialName:"Coroplast",productType:{displayName:"Flatbed",routePolicy:"route_required"}}]});expect(calls[0].text).toContain("SELECT count(*)");expect(calls[0].text).toContain("p.organization_id=$1");expect(calls[0].values).toEqual(["org-a","%Rigid%"]);expect(calls[1].text).toContain("ILIKE $2");expect(calls[1].text).toContain("LIMIT $3 OFFSET $4");expect(calls[1].values).toEqual(["org-a","%Rigid%",50,50]);});test("projects only business facts for detail and returns null when missing",async()=>{const reader=new PostgresProductWorkspaceReads({query:async<T>()=>({rows:[row]as T[]})}as any);await expect(reader.get("org-a","product-a")).resolves.toMatchObject({productId:"product-a",lifecycle:"active_with_draft",measurementMode:"dimensions_required",pricingSummary:"Per sq ft",configurableOptionCount:1});const missing=new PostgresProductWorkspaceReads({query:async<T>()=>({rows:[]as T[]})}as any);await expect(missing.get("org-b","product-a")).resolves.toBeNull();});});

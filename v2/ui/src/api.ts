@@ -106,14 +106,10 @@ export type SalesListPage<T> = Readonly<{
     currencies: readonly string[];
   }>;
 }>;
-export type ProductCatalogItem = Readonly<{
-  productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean;
-  pricingConfiguration: Readonly<{ id: string; version: string; contentHash: string }>;
-}>;
-export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & {
-  productTypeId?: string; routePolicy: "route_required" | "no_route" | "unconfigured";
-  activeConfiguration: Readonly<{ schemaVersion: number; publishedAt?: string; fields: ReadonlyArray<Readonly<{ selectionKey: string; label: string; inputType: string; required: boolean; choices: ReadonlyArray<Readonly<{ value: string | number | boolean; label: string }>>; }>>; }>;
-}>;
+export type ProductLifecycle = "active" | "inactive" | "draft" | "active_with_draft";
+export type ProductCatalogItem = Readonly<{ productId:string; displayName:string; category?:string; lifecycle:ProductLifecycle; measurementMode:"dimensions_required"|"quantity_only"; pricingSummary:string; productType?:Readonly<{displayName:string;routePolicy:"route_required"|"no_route"|"unconfigured"}>; primaryMaterialName?:string; activeVersion?:Readonly<{label:string;publishedAt?:string}>; hasDraft:boolean }>;
+export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number }>;
+export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
 export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentAvailability = Readonly<{
   orderId: string;
@@ -870,8 +866,8 @@ export const contactApi = {
   ),
 };
 export const productApi = {
-  list: (organizationId: string, query = "") => request<{ items: readonly ProductCatalogItem[] }>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+  list: (organizationId: string, query = "", page = 1) => request<ProductCatalogPage>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/products?q=${encodeURIComponent(query)}&page=${page}&pageSize=50`,
   ),
   get: (organizationId: string, productId: string) => request<ProductWorkspaceDetail>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,

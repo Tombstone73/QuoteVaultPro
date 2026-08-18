@@ -1,57 +1,11 @@
-import { createHash } from "node:crypto";
 import type { Pool } from "pg";
-import { canonicalJson } from "../../src/modules/shared/commercialValues.js";
-import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../shared/optionTreeV2Runtime.js";
-import type { OptionTreeV2 } from "../../../shared/optionTreeV2.js";
-import type { ProductCatalogItem, ProductWorkspaceDetail, ProductWorkspaceReadPort } from "../../src/interfaces/http/productRoutes.js";
-
-type ProductRow = {
-  product_id: string; product_name: string; product_type_id: string | null; measurement_mode: "dimensions_required" | "quantity_only";
-  tree_id: string; tree_schema_version: number; tree_published_at: Date | null; tree_json: unknown;
-  routing_mode: "route_required" | "no_route" | "unconfigured" | null; default_route_template_id: string | null;
-};
-const hash = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-const version = (row: ProductRow) => row.tree_published_at?.toISOString() ?? `schema-${row.tree_schema_version}`;
-const item = (row: ProductRow): ProductCatalogItem => ({
-  productId: row.product_id, displayName: row.product_name, measurementMode: row.measurement_mode,
-  requiresDimensions: row.measurement_mode === "dimensions_required",
-  pricingConfiguration: { id: row.tree_id, version: version(row), contentHash: hash(row.tree_json) },
-});
-
-/** Bounded catalog/detail reader; it exposes only active Product + ACTIVE PBV2 facts. */
-export class PostgresProductWorkspaceReads implements ProductWorkspaceReadPort {
-  constructor(private readonly pool: Pool) {}
-  async list(organizationId: string, query = ""): Promise<readonly ProductCatalogItem[]> {
-    const result = await this.pool.query<ProductRow>(`${this.select()}
-      WHERE p.organization_id=$1 AND p.is_active=TRUE AND p.name ILIKE $2
-      ORDER BY p.name,p.id LIMIT 100`, [organizationId, `%${query.trim()}%`]);
-    return result.rows.map(item);
-  }
-  async get(organizationId: string, productId: string): Promise<ProductWorkspaceDetail | null> {
-    const result = await this.pool.query<ProductRow>(`${this.select()}
-      WHERE p.organization_id=$1 AND p.id=$2 AND p.is_active=TRUE`, [organizationId, productId]);
-    const row = result.rows[0];
-    if (!row || !validateOptionTreeV2(row.tree_json as OptionTreeV2).ok) return null;
-    const tree = row.tree_json as OptionTreeV2;
-    const visibility = resolveRuntimeVisibility(tree, {});
-    return {
-      ...item(row), ...(row.product_type_id ? { productTypeId: row.product_type_id } : {}),
-      routePolicy: row.routing_mode === "route_required" && row.default_route_template_id ? "route_required" : row.routing_mode === "no_route" ? "no_route" : "unconfigured",
-      activeConfiguration: {
-        schemaVersion: row.tree_schema_version, ...(row.tree_published_at ? { publishedAt: row.tree_published_at.toISOString() } : {}),
-        fields: visibility.visibleNodeIds.flatMap((id) => {
-          const node = tree.nodes[id];
-          if (!node || node.kind === "group" || !node.input || typeof node.input.selectionKey !== "string") return [];
-          return [{ selectionKey: node.input.selectionKey, label: node.label, inputType: node.input.type, required: Boolean(node.input.required), choices: (node.choices ?? []).map((choice) => ({ value: choice.value, label: choice.label })) }];
-        }),
-      },
-    };
-  }
-  private select() {
-    return `SELECT p.id AS product_id,p.name AS product_name,p.product_type_id,p.measurement_mode,
-      t.id AS tree_id,t.schema_version AS tree_schema_version,t.published_at AS tree_published_at,t.tree_json,
-      pt.routing_mode,pt.default_route_template_id
-      FROM products p JOIN pbv2_tree_versions t ON t.id=p.pbv2_active_tree_version_id AND t.organization_id=p.organization_id AND t.product_id=p.id AND t.status='ACTIVE'
-      LEFT JOIN product_types pt ON pt.id=p.product_type_id AND pt.organization_id=p.organization_id`;
-  }
-}
+import type { ProductCatalogItem, ProductCatalogPage, ProductWorkspaceDetail, ProductWorkspaceReadPort } from "../../src/interfaces/http/productRoutes.js";
+type Row = { product_id:string; product_name:string; description:string; category:string|null; measurement_mode:"dimensions_required"|"quantity_only"; workflow_intent:"standard_production"|"fulfillment_only"|"service_fee"; requires_production_job:boolean; requires_proof_approval:boolean; is_active:boolean; pricing_engine:string|null; pricing_profile_key:string|null; product_type_name:string|null; routing_mode:"route_required"|"no_route"|"unconfigured"|null; default_route_template_id:string|null; material_name:string|null; active_tree_id:string|null; active_published_at:Date|null; active_tree_json:unknown; draft_tree_id:string|null; draft_updated_at:Date|null; total_count?:string };
+const record=(value:unknown):Record<string,any>=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,any>:{};
+const pricing=(r:Row) => { const tree=record(r.active_tree_json); const meta=record(tree.meta); const p=record(meta.pricingV2); if (record(tree.pricingMatrix).dimensions?.length || record(meta.pricingMatrix).dimensions?.length) return "Matrix"; if (r.pricing_engine==="formulaLibrary"||r.pricing_engine==="pricingFormula"||typeof meta.pricingFormula==="string") return "Formula"; if (r.pricing_profile_key==="fee") return "Flat fee"; if (typeof record(p.base).perSqftCents==="number") return "Per sq ft"; if (typeof record(p.base).perPieceCents==="number") return "Per piece"; return "Not configured"; };
+const lifecycle=(r:Row):ProductCatalogItem["lifecycle"]=>!r.is_active&&r.draft_tree_id?"draft":!r.is_active?"inactive":r.draft_tree_id?"active_with_draft":"active";
+const item=(r:Row):ProductCatalogItem=>({ productId:r.product_id,displayName:r.product_name,...(r.category?{category:r.category}:{}),lifecycle:lifecycle(r),measurementMode:r.measurement_mode,pricingSummary:pricing(r),...(r.product_type_name?{productType:{displayName:r.product_type_name,routePolicy:r.routing_mode==="route_required"&&r.default_route_template_id?"route_required":r.routing_mode==="no_route"?"no_route":"unconfigured"} }:{}),...(r.material_name?{primaryMaterialName:r.material_name}:{}),...(r.active_tree_id?{activeVersion:{label:r.active_published_at?`Published ${r.active_published_at.toISOString().slice(0,10)}`:"Active"}}:{}),hasDraft:Boolean(r.draft_tree_id)});
+/** Bounded Product-administration reader. It deliberately never resolves historical Sales configuration. */
+export class PostgresProductWorkspaceReads implements ProductWorkspaceReadPort { constructor(private readonly pool:Pool){} private select(){return `SELECT p.id product_id,p.name product_name,p.description,p.category,p.measurement_mode,p.workflow_intent,p.requires_production_job,p.requires_proof_approval,p.is_active,p.pricing_engine,p.pricing_profile_key,pt.name product_type_name,pt.routing_mode,pt.default_route_template_id,m.name material_name,a.id active_tree_id,a.published_at active_published_at,a.tree_json active_tree_json,d.id draft_tree_id,d.updated_at draft_updated_at`;}
+ async list(organizationId:string,input:Readonly<{query?:string;page?:number;pageSize?:number}>={}) : Promise<ProductCatalogPage>{const page=Math.max(1,input.page??1),pageSize=Math.min(100,Math.max(1,input.pageSize??50)),q=(input.query??"").trim(),where=`p.organization_id=$1 AND (p.name ILIKE $2 OR COALESCE(p.category,'') ILIKE $2)`; const joins=` FROM products p LEFT JOIN product_types pt ON pt.id=p.product_type_id AND pt.organization_id=p.organization_id LEFT JOIN materials m ON m.id=p.primary_material_id AND m.organization_id=p.organization_id LEFT JOIN pbv2_tree_versions a ON a.id=p.pbv2_active_tree_version_id AND a.organization_id=p.organization_id AND a.product_id=p.id AND a.status='ACTIVE' LEFT JOIN LATERAL (SELECT id,updated_at FROM pbv2_tree_versions d WHERE d.organization_id=p.organization_id AND d.product_id=p.id AND d.status='DRAFT' ORDER BY d.updated_at DESC,d.id DESC LIMIT 1) d ON TRUE`; const values=[organizationId,`%${q}%`,pageSize,(page-1)*pageSize]; const [totalResult,result]=await Promise.all([this.pool.query<{total:string}>(`SELECT count(*)::text total FROM products p WHERE ${where}`,[organizationId,`%${q}%`]),this.pool.query<Row>(`${this.select()} ${joins} WHERE ${where} ORDER BY p.name,p.id LIMIT $3 OFFSET $4`,values)]); const total=Number(totalResult.rows[0]?.total??0); return {items:result.rows.map(item),page,pageSize,total,hasMore:page*pageSize<total};}
+ async get(organizationId:string,productId:string):Promise<ProductWorkspaceDetail|null>{const joins=` FROM products p LEFT JOIN product_types pt ON pt.id=p.product_type_id AND pt.organization_id=p.organization_id LEFT JOIN materials m ON m.id=p.primary_material_id AND m.organization_id=p.organization_id LEFT JOIN pbv2_tree_versions a ON a.id=p.pbv2_active_tree_version_id AND a.organization_id=p.organization_id AND a.product_id=p.id AND a.status='ACTIVE' LEFT JOIN LATERAL (SELECT id,updated_at FROM pbv2_tree_versions d WHERE d.organization_id=p.organization_id AND d.product_id=p.id AND d.status='DRAFT' ORDER BY d.updated_at DESC,d.id DESC LIMIT 1) d ON TRUE`;const result=await this.pool.query<Row>(`${this.select()} ${joins} WHERE p.organization_id=$1 AND p.id=$2`,[organizationId,productId]);const r=result.rows[0];if(!r)return null;const nodes=record(r.active_tree_json).nodes;return {...item(r),...(r.description?{description:r.description}:{}),workflowIntent:r.workflow_intent,requiresProductionJob:r.requires_production_job,requiresProofApproval:r.requires_proof_approval,configurableOptionCount:nodes&&typeof nodes==="object"?Object.values(nodes).filter((n:any)=>n&&n.kind!=="group"&&String(n.type).toUpperCase()!=="GROUP").length:0};}}
