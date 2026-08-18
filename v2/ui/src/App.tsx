@@ -531,7 +531,7 @@ const QuoteWorkspace = ({
     onSuccess: (result) => {
       completeRequest("create");
       applyQuoteResult(result, organizationId, sessionScope);
-      setNotice("Quote created from authoritative Product resolution and Pricing.");
+      setNotice("Quote created.");
     },
     onError: handleMutationError,
   });
@@ -595,7 +595,7 @@ const QuoteWorkspace = ({
       applyQuoteResult(result, organizationId, sessionScope);
       setEditingLineId("");
       setAddEditorVersion((value) => value + 1);
-      setNotice("Quote line repriced by the authoritative server.");
+      setNotice("Quote line saved.");
     },
     onError: handleMutationError,
   });
@@ -656,8 +656,8 @@ const QuoteWorkspace = ({
     const selectedLine = quote.quote.lines.find((line) => line.lineId === editingLineId) ?? quote.quote.lines[0];
     const locked = Boolean(quote.quote.convertedOrderId);
     const items = <SalesDocumentSplit
-      left={<section className="v2-sales-items"><header><div><h2>Items</h2><p>{quote.quote.lines.length} line{quote.quote.lines.length === 1 ? "" : "s"} · authoritative pricing snapshot</p></div>{!locked && <button type="button" className="v2-sales-add-line" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => setEditingLineId("__add__")}>Add line</button>}</header>{loading ? <div className="skeleton" /> : <div className="v2-sales-items-table-wrap"><table><thead><tr><th>Product</th><th>Configuration</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>{quote.quote.lines.map((line) => <tr key={line.lineId} className={line.lineId === selectedLine?.lineId ? "is-selected" : ""} onClick={() => setEditingLineId(line.lineId)}><td><button type="button"><i>{line.description.slice(0, 1).toUpperCase() || "P"}</i><span><b>{line.description || line.productId}</b><small>{line.productId}</small>{line.sellingPriceDecision.kind !== "calculated" && <em>Manual price</em>}</span></button></td><td>{lineConfiguration(line)}</td><td className="num">{line.quantity}</td><td className="num">{money(line.sellingUnitAmount)}</td><td className="num strong">{money(line.sellingLineAmount)}</td></tr>)}</tbody></table></div>}<footer><SalesTotals calculated={quote.totals.calculatedLineAmount} selling={quote.totals.sellingLineAmount} /></footer></section>}
-      right={selectedLine ? <section className="v2-sales-line-editor"><header><div><small>LINE {selectedLine.position}</small><h2>{selectedLine.description || selectedLine.productId}</h2><p>Persisted configuration; Product defaults are never applied silently.</p></div>{!locked && <button className="v2-sales-remove-line" type="button" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "remove", lineId: selectedLine.lineId }])}>Remove</button>}</header>{!canOverridePrice && <p className="v2-sales-permission-note">Price overrides are unavailable for this permission set; existing decisions remain visible.</p>}<QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`edit:${selectedLine.lineId}:${quote.revision}`} initialDraft={draftFromQuoteLine(selectedLine)} initializeFromPersistedLine products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || locked || !canEdit} submitLabel="Save and reprice line" onSubmit={(input) => lineChange.mutate([{ kind: "update", lineId: selectedLine.lineId, line: input }])} onCancel={() => setEditingLineId("")} /></section> : !locked ? <section className="v2-sales-line-editor"><header><div><small>NEW LINE</small><h2>Add item</h2><p>Product configuration and pricing are resolved by the authoritative server.</p></div></header><QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`add:${quote.quote.quoteId}:${addEditorVersion}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || !canEdit} submitLabel="Add line and price" onSubmit={(input) => lineChange.mutate([{ kind: "add", line: input }])} /></section> : <SalesDocumentEmpty>This Quote has been converted. Its commercial snapshot is read-only.</SalesDocumentEmpty>}
+      left={<section className="v2-sales-items"><header><div><h2>Items</h2><p>{quote.quote.lines.length} line{quote.quote.lines.length === 1 ? "" : "s"}</p></div>{!locked && <button type="button" className="v2-sales-add-line" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => setEditingLineId("__add__")}>Add line</button>}</header>{loading ? <div className="skeleton" /> : <div className="v2-sales-items-table-wrap"><table><thead><tr><th>Product</th><th>Configuration</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>{quote.quote.lines.map((line) => <tr key={line.lineId} className={line.lineId === selectedLine?.lineId ? "is-selected" : ""} onClick={() => setEditingLineId(line.lineId)}><td><button type="button"><i>{line.description.slice(0, 1).toUpperCase() || "P"}</i><span><b>{line.description || line.productId}</b><small>{line.productId}</small>{line.sellingPriceDecision.kind !== "calculated" && <em>Manual price</em>}</span></button></td><td>{lineConfiguration(line)}</td><td className="num">{line.quantity}</td><td className="num">{money(line.sellingUnitAmount)}</td><td className="num strong">{money(line.sellingLineAmount)}</td></tr>)}</tbody></table></div>}<footer><SalesTotals calculated={quote.totals.calculatedLineAmount} selling={quote.totals.sellingLineAmount} /></footer></section>}
+      right={selectedLine ? <section className="v2-sales-line-editor"><header><div><small>LINE {selectedLine.position}</small><h2>{selectedLine.description || selectedLine.productId}</h2></div>{!locked && <button className="v2-sales-remove-line" type="button" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "remove", lineId: selectedLine.lineId }])}>Remove</button>}</header>{!canOverridePrice && <p className="v2-sales-permission-note">Price overrides are unavailable for this permission set; existing decisions remain visible.</p>}<QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`edit:${selectedLine.lineId}:${quote.revision}`} initialDraft={draftFromQuoteLine(selectedLine)} initializeFromPersistedLine products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || locked || !canEdit} submitLabel="Save and reprice line" onSubmit={(input) => lineChange.mutate([{ kind: "update", lineId: selectedLine.lineId, line: input }])} onCancel={() => setEditingLineId("")} /></section> : !locked ? <section className="v2-sales-line-editor"><header><div><small>NEW LINE</small><h2>Add item</h2></div></header><QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`add:${quote.quote.quoteId}:${addEditorVersion}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || !canEdit} submitLabel="Add line and price" onSubmit={(input) => lineChange.mutate([{ kind: "add", line: input }])} /></section> : <SalesDocumentEmpty>This Quote has been converted. Its commercial snapshot is read-only.</SalesDocumentEmpty>}
     />;
     return <div className="lab v2-quote-detail"><SalesDocumentFrame
       documentType="Quote"
@@ -712,10 +712,6 @@ const QuoteWorkspace = ({
       {!quote ? (
         <div className="card">
           <h2>Create Quote</h2>
-          <p className="muted">
-            Select authoritative CRM and Product records. Product configuration is
-            projected and resolved by the server before Sales persists the line.
-          </p>
           <div className="grid">
             <SelectionField
               label="Customer"
