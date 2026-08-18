@@ -19,6 +19,7 @@ export const SalesDocumentFrame = ({
   metadata,
   panels,
   readOnly = false,
+  readOnlyLabel = "Legacy · read only",
 }: Readonly<{
   documentType: "Quote" | "Order";
   number: string;
@@ -27,13 +28,14 @@ export const SalesDocumentFrame = ({
   metadata: ReactNode;
   panels: Readonly<Record<SalesDocumentTab, ReactNode>>;
   readOnly?: boolean;
+  readOnlyLabel?: string;
 }>) => {
   const [activeTab, setActiveTab] = useState<SalesDocumentTab>("Items");
   return <section className="v2-sales-document" data-read-only={readOnly || undefined}>
     <header className="v2-sales-document-header">
       <div className="v2-sales-document-title">
         <div><span>{documentType}</span><h1>{number}</h1></div>
-        {readOnly && <em>Legacy · read only</em>}
+        {readOnly && <em>{readOnlyLabel}</em>}
         {status}
       </div>
       {headerActions && <div className="v2-sales-document-actions">{headerActions}</div>}
@@ -46,7 +48,7 @@ export const SalesDocumentFrame = ({
   </section>;
 };
 
-export const SalesDocumentSplit = ({ left, right }: Readonly<{ left: ReactNode; right: ReactNode }>) => {
+export const SalesDocumentSplit = ({ left, right }: Readonly<{ left: ReactNode; right: ReactNode | null }>) => {
   const [split, setSplit] = useState(DEFAULT_SPLIT);
   const splitRef = useRef(split);
   useEffect(() => {
@@ -63,6 +65,9 @@ export const SalesDocumentSplit = ({ left, right }: Readonly<{ left: ReactNode; 
     const rect = root.getBoundingClientRect();
     if (rect.width) setSplit(clamp(((clientX - rect.left) / rect.width) * 100));
   };
+  if (right === null) return <div className="v2-sales-split v2-sales-split-closed">
+    <div className="v2-sales-split-left">{left}</div>
+  </div>;
   return <div className="v2-sales-split" style={{ "--sales-split": `${split}%` } as CSSProperties}>
     <div className="v2-sales-split-left">{left}</div>
     <div

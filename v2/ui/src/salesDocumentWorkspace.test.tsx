@@ -28,4 +28,8 @@ assert.match(markup, /Resize document editor/);
 assert.match(markup, /Product/);
 assert.match(markup, /Line editor/);
 
+const closed = renderToStaticMarkup(<SalesDocumentSplit left={<span>Items table</span>} right={null} />);
+assert.match(closed, /Items table/);
+assert.doesNotMatch(closed, /Resize document editor/);
+
 console.log("Shared Sales document workspace visual contract tests passed.");
