@@ -53,6 +53,33 @@ export type UpdateProductDraftGeneralInput = Readonly<{
   businessRequestId: string;
   general: ProductDraftGeneral;
 }>;
+export type ProductDraftOptionInputType = "boolean" | "select" | "multiselect" | "number" | "text" | "textarea";
+export type ProductDraftOptionDefault = string | number | boolean | null | readonly string[];
+export type ProductDraftOptionChoice = Readonly<{ choiceValue: string; label: string }>;
+export type ProductDraftOption = Readonly<{
+  optionId: string;
+  label: string;
+  inputType: ProductDraftOptionInputType;
+  required: boolean;
+  defaultValue: ProductDraftOptionDefault;
+  choices: readonly ProductDraftOptionChoice[];
+  canRemove: boolean;
+  removalReason?: string;
+}>;
+export type ProductDraftOptionsRead = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  options: readonly ProductDraftOption[];
+}>;
+export type UpdateProductDraftOptionsInput = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  expectedDraftUpdatedAt: string;
+  businessRequestId: string;
+  options: readonly ProductDraftOption[];
+}>;
 type DraftCreateReservation = Readonly<{
   kind: "new" | "resumed" | "replay";
   request: Readonly<{ id: string; resultJson: unknown | null }>;
@@ -65,14 +92,18 @@ export interface ProductVersionTransaction {
   audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
   updateDraftGeneral?(input: Readonly<{ organizationId: string; productId: string; draftVersionId: string; expectedDraftUpdatedAt: string; general: ProductDraftGeneral; staffActorUserId?: string }>): Promise<ProductDraftGeneralRead>;
   auditDraftGeneral?(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string; changedFields: readonly string[] }>): Promise<void>;
+  updateDraftOptions?(input: Readonly<{ organizationId: string; productId: string; draftVersionId: string; expectedDraftUpdatedAt: string; options: readonly ProductDraftOption[]; staffActorUserId?: string }>): Promise<ProductDraftOptionsRead>;
+  auditDraftOptions?(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; changedFields: readonly string[] }>): Promise<void>;
 }
 export interface ProductVersionTransactionRunner { transaction<T>(action: (tx: ProductVersionTransaction) => Promise<T>): Promise<T>; }
 
 const operation = "product.version.createDraft.v1";
 const updateGeneralOperation = "product.draft.general.update.v1";
+const updateOptionsOperation = "product.draft.options.update.v1";
 const actor = (context: OperationContext) => ({ principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
 const fingerprint = (input: CreateProductDraftInput) => createHash("sha256").update(JSON.stringify({ productId: input.productId, expectedActiveVersionUpdatedAt: input.expectedActiveVersionUpdatedAt })).digest("hex");
 const generalFingerprint = (input: UpdateProductDraftGeneralInput) => createHash("sha256").update(JSON.stringify({ productId: input.productId, draftVersionId: input.draftVersionId, expectedDraftUpdatedAt: input.expectedDraftUpdatedAt, general: input.general })).digest("hex");
+const optionsFingerprint = (input: UpdateProductDraftOptionsInput) => createHash("sha256").update(JSON.stringify({ productId: input.productId, draftVersionId: input.draftVersionId, expectedDraftUpdatedAt: input.expectedDraftUpdatedAt, options: input.options })).digest("hex");
 const validGeneral = (general: ProductDraftGeneral): ProductDraftGeneral => {
   const text = (value: unknown, label: string, max: number, nullable = false): string | null => {
     if (nullable && (value === null || value === undefined || value === "")) return null;
@@ -90,6 +121,32 @@ const validGeneral = (general: ProductDraftGeneral): ProductDraftGeneral => {
   if (general.workflowIntent !== "standard_production" && general.workflowIntent !== "fulfillment_only" && general.workflowIntent !== "service_fee") throw new V2ApplicationError("VALIDATION_ERROR", "Workflow is invalid.");
   if (general.workflowIntent !== "standard_production" && (general.requiresProofApproval || general.requiresProductionJob)) throw new V2ApplicationError("VALIDATION_ERROR", "This workflow cannot require proofing or production.");
   return { displayName, category, description, storefrontVisible: general.storefrontVisible, measurementMode: general.measurementMode, workflowIntent: general.workflowIntent, requiresProofApproval: general.requiresProofApproval, requiresProductionJob: general.requiresProductionJob };
+};
+const optionTypes: readonly ProductDraftOptionInputType[] = ["boolean", "select", "multiselect", "number", "text", "textarea"];
+const choiceBased = (type: ProductDraftOptionInputType) => type === "select" || type === "multiselect";
+const validOptions = (options: readonly ProductDraftOption[]): readonly ProductDraftOption[] => {
+  if (!Array.isArray(options) || options.length > 100) throw new V2ApplicationError("VALIDATION_ERROR", "Product options are invalid.");
+  const ids = new Set<string>();
+  return options.map((option, index) => {
+    if (!option || typeof option !== "object" || typeof option.optionId !== "string" || !option.optionId.trim() || ids.has(option.optionId)) throw new V2ApplicationError("VALIDATION_ERROR", "Product options are invalid.");
+    ids.add(option.optionId);
+    const label = typeof option.label === "string" ? option.label.trim() : "";
+    if (!label || label.length > 160 || !optionTypes.includes(option.inputType) || typeof option.required !== "boolean" || !Array.isArray(option.choices) || option.choices.length > 100) throw new V2ApplicationError("VALIDATION_ERROR", "Product options are invalid.");
+    const choices = option.choices.map((choice: ProductDraftOptionChoice) => {
+      if (!choice || typeof choice.choiceValue !== "string" || typeof choice.label !== "string" || choice.label.trim().length === 0 || choice.label.trim().length > 160) throw new V2ApplicationError("VALIDATION_ERROR", "A choice is invalid.");
+      return { choiceValue: choice.choiceValue.trim(), label: choice.label.trim() };
+    });
+    if (new Set(choices.map((choice: ProductDraftOptionChoice) => choice.choiceValue).filter(Boolean)).size !== choices.filter((choice: ProductDraftOptionChoice) => choice.choiceValue).length) throw new V2ApplicationError("VALIDATION_ERROR", "Choice values must be unique.");
+    if (!choiceBased(option.inputType) && choices.length) throw new V2ApplicationError("VALIDATION_ERROR", "This option type does not use choices.");
+    if (choiceBased(option.inputType)) {
+      if (!choices.length) throw new V2ApplicationError("VALIDATION_ERROR", "A choice-based option needs at least one choice.");
+      if (option.inputType === "select" && option.defaultValue !== null && (typeof option.defaultValue !== "string" || !choices.some((choice: ProductDraftOptionChoice) => choice.choiceValue === option.defaultValue))) throw new V2ApplicationError("VALIDATION_ERROR", "Choose a valid default choice.");
+      if (option.inputType === "multiselect" && option.defaultValue !== null && (!Array.isArray(option.defaultValue) || option.defaultValue.some((value: unknown) => typeof value !== "string" || !choices.some((choice: ProductDraftOptionChoice) => choice.choiceValue === value)))) throw new V2ApplicationError("VALIDATION_ERROR", "Choose valid default choices.");
+    } else if (option.inputType === "boolean" && option.defaultValue !== null && typeof option.defaultValue !== "boolean") throw new V2ApplicationError("VALIDATION_ERROR", "A Boolean option needs a Boolean default.");
+    else if (option.inputType === "number" && option.defaultValue !== null && (typeof option.defaultValue !== "number" || !Number.isFinite(option.defaultValue))) throw new V2ApplicationError("VALIDATION_ERROR", "A Number option needs a numeric default.");
+    else if ((option.inputType === "text" || option.inputType === "textarea") && option.defaultValue !== null && typeof option.defaultValue !== "string") throw new V2ApplicationError("VALIDATION_ERROR", "A text option needs a text default.");
+    return { ...option, label, choices, defaultValue: option.defaultValue };
+  });
 };
 
 /** Product configuration drafts are a PBV2 lifecycle concern. This service never changes an ACTIVE tree or Product pointer. */
@@ -142,6 +199,27 @@ export class ProductVersionLifecycleApplicationService {
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", error instanceof Error ? error.message : "Product Draft could not be saved."));
     }
+  }
+
+  async updateDraftOptions(context: OperationContext, input: UpdateProductDraftOptionsInput): Promise<ApplicationResult<ProductDraftOptionsRead>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      if (!input.productId || !input.draftVersionId || !input.businessRequestId || Number.isNaN(Date.parse(input.expectedDraftUpdatedAt))) throw new V2ApplicationError("VALIDATION_ERROR", "A Draft and its current revision are required.");
+      if (!this.authority.decide(context.principal, { capability: "product.edit", resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to edit this Product Draft.");
+      const options = validOptions(input.options);
+      const value = await this.runner.transaction(async (tx) => {
+        if (!tx.updateDraftOptions || !tx.auditDraftOptions) throw new V2ApplicationError("CONFLICT", "Product Draft option editing is unavailable.");
+        const request = await tx.reserve({ organizationId: context.organizationId, operation: updateOptionsOperation, businessRequestId: input.businessRequestId, payloadFingerprint: optionsFingerprint({ ...input, options }), ...actor(context) });
+        if (request.kind === "replay") return request.request.resultJson as ProductDraftOptionsRead;
+        const updated = await tx.updateDraftOptions({ organizationId: context.organizationId, productId: input.productId, draftVersionId: input.draftVersionId, expectedDraftUpdatedAt: input.expectedDraftUpdatedAt, options, staffActorUserId: staffActorId(context.principal) });
+        await tx.attribute({ organizationId: context.organizationId, requestId: request.request.id, operation: updateOptionsOperation, resourceId: updated.draftVersionId, ...actor(context) });
+        await tx.auditDraftOptions({ organizationId: context.organizationId, requestId: request.request.id, operation: updateOptionsOperation, resourceId: updated.draftVersionId, changedFields: ["options"], ...actor(context) });
+        await tx.succeed(context.organizationId, request.request.id, updated.draftVersionId, updated);
+        return updated;
+      });
+      return success(value);
+    } catch (error) { return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", error instanceof Error ? error.message : "Product Draft options could not be saved.")); }
   }
 
   private async succeedGeneral(tx: ProductVersionTransaction, organizationId: string, requestId: string, draftVersionId: string, result: ProductDraftGeneralRead) {

@@ -20,6 +20,7 @@
     "v2:migrations:apply": "tsx v2/scripts/applyV2Migrations.ts",
     "v2:boundaries": "node v2/scripts/check-import-boundaries.mjs",
     "v2:m0:postgres": "tsx v2/scripts/runM0PostgresRehearsal.ts",
+    "v2:p4:options": "tsx v2/scripts/runP4ProductDraftOptionsRehearsal.ts",
     "v2:m1:compatibility-reads": "tsx v2/scripts/runM13CompatibilityReadRehearsal.ts",
     "v2:m1:staff-authority": "tsx v2/scripts/runM14StaffAuthorityCompatibilityRehearsal.ts",
     "v2:m1:permission-sets": "tsx v2/scripts/runM15PermissionSetRehearsal.ts",

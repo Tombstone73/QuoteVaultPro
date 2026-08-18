@@ -113,6 +113,9 @@ export type ProductVersionSummary = Readonly<{status:"active"|"draft"|"deprecate
 export type ProductVersionLifecycle = Readonly<{active?:ProductVersionSummary;draft?:ProductVersionSummary;history:readonly ProductVersionSummary[];historyLimit:number;historyHasMore:boolean;canCreateDraft:boolean}>;
 export type ProductDraftGeneral = Readonly<{displayName:string;category:string|null;description:string|null;storefrontVisible:boolean;measurementMode:"dimensions_required"|"quantity_only";workflowIntent:"standard_production"|"fulfillment_only"|"service_fee";requiresProofApproval:boolean;requiresProductionJob:boolean}>;
 export type ProductDraftGeneralRead = Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";general:ProductDraftGeneral}>;
+export type ProductDraftOptionInputType="boolean"|"select"|"multiselect"|"number"|"text"|"textarea";
+export type ProductDraftOption=Readonly<{optionId:string;label:string;inputType:ProductDraftOptionInputType;required:boolean;defaultValue:string|number|boolean|null|readonly string[];choices:readonly Readonly<{choiceValue:string;label:string}>[];canRemove:boolean;removalReason?:string}>;
+export type ProductDraftOptionsRead=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";options:readonly ProductDraftOption[]}>;
 export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;versions:ProductVersionLifecycle }>;
 export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
 export type FulfillmentMethod = "pickup" | "shipment";
@@ -888,6 +891,8 @@ export const productApi = {
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/general`,
     {method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})},
   ),
+  draftOptions:(organizationId:string,productId:string)=>request<ProductDraftOptionsRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/options`),
+  saveDraftOptions:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;options:readonly ProductDraftOption[]}>)=>request<ProductDraftOptionsRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/options`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
 };
 export const financeApi = {
   overview: (organizationId: string) =>
