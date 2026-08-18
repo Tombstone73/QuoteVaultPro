@@ -85,7 +85,7 @@ export class PostgresContactWorkspaceReader {
     const [rows, count] = await Promise.all([
       this.pool.query<ContactRow>(
         `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,
-          c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary
+          c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, COALESCE(ct.is_primary, false) AS is_primary
         FROM customer_contact_links l
         JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
         JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
@@ -115,7 +115,7 @@ export class PostgresContactWorkspaceReader {
   async read(organizationId: OrganizationId, contactId: ContactId): Promise<ContactWorkspaceRead | null> {
     const selected = await this.pool.query<ContactDetailRow>(
       `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,
-        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary,
+        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, COALESCE(ct.is_primary, false) AS is_primary,
         c.display_name, c.company_name, c.billing_street1, c.billing_street2, c.billing_city, c.billing_state, c.billing_postal_code, c.billing_country,
         c.shipping_street1, c.shipping_street2, c.shipping_city, c.shipping_state, c.shipping_postal_code, c.shipping_country
       FROM customer_contact_links l
@@ -123,7 +123,7 @@ export class PostgresContactWorkspaceReader {
       JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
       WHERE l.organization_id = $1 AND ct.id = $2 AND l.status = 'active' AND c.is_active IS NOT FALSE
         AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted') AND c.merged_into_customer_id IS NULL
-      ORDER BY l.is_primary DESC, lower(COALESCE(NULLIF(c.display_name, ''), c.company_name)), c.id
+      ORDER BY COALESCE(ct.is_primary, false) DESC, lower(COALESCE(NULLIF(c.display_name, ''), c.company_name)), c.id
       LIMIT 1`,
       [organizationId, contactId],
     );
@@ -131,13 +131,13 @@ export class PostgresContactWorkspaceReader {
     if (!row) return null;
     const related = await this.pool.query<ContactRow>(
       `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,
-        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary
+        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, COALESCE(ct.is_primary, false) AS is_primary
       FROM customer_contact_links l
       JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
       JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
       WHERE l.organization_id = $1 AND l.customer_id = $2 AND l.status = 'active' AND c.is_active IS NOT FALSE
         AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted') AND c.merged_into_customer_id IS NULL
-      ORDER BY l.is_primary DESC, lower(ct.last_name), lower(ct.first_name), ct.id
+      ORDER BY COALESCE(ct.is_primary, false) DESC, lower(ct.last_name), lower(ct.first_name), ct.id
       LIMIT 500`,
       [organizationId, row.customer_id],
     );
