@@ -172,7 +172,7 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       if (!new AuthorityPolicy().decide(operation.principal, { capability: "order.view", resource: { organizationId: operation.organizationId } }).allowed)
         throw new V2ApplicationError("FORBIDDEN", "Order access is unavailable.");
       const limit = Number(request.query.limit ?? 25);
-      const data = await dependencies.workspace.listOrders(brandedId<"OrganizationId">(operation.organizationId), {
+      const data = await dependencies.workspace.listOrdersForWorkspace(brandedId<"OrganizationId">(operation.organizationId), {
         ...(Number.isFinite(limit) ? { limit } : {}),
         ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
         ...(typeof request.query.q === "string" ? { search: request.query.q } : {}),

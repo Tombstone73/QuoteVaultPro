@@ -14,6 +14,11 @@ export type SalesWorkspacePageRequest = Readonly<{
 export type SalesWorkspacePage<T> = Readonly<{
   items: readonly T[];
   nextCursor?: string;
+  summary?: Readonly<{
+    itemCount: number;
+    sellingTotalCents?: number;
+    currencies: readonly string[];
+  }>;
 }>;
 
 export type QuoteListItem = Readonly<{
@@ -41,6 +46,8 @@ export type OrderListItem = Readonly<{
   orderId: OrderId;
   number: string;
   customerDisplayName: string;
+  purchaseOrderNumber?: string;
+  lineCount?: number;
   lifecycle: string;
   sellingTotalCents: number;
   currency: string;
@@ -72,6 +79,11 @@ export interface SalesWorkspaceReadPort {
     request: SalesWorkspacePageRequest,
   ): Promise<SalesWorkspacePage<QuoteListItem>>;
   listOrders(
+    organizationId: OrganizationId,
+    request: SalesWorkspacePageRequest,
+  ): Promise<SalesWorkspacePage<OrderListItem>>;
+  /** A bounded Orders-list projection with the server-calculated mixed-source summary. */
+  listOrdersForWorkspace(
     organizationId: OrganizationId,
     request: SalesWorkspacePageRequest,
   ): Promise<SalesWorkspacePage<OrderListItem>>;

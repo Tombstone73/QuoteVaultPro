@@ -38,6 +38,7 @@ import {
 } from "./quoteFormQueries";
 import { AppearanceWorkspace } from "./AppearanceWorkspace";
 import { QuotesList } from "./QuotesList";
+import { OrdersList } from "./OrdersList";
 import type { VisualAppearance } from "./appearance";
 import { V2VisualShell, type V2VisualPage } from "./VisualShell";
 import { ProofingWorkspace } from "./ProofingWorkspace";
@@ -363,6 +364,14 @@ const LegacyQuoteWorkspace = ({ organizationId, sessionScope, recordId, onBack }
   /></section>;
 };
 
+const LegacyOrderWorkspace = ({ organizationId, sessionScope, recordId, onBack }: Readonly<{ organizationId: string; sessionScope: string; recordId: string; onBack: () => void }>) => {
+  const legacy = useQuery({ queryKey: ["v2", sessionScope, organizationId, "legacy-order", recordId], queryFn: () => orderApi.legacy(organizationId, recordId), enabled: Boolean(sessionScope && organizationId && recordId) });
+  if (legacy.isLoading) return <section className="v2-sales-workspace"><p className="v2-sales-loading">Loading Order…</p></section>;
+  if (!legacy.data) return <section className="v2-sales-workspace"><p className="notice error">Unable to open the Order.</p></section>;
+  const detail = legacy.data;
+  return <section className="lab v2-sales-workspace"><button className="v2-sales-back" type="button" onClick={onBack}>← Orders</button><SalesDocumentFrame documentType="Order" number={detail.number} readOnly readOnlyLabel="Legacy · read only" status={<LifecycleBadge value={detail.lifecycle} />} metadata={<dl className="v2-sales-meta-grid"><div><dt>Customer</dt><dd>{detail.customerDisplayName}</dd></div><div><dt>Due</dt><dd>{detail.requestedDueDate ?? "Unavailable"}</dd></div><div><dt>Total</dt><dd>{money({ cents: detail.sellingTotalCents, currency: detail.currency })}</dd></div></dl>} panels={{ Items: <SalesDocumentEmpty>Line detail is unavailable for this legacy Order.</SalesDocumentEmpty>, Artwork: <SalesDocumentEmpty>No artwork records are available.</SalesDocumentEmpty>, Notes: <SalesDocumentEmpty>No notes are available.</SalesDocumentEmpty>, History: <SalesDocumentEmpty>Legacy Order · read only</SalesDocumentEmpty> }} /></section>;
+};
+
 const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canCreate: boolean; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
   const [creating, setCreating] = useState(false);
   const [legacyQuoteId, setLegacyQuoteId] = useState("");
@@ -373,11 +382,11 @@ const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuote
   return <QuotesList organizationId={props.organizationId} sessionScope={props.sessionScope} canCreate={props.canCreate} onCreate={() => setCreating(true)} onOpenV2={props.setQuoteId} onOpenLegacy={setLegacyQuoteId} />;
 };
 
-const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer, openFulfillment }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void; openFulfillment: (orderId: string) => void }>) => {
-  const [search, setSearch] = useState(""); const [lifecycle, setLifecycle] = useState(""); const [cursor, setCursor] = useState("");
-  const list = useSalesOrders(sessionScope, organizationId, { q: search, ...(lifecycle ? { lifecycle } : {}), ...(cursor ? { cursor } : {}) });
+const OrdersPage = ({ organizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer, openFulfillment }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void; openFulfillment: (orderId: string) => void }>) => {
+  const [legacyOrderId, setLegacyOrderId] = useState("");
   if (orderId) return <OrderWorkspace organizationId={organizationId} sessionScope={sessionScope} orderId={orderId} canEdit={bootstrap?.capabilities.orderEdit === true} canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true} canViewInvoice={bootstrap?.capabilities.invoiceView === true} csrfReady={Boolean(bootstrap)} onBack={() => setOrderId("")} openCustomer={openCustomer} openFulfillment={openFulfillment} />;
-  return <section className="lab v2-sales-workspace"><header className="v2-sales-page-heading"><div><p className="eyebrow">Sales / Orders</p><h1>Orders</h1><p>Frozen commercial truth, Billing relationship, and Routing context.</p></div><span>Read and write</span></header><div className="card grid"><label className="field">Organization ID<input value={organizationId} onChange={(event) => { setCursor(""); setOrganizationId(event.target.value); }} placeholder="Authenticated route scope" /></label><label className="field">Search Orders<input value={search} onChange={(event) => { setCursor(""); setSearch(event.target.value); }} placeholder="Number or Customer" /></label><label className="field">Lifecycle<select value={lifecycle} onChange={(event) => { setCursor(""); setLifecycle(event.target.value); }}><option value="">All</option><option value="open">Open</option><option value="cancelled">Cancelled</option></select></label></div>{organizationId && <><SalesList kind="Order" organizationId={organizationId} items={list.data?.items ?? []} onOpen={setOrderId} /><SalesPagination cursor={cursor} nextCursor={list.data?.nextCursor} setCursor={setCursor} /></>}</section>;
+  if (legacyOrderId) return <LegacyOrderWorkspace organizationId={organizationId} sessionScope={sessionScope} recordId={legacyOrderId} onBack={() => setLegacyOrderId("")} />;
+  return <OrdersList organizationId={organizationId} sessionScope={sessionScope} onOpenV2={setOrderId} onOpenLegacy={setLegacyOrderId} />;
 };
 
 type WorkspaceProps = Readonly<{

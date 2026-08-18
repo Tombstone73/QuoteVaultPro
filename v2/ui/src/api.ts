@@ -100,6 +100,11 @@ export type UiBootstrap = Readonly<{
 export type SalesListPage<T> = Readonly<{
   items: readonly T[];
   nextCursor?: string;
+  summary?: Readonly<{
+    itemCount: number;
+    sellingTotalCents?: number;
+    currencies: readonly string[];
+  }>;
 }>;
 export type ProductCatalogItem = Readonly<{
   productId: string; displayName: string; measurementMode: "dimensions_required" | "quantity_only"; requiresDimensions: boolean;
@@ -169,6 +174,8 @@ export type OrderListItem = Readonly<{
   orderId: string;
   number: string;
   customerDisplayName: string;
+  purchaseOrderNumber?: string;
+  lineCount?: number;
   lifecycle: string;
   sellingTotalCents: number;
   currency: string;
