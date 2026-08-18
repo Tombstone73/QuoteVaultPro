@@ -23,6 +23,7 @@
     "v2:p4:options": "tsx v2/scripts/runP4ProductDraftOptionsRehearsal.ts",
     "v2:p5:pricing": "tsx v2/scripts/runP5ProductDraftPricingRehearsal.ts",
     "v2:p6a:matrix": "tsx v2/scripts/runP6aMatrixRehearsal.ts",
+    "v2:p6b:formula": "tsx v2/scripts/runP6bFormulaRehearsal.ts",
     "v2:p5:characterize": "tsx v2/scripts/characterizeP5OptionalSelections.ts",
     "v2:m1:compatibility-reads": "tsx v2/scripts/runM13CompatibilityReadRehearsal.ts",
     "v2:m1:staff-authority": "tsx v2/scripts/runM14StaffAuthorityCompatibilityRehearsal.ts",

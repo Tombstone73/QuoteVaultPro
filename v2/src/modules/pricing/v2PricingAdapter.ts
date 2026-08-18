@@ -44,8 +44,8 @@ const selectTier = (tiers: readonly PricingTierRule[] | undefined, basis: number
  * participates here. Expressions are dollar-valued, matching characterized V1
  * PBV2 formula behavior; the result is rounded once when converted to cents.
  */
-const evaluateResolvedFormula = (expression: string, variables: Record<string, number>): number => {
-  const tokens = expression.match(/\s*(ceil|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[()+\-*/])/gu);
+export const evaluateResolvedFormula = (expression: string, variables: Record<string, number>): number => {
+  const tokens = expression.match(/\s*(ceil|[A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)|[()+\-*/])/gu);
   if (!tokens || tokens.join("").replace(/\s/gu, "") !== expression.replace(/\s/gu, "")) throw new Error("Unsupported pricing formula expression.");
   let cursor = 0;
   const take = (): string | undefined => tokens[cursor++]?.trim();
@@ -54,7 +54,7 @@ const evaluateResolvedFormula = (expression: string, variables: Record<string, n
     if (token === "(") { const value = sum(); if (take() !== ")") throw new Error("Unbalanced pricing formula."); return value; }
     if (token === "ceil") { if (take() !== "(") throw new Error("ceil requires parentheses."); const value = sum(); if (take() !== ")") throw new Error("Unbalanced pricing formula."); return Math.ceil(value); }
     if (token === "-") return -factor();
-    if (token && /^\d/u.test(token)) return Number(token);
+    if (token && /^(?:\d|\.)/u.test(token)) return Number(token);
     if (token && Object.hasOwn(variables, token)) return variables[token]!;
     throw new Error(`Unknown pricing formula variable: ${token ?? "end of expression"}.`);
   };

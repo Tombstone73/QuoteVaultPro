@@ -148,7 +148,7 @@ export const resolveActivePbv2PricingInput = (
   if (expression && !supportedFormula(expression)) return validation("The active formula uses an unsupported compatibility function.");
   const resolvedOptionImpacts = optionImpacts(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedOptionImpacts.ok) return resolvedOptionImpacts;
-  const formulaVariables = (record(meta.formulaVariables) ?? record(meta.pricingFormulaVariables) ?? {}) as Record<string, JsonValue>;
+  const formulaVariables = { ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables) } as Record<string, JsonValue>;
   let productionRequirements;
   try { productionRequirements=resolveProductionRequirementSnapshot(meta.productionUnitSpecification,visibility.effectiveSelections as Record<string,JsonValue>); }
   catch { return validation("The active production-unit specification is invalid."); }
