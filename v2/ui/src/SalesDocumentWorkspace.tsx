@@ -34,7 +34,7 @@ export const SalesDocumentFrame = ({
   return <section className="v2-sales-document" data-read-only={readOnly || undefined}>
     <header className="v2-sales-document-header">
       <div className="v2-sales-document-title">
-        <div><span>{documentType}</span><h1>{number}</h1></div>
+        <div><h1>{documentType} #{number}</h1></div>
         {readOnly && <em>{readOnlyLabel}</em>}
         {status}
       </div>

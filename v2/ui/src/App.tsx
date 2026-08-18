@@ -11,6 +11,7 @@ import {
   type QuoteRead,
   type QuoteResult,
   type SalesLine,
+  type Selection,
 } from "./api";
 import {
   applyAuthoritativeQuoteResult,
@@ -35,7 +36,6 @@ import {
   useQuoteFormProducts,
   useSalesOrders,
 } from "./quoteFormQueries";
-import { SelectionField } from "./SelectionField";
 import { AppearanceWorkspace } from "./AppearanceWorkspace";
 import { QuotesList } from "./QuotesList";
 import type { VisualAppearance } from "./appearance";
@@ -424,6 +424,49 @@ const lineConfiguration = (line: SalesLine): string => {
   return parts.join(" · ") || "No additional configuration";
 };
 
+const QuoteDocumentMetadata = ({
+  customerId,
+  contactId,
+  customers,
+  contacts,
+  purchaseOrderNumber,
+  requestedDueDate,
+  canEdit = true,
+  readOnly = false,
+  onCustomerChange,
+  onContactChange,
+  onPurchaseOrderChange,
+  onDueDateChange,
+}: Readonly<{
+  customerId: string;
+  contactId: string;
+  customers: readonly Selection[];
+  contacts: readonly Selection[];
+  purchaseOrderNumber: string;
+  requestedDueDate: string;
+  canEdit?: boolean;
+  readOnly?: boolean;
+  onCustomerChange?: (value: string) => void;
+  onContactChange?: (value: string) => void;
+  onPurchaseOrderChange?: (value: string) => void;
+  onDueDateChange?: (value: string) => void;
+}>) => {
+  const customerName = customers.find((customer) => customer.customerId === customerId)?.displayName ?? "Unavailable";
+  const contactName = contacts.find((contact) => contact.contactId === contactId)?.displayName ?? "Unavailable";
+  return <div className="v2-sales-compact-meta">
+    <div className="v2-sales-identity">
+      {readOnly ? <strong>{customerName}</strong> : <select className="v2-sales-customer-select" aria-label="Customer" value={customerId} disabled={!canEdit} onChange={(event) => onCustomerChange?.(event.target.value)}><option value="">Select Customer</option>{customers.map((customer) => customer.customerId ? <option key={customer.customerId} value={customer.customerId}>{customer.displayName}</option> : null)}</select>}
+      <label className="v2-sales-contact-select"><small>Contact</small>{readOnly ? <span>{contactId ? contactName : "Unavailable"}</span> : <select aria-label="Contact" value={contactId} disabled={!customerId || !canEdit} onChange={(event) => onContactChange?.(event.target.value)}><option value="">Select Contact</option>{contacts.map((contact) => contact.contactId ? <option key={contact.contactId} value={contact.contactId}>{contact.displayName}</option> : null)}</select>}</label>
+    </div>
+    <label className="v2-sales-inline-fact"><small>PO #</small>{readOnly ? <span>{purchaseOrderNumber || "Unavailable"}</span> : <input aria-label="PO #" value={purchaseOrderNumber} disabled={!canEdit} onChange={(event) => onPurchaseOrderChange?.(event.target.value)} />}</label>
+    <label className="v2-sales-inline-fact"><small>Requested Due</small>{readOnly ? <span>{requestedDueDate || "Unavailable"}</span> : <input aria-label="Requested Due" type="date" value={requestedDueDate} disabled={!canEdit} onInput={(event) => onDueDateChange?.(event.currentTarget.value)} onChange={(event) => onDueDateChange?.(event.target.value)} />}</label>
+    <div className="v2-sales-inline-fact"><small>Sales Rep</small><span>Unavailable</span></div>
+    <div className="v2-sales-inline-fact"><small>Terms</small><span>Unavailable</span></div>
+    <div className="v2-sales-inline-fact"><small>Fulfillment</small><span>Unavailable</span></div>
+    <div className="v2-sales-inline-fact"><small>Job Name</small><span>Unavailable</span></div>
+  </div>;
+};
+
 const QuoteWorkspace = ({
   organizationId,
   setOrganizationId,
@@ -647,11 +690,7 @@ const QuoteWorkspace = ({
   const quoteDetail = quote ? (() => {
     const selectedLine = quote.quote.lines.find((line) => line.lineId === editingLineId);
     const locked = Boolean(quote.quote.convertedOrderId);
-    const customerName = customers.data?.find((customer) => customer.customerId === headerCustomerId)?.displayName ?? "Unavailable";
-    const contactName = contacts.data?.find((contact) => contact.contactId === headerContactId)?.displayName ?? "Unavailable";
-    const metadata = locked
-      ? <dl className="v2-sales-meta-grid"><div><dt>Customer</dt><dd>{customerName}</dd></div><div><dt>Contact</dt><dd>{headerContactId ? contactName : "Unavailable"}</dd></div><div><dt>PO</dt><dd>{purchaseOrderNumber || "Unavailable"}</dd></div><div><dt>Due</dt><dd>{requestedDueDate || "Unavailable"}</dd></div><div><dt>Sales rep</dt><dd>Unavailable</dd></div><div><dt>Terms</dt><dd>Unavailable</dd></div><div><dt>Fulfillment</dt><dd>Unavailable</dd></div><div><dt>Job name</dt><dd>Unavailable</dd></div></dl>
-      : <div className="v2-sales-editable-meta"><SelectionField label="Customer" value={headerCustomerId} options={customers.data ?? []} identity="customerId" emptyLabel="Select Customer" disabled={!canEdit} onChange={(value) => { const next = clearContactForCustomerChange(value); setHeaderCustomerId(next.customerId); setHeaderContactId(next.contactId); }} /><SelectionField label="Contact" value={headerContactId} options={contacts.data ?? []} identity="contactId" emptyLabel="Select Contact" disabled={!headerCustomerId || !canEdit} onChange={setHeaderContactId} /><label className="field">PO<input value={purchaseOrderNumber} disabled={!canEdit} onChange={(event) => setPurchaseOrderNumber(event.target.value)} /></label><label className="field">Due<input type="date" value={requestedDueDate} disabled={!canEdit} onInput={(event) => setRequestedDueDate(event.currentTarget.value)} onChange={(event) => setRequestedDueDate(event.target.value)} /></label><div className="v2-sales-unavailable"><small>Sales rep</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Terms</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Fulfillment</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Job name</small><span>Unavailable</span></div></div>;
+    const metadata = <QuoteDocumentMetadata customerId={headerCustomerId} contactId={headerContactId} customers={customers.data ?? []} contacts={contacts.data ?? []} purchaseOrderNumber={purchaseOrderNumber} requestedDueDate={requestedDueDate} canEdit={canEdit} readOnly={locked} onCustomerChange={(value) => { const next = clearContactForCustomerChange(value); setHeaderCustomerId(next.customerId); setHeaderContactId(next.contactId); }} onContactChange={setHeaderContactId} onPurchaseOrderChange={setPurchaseOrderNumber} onDueDateChange={setRequestedDueDate} />;
     const headerActions = locked
       ? quote.quote.convertedOrderId ? <button className="button" type="button" onClick={() => openOrder?.(quote.quote.convertedOrderId!)}>Open converted Order</button> : null
       : <><button className="button secondary" type="button" onClick={() => openCustomer?.(quote.quote.customerContact.customerId)}>Open Customer</button><button className="button secondary" type="button" disabled={!canEdit || save.isPending || !csrfReady} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save"}</button>{quote.quote.deliveryState === "not_sent" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => action.mutate("send")}>Send Quote</button>}{quote.quote.deliveryState === "sent" && quote.quote.acceptanceState === "not_accepted" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => action.mutate("accept")}>Accept Quote</button>}{quote.quote.acceptanceState === "accepted" && canConvert && <button className="button" type="button" disabled={convert.isPending || !csrfReady} onClick={() => { if (window.confirm(`Convert Quote ${quote.number.display} to an Order? This creates the Order, Draft Invoice, and required Routing from the accepted Quote.`)) convert.mutate(); }}>Convert to Order</button>}</>;
@@ -689,7 +728,7 @@ const QuoteWorkspace = ({
           documentType="Quote"
           number="New"
           status={<Status value="draft" />}
-          metadata={<div className="v2-sales-editable-meta"><SelectionField label="Customer" value={customerId} options={customers.data ?? []} identity="customerId" emptyLabel="Select Customer" onChange={(value) => { const next = clearContactForCustomerChange(value); setCustomerId(next.customerId); setContactId(next.contactId); }} /><SelectionField label="Contact" value={contactId} options={contacts.data ?? []} identity="contactId" emptyLabel="Select Contact" disabled={!customerId} onChange={setContactId} /><label className="field">PO<input value={purchaseOrderNumber} onChange={(event) => setPurchaseOrderNumber(event.target.value)} /></label><label className="field">Due<input type="date" value={requestedDueDate} onInput={(event) => setRequestedDueDate(event.currentTarget.value)} onChange={(event) => setRequestedDueDate(event.target.value)} /></label><div className="v2-sales-unavailable"><small>Sales rep</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Terms</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Fulfillment</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Job name</small><span>Unavailable</span></div></div>}
+          metadata={<QuoteDocumentMetadata customerId={customerId} contactId={contactId} customers={customers.data ?? []} contacts={contacts.data ?? []} purchaseOrderNumber={purchaseOrderNumber} requestedDueDate={requestedDueDate} onCustomerChange={(value) => { const next = clearContactForCustomerChange(value); setCustomerId(next.customerId); setContactId(next.contactId); }} onContactChange={setContactId} onPurchaseOrderChange={setPurchaseOrderNumber} onDueDateChange={setRequestedDueDate} />}
           panels={{ Items: <section className="v2-sales-line-editor v2-sales-new-quote"><header><div><small>NEW LINE</small><h2>Items</h2></div></header><QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`create:${organizationId}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={create.isPending} submitLabel="Create Quote" onSubmit={(line) => { if (!customerId) { setNotice("Select a Customer before creating the Quote."); return; } create.mutate(line); }} /></section>, Artwork: <SalesDocumentEmpty>No artwork is attached.</SalesDocumentEmpty>, Notes: <section className="v2-sales-notes"><label className="field">Commercial notes<textarea value={commercialNotes} onChange={(event) => setCommercialNotes(event.target.value)} /></label></section>, History: <SalesDocumentEmpty>No history yet.</SalesDocumentEmpty> }}
         />
       ) : quoteDetail}
