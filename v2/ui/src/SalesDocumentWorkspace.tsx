@@ -1,9 +1,10 @@
 import { GripVertical } from "lucide-react";
 import React, { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 
-export type SalesDocumentTab = "Items" | "Artwork" | "Notes" | "History";
+export type SalesDocumentTab = "Items" | "Artwork" | "Notes" | "Billing" | "Fulfillment" | "History";
 
-const tabs: readonly SalesDocumentTab[] = ["Items", "Artwork", "Notes", "History"];
+const quoteTabs: readonly SalesDocumentTab[] = ["Items", "Artwork", "Notes", "History"];
+const orderTabs: readonly SalesDocumentTab[] = ["Items", "Artwork", "Notes", "Billing", "Fulfillment", "History"];
 const DEFAULT_SPLIT = 45;
 const MIN_SPLIT = 30;
 const MAX_SPLIT = 65;
@@ -18,6 +19,7 @@ export const SalesDocumentFrame = ({
   headerActions,
   metadata,
   panels,
+  tabs,
   readOnly = false,
   readOnlyLabel = "Legacy · read only",
 }: Readonly<{
@@ -26,11 +28,13 @@ export const SalesDocumentFrame = ({
   status: ReactNode;
   headerActions?: ReactNode;
   metadata: ReactNode;
-  panels: Readonly<Record<SalesDocumentTab, ReactNode>>;
+  panels: Readonly<Partial<Record<SalesDocumentTab, ReactNode>>>;
+  tabs?: readonly SalesDocumentTab[];
   readOnly?: boolean;
   readOnlyLabel?: string;
 }>) => {
-  const [activeTab, setActiveTab] = useState<SalesDocumentTab>("Items");
+  const visibleTabs = tabs ?? (documentType === "Order" ? orderTabs : quoteTabs);
+  const [activeTab, setActiveTab] = useState<SalesDocumentTab>(visibleTabs[0] ?? "Items");
   return <section className="v2-sales-document" data-read-only={readOnly || undefined}>
     <header className="v2-sales-document-header">
       <div className="v2-sales-document-title">
@@ -42,7 +46,7 @@ export const SalesDocumentFrame = ({
       <div className="v2-sales-document-meta">{metadata}</div>
     </header>
     <nav className="v2-sales-document-tabs" aria-label={`${documentType} workspace sections`}>
-      {tabs.map((tab) => <button key={tab} type="button" aria-current={activeTab === tab || undefined} onClick={() => setActiveTab(tab)}>{tab}</button>)}
+      {visibleTabs.map((tab) => <button key={tab} type="button" aria-current={activeTab === tab || undefined} onClick={() => setActiveTab(tab)}>{tab}</button>)}
     </nav>
     <div className="v2-sales-document-panel">{panels[activeTab]}</div>
   </section>;
