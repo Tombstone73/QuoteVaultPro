@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { canonicalJson, decimalText, type JsonValue } from "../shared/commercialValues.js";
-import type { PricingMatrixRow, PricingOptionRule, PricingRules, PricingTierRule } from "../pricing/contracts.js";
+import type { PricingBaseRateOverride, PricingMatrixRow, PricingOptionRule, PricingRules, PricingTierRule } from "../pricing/contracts.js";
 import { getPbv2FixedDimensions } from "../../../../shared/pbv2/fixedDimensions.js";
+import { extractFormulaVariables } from "../../../../shared/pbv2/formulaHelpers.js";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBaseRateCents } from "../../../../shared/productOptionPricingMatrix.js";
 import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../../shared/optionTreeV2Runtime.js";
 import type { OptionTreeV2, PricingImpact, PricingV2Tier } from "../../../../shared/optionTreeV2.js";
@@ -33,8 +34,8 @@ const tier = (input: PricingV2Tier, fallbackId: string): PricingTierRule => ({
 });
 const keyFor = (node: any): string => typeof node?.input?.selectionKey === "string" ? node.input.selectionKey : typeof node?.key === "string" ? node.key : node.id;
 const supportedFormula = (expression: string): boolean => {
-  if (!/^[\s\w.()+\-*/]+$/u.test(expression)) return false;
-  return !/\b(?!ceil\s*\()[A-Za-z_]\w*\s*\(/u.test(expression);
+  if (!/^[\s\w.,()+\-*/]+$/u.test(expression)) return false;
+  return !/\b(?!ceil\s*\(|sheet_consumption_sqft\s*\()[A-Za-z_]\w*\s*\(/u.test(expression);
 };
 
 const impactRule = (
@@ -84,7 +85,6 @@ const optionImpacts = (tree: OptionTreeV2, visibleNodeIds: readonly string[], se
     for (const choice of selectedChoices) {
       if (choice.priceDeltaCents != null) impacts.push({ impact: { mode: "addFlat", amountCents: choice.priceDeltaCents }, id: `${node.id}:${choice.value}:delta`, whenValue: choice.value });
       for (const [index, impact] of (choice.pricingImpact ?? []).entries()) impacts.push({ impact, id: `${node.id}:${choice.value}:${index}`, whenValue: choice.value });
-      if (choice.pricingOverride && choice.pricingOverride.mode !== "none") return validation(`The selected pricing option '${selectionKey}' uses an unsupported pricing override.`);
     }
     for (const entry of impacts) {
       const mapped = impactRule(entry.impact, entry.id, selectionKey, entry.whenValue);
@@ -93,6 +93,26 @@ const optionImpacts = (tree: OptionTreeV2, visibleNodeIds: readonly string[], se
     }
   }
   return success(rules);
+};
+
+const baseRateOverrides = (tree: OptionTreeV2, visibleNodeIds: readonly string[], selections: Record<string, JsonValue>): ApplicationResult<readonly PricingBaseRateOverride[]> => {
+  const rules: PricingBaseRateOverride[] = [];
+  for (const nodeId of visibleNodeIds) {
+    const node = tree.nodes[nodeId];
+    if (!node || node.kind !== "question") continue;
+    const selectionKey = keyFor(node), selected = selections[selectionKey];
+    const values = Array.isArray(selected) ? selected : [selected];
+    for (const choice of (node.choices ?? []).filter(choice => values.includes(choice.value))) {
+      const override = choice.pricingOverride;
+      if (!override || override.mode === "none") continue;
+      const amount = override.amount;
+      if ((override.mode !== "set_base_rate" && override.mode !== "add_base_rate") || override.unit !== "perSqft" || (override.appliesTo !== undefined && override.appliesTo !== "area") || typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 0) {
+        return validation(`The selected pricing option '${selectionKey}' uses an unsupported pricing override.`);
+      }
+      rules.push({ id: `${node.id}:${choice.value}:base-rate`, selectionKey, whenValue: choice.value, kind: override.mode === "set_base_rate" ? "set_per_square_foot" : "add_per_square_foot", amountCents: amount });
+    }
+  }
+  return success(rules.sort((left, right) => left.selectionKey.localeCompare(right.selectionKey) || String(left.whenValue).localeCompare(String(right.whenValue)) || left.kind.localeCompare(right.kind)));
 };
 
 const validation = (message: string): ApplicationResult<never> => failure(new V2ApplicationError("VALIDATION_ERROR", message));
@@ -148,7 +168,9 @@ export const resolveActivePbv2PricingInput = (
   if (expression && !supportedFormula(expression)) return validation("The active formula uses an unsupported compatibility function.");
   const resolvedOptionImpacts = optionImpacts(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedOptionImpacts.ok) return resolvedOptionImpacts;
-  const formulaVariables = { ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables) } as Record<string, JsonValue>;
+  const resolvedBaseRateOverrides = baseRateOverrides(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
+  if (!resolvedBaseRateOverrides.ok) return resolvedBaseRateOverrides;
+  const formulaVariables = { ...extractFormulaVariables(record(source.formula?.config)), ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables) } as Record<string, JsonValue>;
   let productionRequirements;
   try { productionRequirements=resolveProductionRequirementSnapshot(meta.productionUnitSpecification,visibility.effectiveSelections as Record<string,JsonValue>); }
   catch { return validation("The active production-unit specification is invalid."); }
@@ -170,6 +192,7 @@ export const resolveActivePbv2PricingInput = (
       variables: formulaVariables,
     } } : {}),
     ...(resolvedOptionImpacts.value.length ? { optionImpacts: resolvedOptionImpacts.value } : {}),
+    ...(resolvedBaseRateOverrides.value.length ? { baseRateOverrides: resolvedBaseRateOverrides.value } : {}),
   };
   const configurationContentHash = stableHash(tree);
   return success({

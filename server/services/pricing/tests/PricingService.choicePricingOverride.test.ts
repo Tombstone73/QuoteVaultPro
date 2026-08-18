@@ -100,7 +100,10 @@ function makeAcmTree() {
     meta: {
       pricingV2: {
         base: {
-          perSqftCents: 0,
+          // A nominal configured rate lets the legacy evaluator reach the
+          // selected set_base_rate override; the override supplies the
+          // commercial rate asserted below.
+          perSqftCents: 1,
           perPieceCents: 0,
           minimumChargeCents: 0,
         },

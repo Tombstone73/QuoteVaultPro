@@ -4,6 +4,7 @@ import { PostgresProductsCompatibilityReader } from "../../infrastructure/compat
 import { resolveActivePbv2PricingInput } from "../../src/modules/products/pbv2CompatibilityResolution";
 import { brandedId, currencyCode, type OrganizationId } from "../../src/modules/shared/commercialValues";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
+import { sheetConsumptionSqft } from "../../../shared/pbv2/formulaHelpers";
 
 const org = brandedId<"OrganizationId">("org-a");
 const productId = brandedId<"ProductId">("product-a");
@@ -121,6 +122,25 @@ describe("M1.3 customer/product compatibility reads", () => {
     const resolved = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: null, treeJson: { ...tree, meta: { ...tree.meta, pricingFormula: undefined } }, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: { id: "formula-a", code: "AREA", profileKey: "formula", expression: "ceil(sqft) * base_price", config: { source: "fixture" }, updatedAt: "2026-08-15T01:02:03.000Z" } }, { organizationId: org, productId, quantity: 1 });
     expect(resolved.ok && resolved.value.rules.formula).toMatchObject({ source: "library", id: "formula-a", version: "2026-08-15T01:02:03.000Z", expression: "ceil(sqft) * base_price" });
     expect(resolved.ok && resolved.value.rules.formula?.contentHash).toMatch(/^sha256:/);
+  });
+
+  test("Formula Library sheet_consumption_sqft uses the established helper and configured variables", async () => {
+    const source = { id: "tree-a", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: { ...tree, meta: { ...tree.meta, pricingFormula: undefined } }, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: { id: "formula-sheet", code: "SHEET", profileKey: "formula", expression: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price", config: { variables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 0, billable_length_increment: 1, minimum_billable_sqft: 0 } }, updatedAt: "2026-08-15T01:02:03.000Z" } };
+    const resolved = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, dimensions: { width: "24" as any, height: "18" as any, unit: "in" } });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    const result = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
+    expect(result.calculatedLineAmount.cents).toBe(Math.round(sheetConsumptionSqft(24, 18, 1, 48, 96, 0, 1, 0) * 100));
+  });
+
+  test("PBV2 per-square-foot set and add base-rate overrides are resolved before formula pricing", async () => {
+    const overrideTree = { ...tree, nodes: { rate: { id: "rate", kind: "question" as const, label: "Material", input: { type: "select" as const, selectionKey: "rate", required: true, defaultValue: "standard" }, choices: [{ value: "standard", label: "Standard", pricingOverride: { mode: "set_base_rate" as const, unit: "perSqft" as const, appliesTo: "area" as const, amount: 125 } }] }, print: { id: "print", kind: "question" as const, label: "Print", input: { type: "select" as const, selectionKey: "print", required: true, defaultValue: "double" }, choices: [{ value: "double", label: "Double", pricingOverride: { mode: "add_base_rate" as const, unit: "perSqft" as const, appliesTo: "area" as const, amount: 150 } }] } }, rootNodeIds: ["rate", "print"], meta: { pricingV2: { base: { perSqftCents: 100, minimumChargeCents: 200 } }, pricingFormula: "total_sqft * p" } };
+    const resolved = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: overrideTree, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 1, dimensions: { width: "12" as any, height: "12" as any, unit: "in" } });
+    expect(resolved.ok && resolved.value.rules.baseRateOverrides).toHaveLength(2);
+    if (!resolved.ok) return;
+    const result = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
+    expect(result.calculatedLineAmount.cents).toBe(275);
+    expect(result.minimumChargeApplied).toBe(false);
   });
 
   test("unmappable Formula Library and option semantics fail closed", () => {

@@ -32,6 +32,8 @@ export type NestingEstimateEvidence = Readonly<{
 export type PricingTierRule = Readonly<{ id: string; minQuantity: number; maxQuantity?: number; perPieceCents?: number; perSquareFootCents?: DecimalText; minimumChargeCents?: number }>;
 export type PricingMatrixRow = Readonly<{ id: string; when: Readonly<Record<string, string | boolean | number>>; tierBasis?: "quantity" | "square_foot" | "computed_sheet"; tiers?: readonly PricingTierRule[]; perPieceCents?: number; perSquareFootCents?: DecimalText }>;
 export type PricingOptionRule = Readonly<{ id: string; selectionKey: string; whenValue?: string | boolean | number; kind: "fixed" | "per_unit" | "per_square_foot" | "percent" | "multiplier"; amount?: number; percentBasisPoints?: PercentageBasisPoints }>;
+/** A deliberately narrow compatibility projection for established PBV2 choice rate overrides. */
+export type PricingBaseRateOverride = Readonly<{ id: string; selectionKey: string; whenValue: string | boolean | number; kind: "set_per_square_foot" | "add_per_square_foot"; amountCents: number }>;
 /** Explicit resolved pricing inputs supplied by a future Product/PBV2 compatibility reader. */
 export type PricingRules = Readonly<{
   base: Readonly<{ perPieceCents?: number; perSquareFootCents?: DecimalText; flatFeeCents?: number }>;
@@ -41,6 +43,7 @@ export type PricingRules = Readonly<{
   matrix?: Readonly<{ id: string; dimensions: readonly string[]; rows: readonly PricingMatrixRow[] }>;
   formula?: Readonly<{ id: string; source: "library" | "embedded"; version: string; contentHash: string; expression: string; variables: Readonly<Record<string, JsonValue>> }>;
   optionImpacts?: readonly PricingOptionRule[];
+  baseRateOverrides?: readonly PricingBaseRateOverride[];
 }>;
 
 export type PricingCalculationRequest = Readonly<{
