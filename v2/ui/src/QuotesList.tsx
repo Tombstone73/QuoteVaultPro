@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { Plus, Search } from "lucide-react";
 import React, { useState } from "react";
-import { money, quoteApi, type QuoteListItem } from "./api";
+import { money, type QuoteListItem } from "./api";
 import { useSalesQuotes } from "./quoteFormQueries";
 
 const filters = ["All", "Draft", "Sent", "Accepted", "Converted"] as const;
@@ -24,31 +23,27 @@ export const QuotesList = ({
   canCreate,
   onCreate,
   onOpenV2,
+  onOpenLegacy,
 }: Readonly<{
   organizationId: string;
   sessionScope: string;
   canCreate: boolean;
   onCreate: () => void;
   onOpenV2: (quoteId: string) => void;
+  onOpenLegacy: (recordId: string) => void;
 }>) => {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<(typeof filters)[number]>("All");
   const [cursor, setCursor] = useState("");
-  const [legacyId, setLegacyId] = useState("");
   const list = useSalesQuotes(sessionScope, organizationId, {
     q: search,
     ...(lifecycleFor(filter) ? { lifecycle: lifecycleFor(filter) } : {}),
     ...(cursor ? { cursor } : {}),
   });
-  const legacy = useQuery({
-    queryKey: ["v2", sessionScope, organizationId, "legacy-quote", legacyId],
-    queryFn: () => quoteApi.legacy(organizationId, legacyId),
-    enabled: Boolean(legacyId && organizationId && sessionScope),
-  });
   const rows = list.data?.items ?? [];
   const total = rows.reduce((sum, row) => sum + row.sellingTotalCents, 0);
   const select = (row: QuoteListItem) => {
-    if (row.source === "legacy") setLegacyId(row.recordId);
+    if (row.source === "legacy") onOpenLegacy(row.recordId);
     else onOpenV2(row.quoteId);
   };
 
@@ -102,10 +97,12 @@ export const QuotesList = ({
         {cursor && <button type="button" onClick={() => setCursor("")}>First page</button>}
         {list.data?.nextCursor && <button type="button" onClick={() => setCursor(list.data!.nextCursor!)}>Next page</button>}
       </div>
+      {/* Legacy list detail replaced by the shared Sales document workspace.
       {legacyId && <section className="v2-quotes-legacy-detail">
         <button type="button" onClick={() => setLegacyId("")}>Close legacy record</button>
         {legacy.isLoading ? <p>Loading read-only legacy record…</p> : legacy.data ? <><h2>{legacy.data.number} <span>Legacy · Read only</span></h2><p>{legacy.data.customerDisplayName} · {legacy.data.lifecycle} · {money({ cents: legacy.data.sellingTotalCents, currency: legacy.data.currency })}</p><p>Legacy Quotes are visible for history and cannot be edited, converted, invoiced, paid, or routed from V2.</p></> : <p>Unable to open the legacy record.</p>}
       </section>}
+      */}
     </section>
   );
 };

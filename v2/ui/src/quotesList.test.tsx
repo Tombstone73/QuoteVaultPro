@@ -13,6 +13,7 @@ const markup = renderToStaticMarkup(
       canCreate
       onCreate={() => undefined}
       onOpenV2={() => undefined}
+      onOpenLegacy={() => undefined}
     />
   </QueryClientProvider>,
 );

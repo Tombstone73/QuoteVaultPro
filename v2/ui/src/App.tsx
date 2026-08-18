@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   money,
   newBusinessRequestId,
@@ -7,8 +7,10 @@ import {
   quoteApi,
   clearV2ApiSessionState,
   type ApiError,
+  type LegacyCommercialDetail,
   type QuoteRead,
   type QuoteResult,
+  type SalesLine,
 } from "./api";
 import {
   applyAuthoritativeQuoteResult,
@@ -18,6 +20,7 @@ import {
 import { QuoteLineEditor } from "./QuoteLineEditor";
 import { OrderWorkspace } from "./OrderWorkspace";
 import { LifecycleBadge, SalesTotals } from "./SalesDocumentParts";
+import { SalesDocumentEmpty, SalesDocumentFrame, SalesDocumentSplit } from "./SalesDocumentWorkspace";
 import {
   clearContactForCustomerChange,
   draftFromQuoteLine,
@@ -328,12 +331,43 @@ const SalesPagination = ({ cursor, nextCursor, setCursor }: Readonly<{ cursor: s
   </div>
 );
 
+const LegacyQuoteWorkspace = ({ organizationId, sessionScope, recordId, onBack }: Readonly<{ organizationId: string; sessionScope: string; recordId: string; onBack: () => void }>) => {
+  const legacy = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "legacy-quote", recordId],
+    queryFn: () => quoteApi.legacy(organizationId, recordId),
+    enabled: Boolean(sessionScope && organizationId && recordId),
+  });
+  if (legacy.isLoading) return <section className="v2-sales-workspace"><p className="v2-sales-loading">Loading read-only legacy quote…</p></section>;
+  if (!legacy.data) return <section className="v2-sales-workspace"><button className="v2-sales-back" type="button" onClick={onBack}>← Quotes</button><p className="notice error">Unable to open the legacy Quote.</p></section>;
+  const detail: LegacyCommercialDetail = legacy.data;
+  const unavailable = "Unavailable in the legacy projection";
+  const items = <SalesDocumentSplit
+    left={<section className="v2-sales-items"><header><div><h2>Items</h2><p>Legacy line detail was not migrated into this V2 workspace.</p></div></header><div className="v2-sales-items-table-wrap"><table><thead><tr><th>Product</th><th>Configuration</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody><tr><td colSpan={5} className="v2-sales-empty-cell">No line details are available from the legacy read model.</td></tr></tbody></table></div><footer><span>Known legacy total</span><strong>{money({ cents: detail.sellingTotalCents, currency: detail.currency })}</strong></footer></section>}
+    right={<SalesDocumentEmpty>Selecting or changing a legacy line is unavailable. Legacy records remain history-only in V2.</SalesDocumentEmpty>}
+  />;
+  return <section className="v2-sales-workspace"><button className="v2-sales-back" type="button" onClick={onBack}>← Quotes</button><SalesDocumentFrame
+    documentType="Quote"
+    number={detail.number}
+    readOnly
+    status={<LifecycleBadge value={detail.lifecycle} />}
+    metadata={<dl className="v2-sales-meta-grid"><div><dt>Customer</dt><dd>{detail.customerDisplayName}</dd></div><div><dt>Contact</dt><dd>{unavailable}</dd></div><div><dt>PO</dt><dd>{unavailable}</dd></div><div><dt>Due</dt><dd>{detail.requestedDueDate ?? unavailable}</dd></div><div><dt>Sales rep</dt><dd>{unavailable}</dd></div><div><dt>Terms</dt><dd>{unavailable}</dd></div></dl>}
+    panels={{
+      Items: items,
+      Artwork: <SalesDocumentEmpty>No artwork records are available from this legacy projection.</SalesDocumentEmpty>,
+      Notes: <SalesDocumentEmpty>No notes are available from this legacy projection.</SalesDocumentEmpty>,
+      History: <SalesDocumentEmpty>Legacy record last updated {new Date(detail.updatedAt).toLocaleString()}.</SalesDocumentEmpty>,
+    }}
+  /></section>;
+};
+
 const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canCreate: boolean; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
   const [creating, setCreating] = useState(false);
+  const [legacyQuoteId, setLegacyQuoteId] = useState("");
+  if (legacyQuoteId) return <LegacyQuoteWorkspace organizationId={props.organizationId} sessionScope={props.sessionScope} recordId={legacyQuoteId} onBack={() => setLegacyQuoteId("")} />;
   if (props.quoteId || creating) {
     return <section className="lab v2-sales-workspace v2-quote-editor"><button className="link-button" onClick={() => { setCreating(false); props.setQuoteId(""); }}>← Quotes</button><QuoteWorkspace {...props} /></section>;
   }
-  return <QuotesList organizationId={props.organizationId} sessionScope={props.sessionScope} canCreate={props.canCreate} onCreate={() => setCreating(true)} onOpenV2={props.setQuoteId} />;
+  return <QuotesList organizationId={props.organizationId} sessionScope={props.sessionScope} canCreate={props.canCreate} onCreate={() => setCreating(true)} onOpenV2={props.setQuoteId} onOpenLegacy={setLegacyQuoteId} />;
 };
 
 const OrdersPage = ({ organizationId, setOrganizationId, sessionScope, orderId, setOrderId, bootstrap, openCustomer, openFulfillment }: Readonly<{ organizationId: string; setOrganizationId: (value: string) => void; sessionScope: string; orderId: string; setOrderId: (value: string) => void; bootstrap?: import("./api").UiBootstrap; openCustomer: (customerId: string) => void; openFulfillment: (orderId: string) => void }>) => {
@@ -368,6 +402,24 @@ type WorkspaceProps = Readonly<{
   openOrder?: (orderId: string) => void;
   openCustomer?: (customerId: string) => void;
 }>;
+
+const lineConfiguration = (line: SalesLine): string => {
+  const resolved = line.resolvedConfiguration;
+  const dimensions = resolved.dimensions;
+  const selections = resolved.selections;
+  const parts: string[] = [];
+  if (dimensions && typeof dimensions === "object" && !Array.isArray(dimensions)) {
+    const value = dimensions as Record<string, unknown>;
+    const size = [value.width, value.height].filter((item) => typeof item === "string" || typeof item === "number").join(" × ");
+    if (size) parts.push(`${size}${typeof value.unit === "string" ? ` ${value.unit}` : ""}`);
+  }
+  if (selections && typeof selections === "object" && !Array.isArray(selections)) {
+    Object.entries(selections as Record<string, unknown>).forEach(([key, value]) => {
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") parts.push(`${key}: ${String(value)}`);
+    });
+  }
+  return parts.join(" · ") || "No additional configuration";
+};
 
 const QuoteWorkspace = ({
   organizationId,
@@ -600,6 +652,22 @@ const QuoteWorkspace = ({
     setEditingLineId("");
     setOrganizationId(nextOrganizationId);
   };
+  const quoteDetail = quote ? (() => {
+    const selectedLine = quote.quote.lines.find((line) => line.lineId === editingLineId) ?? quote.quote.lines[0];
+    const locked = Boolean(quote.quote.convertedOrderId);
+    const items = <SalesDocumentSplit
+      left={<section className="v2-sales-items"><header><div><h2>Items</h2><p>{quote.quote.lines.length} line{quote.quote.lines.length === 1 ? "" : "s"} · authoritative pricing snapshot</p></div>{!locked && <button type="button" className="v2-sales-add-line" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => setEditingLineId("__add__")}>Add line</button>}</header>{loading ? <div className="skeleton" /> : <div className="v2-sales-items-table-wrap"><table><thead><tr><th>Product</th><th>Configuration</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>{quote.quote.lines.map((line) => <tr key={line.lineId} className={line.lineId === selectedLine?.lineId ? "is-selected" : ""} onClick={() => setEditingLineId(line.lineId)}><td><button type="button"><i>{line.description.slice(0, 1).toUpperCase() || "P"}</i><span><b>{line.description || line.productId}</b><small>{line.productId}</small>{line.sellingPriceDecision.kind !== "calculated" && <em>Manual price</em>}</span></button></td><td>{lineConfiguration(line)}</td><td className="num">{line.quantity}</td><td className="num">{money(line.sellingUnitAmount)}</td><td className="num strong">{money(line.sellingLineAmount)}</td></tr>)}</tbody></table></div>}<footer><SalesTotals calculated={quote.totals.calculatedLineAmount} selling={quote.totals.sellingLineAmount} /></footer></section>}
+      right={selectedLine ? <section className="v2-sales-line-editor"><header><div><small>LINE {selectedLine.position + 1}</small><h2>{selectedLine.description || selectedLine.productId}</h2><p>Persisted configuration; Product defaults are never applied silently.</p></div>{!locked && <button className="v2-sales-remove-line" type="button" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "remove", lineId: selectedLine.lineId }])}>Remove</button>}</header>{!canOverridePrice && <p className="v2-sales-permission-note">Price overrides are unavailable for this permission set; existing decisions remain visible.</p>}<QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`edit:${selectedLine.lineId}:${quote.revision}`} initialDraft={draftFromQuoteLine(selectedLine)} initializeFromPersistedLine products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || locked || !canEdit} submitLabel="Save and reprice line" onSubmit={(input) => lineChange.mutate([{ kind: "update", lineId: selectedLine.lineId, line: input }])} onCancel={() => setEditingLineId("")} /></section> : !locked ? <section className="v2-sales-line-editor"><header><div><small>NEW LINE</small><h2>Add item</h2><p>Product configuration and pricing are resolved by the authoritative server.</p></div></header><QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`add:${quote.quote.quoteId}:${addEditorVersion}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || !canEdit} submitLabel="Add line and price" onSubmit={(input) => lineChange.mutate([{ kind: "add", line: input }])} /></section> : <SalesDocumentEmpty>This Quote has been converted. Its commercial snapshot is read-only.</SalesDocumentEmpty>}
+    />;
+    return <div className="lab v2-quote-detail"><SalesDocumentFrame
+      documentType="Quote"
+      number={quote.number.display}
+      status={<><Status value={quote.quote.deliveryState} /><Status value={quote.quote.acceptanceState} /></>}
+      headerActions={<><button className="button secondary" type="button" onClick={() => openCustomer?.(quote.quote.customerContact.customerId)}>Open Customer</button><button className="button secondary" type="button" disabled={!canEdit || save.isPending || !csrfReady || locked} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save"}</button>{quote.quote.deliveryState === "not_sent" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => action.mutate("send")}>Send Quote</button>}{quote.quote.deliveryState === "sent" && quote.quote.acceptanceState === "not_accepted" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => action.mutate("accept")}>Accept Quote</button>}{quote.quote.acceptanceState === "accepted" && !locked && canConvert && <button className="button" type="button" disabled={convert.isPending || !csrfReady} onClick={() => { if (window.confirm(`Convert Quote ${quote.number.display} to an Order? This creates the Order, Draft Invoice, and required Routing from the accepted Quote.`)) convert.mutate(); }}>Convert to Order</button>}{quote.quote.convertedOrderId && <button className="button" type="button" onClick={() => openOrder?.(quote.quote.convertedOrderId!)}>Open converted Order</button>}</>}
+      metadata={<div className="v2-sales-editable-meta"><SelectionField label="Customer" value={headerCustomerId} options={customers.data ?? []} identity="customerId" emptyLabel="Select Customer" disabled={!canEdit || locked} onChange={(value) => { const next = clearContactForCustomerChange(value); setHeaderCustomerId(next.customerId); setHeaderContactId(next.contactId); }} /><SelectionField label="Contact" value={headerContactId} options={contacts.data ?? []} identity="contactId" emptyLabel="Select Contact" disabled={!headerCustomerId || !canEdit || locked} onChange={setHeaderContactId} /><label className="field">PO<input value={purchaseOrderNumber} disabled={!canEdit || locked} onChange={(event) => setPurchaseOrderNumber(event.target.value)} /></label><label className="field">Due<input type="date" value={requestedDueDate} disabled={!canEdit || locked} onChange={(event) => setRequestedDueDate(event.target.value)} /></label><div className="v2-sales-unavailable"><small>Sales rep</small><span>Unavailable</span></div><div className="v2-sales-unavailable"><small>Terms</small><span>Unavailable</span></div></div>}
+      panels={{ Items: items, Artwork: <SalesDocumentEmpty>No artwork is attached to this Quote in the available V2 sales read model.</SalesDocumentEmpty>, Notes: <section className="v2-sales-notes"><label className="field">Commercial notes<textarea value={commercialNotes} disabled={!canEdit || locked} onChange={(event) => setCommercialNotes(event.target.value)} placeholder="No commercial notes" /></label><p>Save changes to persist notes with this Quote.</p></section>, History: <section className="v2-sales-history"><h2>History</h2>{quote.checkpoints.length ? <ol>{quote.checkpoints.map((checkpoint) => <li key={checkpoint.checkpointId}><b>{checkpoint.kind.replaceAll("_", " ")}</b><span>{new Date(checkpoint.occurredAt).toLocaleString()}</span></li>)}</ol> : <p>No lifecycle checkpoints are available.</p>}</section> }}
+    /></div>;
+  })() : null;
 
   return (
     <section className="lab v2-sales-workspace v2-quote-workspace">
@@ -713,7 +781,7 @@ const QuoteWorkspace = ({
             }}
           />
         </div>
-      ) : (
+      ) : (<>{quoteDetail}{/*
         <div className="lab">
           <div className="card v2-sales-document-card">
             <div className="header v2-document-header">
@@ -936,7 +1004,7 @@ const QuoteWorkspace = ({
             </div>
           </div>
         </div>
-      )}
+      */}</>)}
     </section>
   );
 };
