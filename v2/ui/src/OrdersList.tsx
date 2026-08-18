@@ -50,7 +50,7 @@ export const OrdersList = ({
       <div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">Orders</h1><p className="mt-0.5 text-[13px] text-muted-foreground">{count} orders{summary?.sellingTotalCents !== undefined && singleCurrency ? <> · {money({ cents: summary.sellingTotalCents, currency: singleCurrency })} total value</> : cursor ? " shown" : ""}</p></div>
     </div>
     <div className="v2-orders-filters">
-      <label className="v2-orders-search"><Search aria-hidden /><input value={search} onChange={(event) => { setSearch(event.target.value); setCursor(""); }} placeholder="Filter by number, customer…" /></label>
+      <label className="v2-orders-search"><Search aria-hidden /><input value={search} onChange={(event) => { setSearch(event.target.value); setCursor(""); }} placeholder="Filter by number, PO, customer…" /></label>
       <div className="v2-orders-chips" aria-label="Order lifecycle filters">{filters.map((value) => <button key={value} type="button" className={filter === value ? "is-selected" : ""} onClick={() => { setFilter(value); setCursor(""); }}>{value}</button>)}</div>
     </div>
     <div className="panel overflow-hidden v2-orders-table-wrap"><table className="w-full border-collapse"><thead><tr><th>Order #</th><th>Customer</th><th>PO</th><th>Rep</th><th className="is-number">Lines</th><th>Due</th><th>Status</th><th className="is-number">Total</th></tr></thead><tbody>
