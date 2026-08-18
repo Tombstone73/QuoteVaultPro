@@ -79,6 +79,28 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(JSON.stringify(resolved.value)).not.toContain("treeJson");
   });
 
+  test("PBV2 option pricing skips absent optional values but preserves defaults, required validation, explicit impacts, and invalid-value rejection", () => {
+    const optionalTree = {
+      ...tree,
+      rootNodeIds: ["optional", "multi", "required", "computed"],
+      nodes: {
+        optional: { id: "optional", kind: "question" as const, label: "Optional", input: { type: "select" as const, selectionKey: "optional" }, choices: [{ value: "yes", label: "Yes", priceDeltaCents: 25 }], pricingImpact: [{ mode: "addFlat" as const, amountCents: 10 }] },
+        multi: { id: "multi", kind: "question" as const, label: "Multi", input: { type: "multiselect" as const, selectionKey: "multi" }, choices: [{ value: "x", label: "X", priceDeltaCents: 15 }] },
+        required: { id: "required", kind: "question" as const, label: "Required", input: { type: "select" as const, selectionKey: "required", required: true }, choices: [{ value: "ok", label: "OK" }] },
+        computed: { id: "computed", kind: "computed" as const, label: "Base Entry", key: "base" },
+      },
+    };
+    const source = { id: "tree-optional", schemaVersion: 2, publishedAt: null, treeJson: optionalTree, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: null };
+    const missingRequired = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1 });
+    expect(missingRequired).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR", publicMessage: "Required selection 'required' is missing." } });
+    const absentOptional = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: "ok", multi: [] } });
+    expect(absentOptional.ok && absentOptional.value.rules.optionImpacts).toBeUndefined();
+    const explicit = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: "ok", optional: "yes" } });
+    expect(explicit.ok && explicit.value.rules.optionImpacts).toMatchObject([{ selectionKey: "optional", kind: "fixed", amount: 10 }, { selectionKey: "optional", whenValue: "yes", kind: "fixed", amount: 25 }]);
+    const invalid = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: "ok", optional: { invalid: true } as any } });
+    expect(invalid).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+  });
+
   test("compatible Product read resolves to the M1.2 Pricing contract without any commercial write", async () => {
     const resolved = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: tree, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 10 });
     expect(resolved.ok).toBe(true);

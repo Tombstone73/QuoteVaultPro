@@ -67,9 +67,15 @@ const optionImpacts = (tree: OptionTreeV2, visibleNodeIds: readonly string[], se
   const rules: PricingOptionRule[] = [];
   for (const nodeId of visibleNodeIds) {
     const node = tree.nodes[nodeId];
-    if (!node || node.kind === "group") continue;
+    // Pricing option impacts represent selectable questions. Computed/group nodes can
+    // be visible and carry a legacy key, but they never supply an option selection.
+    if (!node || node.kind !== "question") continue;
     const selectionKey = keyFor(node);
     const selectedValue = selections[selectionKey];
+    // Runtime visibility already applies valid defaults and the caller has already
+    // rejected missing required fields. An absent optional answer is not a malformed
+    // selected value and must not create an unconditional option impact.
+    if ((selectedValue === undefined || selectedValue === null || (Array.isArray(selectedValue) && selectedValue.length === 0)) && !node.input?.required) continue;
     const selectedValues = Array.isArray(selectedValue) ? selectedValue : [selectedValue];
     if (selectedValues.some((value) => typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")) return validation(`The selected pricing option '${selectionKey}' has an unsupported value.`);
     const selectedChoices = (node.choices ?? []).filter((choice) => selectedValues.includes(choice.value));
