@@ -27,6 +27,7 @@
     "v2:p6c:option-pricing": "tsx v2/scripts/runP6cOptionPricingRehearsal.ts",
     "v2:p7a:recipes": "tsx scripts/runP7aRecipeRehearsal.ts",
     "v2:p7b:requirements": "tsx scripts/runP7bMaterialRequirementsRehearsal.ts",
+    "v2:p7c:consumption": "tsx v2/scripts/runP7cMaterialConsumptionRehearsal.ts",
     "v2:p6:production-parity": "tsx v2/scripts/runP6ProductionPricingParity.ts",
     "v2:p5:characterize": "tsx v2/scripts/characterizeP5OptionalSelections.ts",
     "v2:m1:compatibility-reads": "tsx v2/scripts/runM13CompatibilityReadRehearsal.ts",

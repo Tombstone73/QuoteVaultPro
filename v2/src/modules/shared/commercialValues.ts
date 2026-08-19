@@ -34,6 +34,9 @@ export type PrepressUnitId = Brand<string, "PrepressUnitId">;
 /** Production work is anchored to a frozen required production unit, not an Order status. */
 export type ProductionWorkId = Brand<string, "ProductionWorkId">;
 export type ProductionAttemptId = Brand<string, "ProductionAttemptId">;
+/** Physical material usage is immutable Production history, not inventory movement. */
+export type ProductionMaterialConsumptionId = Brand<string, "ProductionMaterialConsumptionId">;
+export type OrderLineMaterialRequirementId = Brand<string, "OrderLineMaterialRequirementId">;
 /** Fulfillment owns a completed customer-handoff identity, never a Sales status. */
 export type FulfillmentHandoffId = Brand<string, "FulfillmentHandoffId">;
 export type FulfillmentHandoffLineId = Brand<string, "FulfillmentHandoffLineId">;

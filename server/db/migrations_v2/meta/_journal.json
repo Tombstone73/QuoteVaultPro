@@ -1450,6 +1450,20 @@
       "when": 1788048000058,
       "tag": "0211_v2_order_line_material_requirements",
       "breakpoints": true
+    },
+    {
+      "idx": 213,
+      "version": "7",
+      "when": 1788048000059,
+      "tag": "0212_v2_production_material_consumption",
+      "breakpoints": true
+    },
+    {
+      "idx": 214,
+      "version": "7",
+      "when": 1788048000060,
+      "tag": "0213_v2_production_material_consumption_unit_guard",
+      "breakpoints": true
     }
   ]
 }
