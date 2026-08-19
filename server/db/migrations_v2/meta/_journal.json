@@ -1464,6 +1464,20 @@
       "when": 1788048000060,
       "tag": "0213_v2_production_material_consumption_unit_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "7",
+      "when": 1788048000061,
+      "tag": "0214_v2_inventory_movement_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "7",
+      "when": 1788048000062,
+      "tag": "0215_v2_inventory_reservation_immutability",
+      "breakpoints": true
     }
   ]
 }
