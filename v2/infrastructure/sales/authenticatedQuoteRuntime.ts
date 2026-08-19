@@ -25,6 +25,9 @@ import type { ProductHttpDependencies } from "../../src/interfaces/http/productR
 import { ProductVersionLifecycleApplicationService } from "../../src/modules/products/productVersionLifecycle.js";
 import { ProductRecipeApplicationService } from "../../src/modules/products/productRecipes.js";
 import { PostgresProductMaterialSearch, PostgresProductRecipeTransactionRunner, PostgresProductWorkspaceRecipeReader } from "../products/postgresProductRecipes.js";
+import { ProductPublicationApplicationService } from "../../src/modules/products/productPublication.js";
+import { PostgresProductPublicationTransactionRunner } from "../products/postgresProductPublication.js";
+import { canonicalProductPublishOperations } from "../../../server/services/products/canonicalProductPublishOperations.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -63,7 +66,7 @@ export const composeAuthenticatedQuoteRuntime = (
     },
     customerDependencies: { customers: new PostgresCustomerWorkspaceReader(input.pool), principals },
     contactDependencies: { contacts: new PostgresContactWorkspaceReader(input.pool), principals },
-    productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), draftGeneral: new PostgresProductDraftGeneralReader(input.pool), draftOptions: new PostgresProductDraftOptionsReader(input.pool), draftPricing: new PostgresProductDraftPricingReader(input.pool), draftMatrix: new PostgresProductDraftPricingMatrixReader(input.pool), draftFormula: new PostgresProductDraftFormulaReader(input.pool), draftOptionPricing: new PostgresProductDraftOptionPricingReader(input.pool), draftPreview: new PostgresProductDraftPricingPreview(input.pool), draftRecipe: new PostgresProductWorkspaceRecipeReader(input.pool), materials: new PostgresProductMaterialSearch(input.pool), recipes: new ProductRecipeApplicationService(new PostgresProductRecipeTransactionRunner(input.pool)), lifecycle: new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(input.pool)), principals },
+    productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), draftGeneral: new PostgresProductDraftGeneralReader(input.pool), draftOptions: new PostgresProductDraftOptionsReader(input.pool), draftPricing: new PostgresProductDraftPricingReader(input.pool), draftMatrix: new PostgresProductDraftPricingMatrixReader(input.pool), draftFormula: new PostgresProductDraftFormulaReader(input.pool), draftOptionPricing: new PostgresProductDraftOptionPricingReader(input.pool), draftPreview: new PostgresProductDraftPricingPreview(input.pool), draftRecipe: new PostgresProductWorkspaceRecipeReader(input.pool), materials: new PostgresProductMaterialSearch(input.pool), recipes: new ProductRecipeApplicationService(new PostgresProductRecipeTransactionRunner(input.pool)), lifecycle: new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(input.pool)), publication: new ProductPublicationApplicationService(new PostgresProductPublicationTransactionRunner(input.pool), canonicalProductPublishOperations), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

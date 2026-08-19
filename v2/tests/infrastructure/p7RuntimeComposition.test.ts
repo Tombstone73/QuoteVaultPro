@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/authenticatedQuoteRuntime";
 import { composeAuthenticatedProductionRuntime } from "../../infrastructure/production/authenticatedProductionRuntime";
 import { ProductRecipeApplicationService } from "../../src/modules/products/productRecipes";
+import { ProductPublicationApplicationService } from "../../src/modules/products/productPublication";
 import { ProductionMaterialConsumptionApplicationService } from "../../src/modules/production/materialConsumption";
 import { InventoryLedgerApplicationService } from "../../src/modules/inventory/inventoryLedger";
 
@@ -22,6 +23,9 @@ describe("P7 authenticated runtime composition", () => {
 
     expect(runtime.productDependencies.recipes).toBeInstanceOf(
       ProductRecipeApplicationService,
+    );
+    expect(runtime.productDependencies.publication).toBeInstanceOf(
+      ProductPublicationApplicationService,
     );
     expect(runtime.productDependencies.draftRecipe).toBeDefined();
     expect(runtime.productDependencies.materials).toBeDefined();

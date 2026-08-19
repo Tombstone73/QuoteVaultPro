@@ -10,6 +10,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "moduleResolution": "bundler",
+    "baseUrl": "..",
+    "paths": {
+      "@shared/*": ["shared/*"]
+    },
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "infrastructure/**/*.ts"]

@@ -125,6 +125,7 @@ export type ProductDraftOptionPricingImpact=Readonly<{type:"fixed"|"per_item"|"p
 export type ProductDraftOptionPricing=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";options:readonly Readonly<{optionId:string;selectionKey:string;label:string;nodeImpact:ProductDraftOptionPricingImpact|null;choices:readonly Readonly<{choiceValue:string;label:string;impact:ProductDraftOptionPricingImpact|null;editable:boolean;readOnlyReason?:string}>[]}>[]}>;
 export type ProductRecipeComponent=Readonly<{componentId?:string;materialId:string;materialName?:string;materialSku?:string|null;quantity:string;unit:"each"|"square_foot"|"linear_foot"|"sheet"|"roll";quantityKind:"per_line"|"per_piece"|"per_area";condition?:Readonly<{type:"selected";optionId:string;choiceValue:string}>;replacesPbv2Compatibility?:boolean}>;
 export type ProductRecipe=Readonly<{recipeId:string;productId:string;productVersionId:string;draftUpdatedAt:string;lifecycle:"draft"|"active"|"historical";components:readonly ProductRecipeComponent[]}>;
+export type PublishedProductVersion=Readonly<{productId:string;productName:string;productVersionId:string;productUpdatedAt:string;productVersionUpdatedAt:string;publishedAt?:string;alreadyPublished:boolean;operationReference:"products.publish_configuration.v1"}>;
 export type ProductMaterial=Readonly<{materialId:string;name:string;sku:string|null;unit:ProductRecipeComponent["unit"]}>;
 export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;versions:ProductVersionLifecycle }>;
 export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
@@ -894,6 +895,10 @@ export const productApi = {
   createDraft: (organizationId:string,productId:string,businessRequestId:string,expectedActiveVersionUpdatedAt:string) => request<ProductVersionLifecycle>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/drafts`,
     {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,expectedActiveVersionUpdatedAt})},
+  ),
+  publishDraft:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedProductUpdatedAt:string;expectedDraftUpdatedAt:string;confirmWarnings?:boolean;activateProduct?:boolean}>)=>request<PublishedProductVersion>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/publish`,
+    {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})},
   ),
   draftGeneral: (organizationId:string,productId:string) => request<ProductDraftGeneralRead>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/general`,

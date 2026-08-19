@@ -10,7 +10,7 @@ const principal: StaffPrincipal = {
   userId: "staff-a",
   authority: {
     membershipId: "membership-a",
-    capabilities: ["production.view", "production.work"],
+    capabilities: ["production.view", "production.work", "pricing.publish"],
   },
 };
 
@@ -22,7 +22,19 @@ const app = () =>
     }),
     { log: () => undefined },
     undefined,
-    undefined,
+    {
+      trustedHostMiddleware: (request, _response, next) => {
+        (request as any).session = { v2CsrfToken: "csrf-p7", v2SessionScope: "scope-p7" };
+        next();
+      },
+      dependencies: {} as any,
+      customerDependencies: {} as any,
+      contactDependencies: {} as any,
+      productDependencies: {
+        principals: { principal: async () => principal },
+        publication: { publish: async () => ({ ok: true as const, value: { productId: "product-a", productName: "Rigid", productVersionId: "draft-a", productUpdatedAt: "2026-08-18T00:00:00.000Z", productVersionUpdatedAt: "2026-08-18T00:00:00.000Z", alreadyPublished: false, operationReference: "products.publish_configuration.v1" as const } }) },
+      } as any,
+    },
     undefined,
     undefined,
     undefined,
@@ -86,5 +98,10 @@ describe("P7 runtime HTTP guards", () => {
       .set("x-v2-csrf-token", "csrf-p7")
       .send({ businessRequestId: "reserve-a" })
       .expect(200);
+  });
+  test("uses central CSRF protection for the V2 canonical Product publish adapter", async () => {
+    const command = { businessRequestId: "publish-a", draftVersionId: "draft-a", expectedProductUpdatedAt: "2026-08-18T00:00:00.000Z", expectedDraftUpdatedAt: "2026-08-18T00:00:00.000Z" };
+    await request(app()).post("/v2/organizations/org-a/products/product-a/draft/publish").send(command).expect(403);
+    await request(app()).post("/v2/organizations/org-a/products/product-a/draft/publish").set("x-v2-csrf-token", "csrf-p7").send(command).expect(200);
   });
 });

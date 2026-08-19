@@ -47,14 +47,42 @@ const repository: PublishRepository = {
     const { db } = await import("../../db");
     return db.transaction(async (tx) => {
       const now = new Date();
+      // Lock and re-check the canonical Product/Draft pair inside the one
+      // publisher transaction.  The version columns are timestamp without
+      // time zone and V2's pg runtime and this canonical Neon runtime bind
+      // Date values differently; comparing a bound Date in UPDATE can yield a
+      // false stale result.  The lock plus same-driver revision check keeps
+      // the optimistic-concurrency guarantee without weakening publication.
+      const [lockedProduct] = await tx.select({
+        id: products.id,
+        pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        updatedAt: products.updatedAt,
+      }).from(products).where(and(
+        eq(products.organizationId, input.organizationId),
+        eq(products.id, input.product.id),
+      )).for("update");
+      const [lockedTree] = await tx.select({
+        id: pbv2TreeVersions.id,
+        status: pbv2TreeVersions.status,
+        updatedAt: pbv2TreeVersions.updatedAt,
+      }).from(pbv2TreeVersions).where(and(
+        eq(pbv2TreeVersions.organizationId, input.organizationId),
+        eq(pbv2TreeVersions.id, input.tree.id),
+        eq(pbv2TreeVersions.productId, input.product.id),
+      )).for("update");
+      if (!lockedProduct || !lockedTree || lockedTree.status !== "DRAFT"
+        || iso(lockedProduct.updatedAt) !== iso(input.product.updatedAt)
+        || iso(lockedTree.updatedAt) !== iso(input.tree.updatedAt)) {
+        throw new PublishStoreStaleError();
+      }
       if (input.product.pbv2ActiveTreeVersionId && input.product.pbv2ActiveTreeVersionId !== input.tree.id) {
         await tx.update(pbv2TreeVersions).set({ status: "DEPRECATED", updatedAt: now, updatedByUserId: input.actorUserId }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, input.product.pbv2ActiveTreeVersionId), eq(pbv2TreeVersions.status, "ACTIVE")));
       }
       const nextTreeJson = { ...input.treeJson, schemaVersion: 2, status: "ACTIVE" };
-      const [tree] = await tx.update(pbv2TreeVersions).set({ status: "ACTIVE", publishedAt: now, updatedAt: now, updatedByUserId: input.actorUserId, treeJson: nextTreeJson }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, input.tree.id), eq(pbv2TreeVersions.productId, input.product.id), eq(pbv2TreeVersions.status, "DRAFT"), eq(pbv2TreeVersions.updatedAt, input.tree.updatedAt))).returning();
+      const [tree] = await tx.update(pbv2TreeVersions).set({ status: "ACTIVE", publishedAt: now, updatedAt: now, updatedByUserId: input.actorUserId, treeJson: nextTreeJson }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, input.tree.id), eq(pbv2TreeVersions.productId, input.product.id), eq(pbv2TreeVersions.status, "DRAFT"))).returning();
       if (!tree) throw new PublishStoreStaleError();
       const pointerCondition = input.product.pbv2ActiveTreeVersionId ? eq(products.pbv2ActiveTreeVersionId, input.product.pbv2ActiveTreeVersionId) : isNull(products.pbv2ActiveTreeVersionId);
-      const [product] = await tx.update(products).set({ pbv2ActiveTreeVersionId: tree.id, optionTreeJson: nextTreeJson, ...(input.activateProduct ? { isActive: true } : {}), updatedAt: now }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.product.id), eq(products.updatedAt, input.product.updatedAt), pointerCondition)).returning();
+      const [product] = await tx.update(products).set({ pbv2ActiveTreeVersionId: tree.id, optionTreeJson: nextTreeJson, ...(input.activateProduct ? { isActive: true } : {}), updatedAt: now }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.product.id), pointerCondition)).returning();
       if (!product) throw new PublishStoreStaleError();
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_configuration_published", description: `Published PBV2 configuration ${tree.id} for Product ${product.name}.`, oldValues: { activeTreeVersionId: input.product.pbv2ActiveTreeVersionId, draftTreeVersionId: input.tree.id, draftStatus: input.tree.status }, newValues: { activeTreeVersionId: tree.id, treeStatus: tree.status, operationReference: "products.publish_configuration.v1", reference: input.reference } });
       if (input.activateProduct && !input.product.isActive) await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_lifecycle_updated", description: "Product activated after its confirmed PBV2 configuration was published.", oldValues: { isActive: false }, newValues: { isActive: true, operationReference: "products.update_lifecycle.v1", reference: input.reference } });
@@ -66,7 +94,11 @@ const repository: PublishRepository = {
 export type CanonicalProductPublishValidation = { treeJson: Record<string, unknown>; findings: Finding[]; warnings: Finding[]; errors: Finding[] };
 export function validateCanonicalProductPublishTarget(target: CanonicalProductPublishTarget): CanonicalProductPublishValidation {
   const sanitized = sanitizePbv2PricingMatrix(target.tree.treeJson as Record<string, unknown>);
-  const treeJson = sanitized.tree as Record<string, unknown>;
+  // The PBV2 tree row is the lifecycle authority. Older/P7-created trees do
+  // not necessarily duplicate its status inside tree_json, and an ACTIVE
+  // source copied into a new row must still validate as the DRAFT row it is.
+  // Normalize from the versioned row, never from an optional stale JSON mirror.
+  const treeJson = { ...(sanitized.tree as Record<string, unknown>), status: target.tree.status };
   const schemaVersion = Number((treeJson as any)?.schemaVersion ?? target.tree.schemaVersion ?? 1);
   const schemaFindings: Finding[] = schemaVersion === 2 ? [] : [{ code: "PBV2_E_SCHEMA_VERSION_UNSUPPORTED", severity: "ERROR", message: "Tree must be PBV2 schema version 2", path: "schemaVersion", actual: schemaVersion, expected: 2 } as Finding];
   const base = validateTreeHasBasePrice(treeJson as any);

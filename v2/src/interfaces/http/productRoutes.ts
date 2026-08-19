@@ -20,6 +20,7 @@ import type {
   ProductRecipeApplicationService,
   RecipeComponentInput,
 } from "../../modules/products/productRecipes.js";
+import type { ProductPublicationApplicationService } from "../../modules/products/productPublication.js";
 
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
@@ -149,6 +150,7 @@ export type ProductHttpDependencies = Readonly<{
   materials: ProductMaterialSearchPort;
   recipes: ProductRecipeApplicationService;
   lifecycle: ProductVersionLifecycleApplicationService;
+  publication: ProductPublicationApplicationService;
   principals: Readonly<{
     principal(request: Request, organizationId: string): Promise<Principal>;
   }>;
@@ -305,6 +307,30 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
         "FORBIDDEN",
         "Authenticated access is required.",
       );
+    }
+  });
+  router.post("/:productId/draft/publish", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const body = request.body as Record<string, unknown>;
+      if (typeof body.businessRequestId !== "string" || typeof body.draftVersionId !== "string" || typeof body.expectedProductUpdatedAt !== "string" || typeof body.expectedDraftUpdatedAt !== "string")
+        return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "A Draft and its current revisions are required." } });
+      const result = await dependencies.publication.publish({ principal, organizationId, operationId: body.businessRequestId, businessRequest: { id: body.businessRequestId, payloadFingerprint: body.businessRequestId } }, {
+        productId: request.params.productId,
+        draftVersionId: body.draftVersionId,
+        expectedProductUpdatedAt: body.expectedProductUpdatedAt,
+        expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
+        businessRequestId: body.businessRequestId,
+        confirmWarnings: body.confirmWarnings === true,
+        activateProduct: body.activateProduct === true,
+      });
+      return result.ok
+        ? response.status(200).json({ ok: true, data: result.value })
+        : response.status(result.error.code === "FORBIDDEN" ? 403 : result.error.code === "NOT_FOUND" || result.error.code === "WRONG_TENANT" ? 404 : result.error.code === "VALIDATION_ERROR" ? 400 : result.error.code === "RETRYABLE_FAILURE" ? 503 : 409).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+    } catch (error) {
+      const value = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Product publication is unavailable.");
+      return response.status(value.code === "FORBIDDEN" ? 403 : value.code === "NOT_FOUND" ? 404 : value.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: value.code, message: value.publicMessage } });
     }
   });
   router.get("/:productId/active/recipe", async (request, response) => {

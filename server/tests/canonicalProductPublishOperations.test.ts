@@ -1,7 +1,7 @@
 import { jest } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { CanonicalProductPublishOperations } from "../services/products/canonicalProductPublishOperations";
+import { CanonicalProductPublishOperations, validateCanonicalProductPublishTarget } from "../services/products/canonicalProductPublishOperations";
 
 describe("CanonicalProductPublishOperations", () => {
   const target = () => ({ product: { id: "product_1", organizationId: "org_1", name: "Styrene", isActive: false, primaryMaterialId: null, pbv2ActiveTreeVersionId: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, tree: { id: "tree_1", organizationId: "org_1", productId: "product_1", status: "DRAFT", schemaVersion: 2, treeJson: { schemaVersion: 2 }, publishedAt: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, materials: [] });
@@ -59,6 +59,19 @@ describe("CanonicalProductPublishOperations", () => {
     invalid.tree.treeJson = directMatrixTree(0);
     const invalidService = new CanonicalProductPublishOperations({ get: async () => invalid, publish: async () => null } as any);
     await expect(invalidService.propose({ organizationId: "org_1", productId: "product_1" })).rejects.toMatchObject({ code: "PBV2_PUBLISH_INVALID" });
+  });
+
+  it("uses the version-row Draft lifecycle when tree JSON has no duplicated status", async () => {
+    const valid = target();
+    const tree = directMatrixTree();
+    delete (tree as { status?: unknown }).status;
+    valid.tree.treeJson = tree;
+
+    const validation = validateCanonicalProductPublishTarget(valid as any);
+    expect(validation.errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_TREE_STATUS_INVALID" }),
+    ]));
+    expect(validation.treeJson.status).toBe("DRAFT");
   });
 
   it("requires an actor, rejects another tenant, and is shared by the UI route", async () => {

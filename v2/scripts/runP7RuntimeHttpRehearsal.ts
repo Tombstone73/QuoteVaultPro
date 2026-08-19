@@ -44,6 +44,9 @@ const main = async () => {
     application_name: "p7-runtime-http-rehearsal",
   });
   try {
+    // The canonical Product publisher owns its existing Drizzle transaction
+    // and loads DATABASE_URL lazily. Keep that credential child-process-only.
+    process.env.DATABASE_URL = url;
     const fixture = (
       await pool.query<{
         organization_id: string;
@@ -95,7 +98,6 @@ const main = async () => {
       "UPDATE materials SET stock_quantity=500 WHERE organization_id=$1 AND id=$2",
       [f.organizationId, f.materialId],
     );
-
     const principal: StaffPrincipal = {
       kind: "staff",
       organizationId: f.organizationId,
@@ -105,6 +107,7 @@ const main = async () => {
         capabilities: [
           "product.view",
           "product.edit",
+          "pricing.publish",
           "production.view",
           "production.work",
           "production.complete",
@@ -217,6 +220,49 @@ const main = async () => {
       true,
       "Draft recipe save did not use the canonical P7 recipe command.",
     );
+    // Re-read the optimistic-concurrency pair after the recipe write. This
+    // mirrors the workspace's authoritative refresh before a high-integrity
+    // publish command and keeps the rehearsal independent of fixture-side
+    // timestamp triggers.
+    const publishRevision = (
+      await pool.query<{ product_updated_at: Date; draft_updated_at: Date }>(
+        `SELECT p.updated_at product_updated_at,d.updated_at draft_updated_at
+         FROM products p
+         JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id
+         WHERE p.organization_id=$1 AND p.id=$2 AND d.id=$3 AND d.status='DRAFT'`,
+        [f.organizationId, f.productId, recipe.body.data.productVersionId],
+      )
+    ).rows[0];
+    assert.ok(publishRevision, "Draft revision is unavailable before canonical publication.");
+    const publishId = requestId("publish");
+    const published = await request(app)
+      .post(`${productBase}/draft/publish`)
+      .set(csrf)
+      .send({
+        businessRequestId: publishId,
+        draftVersionId: recipe.body.data.productVersionId,
+        expectedProductUpdatedAt: publishRevision.product_updated_at.toISOString(),
+        expectedDraftUpdatedAt: publishRevision.draft_updated_at.toISOString(),
+        confirmWarnings: true,
+        activateProduct: true,
+      })
+      .expect((response) => {
+        if (response.status !== 200)
+          throw new Error(`Product publication HTTP failure: ${response.status} ${JSON.stringify(response.body)}`);
+      });
+    assert.equal(published.body.data.productVersionId, recipe.body.data.productVersionId, "Canonical publication changed the Product Version identity.");
+    await request(app)
+      .post(`${productBase}/draft/publish`)
+      .set(csrf)
+      .send({
+        businessRequestId: publishId,
+        draftVersionId: recipe.body.data.productVersionId,
+        expectedProductUpdatedAt: publishRevision.product_updated_at.toISOString(),
+        expectedDraftUpdatedAt: publishRevision.draft_updated_at.toISOString(),
+        confirmWarnings: true,
+        activateProduct: true,
+      })
+      .expect(200);
 
     const before = await request(app)
       .get(`${productionBase}/materials`)
@@ -350,6 +396,7 @@ const main = async () => {
       JSON.stringify(
         {
           productDraft: recipe.body.data.productVersionId,
+          productPublish: "canonical-replay-safe",
           productionWork: f.productionWorkId,
           consumption: consumptionId,
           materialCommands: [
