@@ -29,14 +29,17 @@ export class PostgresOrderMaterialRequirements {
     this.recipes = new PostgresProductRecipeReader(client);
   }
 
-  private async pbv2(organizationId: string, line: SalesLineSnapshot): Promise<Pbv2MaterialRequirementContext | undefined> {
+  private async pbv2(organizationId: string, line: SalesLineSnapshot, recipeMaterialIds: readonly string[]): Promise<Pbv2MaterialRequirementContext | undefined> {
     const tree = (await this.client.query<{ tree_json: unknown }>(
       "SELECT tree_json FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 AND id=$3",
       [organizationId, line.productId, line.resolvedConfiguration.pricingConfigurationId],
     )).rows[0]?.tree_json;
     if (!tree || typeof tree !== "object") return undefined;
-    const ids = inventoryMaterialIds(tree);
-    if (!ids.length) return undefined;
+    const ids = [...new Set([...inventoryMaterialIds(tree), ...recipeMaterialIds])];
+    // A Version-owned per-area recipe still needs the immutable PBV2 tree to
+    // resolve its stable conditional option identity even when the tree has no
+    // legacy inventoryConsumption entries.
+    if (!ids.length) return { tree: tree as OptionTreeV2, materials: [] };
     const rows = (await this.client.query<MaterialRequirementMaterial>(
       `SELECT id,name,sku,material_form AS "materialForm",inventory_unit AS "inventoryUnit",consumption_unit AS "consumptionUnit",
         width,height,roll_length_ft AS "rollLengthFt",edge_waste_in_per_side AS "edgeWasteInPerSide",
@@ -58,7 +61,7 @@ export class PostgresOrderMaterialRequirements {
         line.productId,
         line.resolvedConfiguration.pricingConfigurationId,
       );
-      const requirements = resolveMaterialRequirements(recipe, line, await this.pbv2(organizationId, line));
+      const requirements = resolveMaterialRequirements(recipe, line, await this.pbv2(organizationId, line, recipe?.components.map((component) => component.materialId) ?? []));
       for (const requirement of requirements) {
         await this.client.query(
           `INSERT INTO v2_order_line_material_requirements(

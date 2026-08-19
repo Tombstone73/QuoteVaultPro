@@ -20,13 +20,16 @@ type RecipeRow = {
   material_sku_snapshot: string | null;
   quantity: string | null;
   quantity_unit: RecipeComponent["unit"] | null;
-  quantity_kind: "fixed" | "per_line" | "per_piece" | null;
+  quantity_kind: "fixed" | "per_line" | "per_piece" | "per_area" | null;
+  condition_option_id: string | null;
+  condition_choice_value: string | null;
+  replaces_pbv2_compatibility: boolean | null;
 };
 
 const recipeQuery = `
   SELECT r.id recipe_id,r.product_id,r.product_version_id,v.updated_at draft_updated_at,v.status,
     c.id component_id,c.material_id,c.material_name_snapshot,c.material_sku_snapshot,
-    c.quantity::text,c.quantity_unit,c.quantity_kind
+    c.quantity::text,c.quantity_unit,c.quantity_kind,c.condition_option_id,c.condition_choice_value,c.replaces_pbv2_compatibility
   FROM v2_product_recipes r
   JOIN pbv2_tree_versions v ON v.id=r.product_version_id AND v.organization_id=r.organization_id
   LEFT JOIN v2_product_recipe_components c ON c.recipe_id=r.id AND c.organization_id=r.organization_id
@@ -49,7 +52,9 @@ const toRecipe = (rows: readonly RecipeRow[]): ProductRecipe | null => {
       materialSku: row.material_sku_snapshot,
       quantity: row.quantity!,
       unit: row.quantity_unit!,
-      quantityKind: row.quantity_kind === "per_piece" ? "per_piece" : "per_line",
+      quantityKind: row.quantity_kind === "per_piece" ? "per_piece" : row.quantity_kind === "per_area" ? "per_area" : "per_line",
+      ...(row.condition_option_id && row.condition_choice_value ? { condition: { type: "selected" as const, optionId: row.condition_option_id, choiceValue: row.condition_choice_value } } : {}),
+      replacesPbv2Compatibility: Boolean(row.replaces_pbv2_compatibility),
     }] : []),
   };
 };
@@ -97,6 +102,19 @@ class Transaction implements ProductRecipeTransaction {
       throw new V2ApplicationError("VALIDATION_ERROR", "A recipe material is unavailable.");
     }
 
+    const draftTree = (await this.client.query<{ tree_json: unknown }>(
+      "SELECT tree_json FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 AND id=$3 AND status='DRAFT'",
+      [input.organizationId, input.productId, input.draftVersionId],
+    )).rows[0]?.tree_json as { nodes?: Record<string, { id?: string; choices?: Array<{ value?: unknown }> }> } | undefined;
+    const nodes = draftTree?.nodes && typeof draftTree.nodes === "object" ? Object.values(draftTree.nodes) : [];
+    for (const component of input.components) {
+      if (!component.condition) continue;
+      const option = nodes.find((node) => node?.id === component.condition!.optionId);
+      if (!option || !Array.isArray(option.choices) || !option.choices.some((choice) => String(choice?.value) === component.condition!.choiceValue)) {
+        throw new V2ApplicationError("VALIDATION_ERROR", "Recipe applicability must reference a choice in the current Product Draft.");
+      }
+    }
+
     const recipe = (await this.client.query<{ id: string }>(
       `INSERT INTO v2_product_recipes(organization_id,product_id,product_version_id,updated_by_user_id)
        VALUES($1,$2,$3,$4)
@@ -137,18 +155,21 @@ class Transaction implements ProductRecipeTransaction {
       if (component.componentId) {
         await this.client.query(
           `UPDATE v2_product_recipe_components SET material_id=$1,position=$2,quantity=$3::numeric,
-            quantity_unit=$4,quantity_kind=$5,material_name_snapshot=$6,material_sku_snapshot=$7,updated_at=now()
-           WHERE organization_id=$8 AND recipe_id=$9 AND id=$10`,
+            quantity_unit=$4,quantity_kind=$5,material_name_snapshot=$6,material_sku_snapshot=$7,
+            condition_option_id=$8,condition_choice_value=$9,replaces_pbv2_compatibility=$10,updated_at=now()
+           WHERE organization_id=$11 AND recipe_id=$12 AND id=$13`,
           [material.id, position, component.quantity, component.unit, component.quantityKind ?? "per_line", material.name, material.sku,
+            component.condition?.optionId ?? null, component.condition?.choiceValue ?? null, Boolean(component.replacesPbv2Compatibility),
             input.organizationId, recipe.id, component.componentId],
         );
       } else {
         await this.client.query(
           `INSERT INTO v2_product_recipe_components(
             organization_id,recipe_id,material_id,position,quantity,quantity_unit,quantity_kind,
-            material_name_snapshot,material_sku_snapshot
-          ) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8,$9)`,
-          [input.organizationId, recipe.id, material.id, position, component.quantity, component.unit, component.quantityKind ?? "per_line", material.name, material.sku],
+            material_name_snapshot,material_sku_snapshot,condition_option_id,condition_choice_value,replaces_pbv2_compatibility
+          ) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8,$9,$10,$11,$12)`,
+          [input.organizationId, recipe.id, material.id, position, component.quantity, component.unit, component.quantityKind ?? "per_line", material.name, material.sku,
+            component.condition?.optionId ?? null, component.condition?.choiceValue ?? null, Boolean(component.replacesPbv2Compatibility)],
         );
       }
     }

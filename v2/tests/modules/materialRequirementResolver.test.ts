@@ -67,4 +67,45 @@ describe("P7B material requirement resolver", () => {
     expect(() => resolveMaterialRequirements(null, dimensionalLine({ thickness: "4mm" }), { tree: pbv2, materials: materials.filter((material) => material.id !== "coroplast") })).toThrow("unavailable");
     expect(() => resolveMaterialRequirements(null, { ...dimensionalLine({ lamination: "matte" }), resolvedConfiguration: { pricingConfigurationId: "version-a", productId: "product-a", selections: { lamination: "matte" } } }, { tree: pbv2, materials })).toThrow("needs dimensions");
   });
+
+  test("resolves version-owned area rules through the established physical sheet normalizer", () => {
+    const dynamic: ProductRecipe = {
+      ...recipe, components: [{ componentId: "area-sheet", materialId: "coroplast", materialName: "Coroplast", materialSku: "CORO", quantity: "1", unit: "square_foot", quantityKind: "per_area" }],
+    };
+    const resolved = resolveMaterialRequirements(dynamic, dimensionalLine({}, 50), { tree: pbv2, materials });
+    expect(resolved).toEqual([expect.objectContaining({ sourceKind: "recipe_component", recipeComponentId: "area-sheet", quantity: "10", unit: "sheet", quantityMode: "per_square_foot" })]);
+  });
+
+  test("evaluates a version-bound selected-choice condition and never uses mutable labels", () => {
+    const conditional: ProductRecipe = {
+      ...recipe, components: [{ componentId: "matte-only", materialId: "laminate-roll", materialName: "Laminate", materialSku: "LAM", quantity: "1", unit: "square_foot", quantityKind: "per_area", condition: { type: "selected", optionId: "laminate", choiceValue: "matte" } }],
+    };
+    expect(resolveMaterialRequirements(conditional, dimensionalLine({ lamination: "gloss" }), { tree: pbv2, materials })).toEqual([]);
+    expect(resolveMaterialRequirements(conditional, dimensionalLine({ lamination: "matte" }), { tree: pbv2, materials })).toEqual([
+      expect.objectContaining({ recipeComponentId: "matte-only", quantity: "12", unit: "square_foot" }),
+      expect.objectContaining({ sourceKind: "pbv2_inventory_consumption", quantity: "12", unit: "square_foot" }),
+    ]);
+  });
+
+  test("only an explicit version-owned PBV2 replacement suppresses the exact legacy source", () => {
+    const replacement: ProductRecipe = {
+      ...recipe, components: [{ componentId: "authoritative-matte", materialId: "laminate-roll", materialName: "Laminate", materialSku: "LAM", quantity: "1", unit: "square_foot", quantityKind: "per_area", condition: { type: "selected", optionId: "laminate", choiceValue: "matte" }, replacesPbv2Compatibility: true }],
+    };
+    const resolved = resolveMaterialRequirements(replacement, dimensionalLine({ lamination: "matte" }), { tree: pbv2, materials });
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ sourceKind: "recipe_component", sourceDefinitionId: "authoritative-matte", quantity: "12" });
+  });
+
+  test("retains distinct same-material recipe components rather than deduplicating by material", () => {
+    const distinct: ProductRecipe = {
+      ...recipe, components: [
+        { componentId: "setup-a", materialId: "material-grommet", materialName: "Grommet", materialSku: "GROM", quantity: "1", unit: "each", quantityKind: "per_line" },
+        { componentId: "pieces-b", materialId: "material-grommet", materialName: "Grommet", materialSku: "GROM", quantity: "2", unit: "each", quantityKind: "per_piece" },
+      ],
+    };
+    expect(resolveMaterialRequirements(distinct, line(3))).toEqual([
+      expect.objectContaining({ sourceDefinitionId: "setup-a", quantity: "1" }),
+      expect.objectContaining({ sourceDefinitionId: "pieces-b", quantity: "6" }),
+    ]);
+  });
 });

@@ -7,7 +7,7 @@ import type { SalesLineSnapshot } from "../sales/contracts.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 
 export type MaterialRequirementSourceKind = "recipe_component" | "pbv2_inventory_consumption";
-export type MaterialRequirementQuantityMode = RecipeComponent["quantityKind"] | "per_square_foot";
+export type MaterialRequirementQuantityMode = "per_line" | "per_piece" | "per_square_foot";
 
 export type MaterialRequirementMaterial = ReservationMaterial & Readonly<{
   id: string;
@@ -57,20 +57,53 @@ const inches = (value: string, unit: "in" | "ft" | "mm"): number => {
   return unit === "in" ? parsed : unit === "ft" ? parsed * 12 : parsed / 25.4;
 };
 
-const staticRequirements = (recipe: ProductRecipe | null, line: SalesLineSnapshot): ResolvedMaterialRequirement[] => {
+const selectedValue = (value: unknown): unknown => value && typeof value === "object" && "value" in value ? (value as { value: unknown }).value : value;
+const nodeSelectionKey = (tree: OptionTreeV2, optionId: string): string => {
+  const nodes = tree.nodes && typeof tree.nodes === "object" ? Object.values(tree.nodes as Record<string, unknown>) : [];
+  const node = nodes.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === optionId) as { input?: { selectionKey?: unknown } } | undefined;
+  return typeof node?.input?.selectionKey === "string" ? node.input.selectionKey : optionId;
+};
+const conditionIsSelected = (component: RecipeComponent, line: SalesLineSnapshot, source: Pbv2MaterialRequirementContext | undefined): boolean => {
+  if (!component.condition) return true;
+  if (!source) throw new V2ApplicationError("CONFLICT", "Recipe applicability needs the Product Version configuration.");
+  const raw = selectedValue(line.resolvedConfiguration.selections[nodeSelectionKey(source.tree, component.condition.optionId)]
+    ?? line.resolvedConfiguration.selections[component.condition.optionId]);
+  return (Array.isArray(raw) ? raw : [raw]).some((value) => String(value) === component.condition!.choiceValue);
+};
+const staticRequirements = (recipe: ProductRecipe | null, line: SalesLineSnapshot, source: Pbv2MaterialRequirementContext | undefined): ResolvedMaterialRequirement[] => {
   if (!recipe) return [];
   if (recipe.productId !== line.productId || recipe.productVersionId !== line.resolvedConfiguration.pricingConfigurationId) throw new V2ApplicationError("CONFLICT", "The Product recipe does not match this commercial line.");
-  return recipe.components.map((component) => {
-    const source = parseQuantity(component.quantity);
-    const quantity = component.quantityKind === "per_piece" ? source * BigInt(line.quantity) : source;
-    return Object.freeze({
+  const materials = new Map((source?.materials ?? []).map((material) => [material.id, material]));
+  return recipe.components.flatMap<ResolvedMaterialRequirement>((component) => {
+    if (!conditionIsSelected(component, line, source)) return [];
+    const componentQuantity = parseQuantity(component.quantity);
+    if (component.quantityKind === "per_area") {
+      const dimensions = line.resolvedConfiguration.dimensions;
+      if (!dimensions) throw new V2ApplicationError("VALIDATION_ERROR", "The Product recipe needs dimensions.");
+      const widthIn = inches(dimensions.width, dimensions.unit), heightIn = inches(dimensions.height, dimensions.unit);
+      const material = materials.get(component.materialId);
+      if (!material) throw new V2ApplicationError("VALIDATION_ERROR", "A recipe material is unavailable.");
+      const requestedQty = Number(component.quantity) * (widthIn * heightIn / 144) * line.quantity;
+      const normalized = normalizeMaterialReservation({ material, requestedUom: "square_foot", requestedQty, flatSheet: { pieceWidthIn: widthIn, pieceHeightIn: heightIn, allowRotation: true } });
+      if (!normalized.ok) throw new V2ApplicationError("VALIDATION_ERROR", normalized.message);
+      return [Object.freeze({
+        sourceKind: "recipe_component" as const, sourceDefinitionId: component.componentId,
+        recipeId: recipe.recipeId, recipeComponentId: component.componentId,
+        productVersionId: recipe.productVersionId, configurationId: line.resolvedConfiguration.pricingConfigurationId,
+        materialId: component.materialId, materialName: component.materialName, materialSku: component.materialSku,
+        quantity: printedNumber(normalized.convertedQty), unit: normalized.baseUom as RecipeComponent["unit"], quantityMode: "per_square_foot" as const,
+        resolutionVersion: 2 as const,
+      })];
+    }
+    const quantity = component.quantityKind === "per_piece" ? componentQuantity * BigInt(line.quantity) : componentQuantity;
+    return [Object.freeze({
       sourceKind: "recipe_component" as const, sourceDefinitionId: component.componentId,
       recipeId: recipe.recipeId, recipeComponentId: component.componentId,
       productVersionId: recipe.productVersionId, configurationId: line.resolvedConfiguration.pricingConfigurationId,
       materialId: component.materialId, materialName: component.materialName, materialSku: component.materialSku,
-      quantity: printQuantity(quantity), unit: component.unit, quantityMode: component.quantityKind,
+      quantity: printQuantity(quantity), unit: component.unit, quantityMode: component.quantityKind === "per_piece" ? "per_piece" as const : "per_line" as const,
       resolutionVersion: 2 as const,
-    });
+    })];
   });
 };
 
@@ -113,7 +146,14 @@ const pbv2Requirements = (line: SalesLineSnapshot, source: Pbv2MaterialRequireme
 };
 
 /** Pure Product Recipe/PBV2 resolver; persistence and inventory remain outside this boundary. */
+const replacesPbv2Source = (component: RecipeComponent, entry: ResolvedMaterialRequirement): boolean => {
+  if (!component.replacesPbv2Compatibility || !component.condition || entry.sourceKind !== "pbv2_inventory_consumption" || component.materialId !== entry.materialId) return false;
+  return entry.sourceDefinitionId.startsWith(`pbv2:${component.condition.optionId}:${component.condition.choiceValue}:`);
+};
+
 export const resolveMaterialRequirements = (recipe: ProductRecipe | null, line: SalesLineSnapshot, pbv2?: Pbv2MaterialRequirementContext): readonly ResolvedMaterialRequirement[] => {
   if (!Number.isSafeInteger(line.quantity) || line.quantity < 1) throw new V2ApplicationError("VALIDATION_ERROR", "Material requirements need a positive whole quantity.");
-  return Object.freeze([...staticRequirements(recipe, line), ...pbv2Requirements(line, pbv2)]);
+  const authored = staticRequirements(recipe, line, pbv2);
+  const compatibility = pbv2Requirements(line, pbv2).filter((entry) => !(recipe?.components.some((component) => replacesPbv2Source(component, entry))));
+  return Object.freeze([...authored, ...compatibility]);
 };

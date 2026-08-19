@@ -125,9 +125,9 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       await this.client.query(
         `INSERT INTO v2_product_recipe_components(
           organization_id,recipe_id,material_id,position,quantity,quantity_unit,quantity_kind,
-          material_name_snapshot,material_sku_snapshot
+          material_name_snapshot,material_sku_snapshot,condition_option_id,condition_choice_value,replaces_pbv2_compatibility
         ) SELECT organization_id,$2,material_id,position,quantity,quantity_unit,quantity_kind,
-          material_name_snapshot,material_sku_snapshot
+        material_name_snapshot,material_sku_snapshot,condition_option_id,condition_choice_value,replaces_pbv2_compatibility
         FROM v2_product_recipe_components WHERE organization_id=$1 AND recipe_id=$3`,
         [input.organizationId, draftRecipe.rows[0]!.id, sourceRecipe.rows[0].id],
       );

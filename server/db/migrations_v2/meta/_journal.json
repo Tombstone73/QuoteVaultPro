@@ -1499,6 +1499,13 @@
       "when": 1788048000065,
       "tag": "0218_v2_frozen_requirement_inventory_unit_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 220,
+      "version": "7",
+      "when": 1788048000066,
+      "tag": "0219_v2_dynamic_product_recipe_components",
+      "breakpoints": true
     }
   ]
 }

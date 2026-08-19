@@ -7,8 +7,15 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 
 export const recipeUnits = ["each", "square_foot", "linear_foot", "sheet", "roll"] as const;
 export type RecipeUnit = (typeof recipeUnits)[number];
-export const recipeQuantityKinds = ["per_line", "per_piece"] as const;
+export const recipeQuantityKinds = ["per_line", "per_piece", "per_area"] as const;
 export type RecipeQuantityKind = (typeof recipeQuantityKinds)[number];
+export type RecipeComponentCondition = Readonly<{
+  type: "selected";
+  /** Immutable PBV2 node identity in this Product Version. */
+  optionId: string;
+  /** Immutable choice value in this Product Version. */
+  choiceValue: string;
+}>;
 export type RecipeComponent = Readonly<{
   componentId: string;
   materialId: string;
@@ -17,6 +24,9 @@ export type RecipeComponent = Readonly<{
   quantity: string;
   unit: RecipeUnit;
   quantityKind: RecipeQuantityKind;
+  condition?: RecipeComponentCondition;
+  /** An explicit replacement for the matching legacy PBV2 physical rule. */
+  replacesPbv2Compatibility?: boolean;
 }>;
 export type ProductRecipe = Readonly<{
   recipeId: string;
@@ -33,6 +43,8 @@ export type RecipeComponentInput = Readonly<{
   quantity: string;
   unit: RecipeUnit;
   quantityKind?: RecipeQuantityKind;
+  condition?: RecipeComponentCondition;
+  replacesPbv2Compatibility?: boolean;
 }>;
 export type UpdateDraftRecipeInput = Readonly<{
   productId: string;
@@ -98,18 +110,29 @@ const validateComponents = (components: readonly RecipeComponentInput[]): readon
     throw new V2ApplicationError("VALIDATION_ERROR", "Recipe components are invalid.");
   }
 
-  const materialIds = new Set<string>();
+  const componentIds = new Set<string>();
   return components.map((component) => {
     const materialId = component?.materialId?.trim();
-    if (!materialId || materialIds.has(materialId)) {
-      throw new V2ApplicationError("VALIDATION_ERROR", "Recipe materials must be unique.");
+    if (!materialId || (component.componentId && (!component.componentId.trim() || componentIds.has(component.componentId)))) {
+      throw new V2ApplicationError("VALIDATION_ERROR", "Recipe component identities are invalid.");
     }
-    materialIds.add(materialId);
+    if (component.componentId) componentIds.add(component.componentId);
     if (!recipeUnits.includes(component.unit) || !validQuantity(component.quantity)
       || (component.quantityKind !== undefined && !recipeQuantityKinds.includes(component.quantityKind))) {
       throw new V2ApplicationError("VALIDATION_ERROR", "Recipe quantities are invalid.");
     }
-    return { ...component, materialId, quantity: component.quantity };
+    const quantityKind = component.quantityKind ?? "per_line";
+    if (quantityKind === "per_area" && component.unit !== "square_foot") {
+      throw new V2ApplicationError("VALIDATION_ERROR", "Area recipe components must use square feet as their consumption basis.");
+    }
+    const condition = component.condition;
+    if (condition && (condition.type !== "selected" || !condition.optionId?.trim() || !condition.choiceValue?.trim())) {
+      throw new V2ApplicationError("VALIDATION_ERROR", "Recipe applicability must reference a Product Option choice.");
+    }
+    if (component.replacesPbv2Compatibility && !condition) {
+      throw new V2ApplicationError("VALIDATION_ERROR", "A PBV2 replacement must be tied to a selected Product Option choice.");
+    }
+    return { ...component, materialId, quantity: component.quantity, quantityKind, ...(condition ? { condition: { type: "selected" as const, optionId: condition.optionId.trim(), choiceValue: condition.choiceValue.trim() } } : {}) };
   });
 };
 

@@ -57,6 +57,8 @@ class RecipeTransaction implements ProductRecipeTransaction {
         materialName: component.materialId === "material-b" ? "Vinyl" : "Substrate",
         materialSku: component.materialId === "material-b" ? "VIN" : "SUB",
         quantity: component.quantity, unit: component.unit, quantityKind: component.quantityKind ?? "per_line",
+        ...(component.condition ? { condition: component.condition } : {}),
+        replacesPbv2Compatibility: Boolean(component.replacesPbv2Compatibility),
       })),
     };
     return this.draftRecipe;
@@ -119,13 +121,13 @@ describe("P7A Product Draft recipe command", () => {
     expect(wrongTenant).toMatchObject({ ok: false, error: { code: "WRONG_TENANT" } });
   });
 
-  test("rejects duplicate components, unsupported units, malformed quantities, and missing product.edit", async () => {
+  test("permits distinct same-material components but rejects duplicate identities, invalid dynamic rules, unsupported units, malformed quantities, and missing product.edit", async () => {
     const service = new ProductRecipeApplicationService(new Runner());
     const duplicate = await service.updateDraftRecipe(context("recipe-duplicate"), {
       ...input("recipe-duplicate"),
       components: [
-        { materialId: "material-a", quantity: "1", unit: "each" },
-        { materialId: "material-a", quantity: "2", unit: "each" },
+        { componentId: "same", materialId: "material-a", quantity: "1", unit: "each" },
+        { componentId: "same", materialId: "material-a", quantity: "2", unit: "each" },
       ],
     });
     const badQuantity = await service.updateDraftRecipe(context("recipe-quantity"), {
@@ -135,10 +137,25 @@ describe("P7A Product Draft recipe command", () => {
       ...input("recipe-unit"), components: [{ materialId: "material-a", quantity: "1", unit: "grommet" as any }],
     });
     const forbidden = await service.updateDraftRecipe(context("recipe-denied", ["product.view"]), input("recipe-denied"));
+    const areaUnit = await service.updateDraftRecipe(context("recipe-area-unit"), {
+      ...input("recipe-area-unit"), components: [{ materialId: "material-a", quantity: "1", unit: "sheet", quantityKind: "per_area" }],
+    });
+    const replacementWithoutCondition = await service.updateDraftRecipe(context("recipe-replacement"), {
+      ...input("recipe-replacement"), components: [{ materialId: "material-a", quantity: "1", unit: "each", replacesPbv2Compatibility: true }],
+    });
+    const sameMaterial = await service.updateDraftRecipe(context("recipe-same-material"), {
+      ...input("recipe-same-material"), components: [
+        { materialId: "material-a", quantity: "1", unit: "each", quantityKind: "per_line" },
+        { materialId: "material-a", quantity: "2", unit: "each", quantityKind: "per_piece" },
+      ],
+    });
 
     expect(duplicate).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
     expect(badQuantity).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
     expect(badUnit).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
     expect(forbidden).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+    expect(areaUnit).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(replacementWithoutCondition).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(sameMaterial).toMatchObject({ ok: true, value: { components: [{ materialId: "material-a" }, { materialId: "material-a" }] } });
   });
 });
