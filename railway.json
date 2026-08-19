@@ -1,0 +1,8 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "preDeployCommand": [
+      "npm run v2:migrations:apply"
+    ]
+  }
+}

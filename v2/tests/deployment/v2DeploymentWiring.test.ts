@@ -16,6 +16,14 @@ const repoRoot = process.cwd();
 const logger: V2Logger = { log: () => undefined };
 
 describe("V2 DEV cutover deployment wiring", () => {
+  test("runs the authoritative V2 migration runner as a Railway pre-deploy step", () => {
+    const railway = JSON.parse(fs.readFileSync(path.join(repoRoot, "railway.json"), "utf8")) as {
+      deploy?: { preDeployCommand?: string[] };
+    };
+
+    expect(railway.deploy?.preDeployCommand).toEqual(["npm run v2:migrations:apply"]);
+  });
+
   test("uses Railway PORT, the canonical DEV database, and rejects non-DEV deployment targets", () => {
     expect(loadV2RuntimeConfig({ PORT: "8142", V2_PORT: "9999" }).port).toBe(8142);
     const cutover = { NODE_ENV: "production", RAILWAY_PROJECT_NAME: "PrintersHero-DEV", RAILWAY_ENVIRONMENT_NAME: "Development", DATABASE_URL: "postgresql://dev.example/printershero" };

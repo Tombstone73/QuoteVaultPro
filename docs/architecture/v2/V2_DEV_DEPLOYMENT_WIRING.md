@@ -46,15 +46,21 @@ business records) is preserved. V2 migrations are additive and immutable; they
 coexist with the existing core schema and use the V2 ledger
 `public.__drizzle_migrations_v2`.
 
-Run the following only as the deliberate DEV cutover release operation, from
-the exact promoted source commit:
+Each DEV Railway deployment runs `npm run v2:migrations:apply` as its
+repository-controlled pre-deploy command. The command runs after the image
+build and before the new application container starts. It uses the existing
+V2 migration runner, which validates the exact DEV Railway context, uses the
+V2 ledger, applies only pending migrations under its advisory lock, and exits
+non-zero on a migration or release-verification failure. Railway then leaves
+the prior deployment in place instead of starting new code against an old
+schema.
 
-1. `npm run db:migrations:v2:preflight`
-2. `npm run v2:migrations:status`
-3. `npm run v2:migrations:apply` when status shows migrations are pending
-4. `npm run v2:migrations:status`
+`npm run db:migrations:v2:preflight` and `npm run v2:migrations:status` remain
+read-only release-verification commands. `npm run v2:migrations:apply` is the
+deployment lifecycle command; do not use it as an ad hoc substitute for a
+normal DEV deployment.
 
-The current checked-in journal ends at `0208_v2_payment_history_capability`.
+The current checked-in journal ends at `0222_v2_product_version_routing_authoring`.
 The migration guard validates the exact DEV Railway context first. No reset,
 clone, recreation, or production migration is authorised.
 
@@ -85,9 +91,10 @@ branch promotion to use:
 - entrypoint: `v2/src/deployment/server.ts` / `createV2HttpApp`;
 - checks: `GET /health`, `GET /version`, and `GET /ready`.
 
-The server uses Railway `PORT`, starts no migrations automatically, creates the
+The server uses Railway `PORT`, starts no migrations itself, creates the
 canonical PostgreSQL pool only after the DEV guard passes, and shuts its HTTP
-server and pool down safely.
+server and pool down safely. Migrations run once in Railway's pre-deploy phase,
+not in each application instance.
 
 ## Existing Vercel DEV project
 
