@@ -1485,6 +1485,20 @@
       "when": 1788048000063,
       "tag": "0216_v2_inventory_reconciliation_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 218,
+      "version": "7",
+      "when": 1788048000064,
+      "tag": "0217_v2_pbv2_inventory_consumption_requirements",
+      "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1788048000065,
+      "tag": "0218_v2_frozen_requirement_inventory_unit_guard",
+      "breakpoints": true
     }
   ]
 }

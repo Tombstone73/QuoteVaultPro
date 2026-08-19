@@ -148,7 +148,7 @@ export function normalizeMaterialReservation(args: {
         registrationWasteIn: Number(args.rollMedia.registrationWasteIn ?? 0),
         billingWidthIncrementIn: Number(args.rollMedia.billingWidthIncrementIn ?? 12),
         billingLengthIncrementIn: Number(args.rollMedia.billingLengthIncrementIn ?? 12),
-        allowRotation: args.rollMedia.allowRotation,
+        allowRotation: args.rollMedia.allowRotation as string | number | boolean | null | undefined,
         materialId: args.material.id ?? null,
         materialName: args.material.name ?? null,
       });

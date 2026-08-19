@@ -41,7 +41,11 @@ export class PostgresProductionMaterialConsumptionTransaction implements Product
       FROM v2_production_works w JOIN materials m ON m.id=$6::varchar AND m.organization_id=$2::varchar
       LEFT JOIN v2_order_line_material_requirements r ON r.id=$5::varchar AND r.organization_id=$2::varchar
       WHERE w.id=$3::varchar AND w.organization_id=$2::varchar
-        AND (m.consumption_unit IS NULL OR m.consumption_unit=$8::varchar)
+        -- A frozen requirement may be in the Material's configured inventory
+        -- unit (for example sheets resolved from PBV2 area demand).  It is an
+        -- explicit historical basis, not an arbitrary unit conversion.
+        AND (m.consumption_unit IS NULL OR m.consumption_unit=$8::varchar
+          OR (r.id IS NOT NULL AND m.inventory_unit=$8::varchar))
       RETURNING *`, [input.id, input.organizationId, input.productionWorkId, input.productionAttemptId, input.requirementId ?? null, input.materialId, input.quantity, input.unit, input.kind, input.correctsConsumptionId ?? null, input.operationRequestId, input.principalKind, input.principalSubject, input.staffActorUserId ?? null])).rows[0];
     if (!row) throw new V2ApplicationError("NOT_FOUND", "Production work or Material was not found in this organization.");
     await this.hooks?.afterConsumption?.();

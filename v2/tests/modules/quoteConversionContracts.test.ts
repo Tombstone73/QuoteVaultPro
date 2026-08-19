@@ -43,7 +43,8 @@ describe("M1.10 Quote to Order conversion contract", () => {
     const requirements = await readFile(path.join(process.cwd(), "v2", "infrastructure", "sales", "postgresOrderMaterialRequirements.ts"), "utf8");
     expect(transaction).toMatch(/afterMaterialRequirements/);
     expect(requirements).toMatch(/v2_order_line_material_requirements/);
-    expect(requirements).toMatch(/ON CONFLICT\(organization_id,order_line_id,source_recipe_component_id\) DO NOTHING/);
+    expect(requirements).toMatch(/ON CONFLICT\(organization_id,order_line_id,source_definition_id\) DO NOTHING/);
     expect(requirements).toMatch(/resolvedConfiguration\.pricingConfigurationId/);
+    expect(requirements).toMatch(/inventoryConsumption/);
   });
 });
