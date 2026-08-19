@@ -4,6 +4,7 @@ import { requireOperationPrincipalScope } from "../../application/operation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
+import { validateProductionUnitSpecification, type ProductionUnitSpecification } from "../shared/productionRequirements.js";
 
 export type ProductVersionStatus = "active" | "draft" | "deprecated" | "archived";
 export type ProductVersionSummary = Readonly<{
@@ -39,6 +40,7 @@ export type ProductDraftGeneral = Readonly<{
   workflowIntent: ProductWorkflowIntent;
   requiresProofApproval: boolean;
   requiresProductionJob: boolean;
+  productionUnitSpecification: ProductionUnitSpecification | null;
 }>;
 export type ProductDraftGeneralRead = Readonly<{
   productId: string;
@@ -153,7 +155,8 @@ const validGeneral = (general: ProductDraftGeneral): ProductDraftGeneral => {
   if (general.measurementMode !== "dimensions_required" && general.measurementMode !== "quantity_only") throw new V2ApplicationError("VALIDATION_ERROR", "Measurement mode is invalid.");
   if (general.workflowIntent !== "standard_production" && general.workflowIntent !== "fulfillment_only" && general.workflowIntent !== "service_fee") throw new V2ApplicationError("VALIDATION_ERROR", "Workflow is invalid.");
   if (general.workflowIntent !== "standard_production" && (general.requiresProofApproval || general.requiresProductionJob)) throw new V2ApplicationError("VALIDATION_ERROR", "This workflow cannot require proofing or production.");
-  return { displayName, category, description, storefrontVisible: general.storefrontVisible, measurementMode: general.measurementMode, workflowIntent: general.workflowIntent, requiresProofApproval: general.requiresProofApproval, requiresProductionJob: general.requiresProductionJob };
+  const productionUnitSpecification=general.productionUnitSpecification==null?null:validateProductionUnitSpecification(general.productionUnitSpecification);
+  return { displayName, category, description, storefrontVisible: general.storefrontVisible, measurementMode: general.measurementMode, workflowIntent: general.workflowIntent, requiresProofApproval: general.requiresProofApproval, requiresProductionJob: general.requiresProductionJob, productionUnitSpecification };
 };
 const optionTypes: readonly ProductDraftOptionInputType[] = ["boolean", "select", "multiselect", "number", "text", "textarea"];
 const choiceBased = (type: ProductDraftOptionInputType) => type === "select" || type === "multiselect";

@@ -8,6 +8,7 @@ import type { ProductDraftFormulaPricing, ProductDraftGeneral, ProductDraftGener
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { evaluateResolvedFormula, V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter.js";
 import { resolveActivePbv2PricingInput } from "../../src/modules/products/pbv2CompatibilityResolution.js";
+import { validateProductionUnitSpecification } from "../../src/modules/shared/productionRequirements.js";
 import { brandedId, currencyCode, decimalText } from "../../src/modules/shared/commercialValues.js";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBaseRateCents } from "../../../shared/productOptionPricingMatrix.js";
 
@@ -37,9 +38,10 @@ const general = (tree: unknown, fallback: ProductDraftGeneral): ProductDraftGene
     workflowIntent: value.workflowIntent === "fulfillment_only" || value.workflowIntent === "service_fee" || value.workflowIntent === "standard_production" ? value.workflowIntent : fallback.workflowIntent,
     requiresProofApproval: typeof value.requiresProofApproval === "boolean" ? value.requiresProofApproval : fallback.requiresProofApproval,
     requiresProductionJob: typeof value.requiresProductionJob === "boolean" ? value.requiresProductionJob : fallback.requiresProductionJob,
+    productionUnitSpecification: object(object(tree).meta).productionUnitSpecification===undefined||object(object(tree).meta).productionUnitSpecification===null?null:validateProductionUnitSpecification(object(object(tree).meta).productionUnitSpecification),
   };
 };
-const generalFallback = (row: { product_name: string; category: string | null; description: string | null; measurement_mode: "dimensions_required" | "quantity_only"; workflow_intent: "standard_production" | "fulfillment_only" | "service_fee"; requires_proof_approval: boolean; requires_production_job: boolean }): ProductDraftGeneral => ({ displayName: row.product_name, category: row.category, description: row.description, storefrontVisible: false, measurementMode: row.measurement_mode, workflowIntent: row.workflow_intent, requiresProofApproval: row.requires_proof_approval, requiresProductionJob: row.requires_production_job });
+const generalFallback = (row: { product_name: string; category: string | null; description: string | null; measurement_mode: "dimensions_required" | "quantity_only"; workflow_intent: "standard_production" | "fulfillment_only" | "service_fee"; requires_proof_approval: boolean; requires_production_job: boolean }): ProductDraftGeneral => ({ displayName: row.product_name, category: row.category, description: row.description, storefrontVisible: false, measurementMode: row.measurement_mode, workflowIntent: row.workflow_intent, requiresProofApproval: row.requires_proof_approval, requiresProductionJob: row.requires_production_job, productionUnitSpecification:null });
 
 type GeneralRow = { product_id: string; product_name: string; category: string | null; description: string | null; measurement_mode: "dimensions_required" | "quantity_only"; workflow_intent: "standard_production" | "fulfillment_only" | "service_fee"; requires_proof_approval: boolean; requires_production_job: boolean; draft_id: string; draft_updated_at: Date; draft_tree_json: unknown };
 export class PostgresProductDraftGeneralReader {
@@ -160,7 +162,8 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     if (row.draft_updated_at.toISOString() !== new Date(input.expectedDraftUpdatedAt).toISOString()) throw new V2ApplicationError("STALE_STATE", "This Draft changed elsewhere. Refresh and try again.");
     const tree = structuredClone(object(row.draft_tree_json));
     const meta = structuredClone(object(tree.meta));
-    tree.meta = { ...meta, general: input.general };
+    const { productionUnitSpecification, ...general } = input.general;
+    tree.meta = { ...meta, general, productionUnitSpecification };
     const now = new Date();
     const updated = await this.client.query<{ updated_at: Date }>("UPDATE pbv2_tree_versions SET tree_json=$1::jsonb,updated_at=$2,updated_by_user_id=$3 WHERE organization_id=$4 AND product_id=$5 AND id=$6 AND status='DRAFT' RETURNING updated_at", [JSON.stringify(tree), now, input.staffActorUserId ?? null, input.organizationId, input.productId, input.draftVersionId]);
     if (!updated.rows[0]) throw new V2ApplicationError("CONFLICT", "Only the current Draft can be edited.");

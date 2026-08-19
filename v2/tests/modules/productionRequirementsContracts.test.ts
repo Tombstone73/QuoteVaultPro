@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { productionRequirementSnapshot, resolveProductionRequirementSnapshot } from "../../src/modules/shared/productionRequirements.js";
+import { productionRequirementSnapshot, resolveProductionRequirementSnapshot, validateProductionUnitSpecification } from "../../src/modules/shared/productionRequirements.js";
 
 const specification={schemaVersion:1 as const,rules:[
   {key:"front",side:"front" as const},
@@ -15,6 +15,7 @@ assert.deepEqual(resolveProductionRequirementSnapshot(undefined,{}),{state:"unco
 assert.notEqual(single.state==="configured"&&double.state==="configured"?single.specificationFingerprint:undefined,double.state==="configured"?double.specificationFingerprint:undefined,"selection-driven effective requirements receive a new frozen fingerprint.");
 assert.throws(()=>resolveProductionRequirementSnapshot({schemaVersion:1,rules:[{key:"front"},{key:"front"}]},{}),/duplicate/i);
 assert.throws(()=>resolveProductionRequirementSnapshot({schemaVersion:1,rules:[{key:"Both"}]},{}),/key/i);
+assert.deepEqual(validateProductionUnitSpecification({schemaVersion:1,rules:[{key:"front",side:"front"}]}),{schemaVersion:1,rules:[{key:"front",side:"front"}]},"Draft authoring accepts the existing front-unit shape.");
 assert.equal(productionRequirementSnapshot(double).state,"configured","frozen configured snapshot remains configured.");
 assert.equal(productionRequirementSnapshot(undefined).state,"unconfigured","historical absent configuration is unknown, not zero requirements.");
-console.log("[m2.2.1] Production requirement contract tests passed (8 assertions).");
+console.log("[m2.2.1] Production requirement contract tests passed (9 assertions).");

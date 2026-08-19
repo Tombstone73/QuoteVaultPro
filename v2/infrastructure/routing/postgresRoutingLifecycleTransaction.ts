@@ -4,6 +4,8 @@ import type { RoutingLifecycleTransaction, RoutingLifecycleTransactionRunner, Ro
 import type { RouteInstance, RouteInstanceState, RouteInstanceStep, RouteStepKind } from "../../src/modules/routing/contracts.js";
 import { brandedId, type OrganizationId, type RouteInstanceId } from "../../src/modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
+import { PostgresProductionCompletionProjection } from "../production/postgresProductionCompletionProjection.js";
+import { PostgresFulfillmentCompletionProjection } from "../fulfillment/postgresFulfillmentCompletionProjection.js";
 
 type RouteRow = Readonly<{ id: string; organization_id: string; order_document_id: string; order_line_id: string; source_template_id: string; source_template_revision: string; source_template_fingerprint: string; route_state: RouteInstanceState; current_step_id: string | null; revision: string }>;
 type StepRow = Readonly<{ id: string; position: number; step_kind: RouteStepKind }>;
@@ -25,7 +27,9 @@ export type RoutingLifecyclePersistenceTestHooks = Readonly<{ afterAdvance?: () 
  */
 export class PostgresRoutingLifecycleTransaction implements RoutingLifecycleTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
-  constructor(private readonly client: PoolClient, private readonly hooks?: RoutingLifecyclePersistenceTestHooks) {}
+  private readonly productionCompletion: PostgresProductionCompletionProjection;
+  private readonly fulfillmentCompletion: PostgresFulfillmentCompletionProjection;
+  constructor(private readonly client: PoolClient, private readonly hooks?: RoutingLifecyclePersistenceTestHooks) { this.productionCompletion=new PostgresProductionCompletionProjection(client);this.fulfillmentCompletion=new PostgresFulfillmentCompletionProjection(client); }
   async reserve(input: Parameters<RoutingLifecycleTransaction["reserve"]>[0]) { const value = await this.requests.reserve(this.client, input); return { kind: value.kind, request: { id: value.request.id, resultJson: value.request.resultJson } }; }
   async succeed(org: string, id: string, result: Parameters<RoutingLifecycleTransaction["succeed"]>[2]) { await this.requests.succeed(this.client, org, id, { resourceType: "route_instance", resourceId: result.routeInstance.routeInstanceId, resultJson: result }); }
   async attribute(input: Parameters<RoutingLifecycleTransaction["attribute"]>[0]) { await this.requests.recordAttribution(this.client, { organizationId: input.organizationId, operationRequestId: input.requestId, operation: input.operation, resourceType: "route_instance", resourceId: input.resourceId, principalKind: input.principalKind, principalSubject: input.principalSubject, staffActorUserId: input.staffActorUserId }); }
@@ -44,9 +48,9 @@ export class PostgresRoutingLifecycleTransaction implements RoutingLifecycleTran
   async prerequisite(org: OrganizationId, frozen: RouteInstance, current: RouteInstanceStep): Promise<RoutePrerequisite> {
     if (current.kind === "proofing") return this.proofApproved(org, frozen.work.orderLineId);
     if (current.kind === "prepress") return this.prepressComplete(org, frozen.work.orderLineId);
-    // Production/Fulfillment completion has no authoritative line transition
-    // contract yet.  Refusing to advance is safer than inventing one here.
-    return { satisfied: false, reason: `Routing cannot complete ${current.kind} until its owning domain exposes a canonical completion projection.` };
+    if (current.kind === "production") { const completion=await this.productionCompletion.readCompletion(org,frozen.work.orderLineId); return completion.state==="complete"?{satisfied:true}:{satisfied:false,reason:completion.reason??"Production is incomplete."}; }
+    if (current.kind === "fulfillment") { const completion=await this.fulfillmentCompletion.readCompletion(org,frozen.work.orderLineId); return completion.state==="complete"?{satisfied:true}:{satisfied:false,reason:completion.reason??"Fulfillment is incomplete."}; }
+    return { satisfied: false, reason: "Routing has an unknown current step." };
   }
   async advance(input: Parameters<RoutingLifecycleTransaction["advance"]>[0]): Promise<RouteInstance> {
     const state: RouteInstanceState = input.nextStepId ? "active" : "completed";

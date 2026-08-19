@@ -1043,6 +1043,21 @@ const GeneralForm = ({
           }
         />
       </label>
+      <label>
+        Production units
+        <select
+          disabled={disabled || general.workflowIntent !== "standard_production"}
+          value={general.productionUnitSpecification?.rules.map((rule) => rule.side).join(",") ?? "unconfigured"}
+          onChange={(event) => {
+            const mode = event.target.value;
+            change("productionUnitSpecification", mode === "unconfigured" ? null : mode === "front" ? { schemaVersion: 1, rules: [{ key: "front", side: "front" }] } : { schemaVersion: 1, rules: [{ key: "back", side: "back" }, { key: "front", side: "front" }] });
+          }}
+        >
+          <option value="unconfigured">Unconfigured (legacy)</option>
+          <option value="front">One front unit</option>
+          <option value="back,front">Front and back units</option>
+        </select>
+      </label>
     </form>
   );
 };

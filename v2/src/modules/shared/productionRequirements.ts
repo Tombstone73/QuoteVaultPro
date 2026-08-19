@@ -14,18 +14,29 @@ const validKey=(value:string)=>/^[a-z][a-z0-9_.:-]{0,119}$/u.test(value);
 const scalar=(value:unknown):value is string|number|boolean=>typeof value==="string"||typeof value==="number"||typeof value==="boolean";
 const equal=(a:JsonValue|undefined,b:string|number|boolean)=>Array.isArray(a)?a.includes(b):a===b;
 
-/** Product/PBV2 policy resolver. It reads only configured product truth, never Artwork or Prepress. */
-export const resolveProductionRequirementSnapshot=(value:unknown,selections:Readonly<Record<string,JsonValue>>):ProductionRequirementSnapshot=>{
-  if(value===undefined||value===null)return {state:"unconfigured",reason:"product_specification_absent"};
+/** Validates version-owned Product authoring before it becomes Draft truth. */
+export const validateProductionUnitSpecification=(value:unknown):ProductionUnitSpecification=>{
   const raw=object(value); if(!raw||raw.schemaVersion!==1||!Array.isArray(raw.rules))throw Error("Production-unit specification must be schema version 1 with rules.");
-  const units:ProductionUnitRequirement[]=[];
-  for(const candidate of raw.rules){
-    const rule=object(candidate); if(!rule||typeof rule.key!=="string"||!validKey(rule.key))throw Error("Production-unit requirement key is invalid.");
+  const keys=new Set<string>();
+  const rules=raw.rules.map((candidate):ProductionUnitRule=>{
+    const rule=object(candidate); if(!rule||typeof rule.key!=="string"||!validKey(rule.key))throw Error("Production-unit requirement key is invalid."); if(keys.has(rule.key))throw Error("Production-unit requirements cannot contain duplicate keys.");
+    keys.add(rule.key);
     if(rule.side!==undefined&&rule.side!=="front"&&rule.side!=="back")throw Error("Production-unit requirement side is invalid.");
     if(rule.sourcePageIndex!==undefined&&(!Number.isInteger(rule.sourcePageIndex)||Number(rule.sourcePageIndex)<0))throw Error("Production-unit requirement page is invalid.");
     if((rule.layerKey===undefined)!==(rule.layerOrder===undefined)||rule.layerKey!==undefined&&(typeof rule.layerKey!=="string"||!rule.layerKey.trim()||!Number.isInteger(rule.layerOrder)||Number(rule.layerOrder)<0))throw Error("Production-unit requirement layer is invalid.");
-    const when=rule.when===undefined?undefined:object(rule.when); if(when&& (typeof when.selectionKey!=="string"||!when.selectionKey.trim()||!scalar(when.equals)))throw Error("Production-unit requirement condition is invalid.");
-    const condition=when?{selectionKey:when.selectionKey as string,equals:when.equals as string|number|boolean}:undefined;
+    const when=rule.when===undefined?undefined:object(rule.when); if(when&&(typeof when.selectionKey!=="string"||!when.selectionKey.trim()||!scalar(when.equals)))throw Error("Production-unit requirement condition is invalid.");
+    return {key:rule.key,...(rule.side?{side:rule.side as ArtworkSide}:{}),...(rule.sourcePageIndex===undefined?{}:{sourcePageIndex:Number(rule.sourcePageIndex)}),...(rule.layerKey===undefined?{}:{layerKey:rule.layerKey.trim(),layerOrder:Number(rule.layerOrder)}),...(when?{when:{selectionKey:String(when.selectionKey).trim(),equals:when.equals as string|number|boolean}}:{})};
+  }).sort((a,b)=>a.key.localeCompare(b.key));
+  return {schemaVersion:1,rules};
+};
+
+/** Product/PBV2 policy resolver. It reads only configured product truth, never Artwork or Prepress. */
+export const resolveProductionRequirementSnapshot=(value:unknown,selections:Readonly<Record<string,JsonValue>>):ProductionRequirementSnapshot=>{
+  if(value===undefined||value===null)return {state:"unconfigured",reason:"product_specification_absent"};
+  const specification=validateProductionUnitSpecification(value);
+  const units:ProductionUnitRequirement[]=[];
+  for(const rule of specification.rules){
+    const condition=rule.when;
     if(condition&&!equal(selections[condition.selectionKey],condition.equals))continue;
     units.push({key:rule.key,...(rule.side?{side:rule.side as ArtworkSide}:{}),...(rule.sourcePageIndex===undefined?{}:{sourcePageIndex:Number(rule.sourcePageIndex)}),...(rule.layerKey===undefined?{}:{layerKey:rule.layerKey as string,layerOrder:Number(rule.layerOrder)})});
   }
@@ -33,7 +44,7 @@ export const resolveProductionRequirementSnapshot=(value:unknown,selections:Read
   const ordered=units.sort((a,b)=>a.key.localeCompare(b.key));
   // A line's freeze must change when selections alter the effective set even
   // though the Product/PBV2 specification itself is unchanged.
-  return {state:"configured",specificationFingerprint:`sha256:${createHash("sha256").update(canonicalJson({specification:raw,units:ordered})).digest("hex")}`,units:ordered};
+  return {state:"configured",specificationFingerprint:`sha256:${createHash("sha256").update(canonicalJson({specification,units:ordered})).digest("hex")}`,units:ordered};
 };
 
 export const productionRequirementSnapshot=(value:unknown):ProductionRequirementSnapshot=>{
