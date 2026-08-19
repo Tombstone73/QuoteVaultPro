@@ -15,7 +15,8 @@ type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Reado
 export type InventoryReservation = Readonly<{ reservationId: string; organizationId: OrganizationId; productionWorkId: ProductionWorkId; requirementId: OrderLineMaterialRequirementId; materialId: string; materialName: string; materialSku: string | null; quantity: string; unit: RecipeUnit }>;
 export type InventoryMovement = Readonly<{ movementId: string; organizationId: OrganizationId; materialId: string; materialName: string; materialSku: string | null; productionWorkId: ProductionWorkId; reservationId?: string; requirementId?: OrderLineMaterialRequirementId; consumptionId?: ProductionMaterialConsumptionId; quantity: string; unit: RecipeUnit; kind: InventoryMovementKind; onHandDelta: string; reservedDelta: string; createdAt: string }>;
 export type InventoryBalance = Readonly<{ materialId: string; materialName: string; materialSku: string | null; unit: RecipeUnit; onHandQuantity: string; reservedQuantity: string; availableQuantity: string }>;
-export type InventoryReconciliation = Readonly<{ productionWorkId: ProductionWorkId; balances: readonly InventoryBalance[]; movements: readonly InventoryMovement[] }>;
+export type InventoryReconciliationFact = Readonly<{ consumptionId: ProductionMaterialConsumptionId; materialId: string; materialName: string; quantity: string; unit: RecipeUnit; kind: "consumed" | "waste" | "correction"; status: "applied" | "unapplied" | "blocked" | "retryable"; lastFailureCode?: string; lastFailureMessage?: string; attemptCount: number }>;
+export type InventoryReconciliation = Readonly<{ productionWorkId: ProductionWorkId; balances: readonly InventoryBalance[]; movements: readonly InventoryMovement[]; facts: readonly InventoryReconciliationFact[] }>;
 
 export interface InventoryLedgerTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string } & Actor>): Promise<Reservation>;
@@ -25,6 +26,7 @@ export interface InventoryLedgerTransaction {
   reserveForWork(input: Readonly<{ organizationId: OrganizationId; productionWorkId: ProductionWorkId; operationRequestId: string } & Actor>): Promise<readonly InventoryReservation[]>;
   releaseUnusedForWork(input: Readonly<{ organizationId: OrganizationId; productionWorkId: ProductionWorkId; operationRequestId: string } & Actor>): Promise<readonly InventoryMovement[]>;
   applyConsumption(input: Readonly<{ organizationId: OrganizationId; consumptionId: ProductionMaterialConsumptionId; operationRequestId: string } & Actor>): Promise<InventoryMovement>;
+  recordReconciliationFailure(input: Readonly<{ organizationId: OrganizationId; consumptionId: ProductionMaterialConsumptionId; businessRequestId: string; errorCode: string; errorMessage: string; status: "retryable" | "blocked" }>): Promise<void>;
   read(organizationId: OrganizationId, productionWorkId: ProductionWorkId): Promise<InventoryReconciliation | null>;
 }
 export interface InventoryLedgerTransactionRunner { transaction<T>(work: (tx: InventoryLedgerTransaction) => Promise<T>): Promise<T>; }
@@ -47,7 +49,12 @@ export class InventoryLedgerApplicationService {
     return this.mutate(context, "inventory.release-production-work.v1", input, async (tx, requestId) => tx.releaseUnusedForWork({ organizationId: brandedId<"OrganizationId">(context.organizationId), productionWorkId: input.productionWorkId, operationRequestId: requestId, ...actor(context) }));
   }
   async applyProductionConsumption(context: OperationContext, input: Readonly<{ businessRequestId: string; consumptionId: ProductionMaterialConsumptionId }>): Promise<ApplicationResult<InventoryMovement>> {
-    return this.mutate(context, "inventory.apply-production-consumption.v1", input, async (tx, requestId) => tx.applyConsumption({ organizationId: brandedId<"OrganizationId">(context.organizationId), consumptionId: input.consumptionId, operationRequestId: requestId, ...actor(context) }));
+    const result = await this.mutate(context, "inventory.apply-production-consumption.v1", input, async (tx, requestId) => tx.applyConsumption({ organizationId: brandedId<"OrganizationId">(context.organizationId), consumptionId: input.consumptionId, operationRequestId: requestId, ...actor(context) }));
+    if (!result.ok && result.error.code !== "WRONG_TENANT" && result.error.code !== "FORBIDDEN" && result.error.code !== "VALIDATION_ERROR") {
+      const status = /insufficient on-hand stock/i.test(result.error.publicMessage) ? "blocked" as const : "retryable" as const;
+      try { await this.runner.transaction((tx) => tx.recordReconciliationFailure({ organizationId: brandedId<"OrganizationId">(context.organizationId), consumptionId: input.consumptionId, businessRequestId: input.businessRequestId, errorCode: result.error.code, errorMessage: result.error.publicMessage, status })); } catch (cause) { return failure(error(cause)); }
+    }
+    return result;
   }
   async read(context: OperationContext, productionWorkId: ProductionWorkId): Promise<ApplicationResult<InventoryReconciliation>> {
     try {

@@ -1478,6 +1478,13 @@
       "when": 1788048000062,
       "tag": "0215_v2_inventory_reservation_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 217,
+      "version": "7",
+      "when": 1788048000063,
+      "tag": "0216_v2_inventory_reconciliation_attempts",
+      "breakpoints": true
     }
   ]
 }
