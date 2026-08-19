@@ -1028,6 +1028,13 @@ export const artworkApi = {
         body: JSON.stringify({ businessRequestId, usage }),
       },
     ),
+  upload: (organizationId: string, businessRequestId: string, input: Readonly<{ orderId: string; orderLineId: string; purpose: "customer_supplied" | "production" | "proof" | "reference"; side?: "front" | "back"; file: File }>) => {
+    const body = new FormData();
+    body.append("businessRequestId", businessRequestId); body.append("orderId", input.orderId); body.append("orderLineId", input.orderLineId); body.append("purpose", input.purpose);
+    if (input.side) body.append("side", input.side);
+    body.append("file", input.file);
+    return request<Readonly<{ artworkFile: ArtworkOrderProjection["file"]; assignment: ArtworkOrderProjection["assignment"] }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/uploads`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body });
+  },
 };
 const proofEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/proofing${suffix}`;

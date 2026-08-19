@@ -7,11 +7,16 @@ import { ArtworkApplicationService } from "../../src/modules/artwork/artworkAppl
 import type { ArtworkHttpDependencies } from "../../src/interfaces/http/artworkRoutes.js";
 import { PostgresArtworkTransactionRunner } from "./postgresArtworkTransaction.js";
 import { PostgresArtworkWorkspaceReads } from "./postgresArtworkWorkspaceReads.js";
+import { SupabaseArtworkBinaryStorage } from "./artworkBinaryStorage.js";
+import { ArtworkUploadService } from "./artworkUploadService.js";
 
-export type AuthenticatedArtworkRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; service?: ArtworkApplicationService }>;
+export type AuthenticatedArtworkRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; service?: ArtworkApplicationService; upload?: ArtworkUploadService }>;
 export type AuthenticatedArtworkRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
-export const composeAuthenticatedArtworkRuntime = (input: AuthenticatedArtworkRuntimeDependencies): AuthenticatedArtworkRuntime => ({
-  dependencies: { service: input.service ?? new ArtworkApplicationService(new PostgresArtworkTransactionRunner(input.pool)), workspace: new PostgresArtworkWorkspaceReads(input.pool), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
-  trustedHostMiddleware: input.trustedHostMiddleware,
-});
+export const composeAuthenticatedArtworkRuntime = (input: AuthenticatedArtworkRuntimeDependencies): AuthenticatedArtworkRuntime => {
+  const service = input.service ?? new ArtworkApplicationService(new PostgresArtworkTransactionRunner(input.pool));
+  return {
+    dependencies: { service, upload: input.upload ?? new ArtworkUploadService(service, new SupabaseArtworkBinaryStorage()), workspace: new PostgresArtworkWorkspaceReads(input.pool), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
+    trustedHostMiddleware: input.trustedHostMiddleware,
+  };
+};
