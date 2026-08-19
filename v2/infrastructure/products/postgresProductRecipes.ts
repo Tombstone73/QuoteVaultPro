@@ -67,6 +67,57 @@ export class PostgresProductRecipeReader {
   }
 }
 
+/** Bounded runtime read adapter. Recipe ownership stays with the Product Version. */
+export class PostgresProductWorkspaceRecipeReader {
+  constructor(private readonly pool: Pick<Pool, "query">) {}
+
+  private async read(organizationId: string, productId: string, status: "DRAFT" | "ACTIVE"): Promise<ProductRecipe | null> {
+    const version = (await this.pool.query<{ id: string; updated_at: Date }>(
+      `SELECT id,updated_at FROM pbv2_tree_versions
+       WHERE organization_id=$1 AND product_id=$2 AND status=$3
+       ORDER BY updated_at DESC,id DESC LIMIT 1`,
+      [organizationId, productId, status],
+    )).rows[0];
+    if (!version) return null;
+    const recipe = await new PostgresProductRecipeReader(this.pool).read(organizationId, productId, version.id);
+    // A Draft may legitimately begin with no recipe.  The canonical replace
+    // command owns creation, so expose a bounded empty Draft rather than
+    // forcing the browser to invent an identifier or treating it as missing.
+    return recipe ?? (status === "DRAFT" ? {
+      recipeId: "",
+      productId,
+      productVersionId: version.id,
+      draftUpdatedAt: version.updated_at.toISOString(),
+      lifecycle: "draft" as const,
+      components: [],
+    } : null);
+  }
+
+  readDraft(organizationId: string, productId: string): Promise<ProductRecipe | null> {
+    return this.read(organizationId, productId, "DRAFT");
+  }
+
+  readActive(organizationId: string, productId: string): Promise<ProductRecipe | null> {
+    return this.read(organizationId, productId, "ACTIVE");
+  }
+}
+
+export class PostgresProductMaterialSearch {
+  constructor(private readonly pool: Pick<Pool, "query">) {}
+
+  async list(organizationId: string, query: string) {
+    const term = query.trim();
+    const rows = await this.pool.query<{ id: string; name: string; sku: string | null; consumption_unit: "each" | "square_foot" | "linear_foot" | "sheet" | "roll" }>(
+      `SELECT id,name,sku,consumption_unit FROM materials
+       WHERE organization_id=$1 AND is_active=TRUE
+         AND ($2='' OR name ILIKE '%' || $2 || '%' OR COALESCE(sku,'') ILIKE '%' || $2 || '%')
+       ORDER BY name,id LIMIT 50`,
+      [organizationId, term],
+    );
+    return rows.rows.map((row) => ({ materialId: row.id, name: row.name, sku: row.sku, unit: row.consumption_unit }));
+  }
+}
+
 class Transaction implements ProductRecipeTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
 

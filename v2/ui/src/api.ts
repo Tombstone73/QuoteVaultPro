@@ -123,6 +123,9 @@ export type ProductDraftPricingMatrix=Readonly<{productId:string;draftVersionId:
 export type ProductDraftFormulaPricing=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";source:"embedded_editable"|"library_reference_read_only"|"matrix_plus_formula_read_only"|"unsupported_legacy";editable:boolean;unavailableReason?:string;formulaId?:string;formulaName?:string;expression:string;variables:Record<string,number>;supportedRuntimeVariables:readonly string[];warnings:readonly string[]}>;
 export type ProductDraftOptionPricingImpact=Readonly<{type:"fixed"|"per_item"|"per_square_foot"|"percent_of_base"|"multiplier";value:number}>;
 export type ProductDraftOptionPricing=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";options:readonly Readonly<{optionId:string;selectionKey:string;label:string;nodeImpact:ProductDraftOptionPricingImpact|null;choices:readonly Readonly<{choiceValue:string;label:string;impact:ProductDraftOptionPricingImpact|null;editable:boolean;readOnlyReason?:string}>[]}>[]}>;
+export type ProductRecipeComponent=Readonly<{componentId?:string;materialId:string;materialName?:string;materialSku?:string|null;quantity:string;unit:"each"|"square_foot"|"linear_foot"|"sheet"|"roll";quantityKind:"per_line"|"per_piece"|"per_area";condition?:Readonly<{type:"selected";optionId:string;choiceValue:string}>;replacesPbv2Compatibility?:boolean}>;
+export type ProductRecipe=Readonly<{recipeId:string;productId:string;productVersionId:string;draftUpdatedAt:string;lifecycle:"draft"|"active"|"historical";components:readonly ProductRecipeComponent[]}>;
+export type ProductMaterial=Readonly<{materialId:string;name:string;sku:string|null;unit:ProductRecipeComponent["unit"]}>;
 export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;versions:ProductVersionLifecycle }>;
 export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
 export type FulfillmentMethod = "pickup" | "shipment";
@@ -489,6 +492,7 @@ export type ProductionWorkProjection = Readonly<{
   completedGoodQuantity: number;
   unitQuantitySatisfied: boolean;
 }>;
+export type ProductionMaterialProjection=Readonly<{usage:Readonly<{productionWorkId:string;facts:readonly Readonly<{consumptionId:string;materialId:string;materialName:string;materialSku:string|null;requirementId?:string;quantity:string;unit:ProductRecipeComponent["unit"];kind:"consumed"|"waste"|"correction";correctsConsumptionId?:string;createdAt:string}>[];comparison:readonly Readonly<{materialId:string;materialName:string;materialSku:string|null;requirementId?:string;unit:ProductRecipeComponent["unit"];expectedQuantity:string;consumedQuantity:string;wasteQuantity:string;correctionQuantity:string;totalPhysicalUsageQuantity:string;varianceQuantity:string}>[]}>;inventory:Readonly<{balances:readonly Readonly<{materialId:string;materialName:string;materialSku:string|null;unit:ProductRecipeComponent["unit"];onHandQuantity:string;reservedQuantity:string;availableQuantity:string}>[];facts:readonly Readonly<{consumptionId:string;status:"applied"|"unapplied"|"blocked"|"retryable";lastFailureCode?:string;lastFailureMessage?:string;attemptCount:number}>[]}>}>;
 export type Selection = Readonly<{
   customerId?: string;
   contactId?: string;
@@ -909,6 +913,10 @@ export const productApi = {
   saveDraftFormula:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;expression:string;variables:Record<string,number>}>)=>request<ProductDraftFormulaPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
   draftOptionPricing:(organizationId:string,productId:string)=>request<ProductDraftOptionPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/option-pricing`),
   saveDraftOptionPricing:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;optionId:string;choiceValue?:string;impact:ProductDraftOptionPricingImpact|null}>)=>request<ProductDraftOptionPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/option-pricing`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
+  draftRecipe:(organizationId:string,productId:string)=>request<ProductRecipe>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/recipe`),
+  activeRecipe:(organizationId:string,productId:string)=>request<ProductRecipe>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/active/recipe`),
+  materials:(organizationId:string,productId:string,query="")=>request<{items:readonly ProductMaterial[]}>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/materials?q=${encodeURIComponent(query)}`),
+  saveDraftRecipe:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;components:readonly ProductRecipeComponent[]}>)=>request<ProductRecipe>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/recipe`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
 };
 export const financeApi = {
   overview: (organizationId: string) =>
@@ -1174,6 +1182,11 @@ export const productionApi = {
       businessRequestId,
       {},
     ),
+  materials:(org:string,workId:string)=>request<ProductionMaterialProjection>(productionEndpoint(org,`/works/${encodeURIComponent(workId)}/materials`)),
+  recordMaterial:(org:string,workId:string,attemptId:string,businessRequestId:string,input:Readonly<{materialId:string;requirementId?:string;quantity:string;unit:ProductRecipeComponent["unit"];kind:"consumed"|"waste"|"correction";correctsConsumptionId?:string}>)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/attempts/${encodeURIComponent(attemptId)}/materials`,businessRequestId,input as Record<string,unknown>),
+  reserveMaterials:(org:string,workId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/reservations`,businessRequestId,{}),
+  releaseUnusedMaterials:(org:string,workId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/release-unused`,businessRequestId,{}),
+  reconcileMaterial:(org:string,workId:string,consumptionId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/reconciliation/${encodeURIComponent(consumptionId)}`,businessRequestId,{}),
 };
 const fulfillmentEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/fulfillment${suffix}`;

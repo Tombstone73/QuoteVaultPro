@@ -32,6 +32,7 @@
     "v2:p7f:recipe-authoring:clone": "node scripts/runV2CloneChild.mjs v2:p7f:recipe-authoring",
     "v2:p7c:consumption": "tsx v2/scripts/runP7cMaterialConsumptionRehearsal.ts",
     "v2:p7d:inventory": "tsx v2/scripts/runP7dInventoryLedgerRehearsal.ts",
+    "v2:p7:runtime-http": "tsx v2/scripts/runP7RuntimeHttpRehearsal.ts",
     "v2:p6:production-parity": "tsx v2/scripts/runP6ProductionPricingParity.ts",
     "v2:p5:characterize": "tsx v2/scripts/characterizeP5OptionalSelections.ts",
     "v2:m1:compatibility-reads": "tsx v2/scripts/runM13CompatibilityReadRehearsal.ts",

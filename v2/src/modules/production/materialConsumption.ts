@@ -127,7 +127,22 @@ export const compareMaterialUsage = (
   }
   return [...groups.values()].map((group) => {
     const total = group.consumed + group.waste;
-    return Object.freeze({ ...group, expectedQuantity: print(group.expected), consumedQuantity: print(group.consumed), wasteQuantity: print(group.waste), correctionQuantity: print(group.corrections), totalPhysicalUsageQuantity: print(total), varianceQuantity: print(total - group.expected) });
+    // The accumulator intentionally uses bigint for exact physical quantities,
+    // but it is not part of the public projection.  Returning it leaked an
+    // unserializable value through the authenticated HTTP route.
+    return Object.freeze({
+      materialId: group.materialId,
+      materialName: group.materialName,
+      materialSku: group.materialSku,
+      unit: group.unit,
+      ...(group.requirementId ? { requirementId: group.requirementId } : {}),
+      expectedQuantity: print(group.expected),
+      consumedQuantity: print(group.consumed),
+      wasteQuantity: print(group.waste),
+      correctionQuantity: print(group.corrections),
+      totalPhysicalUsageQuantity: print(total),
+      varianceQuantity: print(total - group.expected),
+    });
   });
 };
 

@@ -29,6 +29,7 @@ describe("P7C immutable Production material consumption", () => {
     const facts = [base("fact-a", "consumed", "80"), base("fact-b", "consumed", "120"), base("fact-waste", "waste", "10"), base("fact-correction", "correction", "10", "fact-waste")];
     const projection = compareMaterialUsage([{ requirementId: brandedId<"OrderLineMaterialRequirementId">("requirement-a"), materialId: "material-a", materialName: "Grommets", materialSku: "GROM", quantity: "200", unit: "each" }], facts);
     expect(projection).toEqual([expect.objectContaining({ expectedQuantity: "200", consumedQuantity: "200", wasteQuantity: "0", correctionQuantity: "10", totalPhysicalUsageQuantity: "200", varianceQuantity: "0" })]);
+    expect(() => JSON.stringify(projection)).not.toThrow();
   });
 
   test("records partial usage once, replays exactly, and rejects invalid/cross-tenant input", async () => {

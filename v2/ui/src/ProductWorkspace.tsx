@@ -1,63 +1,2337 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { newBusinessRequestId, productApi, type ProductCatalogItem, type ProductDraftFormulaPricing, type ProductDraftGeneral, type ProductDraftGeneralRead, type ProductDraftOption, type ProductDraftOptionPricing, type ProductDraftOptionsRead, type ProductDraftPricing, type ProductDraftPricingMatrix, type ProductDraftPricingPreview, type ProductDraftPricingTier, type ProductVersionSummary, type ProductWorkspaceDetail } from "./api";
+import {
+  newBusinessRequestId,
+  productApi,
+  type ProductCatalogItem,
+  type ProductDraftFormulaPricing,
+  type ProductDraftGeneral,
+  type ProductDraftGeneralRead,
+  type ProductDraftOption,
+  type ProductDraftOptionPricing,
+  type ProductDraftOptionsRead,
+  type ProductDraftPricing,
+  type ProductDraftPricingMatrix,
+  type ProductDraftPricingPreview,
+  type ProductDraftPricingTier,
+  type ProductMaterial,
+  type ProductRecipe,
+  type ProductRecipeComponent,
+  type ProductVersionSummary,
+  type ProductWorkspaceDetail,
+} from "./api";
 
-const keys={list:(s:string,o:string,q:string,p:number)=>["v2",s,o,"products",q,p] as const,detail:(s:string,o:string,id:string)=>["v2",s,o,"products",id] as const,general:(s:string,o:string,id:string)=>["v2",s,o,"products",id,"draft-general"] as const,options:(s:string,o:string,id:string)=>["v2",s,o,"products",id,"draft-options"] as const,pricing:(s:string,o:string,id:string)=>["v2",s,o,"products",id,"draft-pricing"] as const,formula:(s:string,o:string,id:string)=>["v2",s,o,"products",id,"draft-formula"] as const,optionPricing:(s:string,o:string,id:string)=>["v2",s,o,"products",id,"draft-option-pricing"] as const};
-const dash="—";
-const initials=(value:string)=>value.split(/\s+/).filter(Boolean).slice(0,2).map(word=>word[0]).join("").toUpperCase()||"P";
-const date=(value?:string)=>value?new Intl.DateTimeFormat(undefined,{year:"numeric",month:"short",day:"numeric"}).format(new Date(value)):dash;
-const status=(product:ProductCatalogItem)=>product.lifecycle==="active_with_draft"?"Active · Draft":product.lifecycle==="draft"?"Draft":product.lifecycle==="inactive"?"Inactive":"Active";
-const basis=(product:ProductCatalogItem)=>product.measurementMode==="quantity_only"?"Quantity only":"Dimensions + quantity";
-const route=(product:ProductCatalogItem)=>!product.productType?dash:product.productType.routePolicy==="route_required"?`${product.productType.displayName} · Route required`:product.productType.routePolicy==="no_route"?`${product.productType.displayName} · No route`:`${product.productType.displayName} · Unconfigured`;
+const keys = {
+  list: (s: string, o: string, q: string, p: number) =>
+    ["v2", s, o, "products", q, p] as const,
+  detail: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id] as const,
+  general: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-general"] as const,
+  options: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-options"] as const,
+  pricing: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-pricing"] as const,
+  formula: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-formula"] as const,
+  optionPricing: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-option-pricing"] as const,
+  recipe: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-recipe"] as const,
+};
+const dash = "—";
+const initials = (value: string) =>
+  value
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase() || "P";
+const date = (value?: string) =>
+  value
+    ? new Intl.DateTimeFormat(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      }).format(new Date(value))
+    : dash;
+const status = (product: ProductCatalogItem) =>
+  product.lifecycle === "active_with_draft"
+    ? "Active · Draft"
+    : product.lifecycle === "draft"
+      ? "Draft"
+      : product.lifecycle === "inactive"
+        ? "Inactive"
+        : "Active";
+const basis = (product: ProductCatalogItem) =>
+  product.measurementMode === "quantity_only"
+    ? "Quantity only"
+    : "Dimensions + quantity";
+const route = (product: ProductCatalogItem) =>
+  !product.productType
+    ? dash
+    : product.productType.routePolicy === "route_required"
+      ? `${product.productType.displayName} · Route required`
+      : product.productType.routePolicy === "no_route"
+        ? `${product.productType.displayName} · No route`
+        : `${product.productType.displayName} · Unconfigured`;
 
-export const ProductWorkspace=({organizationId,sessionScope,productId,canView,canEdit,openProduct,backToCatalog}:Readonly<{organizationId:string;sessionScope:string;productId:string;canView:boolean;canEdit:boolean;openProduct:(id:string)=>void;backToCatalog:()=>void}>)=>{
-  const[query,setQuery]=useState(""),[page,setPage]=useState(1),[editing,setEditing]=useState(()=>typeof window!=="undefined"&&new URLSearchParams(window.location.search).get("draft")==="1");
-  const list=useQuery({queryKey:keys.list(sessionScope,organizationId,query,page),queryFn:()=>productApi.list(organizationId,query,page),enabled:Boolean(organizationId&&sessionScope&&canView&&!productId)});
-  const detail=useQuery({queryKey:keys.detail(sessionScope,organizationId,productId),queryFn:()=>productApi.get(organizationId,productId),enabled:Boolean(organizationId&&sessionScope&&canView&&productId)});
-  if(!organizationId||!canView)return <section className="v2-products"><p className="v2-proof-empty">Products are unavailable.</p></section>;
-  if(productId)return <Detail state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} editing={editing} openDraft={()=>{window.history.pushState({},"",`/products/${encodeURIComponent(productId)}?draft=1`);setEditing(true);}} closeDraft={()=>{window.history.pushState({},"",`/products/${encodeURIComponent(productId)}`);setEditing(false);}} back={backToCatalog}/>;
-  return <section className="v2-products" aria-label="Products"><header className="v2-products-heading"><div><h1>Products</h1><p>{list.data?`${list.data.total} configurable product${list.data.total===1?"":"s"}`:"Products"}</p></div></header><div className="v2-products-tools"><label><span>⌕</span><input aria-label="Search Products" value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}} placeholder="Product or category…"/></label></div><div className="v2-products-table-wrap"><table className="v2-products-table"><thead><tr><th>Product</th><th>Category</th><th>Pricing</th><th>Route</th><th>Basis</th><th>Primary Material</th><th>Status</th></tr></thead><tbody>{list.isLoading&&<tr><td colSpan={7}>Loading Products…</td></tr>}{list.isSuccess&&!list.data.items.length&&<tr><td colSpan={7}>No Products match this search.</td></tr>}{list.data?.items.map(product=><tr key={product.productId}><td><button className="v2-products-link" type="button" onClick={()=>openProduct(product.productId)}><i>{initials(product.displayName)}</i><b>{product.displayName}</b></button></td><td>{product.category??dash}</td><td>{product.pricingSummary}</td><td>{route(product)}</td><td>{basis(product)}</td><td>{product.primaryMaterialName??dash}</td><td><em className={`v2-product-status ${product.lifecycle}`}>{status(product)}</em></td></tr>)}</tbody></table></div>{list.data&&list.data.total>list.data.pageSize&&<nav className="v2-products-pagination"><span>Page {list.data.page}</span><button disabled={page===1} onClick={()=>setPage(page-1)}>Previous</button><button disabled={!list.data.hasMore} onClick={()=>setPage(page+1)}>Next</button></nav>}</section>;
+export const ProductWorkspace = ({
+  organizationId,
+  sessionScope,
+  productId,
+  canView,
+  canEdit,
+  openProduct,
+  backToCatalog,
+}: Readonly<{
+  organizationId: string;
+  sessionScope: string;
+  productId: string;
+  canView: boolean;
+  canEdit: boolean;
+  openProduct: (id: string) => void;
+  backToCatalog: () => void;
+}>) => {
+  const [query, setQuery] = useState(""),
+    [page, setPage] = useState(1),
+    [editing, setEditing] = useState(
+      () =>
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("draft") === "1",
+    );
+  const list = useQuery({
+    queryKey: keys.list(sessionScope, organizationId, query, page),
+    queryFn: () => productApi.list(organizationId, query, page),
+    enabled: Boolean(organizationId && sessionScope && canView && !productId),
+  });
+  const detail = useQuery({
+    queryKey: keys.detail(sessionScope, organizationId, productId),
+    queryFn: () => productApi.get(organizationId, productId),
+    enabled: Boolean(organizationId && sessionScope && canView && productId),
+  });
+  const client = useQueryClient();
+  const createDraft = useMutation({
+    mutationFn: (product: ProductWorkspaceDetail) =>
+      productApi.createDraft(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        product.versions.active?.updatedAt ?? "",
+      ),
+    onSuccess: () =>
+      client.invalidateQueries({
+        queryKey: keys.detail(sessionScope, organizationId, productId),
+      }),
+  });
+  if (!organizationId || !canView)
+    return (
+      <section className="v2-products">
+        <p className="v2-proof-empty">Products are unavailable.</p>
+      </section>
+    );
+  if (productId)
+    return (
+      <Detail
+        state={detail}
+        canEdit={canEdit}
+        organizationId={organizationId}
+        sessionScope={sessionScope}
+        editing={editing}
+        creatingDraft={createDraft.isPending}
+        createDraft={(product) => createDraft.mutate(product)}
+        openDraft={() => {
+          window.history.pushState(
+            {},
+            "",
+            `/products/${encodeURIComponent(productId)}?draft=1`,
+          );
+          setEditing(true);
+        }}
+        closeDraft={() => {
+          window.history.pushState(
+            {},
+            "",
+            `/products/${encodeURIComponent(productId)}`,
+          );
+          setEditing(false);
+        }}
+        back={backToCatalog}
+      />
+    );
+  return (
+    <section className="v2-products" aria-label="Products">
+      <header className="v2-products-heading">
+        <div>
+          <h1>Products</h1>
+          <p>
+            {list.data
+              ? `${list.data.total} configurable product${list.data.total === 1 ? "" : "s"}`
+              : "Products"}
+          </p>
+        </div>
+      </header>
+      <div className="v2-products-tools">
+        <label>
+          <span>⌕</span>
+          <input
+            aria-label="Search Products"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setPage(1);
+            }}
+            placeholder="Product or category…"
+          />
+        </label>
+      </div>
+      <div className="v2-products-table-wrap">
+        <table className="v2-products-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Category</th>
+              <th>Pricing</th>
+              <th>Route</th>
+              <th>Basis</th>
+              <th>Primary Material</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.isLoading && (
+              <tr>
+                <td colSpan={7}>Loading Products…</td>
+              </tr>
+            )}
+            {list.isSuccess && !list.data.items.length && (
+              <tr>
+                <td colSpan={7}>No Products match this search.</td>
+              </tr>
+            )}
+            {list.data?.items.map((product) => (
+              <tr key={product.productId}>
+                <td>
+                  <button
+                    className="v2-products-link"
+                    type="button"
+                    onClick={() => openProduct(product.productId)}
+                  >
+                    <i>{initials(product.displayName)}</i>
+                    <b>{product.displayName}</b>
+                  </button>
+                </td>
+                <td>{product.category ?? dash}</td>
+                <td>{product.pricingSummary}</td>
+                <td>{route(product)}</td>
+                <td>{basis(product)}</td>
+                <td>{product.primaryMaterialName ?? dash}</td>
+                <td>
+                  <em className={`v2-product-status ${product.lifecycle}`}>
+                    {status(product)}
+                  </em>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {list.data && list.data.total > list.data.pageSize && (
+        <nav className="v2-products-pagination">
+          <span>Page {list.data.page}</span>
+          <button disabled={page === 1} onClick={() => setPage(page - 1)}>
+            Previous
+          </button>
+          <button
+            disabled={!list.data.hasMore}
+            onClick={() => setPage(page + 1)}
+          >
+            Next
+          </button>
+        </nav>
+      )}
+    </section>
+  );
 };
 
-const Field=({label,value}:{label:string;value:string})=><div><dt>{label}</dt><dd>{value}</dd></div>;
-const VersionRow=({version}:{version:ProductVersionSummary})=><li><span><em className={`v2-product-status ${version.status}`}>{version.status[0].toUpperCase()+version.status.slice(1)}</em>{version.publishedAt?`Published ${date(version.publishedAt)}`:`Updated ${date(version.updatedAt)}`}</span><small>Created {date(version.createdAt)}</small></li>;
-const Detail=({state,canEdit,organizationId,sessionScope,editing,openDraft,closeDraft,back}:{state:ReturnType<typeof useQuery<ProductWorkspaceDetail>>;canEdit:boolean;organizationId:string;sessionScope:string;editing:boolean;openDraft:()=>void;closeDraft:()=>void;back:()=>void})=>{
-  if(state.isLoading)return <section className="v2-products"><p className="v2-proof-empty">Loading Product…</p></section>;
-  if(state.isError||!state.data)return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">Product not found.</p></section>;
-  const product=state.data;if(editing)return <Builder product={product} organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} back={closeDraft}/>;
-  const versions=product.versions;return <section className="v2-products v2-product-detail"><button className="v2-products-back" onClick={back}>← Products</button><header className="v2-products-heading"><div><h1>{product.displayName}</h1><p>{[product.category,product.productType?.displayName].filter(Boolean).join(" · ")||"Product"}</p></div><em className={`v2-product-status ${product.lifecycle}`}>{status(product)}</em></header><div className="v2-product-detail-grid"><article><h2>Product details</h2><dl><Field label="Measurement" value={basis(product)}/><Field label="Workflow" value={product.workflowIntent==="service_fee"?"Service / fee":product.workflowIntent==="fulfillment_only"?"Fulfillment only":"Standard production"}/><Field label="Configurable options" value={product.configurableOptionCount?`${product.configurableOptionCount} option${product.configurableOptionCount===1?"":"s"}`:dash}/></dl></article><article><h2>Pricing</h2><dl><Field label="Method" value={product.pricingSummary}/><Field label="Current version" value={product.activeVersion?.label??dash}/><Field label="Draft" value={product.hasDraft?"Available":dash}/></dl></article><article><h2>Production policy</h2><dl><Field label="Product Type" value={product.productType?.displayName??dash}/><Field label="Route policy" value={product.productType?.routePolicy==="route_required"?"Route required":product.productType?.routePolicy==="no_route"?"No route":product.productType?"Unconfigured":dash}/><Field label="Proof required" value={product.requiresProofApproval?"Yes":"No"}/><Field label="Production required" value={product.requiresProductionJob?"Yes":"No"}/></dl></article><article><h2>Primary Material</h2><dl><Field label="Material" value={product.primaryMaterialName??dash}/></dl></article><article className="v2-product-versions"><header><h2>Versions</h2>{canEdit&&versions.draft&&<button type="button" onClick={openDraft}>Edit Draft</button>}</header><dl><Field label="Active" value={versions.active?`Published ${date(versions.active.publishedAt??versions.active.updatedAt)}`:dash}/><Field label="Draft" value={versions.draft?`Updated ${date(versions.draft.updatedAt)}`:dash}/></dl>{versions.history.length>0&&<><h3>History</h3><ul>{versions.history.map((version,index)=><VersionRow key={`${version.status}-${version.createdAt}-${index}`} version={version}/>)}</ul></>}</article></div></section>;
+const Field = ({ label, value }: { label: string; value: string }) => (
+  <div>
+    <dt>{label}</dt>
+    <dd>{value}</dd>
+  </div>
+);
+const VersionRow = ({ version }: { version: ProductVersionSummary }) => (
+  <li>
+    <span>
+      <em className={`v2-product-status ${version.status}`}>
+        {version.status[0].toUpperCase() + version.status.slice(1)}
+      </em>
+      {version.publishedAt
+        ? `Published ${date(version.publishedAt)}`
+        : `Updated ${date(version.updatedAt)}`}
+    </span>
+    <small>Created {date(version.createdAt)}</small>
+  </li>
+);
+const Detail = ({
+  state,
+  canEdit,
+  organizationId,
+  sessionScope,
+  editing,
+  creatingDraft,
+  createDraft,
+  openDraft,
+  closeDraft,
+  back,
+}: {
+  state: ReturnType<typeof useQuery<ProductWorkspaceDetail>>;
+  canEdit: boolean;
+  organizationId: string;
+  sessionScope: string;
+  editing: boolean;
+  creatingDraft: boolean;
+  createDraft: (product: ProductWorkspaceDetail) => void;
+  openDraft: () => void;
+  closeDraft: () => void;
+  back: () => void;
+}) => {
+  if (state.isLoading)
+    return (
+      <section className="v2-products">
+        <p className="v2-proof-empty">Loading Product…</p>
+      </section>
+    );
+  if (state.isError || !state.data)
+    return (
+      <section className="v2-products">
+        <button className="v2-products-back" onClick={back}>
+          ← Products
+        </button>
+        <p className="v2-proof-empty">Product not found.</p>
+      </section>
+    );
+  const product = state.data;
+  if (editing)
+    return (
+      <Builder
+        product={product}
+        organizationId={organizationId}
+        sessionScope={sessionScope}
+        canEdit={canEdit}
+        back={closeDraft}
+      />
+    );
+  const versions = product.versions;
+  return (
+    <section className="v2-products v2-product-detail">
+      <button className="v2-products-back" onClick={back}>
+        ← Products
+      </button>
+      <header className="v2-products-heading">
+        <div>
+          <h1>{product.displayName}</h1>
+          <p>
+            {[product.category, product.productType?.displayName]
+              .filter(Boolean)
+              .join(" · ") || "Product"}
+          </p>
+        </div>
+        <em className={`v2-product-status ${product.lifecycle}`}>
+          {status(product)}
+        </em>
+      </header>
+      <div className="v2-product-detail-grid">
+        <article>
+          <h2>Product details</h2>
+          <dl>
+            <Field label="Measurement" value={basis(product)} />
+            <Field
+              label="Workflow"
+              value={
+                product.workflowIntent === "service_fee"
+                  ? "Service / fee"
+                  : product.workflowIntent === "fulfillment_only"
+                    ? "Fulfillment only"
+                    : "Standard production"
+              }
+            />
+            <Field
+              label="Configurable options"
+              value={
+                product.configurableOptionCount
+                  ? `${product.configurableOptionCount} option${product.configurableOptionCount === 1 ? "" : "s"}`
+                  : dash
+              }
+            />
+          </dl>
+        </article>
+        <article>
+          <h2>Pricing</h2>
+          <dl>
+            <Field label="Method" value={product.pricingSummary} />
+            <Field
+              label="Current version"
+              value={product.activeVersion?.label ?? dash}
+            />
+            <Field
+              label="Draft"
+              value={product.hasDraft ? "Available" : dash}
+            />
+          </dl>
+        </article>
+        <article>
+          <h2>Production policy</h2>
+          <dl>
+            <Field
+              label="Product Type"
+              value={product.productType?.displayName ?? dash}
+            />
+            <Field
+              label="Route policy"
+              value={
+                product.productType?.routePolicy === "route_required"
+                  ? "Route required"
+                  : product.productType?.routePolicy === "no_route"
+                    ? "No route"
+                    : product.productType
+                      ? "Unconfigured"
+                      : dash
+              }
+            />
+            <Field
+              label="Proof required"
+              value={product.requiresProofApproval ? "Yes" : "No"}
+            />
+            <Field
+              label="Production required"
+              value={product.requiresProductionJob ? "Yes" : "No"}
+            />
+          </dl>
+        </article>
+        <article>
+          <h2>Primary Material</h2>
+          <dl>
+            <Field
+              label="Material"
+              value={product.primaryMaterialName ?? dash}
+            />
+          </dl>
+        </article>
+        <article className="v2-product-versions">
+          <header>
+            <h2>Versions</h2>
+            {canEdit && versions.draft ? (
+              <button type="button" onClick={openDraft}>
+                Edit Draft
+              </button>
+            ) : canEdit && versions.active ? (
+              <button
+                type="button"
+                disabled={creatingDraft}
+                onClick={() => createDraft(product)}
+              >
+                {creatingDraft ? "Creating Draft…" : "Create Draft"}
+              </button>
+            ) : null}
+          </header>
+          <dl>
+            <Field
+              label="Active"
+              value={
+                versions.active
+                  ? `Published ${date(versions.active.publishedAt ?? versions.active.updatedAt)}`
+                  : dash
+              }
+            />
+            <Field
+              label="Draft"
+              value={
+                versions.draft
+                  ? `Updated ${date(versions.draft.updatedAt)}`
+                  : dash
+              }
+            />
+          </dl>
+          {versions.history.length > 0 && (
+            <>
+              <h3>History</h3>
+              <ul>
+                {versions.history.map((version, index) => (
+                  <VersionRow
+                    key={`${version.status}-${version.createdAt}-${index}`}
+                    version={version}
+                  />
+                ))}
+              </ul>
+            </>
+          )}
+        </article>
+      </div>
+    </section>
+  );
 };
 
-const Builder=({product,organizationId,sessionScope,canEdit,back}:{product:ProductWorkspaceDetail;organizationId:string;sessionScope:string;canEdit:boolean;back:()=>void})=>{
-  const client=useQueryClient(),[tab,setTab]=useState<"general"|"options"|"pricing">("general");
-  const general=useQuery({queryKey:keys.general(sessionScope,organizationId,product.productId),queryFn:()=>productApi.draftGeneral(organizationId,product.productId)});
-  const options=useQuery({queryKey:keys.options(sessionScope,organizationId,product.productId),queryFn:()=>productApi.draftOptions(organizationId,product.productId),enabled:tab==="options"||tab==="pricing"});
-  const pricing=useQuery({queryKey:keys.pricing(sessionScope,organizationId,product.productId),queryFn:()=>productApi.draftPricing(organizationId,product.productId),enabled:tab==="pricing"});
-  const matrix=useQuery({queryKey:[...keys.pricing(sessionScope,organizationId,product.productId),"matrix"],queryFn:()=>productApi.draftPricingMatrix(organizationId,product.productId),enabled:tab==="pricing"});
-  const optionPricing=useQuery({queryKey:keys.optionPricing(sessionScope,organizationId,product.productId),queryFn:()=>productApi.draftOptionPricing(organizationId,product.productId),enabled:tab==="options",retry:false});
-  const formula=useQuery({queryKey:keys.formula(sessionScope,organizationId,product.productId),queryFn:()=>productApi.draftFormula(organizationId,product.productId),enabled:tab==="pricing",retry:false});
-  const saveGeneral=useMutation({mutationFn:(value:ProductDraftGeneralRead)=>productApi.saveDraftGeneral(organizationId,product.productId,newBusinessRequestId(),{draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,general:value.general}),onSuccess:value=>client.setQueryData(keys.general(sessionScope,organizationId,product.productId),value)});
-  const saveOptions=useMutation({mutationFn:(value:ProductDraftOptionsRead)=>productApi.saveDraftOptions(organizationId,product.productId,newBusinessRequestId(),{draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,options:value.options}),onSuccess:value=>client.setQueryData(keys.options(sessionScope,organizationId,product.productId),value)});
-  const savePricing=useMutation({mutationFn:(value:ProductDraftPricing)=>productApi.saveDraftPricing(organizationId,product.productId,newBusinessRequestId(),{draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,base:value.base,tierBasis:value.tierBasis,tiers:value.tiers}),onSuccess:value=>client.setQueryData(keys.pricing(sessionScope,organizationId,product.productId),value)});
-  const saveMatrix=useMutation({mutationFn:(value:ProductDraftPricingMatrix)=>productApi.saveDraftPricingMatrix(organizationId,product.productId,newBusinessRequestId(),{draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,matrixId:value.matrixId,pricingUnit:value.pricingUnit,dimensions:value.dimensions.map(dimension=>dimension.selectionKey),rows:value.rows}),onSuccess:value=>client.setQueryData([...keys.pricing(sessionScope,organizationId,product.productId),"matrix"],value)});
-  const saveFormula=useMutation({mutationFn:(value:ProductDraftFormulaPricing)=>productApi.saveDraftFormula(organizationId,product.productId,newBusinessRequestId(),{draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,expression:value.expression,variables:value.variables}),onSuccess:value=>client.setQueryData(keys.formula(sessionScope,organizationId,product.productId),value)});
-  const saveOptionPricing=useMutation({mutationFn:(value:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;optionId:string;choiceValue?:string;impact:ProductDraftOptionPricing["options"][number]["choices"][number]["impact"]}>)=>productApi.saveDraftOptionPricing(organizationId,product.productId,newBusinessRequestId(),value),onSuccess:value=>client.setQueryData(keys.optionPricing(sessionScope,organizationId,product.productId),value)});
-  if(!general.data)return <section className="v2-products"><p className="v2-proof-empty">Loading Draft…</p></section>;
-  const busy=saveGeneral.isPending||saveOptions.isPending||savePricing.isPending||saveMatrix.isPending||saveFormula.isPending;const error=(saveGeneral.error??saveOptions.error??savePricing.error??saveMatrix.error??saveFormula.error) as {message?:string}|null;const pricingForm=formula.data?.editable?"product-draft-formula":tab==="pricing"?"product-draft-pricing":undefined;
-  return <section className="v2-products v2-product-builder"><header><button className="v2-products-back" onClick={back}>← Product</button><div><h1>Product Builder</h1><p>{product.displayName} · Draft</p></div><button type="submit" form={tab==="general"?"product-draft-general":tab==="options"?"product-draft-options":pricingForm} disabled={!canEdit||busy}>{busy?"Saving…":"Save Draft"}</button></header><nav aria-label="Product Builder steps"><button className={tab==="general"?"active":""} onClick={()=>setTab("general")}>1 General</button><button className={tab==="options"?"active":""} onClick={()=>setTab("options")}>2 Options</button><button className={tab==="pricing"?"active":""} onClick={()=>setTab("pricing")}>3 Pricing</button></nav>{error&&<p className="v2-product-version-message">{error.message??"Unable to save Draft."}</p>}{tab==="general"?<GeneralForm value={general.data} disabled={!canEdit||busy} onSave={value=>saveGeneral.mutate(value)}/>:tab==="options"?(options.data?<><OptionsForm value={options.data} disabled={!canEdit||busy} onSave={value=>saveOptions.mutate(value)}/>{optionPricing.data&&<OptionPricingForm value={optionPricing.data} disabled={!canEdit||busy} onSave={saveOptionPricing.mutate}/>}</>:<p className="v2-proof-empty">Loading options…</p>):formula.data?<FormulaForm value={formula.data} disabled={!canEdit||busy} onSave={value=>saveFormula.mutate(value)} organizationId={organizationId} productId={product.productId}/>:matrix.data?<MatrixForm value={matrix.data} measurementMode={pricing.data?.measurementMode??"quantity_only"} disabled={!canEdit||busy} onSave={value=>saveMatrix.mutate(value)} organizationId={organizationId} productId={product.productId}/>:pricing.data?<PricingForm value={pricing.data} options={options.data?.options??[]} disabled={!canEdit||busy} onSave={value=>savePricing.mutate(value)} organizationId={organizationId} productId={product.productId}/>:<p className="v2-proof-empty">Loading pricing…</p>}</section>;
+const Builder = ({
+  product,
+  organizationId,
+  sessionScope,
+  canEdit,
+  back,
+}: {
+  product: ProductWorkspaceDetail;
+  organizationId: string;
+  sessionScope: string;
+  canEdit: boolean;
+  back: () => void;
+}) => {
+  const client = useQueryClient(),
+    [tab, setTab] = useState<"general" | "options" | "pricing" | "materials">(
+      "general",
+    );
+  const general = useQuery({
+    queryKey: keys.general(sessionScope, organizationId, product.productId),
+    queryFn: () => productApi.draftGeneral(organizationId, product.productId),
+  });
+  const options = useQuery({
+    queryKey: keys.options(sessionScope, organizationId, product.productId),
+    queryFn: () => productApi.draftOptions(organizationId, product.productId),
+    enabled: tab === "options" || tab === "pricing" || tab === "materials",
+  });
+  const pricing = useQuery({
+    queryKey: keys.pricing(sessionScope, organizationId, product.productId),
+    queryFn: () => productApi.draftPricing(organizationId, product.productId),
+    enabled: tab === "pricing",
+  });
+  const matrix = useQuery({
+    queryKey: [
+      ...keys.pricing(sessionScope, organizationId, product.productId),
+      "matrix",
+    ],
+    queryFn: () =>
+      productApi.draftPricingMatrix(organizationId, product.productId),
+    enabled: tab === "pricing",
+  });
+  const optionPricing = useQuery({
+    queryKey: keys.optionPricing(
+      sessionScope,
+      organizationId,
+      product.productId,
+    ),
+    queryFn: () =>
+      productApi.draftOptionPricing(organizationId, product.productId),
+    enabled: tab === "options",
+    retry: false,
+  });
+  const formula = useQuery({
+    queryKey: keys.formula(sessionScope, organizationId, product.productId),
+    queryFn: () => productApi.draftFormula(organizationId, product.productId),
+    enabled: tab === "pricing",
+    retry: false,
+  });
+  const recipe = useQuery({
+    queryKey: keys.recipe(sessionScope, organizationId, product.productId),
+    queryFn: () => productApi.draftRecipe(organizationId, product.productId),
+    enabled: tab === "materials",
+    retry: false,
+  });
+  const materials = useQuery({
+    queryKey: [
+      ...keys.recipe(sessionScope, organizationId, product.productId),
+      "materials",
+    ],
+    queryFn: () => productApi.materials(organizationId, product.productId),
+    enabled: tab === "materials",
+  });
+  const saveGeneral = useMutation({
+    mutationFn: (value: ProductDraftGeneralRead) =>
+      productApi.saveDraftGeneral(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: value.draftVersionId,
+          expectedDraftUpdatedAt: value.draftUpdatedAt,
+          general: value.general,
+        },
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        keys.general(sessionScope, organizationId, product.productId),
+        value,
+      ),
+  });
+  const saveOptions = useMutation({
+    mutationFn: (value: ProductDraftOptionsRead) =>
+      productApi.saveDraftOptions(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: value.draftVersionId,
+          expectedDraftUpdatedAt: value.draftUpdatedAt,
+          options: value.options,
+        },
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        keys.options(sessionScope, organizationId, product.productId),
+        value,
+      ),
+  });
+  const savePricing = useMutation({
+    mutationFn: (value: ProductDraftPricing) =>
+      productApi.saveDraftPricing(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: value.draftVersionId,
+          expectedDraftUpdatedAt: value.draftUpdatedAt,
+          base: value.base,
+          tierBasis: value.tierBasis,
+          tiers: value.tiers,
+        },
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        keys.pricing(sessionScope, organizationId, product.productId),
+        value,
+      ),
+  });
+  const saveMatrix = useMutation({
+    mutationFn: (value: ProductDraftPricingMatrix) =>
+      productApi.saveDraftPricingMatrix(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: value.draftVersionId,
+          expectedDraftUpdatedAt: value.draftUpdatedAt,
+          matrixId: value.matrixId,
+          pricingUnit: value.pricingUnit,
+          dimensions: value.dimensions.map(
+            (dimension) => dimension.selectionKey,
+          ),
+          rows: value.rows,
+        },
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        [
+          ...keys.pricing(sessionScope, organizationId, product.productId),
+          "matrix",
+        ],
+        value,
+      ),
+  });
+  const saveFormula = useMutation({
+    mutationFn: (value: ProductDraftFormulaPricing) =>
+      productApi.saveDraftFormula(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: value.draftVersionId,
+          expectedDraftUpdatedAt: value.draftUpdatedAt,
+          expression: value.expression,
+          variables: value.variables,
+        },
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        keys.formula(sessionScope, organizationId, product.productId),
+        value,
+      ),
+  });
+  const saveOptionPricing = useMutation({
+    mutationFn: (
+      value: Readonly<{
+        draftVersionId: string;
+        expectedDraftUpdatedAt: string;
+        optionId: string;
+        choiceValue?: string;
+        impact: ProductDraftOptionPricing["options"][number]["choices"][number]["impact"];
+      }>,
+    ) =>
+      productApi.saveDraftOptionPricing(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        value,
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        keys.optionPricing(sessionScope, organizationId, product.productId),
+        value,
+      ),
+  });
+  const saveRecipe = useMutation({
+    mutationFn: (value: ProductRecipe) =>
+      productApi.saveDraftRecipe(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: value.productVersionId,
+          expectedDraftUpdatedAt: value.draftUpdatedAt,
+          components: value.components,
+        },
+      ),
+    onSuccess: (value) =>
+      client.setQueryData(
+        keys.recipe(sessionScope, organizationId, product.productId),
+        value,
+      ),
+  });
+  if (!general.data)
+    return (
+      <section className="v2-products">
+        <p className="v2-proof-empty">Loading Draft…</p>
+      </section>
+    );
+  const busy =
+    saveGeneral.isPending ||
+    saveOptions.isPending ||
+    savePricing.isPending ||
+    saveMatrix.isPending ||
+    saveFormula.isPending ||
+    saveRecipe.isPending;
+  const error = (saveGeneral.error ??
+    saveOptions.error ??
+    savePricing.error ??
+    saveMatrix.error ??
+    saveFormula.error ??
+    saveRecipe.error) as { message?: string } | null;
+  const pricingForm = formula.data?.editable
+    ? "product-draft-formula"
+    : tab === "pricing"
+      ? "product-draft-pricing"
+      : tab === "materials"
+        ? "product-draft-recipe"
+        : undefined;
+  return (
+    <section className="v2-products v2-product-builder">
+      <header>
+        <button className="v2-products-back" onClick={back}>
+          ← Product
+        </button>
+        <div>
+          <h1>Product Builder</h1>
+          <p>{product.displayName} · Draft</p>
+        </div>
+        <button
+          type="submit"
+          form={
+            tab === "general"
+              ? "product-draft-general"
+              : tab === "options"
+                ? "product-draft-options"
+                : pricingForm
+          }
+          disabled={!canEdit || busy}
+        >
+          {busy ? "Saving…" : "Save Draft"}
+        </button>
+      </header>
+      <nav aria-label="Product Builder steps">
+        <button
+          className={tab === "general" ? "active" : ""}
+          onClick={() => setTab("general")}
+        >
+          1 General
+        </button>
+        <button
+          className={tab === "options" ? "active" : ""}
+          onClick={() => setTab("options")}
+        >
+          2 Options
+        </button>
+        <button
+          className={tab === "pricing" ? "active" : ""}
+          onClick={() => setTab("pricing")}
+        >
+          3 Pricing
+        </button>
+        <button
+          className={tab === "materials" ? "active" : ""}
+          onClick={() => setTab("materials")}
+        >
+          4 Materials
+        </button>
+      </nav>
+      {error && (
+        <p className="v2-product-version-message">
+          {error.message ?? "Unable to save Draft."}
+        </p>
+      )}
+      {tab === "general" ? (
+        <GeneralForm
+          value={general.data}
+          disabled={!canEdit || busy}
+          onSave={(value) => saveGeneral.mutate(value)}
+        />
+      ) : tab === "options" ? (
+        options.data ? (
+          <>
+            <OptionsForm
+              value={options.data}
+              disabled={!canEdit || busy}
+              onSave={(value) => saveOptions.mutate(value)}
+            />
+            {optionPricing.data && (
+              <OptionPricingForm
+                value={optionPricing.data}
+                disabled={!canEdit || busy}
+                onSave={saveOptionPricing.mutate}
+              />
+            )}
+          </>
+        ) : (
+          <p className="v2-proof-empty">Loading options…</p>
+        )
+      ) : tab === "materials" ? (
+        recipe.data ? (
+          <RecipeForm
+            value={recipe.data}
+            materials={materials.data?.items ?? []}
+            options={options.data?.options ?? []}
+            disabled={!canEdit || busy}
+            onSave={(value) => saveRecipe.mutate(value)}
+          />
+        ) : recipe.isError ? (
+          <p className="v2-proof-empty">
+            A recipe is not available for this Draft.
+          </p>
+        ) : (
+          <p className="v2-proof-empty">Loading materialsâ€¦</p>
+        )
+      ) : formula.data ? (
+        <FormulaForm
+          value={formula.data}
+          disabled={!canEdit || busy}
+          onSave={(value) => saveFormula.mutate(value)}
+          organizationId={organizationId}
+          productId={product.productId}
+        />
+      ) : matrix.data ? (
+        <MatrixForm
+          value={matrix.data}
+          measurementMode={pricing.data?.measurementMode ?? "quantity_only"}
+          disabled={!canEdit || busy}
+          onSave={(value) => saveMatrix.mutate(value)}
+          organizationId={organizationId}
+          productId={product.productId}
+        />
+      ) : pricing.data ? (
+        <PricingForm
+          value={pricing.data}
+          options={options.data?.options ?? []}
+          disabled={!canEdit || busy}
+          onSave={(value) => savePricing.mutate(value)}
+          organizationId={organizationId}
+          productId={product.productId}
+        />
+      ) : (
+        <p className="v2-proof-empty">Loading pricing…</p>
+      )}
+    </section>
+  );
 };
 
-const GeneralForm=({value,disabled,onSave}:{value:ProductDraftGeneralRead;disabled:boolean;onSave:(value:ProductDraftGeneralRead)=>void})=>{const[general,setGeneral]=useState(value.general);const change=<K extends keyof ProductDraftGeneral>(key:K,next:ProductDraftGeneral[K])=>setGeneral(current=>({...current,[key]:next}));return <form id="product-draft-general" className="v2-product-general" onSubmit={event=>{event.preventDefault();onSave({...value,general});}}><h2>General</h2><label>Product name<input disabled={disabled} value={general.displayName} onChange={event=>change("displayName",event.target.value)}/></label><label>Category<input disabled={disabled} value={general.category??""} onChange={event=>change("category",event.target.value||null)}/></label><label className="wide">Customer-facing description<textarea disabled={disabled} value={general.description??""} onChange={event=>change("description",event.target.value||null)}/></label><label>Measurement<select disabled={disabled} value={general.measurementMode} onChange={event=>change("measurementMode",event.target.value as ProductDraftGeneral["measurementMode"])}><option value="dimensions_required">Dimensions + quantity</option><option value="quantity_only">Quantity only</option></select></label><label>Workflow<select disabled={disabled} value={general.workflowIntent} onChange={event=>change("workflowIntent",event.target.value as ProductDraftGeneral["workflowIntent"])}><option value="standard_production">Standard production</option><option value="fulfillment_only">Fulfillment only</option><option value="service_fee">Service / fee</option></select></label><label className="toggle">Show in customer storefront<input type="checkbox" disabled={disabled} checked={general.storefrontVisible} onChange={event=>change("storefrontVisible",event.target.checked)}/></label><label className="toggle">Requires proof approval<input type="checkbox" disabled={disabled||general.workflowIntent!=="standard_production"} checked={general.requiresProofApproval} onChange={event=>change("requiresProofApproval",event.target.checked)}/></label><label className="toggle">Requires production job<input type="checkbox" disabled={disabled||general.workflowIntent!=="standard_production"} checked={general.requiresProductionJob} onChange={event=>change("requiresProductionJob",event.target.checked)}/></label></form>};
+const GeneralForm = ({
+  value,
+  disabled,
+  onSave,
+}: {
+  value: ProductDraftGeneralRead;
+  disabled: boolean;
+  onSave: (value: ProductDraftGeneralRead) => void;
+}) => {
+  const [general, setGeneral] = useState(value.general);
+  const change = <K extends keyof ProductDraftGeneral>(
+    key: K,
+    next: ProductDraftGeneral[K],
+  ) => setGeneral((current) => ({ ...current, [key]: next }));
+  return (
+    <form
+      id="product-draft-general"
+      className="v2-product-general"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave({ ...value, general });
+      }}
+    >
+      <h2>General</h2>
+      <label>
+        Product name
+        <input
+          disabled={disabled}
+          value={general.displayName}
+          onChange={(event) => change("displayName", event.target.value)}
+        />
+      </label>
+      <label>
+        Category
+        <input
+          disabled={disabled}
+          value={general.category ?? ""}
+          onChange={(event) => change("category", event.target.value || null)}
+        />
+      </label>
+      <label className="wide">
+        Customer-facing description
+        <textarea
+          disabled={disabled}
+          value={general.description ?? ""}
+          onChange={(event) =>
+            change("description", event.target.value || null)
+          }
+        />
+      </label>
+      <label>
+        Measurement
+        <select
+          disabled={disabled}
+          value={general.measurementMode}
+          onChange={(event) =>
+            change(
+              "measurementMode",
+              event.target.value as ProductDraftGeneral["measurementMode"],
+            )
+          }
+        >
+          <option value="dimensions_required">Dimensions + quantity</option>
+          <option value="quantity_only">Quantity only</option>
+        </select>
+      </label>
+      <label>
+        Workflow
+        <select
+          disabled={disabled}
+          value={general.workflowIntent}
+          onChange={(event) =>
+            change(
+              "workflowIntent",
+              event.target.value as ProductDraftGeneral["workflowIntent"],
+            )
+          }
+        >
+          <option value="standard_production">Standard production</option>
+          <option value="fulfillment_only">Fulfillment only</option>
+          <option value="service_fee">Service / fee</option>
+        </select>
+      </label>
+      <label className="toggle">
+        Show in customer storefront
+        <input
+          type="checkbox"
+          disabled={disabled}
+          checked={general.storefrontVisible}
+          onChange={(event) =>
+            change("storefrontVisible", event.target.checked)
+          }
+        />
+      </label>
+      <label className="toggle">
+        Requires proof approval
+        <input
+          type="checkbox"
+          disabled={
+            disabled || general.workflowIntent !== "standard_production"
+          }
+          checked={general.requiresProofApproval}
+          onChange={(event) =>
+            change("requiresProofApproval", event.target.checked)
+          }
+        />
+      </label>
+      <label className="toggle">
+        Requires production job
+        <input
+          type="checkbox"
+          disabled={
+            disabled || general.workflowIntent !== "standard_production"
+          }
+          checked={general.requiresProductionJob}
+          onChange={(event) =>
+            change("requiresProductionJob", event.target.checked)
+          }
+        />
+      </label>
+    </form>
+  );
+};
 
-const OptionsForm=({value,disabled,onSave}:{value:ProductDraftOptionsRead;disabled:boolean;onSave:(value:ProductDraftOptionsRead)=>void})=>{const[options,setOptions]=useState<readonly ProductDraftOption[]>(value.options),[selected,setSelected]=useState(value.options[0]?.optionId??"");const option=options.find(entry=>entry.optionId===selected);const update=(next:ProductDraftOption)=>setOptions(current=>current.map(entry=>entry.optionId===next.optionId?next:entry));const move=(id:string,delta:number)=>setOptions(current=>{const from=current.findIndex(entry=>entry.optionId===id),to=from+delta;if(to<0||to>=current.length)return current;const next=[...current];[next[from],next[to]]=[next[to]!,next[from]!];return next;});const add=()=>{const next:ProductDraftOption={optionId:`new:${crypto.randomUUID()}`,label:"New option",inputType:"text",required:false,defaultValue:"",choices:[],canRemove:true};setOptions(current=>[...current,next]);setSelected(next.optionId);};return <form id="product-draft-options" className="v2-product-options" onSubmit={event=>{event.preventDefault();onSave({...value,options});}}><header><h2>Options</h2><button type="button" disabled={disabled} onClick={add}>Add option</button></header><div className="v2-product-options-grid"><section><table><thead><tr><th>Option</th><th>Type</th><th>Choices</th><th/></tr></thead><tbody>{options.map(entry=><tr key={entry.optionId} className={entry.optionId===selected?"selected":""}><td><button type="button" onClick={()=>setSelected(entry.optionId)}>{entry.label}</button></td><td>{entry.inputType}</td><td>{entry.choices.length||dash}</td><td><button type="button" aria-label={`Move ${entry.label} up`} disabled={disabled} onClick={()=>move(entry.optionId,-1)}>↑</button><button type="button" aria-label={`Move ${entry.label} down`} disabled={disabled} onClick={()=>move(entry.optionId,1)}>↓</button></td></tr>)}</tbody></table></section>{option&&<OptionEditor option={option} disabled={disabled} onChange={update} onRemove={()=>{setOptions(current=>current.filter(entry=>entry.optionId!==option.optionId));setSelected(options.find(entry=>entry.optionId!==option.optionId)?.optionId??"");}}/>}</div></form>};
+const OptionsForm = ({
+  value,
+  disabled,
+  onSave,
+}: {
+  value: ProductDraftOptionsRead;
+  disabled: boolean;
+  onSave: (value: ProductDraftOptionsRead) => void;
+}) => {
+  const [options, setOptions] = useState<readonly ProductDraftOption[]>(
+      value.options,
+    ),
+    [selected, setSelected] = useState(value.options[0]?.optionId ?? "");
+  const option = options.find((entry) => entry.optionId === selected);
+  const update = (next: ProductDraftOption) =>
+    setOptions((current) =>
+      current.map((entry) => (entry.optionId === next.optionId ? next : entry)),
+    );
+  const move = (id: string, delta: number) =>
+    setOptions((current) => {
+      const from = current.findIndex((entry) => entry.optionId === id),
+        to = from + delta;
+      if (to < 0 || to >= current.length) return current;
+      const next = [...current];
+      [next[from], next[to]] = [next[to]!, next[from]!];
+      return next;
+    });
+  const add = () => {
+    const next: ProductDraftOption = {
+      optionId: `new:${crypto.randomUUID()}`,
+      label: "New option",
+      inputType: "text",
+      required: false,
+      defaultValue: "",
+      choices: [],
+      canRemove: true,
+    };
+    setOptions((current) => [...current, next]);
+    setSelected(next.optionId);
+  };
+  return (
+    <form
+      id="product-draft-options"
+      className="v2-product-options"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave({ ...value, options });
+      }}
+    >
+      <header>
+        <h2>Options</h2>
+        <button type="button" disabled={disabled} onClick={add}>
+          Add option
+        </button>
+      </header>
+      <div className="v2-product-options-grid">
+        <section>
+          <table>
+            <thead>
+              <tr>
+                <th>Option</th>
+                <th>Type</th>
+                <th>Choices</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {options.map((entry) => (
+                <tr
+                  key={entry.optionId}
+                  className={entry.optionId === selected ? "selected" : ""}
+                >
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(entry.optionId)}
+                    >
+                      {entry.label}
+                    </button>
+                  </td>
+                  <td>{entry.inputType}</td>
+                  <td>{entry.choices.length || dash}</td>
+                  <td>
+                    <button
+                      type="button"
+                      aria-label={`Move ${entry.label} up`}
+                      disabled={disabled}
+                      onClick={() => move(entry.optionId, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Move ${entry.label} down`}
+                      disabled={disabled}
+                      onClick={() => move(entry.optionId, 1)}
+                    >
+                      ↓
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+        {option && (
+          <OptionEditor
+            option={option}
+            disabled={disabled}
+            onChange={update}
+            onRemove={() => {
+              setOptions((current) =>
+                current.filter((entry) => entry.optionId !== option.optionId),
+              );
+              setSelected(
+                options.find((entry) => entry.optionId !== option.optionId)
+                  ?.optionId ?? "",
+              );
+            }}
+          />
+        )}
+      </div>
+    </form>
+  );
+};
 
-const OptionEditor=({option,disabled,onChange,onRemove}:{option:ProductDraftOption;disabled:boolean;onChange:(value:ProductDraftOption)=>void;onRemove:()=>void})=>{const choiceBased=option.inputType==="select"||option.inputType==="multiselect";const choices=option.choices;const move=(index:number,delta:number)=>{const target=index+delta;if(target<0||target>=choices.length)return;const next=[...choices];[next[index],next[target]]=[next[target]!,next[index]!];onChange({...option,choices:next});};return <aside className="v2-product-option-editor"><label>Label<input disabled={disabled} value={option.label} onChange={event=>onChange({...option,label:event.target.value})}/></label><p>Type: {option.inputType}</p><label className="toggle">Required<input type="checkbox" disabled={disabled} checked={option.required} onChange={event=>onChange({...option,required:event.target.checked})}/></label>{choiceBased&&<><label>Default<select disabled={disabled} value={typeof option.defaultValue==="string"?option.defaultValue:""} onChange={event=>onChange({...option,defaultValue:event.target.value||null})}><option value="">No default</option>{choices.map((choice,index)=><option key={choice.choiceValue||index} value={choice.choiceValue}>{choice.label}</option>)}</select></label><h3>Choices</h3>{choices.map((choice,index)=><div key={choice.choiceValue||index}><input aria-label={`Choice ${index+1}`} disabled={disabled} value={choice.label} onChange={event=>onChange({...option,choices:choices.map((entry,choiceIndex)=>choiceIndex===index?{...entry,label:event.target.value}:entry)})}/><button type="button" disabled={disabled} onClick={()=>move(index,-1)}>Up</button><button type="button" disabled={disabled} onClick={()=>move(index,1)}>Down</button><button type="button" disabled={disabled} onClick={()=>onChange({...option,choices:choices.filter((_,choiceIndex)=>choiceIndex!==index),defaultValue:option.defaultValue===choice.choiceValue?null:option.defaultValue})}>Remove</button></div>)}<button type="button" disabled={disabled} onClick={()=>onChange({...option,choices:[...choices,{choiceValue:"",label:"New choice"}]})}>Add choice</button></>}<button type="button" disabled={disabled||!option.canRemove} onClick={onRemove}>{option.canRemove?"Remove option":option.removalReason??"Remove unavailable"}</button></aside>};
+const OptionEditor = ({
+  option,
+  disabled,
+  onChange,
+  onRemove,
+}: {
+  option: ProductDraftOption;
+  disabled: boolean;
+  onChange: (value: ProductDraftOption) => void;
+  onRemove: () => void;
+}) => {
+  const choiceBased =
+    option.inputType === "select" || option.inputType === "multiselect";
+  const choices = option.choices;
+  const move = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= choices.length) return;
+    const next = [...choices];
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    onChange({ ...option, choices: next });
+  };
+  return (
+    <aside className="v2-product-option-editor">
+      <label>
+        Label
+        <input
+          disabled={disabled}
+          value={option.label}
+          onChange={(event) =>
+            onChange({ ...option, label: event.target.value })
+          }
+        />
+      </label>
+      <p>Type: {option.inputType}</p>
+      <label className="toggle">
+        Required
+        <input
+          type="checkbox"
+          disabled={disabled}
+          checked={option.required}
+          onChange={(event) =>
+            onChange({ ...option, required: event.target.checked })
+          }
+        />
+      </label>
+      {choiceBased && (
+        <>
+          <label>
+            Default
+            <select
+              disabled={disabled}
+              value={
+                typeof option.defaultValue === "string"
+                  ? option.defaultValue
+                  : ""
+              }
+              onChange={(event) =>
+                onChange({
+                  ...option,
+                  defaultValue: event.target.value || null,
+                })
+              }
+            >
+              <option value="">No default</option>
+              {choices.map((choice, index) => (
+                <option
+                  key={choice.choiceValue || index}
+                  value={choice.choiceValue}
+                >
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <h3>Choices</h3>
+          {choices.map((choice, index) => (
+            <div key={choice.choiceValue || index}>
+              <input
+                aria-label={`Choice ${index + 1}`}
+                disabled={disabled}
+                value={choice.label}
+                onChange={(event) =>
+                  onChange({
+                    ...option,
+                    choices: choices.map((entry, choiceIndex) =>
+                      choiceIndex === index
+                        ? { ...entry, label: event.target.value }
+                        : entry,
+                    ),
+                  })
+                }
+              />
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => move(index, -1)}
+              >
+                Up
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => move(index, 1)}
+              >
+                Down
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() =>
+                  onChange({
+                    ...option,
+                    choices: choices.filter(
+                      (_, choiceIndex) => choiceIndex !== index,
+                    ),
+                    defaultValue:
+                      option.defaultValue === choice.choiceValue
+                        ? null
+                        : option.defaultValue,
+                  })
+                }
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onChange({
+                ...option,
+                choices: [...choices, { choiceValue: "", label: "New choice" }],
+              })
+            }
+          >
+            Add choice
+          </button>
+        </>
+      )}
+      <button
+        type="button"
+        disabled={disabled || !option.canRemove}
+        onClick={onRemove}
+      >
+        {option.canRemove
+          ? "Remove option"
+          : (option.removalReason ?? "Remove unavailable")}
+      </button>
+    </aside>
+  );
+};
 
-const OptionPricingForm=({value,disabled,onSave}:{value:ProductDraftOptionPricing;disabled:boolean;onSave:(input:any)=>void})=>{const labels:any={fixed:"Fixed amount",per_item:"Per item",per_square_foot:"Per square foot",percent_of_base:"Percent of base",multiplier:"Multiplier"};return <section className="v2-product-options"><h2>Option pricing</h2>{value.options.map(option=><div key={option.optionId}><h3>{option.label}</h3>{option.choices.map(choice=><div key={choice.choiceValue}><span>{choice.label}</span>{choice.editable?<><select disabled={disabled} value={choice.impact?.type??"none"} onChange={event=>onSave({draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,optionId:option.optionId,choiceValue:choice.choiceValue,impact:event.target.value==="none"?null:{type:event.target.value,value:choice.impact?.value??0}})}><option value="none">No price change</option>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label as string}</option>)}</select>{choice.impact&&<input disabled={disabled} inputMode="decimal" value={["fixed","per_item","per_square_foot"].includes(choice.impact.type)?(choice.impact.value/100).toFixed(2):choice.impact.value} onChange={event=>{const raw=Number(event.target.value),money=["fixed","per_item","per_square_foot"].includes(choice.impact!.type);onSave({draftVersionId:value.draftVersionId,expectedDraftUpdatedAt:value.draftUpdatedAt,optionId:option.optionId,choiceValue:choice.choiceValue,impact:{...choice.impact!,value:money?Math.round(raw*100):raw}})}}/>}</>:<small>{choice.readOnlyReason??"Read only"}</small>}</div>)}</div>)}</section>};
-const cents=(value:number|null)=>value===null?"":(value/100).toFixed(2);
-const fromDollars=(value:string)=>value.trim()===""?null:Math.round(Number(value)*100);
-const PreviewResult=({result}:{result:ProductDraftPricingPreview|undefined})=>result?<div className="v2-product-pricing-result"><b>{(result.calculatedLineAmount.cents/100).toLocaleString(undefined,{style:"currency",currency:result.calculatedLineAmount.currency})}</b><span>{(result.calculatedUnitAmount.cents/100).toLocaleString(undefined,{style:"currency",currency:result.calculatedUnitAmount.currency})} each</span>{result.minimumChargeApplied&&<span>Minimum charge applied</span>}{result.tier&&<span>{result.tier.basis==="quantity"?"Quantity":"Area"} tier: {result.tier.value}</span>}</div>:null;
-const FormulaForm=({value,disabled,onSave,organizationId,productId}:{value:ProductDraftFormulaPricing;disabled:boolean;onSave:(value:ProductDraftFormulaPricing)=>void;organizationId:string;productId:string})=>{const[expression,setExpression]=useState(value.expression),[variables,setVariables]=useState(value.variables),[quantity,setQuantity]=useState("1"),[width,setWidth]=useState(""),[height,setHeight]=useState(""),preview=useMutation({mutationFn:()=>productApi.previewDraftPricing(organizationId,productId,{quantity:Number(quantity),...(width&&height?{width:Number(width),height:Number(height)}:{})})});const draft={...value,expression,variables};return <section className="v2-product-pricing"><form id="product-draft-formula" onSubmit={event=>{event.preventDefault();onSave(draft);}}><h2>Formula</h2>{value.formulaName&&<p>{value.formulaName}</p>}<label>Expression<textarea disabled={disabled||!value.editable} value={expression} onChange={event=>setExpression(event.target.value)}/></label>{Object.entries(variables).map(([name,number])=><label key={name}>{name}<input disabled={disabled||!value.editable} inputMode="decimal" value={String(number)} onChange={event=>setVariables(current=>({...current,[name]:Number(event.target.value)}))}/></label>)}{value.warnings.map(warning=><p key={warning}>{warning}</p>)}{!value.editable&&<p>{value.unavailableReason??"Formula editing is unavailable."}</p>}</form><section className="v2-product-pricing-preview"><h2>Preview</h2><label>Quantity<input type="number" min="1" value={quantity} onChange={event=>setQuantity(event.target.value)}/></label><label>Width<input inputMode="decimal" value={width} onChange={event=>setWidth(event.target.value)}/></label><label>Height<input inputMode="decimal" value={height} onChange={event=>setHeight(event.target.value)}/></label><button type="button" onClick={()=>preview.mutate()} disabled={preview.isPending}>Preview price</button><PreviewResult result={preview.data}/>{preview.error&&<p>{(preview.error as {message?:string}).message??"Preview is unavailable."}</p>}</section></section>};
-const PricingForm=({value,options,disabled,onSave,organizationId,productId}:{value:ProductDraftPricing;options:readonly ProductDraftOption[];disabled:boolean;onSave:(value:ProductDraftPricing)=>void;organizationId:string;productId:string})=>{const[pricing,setPricing]=useState(value),[quantity,setQuantity]=useState("1"),[width,setWidth]=useState(""),[height,setHeight]=useState(""),[selections,setSelections]=useState<Record<string,unknown>>({}),preview=useMutation({mutationFn:()=>productApi.previewDraftPricing(organizationId,productId,{quantity:Number(quantity),...(pricing.measurementMode==="dimensions_required"?{width:Number(width),height:Number(height)}:{}),selections})});const changeBase=(key:keyof ProductDraftPricing["base"],next:string)=>setPricing(current=>({...current,base:{...current.base,[key]:fromDollars(next)}}));const changeTier=(index:number,key:keyof ProductDraftPricingTier,next:string)=>setPricing(current=>({...current,tiers:current.tiers.map((tier,tierIndex)=>tierIndex===index?{...tier,[key]:key==="minimum"||key==="maximum"?(next===""?null:Number(next)):fromDollars(next)} as ProductDraftPricingTier:tier)}));if(!value.editable)return <section className="v2-product-pricing"><h2>Pricing</h2><p>{value.unavailableReason??"This pricing method is read only."}</p><PreviewResult result={preview.data}/></section>;const rate=value.base.perSqftCents!==null?"perSqftCents":"perPieceCents",rateLabel=rate==="perSqftCents"?"Rate per sq ft":"Rate per piece";return <section className="v2-product-pricing"><form id="product-draft-pricing" onSubmit={event=>{event.preventDefault();onSave(pricing);}}><h2>Pricing</h2><label>{rateLabel}<input disabled={disabled} inputMode="decimal" value={cents(pricing.base[rate])} onChange={event=>changeBase(rate,event.target.value)}/></label><label>Minimum charge<input disabled={disabled} inputMode="decimal" value={cents(pricing.base.minimumChargeCents)} onChange={event=>changeBase("minimumChargeCents",event.target.value)}/></label>{pricing.tierBasis&&<><h3>{pricing.tierBasis==="quantity"?"Quantity tiers":"Square-foot tiers"}</h3>{pricing.tiers.map((tier,index)=><div className="v2-product-pricing-tier" key={tier.tierId}><label>From<input disabled={disabled} type="number" min="1" value={tier.minimum} onChange={event=>changeTier(index,"minimum",event.target.value)}/></label><label>To<input disabled={disabled} type="number" min="1" value={tier.maximum??""} onChange={event=>changeTier(index,"maximum",event.target.value)}/></label><label>{rateLabel}<input disabled={disabled} inputMode="decimal" value={cents(rate==="perSqftCents"?tier.perSqftCents:tier.perPieceCents)} onChange={event=>changeTier(index,rate,event.target.value)}/></label></div>)}</>}</form><section className="v2-product-pricing-preview"><h2>Preview</h2><label>Quantity<input type="number" min="1" value={quantity} onChange={event=>setQuantity(event.target.value)}/></label>{pricing.measurementMode==="dimensions_required"&&<><label>Width<input inputMode="decimal" value={width} onChange={event=>setWidth(event.target.value)}/></label><label>Height<input inputMode="decimal" value={height} onChange={event=>setHeight(event.target.value)}/></label></>}{options.map(option=>option.inputType==="select"?<label key={option.optionId}>{option.label}<select value={String(selections[option.optionId]??option.defaultValue??"")} onChange={event=>setSelections(current=>({...current,[option.optionId]:event.target.value}))}><option value="">Select</option>{option.choices.map(choice=><option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}</select></label>:null)}<button type="button" onClick={()=>preview.mutate()} disabled={preview.isPending}>Preview price</button><PreviewResult result={preview.data}/>{preview.error&&<p>{(preview.error as {message?:string}).message??"Preview is unavailable."}</p>}</section></section>};
+const RecipeForm = ({
+  value,
+  materials,
+  options,
+  disabled,
+  onSave,
+}: {
+  value: ProductRecipe;
+  materials: readonly ProductMaterial[];
+  options: readonly ProductDraftOption[];
+  disabled: boolean;
+  onSave: (value: ProductRecipe) => void;
+}) => {
+  const [components, setComponents] = useState(value.components);
+  const conditionChoices = options.flatMap((option) =>
+    option.choices.map((choice) => ({
+      key: `${option.optionId}:${choice.choiceValue}`,
+      optionId: option.optionId,
+      choiceValue: choice.choiceValue,
+      label: `${option.label}: ${choice.label}`,
+    })),
+  );
+  const update = (index: number, next: Partial<ProductRecipeComponent>) =>
+    setComponents((current) =>
+      current.map((component, componentIndex) =>
+        componentIndex === index ? { ...component, ...next } : component,
+      ),
+    );
+  const add = () => {
+    const material = materials[0];
+    if (!material) return;
+    setComponents((current) => [
+      ...current,
+      {
+        materialId: material.materialId,
+        materialName: material.name,
+        materialSku: material.sku,
+        quantity: "1",
+        unit: material.unit,
+        quantityKind: "per_line",
+      },
+    ]);
+  };
+  return (
+    <form
+      id="product-draft-recipe"
+      className="v2-product-options"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave({ ...value, components });
+      }}
+    >
+      <header>
+        <div>
+          <h2>Materials</h2>
+          <p>
+            Expected components for one configured line. Stock is not consumed
+            here.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={disabled || !materials.length}
+          onClick={add}
+        >
+          Add material
+        </button>
+      </header>
+      {!materials.length && (
+        <p className="v2-proof-empty">
+          No active Materials are available for this organization.
+        </p>
+      )}
+      {components.map((component, index) => {
+        const conditionKey = component.condition
+          ? `${component.condition.optionId}:${component.condition.choiceValue}`
+          : "";
+        return (
+          <fieldset
+            key={component.componentId ?? `${component.materialId}:${index}`}
+            disabled={disabled}
+          >
+            <legend>{component.materialName ?? "Material component"}</legend>
+            <label>
+              Material
+              <select
+                value={component.materialId}
+                onChange={(event) => {
+                  const material = materials.find(
+                    (candidate) => candidate.materialId === event.target.value,
+                  );
+                  if (material)
+                    update(index, {
+                      materialId: material.materialId,
+                      materialName: material.name,
+                      materialSku: material.sku,
+                      unit:
+                        component.quantityKind === "per_area"
+                          ? "square_foot"
+                          : material.unit,
+                    });
+                }}
+              >
+                {materials.map((material) => (
+                  <option key={material.materialId} value={material.materialId}>
+                    {material.name}
+                    {material.sku ? ` · ${material.sku}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Basis
+              <select
+                value={component.quantityKind}
+                onChange={(event) => {
+                  const quantityKind = event.target
+                    .value as ProductRecipeComponent["quantityKind"];
+                  update(index, {
+                    quantityKind,
+                    unit:
+                      quantityKind === "per_area"
+                        ? "square_foot"
+                        : component.unit,
+                  });
+                }}
+              >
+                <option value="per_line">Per line</option>
+                <option value="per_piece">Per finished piece</option>
+                <option value="per_area">Per square foot</option>
+              </select>
+            </label>
+            <label>
+              Quantity / factor
+              <input
+                inputMode="decimal"
+                value={component.quantity}
+                onChange={(event) =>
+                  update(index, { quantity: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Unit
+              <select
+                value={component.unit}
+                disabled={component.quantityKind === "per_area"}
+                onChange={(event) =>
+                  update(index, {
+                    unit: event.target.value as ProductRecipeComponent["unit"],
+                  })
+                }
+              >
+                {["each", "square_foot", "linear_foot", "sheet", "roll"].map(
+                  (unit) => (
+                    <option key={unit} value={unit}>
+                      {unit.replaceAll("_", " ")}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+            <label>
+              Applies when
+              <select
+                value={conditionKey}
+                onChange={(event) => {
+                  const selected = conditionChoices.find(
+                    (choice) => choice.key === event.target.value,
+                  );
+                  update(index, {
+                    condition: selected
+                      ? {
+                          type: "selected",
+                          optionId: selected.optionId,
+                          choiceValue: selected.choiceValue,
+                        }
+                      : undefined,
+                    replacesPbv2Compatibility: selected
+                      ? component.replacesPbv2Compatibility
+                      : undefined,
+                  });
+                }}
+              >
+                <option value="">Always</option>
+                {conditionChoices.map((choice) => (
+                  <option key={choice.key} value={choice.key}>
+                    {choice.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {component.condition && (
+              <label className="toggle">
+                Replaces existing PBV2 material rule
+                <input
+                  type="checkbox"
+                  checked={Boolean(component.replacesPbv2Compatibility)}
+                  onChange={(event) =>
+                    update(index, {
+                      replacesPbv2Compatibility: event.target.checked,
+                    })
+                  }
+                />
+              </label>
+            )}
+            <button
+              type="button"
+              onClick={() =>
+                setComponents((current) =>
+                  current.filter(
+                    (_, componentIndex) => componentIndex !== index,
+                  ),
+                )
+              }
+            >
+              Remove
+            </button>
+          </fieldset>
+        );
+      })}
+      {!components.length && (
+        <p className="v2-proof-empty">
+          No material requirements are defined for this Product Draft.
+        </p>
+      )}
+    </form>
+  );
+};
 
-const MatrixForm=({value,measurementMode,disabled,onSave,organizationId,productId}:{value:ProductDraftPricingMatrix;measurementMode:"dimensions_required"|"quantity_only";disabled:boolean;onSave:(value:ProductDraftPricingMatrix)=>void;organizationId:string;productId:string})=>{const[matrix,setMatrix]=useState(value),[quantity,setQuantity]=useState("1"),[width,setWidth]=useState(""),[height,setHeight]=useState(""),[selections,setSelections]=useState<Record<string,unknown>>({}),preview=useMutation({mutationFn:()=>productApi.previewDraftPricing(organizationId,productId,{quantity:Number(quantity),...(measurementMode==="dimensions_required"?{width:Number(width),height:Number(height)}:{}),selections})});const key=(row:ProductDraftPricingMatrix["rows"][number])=>JSON.stringify(matrix.dimensions.map(dimension=>row.combination[dimension.selectionKey]));const update=(rowId:string,next:Partial<ProductDraftPricingMatrix["rows"][number]>)=>setMatrix(current=>({...current,rows:current.rows.map(row=>row.rowId===rowId?{...row,...next}:row)}));const remove=(rowId:string)=>setMatrix(current=>({...current,rows:current.rows.filter(row=>row.rowId!==rowId)}));const add=()=>setMatrix(current=>({...current,rows:[...current.rows,{rowId:`new:${crypto.randomUUID()}`,combination:Object.fromEntries(current.dimensions.map(dimension=>[dimension.selectionKey,dimension.values[0]?.value??""])),baseRateCents:0,tierBasis:null,tiers:[]}]}));const generate=()=>setMatrix(current=>{const combinations=current.dimensions.reduce<readonly Record<string,string|number|boolean>[]>((all,dimension)=>all.flatMap(combination=>dimension.values.map(choice=>({...combination,[dimension.selectionKey]:choice.value}))),[{}]);const known=new Set(current.rows.map(key));return{...current,rows:[...current.rows,...combinations.filter(combination=>!known.has(JSON.stringify(current.dimensions.map(dimension=>combination[dimension.selectionKey])))).map(combination=>({rowId:`new:${crypto.randomUUID()}`,combination,baseRateCents:0,tierBasis:null,tiers:[]}))]};});const changeTier=(rowId:string,index:number,key:keyof ProductDraftPricingTier,next:string)=>{const row=matrix.rows.find(item=>item.rowId===rowId);if(!row)return;update(rowId,{tierBasis:"quantity",tiers:row.tiers.map((tier,tierIndex)=>tierIndex===index?{...tier,[key]:key==="minimum"||key==="maximum"?(next===""?null:Number(next)):fromDollars(next)} as ProductDraftPricingTier:tier)});} ;if(!value.editable)return <section className="v2-product-pricing"><form id="product-draft-pricing" onSubmit={event=>event.preventDefault()}><h2>Matrix pricing</h2><p>{value.unavailableReason??"This pricing method is read only."}</p></form></section>;return <section className="v2-product-pricing"><form id="product-draft-pricing" onSubmit={event=>{event.preventDefault();onSave(matrix);}}><header><h2>Matrix pricing</h2><button type="button" disabled={disabled} onClick={generate}>Generate missing combinations</button><button type="button" disabled={disabled} onClick={add}>Add row</button></header><p>{matrix.pricingUnit==="per_piece"?"Per piece":"Per sq ft"}</p><div className="v2-products-table-wrap"><table className="v2-products-table"><thead><tr>{matrix.dimensions.map(dimension=><th key={dimension.selectionKey}>{dimension.label}</th>)}<th>Rate</th><th>Tiers</th><th/></tr></thead><tbody>{matrix.rows.map(row=><tr key={row.rowId}>{matrix.dimensions.map(dimension=><td key={dimension.selectionKey}><select disabled={disabled} value={String(row.combination[dimension.selectionKey]??"")} onChange={event=>{const choice=dimension.values.find(item=>String(item.value)===event.target.value);if(choice)update(row.rowId,{combination:{...row.combination,[dimension.selectionKey]:choice.value}});}}>{dimension.values.map(choice=><option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}</select></td>)}<td><input disabled={disabled} inputMode="decimal" value={cents(row.baseRateCents)} onChange={event=>update(row.rowId,{baseRateCents:fromDollars(event.target.value)??0})}/></td><td>{row.tierBasis==="computed_sheet_usage"?"Read only":row.tiers.length?`${row.tiers.length} tier${row.tiers.length===1?"":"s"}`:"—"}</td><td><button type="button" disabled={disabled||row.tierBasis==="computed_sheet_usage"} onClick={()=>remove(row.rowId)}>Remove</button></td></tr>)}</tbody></table></div>{matrix.rows.filter(row=>row.tierBasis!=="computed_sheet_usage"&&row.tiers.length).map(row=><details key={`${row.rowId}:tiers`}><summary>Row tiers</summary>{row.tiers.map((tier,index)=><div className="v2-product-pricing-tier" key={tier.tierId}><label>From<input disabled={disabled} type="number" min="1" value={tier.minimum} onChange={event=>changeTier(row.rowId,index,"minimum",event.target.value)}/></label><label>To<input disabled={disabled} type="number" min="1" value={tier.maximum??""} onChange={event=>changeTier(row.rowId,index,"maximum",event.target.value)}/></label><label>Rate<input disabled={disabled} inputMode="decimal" value={cents(matrix.pricingUnit==="per_piece"?tier.perPieceCents:tier.perSqftCents)} onChange={event=>changeTier(row.rowId,index,matrix.pricingUnit==="per_piece"?"perPieceCents":"perSqftCents",event.target.value)}/></label></div>)}</details>)}</form><section className="v2-product-pricing-preview"><h2>Preview</h2><label>Quantity<input type="number" min="1" value={quantity} onChange={event=>setQuantity(event.target.value)}/></label>{measurementMode==="dimensions_required"&&<><label>Width<input inputMode="decimal" value={width} onChange={event=>setWidth(event.target.value)}/></label><label>Height<input inputMode="decimal" value={height} onChange={event=>setHeight(event.target.value)}/></label></>}{matrix.dimensions.map(dimension=><label key={dimension.selectionKey}>{dimension.label}<select value={String(selections[dimension.selectionKey]??"")} onChange={event=>{const choice=dimension.values.find(item=>String(item.value)===event.target.value);if(choice)setSelections(current=>({...current,[dimension.selectionKey]:choice.value}));}}><option value="">Select</option>{dimension.values.map(choice=><option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}</select></label>)}<button type="button" onClick={()=>preview.mutate()} disabled={preview.isPending}>Preview price</button><PreviewResult result={preview.data}/>{preview.error&&<p>{(preview.error as {message?:string}).message??"Preview is unavailable."}</p>}</section></section>};
+const OptionPricingForm = ({
+  value,
+  disabled,
+  onSave,
+}: {
+  value: ProductDraftOptionPricing;
+  disabled: boolean;
+  onSave: (input: any) => void;
+}) => {
+  const labels: any = {
+    fixed: "Fixed amount",
+    per_item: "Per item",
+    per_square_foot: "Per square foot",
+    percent_of_base: "Percent of base",
+    multiplier: "Multiplier",
+  };
+  return (
+    <section className="v2-product-options">
+      <h2>Option pricing</h2>
+      {value.options.map((option) => (
+        <div key={option.optionId}>
+          <h3>{option.label}</h3>
+          {option.choices.map((choice) => (
+            <div key={choice.choiceValue}>
+              <span>{choice.label}</span>
+              {choice.editable ? (
+                <>
+                  <select
+                    disabled={disabled}
+                    value={choice.impact?.type ?? "none"}
+                    onChange={(event) =>
+                      onSave({
+                        draftVersionId: value.draftVersionId,
+                        expectedDraftUpdatedAt: value.draftUpdatedAt,
+                        optionId: option.optionId,
+                        choiceValue: choice.choiceValue,
+                        impact:
+                          event.target.value === "none"
+                            ? null
+                            : {
+                                type: event.target.value,
+                                value: choice.impact?.value ?? 0,
+                              },
+                      })
+                    }
+                  >
+                    <option value="none">No price change</option>
+                    {Object.entries(labels).map(([key, label]) => (
+                      <option key={key} value={key}>
+                        {label as string}
+                      </option>
+                    ))}
+                  </select>
+                  {choice.impact && (
+                    <input
+                      disabled={disabled}
+                      inputMode="decimal"
+                      value={
+                        ["fixed", "per_item", "per_square_foot"].includes(
+                          choice.impact.type,
+                        )
+                          ? (choice.impact.value / 100).toFixed(2)
+                          : choice.impact.value
+                      }
+                      onChange={(event) => {
+                        const raw = Number(event.target.value),
+                          money = [
+                            "fixed",
+                            "per_item",
+                            "per_square_foot",
+                          ].includes(choice.impact!.type);
+                        onSave({
+                          draftVersionId: value.draftVersionId,
+                          expectedDraftUpdatedAt: value.draftUpdatedAt,
+                          optionId: option.optionId,
+                          choiceValue: choice.choiceValue,
+                          impact: {
+                            ...choice.impact!,
+                            value: money ? Math.round(raw * 100) : raw,
+                          },
+                        });
+                      }}
+                    />
+                  )}
+                </>
+              ) : (
+                <small>{choice.readOnlyReason ?? "Read only"}</small>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
+  );
+};
+const cents = (value: number | null) =>
+  value === null ? "" : (value / 100).toFixed(2);
+const fromDollars = (value: string) =>
+  value.trim() === "" ? null : Math.round(Number(value) * 100);
+const PreviewResult = ({
+  result,
+}: {
+  result: ProductDraftPricingPreview | undefined;
+}) =>
+  result ? (
+    <div className="v2-product-pricing-result">
+      <b>
+        {(result.calculatedLineAmount.cents / 100).toLocaleString(undefined, {
+          style: "currency",
+          currency: result.calculatedLineAmount.currency,
+        })}
+      </b>
+      <span>
+        {(result.calculatedUnitAmount.cents / 100).toLocaleString(undefined, {
+          style: "currency",
+          currency: result.calculatedUnitAmount.currency,
+        })}{" "}
+        each
+      </span>
+      {result.minimumChargeApplied && <span>Minimum charge applied</span>}
+      {result.tier && (
+        <span>
+          {result.tier.basis === "quantity" ? "Quantity" : "Area"} tier:{" "}
+          {result.tier.value}
+        </span>
+      )}
+    </div>
+  ) : null;
+const FormulaForm = ({
+  value,
+  disabled,
+  onSave,
+  organizationId,
+  productId,
+}: {
+  value: ProductDraftFormulaPricing;
+  disabled: boolean;
+  onSave: (value: ProductDraftFormulaPricing) => void;
+  organizationId: string;
+  productId: string;
+}) => {
+  const [expression, setExpression] = useState(value.expression),
+    [variables, setVariables] = useState(value.variables),
+    [quantity, setQuantity] = useState("1"),
+    [width, setWidth] = useState(""),
+    [height, setHeight] = useState(""),
+    preview = useMutation({
+      mutationFn: () =>
+        productApi.previewDraftPricing(organizationId, productId, {
+          quantity: Number(quantity),
+          ...(width && height
+            ? { width: Number(width), height: Number(height) }
+            : {}),
+        }),
+    });
+  const draft = { ...value, expression, variables };
+  return (
+    <section className="v2-product-pricing">
+      <form
+        id="product-draft-formula"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave(draft);
+        }}
+      >
+        <h2>Formula</h2>
+        {value.formulaName && <p>{value.formulaName}</p>}
+        <label>
+          Expression
+          <textarea
+            disabled={disabled || !value.editable}
+            value={expression}
+            onChange={(event) => setExpression(event.target.value)}
+          />
+        </label>
+        {Object.entries(variables).map(([name, number]) => (
+          <label key={name}>
+            {name}
+            <input
+              disabled={disabled || !value.editable}
+              inputMode="decimal"
+              value={String(number)}
+              onChange={(event) =>
+                setVariables((current) => ({
+                  ...current,
+                  [name]: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+        ))}
+        {value.warnings.map((warning) => (
+          <p key={warning}>{warning}</p>
+        ))}
+        {!value.editable && (
+          <p>{value.unavailableReason ?? "Formula editing is unavailable."}</p>
+        )}
+      </form>
+      <section className="v2-product-pricing-preview">
+        <h2>Preview</h2>
+        <label>
+          Quantity
+          <input
+            type="number"
+            min="1"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </label>
+        <label>
+          Width
+          <input
+            inputMode="decimal"
+            value={width}
+            onChange={(event) => setWidth(event.target.value)}
+          />
+        </label>
+        <label>
+          Height
+          <input
+            inputMode="decimal"
+            value={height}
+            onChange={(event) => setHeight(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => preview.mutate()}
+          disabled={preview.isPending}
+        >
+          Preview price
+        </button>
+        <PreviewResult result={preview.data} />
+        {preview.error && (
+          <p>
+            {(preview.error as { message?: string }).message ??
+              "Preview is unavailable."}
+          </p>
+        )}
+      </section>
+    </section>
+  );
+};
+const PricingForm = ({
+  value,
+  options,
+  disabled,
+  onSave,
+  organizationId,
+  productId,
+}: {
+  value: ProductDraftPricing;
+  options: readonly ProductDraftOption[];
+  disabled: boolean;
+  onSave: (value: ProductDraftPricing) => void;
+  organizationId: string;
+  productId: string;
+}) => {
+  const [pricing, setPricing] = useState(value),
+    [quantity, setQuantity] = useState("1"),
+    [width, setWidth] = useState(""),
+    [height, setHeight] = useState(""),
+    [selections, setSelections] = useState<Record<string, unknown>>({}),
+    preview = useMutation({
+      mutationFn: () =>
+        productApi.previewDraftPricing(organizationId, productId, {
+          quantity: Number(quantity),
+          ...(pricing.measurementMode === "dimensions_required"
+            ? { width: Number(width), height: Number(height) }
+            : {}),
+          selections,
+        }),
+    });
+  const changeBase = (key: keyof ProductDraftPricing["base"], next: string) =>
+    setPricing((current) => ({
+      ...current,
+      base: { ...current.base, [key]: fromDollars(next) },
+    }));
+  const changeTier = (
+    index: number,
+    key: keyof ProductDraftPricingTier,
+    next: string,
+  ) =>
+    setPricing((current) => ({
+      ...current,
+      tiers: current.tiers.map((tier, tierIndex) =>
+        tierIndex === index
+          ? ({
+              ...tier,
+              [key]:
+                key === "minimum" || key === "maximum"
+                  ? next === ""
+                    ? null
+                    : Number(next)
+                  : fromDollars(next),
+            } as ProductDraftPricingTier)
+          : tier,
+      ),
+    }));
+  if (!value.editable)
+    return (
+      <section className="v2-product-pricing">
+        <h2>Pricing</h2>
+        <p>{value.unavailableReason ?? "This pricing method is read only."}</p>
+        <PreviewResult result={preview.data} />
+      </section>
+    );
+  const rate =
+      value.base.perSqftCents !== null ? "perSqftCents" : "perPieceCents",
+    rateLabel = rate === "perSqftCents" ? "Rate per sq ft" : "Rate per piece";
+  return (
+    <section className="v2-product-pricing">
+      <form
+        id="product-draft-pricing"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave(pricing);
+        }}
+      >
+        <h2>Pricing</h2>
+        <label>
+          {rateLabel}
+          <input
+            disabled={disabled}
+            inputMode="decimal"
+            value={cents(pricing.base[rate])}
+            onChange={(event) => changeBase(rate, event.target.value)}
+          />
+        </label>
+        <label>
+          Minimum charge
+          <input
+            disabled={disabled}
+            inputMode="decimal"
+            value={cents(pricing.base.minimumChargeCents)}
+            onChange={(event) =>
+              changeBase("minimumChargeCents", event.target.value)
+            }
+          />
+        </label>
+        {pricing.tierBasis && (
+          <>
+            <h3>
+              {pricing.tierBasis === "quantity"
+                ? "Quantity tiers"
+                : "Square-foot tiers"}
+            </h3>
+            {pricing.tiers.map((tier, index) => (
+              <div className="v2-product-pricing-tier" key={tier.tierId}>
+                <label>
+                  From
+                  <input
+                    disabled={disabled}
+                    type="number"
+                    min="1"
+                    value={tier.minimum}
+                    onChange={(event) =>
+                      changeTier(index, "minimum", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  To
+                  <input
+                    disabled={disabled}
+                    type="number"
+                    min="1"
+                    value={tier.maximum ?? ""}
+                    onChange={(event) =>
+                      changeTier(index, "maximum", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  {rateLabel}
+                  <input
+                    disabled={disabled}
+                    inputMode="decimal"
+                    value={cents(
+                      rate === "perSqftCents"
+                        ? tier.perSqftCents
+                        : tier.perPieceCents,
+                    )}
+                    onChange={(event) =>
+                      changeTier(index, rate, event.target.value)
+                    }
+                  />
+                </label>
+              </div>
+            ))}
+          </>
+        )}
+      </form>
+      <section className="v2-product-pricing-preview">
+        <h2>Preview</h2>
+        <label>
+          Quantity
+          <input
+            type="number"
+            min="1"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </label>
+        {pricing.measurementMode === "dimensions_required" && (
+          <>
+            <label>
+              Width
+              <input
+                inputMode="decimal"
+                value={width}
+                onChange={(event) => setWidth(event.target.value)}
+              />
+            </label>
+            <label>
+              Height
+              <input
+                inputMode="decimal"
+                value={height}
+                onChange={(event) => setHeight(event.target.value)}
+              />
+            </label>
+          </>
+        )}
+        {options.map((option) =>
+          option.inputType === "select" ? (
+            <label key={option.optionId}>
+              {option.label}
+              <select
+                value={String(
+                  selections[option.optionId] ?? option.defaultValue ?? "",
+                )}
+                onChange={(event) =>
+                  setSelections((current) => ({
+                    ...current,
+                    [option.optionId]: event.target.value,
+                  }))
+                }
+              >
+                <option value="">Select</option>
+                {option.choices.map((choice) => (
+                  <option key={choice.choiceValue} value={choice.choiceValue}>
+                    {choice.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null,
+        )}
+        <button
+          type="button"
+          onClick={() => preview.mutate()}
+          disabled={preview.isPending}
+        >
+          Preview price
+        </button>
+        <PreviewResult result={preview.data} />
+        {preview.error && (
+          <p>
+            {(preview.error as { message?: string }).message ??
+              "Preview is unavailable."}
+          </p>
+        )}
+      </section>
+    </section>
+  );
+};
+
+const MatrixForm = ({
+  value,
+  measurementMode,
+  disabled,
+  onSave,
+  organizationId,
+  productId,
+}: {
+  value: ProductDraftPricingMatrix;
+  measurementMode: "dimensions_required" | "quantity_only";
+  disabled: boolean;
+  onSave: (value: ProductDraftPricingMatrix) => void;
+  organizationId: string;
+  productId: string;
+}) => {
+  const [matrix, setMatrix] = useState(value),
+    [quantity, setQuantity] = useState("1"),
+    [width, setWidth] = useState(""),
+    [height, setHeight] = useState(""),
+    [selections, setSelections] = useState<Record<string, unknown>>({}),
+    preview = useMutation({
+      mutationFn: () =>
+        productApi.previewDraftPricing(organizationId, productId, {
+          quantity: Number(quantity),
+          ...(measurementMode === "dimensions_required"
+            ? { width: Number(width), height: Number(height) }
+            : {}),
+          selections,
+        }),
+    });
+  const key = (row: ProductDraftPricingMatrix["rows"][number]) =>
+    JSON.stringify(
+      matrix.dimensions.map(
+        (dimension) => row.combination[dimension.selectionKey],
+      ),
+    );
+  const update = (
+    rowId: string,
+    next: Partial<ProductDraftPricingMatrix["rows"][number]>,
+  ) =>
+    setMatrix((current) => ({
+      ...current,
+      rows: current.rows.map((row) =>
+        row.rowId === rowId ? { ...row, ...next } : row,
+      ),
+    }));
+  const remove = (rowId: string) =>
+    setMatrix((current) => ({
+      ...current,
+      rows: current.rows.filter((row) => row.rowId !== rowId),
+    }));
+  const add = () =>
+    setMatrix((current) => ({
+      ...current,
+      rows: [
+        ...current.rows,
+        {
+          rowId: `new:${crypto.randomUUID()}`,
+          combination: Object.fromEntries(
+            current.dimensions.map((dimension) => [
+              dimension.selectionKey,
+              dimension.values[0]?.value ?? "",
+            ]),
+          ),
+          baseRateCents: 0,
+          tierBasis: null,
+          tiers: [],
+        },
+      ],
+    }));
+  const generate = () =>
+    setMatrix((current) => {
+      const combinations = current.dimensions.reduce<
+        readonly Record<string, string | number | boolean>[]
+      >(
+        (all, dimension) =>
+          all.flatMap((combination) =>
+            dimension.values.map((choice) => ({
+              ...combination,
+              [dimension.selectionKey]: choice.value,
+            })),
+          ),
+        [{}],
+      );
+      const known = new Set(current.rows.map(key));
+      return {
+        ...current,
+        rows: [
+          ...current.rows,
+          ...combinations
+            .filter(
+              (combination) =>
+                !known.has(
+                  JSON.stringify(
+                    current.dimensions.map(
+                      (dimension) => combination[dimension.selectionKey],
+                    ),
+                  ),
+                ),
+            )
+            .map((combination) => ({
+              rowId: `new:${crypto.randomUUID()}`,
+              combination,
+              baseRateCents: 0,
+              tierBasis: null,
+              tiers: [],
+            })),
+        ],
+      };
+    });
+  const changeTier = (
+    rowId: string,
+    index: number,
+    key: keyof ProductDraftPricingTier,
+    next: string,
+  ) => {
+    const row = matrix.rows.find((item) => item.rowId === rowId);
+    if (!row) return;
+    update(rowId, {
+      tierBasis: "quantity",
+      tiers: row.tiers.map((tier, tierIndex) =>
+        tierIndex === index
+          ? ({
+              ...tier,
+              [key]:
+                key === "minimum" || key === "maximum"
+                  ? next === ""
+                    ? null
+                    : Number(next)
+                  : fromDollars(next),
+            } as ProductDraftPricingTier)
+          : tier,
+      ),
+    });
+  };
+  if (!value.editable)
+    return (
+      <section className="v2-product-pricing">
+        <form
+          id="product-draft-pricing"
+          onSubmit={(event) => event.preventDefault()}
+        >
+          <h2>Matrix pricing</h2>
+          <p>
+            {value.unavailableReason ?? "This pricing method is read only."}
+          </p>
+        </form>
+      </section>
+    );
+  return (
+    <section className="v2-product-pricing">
+      <form
+        id="product-draft-pricing"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave(matrix);
+        }}
+      >
+        <header>
+          <h2>Matrix pricing</h2>
+          <button type="button" disabled={disabled} onClick={generate}>
+            Generate missing combinations
+          </button>
+          <button type="button" disabled={disabled} onClick={add}>
+            Add row
+          </button>
+        </header>
+        <p>{matrix.pricingUnit === "per_piece" ? "Per piece" : "Per sq ft"}</p>
+        <div className="v2-products-table-wrap">
+          <table className="v2-products-table">
+            <thead>
+              <tr>
+                {matrix.dimensions.map((dimension) => (
+                  <th key={dimension.selectionKey}>{dimension.label}</th>
+                ))}
+                <th>Rate</th>
+                <th>Tiers</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {matrix.rows.map((row) => (
+                <tr key={row.rowId}>
+                  {matrix.dimensions.map((dimension) => (
+                    <td key={dimension.selectionKey}>
+                      <select
+                        disabled={disabled}
+                        value={String(
+                          row.combination[dimension.selectionKey] ?? "",
+                        )}
+                        onChange={(event) => {
+                          const choice = dimension.values.find(
+                            (item) => String(item.value) === event.target.value,
+                          );
+                          if (choice)
+                            update(row.rowId, {
+                              combination: {
+                                ...row.combination,
+                                [dimension.selectionKey]: choice.value,
+                              },
+                            });
+                        }}
+                      >
+                        {dimension.values.map((choice) => (
+                          <option
+                            key={String(choice.value)}
+                            value={String(choice.value)}
+                          >
+                            {choice.label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  ))}
+                  <td>
+                    <input
+                      disabled={disabled}
+                      inputMode="decimal"
+                      value={cents(row.baseRateCents)}
+                      onChange={(event) =>
+                        update(row.rowId, {
+                          baseRateCents: fromDollars(event.target.value) ?? 0,
+                        })
+                      }
+                    />
+                  </td>
+                  <td>
+                    {row.tierBasis === "computed_sheet_usage"
+                      ? "Read only"
+                      : row.tiers.length
+                        ? `${row.tiers.length} tier${row.tiers.length === 1 ? "" : "s"}`
+                        : "—"}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      disabled={
+                        disabled || row.tierBasis === "computed_sheet_usage"
+                      }
+                      onClick={() => remove(row.rowId)}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {matrix.rows
+          .filter(
+            (row) =>
+              row.tierBasis !== "computed_sheet_usage" && row.tiers.length,
+          )
+          .map((row) => (
+            <details key={`${row.rowId}:tiers`}>
+              <summary>Row tiers</summary>
+              {row.tiers.map((tier, index) => (
+                <div className="v2-product-pricing-tier" key={tier.tierId}>
+                  <label>
+                    From
+                    <input
+                      disabled={disabled}
+                      type="number"
+                      min="1"
+                      value={tier.minimum}
+                      onChange={(event) =>
+                        changeTier(
+                          row.rowId,
+                          index,
+                          "minimum",
+                          event.target.value,
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    To
+                    <input
+                      disabled={disabled}
+                      type="number"
+                      min="1"
+                      value={tier.maximum ?? ""}
+                      onChange={(event) =>
+                        changeTier(
+                          row.rowId,
+                          index,
+                          "maximum",
+                          event.target.value,
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    Rate
+                    <input
+                      disabled={disabled}
+                      inputMode="decimal"
+                      value={cents(
+                        matrix.pricingUnit === "per_piece"
+                          ? tier.perPieceCents
+                          : tier.perSqftCents,
+                      )}
+                      onChange={(event) =>
+                        changeTier(
+                          row.rowId,
+                          index,
+                          matrix.pricingUnit === "per_piece"
+                            ? "perPieceCents"
+                            : "perSqftCents",
+                          event.target.value,
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+              ))}
+            </details>
+          ))}
+      </form>
+      <section className="v2-product-pricing-preview">
+        <h2>Preview</h2>
+        <label>
+          Quantity
+          <input
+            type="number"
+            min="1"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </label>
+        {measurementMode === "dimensions_required" && (
+          <>
+            <label>
+              Width
+              <input
+                inputMode="decimal"
+                value={width}
+                onChange={(event) => setWidth(event.target.value)}
+              />
+            </label>
+            <label>
+              Height
+              <input
+                inputMode="decimal"
+                value={height}
+                onChange={(event) => setHeight(event.target.value)}
+              />
+            </label>
+          </>
+        )}
+        {matrix.dimensions.map((dimension) => (
+          <label key={dimension.selectionKey}>
+            {dimension.label}
+            <select
+              value={String(selections[dimension.selectionKey] ?? "")}
+              onChange={(event) => {
+                const choice = dimension.values.find(
+                  (item) => String(item.value) === event.target.value,
+                );
+                if (choice)
+                  setSelections((current) => ({
+                    ...current,
+                    [dimension.selectionKey]: choice.value,
+                  }));
+              }}
+            >
+              <option value="">Select</option>
+              {dimension.values.map((choice) => (
+                <option key={String(choice.value)} value={String(choice.value)}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
+        <button
+          type="button"
+          onClick={() => preview.mutate()}
+          disabled={preview.isPending}
+        >
+          Preview price
+        </button>
+        <PreviewResult result={preview.data} />
+        {preview.error && (
+          <p>
+            {(preview.error as { message?: string }).message ??
+              "Preview is unavailable."}
+          </p>
+        )}
+      </section>
+    </section>
+  );
+};
