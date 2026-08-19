@@ -71,6 +71,23 @@ export type InstantiateRouteResult = Readonly<{
   created: boolean;
 }>;
 
+/**
+ * Routing is the sole owner of frozen-route position.  The client identifies
+ * the current frozen route and its observed revision; it never supplies a
+ * destination step or a replacement route definition.
+ */
+export type CompleteCurrentRouteStepInput = Readonly<{
+  businessRequestId: string;
+  routeInstanceId: RouteInstanceId;
+  expectedRevision: string;
+}>;
+
+export type CompleteCurrentRouteStepResult = Readonly<{
+  routeInstance: RouteInstance;
+  completedStep: RouteInstanceStep;
+  nextStep?: RouteInstanceStep;
+}>;
+
 /** Products' explicit final policy. V1 routing flags/name inference are intentionally absent. */
 /** No generic CRUD: callers resolve, instantiate, and read inside their own transaction. */
 export interface RoutingPort {
@@ -83,7 +100,6 @@ export interface RoutingPort {
 /** Future named operations only; M1.8 deliberately implements none of them. */
 export type FutureRoutingOperation =
   | "route.start"
-  | "route.completeCurrentStep"
   | "route.advance"
   | "route.reroute"
   | "route.cancel";

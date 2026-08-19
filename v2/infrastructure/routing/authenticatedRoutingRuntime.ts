@@ -5,10 +5,12 @@ import type { RoutingHttpDependencies } from "../../src/interfaces/http/routingR
 import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
 import { IssuedV2PrincipalProvider, type TrustedHostIdentitySource } from "../authentication/trustedHostPrincipalProvider.js";
 import { PostgresRoutingWorkspaceReads } from "./postgresRoutingWorkspaceReads.js";
+import { RoutingLifecycleApplicationService } from "../../src/modules/routing/routingLifecycle.js";
+import { PostgresRoutingLifecycleTransactionRunner } from "./postgresRoutingLifecycleTransaction.js";
 
-export type AuthenticatedRoutingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedRoutingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; service?: RoutingLifecycleApplicationService }>;
 export type AuthenticatedRoutingRuntime = Readonly<{ dependencies: RoutingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export const composeAuthenticatedRoutingRuntime = (input: AuthenticatedRoutingRuntimeDependencies): AuthenticatedRoutingRuntime => ({
-  dependencies: { workspace: new PostgresRoutingWorkspaceReads(input.pool), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
+  dependencies: { workspace: new PostgresRoutingWorkspaceReads(input.pool), service: input.service ?? new RoutingLifecycleApplicationService(new PostgresRoutingLifecycleTransactionRunner(input.pool)), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
   trustedHostMiddleware: input.trustedHostMiddleware,
 });

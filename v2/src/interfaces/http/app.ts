@@ -261,7 +261,7 @@ export const createV2HttpApp = (
   if (fulfillment)
     app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFulfillmentRouter(fulfillment.dependencies));
   if (routing)
-    app.use("/v2/organizations/:organizationId/routing",routing.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},createRoutingRouter(routing.dependencies));
+    app.use("/v2/organizations/:organizationId/routing",routing.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createRoutingRouter(routing.dependencies));
 
   app.use((_request, response) =>
     response.status(404).json({ code: "NOT_FOUND" }),

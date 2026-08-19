@@ -43,6 +43,8 @@
     "v2:m1:quote": "tsx v2/scripts/runM17QuoteRehearsal.ts",
     "v2:m1:quote:browser": "playwright test --config v2/playwright.m175b.config.ts",
     "v2:m1:routing:contracts": "tsx v2/tests/modules/routingContracts.test.ts",
+    "v2:routing:lifecycle": "tsx v2/tests/modules/routingLifecycle.test.ts",
+    "v2:routing:lifecycle:http": "tsx v2/scripts/runRoutingLifecycleHttpRehearsal.ts",
     "v2:m1:routing": "tsx v2/scripts/runM18RoutingRehearsal.ts",
     "v2:m1:order:contracts": "jest --runInBand v2/tests/modules/orderContracts.test.ts",
     "v2:m1:order": "tsx v2/scripts/runM19OrderRehearsal.ts",
