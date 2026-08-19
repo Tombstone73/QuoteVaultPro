@@ -110,6 +110,28 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     if (existing.rows[0]) throw new V2ApplicationError("CONFLICT", "A Draft already exists for this Product.");
     const now = new Date();
     const inserted = await this.client.query<VersionRow>("INSERT INTO pbv2_tree_versions(organization_id,product_id,status,schema_version,tree_json,created_by_user_id,updated_by_user_id,created_at,updated_at) VALUES($1,$2,'DRAFT',$3,$4::jsonb,$5,$5,$6,$6) RETURNING id,status,schema_version,tree_json,created_at,updated_at,published_at", [input.organizationId, input.productId, source.schema_version, JSON.stringify(source.tree_json), input.staffActorUserId ?? null, now]);
+    // A recipe belongs to a Product Version, never to the mutable Product row.
+    // Starting a new draft therefore copies the current active definition and its
+    // material snapshots; edits to the new draft cannot rewrite prior versions.
+    const sourceRecipe = await this.client.query<{ id: string }>(
+      "SELECT id FROM v2_product_recipes WHERE organization_id=$1 AND product_id=$2 AND product_version_id=$3 FOR UPDATE",
+      [input.organizationId, input.productId, activeId],
+    );
+    if (sourceRecipe.rows[0]) {
+      const draftRecipe = await this.client.query<{ id: string }>(
+        "INSERT INTO v2_product_recipes(organization_id,product_id,product_version_id,updated_by_user_id) VALUES($1,$2,$3,$4) RETURNING id",
+        [input.organizationId, input.productId, inserted.rows[0]!.id, input.staffActorUserId ?? null],
+      );
+      await this.client.query(
+        `INSERT INTO v2_product_recipe_components(
+          organization_id,recipe_id,material_id,position,quantity,quantity_unit,quantity_kind,
+          material_name_snapshot,material_sku_snapshot
+        ) SELECT organization_id,$2,material_id,position,quantity,quantity_unit,quantity_kind,
+          material_name_snapshot,material_sku_snapshot
+        FROM v2_product_recipe_components WHERE organization_id=$1 AND recipe_id=$3`,
+        [input.organizationId, draftRecipe.rows[0]!.id, sourceRecipe.rows[0].id],
+      );
+    }
     const all = await this.client.query<VersionRow>("SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 ORDER BY updated_at DESC,id DESC LIMIT $3", [input.organizationId, input.productId, historyLimit + 3]);
     return { draftId: inserted.rows[0]!.id, lifecycle: lifecycle(all.rows, activeId) };
   }
