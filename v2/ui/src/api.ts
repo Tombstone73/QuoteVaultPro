@@ -553,13 +553,16 @@ const withSearch = (
   return text ? `${url}?${text}` : url;
 };
 const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
+  // FormData owns its multipart boundary. Supplying JSON here would make a
+  // legitimate binary upload unreadable by the HTTP boundary.
+  const isMultipart = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(url, {
     cache: "no-store",
     credentials: "include",
     ...init,
-    // init may carry only the CSRF header. Apply merged headers after init so
-    // a mutation is still parsed as JSON by the V2 HTTP boundary.
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    // init may carry only the CSRF header. JSON remains the default for the
+    // normal V2 command path; multipart is explicitly left to the browser.
+    headers: { ...(isMultipart ? {} : { "content-type": "application/json" }), ...(init?.headers ?? {}) },
   });
   // Every authenticated Quote/form response carries the trusted host's opaque
   // session epoch. Detect a replacement before its body can update the old
