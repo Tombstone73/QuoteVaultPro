@@ -1513,6 +1513,13 @@
       "when": 1788048000067,
       "tag": "0220_v2_routing_advance_capability",
       "breakpoints": true
+    },
+    {
+      "idx": 222,
+      "version": "7",
+      "when": 1788048000068,
+      "tag": "0221_v2_routing_administrator_view_capability",
+      "breakpoints": true
     }
   ]
 }
