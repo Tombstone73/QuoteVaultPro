@@ -132,6 +132,19 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         [input.organizationId, draftRecipe.rows[0]!.id, sourceRecipe.rows[0].id],
       );
     }
+    // Routing selection is version-owned just like the recipe.  Copy the
+    // complete frozen definition snapshot so Draft edits cannot rewrite the
+    // prior Active Product Version or orders formed from it.
+    await this.client.query(
+      `INSERT INTO v2_product_version_routing_specs(
+        organization_id,product_id,product_version_id,routing_mode,route_template_id,
+        source_template_revision,source_template_fingerprint,steps_json,updated_by_user_id
+      ) SELECT organization_id,product_id,$4,routing_mode,route_template_id,
+        source_template_revision,source_template_fingerprint,steps_json,$5
+      FROM v2_product_version_routing_specs
+      WHERE organization_id=$1 AND product_id=$2 AND product_version_id=$3`,
+      [input.organizationId, input.productId, activeId, inserted.rows[0]!.id, input.staffActorUserId ?? null],
+    );
     const all = await this.client.query<VersionRow>("SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 ORDER BY updated_at DESC,id DESC LIMIT $3", [input.organizationId, input.productId, historyLimit + 3]);
     return { draftId: inserted.rows[0]!.id, lifecycle: lifecycle(all.rows, activeId) };
   }

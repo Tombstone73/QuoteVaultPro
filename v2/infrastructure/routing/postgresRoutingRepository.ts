@@ -10,6 +10,7 @@ import {
 import type {
   InstantiateRouteInput,
   InstantiateRouteResult,
+  FrozenRouteDefinition,
   RouteInstance,
   RouteInstanceState,
   RouteInstanceStep,
@@ -85,11 +86,7 @@ export class PostgresRoutingRepository {
   async instantiateRoute(input: InstantiateRouteInput): Promise<InstantiateRouteResult> {
     if (input.organizationId !== input.work.organizationId)
       throw new V2ApplicationError("WRONG_TENANT", "Route work must use the same organization as its Route Instance.");
-    // Template writers must acquire FOR UPDATE on this header and update its
-    // revision/fingerprint in the same transaction as its steps.
-    const template = await this.template(input.organizationId, input.routeTemplateId, true, true);
-    if (!template) throw new V2ApplicationError("NOT_FOUND", "An active Route Template was not found for this organization.");
-    const definition = await this.readTemplate(template);
+    const definition = await this.definition(input.organizationId, input);
     if (!definition.steps.length)
       throw new V2ApplicationError("VALIDATION_ERROR", "A Route Template requires at least one step.");
 
@@ -101,14 +98,14 @@ export class PostgresRoutingRepository {
       `INSERT INTO v2_route_instances(id,organization_id,work_kind,order_document_id,order_line_id,source_template_id,source_template_revision,source_template_fingerprint,route_state,current_step_id)
        VALUES($1,$2,'sales_order_line',$3,$4,$5,$6,$7,'pending',$8)
        ON CONFLICT (organization_id,work_kind,order_line_id) DO NOTHING RETURNING id`,
-      [routeInstanceId, input.organizationId, input.work.orderId, input.work.orderLineId, definition.routeTemplateId, definition.revision, definition.definitionFingerprint, currentStepId],
+      [routeInstanceId, input.organizationId, input.work.orderId, input.work.orderLineId, definition.sourceTemplate.routeTemplateId, definition.sourceTemplate.revision, definition.sourceTemplate.definitionFingerprint, currentStepId],
     );
     if (!inserted.rows[0]) {
       const existing = await this.readRouteForWork(input.organizationId, input.work.orderLineId);
       if (!existing) throw new Error("Route instance conflict did not return an existing scoped route.");
-      if (existing.sourceTemplate.routeTemplateId !== definition.routeTemplateId
-        || existing.sourceTemplate.revision !== definition.revision
-        || existing.sourceTemplate.definitionFingerprint !== definition.definitionFingerprint)
+      if (existing.sourceTemplate.routeTemplateId !== definition.sourceTemplate.routeTemplateId
+        || existing.sourceTemplate.revision !== definition.sourceTemplate.revision
+        || existing.sourceTemplate.definitionFingerprint !== definition.sourceTemplate.definitionFingerprint)
         throw new V2ApplicationError("CONFLICT", "This Order line already has a Route Instance from a different template.");
       return { routeInstance: existing, created: false };
     }
@@ -123,6 +120,28 @@ export class PostgresRoutingRepository {
     const instance = await this.readRouteInstance(input.organizationId, routeInstanceId);
     if (!instance) throw new Error("New Route Instance could not be read in the caller transaction.");
     return { routeInstance: instance, created: true };
+  }
+
+  private async definition(organizationId: OrganizationId, input: InstantiateRouteInput): Promise<FrozenRouteDefinition> {
+    if (input.definition) {
+      const template = await this.template(organizationId, input.definition.sourceTemplate.routeTemplateId, false, true);
+      if (!template) throw new V2ApplicationError("NOT_FOUND", "The Product Version Route Template was not found for this organization.");
+      const steps = [...input.definition.steps].sort((a, b) => a.position - b.position);
+      if (!steps.length || steps.some((step, index) => !Number.isInteger(step.position) || step.position !== index))
+        throw new V2ApplicationError("VALIDATION_ERROR", "The Product Version Route definition is invalid.");
+      return { sourceTemplate: input.definition.sourceTemplate, steps };
+    }
+    if (!input.routeTemplateId) throw new V2ApplicationError("VALIDATION_ERROR", "A Route Template is required.");
+    // Template writers acquire FOR UPDATE on this header and revise it in the
+    // same transaction as its steps. Legacy Product Type policy snapshots the
+    // currently active definition here; version-owned definitions arrive above.
+    const template = await this.template(organizationId, input.routeTemplateId, true, true);
+    if (!template) throw new V2ApplicationError("NOT_FOUND", "An active Route Template was not found for this organization.");
+    const live = await this.readTemplate(template);
+    return {
+      sourceTemplate: { routeTemplateId: live.routeTemplateId, revision: live.revision, definitionFingerprint: live.definitionFingerprint },
+      steps: live.steps.map(({ position, kind }) => ({ position, kind })),
+    };
   }
 
   private async template(organizationId: OrganizationId, routeTemplateId: RouteTemplateId, activeOnly: boolean, lockForSnapshot: boolean): Promise<TemplateRow | null> {

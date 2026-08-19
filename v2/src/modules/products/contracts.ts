@@ -1,6 +1,7 @@
 import type { CurrencyCode, DecimalText, JsonValue, OrganizationId, PricingConfigurationId, ProductId, ProductTypeId, RouteTemplateId } from "../shared/commercialValues.js";
 import type { DimensionInput, NestingEstimateEvidence, PricingRules, ResolvedProductConfiguration } from "../pricing/contracts.js";
 import type { ApplicationResult } from "../../errors/applicationError.js";
+import type { ProductRoutingPolicy } from "./productRouting.js";
 
 export type SellableProductConfiguration = Readonly<{
   organizationId: OrganizationId;
@@ -27,6 +28,8 @@ export interface ProductsReadPort {
   /** Routing policy is current operational policy, intentionally independent
    * of the active PBV2 tree used by Pricing. */
   resolveCurrentRoutingProduct(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ productTypeId: ProductTypeId }> | null>;
+  /** Route selection is bound to the exact PBV2/Product Version priced on a commercial line. */
+  resolveVersionRoutingPolicy(organizationId: OrganizationId, productId: ProductId, productVersionId: string): Promise<ProductRoutingPolicy>;
 }
 
 /** Explicit input for the normal active-configuration pricing path; callers cannot select a tree id. */

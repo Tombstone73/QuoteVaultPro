@@ -29,6 +29,16 @@ export type RouteTemplate = Readonly<{
   steps: readonly RouteTemplateStep[];
 }>;
 
+/**
+ * A Product Version stores this immutable definition snapshot, not merely a
+ * mutable template id.  Routing still owns validating the snapshot and turns
+ * it into the Order-line route instance.
+ */
+export type FrozenRouteDefinition = Readonly<{
+  sourceTemplate: RouteInstance["sourceTemplate"];
+  steps: readonly Readonly<{ position: number; kind: RouteStepKind }> [];
+}>;
+
 /** The only commercial work Routing accepts in this milestone. Sales validates it in M1.9. */
 export type SalesOrderLineWorkReference = Readonly<{
   kind: "sales_order_line";
@@ -62,7 +72,9 @@ export type RouteInstance = Readonly<{
 export type InstantiateRouteInput = Readonly<{
   organizationId: OrganizationId;
   work: SalesOrderLineWorkReference;
-  routeTemplateId: RouteTemplateId;
+  /** Legacy Product Type policy. New Product Versions use definition below. */
+  routeTemplateId?: RouteTemplateId;
+  definition?: FrozenRouteDefinition;
 }>;
 
 export type InstantiateRouteResult = Readonly<{

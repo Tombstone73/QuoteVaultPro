@@ -6,10 +6,12 @@ import type { RoutingWorkspaceReadPort } from "../../modules/routing/workspaceRe
 import type { RoutingLifecycleApplicationService } from "../../modules/routing/routingLifecycle.js";
 import type { RouteInstanceId } from "../../modules/shared/commercialValues.js";
 import type { OperationContext } from "../../application/operation.js";
+import type { RouteTemplateAuthoringApplicationService } from "../../modules/routing/routeTemplateAuthoring.js";
 
 export type RoutingHttpDependencies = Readonly<{
   workspace: RoutingWorkspaceReadPort;
   service: RoutingLifecycleApplicationService;
+  authoring: RouteTemplateAuthoringApplicationService;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
 }>;
 
@@ -47,6 +49,22 @@ export const createRoutingRouter = (dependencies: RoutingHttpDependencies): Rout
       const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Routing transition is unavailable.");
       return response.status(status(cause.code)).json({ ok: false, error: { code: cause.code, message: cause.publicMessage } });
     }
+  });
+  router.post("/templates", async (request, response) => {
+    try {
+      const command = body(request.body), name = command.name, steps = command.steps;
+      if (typeof name !== "string" || !Array.isArray(steps)) throw new V2ApplicationError("VALIDATION_ERROR", "A Route Template name and steps are required.");
+      const result = await dependencies.authoring.create(await context(request, dependencies), { businessRequestId: command.businessRequestId as string, name, steps: steps as never });
+      return response.status(result.ok ? 201 : status(result.error.code)).json(result.ok ? { ok: true, data: result.value } : { ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+    } catch (error) { const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Route Template creation is unavailable."); return response.status(status(cause.code)).json({ ok:false,error:{code:cause.code,message:cause.publicMessage} }); }
+  });
+  router.post("/templates/:routeTemplateId/update", async (request, response) => {
+    try {
+      const command = body(request.body), routeTemplateId = request.params.routeTemplateId;
+      if (!routeTemplateId?.trim() || typeof command.name !== "string" || typeof command.active !== "boolean" || typeof command.expectedRevision !== "string" || !Array.isArray(command.steps)) throw new V2ApplicationError("VALIDATION_ERROR", "A current Route Template name, revision, state, and steps are required.");
+      const result = await dependencies.authoring.update(await context(request, dependencies), { businessRequestId: command.businessRequestId as string, routeTemplateId, expectedRevision: command.expectedRevision, name: command.name, active: command.active, steps: command.steps as never });
+      return response.status(result.ok ? 200 : status(result.error.code)).json(result.ok ? { ok: true, data: result.value } : { ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+    } catch (error) { const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Route Template update is unavailable."); return response.status(status(cause.code)).json({ ok:false,error:{code:cause.code,message:cause.publicMessage} }); }
   });
   return router;
 };

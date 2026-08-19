@@ -4,6 +4,7 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 import { canonicalJson, brandedId, currencyCode, type JsonValue, type OrganizationId, type PricingConfigurationId, type ProductId, type ProductTypeId } from "../../src/modules/shared/commercialValues.js";
 import type { HistoricalPricingConfigurationReference, ProductPricingCompatibilityPort, ProductTypeRoutePolicy, ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "../../src/modules/products/contracts.js";
 import { resolveActivePbv2PricingInput, type ActivePbv2CompatibilityRecord } from "../../src/modules/products/pbv2CompatibilityResolution.js";
+import { PostgresProductVersionRoutingReader } from "../products/postgresProductRouting.js";
 
 type ProductRow = {
   product_id: string; product_name: string; product_type_id: string | null; measurement_mode: "dimensions_required" | "quantity_only";
@@ -50,6 +51,10 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
     );
     const row = result.rows[0];
     return row?.product_type_id ? { productTypeId: brandedId<"ProductTypeId">(row.product_type_id) } : null;
+  }
+
+  async resolveVersionRoutingPolicy(organizationId: OrganizationId, productId: ProductId, productVersionId: string) {
+    return new PostgresProductVersionRoutingReader(this.client).read(organizationId, productId, productVersionId);
   }
 
   async resolveActivePricingInput(input: ResolveActivePricingInput): Promise<ApplicationResult<ResolvedPricingInput>> {

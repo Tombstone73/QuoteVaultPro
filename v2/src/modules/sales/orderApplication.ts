@@ -32,6 +32,7 @@ import {
   type OrderId,
   type OrderLineId,
   type OrganizationId,
+  type RouteTemplateId,
   type SalesLineId,
 } from "../shared/commercialValues.js";
 import {
@@ -655,18 +656,13 @@ export class OrderApplicationService {
   ): Promise<InstantiateRouteResult["routeInstance"][]> {
     const routes: InstantiateRouteResult["routeInstance"][] = [];
     for (const line of lines) {
-      if (!line.productTypeId)
-        throw new V2ApplicationError("CONFLICT", "The Product Type routing policy is not configured for this Order line.");
-      const productType = await tx.products.resolveProductType(
-        brandedId<"OrganizationId">(context.organizationId),
-        line.productTypeId,
+      const policy = await tx.products.resolveVersionRoutingPolicy(
+        brandedId<"OrganizationId">(context.organizationId), line.productId, line.resolvedConfiguration.pricingConfigurationId,
       );
-      if (!productType)
-        throw new V2ApplicationError("CONFLICT", "The Product Type routing policy is not configured for this Order line.");
-      // A Product Type that is explicitly unconfigured has no Routing
-      // instruction. Preserve that truthful state by creating no synthetic
-      // route; only a missing Product Type is an integrity conflict.
-      if (productType.routePolicy.kind === "no_route" || productType.routePolicy.kind === "unconfigured") continue;
+      // Existing versions without a spec use the compatibility reader's
+      // explicit Product Type fallback. An explicitly unconfigured/no-route
+      // version creates no synthetic route.
+      if (policy.kind === "no_route" || policy.kind === "unconfigured") continue;
       const route = await tx.routing.instantiateRoute({
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         work: {
@@ -675,7 +671,14 @@ export class OrderApplicationService {
           orderId,
           orderLineId: brandedId<"OrderLineId">(line.lineId),
         },
-        routeTemplateId: productType.routePolicy.defaultRouteTemplateId,
+        definition: {
+          sourceTemplate: {
+            routeTemplateId: brandedId<"RouteTemplateId">(policy.routeTemplateId),
+            revision: policy.sourceTemplateRevision ?? "1",
+            definitionFingerprint: policy.sourceTemplateFingerprint ?? "legacy-product-type",
+          },
+          steps: policy.steps,
+        },
       });
       routes.push(route.routeInstance);
     }

@@ -54,6 +54,14 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
     resolveActivePricingInput: async (input: { productId: string; quantity: number; selections?: Record<string, unknown>; dimensions?: { width: string; height: string; unit: "in" } }) => ({ ok: true as const, value: productInput(input.productId, input.quantity, input.selections, input.dimensions) }),
     resolveCurrentRoutingProduct: async (_org: OrganizationId, productId: string) => ({ productTypeId: brandedId<"ProductTypeId">(productId === "banner" ? "print-route" : "stock-no-route") }),
     resolveProductType: async (_org: OrganizationId, productTypeId: string) => ({ id: brandedId<"ProductTypeId">(productTypeId), routePolicy: productTypeId === "print-route" ? { kind: "route_required" as const, defaultRouteTemplateId: brandedId<"RouteTemplateId">("print-template") } : options.yardRouting === "unconfigured" ? { kind: "unconfigured" as const } : { kind: "no_route" as const } }),
+    // Existing parity fixtures predate version-bound routing.  Model the
+    // compatibility reader explicitly so conversion stays pinned to the
+    // priced Product Version instead of consulting mutable Product Type state.
+    resolveVersionRoutingPolicy: async (_org: OrganizationId, productId: string) => productId === "banner"
+      ? { kind: "route_required" as const, routeTemplateId: brandedId<"RouteTemplateId">("print-template"), routeTemplateName: "Print route", sourceTemplateRevision: "1", sourceTemplateFingerprint: "sha256:route", steps: [{ position: 0, kind: "production" as const }] }
+      : options.yardRouting === "unconfigured"
+        ? { kind: "unconfigured" as const }
+        : { kind: "no_route" as const },
   };
   const customers = {
     validateContactReference: async () => true,

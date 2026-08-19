@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import {
   newBusinessRequestId,
   productApi,
+  routingApi,
   type ProductCatalogItem,
   type ProductDraftFormulaPricing,
   type ProductDraftGeneral,
@@ -14,6 +15,7 @@ import {
   type ProductDraftPricingMatrix,
   type ProductDraftPricingPreview,
   type ProductDraftPricingTier,
+  type ProductDraftRouting,
   type ProductMaterial,
   type ProductRecipe,
   type ProductRecipeComponent,
@@ -38,6 +40,8 @@ const keys = {
     ["v2", s, o, "products", id, "draft-option-pricing"] as const,
   recipe: (s: string, o: string, id: string) =>
     ["v2", s, o, "products", id, "draft-recipe"] as const,
+  routing: (s: string, o: string, id: string) =>
+    ["v2", s, o, "products", id, "draft-routing"] as const,
 };
 const dash = "—";
 const initials = (value: string) =>
@@ -274,6 +278,14 @@ const VersionRow = ({ version }: { version: ProductVersionSummary }) => (
     <small>Created {date(version.createdAt)}</small>
   </li>
 );
+
+/** Product selects a Routing-owned definition; it never edits route steps here. */
+const RoutingPolicyForm = ({ value, templates, disabled, onSave }: Readonly<{ value: ProductDraftRouting; templates: readonly Readonly<{ routeTemplateId: string; name: string; active: boolean; steps: readonly Readonly<{ position: number; kind: string }>[] }>[]; disabled: boolean; onSave: (value: ProductDraftRouting) => void }>) => {
+  const [kind, setKind] = useState(value.routing.kind), [templateId, setTemplateId] = useState(value.routing.kind === "route_required" ? value.routing.routeTemplateId : "");
+  const selected = templates.find((template) => template.routeTemplateId === templateId);
+  const submit = (event: React.FormEvent) => { event.preventDefault(); if (kind === "route_required" && !selected) return; onSave({ ...value, routing: kind === "route_required" ? { kind, routeTemplateId: selected!.routeTemplateId, routeTemplateName: selected!.name, steps: selected!.steps.map((step) => ({ position: step.position, kind: step.kind as "proofing" | "prepress" | "production" | "fulfillment" })) } : { kind } }); };
+  return <form id="product-draft-routing" className="v2-product-form" onSubmit={submit}><h2>Routing</h2><p>Products select a Routing-owned definition. Frozen Order routes remain independent from later template edits.</p><label>Routing policy<select value={kind} disabled={disabled} onChange={(event) => setKind(event.target.value as typeof kind)}><option value="unconfigured">Unconfigured</option><option value="no_route">No route</option><option value="route_required">Route required</option></select></label>{kind === "route_required" && <><label>Route template<select value={templateId} disabled={disabled} onChange={(event) => setTemplateId(event.target.value)}><option value="">Select a Route Template</option>{templates.filter((template) => template.active).map((template) => <option key={template.routeTemplateId} value={template.routeTemplateId}>{template.name}</option>)}</select></label>{selected && <p className="v2-product-note">{selected.steps.map((step) => step.kind).join(" → ")}</p>}</>}<button type="submit" disabled={disabled || (kind === "route_required" && !selected)}>Save Routing</button></form>;
+};
 const Detail = ({
   state,
   canEdit,
@@ -487,7 +499,7 @@ const Builder = ({
   back: () => void;
 }) => {
   const client = useQueryClient(),
-    [tab, setTab] = useState<"general" | "options" | "pricing" | "materials">(
+    [tab, setTab] = useState<"general" | "options" | "pricing" | "materials" | "routing">(
       "general",
     );
   const general = useQuery({
@@ -534,6 +546,18 @@ const Builder = ({
     queryKey: keys.recipe(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftRecipe(organizationId, product.productId),
     enabled: tab === "materials",
+    retry: false,
+  });
+  const routing = useQuery({
+    queryKey: keys.routing(sessionScope, organizationId, product.productId),
+    queryFn: () => productApi.draftRouting(organizationId, product.productId),
+    enabled: tab === "routing",
+    retry: false,
+  });
+  const routeTemplates = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "routing", "workspace"],
+    queryFn: () => routingApi.workspace(organizationId),
+    enabled: tab === "routing",
     retry: false,
   });
   const materials = useQuery({
@@ -685,6 +709,10 @@ const Builder = ({
         value,
       ),
   });
+  const saveRouting = useMutation({
+    mutationFn: (value: ProductDraftRouting) => productApi.saveDraftRouting(organizationId, product.productId, newBusinessRequestId(), { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt, routing: value.routing }),
+    onSuccess: (value) => client.setQueryData(keys.routing(sessionScope, organizationId, product.productId), value),
+  });
   if (!general.data)
     return (
       <section className="v2-products">
@@ -697,19 +725,22 @@ const Builder = ({
     savePricing.isPending ||
     saveMatrix.isPending ||
     saveFormula.isPending ||
-    saveRecipe.isPending;
+    saveRecipe.isPending ||
+    saveRouting.isPending;
   const error = (saveGeneral.error ??
     saveOptions.error ??
     savePricing.error ??
     saveMatrix.error ??
     saveFormula.error ??
-    saveRecipe.error) as { message?: string } | null;
+    saveRecipe.error ?? saveRouting.error) as { message?: string } | null;
   const pricingForm = formula.data?.editable
     ? "product-draft-formula"
     : tab === "pricing"
       ? "product-draft-pricing"
       : tab === "materials"
         ? "product-draft-recipe"
+        : tab === "routing"
+          ? "product-draft-routing"
         : undefined;
   return (
     <section className="v2-products v2-product-builder">
@@ -760,6 +791,7 @@ const Builder = ({
         >
           4 Materials
         </button>
+        <button className={tab === "routing" ? "active" : ""} onClick={() => setTab("routing")}>5 Routing</button>
       </nav>
       {error && (
         <p className="v2-product-version-message">
@@ -807,6 +839,8 @@ const Builder = ({
         ) : (
           <p className="v2-proof-empty">Loading materialsâ€¦</p>
         )
+      ) : tab === "routing" ? (
+        routing.data ? <RoutingPolicyForm value={routing.data} templates={routeTemplates.data?.templates ?? []} disabled={!canEdit || busy} onSave={(value) => saveRouting.mutate(value)} /> : <p className="v2-proof-empty">Loading Routing settings…</p>
       ) : formula.data ? (
         <FormulaForm
           value={formula.data}

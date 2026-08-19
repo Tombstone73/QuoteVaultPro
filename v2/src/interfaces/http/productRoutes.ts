@@ -21,6 +21,7 @@ import type {
   RecipeComponentInput,
 } from "../../modules/products/productRecipes.js";
 import type { ProductPublicationApplicationService } from "../../modules/products/productPublication.js";
+import type { ProductDraftRouting, ProductRoutingApplicationService } from "../../modules/products/productRouting.js";
 
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
@@ -124,6 +125,7 @@ export interface ProductRecipeReadPort {
     productId: string,
   ): Promise<ProductRecipe | null>;
 }
+export interface ProductDraftRoutingReadPort { read(organizationId: string, productId: string): Promise<ProductDraftRouting | null>; }
 export interface ProductMaterialSearchPort {
   list(
     organizationId: string,
@@ -147,8 +149,10 @@ export type ProductHttpDependencies = Readonly<{
   draftOptionPricing: ProductDraftOptionPricingReadPort;
   draftPreview: ProductDraftPricingPreviewPort;
   draftRecipe: ProductRecipeReadPort;
+  draftRouting: ProductDraftRoutingReadPort;
   materials: ProductMaterialSearchPort;
   recipes: ProductRecipeApplicationService;
+  routing: ProductRoutingApplicationService;
   lifecycle: ProductVersionLifecycleApplicationService;
   publication: ProductPublicationApplicationService;
   principals: Readonly<{
@@ -1324,6 +1328,30 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
       }
     },
   );
+  router.get("/:productId/draft/routing", async (request, response) => {
+    try {
+      const { organizationId, allowed } = await principalFor(request);
+      if (!allowed) return deny(response, 403, "FORBIDDEN", "Product access is unavailable.");
+      const routing = await dependencies.draftRouting.read(organizationId, request.params.productId);
+      return routing ? response.status(200).json({ ok: true, data: routing }) : deny(response, 404, "NOT_FOUND", "Product Draft Routing is unavailable.");
+    } catch { return deny(response, 403, "FORBIDDEN", "Authenticated access is required."); }
+  });
+  router.patch("/:productId/draft/routing", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const body = request.body as Record<string, unknown>;
+      if (typeof body?.businessRequestId !== "string" || typeof body?.draftVersionId !== "string" || typeof body?.expectedDraftUpdatedAt !== "string" || !body?.routing || typeof body.routing !== "object")
+        throw new V2ApplicationError("VALIDATION_ERROR", "Draft Routing settings are invalid.");
+      const result = await dependencies.routing.updateDraftRouting({ principal, organizationId, operationId: body.businessRequestId, businessRequest: { id: body.businessRequestId, payloadFingerprint: body.businessRequestId } }, {
+        productId: request.params.productId, businessRequestId: body.businessRequestId, draftVersionId: body.draftVersionId, expectedDraftUpdatedAt: body.expectedDraftUpdatedAt, routing: body.routing as any,
+      });
+      return result.ok ? response.status(200).json({ ok:true,data:result.value }) : response.status(result.error.code === "VALIDATION_ERROR" ? 400 : result.error.code === "FORBIDDEN" ? 403 : result.error.code === "NOT_FOUND" ? 404 : 409).json({ ok:false,error:{code:result.error.code,message:result.error.publicMessage} });
+    } catch (error) {
+      const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("VALIDATION_ERROR", "Draft Routing settings are invalid.");
+      return response.status(cause.code === "FORBIDDEN" ? 403 : cause.code === "NOT_FOUND" ? 404 : cause.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok:false,error:{code:cause.code,message:cause.publicMessage} });
+    }
+  });
   router.get("/:productId", async (request, response) => {
     try {
       const { organizationId, allowed } = await principalFor(request);
