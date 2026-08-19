@@ -25,6 +25,7 @@ import { createCustomerRouter, type CustomerHttpDependencies } from "./customerR
 import { createContactRouter, type ContactHttpDependencies } from "./contactRoutes.js";
 import { createProductRouter, type ProductHttpDependencies } from "./productRoutes.js";
 import { createRoutingRouter, type RoutingHttpDependencies } from "./routingRoutes.js";
+import { createInventoryRouter, type InventoryHttpDependencies } from "./inventoryRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -47,6 +48,7 @@ export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: Prepres
 export type AuthenticatedProductionRouteRuntime = Readonly<{ dependencies: ProductionHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedFulfillmentRouteRuntime = Readonly<{ dependencies: FulfillmentHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedRoutingRouteRuntime = Readonly<{ dependencies: RoutingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedInventoryRouteRuntime = Readonly<{ dependencies: InventoryHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -62,6 +64,7 @@ export const createV2HttpApp = (
   fulfillment?: AuthenticatedFulfillmentRouteRuntime,
   routing?: AuthenticatedRoutingRouteRuntime,
   configure?: (app: Express) => void,
+  inventory?: AuthenticatedInventoryRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -111,7 +114,7 @@ export const createV2HttpApp = (
           const policy = new AuthorityPolicy();
           const quoteView = policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed;
           const productView = policy.decide(principal, { capability: "product.view", resource: { organizationId } }).allowed;
-          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "fulfillment.view", "route.view"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
+          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
           if (!anyWorkspaceView)
             return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "V2 workspace access is unavailable." } });
           return response.status(200).json({
@@ -150,6 +153,8 @@ export const createV2HttpApp = (
                 productionView: policy.decide(principal, { capability: "production.view", resource: { organizationId } }).allowed,
                 productionWork: policy.decide(principal, { capability: "production.work", resource: { organizationId } }).allowed,
                 productionComplete: policy.decide(principal, { capability: "production.complete", resource: { organizationId } }).allowed,
+                inventoryView: policy.decide(principal, { capability: "inventory.view", resource: { organizationId } }).allowed,
+                inventoryReceive: policy.decide(principal, { capability: "inventory.receive", resource: { organizationId } }).allowed,
                 fulfillmentView: policy.decide(principal, { capability: "fulfillment.view", resource: { organizationId } }).allowed,
                 fulfillmentPickup: policy.decide(principal, { capability: "fulfillment.pickup", resource: { organizationId } }).allowed,
                 fulfillmentShip: policy.decide(principal, { capability: "fulfillment.ship", resource: { organizationId } }).allowed,
@@ -258,6 +263,8 @@ export const createV2HttpApp = (
     );
   if (production)
     app.use("/v2/organizations/:organizationId/production",production.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createProductionRouter(production.dependencies));
+  if (inventory)
+    app.use("/v2/organizations/:organizationId/inventory",inventory.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createInventoryRouter(inventory.dependencies));
   if (fulfillment)
     app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFulfillmentRouter(fulfillment.dependencies));
   if (routing)

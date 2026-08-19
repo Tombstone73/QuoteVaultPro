@@ -1527,6 +1527,13 @@
       "when": 1788048000069,
       "tag": "0222_v2_product_version_routing_authoring",
       "breakpoints": true
+    },
+    {
+      "idx": 224,
+      "version": "7",
+      "when": 1788048000070,
+      "tag": "0223_v2_inventory_stock_receipts",
+      "breakpoints": true
     }
   ]
 }

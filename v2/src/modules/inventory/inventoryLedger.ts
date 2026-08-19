@@ -7,14 +7,15 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 import { brandedId, canonicalJson, type OrderLineMaterialRequirementId, type OrganizationId, type ProductionMaterialConsumptionId, type ProductionWorkId } from "../shared/commercialValues.js";
 import type { RecipeUnit } from "../products/productRecipes.js";
 
-export const inventoryMovementKinds = ["reserve", "release", "consume", "waste", "correction"] as const;
+export const inventoryMovementKinds = ["receipt", "reserve", "release", "consume", "waste", "correction"] as const;
 export type InventoryMovementKind = (typeof inventoryMovementKinds)[number];
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
 
 export type InventoryReservation = Readonly<{ reservationId: string; organizationId: OrganizationId; productionWorkId: ProductionWorkId; requirementId: OrderLineMaterialRequirementId; materialId: string; materialName: string; materialSku: string | null; quantity: string; unit: RecipeUnit }>;
-export type InventoryMovement = Readonly<{ movementId: string; organizationId: OrganizationId; materialId: string; materialName: string; materialSku: string | null; productionWorkId: ProductionWorkId; reservationId?: string; requirementId?: OrderLineMaterialRequirementId; consumptionId?: ProductionMaterialConsumptionId; quantity: string; unit: RecipeUnit; kind: InventoryMovementKind; onHandDelta: string; reservedDelta: string; createdAt: string }>;
+export type InventoryMovement = Readonly<{ movementId: string; organizationId: OrganizationId; materialId: string; materialName: string; materialSku: string | null; productionWorkId?: ProductionWorkId; reservationId?: string; requirementId?: OrderLineMaterialRequirementId; consumptionId?: ProductionMaterialConsumptionId; quantity: string; unit: RecipeUnit; kind: InventoryMovementKind; onHandDelta: string; reservedDelta: string; reason?: string; createdAt: string }>;
 export type InventoryBalance = Readonly<{ materialId: string; materialName: string; materialSku: string | null; unit: RecipeUnit; onHandQuantity: string; reservedQuantity: string; availableQuantity: string }>;
+export type InventoryMaterialBalance = Readonly<{ materialId: string; materialName: string; materialSku: string | null; unit: RecipeUnit; onHandQuantity: string; reservedQuantity: string; availableQuantity: string }>;
 export type InventoryReconciliationFact = Readonly<{ consumptionId: ProductionMaterialConsumptionId; materialId: string; materialName: string; quantity: string; unit: RecipeUnit; kind: "consumed" | "waste" | "correction"; status: "applied" | "unapplied" | "blocked" | "retryable"; lastFailureCode?: string; lastFailureMessage?: string; attemptCount: number }>;
 export type InventoryReconciliation = Readonly<{ productionWorkId: ProductionWorkId; balances: readonly InventoryBalance[]; movements: readonly InventoryMovement[]; facts: readonly InventoryReconciliationFact[] }>;
 
@@ -23,11 +24,13 @@ export interface InventoryLedgerTransaction {
   succeed(organizationId: string, requestId: string, result: unknown): Promise<void>;
   attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string } & Actor>): Promise<void>;
   audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; summary: string } & Actor>): Promise<void>;
+  receiveStock(input: Readonly<{ organizationId: OrganizationId; materialId: string; quantity: string; reason: string; operationRequestId: string } & Actor>): Promise<InventoryMovement>;
   reserveForWork(input: Readonly<{ organizationId: OrganizationId; productionWorkId: ProductionWorkId; operationRequestId: string } & Actor>): Promise<readonly InventoryReservation[]>;
   releaseUnusedForWork(input: Readonly<{ organizationId: OrganizationId; productionWorkId: ProductionWorkId; operationRequestId: string } & Actor>): Promise<readonly InventoryMovement[]>;
   applyConsumption(input: Readonly<{ organizationId: OrganizationId; consumptionId: ProductionMaterialConsumptionId; operationRequestId: string } & Actor>): Promise<InventoryMovement>;
   recordReconciliationFailure(input: Readonly<{ organizationId: OrganizationId; consumptionId: ProductionMaterialConsumptionId; businessRequestId: string; errorCode: string; errorMessage: string; status: "retryable" | "blocked" }>): Promise<void>;
   read(organizationId: OrganizationId, productionWorkId: ProductionWorkId): Promise<InventoryReconciliation | null>;
+  listMaterials(organizationId: OrganizationId): Promise<readonly InventoryMaterialBalance[]>;
 }
 export interface InventoryLedgerTransactionRunner { transaction<T>(work: (tx: InventoryLedgerTransaction) => Promise<T>): Promise<T>; }
 
@@ -43,13 +46,13 @@ const error = (cause: unknown) => cause instanceof V2ApplicationError ? cause : 
 export class InventoryLedgerApplicationService {
   constructor(private readonly runner: InventoryLedgerTransactionRunner, private readonly authority = new AuthorityPolicy()) {}
   async reserveForProductionWork(context: OperationContext, input: Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId }>): Promise<ApplicationResult<readonly InventoryReservation[]>> {
-    return this.mutate(context, "inventory.reserve-production-work.v1", input, async (tx, requestId) => tx.reserveForWork({ organizationId: brandedId<"OrganizationId">(context.organizationId), productionWorkId: input.productionWorkId, operationRequestId: requestId, ...actor(context) }));
+    return this.mutate(context, "inventory.reserve-production-work.v1", "production.work", input, async (tx, requestId) => tx.reserveForWork({ organizationId: brandedId<"OrganizationId">(context.organizationId), productionWorkId: input.productionWorkId, operationRequestId: requestId, ...actor(context) }));
   }
   async releaseUnusedForProductionWork(context: OperationContext, input: Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId }>): Promise<ApplicationResult<readonly InventoryMovement[]>> {
-    return this.mutate(context, "inventory.release-production-work.v1", input, async (tx, requestId) => tx.releaseUnusedForWork({ organizationId: brandedId<"OrganizationId">(context.organizationId), productionWorkId: input.productionWorkId, operationRequestId: requestId, ...actor(context) }));
+    return this.mutate(context, "inventory.release-production-work.v1", "production.work", input, async (tx, requestId) => tx.releaseUnusedForWork({ organizationId: brandedId<"OrganizationId">(context.organizationId), productionWorkId: input.productionWorkId, operationRequestId: requestId, ...actor(context) }));
   }
   async applyProductionConsumption(context: OperationContext, input: Readonly<{ businessRequestId: string; consumptionId: ProductionMaterialConsumptionId }>): Promise<ApplicationResult<InventoryMovement>> {
-    const result = await this.mutate(context, "inventory.apply-production-consumption.v1", input, async (tx, requestId) => tx.applyConsumption({ organizationId: brandedId<"OrganizationId">(context.organizationId), consumptionId: input.consumptionId, operationRequestId: requestId, ...actor(context) }));
+    const result = await this.mutate(context, "inventory.apply-production-consumption.v1", "production.work", input, async (tx, requestId) => tx.applyConsumption({ organizationId: brandedId<"OrganizationId">(context.organizationId), consumptionId: input.consumptionId, operationRequestId: requestId, ...actor(context) }));
     if (!result.ok && result.error.code !== "WRONG_TENANT" && result.error.code !== "FORBIDDEN" && result.error.code !== "VALIDATION_ERROR") {
       const status = /insufficient on-hand stock/i.test(result.error.publicMessage) ? "blocked" as const : "retryable" as const;
       try { await this.runner.transaction((tx) => tx.recordReconciliationFailure({ organizationId: brandedId<"OrganizationId">(context.organizationId), consumptionId: input.consumptionId, businessRequestId: input.businessRequestId, errorCode: result.error.code, errorMessage: result.error.publicMessage, status })); } catch (cause) { return failure(error(cause)); }
@@ -65,18 +68,31 @@ export class InventoryLedgerApplicationService {
       return success(projection);
     } catch (cause) { return failure(error(cause)); }
   }
-  private async mutate<T>(context: OperationContext, operation: string, input: { businessRequestId: string }, work: (tx: InventoryLedgerTransaction, requestId: string) => Promise<T>): Promise<ApplicationResult<T>> {
+  async listMaterials(context: OperationContext): Promise<ApplicationResult<readonly InventoryMaterialBalance[]>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!this.authority.decide(context.principal, { capability: "inventory.view", resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to view Inventory.");
+      return success(await this.runner.transaction((tx) => tx.listMaterials(brandedId<"OrganizationId">(context.organizationId))));
+    } catch (cause) { return failure(error(cause)); }
+  }
+  async receiveStock(context: OperationContext, input: Readonly<{ businessRequestId: string; materialId: string; quantity: string; reason: string }>): Promise<ApplicationResult<InventoryMovement>> {
+    if (!/^\d+(?:\.\d{1,6})?$/u.test(input.quantity) || Number(input.quantity) <= 0) return failure(new V2ApplicationError("VALIDATION_ERROR", "Received inventory quantity must be positive."));
+    if (input.reason.trim().length < 3 || input.reason.trim().length > 500) return failure(new V2ApplicationError("VALIDATION_ERROR", "Inventory receipt reason must be between 3 and 500 characters."));
+    return this.mutate(context, "inventory.receive-stock.v1", "inventory.receive", input, async (tx, requestId) => tx.receiveStock({ organizationId: brandedId<"OrganizationId">(context.organizationId), materialId: input.materialId, quantity: input.quantity, reason: input.reason.trim(), operationRequestId: requestId, ...actor(context) }));
+  }
+  private async mutate<T>(context: OperationContext, operation: string, capability: import("../../authorization/capabilities.js").Capability, input: { businessRequestId: string }, work: (tx: InventoryLedgerTransaction, requestId: string) => Promise<T>): Promise<ApplicationResult<T>> {
     try {
       requireOperationPrincipalScope(context);
       if (context.businessRequest?.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
-      if (!this.authority.decide(context.principal, { capability: "production.work", resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to reconcile Production inventory.");
+      if (!this.authority.decide(context.principal, { capability, resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Inventory operation.");
       const value = await this.runner.transaction(async (tx) => {
         const reservation = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) });
         if (reservation.kind === "replay") return reservation.request.resultJson as T;
         const result = await work(tx, reservation.request.id);
         const resourceId = Array.isArray(result) ? (result[0] as { reservationId?: string; movementId?: string } | undefined)?.reservationId ?? (result[0] as { movementId?: string } | undefined)?.movementId ?? input.businessRequestId : (result as { movementId?: string }).movementId ?? input.businessRequestId;
         await tx.attribute({ organizationId: context.organizationId, requestId: reservation.request.id, operation, resourceId, ...actor(context) });
-        await tx.audit({ organizationId: context.organizationId, requestId: reservation.request.id, operation, resourceId, summary: operation, ...actor(context) });
+        const reason = typeof result === "object" && result !== null && !Array.isArray(result) && "reason" in result && typeof (result as { reason?: unknown }).reason === "string" ? `: ${(result as { reason: string }).reason}` : "";
+        await tx.audit({ organizationId: context.organizationId, requestId: reservation.request.id, operation, resourceId, summary: `${operation}${reason}`, ...actor(context) });
         await tx.succeed(context.organizationId, reservation.request.id, result);
         return result;
       });

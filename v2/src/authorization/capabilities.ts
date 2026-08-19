@@ -12,6 +12,7 @@ export const capabilityIds = [
   "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship",
   "prepress.view", "prepress.work", "prepress.complete",
   "production.view", "production.work", "production.complete",
+  "inventory.view", "inventory.receive",
 ] as const;
 
 export type Capability = (typeof capabilityIds)[number];

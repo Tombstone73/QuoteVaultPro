@@ -92,6 +92,8 @@ export type UiBootstrap = Readonly<{
     productionView?: boolean;
     productionWork?: boolean;
     productionComplete?: boolean;
+    inventoryView?: boolean;
+    inventoryReceive?: boolean;
     fulfillmentView?: boolean;
     fulfillmentPickup?: boolean;
     fulfillmentShip?: boolean;
@@ -1197,6 +1199,13 @@ export const productionApi = {
   reserveMaterials:(org:string,workId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/reservations`,businessRequestId,{}),
   releaseUnusedMaterials:(org:string,workId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/release-unused`,businessRequestId,{}),
   reconcileMaterial:(org:string,workId:string,consumptionId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/reconciliation/${encodeURIComponent(consumptionId)}`,businessRequestId,{}),
+};
+export type InventoryMaterialBalance = Readonly<{ materialId:string; materialName:string; materialSku:string|null; unit:ProductRecipeComponent["unit"]; onHandQuantity:string; reservedQuantity:string; availableQuantity:string }>;
+export type InventoryReceipt = Readonly<{ movementId:string; materialId:string; quantity:string; unit:ProductRecipeComponent["unit"]; kind:"receipt"; onHandDelta:string; reservedDelta:string; reason:string; createdAt:string }>;
+const inventoryEndpoint = (org: string, suffix = "") => `/v2/organizations/${encodeURIComponent(org)}/inventory${suffix}`;
+export const inventoryApi = {
+  materials: (org:string) => request<readonly InventoryMaterialBalance[]>(inventoryEndpoint(org,"/materials")),
+  receive: (org:string, materialId:string, businessRequestId:string, input:Readonly<{quantity:string;reason:string}>) => request<InventoryReceipt>(inventoryEndpoint(org,`/materials/${encodeURIComponent(materialId)}/receipts`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""}, body:JSON.stringify({businessRequestId,...input}) }),
 };
 const fulfillmentEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/fulfillment${suffix}`;

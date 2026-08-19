@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
-import type { InventoryBalance, InventoryLedgerTransaction, InventoryLedgerTransactionRunner, InventoryMovement, InventoryReconciliation, InventoryReservation } from "../../src/modules/inventory/inventoryLedger.js";
+import type { InventoryBalance, InventoryLedgerTransaction, InventoryLedgerTransactionRunner, InventoryMaterialBalance, InventoryMovement, InventoryReconciliation, InventoryReservation } from "../../src/modules/inventory/inventoryLedger.js";
 import { brandedId, type OrganizationId, type ProductionMaterialConsumptionId, type ProductionWorkId } from "../../src/modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 
@@ -10,9 +10,9 @@ type MaterialRow = { id: string; name: string; sku: string | null; stock_quantit
 type ReservationRow = { id: string; material_id: string; material_name_snapshot: string; material_sku_snapshot: string | null; opened_quantity: string; quantity_unit: InventoryReservation["unit"]; material_requirement_id: string };
 type ConsumptionRow = { id: string; organization_id: string; order_document_id: string; order_line_id: string; production_work_id: string; production_attempt_id: string; material_requirement_id: string | null; material_id: string; material_name_snapshot: string; material_sku_snapshot: string | null; quantity: string; quantity_unit: InventoryReservation["unit"]; consumption_kind: "consumed" | "waste" | "correction"; corrects_consumption_id: string | null };
 type ReconciliationRow = { consumption_id: string; material_id: string; material_name_snapshot: string; quantity: string; quantity_unit: InventoryReservation["unit"]; consumption_kind: "consumed" | "waste" | "correction"; movement_id: string | null; error_code: string | null; error_message: string | null; failure_status: "retryable" | "blocked" | null; attempt_count: string };
-type MovementRow = { id: string; organization_id: string; material_id: string; material_name_snapshot: string; material_sku_snapshot: string | null; production_work_id: string; reservation_id: string | null; material_requirement_id: string | null; consumption_id: string | null; quantity: string; quantity_unit: InventoryReservation["unit"]; movement_kind: InventoryMovement["kind"]; on_hand_delta: string; reserved_delta: string; created_at: Date };
+type MovementRow = { id: string; organization_id: string; material_id: string; material_name_snapshot: string; material_sku_snapshot: string | null; production_work_id: string | null; reservation_id: string | null; material_requirement_id: string | null; consumption_id: string | null; quantity: string; quantity_unit: InventoryReservation["unit"]; movement_kind: InventoryMovement["kind"]; on_hand_delta: string; reserved_delta: string; reason: string | null; created_at: Date };
 const noRows = <T>(rows: readonly T[]) => rows.length === 0;
-const movement = (row: MovementRow): InventoryMovement => Object.freeze({ movementId: row.id, organizationId: brandedId<"OrganizationId">(row.organization_id), materialId: row.material_id, materialName: row.material_name_snapshot, materialSku: row.material_sku_snapshot, productionWorkId: brandedId<"ProductionWorkId">(row.production_work_id), ...(row.reservation_id ? { reservationId: row.reservation_id } : {}), ...(row.material_requirement_id ? { requirementId: brandedId<"OrderLineMaterialRequirementId">(row.material_requirement_id) } : {}), ...(row.consumption_id ? { consumptionId: brandedId<"ProductionMaterialConsumptionId">(row.consumption_id) } : {}), quantity: row.quantity, unit: row.quantity_unit, kind: row.movement_kind, onHandDelta: row.on_hand_delta, reservedDelta: row.reserved_delta, createdAt: row.created_at.toISOString() });
+const movement = (row: MovementRow): InventoryMovement => Object.freeze({ movementId: row.id, organizationId: brandedId<"OrganizationId">(row.organization_id), materialId: row.material_id, materialName: row.material_name_snapshot, materialSku: row.material_sku_snapshot, ...(row.production_work_id ? { productionWorkId: brandedId<"ProductionWorkId">(row.production_work_id) } : {}), ...(row.reservation_id ? { reservationId: row.reservation_id } : {}), ...(row.material_requirement_id ? { requirementId: brandedId<"OrderLineMaterialRequirementId">(row.material_requirement_id) } : {}), ...(row.consumption_id ? { consumptionId: brandedId<"ProductionMaterialConsumptionId">(row.consumption_id) } : {}), quantity: row.quantity, unit: row.quantity_unit, kind: row.movement_kind, onHandDelta: row.on_hand_delta, reservedDelta: row.reserved_delta, ...(row.reason ? { reason: row.reason } : {}), createdAt: row.created_at.toISOString() });
 const positive = (value: string) => /^\d+(?:\.\d{1,6})?$/u.test(value) && Number(value) > 0;
 
 export type InventoryLedgerTestHooks = Readonly<{ afterMovement?: () => Promise<void> }>;
@@ -24,6 +24,18 @@ export class PostgresInventoryLedgerTransaction implements InventoryLedgerTransa
   async succeed(organizationId: string, requestId: string, result: unknown) { await this.requests.succeed(this.client, organizationId, requestId, { resourceType: "inventory_movement", resourceId: requestId, resultJson: result }); }
   async attribute(input: Parameters<InventoryLedgerTransaction["attribute"]>[0]) { await this.requests.recordAttribution(this.client, { organizationId: input.organizationId, operationRequestId: input.requestId, operation: input.operation, resourceType: "inventory_movement", resourceId: input.resourceId, principalKind: input.principalKind, principalSubject: input.principalSubject, staffActorUserId: input.staffActorUserId }); }
   async audit(input: Parameters<InventoryLedgerTransaction["audit"]>[0]) { await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,'inventory_movement_recorded','inventory_movement',$4,$5,$6,$7,$8::jsonb)", [input.organizationId, input.requestId, input.operation, input.resourceId, input.principalKind, input.principalSubject, input.staffActorUserId ?? null, JSON.stringify([{ kind: "inventory_ledger", summary: input.summary }])]); }
+  async receiveStock(input: Parameters<InventoryLedgerTransaction["receiveStock"]>[0]): Promise<InventoryMovement> {
+    if (!positive(input.quantity)) throw new V2ApplicationError("VALIDATION_ERROR", "Received inventory quantity must be positive.");
+    const material = await this.lockMaterial(input.organizationId, input.materialId);
+    const unit = material.inventory_unit;
+    if (!unit) throw new V2ApplicationError("VALIDATION_ERROR", "Material inventory unit is not configured.");
+    const row = (await this.client.query<MovementRow>(`INSERT INTO v2_inventory_movements(organization_id,material_id,material_name_snapshot,material_sku_snapshot,order_document_id,order_line_id,production_work_id,production_attempt_id,material_requirement_id,reservation_id,consumption_id,quantity,quantity_unit,movement_kind,on_hand_delta,reserved_delta,operation_request_id,reason)
+      VALUES($1,$2,$3,$4,NULL,NULL,NULL,NULL,NULL,NULL,NULL,$5::numeric,$6,'receipt',$5::numeric,0,$7,$8) RETURNING *`, [input.organizationId, material.id, material.name, material.sku, input.quantity, unit, input.operationRequestId, input.reason])).rows[0];
+    if (!row) throw new V2ApplicationError("CONFLICT", "Inventory receipt could not be recorded.");
+    await this.client.query("UPDATE materials SET stock_quantity=stock_quantity+$3::numeric,updated_at=now() WHERE organization_id=$1 AND id=$2", [input.organizationId, material.id, input.quantity]);
+    await this.hooks?.afterMovement?.();
+    return movement(row);
+  }
   private async work(org: OrganizationId, id: ProductionWorkId, lock = false): Promise<WorkRow> {
     const row = (await this.client.query<WorkRow>(`SELECT w.id,w.order_document_id,w.order_line_id,(SELECT count(*)::text FROM v2_production_attempts a WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id AND a.completed_at IS NULL) active_attempts FROM v2_production_works w WHERE w.organization_id=$1 AND w.id=$2 ${lock ? "FOR UPDATE" : ""}`, [org, id])).rows[0];
     if (!row) throw new V2ApplicationError("NOT_FOUND", "Production work was not found.");
@@ -94,6 +106,17 @@ export class PostgresInventoryLedgerTransaction implements InventoryLedgerTransa
       LEFT JOIN LATERAL (SELECT count(*) n FROM v2_inventory_reconciliation_attempts a WHERE a.organization_id=c.organization_id AND a.consumption_id=c.id) attempts ON true
       WHERE c.organization_id=$1 AND c.production_work_id=$2 ORDER BY c.created_at,c.id`, [organizationId, work.id])).rows;
     return Object.freeze({ productionWorkId, balances, movements: movements.map(movement), facts: facts.map((row) => Object.freeze({ consumptionId: brandedId<"ProductionMaterialConsumptionId">(row.consumption_id), materialId: row.material_id, materialName: row.material_name_snapshot, quantity: row.quantity, unit: row.quantity_unit, kind: row.consumption_kind, status: row.movement_id ? "applied" as const : row.failure_status ?? "unapplied" as const, ...(row.error_code ? { lastFailureCode: row.error_code, lastFailureMessage: row.error_message ?? undefined } : {}), attemptCount: Number(row.attempt_count) })) });
+  }
+  async listMaterials(organizationId: OrganizationId): Promise<readonly InventoryMaterialBalance[]> {
+    const rows = (await this.client.query<MaterialRow>("SELECT id,name,sku,stock_quantity::text,consumption_unit,inventory_unit FROM materials WHERE organization_id=$1 AND is_active=true ORDER BY name,id", [organizationId])).rows;
+    const balances: InventoryMaterialBalance[] = [];
+    for (const material of rows) {
+      const reserved = (await this.client.query<{ quantity: string }>("SELECT COALESCE(sum(reserved_delta),0)::text quantity FROM v2_inventory_movements WHERE organization_id=$1 AND material_id=$2", [organizationId, material.id])).rows[0]!.quantity;
+      const unit = material.inventory_unit ?? material.consumption_unit;
+      if (!unit) continue;
+      balances.push(Object.freeze({ materialId: material.id, materialName: material.name, materialSku: material.sku, unit, onHandQuantity: material.stock_quantity, reservedQuantity: reserved, availableQuantity: String(Number(material.stock_quantity) - Number(reserved)) }));
+    }
+    return balances;
   }
 }
 export class PostgresInventoryLedgerTransactionRunner implements InventoryLedgerTransactionRunner { constructor(private readonly pool: Pool, private readonly hooks?: InventoryLedgerTestHooks) {} async transaction<T>(action: (tx: InventoryLedgerTransaction) => Promise<T>): Promise<T> { const client = await this.pool.connect(); try { await client.query("BEGIN"); const result = await action(new PostgresInventoryLedgerTransaction(client, this.hooks)); await client.query("COMMIT"); return result; } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); } } }

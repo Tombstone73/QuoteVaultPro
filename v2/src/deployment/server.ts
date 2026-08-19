@@ -25,6 +25,7 @@ import { composeAuthenticatedPrepressRuntime } from "../../infrastructure/prepre
 import { composeAuthenticatedProductionRuntime } from "../../infrastructure/production/authenticatedProductionRuntime.js";
 import { composeAuthenticatedFulfillmentRuntime } from "../../infrastructure/fulfillment/authenticatedFulfillmentRuntime.js";
 import { composeAuthenticatedRoutingRuntime } from "../../infrastructure/routing/authenticatedRoutingRuntime.js";
+import { composeAuthenticatedInventoryRuntime } from "../../infrastructure/inventory/authenticatedInventoryRuntime.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -47,6 +48,7 @@ export const createV2DeploymentApp = (
   const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const fulfillment = composeAuthenticatedFulfillmentRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const routing = composeAuthenticatedRoutingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const inventory = composeAuthenticatedInventoryRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
 
   return createV2HttpApp(
     config,
@@ -69,6 +71,7 @@ export const createV2DeploymentApp = (
     fulfillment,
     routing,
     authentication.install,
+    inventory,
   );
 };
 

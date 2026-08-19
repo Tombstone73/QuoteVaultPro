@@ -46,11 +46,13 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import type { VisualAppearance, VisualTheme } from "./appearance";
+import { InventoryWorkspace } from "./InventoryWorkspace";
 
 export type V2VisualPage = "home" | "quotes" | "orders" | "customers" | "contacts" | "products" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "appearance";
 
 type NavigationItem = Readonly<{
   page?: V2VisualPage;
+  href?: string;
   label: string;
   icon: LucideIcon;
 }>;
@@ -81,7 +83,7 @@ const sections: readonly NavigationSection[] = [
       { label: "Product Builder", icon: Layers },
       { label: "Nesting", icon: Grid2X2 },
       { label: "Materials", icon: Boxes },
-      { label: "Inventory", icon: Warehouse },
+      { href: "/inventory", label: "Inventory", icon: Warehouse },
       { label: "Procurement", icon: Box },
     ],
   },
@@ -216,18 +218,19 @@ export const V2VisualShell = ({
                   </button>
                 )}
                 {!isClosed &&
-                  section.items.filter(({ page }) => Boolean(page)).map(({ page: target, label, icon: Icon }) => (
-                    <button
+                  section.items.filter(({ page, href }) => Boolean(page) || Boolean(href)).map(({ page: target, href, label, icon: Icon }) => href ? (
+                    <a
                       key={label}
-                      type="button"
+                      href={href}
                       title={label}
-                      aria-current={target === page ? "page" : undefined}
-                      className={`v2-nav-item ${target === page ? "is-active" : ""}`}
-                      onClick={() => target && onNavigate(target)}
+                      aria-current={window.location.pathname === href ? "page" : undefined}
+                      className={`v2-nav-item ${window.location.pathname === href ? "is-active" : ""}`}
                     >
                       <Icon aria-hidden />
                       {!collapsed && <span>{label}</span>}
-                    </button>
+                    </a>
+                  ) : (
+                    <button key={label} type="button" title={label} aria-current={target === page ? "page" : undefined} className={`v2-nav-item ${target === page ? "is-active" : ""}`} onClick={() => target && onNavigate(target)}><Icon aria-hidden />{!collapsed && <span>{label}</span>}</button>
                   ))}
               </div>
             );
@@ -266,7 +269,7 @@ export const V2VisualShell = ({
             </div>
           </div>
         </header>
-        <main className="v2-workspace">{children}</main>
+        <main className="v2-workspace">{typeof window !== "undefined" && window.location.pathname === "/inventory" ? <InventoryWorkspace /> : children}</main>
       </div>
     </div>
   );
