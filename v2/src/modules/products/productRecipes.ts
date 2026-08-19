@@ -7,6 +7,8 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 
 export const recipeUnits = ["each", "square_foot", "linear_foot", "sheet", "roll"] as const;
 export type RecipeUnit = (typeof recipeUnits)[number];
+export const recipeQuantityKinds = ["per_line", "per_piece"] as const;
+export type RecipeQuantityKind = (typeof recipeQuantityKinds)[number];
 export type RecipeComponent = Readonly<{
   componentId: string;
   materialId: string;
@@ -14,9 +16,10 @@ export type RecipeComponent = Readonly<{
   materialSku: string | null;
   quantity: string;
   unit: RecipeUnit;
-  quantityKind: "fixed";
+  quantityKind: RecipeQuantityKind;
 }>;
 export type ProductRecipe = Readonly<{
+  recipeId: string;
   productId: string;
   productVersionId: string;
   /** The containing Product Version revision used for stale-write protection. */
@@ -29,6 +32,7 @@ export type RecipeComponentInput = Readonly<{
   materialId: string;
   quantity: string;
   unit: RecipeUnit;
+  quantityKind?: RecipeQuantityKind;
 }>;
 export type UpdateDraftRecipeInput = Readonly<{
   productId: string;
@@ -101,7 +105,8 @@ const validateComponents = (components: readonly RecipeComponentInput[]): readon
       throw new V2ApplicationError("VALIDATION_ERROR", "Recipe materials must be unique.");
     }
     materialIds.add(materialId);
-    if (!recipeUnits.includes(component.unit) || !validQuantity(component.quantity)) {
+    if (!recipeUnits.includes(component.unit) || !validQuantity(component.quantity)
+      || (component.quantityKind !== undefined && !recipeQuantityKinds.includes(component.quantityKind))) {
       throw new V2ApplicationError("VALIDATION_ERROR", "Recipe quantities are invalid.");
     }
     return { ...component, materialId, quantity: component.quantity };

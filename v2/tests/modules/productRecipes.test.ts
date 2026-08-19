@@ -25,8 +25,8 @@ const context = (requestId: string, capabilities: readonly string[] = ["product.
 class RecipeTransaction implements ProductRecipeTransaction {
   draftRevision = initialRevision;
   readonly activeRecipe: ProductRecipe = {
-    productId: "product-a", productVersionId: "active-a", draftUpdatedAt: initialRevision,
-    lifecycle: "active", components: [{ componentId: "active-component", materialId: "material-a", materialName: "Substrate", materialSku: "SUB", quantity: "1", unit: "sheet", quantityKind: "fixed" }],
+    recipeId: "recipe-active", productId: "product-a", productVersionId: "active-a", draftUpdatedAt: initialRevision,
+    lifecycle: "active", components: [{ componentId: "active-component", materialId: "material-a", materialName: "Substrate", materialSku: "SUB", quantity: "1", unit: "sheet", quantityKind: "per_line" }],
   };
   draftRecipe: ProductRecipe | null = null;
   private readonly requests = new Map<string, ProductRecipe>();
@@ -50,13 +50,13 @@ class RecipeTransaction implements ProductRecipeTransaction {
     }
     this.draftRevision = "2026-08-18T12:01:00.000Z";
     this.draftRecipe = {
-      productId: "product-a", productVersionId: "draft-a", draftUpdatedAt: this.draftRevision, lifecycle: "draft",
+      recipeId: "recipe-draft", productId: "product-a", productVersionId: "draft-a", draftUpdatedAt: this.draftRevision, lifecycle: "draft",
       components: input.components.map((component, position) => ({
         componentId: component.componentId ?? `component-${position}`,
         materialId: component.materialId,
         materialName: component.materialId === "material-b" ? "Vinyl" : "Substrate",
         materialSku: component.materialId === "material-b" ? "VIN" : "SUB",
-        quantity: component.quantity, unit: component.unit, quantityKind: "fixed" as const,
+        quantity: component.quantity, unit: component.unit, quantityKind: component.quantityKind ?? "per_line",
       })),
     };
     return this.draftRecipe;

@@ -4,6 +4,7 @@ import { PostgresProductsCompatibilityReader } from "../compatibility/postgresPr
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import { PostgresBillingDraftInvoiceTransaction } from "../billing/postgresBillingDraftInvoiceTransaction.js";
 import { PostgresRoutingRepository } from "../routing/postgresRoutingRepository.js";
+import { PostgresOrderMaterialRequirements } from "./postgresOrderMaterialRequirements.js";
 import { PostgresSalesDocumentNumberAllocator } from "./postgresCommercialPrimitives.js";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter.js";
 import { summarizeOrderTotals, type OrderOperationResult, type OrderReadModel, type OrderReservation, type OrderTransaction, type OrderTransactionRunner } from "../../src/modules/sales/orderApplication.js";
@@ -41,6 +42,7 @@ const restoredResult = (value: unknown): unknown => {
 /** One client backs Sales, Billing, Routing, M0 attribution and Audit. */
 export type OrderPersistenceTestHooks = Readonly<{
   afterSales?: () => Promise<void>;
+  afterMaterialRequirements?: () => Promise<void>;
   afterBilling?: () => Promise<void>;
   afterRoute?: () => Promise<void>;
   afterAudit?: () => Promise<void>;
@@ -51,6 +53,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
   readonly pricing = new V2PricingParityAdapter();
   readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder">;
   readonly routing: RoutingPort;
+  readonly materialRequirements: OrderTransaction["materialRequirements"];
   private readonly requests = new PostgresOperationRequestRepository();
   private readonly numbers = new PostgresSalesDocumentNumberAllocator();
   constructor(private readonly client: PoolClient, private readonly hooks?: OrderPersistenceTestHooks) {
@@ -68,6 +71,14 @@ export class PostgresOrderTransaction implements OrderTransaction {
       readRouteInstance: (...args) => routing.readRouteInstance(...args),
       readRouteForWork: (...args) => routing.readRouteForWork(...args),
       instantiateRoute: async (input) => { const result = await routing.instantiateRoute(input); await hooks?.afterRoute?.(); return result; },
+    };
+    const requirements = new PostgresOrderMaterialRequirements(client);
+    this.materialRequirements = {
+      freeze: async (organizationId, orderId, lines) => {
+        await requirements.freeze(organizationId, orderId, lines);
+        await hooks?.afterMaterialRequirements?.();
+      },
+      hasFrozen: (organizationId, orderLineId) => requirements.hasFrozen(organizationId, orderLineId),
     };
   }
   async reserve(input: Parameters<OrderTransaction["reserve"]>[0]): Promise<OrderReservation> {

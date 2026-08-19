@@ -157,6 +157,10 @@ export interface OrderTransaction {
   readonly pricing: PricingPort;
   readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder">;
   readonly routing: RoutingPort;
+  readonly materialRequirements: Readonly<{
+    freeze(organizationId: string, orderId: OrderId, lines: readonly SalesLineSnapshot[]): Promise<void>;
+    hasFrozen(organizationId: string, orderLineId: SalesLineId): Promise<boolean>;
+  }>;
   reserve(input: Readonly<{
     organizationId: string;
     operation: string;
@@ -391,6 +395,10 @@ export class OrderApplicationService {
     await tx.create({ orderId, organizationId: brandedId<"OrganizationId">(context.organizationId), number,
       customerContact: source.customerContact, purchaseOrderNumber: source.purchaseOrderNumber,
       requestedDueDate: source.requestedDueDate, terms: source.terms, lines });
+    // The source checkpoint has immutable Product Version/configuration facts.
+    // Freeze expected material requirements in this same conversion transaction
+    // before Billing or Routing can observe a partially-created Order.
+    await tx.materialRequirements.freeze(context.organizationId, orderId, lines);
     const draft = await tx.billing.createDraftInvoice(this.draftInput(
       context.organizationId, orderId, operationRequestId, source.customerContact,
       source.purchaseOrderNumber, source.terms, lines, "1",
@@ -581,7 +589,9 @@ export class OrderApplicationService {
       if (index < 0) throw new V2ApplicationError("NOT_FOUND", "Order line was not found in this Order.");
       const prior = lines[index]!;
       const routed = await tx.hasRoute(current.order.organizationId, current.order.orderId, prior.lineId);
+      const materialFrozen = await tx.materialRequirements.hasFrozen(current.order.organizationId, prior.lineId);
       if (change.kind === "remove") {
+        if (materialFrozen) throw new V2ApplicationError("CONFLICT", "A line with frozen material requirements cannot be removed.");
         if (routed) throw new V2ApplicationError("CONFLICT", "A routed Order line cannot be removed without an explicit Routing operation.");
         lines.splice(index, 1);
         continue;
@@ -593,6 +603,8 @@ export class OrderApplicationService {
         dimensions: change.line.dimensions ?? prior.resolvedConfiguration.dimensions,
       };
       const replacement = (await this.buildLines(tx, context, [intended], [prior]))[0]!;
+      if (materialFrozen && canonicalJson(replacement) !== canonicalJson(prior))
+        throw new V2ApplicationError("CONFLICT", "A line with frozen material requirements cannot be changed.");
       if (replacement.productId !== prior.productId)
         throw new V2ApplicationError("CONFLICT", "An existing Order line cannot be retargeted to another Product; remove/add or use a future Routing operation.");
       if (replacement.productTypeId !== prior.productTypeId)

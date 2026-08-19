@@ -20,6 +20,8 @@ describe("M1.10 Quote to Order conversion contract", () => {
   test("the canonical Order core is shared and does not reserve an operation request", async () => {
     const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "orderApplication.ts"), "utf8");
     const core = source.slice(source.indexOf("async createFromCommercialSnapshot"), source.indexOf("async read(", source.indexOf("async createFromCommercialSnapshot")));
+    expect(core).toMatch(/materialRequirements\.freeze/);
+    expect(core.indexOf("materialRequirements.freeze")).toBeLessThan(core.indexOf("createDraftInvoice"));
     expect(core).toMatch(/createDraftInvoice/);
     expect(core).toMatch(/instantiateRoutes/);
     expect(core).toMatch(/resolveCurrentRoutingProduct/);
@@ -34,5 +36,14 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(transaction).toMatch(/BEGIN/);
     expect(transaction).toMatch(/PostgresQuoteTransaction/);
     expect(transaction).toMatch(/PostgresOrderTransaction/);
+  });
+
+  test("freezes expected material requirements inside the same PostgreSQL conversion boundary", async () => {
+    const transaction = await readFile(path.join(process.cwd(), "v2", "infrastructure", "sales", "postgresOrderTransaction.ts"), "utf8");
+    const requirements = await readFile(path.join(process.cwd(), "v2", "infrastructure", "sales", "postgresOrderMaterialRequirements.ts"), "utf8");
+    expect(transaction).toMatch(/afterMaterialRequirements/);
+    expect(requirements).toMatch(/v2_order_line_material_requirements/);
+    expect(requirements).toMatch(/ON CONFLICT\(organization_id,order_line_id,source_recipe_component_id\) DO NOTHING/);
+    expect(requirements).toMatch(/resolvedConfiguration\.pricingConfigurationId/);
   });
 });

@@ -84,6 +84,10 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
     customers,
     products,
     pricing,
+    // The captured V1 fixtures deliberately have no version-bound recipe.
+    // P7B treats that as a valid zero-requirement Product rather than
+    // inventing a physical requirement during commercial conversion.
+    materialRequirements: { freeze: async () => undefined, hasFrozen: async () => false },
     billing: {
       createDraftInvoice: async (input: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } }) => { invoiceInput = input; return { invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "created" as const, synchronizationVersion: "1" }; },
       synchronizeDraftInvoice: async () => ({ invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "unchanged" as const, synchronizationVersion: "1" }),

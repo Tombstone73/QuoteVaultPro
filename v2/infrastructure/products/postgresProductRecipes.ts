@@ -10,6 +10,7 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 
 type RecipeRow = {
   product_id: string;
+  recipe_id: string;
   product_version_id: string;
   draft_updated_at: Date;
   status: string;
@@ -19,11 +20,11 @@ type RecipeRow = {
   material_sku_snapshot: string | null;
   quantity: string | null;
   quantity_unit: RecipeComponent["unit"] | null;
-  quantity_kind: "fixed" | null;
+  quantity_kind: "fixed" | "per_line" | "per_piece" | null;
 };
 
 const recipeQuery = `
-  SELECT r.product_id,r.product_version_id,v.updated_at draft_updated_at,v.status,
+  SELECT r.id recipe_id,r.product_id,r.product_version_id,v.updated_at draft_updated_at,v.status,
     c.id component_id,c.material_id,c.material_name_snapshot,c.material_sku_snapshot,
     c.quantity::text,c.quantity_unit,c.quantity_kind
   FROM v2_product_recipes r
@@ -36,6 +37,7 @@ const toRecipe = (rows: readonly RecipeRow[]): ProductRecipe | null => {
   const first = rows[0];
   if (!first) return null;
   return {
+    recipeId: first.recipe_id,
     productId: first.product_id,
     productVersionId: first.product_version_id,
     draftUpdatedAt: first.draft_updated_at.toISOString(),
@@ -47,13 +49,13 @@ const toRecipe = (rows: readonly RecipeRow[]): ProductRecipe | null => {
       materialSku: row.material_sku_snapshot,
       quantity: row.quantity!,
       unit: row.quantity_unit!,
-      quantityKind: row.quantity_kind!,
+      quantityKind: row.quantity_kind === "per_piece" ? "per_piece" : "per_line",
     }] : []),
   };
 };
 
 export class PostgresProductRecipeReader {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pick<Pool, "query">) {}
 
   async read(organizationId: string, productId: string, versionId: string): Promise<ProductRecipe | null> {
     return toRecipe((await this.pool.query<RecipeRow>(recipeQuery, [organizationId, productId, versionId])).rows);
@@ -135,9 +137,9 @@ class Transaction implements ProductRecipeTransaction {
       if (component.componentId) {
         await this.client.query(
           `UPDATE v2_product_recipe_components SET material_id=$1,position=$2,quantity=$3::numeric,
-            quantity_unit=$4,quantity_kind='fixed',material_name_snapshot=$5,material_sku_snapshot=$6,updated_at=now()
-           WHERE organization_id=$7 AND recipe_id=$8 AND id=$9`,
-          [material.id, position, component.quantity, component.unit, material.name, material.sku,
+            quantity_unit=$4,quantity_kind=$5,material_name_snapshot=$6,material_sku_snapshot=$7,updated_at=now()
+           WHERE organization_id=$8 AND recipe_id=$9 AND id=$10`,
+          [material.id, position, component.quantity, component.unit, component.quantityKind ?? "per_line", material.name, material.sku,
             input.organizationId, recipe.id, component.componentId],
         );
       } else {
@@ -145,8 +147,8 @@ class Transaction implements ProductRecipeTransaction {
           `INSERT INTO v2_product_recipe_components(
             organization_id,recipe_id,material_id,position,quantity,quantity_unit,quantity_kind,
             material_name_snapshot,material_sku_snapshot
-          ) VALUES($1,$2,$3,$4,$5::numeric,$6,'fixed',$7,$8)`,
-          [input.organizationId, recipe.id, material.id, position, component.quantity, component.unit, material.name, material.sku],
+          ) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8,$9)`,
+          [input.organizationId, recipe.id, material.id, position, component.quantity, component.unit, component.quantityKind ?? "per_line", material.name, material.sku],
         );
       }
     }
