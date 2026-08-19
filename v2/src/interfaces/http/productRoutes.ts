@@ -42,6 +42,8 @@ export type ProductCatalogItem = Readonly<{
 }>;
 export type ProductWorkspaceDetail = Readonly<
   ProductCatalogItem & {
+    /** Optimistic-concurrency revision required by the canonical publish command. */
+    productUpdatedAt: string;
     description?: string;
     workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
     requiresProductionJob: boolean;

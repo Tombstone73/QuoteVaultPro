@@ -109,7 +109,7 @@ export type SalesListPage<T> = Readonly<{
 }>;
 export type ProductLifecycle = "active" | "inactive" | "draft" | "active_with_draft";
 export type ProductCatalogItem = Readonly<{ productId:string; displayName:string; category?:string; lifecycle:ProductLifecycle; measurementMode:"dimensions_required"|"quantity_only"; pricingSummary:string; productType?:Readonly<{displayName:string;routePolicy:"route_required"|"no_route"|"unconfigured"}>; primaryMaterialName?:string; activeVersion?:Readonly<{label:string;publishedAt?:string}>; hasDraft:boolean }>;
-export type ProductVersionSummary = Readonly<{status:"active"|"draft"|"deprecated"|"archived";createdAt:string;updatedAt:string;publishedAt?:string;editable:boolean}>;
+export type ProductVersionSummary = Readonly<{productVersionId:string;status:"active"|"draft"|"deprecated"|"archived";createdAt:string;updatedAt:string;publishedAt?:string;editable:boolean}>;
 export type ProductVersionLifecycle = Readonly<{active?:ProductVersionSummary;draft?:ProductVersionSummary;history:readonly ProductVersionSummary[];historyLimit:number;historyHasMore:boolean;canCreateDraft:boolean}>;
 export type ProductDraftGeneral = Readonly<{displayName:string;category:string|null;description:string|null;storefrontVisible:boolean;measurementMode:"dimensions_required"|"quantity_only";workflowIntent:"standard_production"|"fulfillment_only"|"service_fee";requiresProofApproval:boolean;requiresProductionJob:boolean}>;
 export type ProductDraftGeneralRead = Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";general:ProductDraftGeneral}>;
@@ -128,7 +128,7 @@ export type ProductRecipe=Readonly<{recipeId:string;productId:string;productVers
 export type ProductDraftRouting=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";routing:Readonly<{kind:"route_required";routeTemplateId:string;routeTemplateName:string;steps:readonly Readonly<{position:number;kind:"proofing"|"prepress"|"production"|"fulfillment"}>[];sourceTemplateRevision?:string;sourceTemplateFingerprint?:string}>|Readonly<{kind:"no_route"|"unconfigured"}>}>;
 export type PublishedProductVersion=Readonly<{productId:string;productName:string;productVersionId:string;productUpdatedAt:string;productVersionUpdatedAt:string;publishedAt?:string;alreadyPublished:boolean;operationReference:"products.publish_configuration.v1"}>;
 export type ProductMaterial=Readonly<{materialId:string;name:string;sku:string|null;unit:ProductRecipeComponent["unit"]}>;
-export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;versions:ProductVersionLifecycle }>;
+export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { productUpdatedAt:string; description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;versions:ProductVersionLifecycle }>;
 export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
 export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentAvailability = Readonly<{

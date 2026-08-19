@@ -7,6 +7,7 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 
 export type ProductVersionStatus = "active" | "draft" | "deprecated" | "archived";
 export type ProductVersionSummary = Readonly<{
+  productVersionId: string;
   status: ProductVersionStatus;
   createdAt: string;
   updatedAt: string;

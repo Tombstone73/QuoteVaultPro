@@ -129,6 +129,34 @@ export const ProductWorkspace = ({
         queryKey: keys.detail(sessionScope, organizationId, productId),
       }),
   });
+  const publishDraft = useMutation({
+    mutationFn: (product: ProductWorkspaceDetail) => {
+      const draft = product.versions.draft;
+      if (!draft) throw new Error("A Product Draft is required before publication.");
+      return productApi.publishDraft(
+        organizationId,
+        product.productId,
+        newBusinessRequestId(),
+        {
+          draftVersionId: draft.productVersionId,
+          expectedProductUpdatedAt: product.productUpdatedAt,
+          expectedDraftUpdatedAt: draft.updatedAt,
+          confirmWarnings: true,
+          activateProduct: true,
+        },
+      );
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({
+        queryKey: keys.detail(sessionScope, organizationId, productId),
+      });
+      void client.invalidateQueries({
+        queryKey: keys.list(sessionScope, organizationId, query, page),
+      });
+      window.history.pushState({}, "", `/products/${encodeURIComponent(productId)}`);
+      setEditing(false);
+    },
+  });
   if (!organizationId || !canView)
     return (
       <section className="v2-products">
@@ -144,7 +172,10 @@ export const ProductWorkspace = ({
         sessionScope={sessionScope}
         editing={editing}
         creatingDraft={createDraft.isPending}
+        publishingDraft={publishDraft.isPending}
+        publishError={(publishDraft.error as { message?: string } | null)?.message}
         createDraft={(product) => createDraft.mutate(product)}
+        publishDraft={(product) => publishDraft.mutate(product)}
         openDraft={() => {
           window.history.pushState(
             {},
@@ -293,7 +324,10 @@ const Detail = ({
   sessionScope,
   editing,
   creatingDraft,
+  publishingDraft,
+  publishError,
   createDraft,
+  publishDraft,
   openDraft,
   closeDraft,
   back,
@@ -304,7 +338,10 @@ const Detail = ({
   sessionScope: string;
   editing: boolean;
   creatingDraft: boolean;
+  publishingDraft: boolean;
+  publishError?: string;
   createDraft: (product: ProductWorkspaceDetail) => void;
+  publishDraft: (product: ProductWorkspaceDetail) => void;
   openDraft: () => void;
   closeDraft: () => void;
   back: () => void;
@@ -435,9 +472,18 @@ const Detail = ({
           <header>
             <h2>Versions</h2>
             {canEdit && versions.draft ? (
-              <button type="button" onClick={openDraft}>
-                Edit Draft
-              </button>
+              <>
+                <button type="button" onClick={openDraft}>
+                  Edit Draft
+                </button>
+                <button
+                  type="button"
+                  disabled={publishingDraft}
+                  onClick={() => publishDraft(product)}
+                >
+                  {publishingDraft ? "Publishing…" : "Publish Draft"}
+                </button>
+              </>
             ) : canEdit && versions.active ? (
               <button
                 type="button"
@@ -478,6 +524,9 @@ const Detail = ({
                 ))}
               </ul>
             </>
+          )}
+          {publishError && (
+            <p className="v2-product-version-message">{publishError}</p>
           )}
         </article>
       </div>

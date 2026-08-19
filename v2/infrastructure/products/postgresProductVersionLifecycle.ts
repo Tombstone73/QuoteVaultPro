@@ -13,7 +13,7 @@ import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBas
 
 type VersionRow = { id: string; status: "DRAFT" | "ACTIVE" | "DEPRECATED" | "ARCHIVED"; schema_version: number; tree_json: unknown; created_at: Date; updated_at: Date; published_at: Date | null };
 const historyLimit = 25;
-const asSummary = (row: VersionRow): ProductVersionSummary => ({ status: row.status.toLowerCase() as ProductVersionSummary["status"], createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(), ...(row.published_at ? { publishedAt: row.published_at.toISOString() } : {}), editable: row.status === "DRAFT" });
+const asSummary = (row: VersionRow): ProductVersionSummary => ({ productVersionId: row.id, status: row.status.toLowerCase() as ProductVersionSummary["status"], createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(), ...(row.published_at ? { publishedAt: row.published_at.toISOString() } : {}), editable: row.status === "DRAFT" });
 
 const lifecycle = (rows: readonly VersionRow[], activeId: string | null): ProductVersionLifecycle => {
   const active = activeId ? rows.find((row) => row.id === activeId && row.status === "ACTIVE") : undefined;
