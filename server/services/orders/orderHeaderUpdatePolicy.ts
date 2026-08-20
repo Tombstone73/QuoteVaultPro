@@ -15,3 +15,20 @@ export function orderChangesRequireDraftInvoiceSynchronization(changes: Record<s
     "shippingCents",
   ].some((field) => changes[field] !== undefined);
 }
+
+export function normalizeOrderPatchShipping(
+  patch: Record<string, unknown>,
+  existingShippingMethod: string | null | undefined,
+): { shippingCents?: number; error?: string } {
+  const shippingMethodWasProvided = patch.shippingMethod !== undefined;
+  const shippingCentsWasProvided = patch.shippingCents !== undefined;
+  if (!shippingMethodWasProvided && !shippingCentsWasProvided) return {};
+
+  const finalShippingMethod = (patch.shippingMethod ?? existingShippingMethod) as string | null | undefined;
+  if (finalShippingMethod === "pickup") return { shippingCents: 0 };
+  if (!shippingCentsWasProvided) return {};
+
+  const rawShippingCents = Number(patch.shippingCents);
+  if (!Number.isFinite(rawShippingCents)) return { error: "Invalid shippingCents" };
+  return { shippingCents: Math.max(0, Math.floor(rawShippingCents)) };
+}

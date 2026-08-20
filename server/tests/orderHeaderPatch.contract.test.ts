@@ -1,5 +1,5 @@
 import { updateOrderSchema } from "@shared/schema";
-import { orderChangesRequireDraftInvoiceSynchronization } from "../services/orders/orderHeaderUpdatePolicy";
+import { normalizeOrderPatchShipping, orderChangesRequireDraftInvoiceSynchronization } from "../services/orders/orderHeaderUpdatePolicy";
 
 describe("V1 Order header PATCH contract", () => {
   const orderId = "8ed91da0-5d50-4c82-b6f0-5c65a9d50a13";
@@ -25,5 +25,11 @@ describe("V1 Order header PATCH contract", () => {
     expect(orderChangesRequireDraftInvoiceSynchronization({ customerId: "customer-1" } as any)).toBe(true);
     expect(orderChangesRequireDraftInvoiceSynchronization({ shippingCents: 1_250 } as any)).toBe(true);
     expect(orderChangesRequireDraftInvoiceSynchronization({ tax: 12.5 } as any)).toBe(true);
+  });
+
+  test("does not inject shipping cents into a header-only pickup-order patch", () => {
+    expect(normalizeOrderPatchShipping({ poNumber: "PO-20139", dueDate: "2026-08-21T12:00:00.000Z" }, "pickup")).toEqual({});
+    expect(normalizeOrderPatchShipping({ shippingMethod: "pickup" }, "ship")).toEqual({ shippingCents: 0 });
+    expect(normalizeOrderPatchShipping({ shippingCents: 500 }, "pickup")).toEqual({ shippingCents: 0 });
   });
 });

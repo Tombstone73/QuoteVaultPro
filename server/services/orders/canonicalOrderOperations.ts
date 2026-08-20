@@ -44,7 +44,7 @@ class CanonicalOrderOperations {
       customerId: nextCustomerId,
       actorUserId: input.actorUserId,
       actorOrgRole: input.actorOrgRole,
-      proposedOrderTotalCents,
+      proposedOrderTotalCents: proposedTotalCents,
       // Moving an order to a different customer adds its full value to that
       // customer's position; an in-place update applies only the delta.
       existingOrderTotalCents: nextCustomerId === existing.customerId ? parseMoneyToCents(existing.total) : 0,

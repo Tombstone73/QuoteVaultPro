@@ -164,6 +164,7 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
+import { normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
@@ -2631,16 +2632,14 @@ export async function registerOrderRoutes(
                 await canonicalFulfillmentOperations.assertFulfillmentMethodChangeAllowed(organizationId, req.params.id, req.body.shippingMethod);
             }
 
-            // Normalize shippingCents server-side (integer cents; never allow pickup + cents > 0)
-            const finalShippingMethod = (req.body.shippingMethod ?? existingOrder.shippingMethod) as string | null | undefined;
-            if (finalShippingMethod === 'pickup') {
-                req.body.shippingCents = 0;
-            } else if (req.body.shippingCents !== undefined) {
-                const raw = Number(req.body.shippingCents);
-                if (!Number.isFinite(raw)) {
-                    return res.status(400).json({ message: "Invalid shippingCents" });
-                }
-                req.body.shippingCents = Math.max(0, Math.floor(raw));
+            // Normalize an explicitly submitted shipping change only. Header-only
+            // PATCHes on pickup orders must not gain a synthetic financial field.
+            const normalizedShipping = normalizeOrderPatchShipping(req.body, existingOrder.shippingMethod);
+            if (normalizedShipping.error) {
+                return res.status(400).json({ message: normalizedShipping.error });
+            }
+            if (normalizedShipping.shippingCents !== undefined) {
+                req.body.shippingCents = normalizedShipping.shippingCents;
             }
 
             // Check if order is terminal (completed/canceled)
