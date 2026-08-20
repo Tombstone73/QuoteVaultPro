@@ -416,6 +416,11 @@ export type ProofWorkProjection = Readonly<{
     response?: ProofResponse;
   }>[];
 }>;
+export type ProofingMutationResult = Readonly<{
+  work: ProofWorkProjection["work"];
+  version?: ProofVersion;
+  response?: ProofResponse;
+}>;
 export type ProofQueueItem = Readonly<{
   work: ProofWorkProjection["work"];
   orderNumber: string;
@@ -1065,7 +1070,7 @@ export const proofingApi = {
     orderId: string,
     orderLineId: string,
   ) =>
-    proofMutation<unknown>(org, "/works", businessRequestId, {
+    proofMutation<ProofingMutationResult>(org, "/works", businessRequestId, {
       orderId,
       orderLineId,
     }),
@@ -1075,14 +1080,14 @@ export const proofingApi = {
     businessRequestId: string,
     artworkAssignmentIds: readonly string[],
   ) =>
-    proofMutation<unknown>(
+    proofMutation<ProofingMutationResult>(
       org,
       `/works/${encodeURIComponent(proofWorkId)}/versions`,
       businessRequestId,
       { artworkAssignmentIds },
     ),
   issue: (org: string, proofVersionId: string, businessRequestId: string) =>
-    proofMutation<unknown>(
+    proofMutation<ProofingMutationResult>(
       org,
       `/versions/${encodeURIComponent(proofVersionId)}/issue`,
       businessRequestId,
@@ -1094,12 +1099,13 @@ export const proofingApi = {
     businessRequestId: string,
     outcome: "approved" | "revision_requested",
     comment?: string,
+    recordedCustomerId?: string,
   ) =>
-    proofMutation<unknown>(
+    proofMutation<ProofingMutationResult>(
       org,
       `/versions/${encodeURIComponent(proofVersionId)}/respond`,
       businessRequestId,
-      { outcome, ...(comment?.trim() ? { comment: comment.trim() } : {}) },
+      { outcome, ...(comment?.trim() ? { comment: comment.trim() } : {}), ...(recordedCustomerId ? { recordedCustomerId } : {}) },
     ),
 };
 const prepressEndpoint = (org: string, suffix = "") =>
