@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   newBusinessRequestId,
+  prepressApi,
   productionApi,
   type ProductionAttempt,
   type ProductionMaterialProjection,
@@ -15,6 +16,7 @@ const keys = {
   queue: (scope: string, organizationId: string, station: Station) =>
     ["v2", scope, organizationId, "production", station, "queue"] as const,
 };
+const eligibleKey = (scope: string, organizationId: string) => ["v2", scope, organizationId, "production", "eligible"] as const;
 
 const requirementLabel = (work: ProductionWorkProjection) => {
   const requirement = work.work.requirement;
@@ -389,6 +391,7 @@ export const ProductionWorkspace = ({
     queryFn: () => productionApi.queue(organizationId, "roll"),
     enabled: canRead,
   });
+  const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId),enabled:canRead,retry:false});
   const queue = station === "flatbed" ? flatbedQueue : rollQueue;
   const stationQueues = useMemo(
     () => ({ flatbed: flatbedQueue.data ?? [], roll: rollQueue.data ?? [] }),
@@ -460,6 +463,7 @@ export const ProductionWorkspace = ({
       productionApi.complete(organizationId, attemptId, newBusinessRequestId()),
     onSuccess: refresh,
   });
+  const open = useMutation({mutationFn:(artworkAssignmentId:string)=>productionApi.open(organizationId,newBusinessRequestId(),artworkAssignmentId),onSuccess:refresh});
 
   const selectStation = (nextStation: Station) => {
     setStation(nextStation);
@@ -510,6 +514,7 @@ export const ProductionWorkspace = ({
   const satisfiedWork = allWork.filter(
     (item) => item.unitQuantitySatisfied,
   ).length;
+  const openable = (eligible.data ?? []).flatMap((item) => item.routingStepKind === "production" && item.coverage.productionArtworkComplete && item.coverage.allRequiredPrepressUnitsComplete ? item.coverage.requirements.flatMap((requirement) => requirement.artworkAssignmentIds.map((artworkAssignmentId) => ({ item, requirement, artworkAssignmentId }))) : []);
 
   return (
     <section className="v2-production">
@@ -540,6 +545,8 @@ export const ProductionWorkspace = ({
           )}
         </div>
       </header>
+
+      {!!openable.length && <section className="v2-production-open-work"><h2>Ready to open</h2>{openable.map(({item,requirement,artworkAssignmentId})=><article key={artworkAssignmentId}><div><b>{item.orderNumber} · {item.lineDescription}</b><small>{item.quantity} ordered · {requirementLabel({work:{requirement:requirement.requirement} as ProductionWorkProjection["work"]} as ProductionWorkProjection)} · Prepress complete</small></div><button type="button" disabled={!canWork||open.isPending} onClick={()=>open.mutate(artworkAssignmentId)}>{open.isPending?"Opening…":"Open Production Work"}</button></article>)}{open.isError&&<p className="v2-product-version-message">{(open.error as Error).message}</p>}</section>}
 
       {view === "board" ? (
         <section className="v2-production-board" aria-label="Production board">
