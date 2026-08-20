@@ -2580,7 +2580,9 @@ export async function registerOrderRoutes(
     });
 
     app.patch("/api/orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+        let updateStage = "request_start";
         try {
+            updateStage = "resolve_request_context";
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
@@ -2618,12 +2620,14 @@ export async function registerOrderRoutes(
             }
 
             // Get order to check current status
+            updateStage = "load_existing_order";
             const existingOrder = await storage.getOrderById(organizationId, req.params.id);
             if (!existingOrder) {
                 return res.status(404).json({ message: "Order not found" });
             }
 
             if (req.body.shippingMethod !== undefined && req.body.shippingMethod !== existingOrder.shippingMethod) {
+                updateStage = "validate_fulfillment_method";
                 await canonicalFulfillmentOperations.assertFulfillmentMethodChangeAllowed(organizationId, req.params.id, req.body.shippingMethod);
             }
 
@@ -2696,6 +2700,7 @@ export async function registerOrderRoutes(
             }
 
             if (req.body.customerId !== undefined || req.body.contactId !== undefined) {
+                updateStage = "resolve_customer_contact";
                 const resolvedIdentity = await resolveOrderCustomerContactIds({
                     organizationId,
                     customerId: req.body.customerId !== undefined ? req.body.customerId : existingOrder.customerId,
@@ -2705,6 +2710,7 @@ export async function registerOrderRoutes(
                 req.body.contactId = resolvedIdentity.contactId;
             }
 
+            updateStage = "validate_patch";
             const orderData = updateOrderSchema.parse({
                 ...req.body,
                 id: req.params.id,
@@ -2732,6 +2738,7 @@ export async function registerOrderRoutes(
             }
 
             // Get old values for audit
+            updateStage = "load_audit_baseline";
             const oldOrder = await storage.getOrderById(organizationId, req.params.id);
 
             // Determine if we need to refresh snapshots
@@ -2750,6 +2757,7 @@ export async function registerOrderRoutes(
 
                 if (finalCustomerId || finalContactId) {
                     try {
+                        updateStage = "refresh_customer_snapshot";
                         snapshotData = await snapshotCustomerData(
                             organizationId,
                             finalCustomerId,
@@ -2770,6 +2778,7 @@ export async function registerOrderRoutes(
             const creditOverrideReason = req.body.creditOverrideReason ?? null;
             delete req.body.creditOverride;
             delete req.body.creditOverrideReason;
+            updateStage = "update_editable_header";
             const order = await canonicalOrderOperations.updateEditableHeader({
                 organizationId,
                 actorUserId: userId,
@@ -2787,6 +2796,7 @@ export async function registerOrderRoutes(
             // If per-order billing policy changed, recompute readiness and return refreshed order.
             if (req.body.billingReadyPolicy !== undefined) {
                 try {
+                    updateStage = "recompute_billing_readiness";
                     await recomputeOrderBillingStatus({ organizationId, orderId: req.params.id });
                 } catch (e) {
                     console.warn('[BillingReady] Recompute after policy change failed:', e);
@@ -2803,6 +2813,7 @@ export async function registerOrderRoutes(
             // Structured timeline events (v1): only whitelisted fields, only when values actually changed.
             // Stored in order_audit_log.metadata. Old rows remain supported in the UI.
             if (userId && oldOrder) {
+                updateStage = "write_order_field_audit";
                 const toNullableString = (v: any): string | null => {
                     if (v == null) return null;
                     const s = String(v);
@@ -2905,6 +2916,7 @@ export async function registerOrderRoutes(
                 }
             }
 
+            updateStage = "respond_success";
             res.json(order);
         } catch (error) {
             if (error instanceof FulfillmentHttpError) {
@@ -2919,8 +2931,22 @@ export async function registerOrderRoutes(
             if ((error as any)?.code?.startsWith("ORDER_")) {
                 return res.status((error as any).statusCode ?? 400).json({ message: (error as Error).message, code: (error as any).code });
             }
-            console.error("Error updating order:", error);
-            res.status(500).json({ message: "Failed to update order" });
+            const submittedFields = Object.keys(req.body ?? {})
+                .filter((field) => [
+                    "poNumber", "dueDate", "promisedDate", "label", "priority",
+                    "customerId", "contactId", "shippingMethod", "shippingMode", "shippingCents",
+                    "subtotal", "tax", "taxAmount", "total", "discount", "billingReadyPolicy",
+                ].includes(field))
+                .sort();
+            console.error("[OrderUpdate] Failed", {
+                orderId: req.params.id,
+                stage: updateStage,
+                submittedFields,
+                errorName: error instanceof Error ? error.name : typeof error,
+                errorCode: typeof (error as any)?.code === "string" ? (error as any).code : null,
+                errorMessage: error instanceof Error ? error.message : String(error),
+            });
+            res.status(500).json({ message: "Failed to update order", code: "ORDER_UPDATE_FAILED" });
         }
     });
 
