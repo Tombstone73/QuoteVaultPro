@@ -98,6 +98,7 @@ export type UiBootstrap = Readonly<{
     fulfillmentPickup?: boolean;
     fulfillmentShip?: boolean;
     routeView?: boolean;
+    routeAdvance?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{
@@ -1266,10 +1267,11 @@ export const fulfillmentApi = {
 };
 export type RoutingWorkspaceRead = Readonly<{
   templates: readonly Readonly<{ routeTemplateId: string; name: string; active: boolean; revision: string; definitionFingerprint: string; steps: readonly Readonly<{ position: number; kind: string }>[] }> [];
-  instances: readonly Readonly<{ routeInstanceId: string; state: string; currentStepId?: string; sourceTemplate: Readonly<{ routeTemplateId: string; revision: string; definitionFingerprint: string }>; orderId: string; orderNumber: string; orderLineId: string; lineDescription: string; steps: readonly Readonly<{ routeInstanceStepId: string; position: number; kind: string }>[] }> [];
+  instances: readonly Readonly<{ routeInstanceId: string; state: string; revision: string; currentStepId?: string; currentPrerequisite?: Readonly<{ satisfied: boolean; reason?: string }>; sourceTemplate: Readonly<{ routeTemplateId: string; revision: string; definitionFingerprint: string }>; orderId: string; orderNumber: string; orderLineId: string; lineDescription: string; steps: readonly Readonly<{ routeInstanceStepId: string; position: number; kind: string }>[] }> [];
 }>;
 export const routingApi = {
   workspace: (org: string) => request<RoutingWorkspaceRead>(`/v2/organizations/${encodeURIComponent(org)}/routing/workspace`),
+  completeCurrent:(org:string,routeInstanceId:string,businessRequestId:string,expectedRevision:string)=>request<Readonly<{ routeInstance: RoutingWorkspaceRead["instances"][number] }>>(`/v2/organizations/${encodeURIComponent(org)}/routing/instances/${encodeURIComponent(routeInstanceId)}/complete-current`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,expectedRevision})}),
   createTemplate:(org:string,businessRequestId:string,input:Readonly<{name:string;steps:readonly Readonly<{position:number;kind:"proofing"|"prepress"|"production"|"fulfillment"}>[]}>)=>request<RoutingWorkspaceRead["templates"][number]>(`/v2/organizations/${encodeURIComponent(org)}/routing/templates`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...input})}),
   updateTemplate:(org:string,routeTemplateId:string,businessRequestId:string,input:Readonly<{expectedRevision:string;name:string;active:boolean;steps:readonly Readonly<{position:number;kind:"proofing"|"prepress"|"production"|"fulfillment"}>[]}>)=>request<RoutingWorkspaceRead["templates"][number]>(`/v2/organizations/${encodeURIComponent(org)}/routing/templates/${encodeURIComponent(routeTemplateId)}/update`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...input})}),
 };

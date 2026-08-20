@@ -7,7 +7,8 @@ export type RoutingWorkspaceRead = Readonly<{
     definitionFingerprint: string; steps: readonly Readonly<{ position: number; kind: RouteStepKind }>[];
   }>[];
   instances: readonly Readonly<{
-    routeInstanceId: string; state: RouteInstanceState; currentStepId?: string;
+    routeInstanceId: string; state: RouteInstanceState; revision: string; currentStepId?: string;
+    currentPrerequisite?: Readonly<{ satisfied: boolean; reason?: string }>;
     sourceTemplate: Readonly<{ routeTemplateId: string; revision: string; definitionFingerprint: string }>;
     orderId: string; orderNumber: string; orderLineId: string; lineDescription: string;
     steps: readonly Readonly<{ routeInstanceStepId: string; position: number; kind: RouteStepKind }>[];

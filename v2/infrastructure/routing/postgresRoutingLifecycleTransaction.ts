@@ -4,8 +4,7 @@ import type { RoutingLifecycleTransaction, RoutingLifecycleTransactionRunner, Ro
 import type { RouteInstance, RouteInstanceState, RouteInstanceStep, RouteStepKind } from "../../src/modules/routing/contracts.js";
 import { brandedId, type OrganizationId, type RouteInstanceId } from "../../src/modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
-import { PostgresProductionCompletionProjection } from "../production/postgresProductionCompletionProjection.js";
-import { PostgresFulfillmentCompletionProjection } from "../fulfillment/postgresFulfillmentCompletionProjection.js";
+import { readRoutePrerequisite } from "./postgresRoutePrerequisites.js";
 
 type RouteRow = Readonly<{ id: string; organization_id: string; order_document_id: string; order_line_id: string; source_template_id: string; source_template_revision: string; source_template_fingerprint: string; route_state: RouteInstanceState; current_step_id: string | null; revision: string }>;
 type StepRow = Readonly<{ id: string; position: number; step_kind: RouteStepKind }>;
@@ -27,9 +26,7 @@ export type RoutingLifecyclePersistenceTestHooks = Readonly<{ afterAdvance?: () 
  */
 export class PostgresRoutingLifecycleTransaction implements RoutingLifecycleTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
-  private readonly productionCompletion: PostgresProductionCompletionProjection;
-  private readonly fulfillmentCompletion: PostgresFulfillmentCompletionProjection;
-  constructor(private readonly client: PoolClient, private readonly hooks?: RoutingLifecyclePersistenceTestHooks) { this.productionCompletion=new PostgresProductionCompletionProjection(client);this.fulfillmentCompletion=new PostgresFulfillmentCompletionProjection(client); }
+  constructor(private readonly client: PoolClient, private readonly hooks?: RoutingLifecyclePersistenceTestHooks) {}
   async reserve(input: Parameters<RoutingLifecycleTransaction["reserve"]>[0]) { const value = await this.requests.reserve(this.client, input); return { kind: value.kind, request: { id: value.request.id, resultJson: value.request.resultJson } }; }
   async succeed(org: string, id: string, result: Parameters<RoutingLifecycleTransaction["succeed"]>[2]) { await this.requests.succeed(this.client, org, id, { resourceType: "route_instance", resourceId: result.routeInstance.routeInstanceId, resultJson: result }); }
   async attribute(input: Parameters<RoutingLifecycleTransaction["attribute"]>[0]) { await this.requests.recordAttribution(this.client, { organizationId: input.organizationId, operationRequestId: input.requestId, operation: input.operation, resourceType: "route_instance", resourceId: input.resourceId, principalKind: input.principalKind, principalSubject: input.principalSubject, staffActorUserId: input.staffActorUserId }); }
@@ -45,13 +42,7 @@ export class PostgresRoutingLifecycleTransaction implements RoutingLifecycleTran
     if (!frozen.length || (row.current_step_id && !frozen.some((candidate) => candidate.routeInstanceStepId === row.current_step_id))) throw new V2ApplicationError("CONFLICT", "The frozen Route is structurally invalid.");
     return route(row, frozen);
   }
-  async prerequisite(org: OrganizationId, frozen: RouteInstance, current: RouteInstanceStep): Promise<RoutePrerequisite> {
-    if (current.kind === "proofing") return this.proofApproved(org, frozen.work.orderLineId);
-    if (current.kind === "prepress") return this.prepressComplete(org, frozen.work.orderLineId);
-    if (current.kind === "production") { const completion=await this.productionCompletion.readCompletion(org,frozen.work.orderLineId); return completion.state==="complete"?{satisfied:true}:{satisfied:false,reason:completion.reason??"Production is incomplete."}; }
-    if (current.kind === "fulfillment") { const completion=await this.fulfillmentCompletion.readCompletion(org,frozen.work.orderLineId); return completion.state==="complete"?{satisfied:true}:{satisfied:false,reason:completion.reason??"Fulfillment is incomplete."}; }
-    return { satisfied: false, reason: "Routing has an unknown current step." };
-  }
+  async prerequisite(org: OrganizationId, frozen: RouteInstance, current: RouteInstanceStep): Promise<RoutePrerequisite> { return readRoutePrerequisite(this.client, org, frozen.work.orderLineId, current.kind); }
   async advance(input: Parameters<RoutingLifecycleTransaction["advance"]>[0]): Promise<RouteInstance> {
     const state: RouteInstanceState = input.nextStepId ? "active" : "completed";
     const updated = await this.client.query<RouteRow>("UPDATE v2_route_instances SET route_state=$4,current_step_id=$5,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 RETURNING id,organization_id,order_document_id,order_line_id,source_template_id,source_template_revision,source_template_fingerprint,route_state,current_step_id,revision", [input.organizationId, input.routeInstanceId, input.expectedRevision, state, input.nextStepId ?? null]);
@@ -59,34 +50,6 @@ export class PostgresRoutingLifecycleTransaction implements RoutingLifecycleTran
     await this.hooks?.afterAdvance?.();
     const steps = await this.client.query<StepRow>("SELECT id,position,step_kind FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position", [input.organizationId, input.routeInstanceId]);
     return route(updated.rows[0], steps.rows.map(step));
-  }
-  private async proofApproved(org: OrganizationId, line: string): Promise<RoutePrerequisite> {
-    const result = await this.client.query<{ satisfied: boolean }>(`SELECT EXISTS(
-      SELECT 1 FROM v2_proof_works w
-      JOIN v2_proof_versions v ON v.organization_id=w.organization_id AND v.proof_work_id=w.id
-      JOIN v2_proof_responses r ON r.organization_id=v.organization_id AND r.proof_version_id=v.id
-      WHERE w.organization_id=$1 AND w.order_line_id=$2 AND r.outcome='approved'
-        AND v.id=(SELECT latest.id FROM v2_proof_versions latest WHERE latest.organization_id=w.organization_id AND latest.proof_work_id=w.id ORDER BY latest.sequence DESC LIMIT 1)
-    ) satisfied`, [org, line]);
-    return result.rows[0]?.satisfied ? { satisfied: true } : { satisfied: false, reason: "Routing requires the current Proof Version to be approved." };
-  }
-  private async prepressComplete(org: OrganizationId, line: string): Promise<RoutePrerequisite> {
-    const result = await this.client.query<{ satisfied: boolean }>(`SELECT EXISTS(
-      SELECT 1 FROM v2_sales_document_lines l
-      WHERE l.organization_id=$1 AND l.id=$2 AND l.production_requirement_state='configured'
-        AND NOT EXISTS(
-          SELECT 1 FROM v2_sales_line_production_requirements req
-          WHERE req.organization_id=l.organization_id AND req.order_line_id=l.id
-            AND NOT EXISTS(
-              SELECT 1 FROM v2_artwork_assignments a
-              JOIN v2_prepress_units unit ON unit.organization_id=a.organization_id AND unit.artwork_assignment_id=a.id AND unit.completed_at IS NOT NULL
-              WHERE a.organization_id=req.organization_id AND a.order_line_id=req.order_line_id AND a.purpose='production'
-                AND a.side IS NOT DISTINCT FROM req.side AND a.source_page_index IS NOT DISTINCT FROM req.source_page_index
-                AND a.layer_key IS NOT DISTINCT FROM req.layer_key AND a.layer_order IS NOT DISTINCT FROM req.layer_order
-            )
-        )
-    ) satisfied`, [org, line]);
-    return result.rows[0]?.satisfied ? { satisfied: true } : { satisfied: false, reason: "Routing requires all authoritative Prepress units to be complete." };
   }
 }
 
