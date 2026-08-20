@@ -32,6 +32,23 @@ describe("P7C immutable Production material consumption", () => {
     expect(() => JSON.stringify(projection)).not.toThrow();
   });
 
+  test("retains separate frozen requirement attribution when two requirements share one Material", () => {
+    const requirements = [
+      { requirementId: brandedId<"OrderLineMaterialRequirementId">("requirement-a"), materialId: "material-a", materialName: "Laminate", materialSku: "LAM", quantity: "1", unit: "square_foot" as const },
+      { requirementId: brandedId<"OrderLineMaterialRequirementId">("requirement-b"), materialId: "material-a", materialName: "Laminate", materialSku: "LAM", quantity: "1", unit: "square_foot" as const },
+    ];
+    const facts = [
+      { ...base("fact-a", "consumed", "1"), materialId: "material-a", materialName: "Laminate", materialSku: "LAM", requirementId: brandedId<"OrderLineMaterialRequirementId">("requirement-a"), unit: "square_foot" as const },
+      { ...base("fact-b", "consumed", "1"), materialId: "material-a", materialName: "Laminate", materialSku: "LAM", requirementId: brandedId<"OrderLineMaterialRequirementId">("requirement-b"), unit: "square_foot" as const },
+    ];
+    const projection = compareMaterialUsage(requirements, facts);
+    expect(projection).toHaveLength(2);
+    expect(projection).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requirementId: "requirement-a", materialId: "material-a", consumedQuantity: "1" }),
+      expect.objectContaining({ requirementId: "requirement-b", materialId: "material-a", consumedQuantity: "1" }),
+    ]));
+  });
+
   test("records partial usage once, replays exactly, and rejects invalid/cross-tenant input", async () => {
     const runner = new Runner(), service = new ProductionMaterialConsumptionApplicationService(runner);
     const input = { businessRequestId: "consume-a", productionWorkId: brandedId<"ProductionWorkId">("work-a"), productionAttemptId: brandedId<"ProductionAttemptId">("attempt-a"), materialId: "material-a", requirementId: brandedId<"OrderLineMaterialRequirementId">("requirement-a"), quantity: "80", unit: "each" as const, kind: "consumed" as const };

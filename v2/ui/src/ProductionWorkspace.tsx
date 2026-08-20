@@ -51,6 +51,73 @@ const materialKeys = {
     ["v2", scope, organizationId, "production", workId, "materials"] as const,
 };
 
+type MaterialRequirementComparison =
+  ProductionMaterialProjection["usage"]["comparison"][number];
+
+export type MaterialRequirementChoice = Readonly<{
+  value: string;
+  label: string;
+  requirement: MaterialRequirementComparison;
+}>;
+
+/**
+ * Frozen requirements, rather than Materials, are the operational identity for
+ * Production usage. A single Material can legitimately appear in more than
+ * one requirement (for example separate Recipe components), so each choice
+ * must retain its exact frozen requirement id.
+ */
+export const materialRequirementChoices = (
+  comparison: readonly MaterialRequirementComparison[],
+): readonly MaterialRequirementChoice[] => {
+  const materialCounts = new Map<string, number>();
+  for (const item of comparison)
+    materialCounts.set(item.materialId, (materialCounts.get(item.materialId) ?? 0) + 1);
+  const materialPositions = new Map<string, number>();
+  return comparison.map((requirement) => {
+    const position = (materialPositions.get(requirement.materialId) ?? 0) + 1;
+    materialPositions.set(requirement.materialId, position);
+    const duplicateMaterial = (materialCounts.get(requirement.materialId) ?? 0) > 1;
+    const source = duplicateMaterial && requirement.requirementId
+      ? `Requirement ${position}`
+      : undefined;
+    return Object.freeze({
+      // Frozen requirements are the primary selection identity. The fallback
+      // is retained only for legacy/unplanned material facts that have no
+      // frozen requirement to select.
+      value: requirement.requirementId ?? `unplanned:${requirement.materialId}:${requirement.unit}`,
+      label: [
+        requirement.materialName,
+        requirement.materialSku ? `SKU ${requirement.materialSku}` : undefined,
+        source,
+        `${requirement.expectedQuantity} ${requirement.unit}`,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · "),
+      requirement,
+    });
+  });
+};
+
+export const materialConsumptionRequest = (
+  requirement: MaterialRequirementComparison,
+  input: Readonly<{
+    quantity: string;
+    kind: "consumed" | "waste" | "correction";
+    correctsConsumptionId?: string;
+  }>,
+) => ({
+  materialId: requirement.materialId,
+  ...(requirement.requirementId
+    ? { requirementId: requirement.requirementId }
+    : {}),
+  quantity: input.quantity,
+  unit: requirement.unit,
+  kind: input.kind,
+  ...(input.correctsConsumptionId
+    ? { correctsConsumptionId: input.correctsConsumptionId }
+    : {}),
+});
+
 const ProductionMaterials = ({
   organizationId,
   sessionScope,
@@ -75,7 +142,7 @@ const ProductionMaterials = ({
   const [kind, setKind] = useState<"consumed" | "waste" | "correction">(
     "consumed",
   );
-  const [selectedMaterialId, setSelectedMaterialId] = useState("");
+  const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [correctsConsumptionId, setCorrectsConsumptionId] = useState("");
   const refresh = () =>
     client.invalidateQueries({
@@ -101,25 +168,20 @@ const ProductionMaterials = ({
   });
   const record = useMutation({
     mutationFn: (
-      requirement: ProductionMaterialProjection["usage"]["comparison"][number],
+      requirement: MaterialRequirementComparison,
     ) =>
       productionApi.recordMaterial(
         organizationId,
         workId,
         activeAttempt!.productionAttemptId,
         newBusinessRequestId(),
-        {
-          materialId: requirement.materialId,
-          ...(requirement.requirementId
-            ? { requirementId: requirement.requirementId }
-            : {}),
+        materialConsumptionRequest(requirement, {
           quantity,
-          unit: requirement.unit,
           kind,
           ...(kind === "correction" && correctsConsumptionId
             ? { correctsConsumptionId }
             : {}),
-        },
+        }),
       ),
     onSuccess: refresh,
   });
@@ -134,9 +196,10 @@ const ProductionMaterials = ({
     onSuccess: refresh,
   });
   const comparison = projection.data?.usage.comparison ?? [];
+  const choices = materialRequirementChoices(comparison);
   const selected =
-    comparison.find((item) => item.materialId === selectedMaterialId) ??
-    comparison[0];
+    choices.find((choice) => choice.value === selectedRequirementId) ??
+    choices[0];
   const error =
     record.error ?? reserve.error ?? release.error ?? reconcile.error;
   return (
@@ -187,7 +250,7 @@ const ProductionMaterials = ({
                 </tr>
               </thead>
               <tbody>
-                {comparison.map((item) => {
+                {choices.map(({ label, requirement: item }) => {
                   const balance = projection.data?.inventory.balances.find(
                     (candidate) => candidate.materialId === item.materialId,
                   );
@@ -195,7 +258,7 @@ const ProductionMaterials = ({
                     <tr
                       key={`${item.materialId}:${item.requirementId ?? "unplanned"}`}
                     >
-                      <td>{item.materialName}</td>
+                      <td>{label}</td>
                       <td>
                         {item.expectedQuantity} {item.unit}
                       </td>
@@ -231,20 +294,20 @@ const ProductionMaterials = ({
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                record.mutate(selected);
+                record.mutate(selected.requirement);
               }}
             >
               <label>
                 Material
                 <select
-                  value={selectedMaterialId || selected.materialId}
+                  value={selected.value}
                   onChange={(event) =>
-                    setSelectedMaterialId(event.target.value)
+                    setSelectedRequirementId(event.target.value)
                   }
                 >
-                  {comparison.map((item) => (
-                    <option key={item.materialId} value={item.materialId}>
-                      {item.materialName}
+                  {choices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
                     </option>
                   ))}
                 </select>
