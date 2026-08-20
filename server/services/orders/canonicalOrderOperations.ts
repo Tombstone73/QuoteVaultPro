@@ -5,6 +5,7 @@ import { db } from "../../db";
 import { storage } from "../../storage";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
 import { synchronizeDraftInvoiceFromOrder } from "../../invoicesService";
+import { orderChangesRequireDraftInvoiceSynchronization } from "./orderHeaderUpdatePolicy";
 import { assertCustomerCreditForOrder, orderPayloadTotalCents } from "../customerCreditPolicyService";
 import { parseMoneyToCents } from "@shared/customerCreditExposure";
 
@@ -52,11 +53,13 @@ class CanonicalOrderOperations {
       overrideReason: input.creditOverrideReason,
     });
     const order = await storage.updateOrder(input.organizationId, input.orderId, { ...input.changes, ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}) });
-    await synchronizeDraftInvoiceFromOrder({
-      organizationId: input.organizationId,
-      orderId: order.id,
-      actorUserId: input.actorUserId,
-    });
+    if (orderChangesRequireDraftInvoiceSynchronization(input.changes)) {
+      await synchronizeDraftInvoiceFromOrder({
+        organizationId: input.organizationId,
+        orderId: order.id,
+        actorUserId: input.actorUserId,
+      });
+    }
     await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
     return order;
   }

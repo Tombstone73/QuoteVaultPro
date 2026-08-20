@@ -636,8 +636,8 @@ export function useUpdateOrder(id: string) {
         credentials: "include",
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to update order");
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || error?.error || "Failed to update order");
       }
       return response.json();
     },

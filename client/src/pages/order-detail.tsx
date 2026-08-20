@@ -48,6 +48,7 @@ import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { useShipments, useDeleteShipment, useUpdateShipment, useGeneratePackingSlip, useSendShipmentEmail, useUpdateFulfillmentStatus } from "@/hooks/useShipments";
 import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
+import { formatOrderDate, orderDateInputValue, serializeOrderDateInput } from "@/lib/orderDate";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Page, ContentLayout, DataCard, StatusPill } from "@/components/titan";
@@ -1275,14 +1276,13 @@ export default function OrderDetail() {
   };
 
   const handleDueDateEdit = () => {
-    setTempDueDate(order?.dueDate ? format(new Date(order.dueDate), 'yyyy-MM-dd') : '');
+    setTempDueDate(orderDateInputValue(order?.dueDate));
     setEditingDueDate(true);
   };
 
   const handleDueDateSave = async () => {
     try {
-      // Convert string to Date or null
-      const dateValue = tempDueDate ? new Date(tempDueDate) : null;
+      const dateValue = serializeOrderDateInput(tempDueDate);
       await applyOrderPatch({ dueDate: dateValue });
       setEditingDueDate(false);
     } catch (error) {
@@ -1296,14 +1296,13 @@ export default function OrderDetail() {
   };
 
   const handlePromisedDateEdit = () => {
-    setTempPromisedDate(order?.promisedDate ? format(new Date(order.promisedDate), 'yyyy-MM-dd') : '');
+    setTempPromisedDate(orderDateInputValue(order?.promisedDate));
     setEditingPromisedDate(true);
   };
 
   const handlePromisedDateSave = async () => {
     try {
-      // Convert string to Date or null
-      const dateValue = tempPromisedDate ? new Date(tempPromisedDate) : null;
+      const dateValue = serializeOrderDateInput(tempPromisedDate);
       await applyOrderPatch({ promisedDate: dateValue });
       setEditingPromisedDate(false);
     } catch (error) {
@@ -2774,7 +2773,7 @@ export default function OrderDetail() {
                       </div>
                     ) : (
                       <div className="inline-flex items-center gap-2 shrink-0">
-                        <div className="text-sm whitespace-nowrap">{formatDate(order.dueDate)}</div>
+                        <div className="text-sm whitespace-nowrap">{formatOrderDate(order.dueDate, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</div>
                         {canEditOrder && (
                           <Button
                             size="icon"
@@ -2809,7 +2808,7 @@ export default function OrderDetail() {
                       </div>
                     ) : (
                       <div className="inline-flex items-center gap-2 shrink-0">
-                        <div className="text-sm whitespace-nowrap">{formatDate(order.promisedDate)}</div>
+                        <div className="text-sm whitespace-nowrap">{formatOrderDate(order.promisedDate, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</div>
                         {canEditOrder && (
                           <Button
                             size="icon"
