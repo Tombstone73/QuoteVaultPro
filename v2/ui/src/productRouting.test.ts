@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { contactPath, customerPath, fulfillmentPath, invoicePath, orderPath, productPath, productionPath, quotePath, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductLocation, readProductionLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkPath, contactPath, customerPath, fulfillmentPath, invoicePath, orderPath, productPath, productionPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductLocation, readProductionLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.deepEqual(readProductLocation("/products/product-a"), { productId: "product-a" });
@@ -19,6 +19,10 @@ assert.equal(readContactLocation("/contacts/%2Fwrong"), null);
 assert.deepEqual(readWorkspaceLocation("/contacts/contact-a"), { page: "contacts", contactId: "contact-a" });
 assert.equal(contactPath("contact a"), "/contacts/contact%20a");
 assert.deepEqual(readWorkspaceLocation("/artwork"), { page: "artwork" });
+assert.deepEqual(readArtworkLocation("/artwork/orders/order-a/lines/line-a"), { orderId: "order-a", lineId: "line-a" });
+assert.deepEqual(readWorkspaceLocation("/artwork/orders/order-a"), { page: "artwork", orderId: "order-a" });
+assert.deepEqual(readWorkspaceLocation("/artwork/orders/order-a/lines/line-a"), { page: "artwork", orderId: "order-a", lineId: "line-a" });
+assert.equal(artworkPath("order a", "line a"), "/artwork/orders/order%20a/lines/line%20a");
 assert.deepEqual(readWorkspaceLocation("/proofing"), { page: "proofing" });
 assert.deepEqual(readWorkspaceLocation("/prepress"), { page: "prepress" });
 assert.equal(workspacePath("artwork"), "/artwork");
