@@ -1534,6 +1534,13 @@
       "when": 1788048000070,
       "tag": "0223_v2_inventory_stock_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "7",
+      "when": 1788048000071,
+      "tag": "0224_v2_inventory_reservation_inventory_unit_guard",
+      "breakpoints": true
     }
   ]
 }
