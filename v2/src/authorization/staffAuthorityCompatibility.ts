@@ -31,6 +31,9 @@ const ownerAdminCommercial: readonly Capability[] = [
   "order.cancel",
   "invoice.issue",
   "product.edit",
+  // Artwork is an operational Owner/Admin workflow. Keep it explicitly
+  // bounded here until organization-scoped permission sets replace this map.
+  "artwork.view", "artwork.adopt", "artwork.assign",
 ];
 
 /**
