@@ -52,6 +52,8 @@ import type { SalesDocumentNumber } from "./persistenceContracts.js";
  * current configuration and Pricing produces the calculated evidence below.
  */
 export type OrderLineInput = Readonly<{
+  /** Opaque request-only correlation; never persisted as a commercial fact. */
+  clientLineKey?: string;
   productId: string;
   description?: string;
   quantity: number;
@@ -115,6 +117,7 @@ export type OrderOperationResult = Readonly<{
   order: OrderReadModel;
   draftInvoiceId: InvoiceId;
   routeInstances: readonly InstantiateRouteResult["routeInstance"][];
+  lineCorrelations?: readonly Readonly<{ clientLineKey: string; orderLineId: SalesLineId }>[];
 }>;
 
 /**
@@ -347,17 +350,33 @@ export class OrderApplicationService {
     return this.mutate(context, "sales.order.create.v1", input, "order.create", async (tx, request) => {
       await validateReference(context.organizationId, tx.customers, input.customerContact);
       requireAllowed(this.authority, context, "order.create", input.customerContact.customerId);
+      const clientLineKeys = new Set<string>();
+      for (const line of input.lines) {
+        if (line.clientLineKey === undefined) continue;
+        if (!/^[A-Za-z0-9_-]{1,120}$/u.test(line.clientLineKey))
+          throw new V2ApplicationError("VALIDATION_ERROR", "Order line correlation is invalid.");
+        if (clientLineKeys.has(line.clientLineKey))
+          throw new V2ApplicationError("VALIDATION_ERROR", "Order line correlations must be unique.");
+        clientLineKeys.add(line.clientLineKey);
+      }
       const lines = await this.buildLines(tx, context, input.lines);
       if (!lines.length)
         throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
 
-      return this.createFromCommercialSnapshot(tx, context, request.id, {
+      const created = await this.createFromCommercialSnapshot(tx, context, request.id, {
         customerContact: input.customerContact,
         purchaseOrderNumber: input.purchaseOrderNumber,
         requestedDueDate: input.requestedDueDate,
         terms: input.terms ?? {},
         lines,
       }, "sales.order.create.v1");
+      const lineCorrelations = input.lines.flatMap((line, index) => {
+        if (line.clientLineKey === undefined) return [];
+        const createdLine = lines[index];
+        if (!createdLine) throw new Error("Created Order line correlation is unavailable.");
+        return [{ clientLineKey: line.clientLineKey, orderLineId: createdLine.lineId }];
+      });
+      return lineCorrelations.length ? { ...created, lineCorrelations } : created;
     });
   }
 

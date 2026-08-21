@@ -197,6 +197,20 @@ export const createQuoteRouter = (
     if (!value) throw new V2ApplicationError("NOT_FOUND", "Product configuration is unavailable.");
     return value;
   }));
+  router.post("/form/products/:productId/pricing-preview", (request, response) => void (async () => {
+    try {
+      const payload = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
+      const dimensions = payload.dimensions && typeof payload.dimensions === "object" && !Array.isArray(payload.dimensions) ? payload.dimensions as Record<string, unknown> : undefined;
+      const result = await dependencies.service.preview(await context(request, dependencies), {
+        productId: request.params.productId,
+        quantity: Number(payload.quantity),
+        ...(payload.selections && typeof payload.selections === "object" && !Array.isArray(payload.selections) ? { selections: payload.selections as Record<string, unknown> } : {}),
+        ...(dimensions && typeof dimensions.width === "string" && typeof dimensions.height === "string" && (dimensions.unit === "in" || dimensions.unit === "ft" || dimensions.unit === "mm") ? { dimensions: { width: dimensions.width as never, height: dimensions.height as never, unit: dimensions.unit } } : {}),
+      });
+      if (!result.ok) return error(response, result.error);
+      response.status(200).json({ ok: true, data: result.value });
+    } catch (cause) { error(response, cause); }
+  })());
   router.post("/", async (request, response) => {
     try {
       await send(

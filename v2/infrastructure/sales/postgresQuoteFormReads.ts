@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import type { QuoteFormReadPort } from "../../src/interfaces/http/quoteRoutes.js";
 import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../shared/optionTreeV2Runtime.js";
 import type { OptionTreeV2 } from "../../../shared/optionTreeV2.js";
+import { resolveProductionRequirementSnapshot } from "../../src/modules/shared/productionRequirements.js";
 
 /** Read-only, tenant-scoped selection projection for the Quote UI. */
 export class PostgresQuoteFormReads implements QuoteFormReadPort {
@@ -45,10 +46,15 @@ export class PostgresQuoteFormReads implements QuoteFormReadPort {
     if (!row || !validateOptionTreeV2(row.tree_json as OptionTreeV2).ok) return null;
     const tree = row.tree_json as OptionTreeV2;
     const visibility = resolveRuntimeVisibility(tree, selections as never);
+    const productionRequirements = resolveProductionRequirementSnapshot(
+      (tree.meta as Readonly<Record<string, unknown>> | undefined)?.productionUnitSpecification,
+      visibility.effectiveSelections as never,
+    );
     return {
       productId, displayName: row.name, measurementMode: row.measurement_mode,
       requiresDimensions: row.measurement_mode === "dimensions_required", supportedDimensionUnits: ["in"],
       effectiveSelections: visibility.effectiveSelections,
+      productionRequirements,
       fields: visibility.visibleNodeIds.flatMap((id) => {
         const node = tree.nodes[id];
         if (!node || node.kind === "group" || !node.input) return [];

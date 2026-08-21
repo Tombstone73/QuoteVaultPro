@@ -66,6 +66,13 @@ export type QuoteLineInput = Readonly<{
   dimensions?: ResolveActivePricingInput["dimensions"];
   selling?: QuoteSellingInstruction;
 }>;
+/** Read-only Sales/Pricing evaluation for pre-persistence entry. */
+export type QuoteLinePricingPreviewInput = Omit<QuoteLineInput, "selling">;
+export type QuoteLinePricingPreview = Readonly<{
+  calculatedUnitAmount: Money;
+  calculatedLineAmount: Money;
+  currency: string;
+}>;
 export type CreateQuoteInput = Readonly<{
   businessRequestId: string;
   customerContact: CustomerContactReference;
@@ -397,6 +404,26 @@ export class QuoteApplicationService {
     private readonly runner: QuoteTransactionRunner,
     private readonly authority = new AuthorityPolicy(),
   ) {}
+  async preview(
+    context: OperationContext,
+    input: QuoteLinePricingPreviewInput,
+  ): Promise<ApplicationResult<QuoteLinePricingPreview>> {
+    try {
+      requireOperationPrincipalScope(context);
+      requireAllowed(this.authority, context, "quote.create");
+      return success(await this.runner.transaction(async (tx) => {
+        const line = (await this.buildLines(tx, context, [{ ...input, selling: { kind: "calculated" } }], []))[0];
+        if (!line) throw new Error("Pricing preview did not resolve a line.");
+        return {
+          calculatedUnitAmount: line.pricingResult.calculatedUnitAmount,
+          calculatedLineAmount: line.pricingResult.calculatedLineAmount,
+          currency: line.pricingResult.currency,
+        };
+      }));
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("RETRYABLE_FAILURE", "Pricing preview is unavailable."));
+    }
+  }
   async create(
     context: OperationContext,
     input: CreateQuoteInput,

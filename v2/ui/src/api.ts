@@ -113,6 +113,7 @@ export type SalesListPage<T> = Readonly<{
 }>;
 export type ProductLifecycle = "active" | "inactive" | "draft" | "active_with_draft";
 export type ProductCatalogItem = Readonly<{ productId:string; displayName:string; category?:string; lifecycle:ProductLifecycle; measurementMode:"dimensions_required"|"quantity_only"; pricingSummary:string; productType?:Readonly<{displayName:string;routePolicy:"route_required"|"no_route"|"unconfigured"}>; primaryMaterialName?:string; activeVersion?:Readonly<{label:string;publishedAt?:string}>; hasDraft:boolean }>;
+export type ProductionRequirementPreview = Readonly<{ state:"configured"; specificationFingerprint:string; units:readonly Readonly<{key:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number}>[] }>|Readonly<{state:"unconfigured";reason:"product_specification_absent"}>;
 export type ProductVersionSummary = Readonly<{productVersionId:string;status:"active"|"draft"|"deprecated"|"archived";createdAt:string;updatedAt:string;publishedAt?:string;editable:boolean}>;
 export type ProductVersionLifecycle = Readonly<{active?:ProductVersionSummary;draft?:ProductVersionSummary;history:readonly ProductVersionSummary[];historyLimit:number;historyHasMore:boolean;canCreateDraft:boolean}>;
 export type ProductProductionUnitRule=Readonly<{key:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number;when?:Readonly<{selectionKey:string;equals:string|number|boolean}>}>;
@@ -253,6 +254,7 @@ export type OrderRead = Readonly<{
 export type OrderResult = Readonly<{
   order: OrderRead;
   draftInvoiceId: string;
+  lineCorrelations?: readonly Readonly<{ clientLineKey: string; orderLineId: string }>[];
 }>;
 export type InvoiceRead = Readonly<{
   source?: "v2" | "legacy";
@@ -521,6 +523,7 @@ export type ProductConfiguration = Readonly<{
   requiresDimensions: boolean;
   supportedDimensionUnits: readonly ("in" | "ft" | "mm")[];
   effectiveSelections: Record<string, unknown>;
+  productionRequirements?: ProductionRequirementPreview;
   fields: readonly Readonly<{
     selectionKey: string;
     label: string;
@@ -533,6 +536,7 @@ export type ProductConfiguration = Readonly<{
     }>[];
   }>[];
 }>;
+export type SalesLinePricingPreview = Readonly<{ calculatedUnitAmount: Readonly<{ cents: number; currency: string }>; calculatedLineAmount: Readonly<{ cents: number; currency: string }>; currency: string }>;
 const csrfTokens = new Map<string, string>();
 let sessionScope: string | undefined;
 const csrfKey = (organizationId: string) =>
@@ -635,6 +639,11 @@ export const quoteApi = {
         },
         body: JSON.stringify({ selections }),
       },
+    ),
+  previewLinePricing: (organizationId: string, productId: string, input: Readonly<{ quantity: number; selections: Record<string, unknown>; dimensions?: Readonly<{ width: string; height: string; unit: "in" | "ft" | "mm" }> }>) =>
+    request<SalesLinePricingPreview>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/pricing-preview`,
+      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) },
     ),
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(

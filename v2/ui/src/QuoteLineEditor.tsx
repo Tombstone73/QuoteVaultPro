@@ -17,6 +17,7 @@ import {
 } from "./quoteFormModel";
 import { useQuoteFormConfiguration } from "./quoteFormQueries";
 import { SelectionField } from "./SelectionField";
+import { ArtworkLineIntake, type DraftLineArtwork } from "./ArtworkLineIntake";
 
 type EditorProps = Readonly<{
   organizationId: string;
@@ -31,7 +32,9 @@ type EditorProps = Readonly<{
   csrfReady: boolean;
   busy: boolean;
   submitLabel: string;
-  onSubmit: (input: QuoteLineMutationInput) => void;
+  onSubmit: (input: QuoteLineMutationInput, artwork: readonly DraftLineArtwork[]) => void;
+  /** Only the shared pre-persistence Sales composer holds local Artwork files. */
+  enableArtworkIntake?: boolean;
   onCancel?: () => void;
 }>;
 
@@ -292,6 +295,7 @@ export const QuoteLineEditor = ({
   busy,
   submitLabel,
   onSubmit,
+  enableArtworkIntake = false,
   onCancel,
 }: EditorProps) => {
   const [draft, setDraft] = useState(initialDraft);
@@ -303,6 +307,10 @@ export const QuoteLineEditor = ({
   const [compatibilityWarning, setCompatibilityWarning] = useState("");
   const [localError, setLocalError] = useState("");
   const [resolving, setResolving] = useState(false);
+  const [artwork, setArtwork] = useState<readonly DraftLineArtwork[]>([]);
+  const [pricingPreview, setPricingPreview] = useState<Readonly<{ cents: number; currency: string }>>();
+  const [pricingPreviewError, setPricingPreviewError] = useState("");
+  const pricingPreviewSequence = useRef(0);
   const appliedDefaults = useRef("");
   const validatedPersisted = useRef("");
   const resolutionSequence = useRef(0);
@@ -330,6 +338,10 @@ export const QuoteLineEditor = ({
     setOrigin(initializeFromPersistedLine ? "persisted" : "fresh");
     setCompatibilityWarning("");
     setLocalError("");
+    setArtwork([]);
+    setPricingPreview(undefined);
+    setPricingPreviewError("");
+    pricingPreviewSequence.current += 1;
     appliedDefaults.current = "";
     validatedPersisted.current = "";
     resolutionSequence.current += 1;
@@ -387,6 +399,30 @@ export const QuoteLineEditor = ({
     origin,
     organizationId,
   ]);
+
+  useEffect(() => {
+    if (!csrfReady || !configuration || !draft.productId) return;
+    const quantity = Number(draft.quantity);
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) return;
+    if (configuration.requiresDimensions && (!draft.dimensions.width || !draft.dimensions.height)) return;
+    const sequence = ++pricingPreviewSequence.current;
+    const handle = globalThis.setTimeout(() => {
+      void quoteApi.previewLinePricing(organizationId, draft.productId, {
+        quantity,
+        selections: { ...draft.selections },
+        ...(configuration.requiresDimensions ? { dimensions: { ...draft.dimensions } } : {}),
+      }).then((preview) => {
+        if (pricingPreviewSequence.current !== sequence) return;
+        setPricingPreview(preview.calculatedLineAmount);
+        setPricingPreviewError("");
+      }).catch((error: unknown) => {
+        if (pricingPreviewSequence.current !== sequence) return;
+        setPricingPreview(undefined);
+        setPricingPreviewError(error instanceof Error ? error.message : "Pricing preview is unavailable.");
+      });
+    }, 200);
+    return () => globalThis.clearTimeout(handle);
+  }, [configuration, csrfReady, draft.dimensions, draft.productId, draft.quantity, draft.selections, organizationId]);
 
   const resolveSelection = (selectionKey: string, value: unknown) => {
     // An explicit operator selection supersedes the asynchronous persisted-line
@@ -497,6 +533,18 @@ export const QuoteLineEditor = ({
             }
           />
         )}
+        {enableArtworkIntake && configuration && (
+          <ArtworkLineIntake
+            productionRequirements={configuration.productionRequirements}
+            onChange={setArtwork}
+            onDetectedDimensions={({ widthIn, heightIn }) => {
+              const current = draftRef.current;
+              if (!configuration.requiresDimensions || current.dimensions.width || current.dimensions.height || current.dimensions.unit !== "in") return false;
+              replaceDraft({ ...current, dimensions: { ...current.dimensions, width: String(widthIn), height: String(heightIn) } });
+              return true;
+            }}
+          />
+        )}
         <SellingPriceFields
           selling={draft.selling}
           canOverridePrice={canOverridePrice}
@@ -560,6 +608,8 @@ export const QuoteLineEditor = ({
         </div>
       )}
       {localError && <div className="notice error">{localError}</div>}
+      {pricingPreview && <p className="v2-sales-entry-price-preview" aria-live="polite">Authoritative price preview: {(pricingPreview.cents / 100).toLocaleString(undefined, { style: "currency", currency: pricingPreview.currency })}</p>}
+      {pricingPreviewError && <p className="notice error" role="alert">Pricing preview is unavailable: {pricingPreviewError}</p>}
       {unavailableSellingDecision && (
         <p className="muted">
           This line cannot be repriced without authority to preserve or replace its
@@ -582,7 +632,7 @@ export const QuoteLineEditor = ({
           onClick={() => {
             try {
               setLocalError("");
-              onSubmit(quoteLineInputFromDraft(draft, configuration!));
+              onSubmit(quoteLineInputFromDraft(draft, configuration!), artwork);
             } catch (error) {
               setLocalError(
                 error instanceof Error ? error.message : "The line is invalid.",

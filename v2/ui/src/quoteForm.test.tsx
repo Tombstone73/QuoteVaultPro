@@ -540,6 +540,8 @@ const testTransportContracts = async () => {
         }
       : url.endsWith("/configuration/resolve")
         ? dimensionalConfiguration
+        : url.endsWith("/pricing-preview")
+          ? { calculatedUnitAmount: { cents: 500, currency: "USD" }, calculatedLineAmount: { cents: 1000, currency: "USD" }, currency: "USD" }
         : url.endsWith("/orders")
           ? { order: { order: { lines: [] } }, draftInvoiceId: "invoice/1" }
         : [];
@@ -556,6 +558,11 @@ const testTransportContracts = async () => {
     await quoteFormQueryOptions.configuration("scope-a", "org A", "product/1").queryFn();
     await quoteApi.resolveConfiguration("org A", "product/1", {
       finish: "hemmed",
+    });
+    await quoteApi.previewLinePricing("org A", "product/1", {
+      quantity: 2,
+      selections: { finish: "hemmed", grommets: "corners" },
+      dimensions: { width: "48", height: "24", unit: "in" },
     });
     const createLine = quoteLineInputFromDraft(
       {
@@ -583,7 +590,7 @@ const testTransportContracts = async () => {
         organizationId: "org A",
         customerId: "customer/1",
       },
-      lines: [createLine],
+      lines: [{ ...createLine, clientLineKey: "line-artwork-1" }],
     });
     await quoteApi.patch("org A", "quote/1", "business-update-1", {
       expectedRevision: "3",
@@ -614,12 +621,13 @@ const testTransportContracts = async () => {
       "/v2/organizations/org%20A/quotes/form/products",
       "/v2/organizations/org%20A/quotes/form/products/product%2F1/configuration",
       "/v2/organizations/org%20A/quotes/form/products/product%2F1/configuration/resolve",
+      "/v2/organizations/org%20A/quotes/form/products/product%2F1/pricing-preview",
       "/v2/organizations/org%20A/quotes",
       "/v2/organizations/org%20A/orders",
       "/v2/organizations/org%20A/quotes/quote%2F1",
     ],
   );
-  const resolveCall = calls.at(-4)!;
+  const resolveCall = calls.at(-5)!;
   assert.equal(resolveCall.init?.method, "POST");
   assert.equal(
     (resolveCall.init?.headers as Record<string, string>)["x-v2-csrf-token"],
@@ -631,6 +639,17 @@ const testTransportContracts = async () => {
     "a CSRF header must not replace the JSON content type",
   );
   assert.equal(resolveCall.init?.body, JSON.stringify({ selections: { finish: "hemmed" } }));
+  const previewCall = calls.at(-4)!;
+  assert.equal(previewCall.init?.method, "POST");
+  assert.equal(
+    (previewCall.init?.headers as Record<string, string>)["x-v2-csrf-token"],
+    "csrf-token",
+  );
+  assert.deepEqual(JSON.parse(String(previewCall.init?.body)), {
+    quantity: 2,
+    selections: { finish: "hemmed", grommets: "corners" },
+    dimensions: { width: "48", height: "24", unit: "in" },
+  });
   const createBody = JSON.parse(String(calls.at(-3)!.init?.body));
   assert.equal(createBody.businessRequestId, "business-create-1");
   assert.deepEqual(createBody.lines[0].dimensions, {
@@ -654,6 +673,7 @@ const testTransportContracts = async () => {
     finish: "hemmed",
     grommets: "corners",
   });
+  assert.equal(orderBody.lines[0].clientLineKey, "line-artwork-1");
   const updateBody = JSON.parse(String(calls.at(-1)!.init?.body));
   assert.deepEqual(updateBody.lineChanges[0].line.selling, {
     kind: "unit_override",

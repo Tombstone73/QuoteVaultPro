@@ -1,5 +1,11 @@
 @import "../../../reference/lovable-ui/src/styles.css";
 
+.v2-sales-line-artwork{grid-column:1/-1;padding:10px;border:1px dashed var(--color-border);border-radius:var(--radius);background:color-mix(in oklch,var(--color-primary) 5%,var(--color-surface))}
+.v2-sales-line-artwork>header,.v2-sales-line-artwork-file,.v2-sales-line-artwork-controls{display:flex;align-items:center;justify-content:space-between;gap:9px}
+.v2-sales-line-artwork h4{margin:0;font-size:12px}.v2-sales-line-artwork h4 small,.v2-sales-line-artwork p,.v2-sales-line-artwork small{color:var(--color-muted-foreground);font-size:10px}.v2-sales-line-artwork header p{margin:3px 0 0}
+.v2-sales-line-artwork-file{padding:8px 0;border-top:1px solid var(--color-border)}.v2-sales-line-artwork-file>div:first-child{display:grid;gap:2px}.v2-sales-line-artwork-controls label{display:grid;gap:2px;color:var(--color-muted-foreground);font-size:10px}.v2-sales-line-artwork-controls select{font:inherit}
+@media(max-width:420px){.v2-sales-line-artwork>header,.v2-sales-line-artwork-file{align-items:flex-start;flex-direction:column}}
+
 /* Canonical Lovable SalesList port: Quotes adapts data only, preserving its dense page structure. */
 .v2-quotes-list{min-height:calc(100vh - 118px);background:var(--color-background)}
 .v2-orders-list{min-height:calc(100vh - 48px);background:var(--color-background)}
