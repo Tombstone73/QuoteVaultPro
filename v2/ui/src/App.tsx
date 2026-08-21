@@ -52,6 +52,7 @@ import { ProductWorkspace } from "./ProductWorkspace";
 import { ArtworkWorkspace } from "./ArtworkWorkspace";
 import { RoutingWorkspace } from "./RoutingWorkspace";
 import { CommandCenter } from "./CommandCenter";
+import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { pushArtworkLocation, pushContactLocation, pushCustomerLocation, pushFulfillmentLocation, pushInvoiceLocation, pushOrderLocation, pushProductLocation, pushProductionLocation, pushProofingLocation, pushQuoteLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
 
 const errorText = (error: unknown) => {
@@ -403,10 +404,16 @@ const LegacyOrderWorkspace = ({ organizationId, sessionScope, recordId, onBack }
 };
 
 const QuotesPage = (props: WorkspaceProps & Readonly<{ quoteId: string; setQuoteId: (value: string) => void; canCreate: boolean; canEdit: boolean; canSend: boolean; canConvert: boolean; openOrder: (value: string) => void }>) => {
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(() => { try { const requested = sessionStorage.getItem("ph.v2.new-quote") === "1"; if (requested) sessionStorage.removeItem("ph.v2.new-quote"); return requested; } catch { return false; } });
+  useEffect(() => {
+    const open = () => setCreating(true);
+    window.addEventListener("v2:new-quote", open);
+    return () => window.removeEventListener("v2:new-quote", open);
+  }, []);
   const [legacyQuoteId, setLegacyQuoteId] = useState("");
   if (legacyQuoteId) return <LegacyQuoteWorkspace organizationId={props.organizationId} sessionScope={props.sessionScope} recordId={legacyQuoteId} onBack={() => setLegacyQuoteId("")} />;
-  if (props.quoteId || creating) {
+  if (creating && !props.quoteId) return <SalesEntryWorkspace mode="quote" organizationId={props.organizationId} sessionScope={props.sessionScope} canCreate={props.canCreate} canOverridePrice={props.canOverridePrice} csrfReady={props.csrfReady} onCancel={() => setCreating(false)} onQuoteCreated={(result) => { props.applyQuoteResult(result, props.organizationId, props.sessionScope); props.load(result.quote.quote.quoteId); setCreating(false); }} />;
+  if (props.quoteId) {
     return <section className="lab v2-sales-workspace v2-quote-editor"><button className="link-button" onClick={() => { setCreating(false); props.setQuoteId(""); }}>← Quotes</button><QuoteWorkspace {...props} /></section>;
   }
   return <QuotesList organizationId={props.organizationId} sessionScope={props.sessionScope} canCreate={props.canCreate} onCreate={() => setCreating(true)} onOpenV2={props.setQuoteId} onOpenLegacy={setLegacyQuoteId} />;

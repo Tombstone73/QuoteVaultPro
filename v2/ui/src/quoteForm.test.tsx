@@ -8,6 +8,7 @@ import {
 } from "./QuoteLineEditor";
 import { SelectionField } from "./SelectionField";
 import {
+  orderApi,
   quoteApi,
   type ProductConfiguration,
   type QuoteLine,
@@ -539,6 +540,8 @@ const testTransportContracts = async () => {
         }
       : url.endsWith("/configuration/resolve")
         ? dimensionalConfiguration
+        : url.endsWith("/orders")
+          ? { order: { order: { lines: [] } }, draftInvoiceId: "invoice/1" }
         : [];
     return new Response(JSON.stringify({ ok: true, data }), {
       status: 200,
@@ -575,6 +578,13 @@ const testTransportContracts = async () => {
       },
       lines: [createLine],
     });
+    await orderApi.create("org A", "business-order-1", {
+      customerContact: {
+        organizationId: "org A",
+        customerId: "customer/1",
+      },
+      lines: [createLine],
+    });
     await quoteApi.patch("org A", "quote/1", "business-update-1", {
       expectedRevision: "3",
       lineChanges: [
@@ -605,10 +615,11 @@ const testTransportContracts = async () => {
       "/v2/organizations/org%20A/quotes/form/products/product%2F1/configuration",
       "/v2/organizations/org%20A/quotes/form/products/product%2F1/configuration/resolve",
       "/v2/organizations/org%20A/quotes",
+      "/v2/organizations/org%20A/orders",
       "/v2/organizations/org%20A/quotes/quote%2F1",
     ],
   );
-  const resolveCall = calls.at(-3)!;
+  const resolveCall = calls.at(-4)!;
   assert.equal(resolveCall.init?.method, "POST");
   assert.equal(
     (resolveCall.init?.headers as Record<string, string>)["x-v2-csrf-token"],
@@ -620,7 +631,7 @@ const testTransportContracts = async () => {
     "a CSRF header must not replace the JSON content type",
   );
   assert.equal(resolveCall.init?.body, JSON.stringify({ selections: { finish: "hemmed" } }));
-  const createBody = JSON.parse(String(calls.at(-2)!.init?.body));
+  const createBody = JSON.parse(String(calls.at(-3)!.init?.body));
   assert.equal(createBody.businessRequestId, "business-create-1");
   assert.deepEqual(createBody.lines[0].dimensions, {
     width: "48",
@@ -628,6 +639,18 @@ const testTransportContracts = async () => {
     unit: "in",
   });
   assert.deepEqual(createBody.lines[0].selections, {
+    finish: "hemmed",
+    grommets: "corners",
+  });
+  const orderCall = calls.at(-2)!;
+  assert.equal(orderCall.init?.method, "POST");
+  assert.equal(
+    (orderCall.init?.headers as Record<string, string>)["x-v2-csrf-token"],
+    "csrf-token",
+  );
+  const orderBody = JSON.parse(String(orderCall.init?.body));
+  assert.equal(orderBody.businessRequestId, "business-order-1");
+  assert.deepEqual(orderBody.lines[0].selections, {
     finish: "hemmed",
     grommets: "corners",
   });

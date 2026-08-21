@@ -73,6 +73,7 @@ export type UiBootstrap = Readonly<{
     quoteSend?: boolean;
     quoteConvert?: boolean;
     orderView?: boolean;
+    orderCreate?: boolean;
     orderEdit?: boolean;
     orderOverridePrice?: boolean;
     invoiceView?: boolean;
@@ -767,6 +768,21 @@ const orderForUi = (value: RawOrderRead): OrderRead => ({
   },
 });
 export const orderApi = {
+  create: async (
+    organizationId: string,
+    businessRequestId: string,
+    input: Record<string, unknown>,
+  ): Promise<OrderResult> => {
+    const raw = await request<{ order: RawOrderRead; draftInvoiceId: string }>(
+      orderEndpoint(organizationId),
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        body: JSON.stringify({ ...input, businessRequestId }),
+      },
+    );
+    return { ...raw, order: orderForUi(raw.order) };
+  },
   list: (
     organizationId: string,
     query?: Readonly<{

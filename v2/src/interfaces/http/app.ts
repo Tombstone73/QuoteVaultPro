@@ -134,6 +134,7 @@ export const createV2HttpApp = (
                 quoteSend: policy.decide(principal, { capability: "quote.send", resource: { organizationId } }).allowed,
                 quoteConvert: policy.decide(principal, { capability: "quote.convert", resource: { organizationId } }).allowed,
                 orderView: policy.decide(principal, { capability: "order.view", resource: { organizationId } }).allowed,
+                orderCreate: policy.decide(principal, { capability: "order.create", resource: { organizationId } }).allowed,
                 orderEdit: policy.decide(principal, { capability: "order.edit", resource: { organizationId } }).allowed,
                 orderOverridePrice: policy.decide(principal, { capability: "order.overridePrice", resource: { organizationId } }).allowed,
                 invoiceView: policy.decide(principal, { capability: "invoice.view", resource: { organizationId } }).allowed,

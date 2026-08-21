@@ -1,6 +1,8 @@
 import { Search } from "lucide-react";
-import React, { useState } from "react";
-import { money, type OrderListItem } from "./api";
+import React, { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { money, quoteApi, type OrderListItem } from "./api";
+import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { useSalesOrders } from "./quoteFormQueries";
 
 const filters = ["All", "Open", "Cancelled"] as const;
@@ -28,6 +30,19 @@ export const OrdersList = ({
   onOpenV2: (orderId: string) => void;
   onOpenLegacy: (recordId: string) => void;
 }>) => {
+  const [creating, setCreating] = useState(() => {
+    try {
+      const requested = sessionStorage.getItem("ph.v2.new-order") === "1";
+      if (requested) sessionStorage.removeItem("ph.v2.new-order");
+      return requested;
+    } catch { return false; }
+  });
+  useEffect(() => {
+    const open = () => setCreating(true);
+    window.addEventListener("v2:new-order", open);
+    return () => window.removeEventListener("v2:new-order", open);
+  }, []);
+  const bootstrap = useQuery({ queryKey: ["v2", sessionScope, organizationId, "ui-bootstrap"], queryFn: () => quoteApi.bootstrap(organizationId), enabled: Boolean(sessionScope && organizationId) });
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<(typeof filters)[number]>("All");
   const [cursor, setCursor] = useState("");
@@ -45,9 +60,10 @@ export const OrdersList = ({
     else onOpenV2(row.orderId);
   };
 
+  if (creating) return <SalesEntryWorkspace mode="order" organizationId={organizationId} sessionScope={sessionScope} canCreate={bootstrap.data?.capabilities.orderCreate === true} canOverridePrice={bootstrap.data?.capabilities.orderOverridePrice === true} csrfReady={Boolean(bootstrap.data)} onCancel={() => setCreating(false)} onOrderCreated={(id) => onOpenV2(id)} />;
   return <section className="v2-orders-list space-y-3 p-4">
     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3">
-      <div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">Orders</h1><p className="mt-0.5 text-[13px] text-muted-foreground">{count} orders{summary?.sellingTotalCents !== undefined && singleCurrency ? <> · {money({ cents: summary.sellingTotalCents, currency: singleCurrency })} total value</> : cursor ? " shown" : ""}</p></div>
+      <div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">Orders</h1><p className="mt-0.5 text-[13px] text-muted-foreground">{count} orders{summary?.sellingTotalCents !== undefined && singleCurrency ? <> · {money({ cents: summary.sellingTotalCents, currency: singleCurrency })} total value</> : cursor ? " shown" : ""}</p></div><button type="button" className="v2-quotes-new" disabled={bootstrap.data?.capabilities.orderCreate !== true} onClick={() => setCreating(true)}>New Order</button>
     </div>
     <div className="v2-orders-filters">
       <label className="v2-orders-search"><Search aria-hidden /><input value={search} onChange={(event) => { setSearch(event.target.value); setCursor(""); }} placeholder="Filter by number, PO, customer…" /></label>

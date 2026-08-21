@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import React, { type ReactNode, useState } from "react";
 import {
   Activity,
   Bell,
@@ -44,7 +44,6 @@ import {
   Warehouse,
   type LucideIcon,
 } from "lucide-react";
-import { useState } from "react";
 import type { VisualAppearance, VisualTheme } from "./appearance";
 import { InventoryWorkspace } from "./InventoryWorkspace";
 
@@ -171,9 +170,15 @@ export const V2VisualShell = ({
 }>) => {
   const collapsed = appearance.sidebar === "collapsed";
   const [closed, setClosed] = useState<Record<string, boolean>>({});
+  const [newOpen, setNewOpen] = useState(false);
   const ThemeIcon = themeIcon[appearance.theme];
   const nextTheme =
     themeOrder[(themeOrder.indexOf(appearance.theme) + 1) % themeOrder.length]!;
+  const create = (target: "quotes" | "orders") => {
+    try { sessionStorage.setItem(`ph.v2.new-${target === "quotes" ? "quote" : "order"}`, "1"); } catch {}
+    onNavigate(target);
+    window.dispatchEvent(new Event(`v2:new-${target === "quotes" ? "quote" : "order"}`));
+  };
 
   return (
     <div className="v2-visual-shell">
@@ -245,9 +250,10 @@ export const V2VisualShell = ({
             <kbd>Ctrl K</kbd>
           </button>
           <div className="v2-topbar-actions">
-            <button type="button" className="v2-primary-button v2-new-button" onClick={() => onNavigate("quotes")}>
+            <button type="button" className="v2-primary-button v2-new-button" aria-expanded={newOpen} aria-haspopup="menu" onClick={() => setNewOpen((open) => !open)}>
               <Plus aria-hidden /> New
             </button>
+            {newOpen && <div className="v2-new-menu" role="menu" aria-label="Create new record"><button type="button" role="menuitem" onClick={() => { setNewOpen(false); create("quotes"); }}>New Quote</button><button type="button" role="menuitem" onClick={() => { setNewOpen(false); create("orders"); }}>New Order</button></div>}
             <button
               type="button"
               className="v2-icon-button"
