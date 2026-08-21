@@ -4,15 +4,18 @@ import type { ProductDraftOption, ProductDraftRouting, ProductProductionUnitRule
 import { Cell, Chip } from "./referencePrimitives";
 
 /** Direct presentation port of production-routing.tsx, adapted to V2's canonical generic unit schema. */
-export function ProductionUnits({ specification, options, disabled, onChange }: Readonly<{
+export function ProductionUnits({ specification, options, selectionKeys = {}, disabled, onChange }: Readonly<{
   specification: ProductProductionUnitSpecification | null;
   options: readonly ProductDraftOption[];
+  /** Product Draft options are identified by optionId, while Production rules
+   * correctly persist the canonical PBV2 selectionKey. */
+  selectionKeys?: Readonly<Record<string, string>>;
   disabled?: boolean;
   onChange: (specification: ProductProductionUnitSpecification) => void;
 }>) {
   const rules = specification?.rules ?? [];
   const selectableOptions = options.filter((option) => option.choices.length > 0);
-  const optionFor = (selectionKey: string) => selectableOptions.find((option) => option.optionId === selectionKey);
+  const optionFor = (selectionKey: string) => selectableOptions.find((option) => option.optionId === selectionKey || selectionKeys[option.optionId] === selectionKey);
   const update = (index: number, patch: (rule: ProductProductionUnitRule) => ProductProductionUnitRule) =>
     onChange({ schemaVersion: 1, rules: rules.map((rule, position) => position === index ? patch(rule) : rule) });
   const remove = (index: number) => onChange({ schemaVersion: 1, rules: rules.filter((_, position) => position !== index) });
@@ -34,8 +37,8 @@ export function ProductionUnits({ specification, options, disabled, onChange }: 
             <Cell label="Layer"><input className="h-8 text-[13px]" disabled={disabled} value={unit.layerKey ?? ""} onChange={(event) => update(index, (current) => ({ ...current, layerKey: event.target.value || undefined }))} /></Cell>
             <Cell label="Required when"><select disabled={disabled} value={unit.when?.selectionKey ?? ""} onChange={(event) => {
               const selected = optionFor(event.target.value);
-              update(index, (current) => ({ ...current, when: selected ? { selectionKey: selected.optionId, equals: selected.choices[0]?.choiceValue ?? "" } : undefined }));
-            }}><option value="">Always</option>{selectableOptions.map((option) => <option key={option.optionId} value={option.optionId}>{option.label}</option>)}</select></Cell>
+              update(index, (current) => ({ ...current, when: selected ? { selectionKey: selectionKeys[selected.optionId] ?? selected.optionId, equals: selected.choices[0]?.choiceValue ?? "" } : undefined }));
+            }}><option value="">Always</option>{selectableOptions.map((option) => <option key={option.optionId} value={selectionKeys[option.optionId] ?? option.optionId}>{option.label}</option>)}</select></Cell>
             {conditionOption && <Cell label="Choice"><select disabled={disabled} value={String(unit.when?.equals ?? "")} onChange={(event) => update(index, (current) => current.when ? { ...current, when: { ...current.when, equals: event.target.value } } : current)}>{conditionOption.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}</select></Cell>}
           </div>
         </div>;

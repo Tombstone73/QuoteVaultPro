@@ -16,13 +16,15 @@ export function projectCanonicalConditions({
   options,
   recipe,
   production,
+  selectionKeys = {},
 }: Readonly<{
   options: readonly ProductDraftOption[];
   recipe: readonly ProductRecipeComponent[];
   production: ProductProductionUnitSpecification | null;
+  selectionKeys?: Readonly<Record<string, string>>;
 }>): readonly CanonicalConditionReference[] {
   const source = (optionId: string, choiceValue: string) => {
-    const option = options.find((entry) => entry.optionId === optionId);
+    const option = options.find((entry) => entry.optionId === optionId || selectionKeys[entry.optionId] === optionId);
     const choice = option?.choices.find((entry) => entry.choiceValue === choiceValue);
     return { label: option?.label ?? optionId, choice: choice?.label ?? choiceValue };
   };
