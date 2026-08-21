@@ -48,7 +48,7 @@ import type { VisualAppearance, VisualTheme } from "./appearance";
 import { InventoryWorkspace } from "./InventoryWorkspace";
 import { useAuthSessionControls } from "./AuthGate";
 
-export type V2VisualPage = "home" | "quotes" | "orders" | "customers" | "contacts" | "products" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "appearance";
+export type V2VisualPage = "home" | "quotes" | "orders" | "customers" | "contacts" | "products" | "productBuilder" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "appearance";
 
 type NavigationItem = Readonly<{
   page?: V2VisualPage;
@@ -80,7 +80,7 @@ const sections: readonly NavigationSection[] = [
     label: "Products",
     items: [
       { page: "products", label: "Products", icon: Package },
-      { label: "Product Builder", icon: Layers },
+      { page: "productBuilder", label: "Product Builder", icon: Layers },
       { label: "Nesting", icon: Grid2X2 },
       { label: "Materials", icon: Boxes },
       { href: "/inventory", label: "Inventory", icon: Warehouse },

@@ -1,8 +1,9 @@
 export type ProductLocation = Readonly<{ productId?: string }>;
+export type ProductBuilderLocation = Readonly<{ productId?: string }>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
 export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "artwork"; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "prepress" }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "artwork"; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "prepress" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -20,6 +21,14 @@ export const readProductLocation = (pathname = window.location.pathname): Produc
 };
 export const productPath = (id?: string) => id ? `/products/${encodeURIComponent(id)}` : "/products";
 export const pushProductLocation = (id?: string) => window.history.pushState({}, "", productPath(id));
+export const readProductBuilderLocation = (pathname = window.location.pathname): ProductBuilderLocation | null => {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 1 && parts[0] === "product-builder") return {};
+  if (parts.length === 2 && parts[0] === "product-builder") return productId(parts[1]) ? { productId: productId(parts[1]) } : null;
+  return null;
+};
+export const productBuilderPath = (id?: string) => id ? `/product-builder/${encodeURIComponent(id)}?draft=1` : "/product-builder";
+export const pushProductBuilderLocation = (id?: string) => window.history.pushState({}, "", productBuilderPath(id));
 export const readCustomerLocation = (pathname = window.location.pathname): CustomerLocation | null => {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "customers") return {};
@@ -86,6 +95,8 @@ export const readProofingLocation = (pathname = window.location.pathname): Reado
 /** Extend the Product slice's one small history adapter; unrelated shell destinations stay state-driven. */
 export const readWorkspaceLocation = (pathname = window.location.pathname): WorkspaceLocation | null => {
   if (pathname === "/" || pathname === "") return { page: "home" };
+  const productBuilder = readProductBuilderLocation(pathname);
+  if (productBuilder) return { page: "productBuilder", ...productBuilder };
   const product = readProductLocation(pathname);
   if (product) return { page: "products", ...product };
   const customer = readCustomerLocation(pathname);
