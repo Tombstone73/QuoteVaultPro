@@ -457,7 +457,13 @@ export function registerFulfillmentRoutes(
       const data = await canonicalFulfillmentOperations.recordPickupHandoff(organizationId, req.params.ticketId, handoff, getUserId(req.user) || null);
       return res.json({ success: true, data, message: data.terminal ? 'Pickup completed' : 'Partial pickup recorded' });
     } catch (error: any) {
-      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid pickup handoff payload', code: 'VALIDATION_ERROR' });
+      if (error?.name === 'ZodError') {
+        const issues = Array.isArray(error.issues)
+          ? error.issues.map((issue: any) => ({ path: issue.path, code: issue.code, message: issue.message }))
+          : [];
+        console.warn('[fulfillment] invalid pickup handoff payload', { ticketId: req.params.ticketId, issues });
+        return res.status(400).json({ success: false, message: 'Invalid pickup handoff payload', code: 'VALIDATION_ERROR' });
+      }
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       console.error('[fulfillment] record pickup handoff error:', error);
       return res.status(500).json({ success: false, message: 'Failed to record pickup handoff' });

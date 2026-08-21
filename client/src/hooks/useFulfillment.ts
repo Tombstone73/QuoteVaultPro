@@ -272,17 +272,17 @@ class ApiError extends Error implements FulfillmentApiError {
   }
 }
 
-async function apiCall<T>(
+export async function apiCall<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
+  const { headers: customHeaders, credentials = "include", ...requestInit } = init ?? {};
+  const headers = new Headers({ "Content-Type": "application/json" });
+  new Headers(customHeaders).forEach((value, name) => headers.set(name, value));
   const response = await fetch(getApiUrl(path), {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
+    ...requestInit,
+    credentials,
+    headers,
   });
 
   let payload: any = null;
