@@ -5,6 +5,7 @@ import {
   productApi,
   routingApi,
   type ProductCatalogItem,
+  type ProductActiveDefinition,
   type ProductDraftFormulaPricing,
   type ProductDraftGeneral,
   type ProductDraftGeneralRead,
@@ -69,6 +70,8 @@ const date = (value?: string) =>
         day: "numeric",
       }).format(new Date(value))
     : dash;
+const dollars = (value?: number) =>
+  value === undefined ? dash : (value / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
 const status = (product: ProductCatalogItem) =>
   product.lifecycle === "active_with_draft"
     ? "Active · Draft"
@@ -318,6 +321,18 @@ const VersionRow = ({ version }: { version: ProductVersionSummary }) => (
     <small>Created {date(version.createdAt)}</small>
   </li>
 );
+const ActiveDefinition = ({ value }: { value: ProductActiveDefinition }) => (
+  <section className="v2-product-definition" aria-label="Active Product definition">
+    <header><div><h2>Active Product definition</h2><p>This is the immutable configuration currently used by Sales.</p></div><small>Active version</small></header>
+    <div className="v2-product-definition-grid">
+      <article><h3>Options</h3>{value.options.length ? <ul>{value.options.map(option => <li key={option.label}><strong>{option.label}</strong>{option.required ? " · Required" : " · Optional"}{option.defaultLabel ? ` · Default: ${option.defaultLabel}` : ""}{option.choices.length ? <span>{option.choices.map(choice => choice.label).join(" · ")}</span> : null}</li>)}</ul> : <p className="muted">No configurable options.</p>}</article>
+      <article><h3>Pricing</h3><p><strong>{value.pricing.mode === "matrix_formula" ? "Matrix + Formula" : value.pricing.mode[0].toUpperCase() + value.pricing.mode.slice(1)}</strong></p>{value.pricing.perSquareFootCents !== undefined && <p>Rate per sq ft: {dollars(value.pricing.perSquareFootCents)}</p>}{value.pricing.perPieceCents !== undefined && <p>Rate per piece: {dollars(value.pricing.perPieceCents)}</p>}{value.pricing.minimumChargeCents !== undefined && <p>Minimum charge: {dollars(value.pricing.minimumChargeCents)}</p>}{value.pricing.tierBasis && <p>Tier basis: {value.pricing.tierBasis.replaceAll("_", " ")}</p>}{value.pricing.formula && <details><summary>{value.pricing.formula.name ?? "Formula"}</summary><code>{value.pricing.formula.expression}</code>{Object.keys(value.pricing.formula.variables).length ? <p>Variables: {Object.entries(value.pricing.formula.variables).map(([key, amount]) => `${key} = ${amount}`).join(", ")}</p> : null}</details>}{value.pricing.matrix && <details><summary>Matrix: {value.pricing.matrix.dimensions.join(" × ")}</summary><p>{value.pricing.matrix.pricingUnit === "per_piece" ? "Per piece" : "Per sq ft"}</p><ul>{value.pricing.matrix.rows.map((row,index)=><li key={index}>{row.selections.join(" · ")} — {dollars(row.baseRateCents)}{row.tierCount ? ` · ${row.tierCount} tier${row.tierCount === 1 ? "" : "s"}` : ""}{row.computedSheetTiers ? " · computed-sheet tiers" : ""}</li>)}</ul></details>}</article>
+      <article><h3>Materials / Recipe</h3>{value.recipe.length ? <ul>{value.recipe.map(component => <li key={component.componentId}><strong>{component.materialName}</strong> — {component.quantity} {component.unit} per {component.basis.replace(/^per_/u, "")}{component.condition ? ` · ${component.condition}` : ""}{component.replacesCompatibility ? " · replaces compatibility rule" : ""}</li>)}</ul> : <p className="muted">No recipe is defined.</p>}</article>
+      <article><h3>Production</h3>{value.productionUnits.length ? <ul>{value.productionUnits.map(unit => <li key={unit.key}><strong>{unit.side ?? unit.key}</strong>{unit.condition ? ` · ${unit.condition}` : " · Always"}</li>)}</ul> : <p className="muted">Production units are unconfigured.</p>}</article>
+      <article><h3>Routing</h3>{value.routing ? <><p><strong>{value.routing.mode === "route_required" ? "Route required" : value.routing.mode === "no_route" ? "No route" : "Unconfigured"}</strong></p>{value.routing.templateName && <p>{value.routing.templateName}{value.routing.revision ? ` · revision ${value.routing.revision}` : ""}</p>}{value.routing.steps.length ? <p>{value.routing.steps.join(" → ")}</p> : null}</> : <p className="muted">No version-owned routing specification.</p>}</article>
+    </div>
+  </section>
+);
 
 /** Product selects a Routing-owned definition; it never edits route steps here. */
 const RoutingPolicyForm = ({ value, templates, disabled, onSave }: Readonly<{ value: ProductDraftRouting; templates: readonly Readonly<{ routeTemplateId: string; name: string; active: boolean; steps: readonly Readonly<{ position: number; kind: string }>[] }>[]; disabled: boolean; onSave: (value: ProductDraftRouting) => void }>) => {
@@ -378,6 +393,8 @@ const Detail = ({
         organizationId={organizationId}
         sessionScope={sessionScope}
         canEdit={canEdit}
+        publish={() => publishDraft(product)}
+        publishing={publishingDraft}
         back={closeDraft}
       />
     );
@@ -539,6 +556,7 @@ const Detail = ({
           )}
         </article>
       </div>
+      {product.activeDefinition && <ActiveDefinition value={product.activeDefinition} />}
     </section>
   );
 };
@@ -548,18 +566,26 @@ const Builder = ({
   organizationId,
   sessionScope,
   canEdit,
+  publish,
+  publishing,
   back,
 }: {
   product: ProductWorkspaceDetail;
   organizationId: string;
   sessionScope: string;
   canEdit: boolean;
+  publish: () => void;
+  publishing: boolean;
   back: () => void;
 }) => {
-  const client = useQueryClient(),
-    [tab, setTab] = useState<"general" | "options" | "pricing" | "materials" | "routing">(
-      "general",
-    );
+  const client = useQueryClient();
+  const refreshDetail = () =>
+    void client.invalidateQueries({
+      queryKey: keys.detail(sessionScope, organizationId, product.productId),
+    });
+  const [tab, setTab] = useState<"general" | "options" | "pricing" | "materials" | "routing" | "review">(
+    "general",
+  );
   const general = useQuery({
     queryKey: keys.general(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftGeneral(organizationId, product.productId),
@@ -567,12 +593,12 @@ const Builder = ({
   const options = useQuery({
     queryKey: keys.options(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftOptions(organizationId, product.productId),
-    enabled: tab === "general" || tab === "options" || tab === "pricing" || tab === "materials",
+    enabled: tab === "general" || tab === "options" || tab === "pricing" || tab === "materials" || tab === "review",
   });
   const pricing = useQuery({
     queryKey: keys.pricing(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftPricing(organizationId, product.productId),
-    enabled: tab === "pricing",
+    enabled: tab === "pricing" || tab === "review",
   });
   const matrix = useQuery({
     queryKey: [
@@ -581,7 +607,7 @@ const Builder = ({
     ],
     queryFn: () =>
       productApi.draftPricingMatrix(organizationId, product.productId),
-    enabled: tab === "pricing",
+    enabled: tab === "pricing" || tab === "review",
   });
   const optionPricing = useQuery({
     queryKey: keys.optionPricing(
@@ -591,31 +617,31 @@ const Builder = ({
     ),
     queryFn: () =>
       productApi.draftOptionPricing(organizationId, product.productId),
-    enabled: tab === "general" || tab === "options",
+    enabled: tab === "general" || tab === "options" || tab === "review",
     retry: false,
   });
   const formula = useQuery({
     queryKey: keys.formula(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftFormula(organizationId, product.productId),
-    enabled: tab === "pricing",
+    enabled: tab === "pricing" || tab === "review",
     retry: false,
   });
   const recipe = useQuery({
     queryKey: keys.recipe(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftRecipe(organizationId, product.productId),
-    enabled: tab === "materials",
+    enabled: tab === "materials" || tab === "review",
     retry: false,
   });
   const routing = useQuery({
     queryKey: keys.routing(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftRouting(organizationId, product.productId),
-    enabled: tab === "routing",
+    enabled: tab === "routing" || tab === "review",
     retry: false,
   });
   const routeTemplates = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "routing", "workspace"],
     queryFn: () => routingApi.workspace(organizationId),
-    enabled: tab === "routing",
+    enabled: tab === "routing" || tab === "review",
     retry: false,
   });
   const materials = useQuery({
@@ -624,7 +650,7 @@ const Builder = ({
       "materials",
     ],
     queryFn: () => productApi.materials(organizationId, product.productId),
-    enabled: tab === "materials",
+    enabled: tab === "materials" || tab === "review",
   });
   const saveGeneral = useMutation({
     mutationFn: (value: ProductDraftGeneralRead) =>
@@ -638,11 +664,13 @@ const Builder = ({
           general: value.general,
         },
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         keys.general(sessionScope, organizationId, product.productId),
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const saveOptions = useMutation({
     mutationFn: (value: ProductDraftOptionsRead) =>
@@ -656,11 +684,13 @@ const Builder = ({
           options: value.options,
         },
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         keys.options(sessionScope, organizationId, product.productId),
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const savePricing = useMutation({
     mutationFn: (value: ProductDraftPricing) =>
@@ -676,11 +706,13 @@ const Builder = ({
           tiers: value.tiers,
         },
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         keys.pricing(sessionScope, organizationId, product.productId),
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const saveMatrix = useMutation({
     mutationFn: (value: ProductDraftPricingMatrix) =>
@@ -699,14 +731,16 @@ const Builder = ({
           rows: value.rows,
         },
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         [
           ...keys.pricing(sessionScope, organizationId, product.productId),
           "matrix",
         ],
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const saveFormula = useMutation({
     mutationFn: (value: ProductDraftFormulaPricing) =>
@@ -721,11 +755,13 @@ const Builder = ({
           variables: value.variables,
         },
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         keys.formula(sessionScope, organizationId, product.productId),
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const saveOptionPricing = useMutation({
     mutationFn: (
@@ -743,11 +779,13 @@ const Builder = ({
         newBusinessRequestId(),
         value,
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         keys.optionPricing(sessionScope, organizationId, product.productId),
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const saveRecipe = useMutation({
     mutationFn: (value: ProductRecipe) =>
@@ -761,15 +799,20 @@ const Builder = ({
           components: value.components,
         },
       ),
-    onSuccess: (value) =>
+    onSuccess: (value) => {
       client.setQueryData(
         keys.recipe(sessionScope, organizationId, product.productId),
         value,
-      ),
+      );
+      refreshDetail();
+    },
   });
   const saveRouting = useMutation({
     mutationFn: (value: ProductDraftRouting) => productApi.saveDraftRouting(organizationId, product.productId, newBusinessRequestId(), { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt, routing: value.routing }),
-    onSuccess: (value) => client.setQueryData(keys.routing(sessionScope, organizationId, product.productId), value),
+    onSuccess: (value) => {
+      client.setQueryData(keys.routing(sessionScope, organizationId, product.productId), value);
+      refreshDetail();
+    },
   });
   if (!general.data)
     return (
@@ -819,7 +862,7 @@ const Builder = ({
                 ? "product-draft-options"
                 : pricingForm
           }
-          disabled={!canEdit || busy}
+          disabled={!canEdit || busy || tab === "review"}
         >
           {busy ? "Saving…" : "Save Draft"}
         </button>
@@ -829,7 +872,7 @@ const Builder = ({
           className={tab === "general" ? "active" : ""}
           onClick={() => setTab("general")}
         >
-          1 General
+          1 General &amp; Production
         </button>
         <button
           className={tab === "options" ? "active" : ""}
@@ -850,6 +893,7 @@ const Builder = ({
           4 Materials
         </button>
         <button className={tab === "routing" ? "active" : ""} onClick={() => setTab("routing")}>5 Routing</button>
+        <button className={tab === "review" ? "active" : ""} onClick={() => setTab("review")}>6 Review &amp; Publish</button>
       </nav>
       {error && (
         <p className="v2-product-version-message">
@@ -926,6 +970,8 @@ const Builder = ({
           organizationId={organizationId}
           productId={product.productId}
         />
+      ) : tab === "review" ? (
+        <DraftReview general={general.data} options={options.data} pricing={pricing.data} matrix={matrix.data} formula={formula.data} optionPricing={optionPricing.data} recipe={recipe.data} routing={routing.data} canPublish={canEdit} publishing={publishing} publish={publish} />
       ) : (
         <p className="v2-proof-empty">Loading pricing…</p>
       )}
@@ -933,6 +979,31 @@ const Builder = ({
   );
 };
 
+const DraftReview = ({ general, options, pricing, matrix, formula, optionPricing, recipe, routing, canPublish, publishing, publish }: Readonly<{
+  general: ProductDraftGeneralRead;
+  options?: ProductDraftOptionsRead;
+  pricing?: ProductDraftPricing;
+  matrix?: ProductDraftPricingMatrix | null;
+  formula?: ProductDraftFormulaPricing | null;
+  optionPricing?: ProductDraftOptionPricing | null;
+  recipe?: ProductRecipe | null;
+  routing?: ProductDraftRouting | null;
+  canPublish: boolean;
+  publishing: boolean;
+  publish: () => void;
+}>) => (
+  <section className="v2-product-review" aria-label="Draft review and publish">
+    <header><div><h2>Review Product definition</h2><p>Review this Draft before it replaces the Active ProductVersion.</p></div><button type="button" disabled={!canPublish || publishing} onClick={publish}>{publishing ? "Publishing…" : "Publish Draft"}</button></header>
+    <div className="v2-product-definition-grid">
+      <article><h3>General</h3><p><strong>{general.general.displayName}</strong></p><p>{general.general.measurementMode === "dimensions_required" ? "Dimensions + quantity" : "Quantity only"} · {general.general.workflowIntent.replaceAll("_", " ")}</p><p>{general.general.description || "No description"}</p></article>
+      <article><h3>Options</h3>{options ? <ul>{options.options.map(option => <li key={option.optionId}><strong>{option.label}</strong>{option.required ? " · Required" : " · Optional"}{option.choices.length ? <span>{option.choices.map(choice => choice.label).join(" · ")}</span> : null}</li>)}</ul> : <p>Loading options…</p>}</article>
+      <article><h3>Pricing</h3>{matrix ? <><p><strong>Matrix</strong> · {matrix.dimensions.map(dimension => dimension.label).join(" × ")}</p><p>{matrix.rows.length} matrix row{matrix.rows.length === 1 ? "" : "s"} · {matrix.pricingUnit === "per_piece" ? "per piece" : "per sq ft"}</p></> : formula ? <><p><strong>Formula</strong>{formula.formulaName ? ` · ${formula.formulaName}` : ""}</p><code>{formula.expression}</code></> : pricing ? <><p><strong>{pricing.mode.replaceAll("_", " ")}</strong></p><p>{pricing.base.perSqftCents !== null ? `Rate per sq ft: ${dollars(pricing.base.perSqftCents)}` : pricing.base.perPieceCents !== null ? `Rate per piece: ${dollars(pricing.base.perPieceCents)}` : "No base rate"}</p><p>Minimum: {dollars(pricing.base.minimumChargeCents ?? undefined)}</p></> : <p>Loading pricing…</p>}{optionPricing?.options.some(option => option.nodeImpact || option.choices.some(choice => choice.impact)) ? <p>Option pricing impacts are configured.</p> : null}</article>
+      <article><h3>Materials / Recipe</h3>{recipe ? recipe.components.length ? <ul>{recipe.components.map(component => <li key={component.componentId}><strong>{component.materialName}</strong> — {component.quantity} {component.unit} per {component.quantityKind.replace(/^per_/u, "")}{component.condition ? " · conditional selection" : ""}</li>)}</ul> : <p>No recipe components.</p> : <p>Loading recipe…</p>}</article>
+      <article><h3>Production</h3>{general.general.productionUnitSpecification?.rules.length ? <ul>{general.general.productionUnitSpecification.rules.map(rule => <li key={rule.key}><strong>{rule.side ?? rule.key}</strong>{rule.when ? " · Conditional selection" : " · Always"}</li>)}</ul> : <p>Production units are unconfigured.</p>}</article>
+      <article><h3>Routing</h3>{routing ? <><p><strong>{routing.routing.kind === "route_required" ? "Route required" : routing.routing.kind === "no_route" ? "No route" : "Unconfigured"}</strong></p>{routing.routing.kind === "route_required" ? <p>{routing.routing.routeTemplateName} · {routing.routing.steps.map(step => step.kind).join(" → ")}</p> : null}</> : <p>Loading routing…</p>}</article>
+    </div>
+  </section>
+);
 const GeneralForm = ({
   value,
   conditionOptions: productionOptions,

@@ -25,6 +25,49 @@ import type { ProductDraftRouting, ProductRoutingApplicationService } from "../.
 
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
+/** Human-readable, immutable ProductVersion definition used by the Active Product view. */
+export type ProductActiveDefinition = Readonly<{
+  productVersionId: string;
+  options: readonly Readonly<{
+    label: string;
+    inputType: string;
+    required: boolean;
+    defaultLabel?: string;
+    choices: readonly Readonly<{ label: string; value: string | number | boolean }>[];
+  }>[];
+  pricing: Readonly<{
+    mode: "unconfigured" | "simple" | "formula" | "matrix" | "matrix_formula";
+    perPieceCents?: number;
+    perSquareFootCents?: number;
+    minimumChargeCents?: number;
+    tierBasis?: "quantity" | "square_foot" | "computed_sheet_usage";
+    tiers: readonly Readonly<{ minimum: number; maximum: number | null; perPieceCents?: number; perSquareFootCents?: number; minimumChargeCents?: number }>[];
+    formula?: Readonly<{ name?: string; expression: string; variables: Readonly<Record<string, number>> }>;
+    matrix?: Readonly<{
+      pricingUnit: "per_piece" | "per_square_foot";
+      dimensions: readonly string[];
+      rows: readonly Readonly<{ selections: readonly string[]; baseRateCents: number; tierCount: number; computedSheetTiers: boolean }>[];
+    }>;
+  }>;
+  recipe: readonly Readonly<{
+    componentId: string;
+    materialName: string;
+    materialSku?: string;
+    quantity: string;
+    unit: string;
+    basis: string;
+    condition?: string;
+    replacesCompatibility: boolean;
+  }>[];
+  productionUnits: readonly Readonly<{ key: string; side?: string; condition?: string }>[];
+  routing?: Readonly<{
+    mode: "route_required" | "no_route" | "unconfigured";
+    templateName?: string;
+    revision?: string;
+    fingerprint?: string;
+    steps: readonly string[];
+  }>;
+}>;
 export type ProductCatalogItem = Readonly<{
   productId: string;
   displayName: string;
@@ -49,6 +92,7 @@ export type ProductWorkspaceDetail = Readonly<
     requiresProductionJob: boolean;
     requiresProofApproval: boolean;
     configurableOptionCount: number;
+    activeDefinition?: ProductActiveDefinition;
     versions: ProductVersionLifecycle;
   }
 >;
