@@ -129,8 +129,36 @@ describe("M1.3 customer/product compatibility reads", () => {
     const resolved = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, dimensions: { width: "24" as any, height: "18" as any, unit: "in" } });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
-    const result = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
+    expect(resolved.value.nestingEstimate?.facts).toMatchObject({ totalSheetCount: 1, billedSheetSqft: 3 });
+    const result = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" }, nestingEstimate: resolved.value.nestingEstimate });
     expect(result.calculatedLineAmount.cents).toBe(Math.round(sheetConsumptionSqft(24, 18, 1, 48, 96, 0, 1, 0) * 100));
+  });
+
+  test("published computed-sheet matrix pricing supplies one canonical sheet estimate to Pricing", async () => {
+    const coroplastTree = {
+      ...tree,
+      rootNodeIds: ["sides", "thickness"],
+      nodes: {
+        sides: { id: "sides", kind: "question" as const, label: "Print Sides", input: { type: "select" as const, selectionKey: "print_sides", required: true }, choices: [{ value: "double_sided", label: "Double sided" }] },
+        thickness: { id: "thickness", kind: "question" as const, label: "Thickness", input: { type: "select" as const, selectionKey: "thickness", required: true }, choices: [{ value: "4mm", label: "4mm" }] },
+      },
+      meta: {
+        pricingV2: { base: { perSqftCents: 137.5, minimumChargeCents: 525 } },
+        pricingMatrix: {
+          id: "coroplast-matrix", dimensions: ["print_sides", "thickness"], rows: [{ id: "double-4mm", when: { print_sides: "double_sided", thickness: "4mm" }, variables: { base_price: 0 }, tierBasis: "computed_sheet_usage", qtyTiers: [{ id: "sheet-tier", minQty: 1, perSqftCents: 172 }] }],
+        },
+      },
+    };
+    const source = { id: "tree-coroplast", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: coroplastTree, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "formula", formula: { id: "formula-sheet", code: "4X8", profileKey: "formula", expression: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price", config: { variables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 24, billable_length_increment: 12, minimum_billable_sqft: 3 } }, updatedAt: "2026-08-15T01:02:03.000Z" } };
+    const resolved = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 2, dimensions: { width: "48" as any, height: "96" as any, unit: "in" }, selections: { print_sides: "double_sided", thickness: "4mm" } });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.value.nestingEstimate?.facts).toMatchObject({ totalSheetCount: 2, billedSheetSqft: 64 });
+    const result = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, nestingEstimate: resolved.value.nestingEstimate, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
+    expect(result.calculatedLineAmount.cents).toBe(11008);
+    expect(result.minimumChargeApplied).toBe(false);
+    expect(result.tier).toMatchObject({ source: "computed_sheet", basisValue: "2", selectedTierId: "sheet-tier", selectedRate: "172" });
+    expect(result.matrix?.rowId).toBe("double-4mm");
   });
 
   test("PBV2 per-square-foot set and add base-rate overrides are resolved before formula pricing", async () => {

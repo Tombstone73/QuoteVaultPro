@@ -18,6 +18,7 @@ import type {
   CustomersReadPort,
 } from "../customers/contracts.js";
 import type { PricingPort } from "../pricing/contracts.js";
+import { explainPricingResult, type OperatorPricingExplanation } from "../pricing/operatorPricingExplanation.js";
 import type {
   ProductPricingCompatibilityPort,
   ResolveActivePricingInput,
@@ -72,6 +73,7 @@ export type QuoteLinePricingPreview = Readonly<{
   calculatedUnitAmount: Money;
   calculatedLineAmount: Money;
   currency: string;
+  explanation: OperatorPricingExplanation;
 }>;
 export type CreateQuoteInput = Readonly<{
   businessRequestId: string;
@@ -458,6 +460,7 @@ export class QuoteApplicationService {
           calculatedUnitAmount: line.pricingResult.calculatedUnitAmount,
           calculatedLineAmount: line.pricingResult.calculatedLineAmount,
           currency: line.pricingResult.currency,
+          explanation: explainPricingResult(line.pricingResult),
         };
       }));
     } catch (error) {

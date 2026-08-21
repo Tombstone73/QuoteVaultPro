@@ -1824,10 +1824,14 @@ const PreviewResult = ({
       {result.minimumChargeApplied && <span>Minimum charge applied</span>}
       {result.tier && (
         <span>
-          {result.tier.basis === "quantity" ? "Quantity" : "Area"} tier:{" "}
+          {result.tier.basis === "quantity" ? "Quantity" : result.tier.basis === "computed_sheet" ? "Computed-sheet" : "Area"} tier:{" "}
           {result.tier.value}
         </span>
       )}
+      {result.explanation.dimensions && <span>{result.explanation.dimensions.widthIn} × {result.explanation.dimensions.heightIn} in · {result.explanation.dimensions.totalAreaSqft} sq ft total</span>}
+      {result.explanation.computedSheetUsage && <span>Computed sheet usage: {result.explanation.computedSheetUsage.sheetCount} sheet{result.explanation.computedSheetUsage.sheetCount === 1 ? "" : "s"}{result.explanation.computedSheetUsage.billedSquareFeet == null ? "" : ` · ${result.explanation.computedSheetUsage.billedSquareFeet} billable sq ft`}</span>}
+      {result.explanation.matrix && <span>Pricing matrix row: {result.explanation.matrix.rowId}</span>}
+      {result.explanation.formula && <span>Formula: {result.explanation.formula.expression}</span>}
     </div>
   ) : null;
 const FormulaForm = ({

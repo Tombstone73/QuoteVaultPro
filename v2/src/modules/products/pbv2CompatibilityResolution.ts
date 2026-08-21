@@ -9,6 +9,7 @@ import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../../shar
 import type { OptionTreeV2, PricingImpact, PricingV2Tier } from "../../../../shared/optionTreeV2.js";
 import type { ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "./contracts.js";
 import { resolveProductionRequirementSnapshot } from "../shared/productionRequirements.js";
+import { estimatePricingSheetUsage } from "../pricing/pricingNestingEstimate.js";
 
 export type ActivePbv2CompatibilityRecord = Readonly<{
   id: string;
@@ -117,6 +118,56 @@ const baseRateOverrides = (tree: OptionTreeV2, visibleNodeIds: readonly string[]
 
 const validation = (message: string): ApplicationResult<never> => failure(new V2ApplicationError("VALIDATION_ERROR", message));
 
+const formulaNeedsSheetEstimate = (expression: string | undefined): boolean =>
+  Boolean(expression && /\bsheet_consumption_sqft\s*\(/u.test(expression));
+
+const numberVariable = (
+  variables: Readonly<Record<string, JsonValue>>,
+  key: string,
+  options: Readonly<{ allowZero?: boolean }> = {},
+): number | null => {
+  const value = variables[key];
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
+  return Number.isFinite(number) && (options.allowZero ? number >= 0 : number > 0) ? number : null;
+};
+
+/**
+ * Formula-library sheet consumption needs deterministic pricing facts before the
+ * Pricing domain selects its computed-sheet tier. This stays a Product/PBV2
+ * compatibility concern: it adapts the published formula configuration to the
+ * existing pure Pricing estimator and never consults Recipe, Inventory, or
+ * Production state.
+ */
+const resolveFormulaSheetEstimate = (
+  expression: string | undefined,
+  variables: Readonly<Record<string, JsonValue>>,
+  dimensions: ResolveActivePricingInput["dimensions"] | undefined,
+  quantity: number,
+): ApplicationResult<ResolvedPricingInput["nestingEstimate"]> => {
+  if (!formulaNeedsSheetEstimate(expression)) return success(undefined);
+  if (!dimensions) return validation("The active sheet-pricing formula requires effective dimensions.");
+  const scale = dimensions.unit === "in" ? 1 : dimensions.unit === "ft" ? 12 : 1 / 25.4;
+  const width = Number(dimensions.width) * scale;
+  const height = Number(dimensions.height) * scale;
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    return validation("The active sheet-pricing formula requires positive effective dimensions.");
+  }
+  const sheetWidthIn = numberVariable(variables, "sheet_width");
+  const sheetLengthIn = numberVariable(variables, "sheet_length");
+  const usableDropMinimumIn = numberVariable(variables, "usable_drop_min", { allowZero: true });
+  const billableLengthIncrementIn = numberVariable(variables, "billable_length_increment");
+  const minimumBillableSqft = numberVariable(variables, "minimum_billable_sqft", { allowZero: true });
+  if (sheetWidthIn == null || sheetLengthIn == null || usableDropMinimumIn == null || billableLengthIncrementIn == null || minimumBillableSqft == null) {
+    return validation("The active sheet-pricing formula is missing valid sheet-yield variables.");
+  }
+  const allowRotation = variables.allow_rotation === true || variables.allowRotation === true;
+  try {
+    return success(estimatePricingSheetUsage({ pieceWidthIn: width, pieceHeightIn: height, quantity, sheetWidthIn, sheetLengthIn, usableDropMinimumIn, billableLengthIncrementIn, minimumBillableSqft, allowRotation }));
+  } catch {
+    return validation("The active sheet-pricing formula could not resolve a valid sheet-yield estimate.");
+  }
+};
+
 /** Pure anti-corruption mapper: tree JSON is consumed here and never crosses the Sales/Pricing DTO boundary. */
 export const resolveActivePbv2PricingInput = (
   sellableProduct: SellableProductConfiguration,
@@ -171,6 +222,8 @@ export const resolveActivePbv2PricingInput = (
   const resolvedBaseRateOverrides = baseRateOverrides(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedBaseRateOverrides.ok) return resolvedBaseRateOverrides;
   const formulaVariables = { ...extractFormulaVariables(record(source.formula?.config)), ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables) } as Record<string, JsonValue>;
+  const nestingEstimate = resolveFormulaSheetEstimate(expression, formulaVariables, dimensions, input.quantity);
+  if (!nestingEstimate.ok) return nestingEstimate;
   let productionRequirements;
   try { productionRequirements=resolveProductionRequirementSnapshot(meta.productionUnitSpecification,visibility.effectiveSelections as Record<string,JsonValue>); }
   catch { return validation("The active production-unit specification is invalid."); }
@@ -212,6 +265,7 @@ export const resolveActivePbv2PricingInput = (
       productionRequirements,
     },
     rules,
+    ...(nestingEstimate.value ? { nestingEstimate: nestingEstimate.value } : {}),
     warnings: [],
   });
 };

@@ -2,6 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from "react";
 import {
   quoteApi,
   type ProductConfiguration,
+  type SalesLinePricingPreview,
   type Selection,
 } from "./api";
 import {
@@ -309,7 +310,7 @@ export const QuoteLineEditor = ({
   const [localError, setLocalError] = useState("");
   const [resolving, setResolving] = useState(false);
   const [artwork, setArtwork] = useState<readonly DraftLineArtwork[]>([]);
-  const [pricingPreview, setPricingPreview] = useState<Readonly<{ cents: number; currency: string }>>();
+  const [pricingPreview, setPricingPreview] = useState<SalesLinePricingPreview>();
   const [pricingPreviewError, setPricingPreviewError] = useState("");
   const pricingPreviewSequence = useRef(0);
   const appliedDefaults = useRef("");
@@ -414,7 +415,7 @@ export const QuoteLineEditor = ({
         ...(configuration.requiresDimensions ? { dimensions: { ...draft.dimensions } } : {}),
       }).then((preview) => {
         if (pricingPreviewSequence.current !== sequence) return;
-        setPricingPreview(preview.calculatedLineAmount);
+        setPricingPreview(preview);
         setPricingPreviewError("");
       }).catch((error: unknown) => {
         if (pricingPreviewSequence.current !== sequence) return;
@@ -613,7 +614,14 @@ export const QuoteLineEditor = ({
         </div>
       )}
       {localError && <div className="notice error">{localError}</div>}
-      {pricingPreview && <p className="v2-sales-entry-price-preview" aria-live="polite">Authoritative price preview: {(pricingPreview.cents / 100).toLocaleString(undefined, { style: "currency", currency: pricingPreview.currency })}</p>}
+      {pricingPreview && <div className="v2-sales-entry-price-preview" aria-live="polite">
+        <p>Authoritative price preview: {(pricingPreview.calculatedLineAmount.cents / 100).toLocaleString(undefined, { style: "currency", currency: pricingPreview.currency })}</p>
+        {pricingPreview.explanation.dimensions && <small>{pricingPreview.explanation.dimensions.widthIn} × {pricingPreview.explanation.dimensions.heightIn} in · {pricingPreview.explanation.dimensions.totalAreaSqft} sq ft total</small>}
+        {pricingPreview.explanation.computedSheetUsage && <small>Computed sheet usage: {pricingPreview.explanation.computedSheetUsage.sheetCount} sheet{pricingPreview.explanation.computedSheetUsage.sheetCount === 1 ? "" : "s"}{pricingPreview.explanation.computedSheetUsage.billedSquareFeet == null ? "" : ` · ${pricingPreview.explanation.computedSheetUsage.billedSquareFeet} billable sq ft`}</small>}
+        {pricingPreview.explanation.tier && <small>{pricingPreview.explanation.tier.basis === "computed_sheet" ? "Computed-sheet" : pricingPreview.explanation.tier.basis} tier · {pricingPreview.explanation.tier.value} · ${(pricingPreview.explanation.tier.rateCents / 100).toFixed(2)}/sq ft</small>}
+        {pricingPreview.explanation.matrix && <small>Pricing matrix row: {pricingPreview.explanation.matrix.rowId}</small>}
+        {pricingPreview.explanation.minimumChargeApplied && <small>Minimum charge applied</small>}
+      </div>}
       {pricingPreviewError && <p className="notice error" role="alert">Pricing preview is unavailable: {pricingPreviewError}</p>}
       {unavailableSellingDecision && (
         <p className="muted">
