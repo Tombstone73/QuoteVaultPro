@@ -25,6 +25,8 @@ for (const [mode, action] of [["quote", "Create Quote"], ["order", "Create Order
 }
 
 const shell = renderToStaticMarkup(<V2VisualShell page="home" onNavigate={() => undefined} appearance={defaultVisualAppearance} setAppearance={() => undefined}><div /></V2VisualShell>);
+assert.match(shell,/Products/);
+assert.doesNotMatch(shell,/Product Builder/);
 assert.match(shell, /aria-haspopup="menu"/);
 assert.match(shell, />\s*New</);
 

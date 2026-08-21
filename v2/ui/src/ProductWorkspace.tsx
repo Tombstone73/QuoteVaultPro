@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   newBusinessRequestId,
   productApi,
@@ -122,10 +122,13 @@ export const ProductWorkspace = ({
         typeof window !== "undefined" &&
         builderMode || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("draft") === "1"),
     );
+  useEffect(() => {
+    if (builderMode || new URLSearchParams(window.location.search).get("draft") === "1") setEditing(true);
+  }, [builderMode, productId]);
   const list = useQuery({
     queryKey: keys.list(sessionScope, organizationId, query, page),
     queryFn: () => productApi.list(organizationId, query, page),
-    enabled: Boolean(organizationId && sessionScope && canView && (builderMode || !productId)),
+    enabled: Boolean(organizationId && sessionScope && canView && !productId),
   });
   const detail = useQuery({
     queryKey: keys.detail(sessionScope, organizationId, productId),
@@ -141,10 +144,13 @@ export const ProductWorkspace = ({
         newBusinessRequestId(),
         product.versions.active?.updatedAt ?? "",
       ),
-    onSuccess: () =>
-      client.invalidateQueries({
+    onSuccess: () => {
+      void client.invalidateQueries({
         queryKey: keys.detail(sessionScope, organizationId, productId),
-      }),
+      });
+      window.history.pushState({}, "", builderMode ? productBuilderPath(productId) : `${productPath(productId)}?draft=1`);
+      setEditing(true);
+    },
   });
   const createProduct = useMutation({
     mutationFn: (displayName: string) => productApi.createProduct(organizationId, newBusinessRequestId(), displayName),
@@ -194,7 +200,6 @@ export const ProductWorkspace = ({
       <Detail
         state={detail}
         canEdit={canEdit}
-        productChoices={list.data?.items ?? []}
         organizationId={organizationId}
         sessionScope={sessionScope}
         editing={editing}
@@ -204,23 +209,18 @@ export const ProductWorkspace = ({
         createDraft={(product) => createDraft.mutate(product)}
         publishDraft={(product) => publishDraft.mutate(product)}
         openDraft={() => {
-          window.history.pushState(
-            {},
-            "",
-            builderMode ? productBuilderPath(productId) : `${productPath(productId)}?draft=1`,
-          );
+          window.history.pushState({}, "", builderMode ? productBuilderPath(productId) : `${productPath(productId)}?draft=1`);
           setEditing(true);
         }}
         closeDraft={() => {
-          window.history.pushState({}, "", builderMode ? productBuilderPath() : productPath(productId));
+          if (builderMode) backToCatalog();
+          else window.history.pushState({}, "", productPath(productId));
           setEditing(false);
         }}
-        openProduct={openProduct}
         back={backToCatalog}
       />
     );
-  if (builderMode)
-    return <BuilderLanding products={list.data?.items ?? []} loading={list.isLoading} canEdit={canEdit} openProduct={openProduct} />;
+  if (builderMode) return <section className="v2-products"><p className="v2-proof-empty">Choose a Product from the Product Catalog.</p></section>;
   return (
     <section className="v2-products" aria-label="Products">
       <header className="v2-products-heading">
@@ -259,30 +259,27 @@ export const ProductWorkspace = ({
               <th>Basis</th>
               <th>Primary Material</th>
               <th>Status</th>
+              <th><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
             {list.isLoading && (
               <tr>
-                <td colSpan={7}>Loading Products…</td>
+                <td colSpan={8}>Loading Products…</td>
               </tr>
             )}
             {list.isSuccess && !list.data.items.length && (
               <tr>
-                <td colSpan={7}>No Products match this search.</td>
+                <td colSpan={8}>No Products match this search.</td>
               </tr>
             )}
             {list.data?.items.map((product) => (
               <tr key={product.productId}>
                 <td>
-                  <button
-                    className="v2-products-link"
-                    type="button"
-                    onClick={() => openProduct(product.productId)}
-                  >
+                  <span className="v2-products-link">
                     <i>{initials(product.displayName)}</i>
                     <b>{product.displayName}</b>
-                  </button>
+                  </span>
                 </td>
                 <td>{product.category ?? dash}</td>
                 <td>{product.pricingSummary}</td>
@@ -294,6 +291,7 @@ export const ProductWorkspace = ({
                     {status(product)}
                   </em>
                 </td>
+                <td><button type="button" className="button secondary" disabled={!canEdit} onClick={() => openProduct(product.productId)}>Edit</button></td>
               </tr>
             ))}
           </tbody>
@@ -316,14 +314,6 @@ export const ProductWorkspace = ({
       {newProductOpen && <div className="v2-quote-send-modal" role="dialog" aria-modal="true" aria-labelledby="new-product-title"><div><header><div><h2 id="new-product-title">New Product</h2><p>Creates an inactive Product identity with one editable Draft ProductVersion.</p></div><button type="button" aria-label="Close" onClick={() => setNewProductOpen(false)}>×</button></header><label>Product name<input autoFocus value={newProductName} onChange={(event) => setNewProductName(event.target.value)} /></label>{createProduct.error && <p className="v2-product-version-message">{(createProduct.error as { message?: string }).message ?? "Product could not be created."}</p>}<footer><button type="button" onClick={() => setNewProductOpen(false)}>Cancel</button><button type="button" className="button" disabled={!newProductName.trim() || createProduct.isPending} onClick={() => createProduct.mutate(newProductName)}>{createProduct.isPending ? "Creating…" : "Create Draft"}</button></footer></div></div>}
     </section>
   );
-};
-
-const BuilderLanding = ({ products, loading, canEdit, openProduct }: Readonly<{ products: readonly ProductCatalogItem[]; loading: boolean; canEdit: boolean; openProduct: (id: string) => void }>) => {
-  const [selectedId, setSelectedId] = useState("");
-  return <section className="v2-products v2-product-builder v2-product-builder-landing" aria-label="Product Builder">
-    <header className="v2-product-builder-header"><div><h1>Product Builder</h1><p>Select a Product to open its canonical Draft authoring workspace.</p></div><span className="v2-product-builder-state">Draft authoring</span></header>
-    <div className="v2-product-builder-landing-card"><h2>Choose a Product</h2><p>ACTIVE ProductVersions remain immutable. A Product without a Draft will first offer the canonical Create Draft action.</p><label>Product selector<select aria-label="Product selector" value={selectedId} disabled={loading || !products.length} onChange={(event) => setSelectedId(event.target.value)}><option value="">{loading ? "Loading Products…" : "Select a Product"}</option>{products.map((product) => <option key={product.productId} value={product.productId}>{product.displayName} · {status(product)}</option>)}</select></label><button type="button" className="button" disabled={!selectedId} onClick={() => openProduct(selectedId)}>Open Product Builder</button>{!canEdit && <p className="v2-product-note">Your current authority can review Products but cannot edit a Draft.</p>}</div>
-  </section>;
 };
 
 const Field = ({ label, value }: { label: string; value: string }) => (
@@ -368,7 +358,6 @@ const RoutingPolicyForm = ({ value, templates, disabled, onSave }: Readonly<{ va
 const Detail = ({
   state,
   canEdit,
-  productChoices,
   organizationId,
   sessionScope,
   editing,
@@ -379,12 +368,10 @@ const Detail = ({
   publishDraft,
   openDraft,
   closeDraft,
-  openProduct,
   back,
 }: {
   state: ReturnType<typeof useQuery<ProductWorkspaceDetail>>;
   canEdit: boolean;
-  productChoices: readonly ProductCatalogItem[];
   organizationId: string;
   sessionScope: string;
   editing: boolean;
@@ -395,7 +382,6 @@ const Detail = ({
   publishDraft: (product: ProductWorkspaceDetail) => void;
   openDraft: () => void;
   closeDraft: () => void;
-  openProduct: (id: string) => void;
   back: () => void;
 }) => {
   if (state.isLoading)
@@ -421,8 +407,6 @@ const Detail = ({
         organizationId={organizationId}
         sessionScope={sessionScope}
         canEdit={canEdit}
-        productChoices={productChoices}
-        openProduct={openProduct}
         publish={() => publishDraft(product)}
         publishing={publishingDraft}
         back={closeDraft}
@@ -596,8 +580,6 @@ const Builder = ({
   organizationId,
   sessionScope,
   canEdit,
-  productChoices,
-  openProduct,
   publish,
   publishing,
   back,
@@ -606,8 +588,6 @@ const Builder = ({
   organizationId: string;
   sessionScope: string;
   canEdit: boolean;
-  productChoices: readonly ProductCatalogItem[];
-  openProduct: (id: string) => void;
   publish: () => void;
   publishing: boolean;
   back: () => void;
@@ -869,13 +849,12 @@ const Builder = ({
     <section className="v2-products v2-product-builder">
       <header className="v2-product-builder-header">
         <button className="v2-products-back" onClick={back}>
-          ← Product Builder
+          ← Products
         </button>
         <div>
           <h1>{product.displayName}</h1>
           <p>Draft ProductVersion · {product.versions.active ? "Active version preserved" : "No Active version yet"}</p>
         </div>
-        <label className="v2-product-builder-selector">Product selector<select aria-label="Product selector" value={product.productId} onChange={(event) => openProduct(event.target.value)}>{productChoices.map((candidate) => <option key={candidate.productId} value={candidate.productId}>{candidate.displayName}</option>)}</select></label>
         <span className="v2-product-builder-state">DRAFT</span>
         <a className="v2-product-builder-save-link" href="#basics" title="Each canonical Product Draft section has its own Save action.">Save Changes</a>
         <a className="v2-product-builder-review-link" href="#review">Review</a>

@@ -15,7 +15,6 @@ import {
   Gauge,
   Grid2X2,
   Image,
-  Layers,
   LayoutDashboard,
   Link2,
   MonitorCog,
@@ -80,7 +79,6 @@ const sections: readonly NavigationSection[] = [
     label: "Products",
     items: [
       { page: "products", label: "Products", icon: Package },
-      { page: "productBuilder", label: "Product Builder", icon: Layers },
       { label: "Nesting", icon: Grid2X2 },
       { label: "Materials", icon: Boxes },
       { href: "/inventory", label: "Inventory", icon: Warehouse },
