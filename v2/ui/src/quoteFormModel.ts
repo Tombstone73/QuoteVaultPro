@@ -177,6 +177,32 @@ export const applyServerConfiguration = (
 });
 
 /**
+ * Artwork metadata can assist a blank dimensional line, but an operator's
+ * entered dimensions always remain authoritative local intent.
+ */
+export const applyDetectedArtworkDimensions = (
+  draft: QuoteLineDraft,
+  configuration: ProductConfiguration,
+  size: Readonly<{ widthIn: number; heightIn: number }>,
+): QuoteLineDraft | undefined => {
+  if (
+    !configuration.requiresDimensions ||
+    draft.dimensions.width ||
+    draft.dimensions.height ||
+    draft.dimensions.unit !== "in"
+  )
+    return undefined;
+  return {
+    ...draft,
+    dimensions: {
+      ...draft.dimensions,
+      width: String(size.widthIn),
+      height: String(size.heightIn),
+    },
+  };
+};
+
+/**
  * Advances local draft intent before an async server resolution starts. This makes
  * rapid changes compose instead of allowing a later request to omit an earlier one.
  */

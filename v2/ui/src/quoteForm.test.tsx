@@ -20,6 +20,7 @@ import {
 } from "./quoteCache";
 import {
   applyServerConfiguration,
+  applyDetectedArtworkDimensions,
   assessPersistedConfiguration,
   beginConfigurationSelectionResolution,
   changeDraftProduct,
@@ -225,6 +226,32 @@ const testCreateAndMeasurementPayloads = () => {
   );
   assert.doesNotMatch(quantityMarkup, /Width \(/);
   assert.doesNotMatch(quantityMarkup, /Height \(/);
+};
+
+const testDetectedArtworkDimensionsRespectManualIntent = () => {
+  const blank = applyServerConfiguration(
+    emptyQuoteLineDraft(),
+    dimensionalConfiguration,
+  );
+  assert.deepEqual(
+    applyDetectedArtworkDimensions(blank, dimensionalConfiguration, {
+      widthIn: 24,
+      heightIn: 18,
+    })?.dimensions,
+    { width: "24", height: "18", unit: "in" },
+  );
+  const manual = {
+    ...blank,
+    dimensions: { width: "30", height: "18", unit: "in" as const },
+  };
+  assert.equal(
+    applyDetectedArtworkDimensions(manual, dimensionalConfiguration, {
+      widthIn: 24,
+      heightIn: 18,
+    }),
+    undefined,
+    "detected artwork must not replace any manual dimension",
+  );
 };
 
 const testPersistedLineAndDefinitionSafety = () => {
@@ -704,6 +731,7 @@ const main = async () => {
   testQueryScopes();
   testSelectorsAndContactReset();
   testCreateAndMeasurementPayloads();
+  testDetectedArtworkDimensionsRespectManualIntent();
   testPersistedLineAndDefinitionSafety();
   testServerResolutionRoundTrip();
   await testAuthoritativeQuoteAndForbiddenCacheTransitions();

@@ -6,6 +6,7 @@ import {
 } from "./api";
 import {
   applyServerConfiguration,
+  applyDetectedArtworkDimensions,
   assessPersistedConfiguration,
   beginConfigurationSelectionResolution,
   changeDraftProduct,
@@ -538,9 +539,13 @@ export const QuoteLineEditor = ({
             productionRequirements={configuration.productionRequirements}
             onChange={setArtwork}
             onDetectedDimensions={({ widthIn, heightIn }) => {
-              const current = draftRef.current;
-              if (!configuration.requiresDimensions || current.dimensions.width || current.dimensions.height || current.dimensions.unit !== "in") return false;
-              replaceDraft({ ...current, dimensions: { ...current.dimensions, width: String(widthIn), height: String(heightIn) } });
+              const next = applyDetectedArtworkDimensions(
+                draftRef.current,
+                configuration,
+                { widthIn, heightIn },
+              );
+              if (!next) return false;
+              replaceDraft(next);
               return true;
             }}
           />
