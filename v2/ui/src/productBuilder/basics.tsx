@@ -23,13 +23,13 @@ export function BasicsSection({
   return <div className="space-y-3">
     <div className="grid gap-3 sm:grid-cols-2">
       <Cell label="Product name">
-        <input className="h-8 text-[13px]" disabled={disabled} value={general.displayName} onChange={(event) => patch({ displayName: event.target.value })} />
+        <input className="h-8 w-full text-[13px]" disabled={disabled} value={general.displayName} onChange={(event) => patch({ displayName: event.target.value })} />
       </Cell>
       <Cell label="Description" className="sm:col-span-2">
-        <textarea className="min-h-[60px] text-[13px]" disabled={disabled} value={general.description ?? ""} onChange={(event) => patch({ description: event.target.value || null })} />
+        <textarea className="min-h-[60px] w-full text-[13px]" disabled={disabled} value={general.description ?? ""} onChange={(event) => patch({ description: event.target.value || null })} />
       </Cell>
       <Cell label="Category">
-        <input className="h-8 text-[13px]" disabled={disabled} value={general.category ?? ""} onChange={(event) => patch({ category: event.target.value || null })} />
+        <input className="h-8 w-full text-[13px]" disabled={disabled} value={general.category ?? ""} onChange={(event) => patch({ category: event.target.value || null })} />
       </Cell>
       <Cell label="Measurement mode">
         <Picker value={general.measurementMode} disabled={disabled} items={["dimensions_required", "quantity_only"] as const} onChange={(measurementMode) => patch({ measurementMode })} />

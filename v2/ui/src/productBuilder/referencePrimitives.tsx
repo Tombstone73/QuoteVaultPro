@@ -15,7 +15,7 @@ export function Cell({ label, hint, children, className }: Readonly<{ label?: st
 }
 
 export function Picker<T extends string>({ value, onChange, items, className, disabled }: Readonly<{ value: T; onChange: (value: T) => void; items: readonly T[]; className?: string; disabled?: boolean }>) {
-  return <select className={`h-8 min-w-0 text-[13px] ${className ?? ""}`} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as T)}>
+  return <select className={`h-8 min-w-0 w-full text-[13px] ${className ?? ""}`} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as T)}>
     {items.map((item) => <option key={item} value={item}>{item}</option>)}
   </select>;
 }
