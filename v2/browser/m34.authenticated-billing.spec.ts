@@ -64,16 +64,16 @@ const createOrder = async (page: Page, f: Fixture) => {
   const quoteId = (await (await created).json()).data.quote.quote
     .quoteId as string;
   await page.getByRole("button", { name: "Send Quote" }).click();
-  await page.getByRole("button", { name: "Accept Quote" }).click();
-  page.once("dialog", (dialog) => dialog.accept());
-  const converted = page.waitForResponse(
+  await page.getByRole("button", { name: "Mark Quote Sent" }).click();
+  await page.getByRole("button", { name: "Accept Quote & Create Order" }).click();
+  const accepted = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      response.url().endsWith(`/quotes/${quoteId}/convert`) &&
+      response.url().endsWith(`/quotes/${quoteId}/accept`) &&
       response.status() === 200,
   );
-  await page.getByRole("button", { name: "Convert to Order" }).click();
-  return (await (await converted).json()).data.orderId as string;
+  await page.getByRole("button", { name: "Accept & Create Order" }).click();
+  return (await (await accepted).json()).data.orderId as string;
 };
 
 test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints", async ({

@@ -267,6 +267,46 @@ const toAttribution = (context: OperationContext): AttributionSnapshot =>
         principalKind: context.principal.kind,
         subjectId: principalSubject(context.principal),
       };
+
+/**
+ * Lifecycle checkpoints are Sales-owned evidence.  Acceptance-and-conversion
+ * reuses this constructor inside its one transaction rather than recreating
+ * an accepted-only state in a separate application service.
+ */
+export const createQuoteLifecycleCheckpoint = (
+  quote: QuoteCurrentState,
+  kind: "send" | "accept",
+  checkpointId: QuoteCheckpointId,
+  presentation: CustomerPresentationIdentity,
+  context: OperationContext,
+): QuoteCheckpoint => {
+  const raw = {
+    schemaVersion: 1 as const,
+    checkpointId,
+    evidenceFingerprint: "",
+    organizationId: quote.organizationId,
+    occurredAt: new Date().toISOString(),
+    principal: toAttribution(context),
+    customerPresentation: presentation,
+    commercial: {
+      currency: quote.currency,
+      terms: quote.terms,
+      lines: quote.lines,
+      ...(quote.purchaseOrderNumber
+        ? { purchaseOrderNumber: quote.purchaseOrderNumber }
+        : {}),
+      ...(quote.requestedDueDate
+        ? { requestedDueDate: quote.requestedDueDate }
+        : {}),
+    },
+    kind: kind === "send" ? ("quote_sent" as const) : ("quote_accepted" as const),
+    sourceDocument: { quoteId: quote.quoteId },
+  };
+  return freezeCheckpoint({
+    ...raw,
+    evidenceFingerprint: fingerprint(raw),
+  }) as QuoteCheckpoint;
+};
 const requireAllowed = (
   policy: AuthorityPolicy,
   context: OperationContext,
@@ -678,23 +718,11 @@ export class QuoteApplicationService {
       "sales.quote.send.v1",
     );
   }
-  async accept(
-    context: OperationContext,
-    input: QuoteLifecycleInput,
-  ): Promise<ApplicationResult<QuoteOperationResult>> {
-    return this.lifecycle(
-      context,
-      input,
-      "accept",
-      "quote.edit",
-      "sales.quote.accept.v1",
-    );
-  }
   private async lifecycle(
     context: OperationContext,
     input: QuoteLifecycleInput,
-    kind: "send" | "accept",
-    capability: "quote.send" | "quote.edit",
+    kind: "send",
+    capability: "quote.send",
     operation: string,
   ): Promise<ApplicationResult<QuoteOperationResult>> {
     return this.mutate(
@@ -728,20 +756,11 @@ export class QuoteApplicationService {
             "CONFLICT",
             "Quote has already been sent.",
           );
-        if (
-          kind === "accept" &&
-          (current.quote.deliveryState !== "sent" ||
-            current.quote.acceptanceState !== "not_accepted")
-        )
-          throw new V2ApplicationError(
-            "CONFLICT",
-            "Only a sent, unaccepted Quote can be accepted.",
-          );
         const presentation = await tx.customers.getPresentationIdentity(
           current.quote.customerContact,
         );
         const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
-        const checkpoint = this.checkpoint(
+        const checkpoint = createQuoteLifecycleCheckpoint(
           current.quote,
           kind,
           checkpointId,
@@ -965,41 +984,6 @@ export class QuoteApplicationService {
       next[index] = replacement[0]!;
     }
     return next;
-  }
-  private checkpoint(
-    quote: QuoteCurrentState,
-    kind: "send" | "accept",
-    checkpointId: QuoteCheckpointId,
-    presentation: CustomerPresentationIdentity,
-    context: OperationContext,
-  ): QuoteCheckpoint {
-    const raw = {
-      schemaVersion: 1 as const,
-      checkpointId,
-      evidenceFingerprint: "",
-      organizationId: quote.organizationId,
-      occurredAt: new Date().toISOString(),
-      principal: toAttribution(context),
-      customerPresentation: presentation,
-      commercial: {
-        currency: quote.currency,
-        terms: quote.terms,
-        lines: quote.lines,
-        ...(quote.purchaseOrderNumber
-          ? { purchaseOrderNumber: quote.purchaseOrderNumber }
-          : {}),
-        ...(quote.requestedDueDate
-          ? { requestedDueDate: quote.requestedDueDate }
-          : {}),
-      },
-      kind:
-        kind === "send" ? ("quote_sent" as const) : ("quote_accepted" as const),
-      sourceDocument: { quoteId: quote.quoteId },
-    };
-    return freezeCheckpoint({
-      ...raw,
-      evidenceFingerprint: fingerprint(raw),
-    }) as QuoteCheckpoint;
   }
   private error(error: unknown): V2ApplicationError {
     return error instanceof V2ApplicationError

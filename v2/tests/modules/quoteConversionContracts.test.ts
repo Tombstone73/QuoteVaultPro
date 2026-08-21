@@ -8,13 +8,26 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(capabilityIds).toContain("quote.convert");
   });
 
-  test("conversion starts from an accepted checkpoint and never recalculates pricing", async () => {
+  test("acceptance creates the accepted checkpoint and canonical Order in one transaction without recalculating pricing", async () => {
     const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
+    expect(source).toMatch(/async accept\(context: OperationContext, input: QuoteLifecycleInput\)/);
+    expect(source).toMatch(/createQuoteLifecycleCheckpoint\(current\.quote, "accept"/);
+    expect(source).toMatch(/convertAccepted\(\{ quote, order \}, context, reservation\.request\.id, accepted, checkpoint/);
+    expect(source).toMatch(/succeedConversion\(context\.organizationId, reservation\.request\.id/);
     expect(source).toMatch(/source\.kind !== "quote_accepted"/);
     expect(source).toMatch(/cloneLines\(source\.commercial\.lines\)/);
     expect(source).toMatch(/createFromCommercialSnapshot/);
     expect(source).not.toMatch(/\.pricing\.calculate\(/);
     expect(source).not.toMatch(/resolveActivePricingInput/);
+  });
+
+  test("the normal Quote HTTP and UI flows do not expose standalone acceptance or conversion", async () => {
+    const routes = await readFile(path.join(process.cwd(), "v2", "src", "interfaces", "http", "quoteRoutes.ts"), "utf8");
+    const ui = await readFile(path.join(process.cwd(), "v2", "ui", "src", "App.tsx"), "utf8");
+    expect(routes).toMatch(/dependencies\.conversion\.accept/);
+    expect(routes).not.toMatch(/dependencies\.service\[action\]/);
+    expect(ui).toMatch(/Accept Quote &amp; Create Order/);
+    expect(ui).not.toMatch(/>Convert to Order</);
   });
 
   test("the canonical Order core is shared and does not reserve an operation request", async () => {

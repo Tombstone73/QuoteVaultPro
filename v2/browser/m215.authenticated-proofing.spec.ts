@@ -11,9 +11,9 @@ const createOrder=async(page:Page,f:Fixture)=>{
   await page.getByLabel("PO").fill("Proof browser PO");await page.getByLabel("Requested due date").fill("2026-12-31");await page.getByLabel("Width (in)").fill("24");await page.getByLabel("Height (in)").fill("18");await page.getByLabel("Quantity").first().fill("2");
   const created=page.waitForResponse((response)=>response.request().method()==="POST"&&response.url().endsWith(`/v2/organizations/${encodeURIComponent(f.organizationA)}/quotes`)&&response.status()===200);
   await page.getByRole("button",{name:"Create Quote"}).click();const quoteId=((await (await created).json()).data.quote.quote.quoteId) as string;
-  await page.getByRole("button",{name:"Send Quote"}).click();await page.getByRole("button",{name:"Accept Quote"}).click();page.once("dialog",(dialog)=>dialog.accept());
-  const converted=page.waitForResponse((response)=>response.request().method()==="POST"&&response.url().endsWith(`/quotes/${quoteId}/convert`)&&response.status()===200);
-  await page.getByRole("button",{name:"Convert to Order"}).click();return (await (await converted).json()).data.orderId as string;
+  await page.getByRole("button",{name:"Send Quote"}).click();await page.getByRole("button",{name:"Mark Quote Sent"}).click();await page.getByRole("button",{name:"Accept Quote & Create Order"}).click();
+  const accepted=page.waitForResponse((response)=>response.request().method()==="POST"&&response.url().endsWith(`/quotes/${quoteId}/accept`)&&response.status()===200);
+  await page.getByRole("button",{name:"Accept & Create Order"}).click();return (await (await accepted).json()).data.orderId as string;
 };
 const orderReadback=async(page:Page,orderId:string)=>{const response=await page.context().request.get(`/_v2-browser-test/order-readback/${encodeURIComponent(orderId)}`);expect(response.ok()).toBeTruthy();return (await response.json()).data as {lines:Array<{id:string}>;routes:unknown};};
 

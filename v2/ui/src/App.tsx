@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   money,
   newBusinessRequestId,
+  contactApi,
   orderApi,
   quoteApi,
   clearV2ApiSessionState,
@@ -544,6 +545,12 @@ const QuoteWorkspace = ({
   const [headerContactId, setHeaderContactId] = useState("");
   const [editingLineId, setEditingLineId] = useState("");
   const [addEditorVersion, setAddEditorVersion] = useState(0);
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [acceptDialogOpen, setAcceptDialogOpen] = useState(false);
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [sendSubject, setSendSubject] = useState("");
+  const [sendMessage, setSendMessage] = useState("");
   const customers = useQuoteFormCustomers(sessionScope, organizationId);
   const contacts = useQuoteFormContacts(
     sessionScope,
@@ -551,6 +558,11 @@ const QuoteWorkspace = ({
     quote ? headerCustomerId : customerId,
   );
   const products = useQuoteFormProducts(sessionScope, organizationId);
+  const recipientContact = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "quote-send-contact", quote?.quote.customerContact.contactId ?? ""],
+    queryFn: () => contactApi.get(organizationId, quote!.quote.customerContact.contactId!),
+    enabled: Boolean((sendDialogOpen || acceptDialogOpen) && sessionScope && organizationId && quote?.quote.customerContact.contactId),
+  });
   const requestIds = useRef<Record<string, { id: string; payload: string }>>({});
 
   const requestId = (operation: string, payload: unknown) => {
@@ -575,6 +587,15 @@ const QuoteWorkspace = ({
     setHeaderContactId(quote?.quote.customerContact.contactId ?? "");
     setEditingLineId("");
   }, [quote?.quote.quoteId]);
+
+  useEffect(() => {
+    if (!sendDialogOpen || !quote) return;
+    const name = recipientContact.data?.displayName ?? "";
+    setRecipientName(name);
+    setRecipientEmail(recipientContact.data?.email ?? "");
+    setSendSubject(`Quote ${quote.number.display}`);
+    setSendMessage(`Hello${name ? ` ${name}` : ""},\n\nPlease review quote ${quote.number.display}.\n\nThank you for your business.`);
+  }, [sendDialogOpen, quote?.quote.quoteId, quote?.number.display, recipientContact.data?.displayName, recipientContact.data?.email]);
 
   const handleMutationError = (mutationError: unknown) => {
     const code = (mutationError as ApiError)?.code;
@@ -693,53 +714,54 @@ const QuoteWorkspace = ({
   });
 
   const action = useMutation({
-    mutationFn: (kind: "send" | "accept") =>
+    mutationFn: () =>
       quoteApi.action(
         organizationId,
         quote!.quote.quoteId,
-        kind,
-        requestId(`action:${kind}`, {
+        "send",
+        requestId("action:send", {
           organizationId,
           quoteId: quote!.quote.quoteId,
-          kind,
           revision: quote!.revision,
         }),
         quote!.revision,
       ),
     onSuccess: (result) => {
       completeRequest("action:send");
-      completeRequest("action:accept");
       applyQuoteResult(result, organizationId, sessionScope);
-      setNotice("Quote lifecycle updated.");
+      setSendDialogOpen(false);
+      setNotice("Quote marked sent internally. No customer email or PDF was delivered.");
     },
     onError: handleMutationError,
   });
 
-  const convert = useMutation({
-    mutationFn: () => {
-      const checkpoint = quote!.checkpoints.find((item) => item.kind === "quote_accepted");
-      if (!checkpoint) throw new Error("An accepted Quote checkpoint is required before conversion.");
-      const payload = { organizationId, quoteId: quote!.quote.quoteId, checkpointId: checkpoint.checkpointId, revision: quote!.revision };
-      return quoteApi.convert(organizationId, quote!.quote.quoteId, requestId("convert", payload), checkpoint.checkpointId, quote!.revision);
-    },
+  const accept = useMutation({
+    mutationFn: () => quoteApi.accept(
+      organizationId,
+      quote!.quote.quoteId,
+      requestId("accept", { organizationId, quoteId: quote!.quote.quoteId, revision: quote!.revision }),
+      quote!.revision,
+    ),
     onSuccess: (result) => {
-      completeRequest("convert");
-      setNotice(`Quote converted to Order ${result.orderNumber}.`);
-      void reload();
+      completeRequest("accept");
+      applyQuoteResult({ quote: result.quote }, organizationId, sessionScope);
+      setAcceptDialogOpen(false);
+      setNotice(`Quote accepted and converted to Order ${result.orderNumber}.`);
       void queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "sales"] });
+      openOrder?.(result.orderId);
     },
     onError: handleMutationError,
   });
 
   const mutationError =
-    error || create.error || save.error || action.error || lineChange.error || convert.error;
+    error || create.error || save.error || action.error || accept.error || lineChange.error;
   const quoteDetail = quote ? (() => {
     const selectedLine = quote.quote.lines.find((line) => line.lineId === editingLineId);
     const locked = Boolean(quote.quote.convertedOrderId);
     const metadata = <QuoteDocumentMetadata customerId={headerCustomerId} contactId={headerContactId} customers={customers.data ?? []} contacts={contacts.data ?? []} purchaseOrderNumber={purchaseOrderNumber} requestedDueDate={requestedDueDate} canEdit={canEdit} readOnly={locked} onCustomerChange={(value) => { const next = clearContactForCustomerChange(value); setHeaderCustomerId(next.customerId); setHeaderContactId(next.contactId); }} onContactChange={setHeaderContactId} onPurchaseOrderChange={setPurchaseOrderNumber} onDueDateChange={setRequestedDueDate} />;
     const headerActions = locked
       ? quote.quote.convertedOrderId ? <button className="button" type="button" onClick={() => openOrder?.(quote.quote.convertedOrderId!)}>Open converted Order</button> : null
-      : <><button className="button secondary" type="button" onClick={() => openCustomer?.(quote.quote.customerContact.customerId)}>Open Customer</button><button className="button secondary" type="button" disabled={!canEdit || save.isPending || !csrfReady} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save"}</button>{quote.quote.deliveryState === "not_sent" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => action.mutate("send")}>Send Quote</button>}{quote.quote.deliveryState === "sent" && quote.quote.acceptanceState === "not_accepted" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => action.mutate("accept")}>Accept Quote</button>}{quote.quote.acceptanceState === "accepted" && canConvert && <button className="button" type="button" disabled={convert.isPending || !csrfReady} onClick={() => { if (window.confirm(`Convert Quote ${quote.number.display} to an Order? This creates the Order, Draft Invoice, and required Routing from the accepted Quote.`)) convert.mutate(); }}>Convert to Order</button>}</>;
+      : <><button className="button secondary" type="button" onClick={() => openCustomer?.(quote.quote.customerContact.customerId)}>Open Customer</button><button className="button secondary" type="button" disabled={!canEdit || save.isPending || !csrfReady} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save"}</button>{quote.quote.deliveryState === "not_sent" && canSend && <button className="button" type="button" disabled={action.isPending || !csrfReady} onClick={() => setSendDialogOpen(true)}>Send Quote</button>}{quote.quote.deliveryState === "sent" && quote.quote.acceptanceState === "not_accepted" && canEdit && canSend && canConvert && <button className="button" type="button" disabled={accept.isPending || !csrfReady} onClick={() => setAcceptDialogOpen(true)}>Accept Quote & Create Order</button>}</>;
     const items = <SalesDocumentSplit
       left={<section className="v2-sales-items"><header><div><h2>Items</h2><p>{quote.quote.lines.length} line{quote.quote.lines.length === 1 ? "" : "s"}</p></div>{!locked && <button type="button" className="v2-sales-add-line" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => setEditingLineId("__add__")}>Add line</button>}</header>{loading ? <div className="skeleton" /> : <div className="v2-sales-items-table-wrap"><table><thead><tr><th>Product</th><th>Configuration</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>{quote.quote.lines.map((line) => <tr key={line.lineId} className={line.lineId === selectedLine?.lineId ? "is-selected" : ""} onClick={() => !locked && setEditingLineId((current) => current === line.lineId ? "" : line.lineId)}><td><button type="button"><i>{line.description.slice(0, 1).toUpperCase() || "P"}</i><span><b>{line.description || line.productId}</b><small>{line.productId}</small>{line.sellingPriceDecision.kind !== "calculated" && <em>Manual price</em>}</span></button></td><td>{lineConfiguration(line)}</td><td className="num">{line.quantity}</td><td className="num">{money(line.sellingUnitAmount)}</td><td className="num strong">{money(line.sellingLineAmount)}</td></tr>)}</tbody></table></div>}<footer><SalesTotals calculated={quote.totals.calculatedLineAmount} selling={quote.totals.sellingLineAmount} /></footer></section>}
       right={selectedLine && !locked ? <section className="v2-sales-line-editor"><header><div><small>LINE {selectedLine.position}</small><h2>{selectedLine.description || selectedLine.productId}</h2></div><button className="v2-sales-remove-line" type="button" disabled={!canEdit || lineChange.isPending || !csrfReady} onClick={() => lineChange.mutate([{ kind: "remove", lineId: selectedLine.lineId }])}>Remove</button></header>{!canOverridePrice && <p className="v2-sales-permission-note">Price overrides are unavailable for this permission set; existing decisions remain visible.</p>}<QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`edit:${selectedLine.lineId}:${quote.revision}`} initialDraft={draftFromQuoteLine(selectedLine)} initializeFromPersistedLine products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || !canEdit} submitLabel="Save and reprice line" onSubmit={(input) => lineChange.mutate([{ kind: "update", lineId: selectedLine.lineId, line: input }])} onCancel={() => setEditingLineId("")} /></section> : editingLineId === "__add__" && !locked ? <section className="v2-sales-line-editor"><header><div><small>NEW LINE</small><h2>Add item</h2></div></header><QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`add:${quote.quote.quoteId}:${addEditorVersion}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={lineChange.isPending || !canEdit} submitLabel="Add line and price" onSubmit={(input) => lineChange.mutate([{ kind: "add", line: input }])} onCancel={() => setEditingLineId("")} /></section> : null}
@@ -778,6 +800,30 @@ const QuoteWorkspace = ({
           panels={{ Items: <section className="v2-sales-line-editor v2-sales-new-quote"><header><div><small>NEW LINE</small><h2>Items</h2></div></header><QuoteLineEditor organizationId={organizationId} sessionScope={sessionScope} draftKey={`create:${organizationId}`} initialDraft={emptyQuoteLineDraft()} products={products.data ?? []} canOverridePrice={canOverridePrice} csrfReady={csrfReady} busy={create.isPending} submitLabel="Create Quote" onSubmit={(line) => { if (!customerId) { setNotice("Select a Customer before creating the Quote."); return; } create.mutate(line); }} /></section>, Artwork: <SalesDocumentEmpty>No artwork is attached.</SalesDocumentEmpty>, Notes: <section className="v2-sales-notes"><label className="field">Commercial notes<textarea value={commercialNotes} onChange={(event) => setCommercialNotes(event.target.value)} /></label></section>, History: <SalesDocumentEmpty>No history yet.</SalesDocumentEmpty> }}
         />
       ) : quoteDetail}
+      {sendDialogOpen && quote && (
+        <div className="v2-quote-send-modal" role="dialog" aria-modal="true" aria-label="Send Quote">
+          <div>
+            <header><div><h2>Send Quote</h2><p>{quote.number.display}</p></div><button type="button" onClick={() => setSendDialogOpen(false)}>Close</button></header>
+            <p className="v2-quote-send-notice">This V2 operation records the Quote as sent internally. Customer email delivery and Quote PDF delivery are not configured, so no external message will be sent. The delivery fields below are a review aid and are not retained.</p>
+            <label>Recipient email<input aria-label="Recipient email" type="email" value={recipientEmail} onChange={(event) => setRecipientEmail(event.target.value)} placeholder="No contact email available" /></label>
+            <label>Recipient name<input aria-label="Recipient name" value={recipientName} onChange={(event) => setRecipientName(event.target.value)} placeholder="Recipient name" /></label>
+            <label>Subject<input aria-label="Subject" value={sendSubject} onChange={(event) => setSendSubject(event.target.value)} /></label>
+            <label>Message<textarea aria-label="Message" value={sendMessage} onChange={(event) => setSendMessage(event.target.value)} /></label>
+            <label className="v2-quote-send-pdf"><input aria-label="Attach Quote PDF" type="checkbox" disabled />Attach Quote PDF <small>Unavailable — no canonical V2 Quote PDF delivery is implemented.</small></label>
+            <footer><button className="button secondary" type="button" onClick={() => setSendDialogOpen(false)} disabled={action.isPending}>Cancel</button><button className="button" type="button" onClick={() => action.mutate()} disabled={!csrfReady || action.isPending || recipientContact.isLoading}>{action.isPending ? "Marking sent…" : "Mark Quote Sent"}</button></footer>
+          </div>
+        </div>
+      )}
+      {acceptDialogOpen && quote && (
+        <div className="v2-quote-send-modal" role="dialog" aria-modal="true" aria-label="Accept Quote and create Order">
+          <div>
+            <header><div><h2>Accept Quote &amp; Create Order</h2><p>{quote.number.display}</p></div><button type="button" onClick={() => setAcceptDialogOpen(false)}>Close</button></header>
+            <p className="v2-quote-send-notice">This accepts the frozen commercial Quote and creates its canonical Order and Draft Invoice in one operation. It does not send customer communication, take payment, or check inventory availability.</p>
+            <dl className="v2-quote-accept-summary"><div><dt>Contact</dt><dd>{recipientContact.data?.displayName ?? "Selected contact"}</dd></div><div><dt>Quote total</dt><dd>{money(quote.totals.sellingLineAmount)}</dd></div><div><dt>Lines</dt><dd>{quote.quote.lines.length}</dd></div></dl>
+            <footer><button className="button secondary" type="button" onClick={() => setAcceptDialogOpen(false)} disabled={accept.isPending}>Cancel</button><button className="button" type="button" onClick={() => accept.mutate()} disabled={!csrfReady || accept.isPending}>{accept.isPending ? "Accepting…" : "Accept & Create Order"}</button></footer>
+          </div>
+        </div>
+      )}
     </section>
   );
 };

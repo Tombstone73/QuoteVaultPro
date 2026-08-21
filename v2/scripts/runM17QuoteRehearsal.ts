@@ -366,15 +366,6 @@ async function main() {
       JSON.stringify(checkpointPayload.rows[0]?.payload).includes("PO-2"),
       "Current edit rewrote sent checkpoint.",
     );
-    const accepted = await service.accept(ctx(staff, f.org, "m17-accept"), {
-      businessRequestId: "m17-accept",
-      quoteId,
-      expectedRevision: "4",
-    });
-    assert(
-      accepted.ok && accepted.value.checkpointId,
-      "Accept transition failed.",
-    );
     const [first, second] = await Promise.all([
       service.create(ctx(staff, f.org, "m17-concurrent"), {
         ...input,
@@ -409,7 +400,7 @@ async function main() {
       "SELECT 1 FROM v2_audit_events WHERE organization_id=$1 AND resource_id=$2",
       [f.org, quoteId],
     );
-    assert(audit.rowCount >= 3, "Semantic Audit was missing.");
+    assert(audit.rowCount >= 2, "Semantic Audit was missing.");
     const trustedSession: { v2CsrfToken?: string } = {};
     const trustedHostMiddleware = (req: any, _res: any, next: () => void) => {
       // Test host state is server-side and fixed. Request headers cannot select

@@ -290,28 +290,30 @@ export const createQuoteRouter = (
       error(response, cause);
     }
   });
-  for (const action of ["send", "accept"] as const)
-    router.post(`/:quoteId/${action}`, async (request, response) => {
-      try {
-        const body: QuoteLifecycleInput = {
-          businessRequestId: requestId(request.body),
-          quoteId: brandedId<"QuoteId">(request.params.quoteId),
-          expectedRevision: String(
-            (request.body as { expectedRevision?: unknown }).expectedRevision ??
-              "",
-          ),
-        };
-        await send(
-          response,
-          await dependencies.service[action](
-            await context(request, dependencies, true),
-            body,
-          ),
-        );
-      } catch (cause) {
-        error(response, cause);
-      }
-    });
+  router.post("/:quoteId/send", async (request, response) => {
+    try {
+      const body: QuoteLifecycleInput = {
+        businessRequestId: requestId(request.body),
+        quoteId: brandedId<"QuoteId">(request.params.quoteId),
+        expectedRevision: String((request.body as { expectedRevision?: unknown }).expectedRevision ?? ""),
+      };
+      await send(response, await dependencies.service.send(await context(request, dependencies, true), body));
+    } catch (cause) { error(response, cause); }
+  });
+  router.post("/:quoteId/accept", async (request, response) => {
+    try {
+      if (!dependencies.conversion)
+        throw new V2ApplicationError("INTERNAL_ERROR", "Quote acceptance runtime is unavailable.");
+      const body: QuoteLifecycleInput = {
+        businessRequestId: requestId(request.body),
+        quoteId: brandedId<"QuoteId">(request.params.quoteId),
+        expectedRevision: String((request.body as { expectedRevision?: unknown }).expectedRevision ?? ""),
+      };
+      const result = await dependencies.conversion.accept(await context(request, dependencies, true), body);
+      if (!result.ok) return error(response, result.error);
+      response.status(200).json({ ok: true, data: { ...result.value, quote: quoteForUi(result.value.quote) } });
+    } catch (cause) { error(response, cause); }
+  });
   router.post("/:quoteId/convert", async (request, response) => {
     try {
       if (!dependencies.conversion)

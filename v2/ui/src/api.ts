@@ -57,6 +57,15 @@ export type QuoteRead = Readonly<{
   };
 }>;
 export type QuoteResult = Readonly<{ quote: QuoteRead; checkpointId?: string }>;
+export type QuoteAcceptanceResult = Readonly<{
+  quote: QuoteRead;
+  quoteId: string;
+  sourceCheckpointId: string;
+  conversionCheckpointId: string;
+  orderId: string;
+  draftInvoiceId: string;
+  orderNumber: string;
+}>;
 export type UiBootstrap = Readonly<{
   organizationId: string;
   csrfToken: string;
@@ -697,7 +706,7 @@ export const quoteApi = {
   action: (
     organizationId: string,
     quoteId: string,
-    action: "send" | "accept",
+    action: "send",
     businessRequestId: string,
     expectedRevision: string,
   ) =>
@@ -711,6 +720,18 @@ export const quoteApi = {
         body: JSON.stringify({ businessRequestId, expectedRevision }),
       },
     ),
+  accept: (
+    organizationId: string,
+    quoteId: string,
+    businessRequestId: string,
+    expectedRevision: string,
+  ) => request<QuoteAcceptanceResult>(
+    endpoint(organizationId, `/${encodeURIComponent(quoteId)}/accept`), {
+      method: "POST",
+      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+      body: JSON.stringify({ businessRequestId, expectedRevision }),
+    },
+  ),
   convert: (
     organizationId: string,
     quoteId: string,

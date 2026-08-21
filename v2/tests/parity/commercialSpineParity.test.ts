@@ -50,6 +50,7 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
   let createdOrder: { orderId: string; lines: readonly SalesLineSnapshot[]; terms: { taxContextReference?: string } } | undefined;
   let invoiceInput: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } } | undefined;
   const routes: string[] = [];
+  const conversionOperations = new Map<string, { id: string; resultJson: unknown | null }>();
   const products = {
     resolveActivePricingInput: async (input: { productId: string; quantity: number; selections?: Record<string, unknown>; dimensions?: { width: string; height: string; unit: "in" } }) => ({ ok: true as const, value: productInput(input.productId, input.quantity, input.selections, input.dimensions) }),
     resolveCurrentRoutingProduct: async (_org: OrganizationId, productId: string) => ({ productTypeId: brandedId<"ProductTypeId">(productId === "banner" ? "print-route" : "stock-no-route") }),
@@ -111,10 +112,29 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
   };
   const conversionQuote = {
     ...quoteTx,
+    reserve: async (input: { operation: string; businessRequestId: string }) => {
+      const key = `${input.operation}:${input.businessRequestId}`;
+      const existing = conversionOperations.get(key);
+      if (existing?.resultJson)
+        return { kind: "replay" as const, request: { id: existing.id, status: "succeeded" as const, resultJson: existing.resultJson } };
+      if (existing)
+        return { kind: "new" as const, request: { id: existing.id, status: "in_progress" as const, resultJson: null } };
+      const request = { id: key, resultJson: null };
+      conversionOperations.set(key, request);
+      return { kind: "new" as const, request: { id: request.id, status: "in_progress" as const, resultJson: null } };
+    },
     readCheckpoint: async (_org: OrganizationId, _quoteId: string, checkpointId: string) => checkpoints.get(checkpointId) ?? null,
-    appendConvertedCheckpoint: async (input: { checkpoint: QuoteCheckpoint }) => { checkpoints.set(input.checkpoint.checkpointId, input.checkpoint); },
-    createConversionLineage: async () => undefined,
-    succeedConversion: async () => undefined,
+    appendConvertedCheckpoint: async (input: { checkpoint: QuoteCheckpoint }) => {
+      checkpoints.set(input.checkpoint.checkpointId, input.checkpoint);
+      if (quoteRead) quoteRead = { ...quoteRead, checkpoints: [...quoteRead.checkpoints, { checkpointId: input.checkpoint.checkpointId, kind: input.checkpoint.kind, occurredAt: input.checkpoint.occurredAt }] };
+    },
+    createConversionLineage: async (input: { orderId: string }) => {
+      if (quoteRead) quoteRead = { ...quoteRead, quote: { ...quoteRead.quote, convertedOrderId: brandedId<"OrderId">(input.orderId) } };
+    },
+    succeedConversion: async (_org: string, requestId: string, _quoteId: string, result: unknown) => {
+      const operation = conversionOperations.get(requestId);
+      if (operation) operation.resultJson = result;
+    },
   };
   return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService({ transaction: async (work) => work({ quote: conversionQuote as never, order: orderTx as never }) }, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), get quoteRead() { return quoteRead; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, audits };
 };
@@ -163,12 +183,13 @@ describe("M5 commercial spine parity baseline", () => {
     const sent = await runtime.quote.send(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
-    const accepted = await runtime.quote.accept(context("quote-accept"), { businessRequestId: "quote-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
+    const accepted = await runtime.conversion.accept(context("quote-accept"), { businessRequestId: "quote-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw accepted.error;
-    const converted = await runtime.conversion.convert(context("quote-convert"), { organizationId, quoteId: created.value.quote.quote.quoteId, sourceCheckpointId: accepted.value.checkpointId!, businessRequestId: brandedId<"BusinessRequestId">("quote-convert"), expectedStateToken: accepted.value.quote.revision });
-    expect(converted.ok).toBe(true);
-    if (!converted.ok) throw converted.error;
+    const replay = await runtime.conversion.accept(context("quote-accept"), { businessRequestId: "quote-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) throw replay.error;
+    expect(replay.value.orderId).toBe(accepted.value.orderId);
     const quote = accepted.value.quote.quote;
     const invoiceSubtotal = runtime.invoiceInput!.salesLines.reduce((total, line) => total + line.sellingLineAmount.cents, 0);
     const v2 = {
@@ -211,19 +232,11 @@ describe("M5 commercial spine parity baseline", () => {
     });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
-    const accepted = await runtime.quote.accept(context("unconfigured-accept"), {
+    const accepted = await runtime.conversion.accept(context("unconfigured-accept"), {
       businessRequestId: "unconfigured-accept", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: sent.value.quote.revision,
     });
     expect(accepted.ok).toBe(true);
-    if (!accepted.ok) throw accepted.error;
-    const converted = await runtime.conversion.convert(context("unconfigured-convert"), {
-      organizationId, quoteId: created.value.quote.quote.quoteId,
-      sourceCheckpointId: accepted.value.checkpointId!,
-      businessRequestId: brandedId<"BusinessRequestId">("unconfigured-convert"),
-      expectedStateToken: accepted.value.quote.revision,
-    });
-    expect(converted.ok).toBe(true);
     expect(runtime.routes).toEqual([]);
     expect(runtime.invoiceInput?.salesLines).toHaveLength(1);
   });
