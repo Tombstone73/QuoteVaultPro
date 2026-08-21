@@ -51,6 +51,7 @@ import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@share
 import { getPaymentSettings } from "./payments/paymentProvider.service";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
+import { resolveStripeReadiness } from "./stripeReadiness.service";
 
 export type PortalSessionDto = {
   userId: string;
@@ -1710,18 +1711,10 @@ function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRow
 }
 
 async function getStripeAccountId(organizationId: string): Promise<string> {
-  const [stripeConn] = await db
-    .select({
-      externalAccountId: integrationConnections.externalAccountId,
-      status: integrationConnections.status,
-    })
-    .from(integrationConnections)
-    .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, "stripe")))
-    .limit(1);
-
-  const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : "";
-  if (!stripeAccountId || String(stripeConn?.status || "connected") === "disconnected") {
-    throw new PortalAccessError(409, "Stripe is not connected for this organization");
+  const readiness = await resolveStripeReadiness(organizationId);
+  const stripeAccountId = readiness.stripeAccountId || "";
+  if (!readiness.readyForPayments || !stripeAccountId) {
+    throw new PortalAccessError(409, readiness.lastError || readiness.code || "Stripe is not ready for payments for this organization");
   }
 
   const paymentSettings = await getPaymentSettings(organizationId);
@@ -1894,8 +1887,17 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     }
   }
 
+  const terminalAttempts = await db
+    .select({ id: payments.id })
+    .from(payments)
+    .where(and(
+      eq(payments.organizationId, scope.organizationId),
+      eq(payments.invoiceId, invoice.id),
+      eq(payments.provider, "stripe"),
+      inArray(payments.status, ["failed", "canceled"]),
+    ));
   const stripe = getStripeClient();
-  const idempotencyKey = `${scope.organizationId}:${invoice.id}:${amountDueCents}:portal:v1`;
+  const idempotencyKey = `${scope.organizationId}:${invoice.id}:${amountDueCents}:portal:v2:${terminalAttempts.length + 1}`;
   const pi = await stripe.paymentIntents.create(
     {
       amount: amountDueCents,

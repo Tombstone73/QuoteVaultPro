@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus, voidManualPaymentCanonical } from "../invoicesService";
@@ -10,7 +10,7 @@ import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
 import { recomputeOrderBillingStatus, resolveInvoiceFinancialEligibility } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
-import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
+import { getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
 import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
@@ -31,6 +31,7 @@ import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoice
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
+import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -377,7 +378,7 @@ export async function registerMvpInvoicingRoutes(
     });
     let paymentUrl: string | null = null;
     if (canInvoiceBePaidOnline) {
-      const [portalAccessRows, paymentSettings, stripeConnections] = await Promise.all([
+      const [portalAccessRows, paymentSettings, stripeReadiness] = await Promise.all([
         db
           .select({ email: customerPortalAccess.email })
           .from(customerPortalAccess)
@@ -387,20 +388,13 @@ export async function registerMvpInvoicingRoutes(
             eq(customerPortalAccess.status, "ACTIVE"),
           )),
         getPaymentSettings(input.organizationId),
-        db
-          .select({ externalAccountId: integrationConnections.externalAccountId, status: integrationConnections.status })
-          .from(integrationConnections)
-          .where(and(eq(integrationConnections.organizationId, input.organizationId), eq(integrationConnections.provider, "stripe")))
-          .limit(1),
+        resolveStripeReadiness(input.organizationId),
       ]);
 
       const recipientHasPortalAccess = portalAccessRows.some(
         (access) => String(access.email || "").trim().toLowerCase() === String(recipientEmail).trim().toLowerCase(),
       );
-      const stripeConnected = Boolean(
-        stripeConnections[0]?.externalAccountId
-        && String(stripeConnections[0]?.status || "connected").toLowerCase() !== "disconnected",
-      );
+      const stripeConnected = stripeReadiness.readyForPayments;
       const availableProviders = [
         stripeConnected ? "stripe" : null,
         paymentSettings.epsReady ? "eps" : null,
@@ -535,18 +529,13 @@ export async function registerMvpInvoicingRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
-      const [stripeConn] = await db
-        .select()
-        .from(integrationConnections)
-        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
-        .limit(1);
-
-      const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : null;
-      if (!stripeAccountId) {
+      const stripeReadiness = await resolveStripeReadiness(organizationId);
+      const stripeAccountId = stripeReadiness.stripeAccountId;
+      if (!stripeReadiness.readyForPayments || !stripeAccountId) {
         return res.status(409).json({
           success: false,
-          error: 'Stripe is not connected for this organization.',
-          code: 'STRIPE_NOT_CONNECTED',
+          error: stripeReadiness.lastError || 'Stripe is not ready for payments for this organization.',
+          code: stripeReadiness.code || 'STRIPE_NOT_READY',
         });
       }
 
@@ -603,6 +592,49 @@ export async function registerMvpInvoicingRoutes(
       if (amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
 
       const currency = String(inv.currency || 'USD');
+
+      // A changed invoice balance does not make an earlier PaymentIntent safe
+      // to ignore. Verify its Stripe state before offering a second amount.
+      const [differentAmountPending] = await db
+        .select({ id: payments.id, stripePaymentIntentId: payments.stripePaymentIntentId })
+        .from(payments)
+        .where(and(
+          eq(payments.organizationId, organizationId),
+          eq(payments.invoiceId, inv.id),
+          eq(payments.provider, 'stripe'),
+          eq(payments.status, 'pending'),
+          ne(payments.amountCents, amountDueCents),
+        ))
+        .orderBy(desc(payments.createdAt))
+        .limit(1);
+      if (differentAmountPending?.stripePaymentIntentId) {
+        try {
+          const stripe = getStripeClient();
+          const pi = await stripe.paymentIntents.retrieve(String(differentAmountPending.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
+          const piStatus = String((pi as any).status || '').toLowerCase();
+          if (piStatus === 'succeeded') {
+            await captureAndApplyStripeObservation({
+              eventId: `stripe-browser-create:${differentAmountPending.stripePaymentIntentId}:payment_intent.succeeded`,
+              type: 'payment_intent.succeeded', organizationId, invoiceId: inv.id,
+              paymentIntentId: String(differentAmountPending.stripePaymentIntentId), stripeAccountId,
+              amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? 0))),
+              currency: String((pi as any).currency || currency), occurredAt: new Date(),
+            });
+            return res.status(409).json({ success: false, error: 'Invoice is already paid' });
+          }
+          if (piStatus !== 'canceled' && piStatus !== 'failed') {
+            return res.status(409).json({ success: false, code: 'STRIPE_PENDING_AMOUNT_MISMATCH', error: 'A previous Stripe payment is still awaiting completion.' });
+          }
+          await db.update(payments).set({
+            status: piStatus === 'failed' ? 'failed' : 'canceled',
+            ...(piStatus === 'failed' ? { failedAt: new Date() } : { canceledAt: new Date() }),
+            updatedAt: new Date(),
+          } as any).where(and(eq(payments.id, differentAmountPending.id), eq(payments.organizationId, organizationId)));
+        } catch (error: any) {
+          console.error('[StripeCreateIntent] failed to verify different-amount pending intent', { organizationId, invoiceId: inv.id, message: String(error?.message || error) });
+          return res.status(502).json({ success: false, error: 'Unable to verify the previous Stripe payment attempt; it was left unchanged.' });
+        }
+      }
 
       // Idempotency: reuse existing pending Stripe payment for the same invoice + amountDue.
       const [existingPending] = await db
@@ -698,7 +730,19 @@ export async function registerMvpInvoicingRoutes(
         }
       }
 
-      const idempotencyKey = `${organizationId}:${inv.id}:${amountDueCents}`;
+      // The generation is stable for concurrent requests to the same logical
+      // attempt, while a Stripe-confirmed terminal attempt advances it for a
+      // legitimate retry. Amount-only keys replay canceled attempts forever.
+      const terminalAttempts = await db
+        .select({ id: payments.id })
+        .from(payments)
+        .where(and(
+          eq(payments.organizationId, organizationId),
+          eq(payments.invoiceId, inv.id),
+          eq(payments.provider, 'stripe'),
+          inArray(payments.status, ['failed', 'canceled']),
+        ));
+      const idempotencyKey = `${organizationId}:${inv.id}:${amountDueCents}:staff:v2:${terminalAttempts.length + 1}`;
 
       const stripe = getStripeClient();
       const pi = await stripe.paymentIntents.create(
@@ -871,15 +915,14 @@ export async function registerMvpInvoicingRoutes(
         return res.status(400).json({ success: false, error: "Missing paymentIntentId" });
       }
 
-      const [stripeConn] = await db
-        .select()
-        .from(integrationConnections)
-        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
-        .limit(1);
-
-      const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : null;
-      if (!stripeAccountId) {
-        return res.status(409).json({ success: false, error: 'Stripe not connected', code: 'STRIPE_NOT_CONNECTED' });
+      const stripeReadiness = await resolveStripeReadiness(organizationId);
+      const stripeAccountId = stripeReadiness.stripeAccountId;
+      if (!stripeReadiness.readyForPayments || !stripeAccountId) {
+        return res.status(409).json({
+          success: false,
+          error: stripeReadiness.lastError || 'Stripe is not ready for payments for this organization.',
+          code: stripeReadiness.code || 'STRIPE_NOT_READY',
+        });
       }
 
       // Retrieve PaymentIntent from Stripe

@@ -4,7 +4,7 @@ import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { getStripePromise } from '@/lib/stripeClient';
+import { getStripePromise, getStripePublishableKeyMode } from '@/lib/stripeClient';
 
 const DEV = Boolean((import.meta as any).env?.DEV);
 
@@ -264,11 +264,16 @@ export default function StripePayDialog(props: {
   onOpenChange: (open: boolean) => void;
   invoiceId: string;
   stripeAccountId?: string | null;
+  serverMode?: 'test' | 'live' | 'unknown' | string;
   apiBasePath: string;
   disabled?: boolean;
   onSettled: () => void;
 }) {
   const publishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined;
+  const publishableKeyMode = getStripePublishableKeyMode(publishableKey);
+  const publishableKeyModeMismatch = (props.serverMode === 'test' || props.serverMode === 'live')
+    && publishableKeyMode !== 'unknown'
+    && publishableKeyMode !== props.serverMode;
   const apiBasePath = props.apiBasePath;
   const [intentStripeAccountId, setIntentStripeAccountId] = useState<string | null>(null);
 
@@ -323,6 +328,11 @@ export default function StripePayDialog(props: {
     // Dialog opened
     if (!props.invoiceId) return;
     if (intentRequestedRef.current) return;
+    if (publishableKeyModeMismatch) {
+      setIntentError('Stripe publishable-key mode does not match the server mode. Contact an administrator.');
+      setState('error');
+      return;
+    }
 
     // Start a new payment session.
     intentRequestedRef.current = true;
@@ -384,7 +394,7 @@ export default function StripePayDialog(props: {
 
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.invoiceId]);
+  }, [props.open, props.invoiceId, publishableKeyModeMismatch]);
 
   const close = () => props.onOpenChange(false);
 

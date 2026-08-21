@@ -12,6 +12,15 @@ import { loadStripe, Stripe } from '@stripe/stripe-js';
 
 const cache = new Map<string, Promise<Stripe | null>>();
 
+export type StripePublishableKeyMode = 'test' | 'live' | 'unknown';
+
+export function getStripePublishableKeyMode(publishableKey: string | undefined): StripePublishableKeyMode {
+  const key = String(publishableKey || '').trim();
+  if (key.startsWith('pk_test_')) return 'test';
+  if (key.startsWith('pk_live_')) return 'live';
+  return 'unknown';
+}
+
 /**
  * Get or create a singleton Stripe.js instance.
  * 

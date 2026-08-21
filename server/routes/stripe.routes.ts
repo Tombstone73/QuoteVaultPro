@@ -18,11 +18,7 @@ import { integrationConnections, auditLogs } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { assertStripeServerConfig, getStripeClient } from "../lib/stripe";
-
-function getStripeModeFromEnv(): 'test' | 'live' {
-  const key = String(process.env.STRIPE_SECRET_KEY || '').trim();
-  return key.startsWith('sk_live_') ? 'live' : 'test';
-}
+import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 
 function getBaseOrigin(req: any): string {
   const origin = req?.headers?.origin;
@@ -49,58 +45,12 @@ export function registerStripeRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
 
-      const stripeCfg = assertStripeServerConfig();
-      if (!stripeCfg.ok) {
-        return res.json({
-          success: true,
-          data: {
-            connected: false,
-            stripeAccountId: null,
-            mode: 'test',
-            status: 'not_configured',
-            lastError: 'Stripe is not configured. Set STRIPE_SECRET_KEY (sk_...) in server env and restart the server.',
-            chargesEnabled: false,
-            detailsSubmitted: false,
-          },
-        });
-      }
-
-      const [conn] = await db
-        .select()
-        .from(integrationConnections)
-        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
-        .limit(1);
-
-      const stripeAccountId = conn?.externalAccountId ? String(conn.externalAccountId) : null;
-      if (!stripeAccountId) {
-        return res.json({
-          success: true,
-          data: {
-            connected: false,
-            stripeAccountId: null,
-            mode: conn?.mode || getStripeModeFromEnv(),
-            status: conn?.status || 'disconnected',
-            lastError: conn?.lastError || null,
-          },
-        });
-      }
-
-      const stripe = getStripeClient();
-      const acct = await stripe.accounts.retrieve(stripeAccountId);
-
-      const chargesEnabled = Boolean((acct as any).charges_enabled);
-      const detailsSubmitted = Boolean((acct as any).details_submitted);
-
+      const readiness = await resolveStripeReadiness(organizationId);
       return res.json({
         success: true,
         data: {
-          connected: chargesEnabled,
-          stripeAccountId,
-          mode: conn?.mode || getStripeModeFromEnv(),
-          status: conn?.status || 'connected',
-          lastError: conn?.lastError || null,
-          chargesEnabled,
-          detailsSubmitted,
+          ...readiness,
+          mode: readiness.serverMode,
         },
       });
     } catch (error: any) {
@@ -134,8 +84,19 @@ export function registerStripeRoutes(
         .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
         .limit(1);
 
-      const mode = getStripeModeFromEnv();
+      const mode = stripeCfg.mode;
+      if (mode === 'unknown') {
+        return res.status(409).json({ success: false, code: 'STRIPE_MODE_UNKNOWN', message: 'Stripe server mode is unknown. Use an sk_test_ or sk_live_ key.' });
+      }
       let stripeAccountId = existing?.externalAccountId ? String(existing.externalAccountId) : null;
+
+      if (stripeAccountId && String(existing?.mode || "").toLowerCase() !== mode) {
+        return res.status(409).json({
+          success: false,
+          code: 'STRIPE_MODE_MISMATCH',
+          message: `Stored Stripe connection is ${existing?.mode || 'unknown'}; server is ${mode}. Disconnect the obsolete connection before reconnecting.`,
+        });
+      }
 
       if (!stripeAccountId) {
         const account = await stripe.accounts.create({
@@ -218,7 +179,7 @@ export function registerStripeRoutes(
             organizationId,
             provider: 'stripe',
             status: 'error',
-            mode: getStripeModeFromEnv(),
+            mode: assertStripeServerConfig().mode === 'live' ? 'live' : 'test',
             lastError: message.slice(0, 800),
             updatedAt: now,
             createdAt: now,
@@ -261,7 +222,7 @@ export function registerStripeRoutes(
           organizationId,
           provider: 'stripe',
           status: 'disconnected',
-          mode: getStripeModeFromEnv(),
+          mode: assertStripeServerConfig().mode === 'live' ? 'live' : 'test',
           lastError: null,
           disconnectedAt: now,
           updatedAt: now,

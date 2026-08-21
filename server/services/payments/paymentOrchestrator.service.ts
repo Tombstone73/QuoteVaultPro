@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../../db";
-import { integrationConnections, invoices, orders, payments } from "../../../shared/schema";
+import { invoices, orders, payments } from "../../../shared/schema";
 import { normalizeInvoiceAccountingDisplay } from "../../../shared/invoiceAccountingDisplay";
 import { resolveHostedPaymentProvider, type ConfiguredPaymentProvider, type HostedPaymentProvider } from "../../../shared/paymentProviderResolution";
 import {
@@ -11,6 +11,7 @@ import {
   type PaymentResolution,
 } from "../../../shared/paymentOrchestration";
 import { getPaymentSettings } from "./paymentProvider.service";
+import { resolveStripeReadiness } from "../stripeReadiness.service";
 
 function asCents(value: unknown): number {
   const numeric = Math.round(Number(value || 0));
@@ -95,19 +96,12 @@ function toInvoiceCandidate(invoice: Record<string, any>, paymentRows: Array<Rec
 }
 
 async function getProviderSummary(organizationId: string): Promise<PaymentProviderSummary> {
-  const [settings, stripeConnection] = await Promise.all([
+  const [settings, stripeReadiness] = await Promise.all([
     getPaymentSettings(organizationId),
-    db
-      .select({ id: integrationConnections.id, externalAccountId: integrationConnections.externalAccountId, status: integrationConnections.status })
-      .from(integrationConnections)
-      .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, "stripe")))
-      .limit(1)
-      .then((rows) => rows[0] ?? null),
+    resolveStripeReadiness(organizationId),
   ]);
 
-  const stripeConnected = Boolean(
-    stripeConnection?.externalAccountId && String(stripeConnection?.status || "connected").toLowerCase() !== "disconnected",
-  );
+  const stripeConnected = stripeReadiness.readyForPayments;
   const availableHostedProviders = [
     stripeConnected ? "stripe" : null,
     settings.epsReady ? "eps" : null,

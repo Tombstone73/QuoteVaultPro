@@ -50,6 +50,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { format } from "date-fns";
+import { getStripePublishableKeyMode } from "@/lib/stripeClient";
 
 type QBConnectionStatus = {
   connected: boolean;
@@ -158,10 +159,19 @@ type StripeStatusData = {
   connected: boolean;
   stripeAccountId: string | null;
   mode?: 'test' | 'live' | string;
+  serverMode?: 'test' | 'live' | 'unknown' | string;
+  storedConnectionMode?: 'test' | 'live' | null;
   status?: string;
+  code?: string | null;
   lastError?: string | null;
   chargesEnabled?: boolean;
+  payoutsEnabled?: boolean;
   detailsSubmitted?: boolean;
+  cardPaymentsCapability?: string | null;
+  readyForTestPayments?: boolean;
+  readyForProductionPayments?: boolean;
+  readyForPayments?: boolean;
+  modeMismatch?: boolean;
 };
 
 type StripeStatusEnvelope = {
@@ -931,7 +941,12 @@ export default function SettingsIntegrations() {
     }
   };
 
-  const stripeReady = stripeStatus?.data?.connected === true && stripeStatus.data.chargesEnabled === true;
+  const stripeServerMode = stripeStatus?.data?.serverMode;
+  const stripePublishableMode = getStripePublishableKeyMode((import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined);
+  const stripePublishableKeyModeMismatch = (stripeServerMode === 'test' || stripeServerMode === 'live')
+    && stripePublishableMode !== 'unknown'
+    && stripePublishableMode !== stripeServerMode;
+  const stripeReady = stripeStatus?.data?.readyForPayments === true && !stripePublishableKeyModeMismatch;
   const stripeNeedsSetup = Boolean(stripeStatus?.data?.stripeAccountId) && !stripeReady;
   const stripeProcessorStatus = stripeReady ? "ready" : stripeNeedsSetup ? "needs_setup" : "off";
   const epsProcessorStatus = paymentSettings?.epsReady
@@ -1626,6 +1641,12 @@ export default function SettingsIntegrations() {
                 <div className="break-words">{stripeStatus.data.lastError}</div>
               </div>
             ) : null}
+            {stripePublishableKeyModeMismatch ? (
+              <div className="bg-destructive/10 border border-destructive/20 text-destructive rounded-lg p-3 text-sm">
+                <div className="font-semibold mb-1">Publishable key mode mismatch</div>
+                <div>The browser is using {stripePublishableMode} mode while the server is using {stripeServerMode} mode. Payments are blocked until both deployments use matching Stripe modes.</div>
+              </div>
+            ) : null}
 
             {stripeStatus?.data?.stripeAccountId ? (
               <div className="grid grid-cols-2 gap-4 text-sm">
@@ -1634,8 +1655,8 @@ export default function SettingsIntegrations() {
                   <p className="font-medium">{stripeStatus.data.stripeAccountId}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Mode</p>
-                  <p className="font-medium">{String(stripeStatus.data.mode || 'test')}</p>
+                  <p className="text-muted-foreground">Server mode</p>
+                  <p className="font-medium">{String(stripeStatus.data.serverMode || stripeStatus.data.mode || 'unknown')}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Charges Enabled</p>
@@ -1644,6 +1665,14 @@ export default function SettingsIntegrations() {
                 <div>
                   <p className="text-muted-foreground">Details Submitted</p>
                   <p className="font-medium">{stripeStatus.data.detailsSubmitted ? 'Yes' : 'No'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Payouts Enabled</p>
+                  <p className="font-medium">{stripeStatus.data.payoutsEnabled ? 'Yes' : 'No'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Readiness</p>
+                  <p className="font-medium">{stripeStatus.data.readyForProductionPayments ? 'Ready for live payments' : stripeStatus.data.readyForTestPayments ? 'Ready for test payments' : String(stripeStatus.data.status || 'Needs setup')}</p>
                 </div>
               </div>
             ) : (

@@ -3,16 +3,18 @@ import Stripe from 'stripe';
 let stripeSingleton: Stripe | null = null;
 let stripeConfigLogged = false;
 
-type StripeServerConfigStatus = {
+export type StripeMode = 'test' | 'live' | 'unknown';
+
+export type StripeServerConfigStatus = {
   ok: boolean;
-  mode: 'test' | 'live' | 'unknown';
+  mode: StripeMode;
   webhookSecretStatus: 'missing' | 'ok' | 'invalid';
   reason?: 'missing_secret_key' | 'invalid_secret_key';
 };
 
 type StripeEnv = Record<string, string | undefined>;
 
-function getStripeModeFromSecretKey(secretKey: string): 'test' | 'live' | 'unknown' {
+export function getStripeModeFromSecretKey(secretKey: string): StripeMode {
   if (secretKey.startsWith('sk_live_')) return 'live';
   if (secretKey.startsWith('sk_test_')) return 'test';
   if (secretKey.startsWith('sk_')) return 'unknown';
@@ -79,6 +81,7 @@ export async function createInvoicePaymentIntent(params: {
   currency: string;
   organizationId: string;
   invoiceId: string;
+  stripeAccountId: string;
   description?: string;
   idempotencyKey?: string;
 }): Promise<{ paymentIntentId: string; clientSecret: string }> {
@@ -86,6 +89,8 @@ export async function createInvoicePaymentIntent(params: {
 
   const amountCents = Math.max(0, Math.round(Number(params.amountCents || 0)));
   if (amountCents <= 0) throw new Error('amountCents must be > 0');
+  const stripeAccountId = String(params.stripeAccountId || '').trim();
+  if (!stripeAccountId) throw new Error('stripeAccountId is required for a Connect direct charge');
 
   const currency = (params.currency || 'USD').toLowerCase();
 
@@ -98,9 +103,13 @@ export async function createInvoicePaymentIntent(params: {
       metadata: {
         organizationId: params.organizationId,
         invoiceId: params.invoiceId,
+        stripeAccountId,
       },
     },
-    params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : undefined
+    {
+      ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+      stripeAccount: stripeAccountId,
+    }
   );
 
   if (!pi.client_secret) throw new Error('Stripe did not return client_secret');
