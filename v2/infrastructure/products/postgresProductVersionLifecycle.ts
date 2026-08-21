@@ -208,7 +208,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     const tree = createInitialProductDraftTree(input.displayName);
     const valid = validateOptionTreeV2(tree as any), complete = optionTreeV2Schema.safeParse(tree);
     if (!valid.ok || !complete.success) throw new V2ApplicationError("CONFLICT", "The initial Product Draft could not be initialized.");
-    await this.client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,workflow_intent,requires_proof_approval,requires_production_job,created_at,updated_at) VALUES($1,$2,$3,$3,FALSE,'dimensions_required','standard_production',FALSE,FALSE,$4,$4)", [productId, input.organizationId, input.displayName, now]);
+    await this.client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,workflow_intent,requires_proof_approval,requires_production_job,created_at,updated_at) VALUES($1,$2,$3::text,$3::text,FALSE,'dimensions_required','standard_production',FALSE,FALSE,$4,$4)", [productId, input.organizationId, input.displayName, now]);
     const inserted = await this.client.query<{ id: string; updated_at: Date }>("INSERT INTO pbv2_tree_versions(id,organization_id,product_id,status,schema_version,tree_json,created_by_user_id,updated_by_user_id,created_at,updated_at) VALUES($1,$2,$3,'DRAFT',2,$4::jsonb,$5,$5,$6,$6) RETURNING id,updated_at", [draftId, input.organizationId, productId, JSON.stringify(tree), input.staffActorUserId ?? null, now]);
     return { productId, draftVersionId: inserted.rows[0]!.id, draftUpdatedAt: inserted.rows[0]!.updated_at.toISOString() };
   }
