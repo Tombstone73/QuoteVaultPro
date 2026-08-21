@@ -33,6 +33,7 @@ import {
   type ProductionUnitAuthoringMode,
 } from "./productProductionUnits";
 import { productBuilderPath, productPath } from "./productRouting";
+import { ProductBuilderReference } from "./ProductBuilderReference";
 
 const keys = {
   list: (s: string, o: string, q: string, p: number) =>
@@ -314,6 +315,9 @@ export const ProductWorkspace = ({
 };
 
 const NewProductBuilder = ({ organizationId, sessionScope, canEdit, openEditor, back }: Readonly<{ organizationId: string; sessionScope: string; canEdit: boolean; openEditor: (id: string) => void; back: () => void }>) => {
+  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} back={back} openProduct={openEditor} newProduct />;
+  /* Legacy per-section New Product shell retained below only as an unrendered
+     implementation record while the reference port is exercised in DEV. */
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
   const [collapsed, setCollapsed] = useState<Readonly<Partial<Record<ProductBuilderSectionId, boolean>>>>({});
@@ -866,6 +870,29 @@ const Builder = ({
       refreshDetail();
     },
   });
+  if (!general.data)
+    return (
+      <section className="v2-products">
+        <p className="v2-proof-empty">Loading Draft…</p>
+      </section>
+    );
+  /* The reference port owns presentation and global-save orchestration. The
+     canonical queries above remain intentionally available for the legacy
+     editor until its focused tests are migrated. */
+  return <ProductBuilderReference
+    organizationId={organizationId}
+    sessionScope={sessionScope}
+    product={product}
+    canEdit={canEdit}
+    back={back}
+    publish={publish}
+    publishing={publishing}
+    openProduct={(id) => {
+      window.history.pushState({}, "", productBuilderPath(id));
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }}
+  />;
+  /* Legacy rendered Builder intentionally superseded by ProductBuilderReference.
   const [collapsed, setCollapsed] = useState<Readonly<Partial<Record<ProductBuilderSectionId, boolean>>>>({});
   if (!general.data)
     return (
@@ -930,7 +957,7 @@ const Builder = ({
         <aside className="v2-product-builder-rail"><PricingDiagnostic organizationId={organizationId} productId={product.productId} options={options.data?.options ?? []} requiresDimensions={general.data.general.measurementMode === "dimensions_required"} /><DraftReadiness general={general.data} recipe={recipe.data} routing={routing.data} /></aside>
       </div>
     </section>
-  );
+  ); */
 };
 
 const DraftReview = ({ general, options, pricing, matrix, formula, optionPricing, recipe, routing, canPublish, publishing, publish }: Readonly<{
