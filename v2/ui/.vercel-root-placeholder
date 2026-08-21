@@ -1,0 +1,7 @@
+This file exists only so the printershero-development Vercel project can resolve
+its configured v2/ui Root Directory on the V1 main branch.
+
+After the Root Directory is resolved, the existing Vercel Ignored Build Step
+skips main deployments for that project.
+
+This is not V2 application code. Do not use this file for runtime behavior.
