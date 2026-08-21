@@ -44,6 +44,7 @@ export const CustomerLookup = ({
     onChange(customer);
   };
   const clear = (value: string) => {
+    setFocused(true);
     setQuery(value);
     setSelectedName("");
     if (customerId) onChange(undefined);
