@@ -946,6 +946,12 @@ const GeneralForm = ({
 }) => {
   const [general, setGeneral] = useState(value.general);
   const [pendingPreset, setPendingPreset] = useState<Exclude<ProductionUnitAuthoringMode, "conditional"> | null>(null);
+  const [conditionalEditor, setConditionalEditor] = useState(
+    () => productionUnitAuthoringMode(value.general.productionUnitSpecification) === "conditional",
+  );
+  const productionUnitMode = conditionalEditor
+    ? "conditional"
+    : productionUnitAuthoringMode(general.productionUnitSpecification);
   const change = <K extends keyof ProductDraftGeneral>(
     key: K,
     next: ProductDraftGeneral[K],
@@ -1060,14 +1066,15 @@ const GeneralForm = ({
         Production units
         <select
           disabled={disabled || general.workflowIntent !== "standard_production"}
-          value={productionUnitAuthoringMode(general.productionUnitSpecification)}
+          value={productionUnitMode}
           onChange={(event) => {
             const mode = event.target.value as ProductionUnitAuthoringMode;
             if (mode === "conditional") {
               change("productionUnitSpecification", conditionalProductionUnitSpecification("always", "always", productionOptions));
+              setConditionalEditor(true);
               return;
             }
-            if (productionUnitAuthoringMode(general.productionUnitSpecification) === "conditional") {
+            if (productionUnitMode === "conditional") {
               setPendingPreset(mode);
               return;
             }
@@ -1083,11 +1090,11 @@ const GeneralForm = ({
       {pendingPreset && (
         <div className="wide v2-product-note" role="status">
           <p>Changing this mode replaces the authored conditional production rules.</p>
-          <button type="button" disabled={disabled} onClick={() => { change("productionUnitSpecification", presetProductionUnitSpecification(pendingPreset)); setPendingPreset(null); }}>Replace conditional rules</button>
+          <button type="button" disabled={disabled} onClick={() => { change("productionUnitSpecification", presetProductionUnitSpecification(pendingPreset)); setConditionalEditor(false); setPendingPreset(null); }}>Replace conditional rules</button>
           <button type="button" disabled={disabled} onClick={() => setPendingPreset(null)}>Keep conditional rules</button>
         </div>
       )}
-      {productionUnitAuthoringMode(general.productionUnitSpecification) === "conditional" && (
+      {productionUnitMode === "conditional" && (
         <fieldset className="wide v2-product-production-units">
           <legend>Conditional production units</legend>
           <p>Use Product Options and their stable choices. Production requirements remain version-owned and frozen when an Order is created.</p>
