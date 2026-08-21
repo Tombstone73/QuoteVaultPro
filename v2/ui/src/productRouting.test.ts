@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { artworkPath, contactPath, customerPath, fulfillmentPath, invoicePath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkPath, contactPath, customerPath, fulfillmentPath, invoicePath, newProductBuilderPath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.deepEqual(readProductLocation("/products/product-a"), { productId: "product-a" });
@@ -12,6 +12,9 @@ assert.deepEqual(readProductBuilderLocation("/product-builder/product-a"), { pro
 assert.equal(readProductBuilderLocation("/product-builder/%2Fwrong"), null);
 assert.equal(productBuilderPath("product a"), "/product-builder/product%20a?draft=1");
 assert.deepEqual(readWorkspaceLocation("/product-builder/product-a"), { page: "productBuilder", productId: "product-a" });
+assert.equal(newProductBuilderPath(), "/products/new");
+assert.deepEqual(readProductBuilderLocation("/products/new"), { newProduct: true });
+assert.deepEqual(readWorkspaceLocation("/products/new"), { page: "productBuilder", newProduct: true });
 assert.deepEqual(readCustomerLocation("/customers"), {});
 assert.deepEqual(readCustomerLocation("/customers/customer-a"), { customerId: "customer-a" });
 assert.equal(readCustomerLocation("/customers/%2Fwrong"), null);
