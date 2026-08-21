@@ -286,8 +286,16 @@ export type PricingPreviewEvaluationResult = {
     steps?: Array<{ label: string; value: number | string }>;
     errors?: Array<{ code: string; message: string; detail?: any }>;
     likelyMisconfiguredFormula?: boolean;
-    preCeilSqftTotal?: number | null;
-    postCeilSqftTotal?: number | null;
+    lastCeilInput?: number | null;
+    lastCeilResult?: number | null;
+    optionPriceContributions?: Array<{
+      optionId: string;
+      selectionKey?: string;
+      optionLabel: string;
+      choiceValue?: string;
+      choiceLabel?: string;
+      amountCents: number;
+    }>;
     rawSqftPerItem?: number;
     rawTotalSqft?: number;
     baseRateUsed?: number | null;
@@ -1351,8 +1359,9 @@ export function evaluatePricingPreviewFromTree(input: {
       steps: formulaDebug.steps,
       errors: formulaDebug.errors,
       likelyMisconfiguredFormula: formulaDebug.likelyMisconfiguredFormula,
-      preCeilSqftTotal: formulaDebug.preCeilSqftTotal,
-      postCeilSqftTotal: formulaDebug.postCeilSqftTotal,
+      lastCeilInput: formulaDebug.lastCeilInput,
+      lastCeilResult: formulaDebug.lastCeilResult,
+      optionPriceContributions: evalResult.optionPriceContributions,
       rawSqftPerItem: quantityOnlyPricing ? undefined : (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0),
       rawTotalSqft: quantityOnlyPricing ? undefined : (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
@@ -3835,8 +3844,8 @@ function calculateFormulaAwareBasePrice(input: {
         message: "Fee / Service pricing ignored a formula source and used Flat Fee Amount.",
       }] : [],
       likelyMisconfiguredFormula: false,
-      preCeilSqftTotal: null,
-      postCeilSqftTotal: null,
+      lastCeilInput: null,
+      lastCeilResult: null,
       baseRateUsed: null,
       formulaOutputMeaning: "final_price",
       formulaOutputMeaningSource: "fee.profile",
@@ -3910,8 +3919,8 @@ function calculateFormulaAwareBasePrice(input: {
         message: "Quantity-only pricing ignored a non-quantity formula source and used Rate per piece.",
       }] : [],
       likelyMisconfiguredFormula: false,
-      preCeilSqftTotal: null,
-      postCeilSqftTotal: null,
+      lastCeilInput: null,
+      lastCeilResult: null,
       baseRateUsed: null,
       formulaOutputMeaning: "final_price",
       formulaOutputMeaningSource: "qty_only.profile",
@@ -4141,8 +4150,8 @@ function calculateFormulaAwareBasePrice(input: {
   formulaDebug.resultValue = formulaEvaluation.resultValue;
   formulaDebug.appliedAs = formulaEvaluation.appliedAs;
   formulaDebug.steps = formulaEvaluation.steps;
-  formulaDebug.preCeilSqftTotal = formulaEvaluation.preCeilSqftTotal;
-  formulaDebug.postCeilSqftTotal = formulaEvaluation.postCeilSqftTotal;
+  formulaDebug.lastCeilInput = formulaEvaluation.lastCeilInput;
+  formulaDebug.lastCeilResult = formulaEvaluation.lastCeilResult;
   formulaDebug.baseRateUsed = formulaEvaluation.baseRateUsed;
   formulaDebug.formulaOutputMeaning = formulaEvaluation.formulaOutputMeaning;
   formulaDebug.formulaResultType = formulaEvaluation.formulaResultType;
@@ -4572,8 +4581,8 @@ function evaluatePreviewFormulaToCents(input: {
   formulaResolved?: string;
   appliedAs: 'unitPrice' | 'totalPrice' | 'unknown';
   steps: Array<{ label: string; value: number | string }>;
-  preCeilSqftTotal: number | null;
-  postCeilSqftTotal: number | null;
+  lastCeilInput: number | null;
+  lastCeilResult: number | null;
   baseRateUsed: number;
   formulaOutputMeaning: FormulaOutputMeaning;
   formulaResultType: "final_dollars" | "billable_quantity";
@@ -4613,16 +4622,16 @@ function evaluatePreviewFormulaToCents(input: {
   });
   // Use the scope-resolved base_price (matrix may have overridden the tiered fallback).
   const resolvedBaseRate = typeof formulaScope.base_price === 'number' ? formulaScope.base_price : input.baseRatePerSqft;
-  let preCeilSqftTotal: number | null = null;
-  let postCeilSqftTotal: number | null = null;
+  let lastCeilInput: number | null = null;
+  let lastCeilResult: number | null = null;
   const evalScope: Record<string, any> = {
     ...formulaScope,
     ceil: (value: unknown) => {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return Math.ceil(numeric);
-      preCeilSqftTotal = numeric;
-      postCeilSqftTotal = Math.ceil(numeric);
-      return postCeilSqftTotal;
+      lastCeilInput = numeric;
+      lastCeilResult = Math.ceil(numeric);
+      return lastCeilResult;
     },
     sheet_consumption_sqft: (
       w: unknown,
@@ -4717,8 +4726,8 @@ function evaluatePreviewFormulaToCents(input: {
       appliedAs,
       steps,
       errors: formulaError.details,
-      preCeilSqftTotal,
-      postCeilSqftTotal,
+      lastCeilInput,
+      lastCeilResult,
       baseRateUsed: resolvedBaseRate,
     };
     throw formulaError;
@@ -4748,8 +4757,8 @@ function evaluatePreviewFormulaToCents(input: {
       appliedAs,
       steps,
       errors: formulaError.details,
-      preCeilSqftTotal,
-      postCeilSqftTotal,
+      lastCeilInput,
+      lastCeilResult,
       baseRateUsed: resolvedBaseRate,
     };
     throw formulaError;
@@ -4772,8 +4781,8 @@ function evaluatePreviewFormulaToCents(input: {
       formulaResolved,
       appliedAs,
       steps,
-      preCeilSqftTotal,
-      postCeilSqftTotal,
+      lastCeilInput,
+      lastCeilResult,
       baseRateUsed: resolvedBaseRate,
       formulaOutputMeaning,
       formulaResultType: isBillableOutput ? "billable_quantity" : "final_dollars",
@@ -4809,8 +4818,8 @@ function evaluatePreviewFormulaToCents(input: {
       appliedAs,
       steps,
       errors: [{ code: errorCode, message: friendlyMessage, detail: missingSymbol ? { missingSymbol } : undefined }],
-      preCeilSqftTotal,
-      postCeilSqftTotal,
+      lastCeilInput,
+      lastCeilResult,
       baseRateUsed: resolvedBaseRate,
     };
     throw formulaError;
@@ -4908,8 +4917,8 @@ function buildBaseFormulaDebugContext(input: {
     ],
     errors: [],
     likelyMisconfiguredFormula: input.formulaRaw ? isLikelyGeometryOnlyFormula(input.formulaRaw) : false,
-    preCeilSqftTotal: null,
-    postCeilSqftTotal: null,
+    lastCeilInput: null,
+    lastCeilResult: null,
     baseRateUsed: resolvedBaseRate,
     formulaResultType: input.formulaRaw ? "final_dollars" : undefined,
     quantityBasisUsed: input.formulaRaw ? inferFormulaQuantityBasis(input.formulaRaw) : undefined,

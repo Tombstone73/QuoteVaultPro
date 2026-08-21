@@ -113,5 +113,10 @@ describe("optionTreeV2Evaluator visibility-aware pricing", () => {
 
     expect(result.visibleNodeIds).toContain("printSides");
     expect(result.optionsPrice).toBe(7);
+    expect(result.optionPriceContributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ selectionKey: "printSides", choiceValue: "double", amountCents: 500 }),
+      expect.objectContaining({ selectionKey: "contourCut", amountCents: 200 }),
+    ]));
+    expect(result.optionPriceContributions.reduce((total, entry) => total + entry.amountCents, 0)).toBe(700);
   });
 });

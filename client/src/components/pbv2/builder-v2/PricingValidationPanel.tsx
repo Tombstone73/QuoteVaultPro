@@ -66,8 +66,16 @@ type PricingPreviewResponse = {
     steps?: Array<{ label: string; value: number | string }>;
     errors?: Array<{ code: string; message: string; detail?: any }>;
     likelyMisconfiguredFormula?: boolean;
-    preCeilSqftTotal?: number | null;
-    postCeilSqftTotal?: number | null;
+    lastCeilInput?: number | null;
+    lastCeilResult?: number | null;
+    optionPriceContributions?: Array<{
+      optionId: string;
+      selectionKey?: string;
+      optionLabel: string;
+      choiceValue?: string;
+      choiceLabel?: string;
+      amountCents: number;
+    }>;
     rawSqftPerItem?: number;
     rawTotalSqft?: number;
     baseRateUsed?: number | null;
@@ -236,7 +244,12 @@ type PricingPreviewResponse = {
     };
     runtimeSelectionContext?: {
       selectedChoices?: Record<string, string>;
-      resolvedChoices?: Record<string, unknown>;
+      resolvedChoices?: Record<string, {
+        selectionKey?: string;
+        optionLabel?: string;
+        choiceValue?: string;
+        choiceLabel?: string;
+      }>;
       appliedPricingOverrides?: Array<Record<string, unknown>>;
       hiddenSelectionWarnings?: Array<{ selectionKey?: string; choiceValue?: string; reason?: string }>;
     };
@@ -575,6 +588,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   });
   const [result, setResult] = useState<PricingPreviewResponse | null>(null);
   const [formulaDebug, setFormulaDebug] = useState<PricingPreviewResponse["debug"] | null>(null);
+  const effectiveRuntimeSelectionValues = useMemo(
+    () => formulaDebug?.runtimeSelectionContext?.selectedChoices ?? {},
+    [formulaDebug?.runtimeSelectionContext?.selectedChoices],
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [responseErrors, setResponseErrors] = useState<string[]>([]);
@@ -630,8 +647,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn, nonDimensionalPricing]);
 
   const previewGroups = useMemo(
-    () => buildPreviewGroups(treeForPreview, previewState.selectedOptionValues),
-    [treeForPreview, previewState.selectedOptionValues],
+    () => buildPreviewGroups(treeForPreview, { ...effectiveRuntimeSelectionValues, ...previewState.selectedOptionValues }),
+    [treeForPreview, effectiveRuntimeSelectionValues, previewState.selectedOptionValues],
   );
   const previewSelectionKeys = useMemo(
     () => new Set(previewGroups.flatMap((group) => group.options.map((option) => option.selectionKey))),
@@ -782,13 +799,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const finishedTotalSqft = typeof result?.derived?.totalSqft === "number"
     ? result.derived.totalSqft
     : (typeof finishedSqftPerItem === "number" ? finishedSqftPerItem * previewState.quantity : undefined);
-  const billedSqftPre = typeof formulaDebug?.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal : null;
-  const billedSqftPost = typeof formulaDebug?.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal : null;
+  const lastCeilInput = typeof formulaDebug?.lastCeilInput === "number" ? formulaDebug.lastCeilInput : null;
+  const lastCeilResult = typeof formulaDebug?.lastCeilResult === "number" ? formulaDebug.lastCeilResult : null;
   const baseRateUsed = typeof formulaDebug?.baseRateUsed === "number" ? formulaDebug.baseRateUsed : null;
-  const billedLineTotal = billedSqftPost != null && baseRateUsed != null
-    ? billedSqftPost * baseRateUsed
-    : null;
-  const hasBilledSqftDebug = billedSqftPre != null && billedSqftPost != null;
+  const hasLastCeilDebug = lastCeilInput != null && lastCeilResult != null;
   const activeFormulaText = String(formulaDebug?.resolvedFormulaExpression || result?.formulaUsed || formulaDebug?.formulaRaw || pricingFormulaOverride || "");
   const hasActiveTrimAllowance = trimAllowanceX > 0 || trimAllowanceY > 0;
   const hasManualGeometryRebuild = detectsManualGeometryRebuild(activeFormulaText, hasActiveTrimAllowance);
@@ -926,6 +940,12 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const fallbackUsed = weightDebug?.resolvedWeightSource === "product_fallback";
   const runtimeSelectionDebug = formulaDebug?.runtimeSelectionContext ?? null;
   const selectedChoiceEntries = Object.entries(runtimeSelectionDebug?.selectedChoices ?? {});
+  const resolvedRuntimeChoices = Object.values(runtimeSelectionDebug?.resolvedChoices ?? {});
+  const optionPriceContributionBySelectionKey = new Map(
+    (formulaDebug?.optionPriceContributions ?? [])
+      .filter((entry) => typeof entry.selectionKey === "string" && entry.selectionKey.length > 0)
+      .map((entry) => [entry.selectionKey as string, entry.amountCents]),
+  );
   const appliedPricingOverrides = Array.isArray(runtimeSelectionDebug?.appliedPricingOverrides)
     ? runtimeSelectionDebug.appliedPricingOverrides
     : [];
@@ -1223,9 +1243,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </div>
                   </div> : null}
 
-                  {hasBilledSqftDebug ? (
+                  {hasLastCeilDebug ? (
                     <div className="rounded border border-slate-700/70 bg-slate-900/40 px-2 py-1.5 mb-2">
-                      <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">BILLED (Pricing)</div>
+                      <div className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">FORMULA CEIL DEBUG</div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-300">total_sqft (finished)</span>
                         <span className="font-mono text-base text-slate-100">{typeof finishedTotalSqft === "number" ? finishedTotalSqft.toFixed(4) : "—"}</span>
@@ -1235,23 +1255,16 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                         <span className="font-mono text-base text-slate-100">{formulaDimensionUsageLabel}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-300">Pre-ceil sqft total</span>
-                        <span className="font-mono text-base text-slate-100">{billedSqftPre.toFixed(4)}</span>
+                        <span className="text-slate-300">Last ceil() input</span>
+                        <span className="font-mono text-base text-slate-100">{lastCeilInput.toFixed(4)}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm mt-1">
-                        <span className="text-slate-300">Post-ceil billed sqft</span>
-                        <span className="font-mono text-base text-slate-100">{billedSqftPost.toFixed(0)}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm mt-1">
-                        <span className="text-slate-300">Rate used (base_price / p)</span>
-                        <span className="font-mono text-slate-100">{baseRateUsed != null ? currencyFormatter.format(baseRateUsed) : "—"}</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">
-                        {billedSqftPost.toFixed(0)} × {baseRateUsed != null ? currencyFormatter.format(baseRateUsed) : "—"} = {billedLineTotal != null ? currencyFormatter.format(billedLineTotal) : "—"}
+                        <span className="text-slate-300">Last ceil() result</span>
+                        <span className="font-mono text-base text-slate-100">{lastCeilResult.toFixed(0)}</span>
                       </div>
                     </div>
                   ) : (
-                    <div className="text-[11px] text-slate-400 mb-2">Enable ceil debug to see billed sqft breakdown.</div>
+                    <div className="text-[11px] text-slate-400 mb-2">No ceil() call was evaluated by this formula.</div>
                   )}
 
                   {hasFormulaDebugErrors ? (
@@ -1303,6 +1316,29 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1">
                       <div className="flex items-center justify-between"><span>Base</span><span className="font-mono">{currencyFormatter.format(displayBasePrice)}</span></div>
                       <div className="flex items-center justify-between"><span>Options</span><span className="font-mono">{currencyFormatter.format(result.breakdown.optionsPrice)}</span></div>
+                      {resolvedRuntimeChoices.length > 0 ? (
+                        <div className="space-y-1 border-t border-slate-700/60 pt-1.5">
+                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Effective choices</div>
+                          {resolvedRuntimeChoices.map((choice, index) => {
+                            const selectionKey = choice.selectionKey ?? "";
+                            const contributionCents = selectionKey ? optionPriceContributionBySelectionKey.get(selectionKey) : undefined;
+                            const isDefault = selectionKey.length > 0 && !Object.prototype.hasOwnProperty.call(previewState.selectedOptionValues, selectionKey);
+                            return (
+                              <div key={`${selectionKey}-${choice.choiceValue ?? index}`} className="flex items-center justify-between gap-2 text-slate-300">
+                                <span className="min-w-0 truncate">
+                                  {choice.optionLabel ?? selectionKey}: {choice.choiceLabel ?? choice.choiceValue ?? "—"}
+                                  {isDefault ? <span className="ml-1 text-sky-300">(default)</span> : null}
+                                </span>
+                                <span className="font-mono shrink-0 text-slate-200">
+                                  {typeof contributionCents === "number" && contributionCents !== 0
+                                    ? currencyFormatter.format(contributionCents / 100)
+                                    : "No price change"}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -1393,8 +1429,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Usable drop:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.dropUsable === "boolean" ? `${formulaDebug.sheetYield.dropUsable ? "Yes" : "No"} (width: ${formulaDebug.sheetYield.widthDropUsable ? "usable" : "not usable"}; length: ${formulaDebug.sheetYield.lengthDropUsable ? "usable" : "not usable"})` : "—"}</span></div>
                       <div><span className="text-slate-400">Final price basis:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.billedSheetSqft === "number" && typeof formulaDebug.baseRateUsed === "number" ? `${formulaDebug.sheetYield.billedSheetSqft.toFixed(2)} billable sqft × ${currencyFormatter.format(formulaDebug.baseRateUsed)}/sqft` : "—"}</span></div>
                       <div><span className="text-slate-400">Selected tier basis:</span> <span className="font-mono">{tierResolution?.tierBasis ?? "—"}</span></div>
-                      <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
-                      <div><span className="text-slate-400">Post-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Last ceil() input:</span> <span className="font-mono">{typeof formulaDebug.lastCeilInput === "number" ? formulaDebug.lastCeilInput.toFixed(4) : "—"}</span></div>
+                      <div><span className="text-slate-400">Last ceil() result:</span> <span className="font-mono">{typeof formulaDebug.lastCeilResult === "number" ? formulaDebug.lastCeilResult.toFixed(0) : "—"}</span></div>
                       <div><span className="text-slate-400">Base rate used (p):</span> <span className="font-mono">{typeof formulaDebug.baseRateUsed === "number" ? String(formulaDebug.baseRateUsed) : "—"}</span></div>
                       <div className="space-y-1">
                         <div className="text-slate-400">Variables</div>
@@ -1737,7 +1773,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   </div>
 
                   {group.options.map((option) => {
-                    const selectedValue = previewState.selectedOptionValues[option.selectionKey];
+                    const explicitSelectedValue = previewState.selectedOptionValues[option.selectionKey];
+                    const selectedValue = explicitSelectedValue ?? effectiveRuntimeSelectionValues[option.selectionKey];
+                    const hasEffectiveDefault = !Object.prototype.hasOwnProperty.call(previewState.selectedOptionValues, option.selectionKey)
+                      && typeof effectiveRuntimeSelectionValues[option.selectionKey] === "string";
                     const isFreeform = FREEFORM_INPUT_TYPES.has(option.inputType);
                     const isMulti = !isFreeform && (option.inputType === "multiselect" || group.isMultiSelect);
 
@@ -1757,7 +1796,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       };
                       return (
                         <div key={option.optionId} className="space-y-1 min-w-0">
-                          <div className="text-xs text-slate-400">{option.optionName}</div>
+                          <div className="text-xs text-slate-400">{option.optionName}{hasEffectiveDefault ? <span className="ml-1 text-sky-300">(default)</span> : null}</div>
                           {isTextarea ? (
                             <Textarea
                               value={freeformValue}
@@ -1783,7 +1822,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       const selectedArray = Array.isArray(selectedValue) ? selectedValue : [];
                       return (
                         <div key={option.optionId} className="space-y-1.5 min-w-0">
-                          <div className="text-xs text-slate-400">{option.optionName}</div>
+                          <div className="text-xs text-slate-400">{option.optionName}{hasEffectiveDefault ? <span className="ml-1 text-sky-300">(default)</span> : null}</div>
                           <div className="space-y-1">
                             {option.choices.map((choice) => {
                               const checked = selectedArray.includes(choice.value);
@@ -1817,7 +1856,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
                     return (
                       <div key={option.optionId} className="space-y-1 min-w-0">
-                        <div className="text-xs text-slate-400">{option.optionName}</div>
+                        <div className="text-xs text-slate-400">{option.optionName}{hasEffectiveDefault ? <span className="ml-1 text-sky-300">(default)</span> : null}</div>
                         <Select
                           value={typeof selectedValue === "string" ? selectedValue : "__none__"}
                           onValueChange={(value) => {

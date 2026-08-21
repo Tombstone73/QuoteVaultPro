@@ -3050,8 +3050,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     ? (pricingDetailWidth * pricingDetailHeight * pricingDetailQuantity) / 144
                     : null;
                   const formulaDebug = pricingDebugSnapshot?.formulaDebug ?? pricingDebugSnapshot?.debug ?? null;
-                  const billedSqft = typeof formulaDebug?.postCeilSqftTotal === "number"
-                    ? formulaDebug.postCeilSqftTotal
+                  const billedSqft = typeof formulaDebug?.sheetYield?.billedSheetSqft === "number"
+                    ? formulaDebug.sheetYield.billedSheetSqft
                     : null;
                   const ratePerSqft = typeof pricingDebugSnapshot?.baseRateUsed === "number"
                     ? pricingDebugSnapshot.baseRateUsed

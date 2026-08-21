@@ -19,6 +19,15 @@ type SelectedOptionsSnapshotEntry = {
   calculatedCost: number;
 };
 
+export type OptionPriceContribution = {
+  optionId: string;
+  selectionKey?: string;
+  optionLabel: string;
+  choiceValue?: string;
+  choiceLabel?: string;
+  amountCents: number;
+};
+
 export type OptionTreeV2EvaluateInput = {
   tree: unknown;
   selections: unknown;
@@ -32,6 +41,7 @@ export type OptionTreeV2EvaluateInput = {
 export type OptionTreeV2EvaluateResult = {
   optionsPrice: number;
   selectedOptions: SelectedOptionsSnapshotEntry[];
+  optionPriceContributions: OptionPriceContribution[];
   visibleNodeIds: string[];
 };
 
@@ -271,6 +281,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
   let optionsCents = 0; // Running total in cents
   const selectedOptions: SelectedOptionsSnapshotEntry[] = [];
+  const optionPriceContributions: OptionPriceContribution[] = [];
 
   for (let i = 0; i < visibleNodeIds.length; i++) {
     const nodeId = visibleNodeIds[i];
@@ -338,6 +349,8 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     }
 
     let nodeCost = 0;
+    let choiceCentsApplied = 0;
+    let selectedChoice: { value: string; label: string } | null = null;
 
     // STEP 1: Process NODE-level pricing impacts (legacy backward compatibility)
     // This is kept for existing data but NEW flows should use choice-level pricing
@@ -394,6 +407,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       }
       
       const choice = node.choices.find((c) => c.value === selectedValue);
+      selectedChoice = choice ? { value: choice.value, label: choice.label } : null;
       
       // PBV2_DEBUG: Log choice match result
       if (process.env.PBV2_DEBUG === "1") {
@@ -423,8 +437,6 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       }
       
       if (choice && Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0) {
-        let choiceCentsApplied = 0; // Track total cents from this choice
-        
         // Dev logging to verify choice-level pricing is working
         if (process.env.NODE_ENV === "development") {
           console.log(`[PBV2_CHOICE_PRICING] Processing choice pricing for node: ${node.label}, Choice: ${choice.label}, Impacts: ${choice.pricingImpact.length}`);
@@ -598,7 +610,18 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     }
 
     // Add node-level cost (legacy flow uses dollars, converted to cents)
-    optionsCents += Math.round(nodeCost * 100);
+    const nodeCostCents = Math.round(nodeCost * 100);
+    const contributionCents = choiceCentsApplied + nodeCostCents;
+    if (isSelected) {
+      optionPriceContributions.push({
+        optionId: nodeId,
+        selectionKey: matchedKey ?? node.input?.selectionKey ?? node.key,
+        optionLabel: node.label || nodeId,
+        ...(selectedChoice ? { choiceValue: selectedChoice.value, choiceLabel: selectedChoice.label } : {}),
+        amountCents: contributionCents,
+      });
+    }
+    optionsCents += nodeCostCents;
   }
 
   // DEV: Log final pricing summary
@@ -622,7 +645,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
   const optionsPrice = optionsCents / 100; // Convert back to dollars for result
 
-  return { optionsPrice, selectedOptions, visibleNodeIds };
+  return { optionsPrice, selectedOptions, optionPriceContributions, visibleNodeIds };
 }
 
 export function isZodError(error: unknown): error is z.ZodError {

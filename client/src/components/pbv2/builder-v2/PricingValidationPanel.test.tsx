@@ -230,4 +230,76 @@ describe("PricingValidationPanel fixed-size preview", () => {
     await cleanup();
     jest.useRealTimers();
   });
+
+  it("shows backend-resolved default choices and their authoritative price contribution", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          unitPrice: 14.5,
+          totalPrice: 14.5,
+          breakdown: { basePrice: 9, optionsPrice: 5.5, total: 14.5 },
+          debug: {
+            runtimeSelectionContext: {
+              selectedChoices: { printSides: "double" },
+              resolvedChoices: {
+                printSides: {
+                  selectionKey: "printSides",
+                  optionLabel: "Print Sides",
+                  choiceValue: "double",
+                  choiceLabel: "Double-sided",
+                },
+              },
+            },
+            optionPriceContributions: [{
+              optionId: "printSides",
+              selectionKey: "printSides",
+              optionLabel: "Print Sides",
+              choiceValue: "double",
+              choiceLabel: "Double-sided",
+              amountCents: 550,
+            }],
+            lastCeilInput: 36,
+            lastCeilResult: 36,
+          },
+        },
+      }),
+    }));
+    (globalThis as any).fetch = fetchMock;
+
+    const { container, cleanup } = await renderPanel({
+      schemaVersion: 2,
+      rootNodeIds: ["group_print"],
+      nodes: {
+        group_print: { id: "group_print", kind: "group", label: "Print" },
+        printSides: {
+          id: "printSides",
+          kind: "question",
+          label: "Print Sides",
+          input: { type: "select", selectionKey: "printSides", defaultValue: "double" },
+          choices: [{ value: "single", label: "Single-sided" }, { value: "double", label: "Double-sided" }],
+        },
+      },
+      edges: [{ id: "e1", status: "DISABLED", fromNodeId: "group_print", toNodeId: "printSides" }],
+      meta: { requiresDimensions: true, pricingV2: { base: { perSqftCents: 150 } } },
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Effective choices");
+    expect(container.textContent).toContain("Print Sides: Double-sided");
+    expect(container.textContent).toContain("(default)");
+    expect(container.textContent).toContain("$5.50");
+    expect(container.textContent).toContain("Last ceil() input");
+    expect(container.textContent).not.toContain("Pre-ceil sqft total");
+
+    await cleanup();
+    jest.useRealTimers();
+  });
 });
