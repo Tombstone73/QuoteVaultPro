@@ -22,6 +22,15 @@ import {
   type ProductVersionSummary,
   type ProductWorkspaceDetail,
 } from "./api";
+import {
+  conditionalProductionUnitSpecification,
+  conditionLabel,
+  conditionOptions,
+  conditionToken,
+  presetProductionUnitSpecification,
+  productionUnitAuthoringMode,
+  type ProductionUnitAuthoringMode,
+} from "./productProductionUnits";
 
 const keys = {
   list: (s: string, o: string, q: string, p: number) =>
@@ -558,7 +567,7 @@ const Builder = ({
   const options = useQuery({
     queryKey: keys.options(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftOptions(organizationId, product.productId),
-    enabled: tab === "options" || tab === "pricing" || tab === "materials",
+    enabled: tab === "general" || tab === "options" || tab === "pricing" || tab === "materials",
   });
   const pricing = useQuery({
     queryKey: keys.pricing(sessionScope, organizationId, product.productId),
@@ -582,7 +591,7 @@ const Builder = ({
     ),
     queryFn: () =>
       productApi.draftOptionPricing(organizationId, product.productId),
-    enabled: tab === "options",
+    enabled: tab === "general" || tab === "options",
     retry: false,
   });
   const formula = useQuery({
@@ -850,6 +859,7 @@ const Builder = ({
       {tab === "general" ? (
         <GeneralForm
           value={general.data}
+          conditionOptions={optionPricing.data?.options ?? []}
           disabled={!canEdit || busy}
           onSave={(value) => saveGeneral.mutate(value)}
         />
@@ -925,14 +935,17 @@ const Builder = ({
 
 const GeneralForm = ({
   value,
+  conditionOptions: productionOptions,
   disabled,
   onSave,
 }: {
   value: ProductDraftGeneralRead;
+  conditionOptions: ProductDraftOptionPricing["options"];
   disabled: boolean;
   onSave: (value: ProductDraftGeneralRead) => void;
 }) => {
   const [general, setGeneral] = useState(value.general);
+  const [pendingPreset, setPendingPreset] = useState<Exclude<ProductionUnitAuthoringMode, "conditional"> | null>(null);
   const change = <K extends keyof ProductDraftGeneral>(
     key: K,
     next: ProductDraftGeneral[K],
@@ -1047,17 +1060,57 @@ const GeneralForm = ({
         Production units
         <select
           disabled={disabled || general.workflowIntent !== "standard_production"}
-          value={general.productionUnitSpecification?.rules.map((rule) => rule.side).join(",") ?? "unconfigured"}
+          value={productionUnitAuthoringMode(general.productionUnitSpecification)}
           onChange={(event) => {
-            const mode = event.target.value;
-            change("productionUnitSpecification", mode === "unconfigured" ? null : mode === "front" ? { schemaVersion: 1, rules: [{ key: "front", side: "front" }] } : { schemaVersion: 1, rules: [{ key: "back", side: "back" }, { key: "front", side: "front" }] });
+            const mode = event.target.value as ProductionUnitAuthoringMode;
+            if (mode === "conditional") {
+              change("productionUnitSpecification", conditionalProductionUnitSpecification("always", "always", productionOptions));
+              return;
+            }
+            if (productionUnitAuthoringMode(general.productionUnitSpecification) === "conditional") {
+              setPendingPreset(mode);
+              return;
+            }
+            change("productionUnitSpecification", presetProductionUnitSpecification(mode));
           }}
         >
           <option value="unconfigured">Unconfigured (legacy)</option>
           <option value="front">One front unit</option>
-          <option value="back,front">Front and back units</option>
+          <option value="front-back">Front and back units</option>
+          <option value="conditional">Conditional production units</option>
         </select>
       </label>
+      {pendingPreset && (
+        <div className="wide v2-product-note" role="status">
+          <p>Changing this mode replaces the authored conditional production rules.</p>
+          <button type="button" disabled={disabled} onClick={() => { change("productionUnitSpecification", presetProductionUnitSpecification(pendingPreset)); setPendingPreset(null); }}>Replace conditional rules</button>
+          <button type="button" disabled={disabled} onClick={() => setPendingPreset(null)}>Keep conditional rules</button>
+        </div>
+      )}
+      {productionUnitAuthoringMode(general.productionUnitSpecification) === "conditional" && (
+        <fieldset className="wide v2-product-production-units">
+          <legend>Conditional production units</legend>
+          <p>Use Product Options and their stable choices. Production requirements remain version-owned and frozen when an Order is created.</p>
+          {general.productionUnitSpecification?.rules.map((rule) => {
+            const current = rule.when ? conditionToken(rule.when.selectionKey, String(rule.when.equals)) : "always";
+            return <label key={rule.key}>
+              {rule.side === "back" ? "Back" : "Front"}
+              <select
+                disabled={disabled}
+                value={current}
+                onChange={(event) => {
+                  const next = general.productionUnitSpecification?.rules.map((candidate) => candidate.key === rule.key ? { ...candidate, ...(event.target.value === "always" ? {} : (() => { const [selectionKey, equals] = event.target.value.split("\u0000"); return { when: { selectionKey, equals } }; })()), ...(event.target.value === "always" ? { when: undefined } : {}) } : candidate) ?? [];
+                  change("productionUnitSpecification", { schemaVersion: 1, rules: next });
+                }}
+              >
+                <option value="always">Always</option>
+                {conditionOptions(productionOptions).flatMap((option) => option.choices.map((choice) => <option key={`${option.selectionKey}:${choice.choiceValue}`} value={conditionToken(option.selectionKey, choice.choiceValue)}>When {option.label} = {choice.label}</option>))}
+              </select>
+              <small>{conditionLabel(rule.when, productionOptions)}</small>
+            </label>;
+          })}
+        </fieldset>
+      )}
     </form>
   );
 };

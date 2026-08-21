@@ -42,6 +42,25 @@ const general = (tree: unknown, fallback: ProductDraftGeneral): ProductDraftGene
   };
 };
 const generalFallback = (row: { product_name: string; category: string | null; description: string | null; measurement_mode: "dimensions_required" | "quantity_only"; workflow_intent: "standard_production" | "fulfillment_only" | "service_fee"; requires_proof_approval: boolean; requires_production_job: boolean }): ProductDraftGeneral => ({ displayName: row.product_name, category: row.category, description: row.description, storefrontVisible: false, measurementMode: row.measurement_mode, workflowIntent: row.workflow_intent, requiresProofApproval: row.requires_proof_approval, requiresProductionJob: row.requires_production_job, productionUnitSpecification:null });
+export const validateProductionUnitConditions = (specification: ProductDraftGeneral["productionUnitSpecification"], tree: Record<string, unknown>) => {
+  if (!specification) return;
+  const options = new Map<string, ReadonlySet<string | number | boolean>>();
+  for (const source of Object.values(record(tree.nodes))) {
+    const node = record(source), input = record(node.input);
+    if (node.kind !== "question") continue;
+    const selectionKey = typeof input.selectionKey === "string" ? input.selectionKey : typeof node.key === "string" ? node.key : typeof node.id === "string" ? node.id : "";
+    const choices = new Set((Array.isArray(node.choices) ? node.choices : []).flatMap((candidate) => {
+      const value = record(candidate).value;
+      return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? [value] : [];
+    }));
+    if (selectionKey && choices.size) options.set(selectionKey, choices);
+  }
+  for (const rule of specification.rules) {
+    if (!rule.when) continue;
+    const choices = options.get(rule.when.selectionKey);
+    if (!choices || !choices.has(rule.when.equals)) throw new V2ApplicationError("VALIDATION_ERROR", "A production-unit condition must reference a choice on this Product Draft.");
+  }
+};
 
 type GeneralRow = { product_id: string; product_name: string; category: string | null; description: string | null; measurement_mode: "dimensions_required" | "quantity_only"; workflow_intent: "standard_production" | "fulfillment_only" | "service_fee"; requires_proof_approval: boolean; requires_production_job: boolean; draft_id: string; draft_updated_at: Date; draft_tree_json: unknown };
 export class PostgresProductDraftGeneralReader {
@@ -161,6 +180,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     if (!row || row.status !== "DRAFT") throw new V2ApplicationError("CONFLICT", "Only the current Draft can be edited.");
     if (row.draft_updated_at.toISOString() !== new Date(input.expectedDraftUpdatedAt).toISOString()) throw new V2ApplicationError("STALE_STATE", "This Draft changed elsewhere. Refresh and try again.");
     const tree = structuredClone(object(row.draft_tree_json));
+    validateProductionUnitConditions(input.general.productionUnitSpecification, tree);
     const meta = structuredClone(object(tree.meta));
     const { productionUnitSpecification, ...general } = input.general;
     tree.meta = { ...meta, general, productionUnitSpecification };
