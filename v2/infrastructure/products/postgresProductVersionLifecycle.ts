@@ -28,6 +28,36 @@ const lifecycle = (rows: readonly VersionRow[], activeId: string | null): Produc
 };
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 const record = object;
+/**
+ * A newly-created Product starts as an inactive identity with a structurally
+ * valid Draft tree.  The runtime graph validator requires at least one root,
+ * even before the merchant has authored sellable options.
+ */
+export const createInitialProductDraftTree = (displayName: string) => ({
+  schemaVersion: 2 as const,
+  status: "DRAFT" as const,
+  rootNodeIds: ["product_configuration"],
+  nodes: {
+    product_configuration: {
+      id: "product_configuration",
+      kind: "group" as const,
+      label: "Product configuration",
+    },
+  },
+  meta: {
+    general: {
+      displayName,
+      category: null,
+      description: null,
+      storefrontVisible: false,
+      measurementMode: "dimensions_required" as const,
+      workflowIntent: "standard_production" as const,
+      requiresProofApproval: false,
+      requiresProductionJob: false,
+    },
+    pricingV2: { base: {} },
+  },
+});
 const general = (tree: unknown, fallback: ProductDraftGeneral): ProductDraftGeneral => {
   const candidate = object(object(tree).meta).general;
   const value = object(candidate);
@@ -175,7 +205,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     const productId = randomUUID(), draftId = randomUUID(), now = new Date();
     // A new identity begins inactive and without an Active pointer.  Existing
     // publication validation is the only operation that can activate it.
-    const tree = { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { general: { displayName: input.displayName, category: null, description: null, storefrontVisible: false, measurementMode: "dimensions_required", workflowIntent: "standard_production", requiresProofApproval: false, requiresProductionJob: false, productionUnitSpecification: null }, pricingV2: { base: {} } } };
+    const tree = createInitialProductDraftTree(input.displayName);
     const valid = validateOptionTreeV2(tree as any), complete = optionTreeV2Schema.safeParse(tree);
     if (!valid.ok || !complete.success) throw new V2ApplicationError("CONFLICT", "The initial Product Draft could not be initialized.");
     await this.client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,workflow_intent,requires_proof_approval,requires_production_job,created_at,updated_at) VALUES($1,$2,$3,$3,FALSE,'dimensions_required','standard_production',FALSE,FALSE,$4,$4)", [productId, input.organizationId, input.displayName, now]);
