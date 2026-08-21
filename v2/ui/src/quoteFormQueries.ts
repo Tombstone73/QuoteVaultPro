@@ -42,7 +42,10 @@ export const customerLookupQueryOptions = (
 ) => ({
   queryKey: customerLookupKeys.search(sessionScope, organizationId, query),
   queryFn: () => customerApi.list(organizationId, query.trim()),
-  enabled: Boolean(enabled && sessionScope && organizationId && query.trim()),
+  // The CRM endpoint is bounded even with an empty term.  Sales can therefore
+  // offer a useful browse list without treating that first page as the tenant's
+  // complete Customer catalog; typed terms always remain server-side searches.
+  enabled: Boolean(enabled && sessionScope && organizationId),
 });
 
 export const quoteFormQueryOptions = {
