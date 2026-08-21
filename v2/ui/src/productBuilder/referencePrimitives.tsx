@@ -1,15 +1,17 @@
-import React, { type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
+import React, { useState, type ReactNode } from "react";
 
 /**
- * Direct presentation port of reference/lovable-ui/src/components/app/product-editor/fields.tsx.
- * Native controls are the sole shell adaptation: V2 deliberately has no shadcn dependency.
+ * Presentation port of reference/lovable-ui/src/components/app/product-editor/fields.tsx
+ * plus the page-local Section/Sub/Disclosure primitives from its product-builder
+ * route. Native controls are the sole shell adaptation: V2 has no shadcn runtime.
  */
 export function Cell({ label, hint, children, className }: Readonly<{ label?: string; hint?: ReactNode; children: ReactNode; className?: string }>) {
-  return <label className={`grid min-w-0 gap-1.5 ${className ?? ""}`}>
+  return <div className={`grid min-w-0 gap-1.5 ${className ?? ""}`}>
     {label && <span className="text-[12px]">{label}</span>}
     {children}
     {hint && <p className="text-[11px] leading-snug text-muted-foreground">{hint}</p>}
-  </label>;
+  </div>;
 }
 
 export function Picker<T extends string>({ value, onChange, items, className, disabled }: Readonly<{ value: T; onChange: (value: T) => void; items: readonly T[]; className?: string; disabled?: boolean }>) {
@@ -18,27 +20,76 @@ export function Picker<T extends string>({ value, onChange, items, className, di
   </select>;
 }
 
-export function Toggle({ label, hint, checked, onChange, disabled }: Readonly<{ label: string; hint?: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }>) {
-  return <label className="flex min-w-0 items-start gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-2">
-    <input className="mt-0.5" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-    <span className="min-w-0"><b className="block text-[12px]">{label}</b>{hint && <small className="block text-[11px] leading-snug text-muted-foreground">{hint}</small>}</span>
+/** Compact segmented switch (Basic | Advanced, Quantity Tiers | Size Tiers, …). */
+export function Segmented<T extends string>({ value, onChange, items, className, disabled }: Readonly<{ value: T; onChange: (value: T) => void; items: readonly { id: T; label: string }[]; className?: string; disabled?: boolean }>) {
+  return <div className={`inline-flex items-center gap-0.5 rounded-md border border-border bg-surface-2 p-0.5 ${className ?? ""}`}>
+    {items.map((item) => <button key={item.id} type="button" disabled={disabled} onClick={() => onChange(item.id)} aria-pressed={value === item.id} className={`rounded px-2 py-1 text-[12px] font-medium transition-colors ${value === item.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+      {item.label}
+    </button>)}
+  </div>;
+}
+
+export function Toggle({ label, hint, checked, onChange, disabled, disabledReason }: Readonly<{ label: string; hint?: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; disabledReason?: string }>) {
+  return <label className={`flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2${disabled ? " opacity-60" : ""}`}>
+    <span className="min-w-0">
+      <span className="block text-[13px] font-medium">{label}</span>
+      {(disabled && disabledReason ? disabledReason : hint) && <span className="block text-[11px] leading-snug text-muted-foreground">{disabled && disabledReason ? disabledReason : hint}</span>}
+    </span>
+    <SwitchLike checked={checked} onChange={onChange} disabled={disabled} label={label} />
   </label>;
 }
 
+function SwitchLike({ checked, onChange, disabled, label }: Readonly<{ checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; label: string }>) {
+  return <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)} className={`relative h-5 w-9 shrink-0 rounded-full border border-border transition-colors ${checked ? "bg-primary" : "bg-surface-2"}${disabled ? " cursor-not-allowed" : ""}`}>
+    <span className={`absolute top-0.5 size-3.5 rounded-full bg-background transition-all ${checked ? "left-[18px]" : "left-0.5"}`} />
+  </button>;
+}
+
 export function Chip({ children, tone = "neutral" }: Readonly<{ children: ReactNode; tone?: "neutral" | "accent" | "ok" | "warn" | "late" }>) {
-  return <span className={`v2-ref-chip ${tone}`}>{children}</span>;
+  const tones = {
+    neutral: "border-border text-muted-foreground",
+    accent: "border-primary/50 bg-primary/15 text-primary",
+    ok: "border-ok/50 bg-ok/15 text-ok",
+    warn: "border-warn/50 bg-warn/15 text-warn",
+    late: "border-late/50 bg-late/15 text-late",
+  } as const;
+  return <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tones[tone]}`}>{children}</span>;
 }
 
 export function Section({ id, title, hint, open, onToggle, register, children }: Readonly<{ id: string; title: string; hint?: string; open: boolean; onToggle: () => void; register: (element: HTMLElement | null) => void; children: ReactNode }>) {
   return <section ref={register} data-section={id} id={`section-${id}`} className="panel scroll-mt-14 overflow-hidden">
     <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border bg-surface-2/50 px-3 py-2">
-      <div className="min-w-0"><h2 className="truncate text-[13px] font-bold uppercase tracking-wide">{title}</h2>{hint && <p className="truncate text-[11px] text-muted-foreground">{hint}</p>}</div>
-      <button type="button" onClick={onToggle} aria-expanded={open} className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">{open ? "Collapse" : "Expand"}<span aria-hidden>{open ? "⌄" : "›"}</span></button>
+      <div className="min-w-0">
+        <h2 className="truncate text-[13px] font-bold uppercase tracking-wide">{title}</h2>
+        {hint && <p className="truncate text-[11px] text-muted-foreground">{hint}</p>}
+      </div>
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">
+        {open ? "Collapse" : "Expand"}
+        <ChevronDown className={`size-3.5 transition-transform${open ? "" : " -rotate-90"}`} />
+      </button>
     </header>
     {open && <div className="p-3">{children}</div>}
   </section>;
 }
 
 export function Sub({ title, hint, children }: Readonly<{ title: string; hint?: string; children: ReactNode }>) {
-  return <div><div className="mb-2 flex flex-wrap items-baseline gap-2 border-b border-border pb-1"><h3 className="text-[12px] font-bold uppercase tracking-wide text-muted-foreground">{title}</h3>{hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}</div>{children}</div>;
+  return <div>
+    <div className="mb-2 flex flex-wrap items-baseline gap-2 border-b border-border pb-1">
+      <h3 className="text-[12px] font-bold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+    </div>
+    {children}
+  </div>;
+}
+
+export function Disclosure({ label, icon, children }: Readonly<{ label: string; icon?: ReactNode; children: ReactNode }>) {
+  const [open, setOpen] = useState(false);
+  return <div className="mt-3 rounded-md border border-border">
+    <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[12px] font-medium text-muted-foreground hover:text-foreground">
+      <ChevronDown className={`size-3.5 transition-transform${open ? "" : " -rotate-90"}`} />
+      {icon}
+      {label}
+    </button>
+    {open && <div className="border-t border-border p-2.5">{children}</div>}
+  </div>;
 }

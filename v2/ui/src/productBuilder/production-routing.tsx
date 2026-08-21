@@ -32,9 +32,6 @@ export function ProductionUnits({ specification, options, selectionKeys = {}, di
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <Cell label="Unit name"><input className="h-8 text-[13px]" disabled={disabled} value={unit.key} onChange={(event) => update(index, (current) => ({ ...current, key: event.target.value }))} /></Cell>
-            <Cell label="Side"><select disabled={disabled} value={unit.side ?? ""} onChange={(event) => update(index, (current) => ({ ...current, side: event.target.value ? event.target.value as "front" | "back" : undefined }))}><option value="">Not specified</option><option value="front">Front</option><option value="back">Back</option></select></Cell>
-            <Cell label="Source page"><input className="h-8 text-[13px]" disabled={disabled} type="number" min="1" value={unit.sourcePageIndex === undefined ? "" : unit.sourcePageIndex + 1} onChange={(event) => update(index, (current) => ({ ...current, sourcePageIndex: event.target.value === "" ? undefined : Number(event.target.value) - 1 }))} /></Cell>
-            <Cell label="Layer"><input className="h-8 text-[13px]" disabled={disabled} value={unit.layerKey ?? ""} onChange={(event) => update(index, (current) => ({ ...current, layerKey: event.target.value || undefined }))} /></Cell>
             <Cell label="Required when"><select disabled={disabled} value={unit.when?.selectionKey ?? ""} onChange={(event) => {
               const selected = optionFor(event.target.value);
               update(index, (current) => ({ ...current, when: selected ? { selectionKey: selectionKeys[selected.optionId] ?? selected.optionId, equals: selected.choices[0]?.choiceValue ?? "" } : undefined }));

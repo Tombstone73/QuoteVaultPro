@@ -25,6 +25,7 @@ import { BasicsSection } from "./productBuilder/basics";
 import { RuleCards, projectCanonicalConditions } from "./productBuilder/ruleCards";
 import { ReviewSummary } from "./productBuilder/review";
 import type { ProductBuilderSection } from "./productBuilder/lovableRoot";
+import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
 
 /*
  * This file is a direct production port of reference/lovable-ui's
@@ -121,9 +122,9 @@ export const ProductBuilderReference = ({
     setDraft((current) => update(clone(current)));
     setDirty((current) => new Set([...current, section]));
   }, []);
-  const runSave = async () => {
-    if (!canEdit || saving) return;
-    if (!draft.general.displayName.trim()) { setSaveError("Product name is required before saving."); sectionJumpRef.current?.("basics"); return; }
+  const runSave = async (): Promise<boolean> => {
+    if (!canEdit || saving) return false;
+    if (!draft.general.displayName.trim()) { setSaveError("Product name is required before saving."); sectionJumpRef.current?.("basics"); return false; }
     setSaving(true); setSaveError(null);
     const saved: DirtySection[] = [];
     try {
@@ -151,10 +152,12 @@ export const ProductBuilderReference = ({
         await Promise.all([generalRead.refetch(), optionsRead.refetch(), pricingRead.refetch(), formulaRead.refetch(), matrixRead.refetch(), impactsRead.refetch(), recipeRead.refetch(), routingRead.refetch()]);
         void client.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "products"] });
       }
+      return true;
     } catch (error) {
       const detail = error as { code?: string; message?: string };
       const prefix = detail.code === "STALE_STATE" ? "This Draft changed elsewhere. Your local edits were kept; refresh and reconcile before saving again." : "Save stopped after " + (saved.length ? `${saved.join(", ")} saved. ` : "") ;
       setSaveError(prefix + (detail.message ?? "Unable to save this Draft."));
+      return false;
     } finally { setSaving(false); }
   };
 
@@ -197,6 +200,12 @@ export const ProductBuilderReference = ({
     return [{ section: "Basics", label: "Product name", from: product.displayName, to: generalRead.data.general.displayName }];
   }, [generalRead.data, product]);
   const reviewFindings = useMemo(() => issueCount ? [{ severity: "error" as const, message: "Product name is required before the Draft can be saved or published." }] : [], [issueCount]);
+  const canonicalConditions = useMemo(() => projectCanonicalConditions({
+    options: draft.options,
+    recipe: draft.recipe,
+    production: draft.general.productionUnitSpecification,
+    selectionKeys: optionSelectionKeys,
+  }), [draft.general.productionUnitSpecification, draft.options, draft.recipe, optionSelectionKeys]);
   const runPreview = useCallback(async () => {
     if (!productId || previewLoading) return;
     setPreviewLoading(true);
@@ -219,17 +228,22 @@ export const ProductBuilderReference = ({
   if (productId && !sourceReady) return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
   return <LovableProductBuilderRoot
     title={draft.general.displayName || "Untitled product"}
-    lifecycle={<><span className={`v2-ref-chip ${product?.versions.active ? "ok" : "neutral"}`}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</span>{newProduct && <span className="text-[11px] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <span className="v2-ref-chip warn">Unsaved</span>}</>}
+    lifecycle={<><Chip tone={product?.versions.active ? "ok" : "neutral"}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</Chip>{newProduct && <span className="text-[11px] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <Chip tone="warn">Unsaved</Chip>}</>}
     picker={<select aria-label="Choose Product" value={productId ?? ""} onChange={(event) => { if (dirty.size) { setPendingProduct(event.target.value); return; } openProduct(event.target.value); }} disabled={catalog.isLoading}><option value="">{newProduct ? "New Product" : "Choose Product"}</option>{catalog.data?.items.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select>}
-    onBack={back} onSave={() => void runSave()} saving={saving} onPublish={publish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} findings={{ errors: issueCount, warnings: 0 }}
+    onSave={() => void runSave()} saving={saving} onPublish={publish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} findings={{ errors: issueCount, warnings: 0 }}
     sectionJumpRef={sectionJumpRef}
     rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={setPreviewInputs} result={preview} loading={previewLoading} error={previewError} onPreview={() => void runPreview()} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={issueCount ? [{ severity: "error", code: "PRODUCT_NAME_REQUIRED", message: "Product name is required.", section: "basics" }] : []} />}
-    dialog={pendingProduct ? <div className="v2-ref-dialog-backdrop" role="dialog" aria-modal="true" aria-label="Unsaved changes"><div className="v2-ref-dialog"><h2>Discard unsaved changes?</h2><p>{draft.general.displayName || "This Product"} has unsaved Draft changes. Switching Products now discards them.</p><div><button type="button" onClick={() => setPendingProduct(null)}>Keep editing</button><button type="button" onClick={() => { const selected = pendingProduct; setPendingProduct(null); void runSave().then(() => openProduct(selected)); }}>Save and switch</button><button type="button" className="button" onClick={() => { const selected = pendingProduct; setPendingProduct(null); openProduct(selected); }}>Discard and switch</button></div></div></div> : undefined}
+    pendingSwitch={pendingProduct ? {
+      productName: draft.general.displayName,
+      onKeepEditing: () => setPendingProduct(null),
+      onSaveAndSwitch: () => { const selected = pendingProduct; void runSave().then((saved) => { if (saved) { setPendingProduct(null); openProduct(selected); } }); },
+      onDiscardAndSwitch: () => { const selected = pendingProduct; setPendingProduct(null); openProduct(selected); },
+    } : undefined}
   >{{
     basics: <BasicsSection general={draft.general} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
-    options: <div className="space-y-3"><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><RuleCards conditions={projectCanonicalConditions({ options: draft.options, recipe: draft.recipe, production: draft.general.productionUnitSpecification, selectionKeys: optionSelectionKeys })} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></div>,
-    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} disabled={!canEdit || saving} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, tierBasis: pricing.tierBasis, tiers: pricing.tiers } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}{draft.matrix && <MatrixPricing matrix={draft.matrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}<OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></div>,
-    materials: <RecipeEditor components={draft.recipe} materials={materials.data?.items ?? []} options={draft.options} disabled={!canEdit || saving} onChange={(recipe) => patch("recipe", (value) => ({ ...value, recipe }))} />,
+    options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><Disclosure label={`Option visibility conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
+    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} disabled={!canEdit || saving} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, tierBasis: pricing.tierBasis, tiers: pricing.tiers } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{draft.matrix && <MatrixPricing matrix={draft.matrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
+    materials: <div className="space-y-4"><Sub title="Recipe"><RecipeEditor components={draft.recipe} materials={materials.data?.items ?? []} options={draft.options} disabled={!canEdit || saving} onChange={(recipe) => patch("recipe", (value) => ({ ...value, recipe }))} /></Sub></div>,
     production: <ProductionUnits specification={draft.general.productionUnitSpecification} options={draft.options} selectionKeys={optionSelectionKeys} disabled={!canEdit || saving} onChange={(productionUnitSpecification) => patch("general", (value) => ({ ...value, general: { ...value.general, productionUnitSpecification } }))} />,
     routing: <RoutingSection routing={draft.routing} templates={routeTemplates} disabled={!canEdit || saving} onChange={(routing) => patch("routing", (value) => ({ ...value, routing }))} />,
     review: <ReviewSummary rows={[
