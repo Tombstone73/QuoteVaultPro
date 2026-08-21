@@ -31,6 +31,9 @@ export type CreateProductDraftInput = Readonly<{
   businessRequestId: string;
   expectedActiveVersionUpdatedAt: string;
 }>;
+/** Creates a Product identity only together with its first editable Draft. */
+export type CreateProductWithInitialDraftInput = Readonly<{ displayName: string; businessRequestId: string }>;
+export type CreatedProductWithInitialDraft = Readonly<{ productId: string; draftVersionId: string; draftUpdatedAt: string }>;
 export type ProductMeasurementMode = "dimensions_required" | "quantity_only";
 export type ProductWorkflowIntent = "standard_production" | "fulfillment_only" | "service_fee";
 export type ProductDraftGeneral = Readonly<{
@@ -107,6 +110,7 @@ type DraftCreateReservation = Readonly<{
 export interface ProductVersionTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string; principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string }>): Promise<DraftCreateReservation>;
   createDraftFromActive(input: Readonly<{ organizationId: string; productId: string; expectedActiveVersionUpdatedAt: string; staffActorUserId?: string }>): Promise<Readonly<{ draftId: string; lifecycle: ProductVersionLifecycle }>>;
+  createProductWithInitialDraft?(input: Readonly<{ organizationId: string; displayName: string; staffActorUserId?: string }>): Promise<CreatedProductWithInitialDraft>;
   succeed(organizationId: string, requestId: string, draftId: string, result: unknown): Promise<void>;
   attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
   audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
@@ -126,6 +130,7 @@ export interface ProductVersionTransaction {
 export interface ProductVersionTransactionRunner { transaction<T>(action: (tx: ProductVersionTransaction) => Promise<T>): Promise<T>; }
 
 const operation = "product.version.createDraft.v1";
+const createProductOperation = "product.createWithDraft.v1";
 const updateGeneralOperation = "product.draft.general.update.v1";
 const updateOptionsOperation = "product.draft.options.update.v1";
 const updatePricingOperation = "product.draft.pricing.update.v1";
@@ -213,6 +218,27 @@ export class ProductVersionLifecycleApplicationService {
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", error instanceof Error ? error.message : "Product Draft could not be created."));
     }
+  }
+
+  async createProductWithInitialDraft(context: OperationContext, input: CreateProductWithInitialDraftInput): Promise<ApplicationResult<CreatedProductWithInitialDraft>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      const displayName = input.displayName.trim();
+      if (!displayName || displayName.length > 160) throw new V2ApplicationError("VALIDATION_ERROR", "Product name is invalid.");
+      if (!this.authority.decide(context.principal, { capability: "product.edit", resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to create a Product.");
+      const value = await this.runner.transaction(async (tx) => {
+        if (!tx.createProductWithInitialDraft) throw new V2ApplicationError("CONFLICT", "Product creation is unavailable.");
+        const request = await tx.reserve({ organizationId: context.organizationId, operation: createProductOperation, businessRequestId: input.businessRequestId, payloadFingerprint: createHash("sha256").update(JSON.stringify({ displayName })).digest("hex"), ...actor(context) });
+        if (request.kind === "replay") return request.request.resultJson as CreatedProductWithInitialDraft;
+        const created = await tx.createProductWithInitialDraft({ organizationId: context.organizationId, displayName, staffActorUserId: staffActorId(context.principal) });
+        await tx.attribute({ organizationId: context.organizationId, requestId: request.request.id, operation: createProductOperation, resourceId: created.productId, ...actor(context) });
+        await tx.audit({ organizationId: context.organizationId, requestId: request.request.id, operation: createProductOperation, resourceId: created.productId, ...actor(context) });
+        await tx.succeed(context.organizationId, request.request.id, created.productId, created);
+        return created;
+      });
+      return success(value);
+    } catch (error) { return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", error instanceof Error ? error.message : "Product could not be created.")); }
   }
 
   async updateDraftGeneral(context: OperationContext, input: UpdateProductDraftGeneralInput): Promise<ApplicationResult<ProductDraftGeneralRead>> {

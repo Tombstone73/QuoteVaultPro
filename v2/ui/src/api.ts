@@ -148,6 +148,7 @@ export type PublishedProductVersion=Readonly<{productId:string;productName:strin
 export type ProductMaterial=Readonly<{materialId:string;name:string;sku:string|null;unit:ProductRecipeComponent["unit"]}>;
 export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { productUpdatedAt:string; description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;activeDefinition?:ProductActiveDefinition;versions:ProductVersionLifecycle }>;
 export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
+export type CreatedProductWithInitialDraft = Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string}>;
 export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentAvailability = Readonly<{
   orderId: string;
@@ -954,6 +955,7 @@ export const productApi = {
   get: (organizationId: string, productId: string) => request<ProductWorkspaceDetail>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,
   ),
+  createProduct: (organizationId:string,businessRequestId:string,displayName:string) => request<CreatedProductWithInitialDraft>(`/v2/organizations/${encodeURIComponent(organizationId)}/products`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""}, body:JSON.stringify({businessRequestId,displayName}) }),
   createDraft: (organizationId:string,productId:string,businessRequestId:string,expectedActiveVersionUpdatedAt:string) => request<ProductVersionLifecycle>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/drafts`,
     {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,expectedActiveVersionUpdatedAt})},

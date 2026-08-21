@@ -112,6 +112,8 @@ export const ProductWorkspace = ({
 }>) => {
   const [query, setQuery] = useState(""),
     [page, setPage] = useState(1),
+    [newProductName, setNewProductName] = useState(""),
+    [newProductOpen, setNewProductOpen] = useState(false),
     [editing, setEditing] = useState(
       () =>
         typeof window !== "undefined" &&
@@ -140,6 +142,15 @@ export const ProductWorkspace = ({
       client.invalidateQueries({
         queryKey: keys.detail(sessionScope, organizationId, productId),
       }),
+  });
+  const createProduct = useMutation({
+    mutationFn: (displayName: string) => productApi.createProduct(organizationId, newBusinessRequestId(), displayName),
+    onSuccess: (created) => {
+      void client.invalidateQueries({ queryKey: keys.list(sessionScope, organizationId, query, page) });
+      setNewProductOpen(false);
+      setNewProductName("");
+      openProduct(created.productId);
+    },
   });
   const publishDraft = useMutation({
     mutationFn: (product: ProductWorkspaceDetail) => {
@@ -218,6 +229,7 @@ export const ProductWorkspace = ({
               : "Products"}
           </p>
         </div>
+        {canEdit && <button type="button" className="button" onClick={() => setNewProductOpen(true)}>New Product</button>}
       </header>
       <div className="v2-products-tools">
         <label>
@@ -298,6 +310,7 @@ export const ProductWorkspace = ({
           </button>
         </nav>
       )}
+      {newProductOpen && <div className="v2-quote-send-modal" role="dialog" aria-modal="true" aria-labelledby="new-product-title"><div><header><div><h2 id="new-product-title">New Product</h2><p>Creates an inactive Product identity with one editable Draft ProductVersion.</p></div><button type="button" aria-label="Close" onClick={() => setNewProductOpen(false)}>×</button></header><label>Product name<input autoFocus value={newProductName} onChange={(event) => setNewProductName(event.target.value)} /></label>{createProduct.error && <p className="v2-product-version-message">{(createProduct.error as { message?: string }).message ?? "Product could not be created."}</p>}<footer><button type="button" onClick={() => setNewProductOpen(false)}>Cancel</button><button type="button" className="button" disabled={!newProductName.trim() || createProduct.isPending} onClick={() => createProduct.mutate(newProductName)}>{createProduct.isPending ? "Creating…" : "Create Draft"}</button></footer></div></div>}
     </section>
   );
 };
@@ -583,9 +596,6 @@ const Builder = ({
     void client.invalidateQueries({
       queryKey: keys.detail(sessionScope, organizationId, product.productId),
     });
-  const [tab, setTab] = useState<"general" | "options" | "pricing" | "materials" | "routing" | "review">(
-    "general",
-  );
   const general = useQuery({
     queryKey: keys.general(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftGeneral(organizationId, product.productId),
@@ -593,12 +603,12 @@ const Builder = ({
   const options = useQuery({
     queryKey: keys.options(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftOptions(organizationId, product.productId),
-    enabled: tab === "general" || tab === "options" || tab === "pricing" || tab === "materials" || tab === "review",
+    enabled: true,
   });
   const pricing = useQuery({
     queryKey: keys.pricing(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftPricing(organizationId, product.productId),
-    enabled: tab === "pricing" || tab === "review",
+    enabled: true,
   });
   const matrix = useQuery({
     queryKey: [
@@ -607,7 +617,7 @@ const Builder = ({
     ],
     queryFn: () =>
       productApi.draftPricingMatrix(organizationId, product.productId),
-    enabled: tab === "pricing" || tab === "review",
+    enabled: true,
   });
   const optionPricing = useQuery({
     queryKey: keys.optionPricing(
@@ -617,31 +627,31 @@ const Builder = ({
     ),
     queryFn: () =>
       productApi.draftOptionPricing(organizationId, product.productId),
-    enabled: tab === "general" || tab === "options" || tab === "review",
+    enabled: true,
     retry: false,
   });
   const formula = useQuery({
     queryKey: keys.formula(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftFormula(organizationId, product.productId),
-    enabled: tab === "pricing" || tab === "review",
+    enabled: true,
     retry: false,
   });
   const recipe = useQuery({
     queryKey: keys.recipe(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftRecipe(organizationId, product.productId),
-    enabled: tab === "materials" || tab === "review",
+    enabled: true,
     retry: false,
   });
   const routing = useQuery({
     queryKey: keys.routing(sessionScope, organizationId, product.productId),
     queryFn: () => productApi.draftRouting(organizationId, product.productId),
-    enabled: tab === "routing" || tab === "review",
+    enabled: true,
     retry: false,
   });
   const routeTemplates = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "routing", "workspace"],
     queryFn: () => routingApi.workspace(organizationId),
-    enabled: tab === "routing" || tab === "review",
+    enabled: true,
     retry: false,
   });
   const materials = useQuery({
@@ -650,7 +660,7 @@ const Builder = ({
       "materials",
     ],
     queryFn: () => productApi.materials(organizationId, product.productId),
-    enabled: tab === "materials" || tab === "review",
+    enabled: true,
   });
   const saveGeneral = useMutation({
     mutationFn: (value: ProductDraftGeneralRead) =>
@@ -834,147 +844,59 @@ const Builder = ({
     saveMatrix.error ??
     saveFormula.error ??
     saveRecipe.error ?? saveRouting.error) as { message?: string } | null;
-  const pricingForm = formula.data?.editable
-    ? "product-draft-formula"
-    : tab === "pricing"
-      ? "product-draft-pricing"
-      : tab === "materials"
-        ? "product-draft-recipe"
-        : tab === "routing"
-          ? "product-draft-routing"
-        : undefined;
   return (
     <section className="v2-products v2-product-builder">
-      <header>
+      <header className="v2-product-builder-header">
         <button className="v2-products-back" onClick={back}>
           ← Product
         </button>
         <div>
           <h1>Product Builder</h1>
-          <p>{product.displayName} · Draft</p>
+          <p>{product.displayName} · Draft ProductVersion</p>
         </div>
-        <button
-          type="submit"
-          form={
-            tab === "general"
-              ? "product-draft-general"
-              : tab === "options"
-                ? "product-draft-options"
-                : pricingForm
-          }
-          disabled={!canEdit || busy || tab === "review"}
-        >
-          {busy ? "Saving…" : "Save Draft"}
-        </button>
+        <a className="v2-product-builder-review-link" href="#review">Review &amp; Publish</a>
       </header>
-      <nav aria-label="Product Builder steps">
-        <button
-          className={tab === "general" ? "active" : ""}
-          onClick={() => setTab("general")}
-        >
-          1 General &amp; Production
-        </button>
-        <button
-          className={tab === "options" ? "active" : ""}
-          onClick={() => setTab("options")}
-        >
-          2 Options
-        </button>
-        <button
-          className={tab === "pricing" ? "active" : ""}
-          onClick={() => setTab("pricing")}
-        >
-          3 Pricing
-        </button>
-        <button
-          className={tab === "materials" ? "active" : ""}
-          onClick={() => setTab("materials")}
-        >
-          4 Materials
-        </button>
-        <button className={tab === "routing" ? "active" : ""} onClick={() => setTab("routing")}>5 Routing</button>
-        <button className={tab === "review" ? "active" : ""} onClick={() => setTab("review")}>6 Review &amp; Publish</button>
+      <nav className="v2-product-builder-jump-nav" aria-label="Product Builder sections">
+        <a href="#basics">Basics</a><a href="#options">Options</a><a href="#pricing">Pricing</a><a href="#materials">Materials</a><a href="#production">Production</a><a href="#routing">Routing</a><a href="#review">Review</a>
       </nav>
       {error && (
         <p className="v2-product-version-message">
           {error.message ?? "Unable to save Draft."}
         </p>
       )}
-      {tab === "general" ? (
-        <GeneralForm
+      <div className="v2-product-builder-layout">
+        <main className="v2-product-builder-main">
+          <section id="basics" className="v2-product-builder-section"><GeneralForm
           value={general.data}
           conditionOptions={optionPricing.data?.options ?? []}
           disabled={!canEdit || busy}
           onSave={(value) => saveGeneral.mutate(value)}
-        />
-      ) : tab === "options" ? (
-        options.data ? (
-          <>
-            <OptionsForm
+          /></section>
+          <section id="options" className="v2-product-builder-section">{options.data ? <><OptionsForm
               value={options.data}
               disabled={!canEdit || busy}
               onSave={(value) => saveOptions.mutate(value)}
-            />
-            {optionPricing.data && (
-              <OptionPricingForm
+            />{optionPricing.data && <OptionPricingForm
                 value={optionPricing.data}
                 disabled={!canEdit || busy}
                 onSave={saveOptionPricing.mutate}
-              />
-            )}
-          </>
-        ) : (
-          <p className="v2-proof-empty">Loading options…</p>
-        )
-      ) : tab === "materials" ? (
-        recipe.data ? (
-          <RecipeForm
+              />}</> : <p className="v2-proof-empty">Loading options…</p>}</section>
+          <section id="pricing" className="v2-product-builder-section">{formula.data ? <FormulaForm
+              value={formula.data} disabled={!canEdit || busy} onSave={(value) => saveFormula.mutate(value)} organizationId={organizationId} productId={product.productId}
+            /> : matrix.data ? <MatrixForm value={matrix.data} measurementMode={pricing.data?.measurementMode ?? "quantity_only"} disabled={!canEdit || busy} onSave={(value) => saveMatrix.mutate(value)} organizationId={organizationId} productId={product.productId} /> : pricing.data ? <PricingForm value={pricing.data} options={options.data?.options ?? []} disabled={!canEdit || busy} onSave={(value) => savePricing.mutate(value)} organizationId={organizationId} productId={product.productId} /> : <p className="v2-proof-empty">Loading pricing…</p>}</section>
+          <section id="materials" className="v2-product-builder-section">{recipe.data ? <RecipeForm
             value={recipe.data}
             materials={materials.data?.items ?? []}
             options={options.data?.options ?? []}
             disabled={!canEdit || busy}
             onSave={(value) => saveRecipe.mutate(value)}
-          />
-        ) : recipe.isError ? (
-          <p className="v2-proof-empty">
-            A recipe is not available for this Draft.
-          </p>
-        ) : (
-          <p className="v2-proof-empty">Loading materialsâ€¦</p>
-        )
-      ) : tab === "routing" ? (
-        routing.data ? <RoutingPolicyForm value={routing.data} templates={routeTemplates.data?.templates ?? []} disabled={!canEdit || busy} onSave={(value) => saveRouting.mutate(value)} /> : <p className="v2-proof-empty">Loading Routing settings…</p>
-      ) : tab === "review" ? (
-        <DraftReview general={general.data} options={options.data} pricing={pricing.data} matrix={matrix.data} formula={formula.data} optionPricing={optionPricing.data} recipe={recipe.data} routing={routing.data} canPublish={canEdit} publishing={publishing} publish={publish} />
-      ) : formula.data ? (
-        <FormulaForm
-          value={formula.data}
-          disabled={!canEdit || busy}
-          onSave={(value) => saveFormula.mutate(value)}
-          organizationId={organizationId}
-          productId={product.productId}
-        />
-      ) : matrix.data ? (
-        <MatrixForm
-          value={matrix.data}
-          measurementMode={pricing.data?.measurementMode ?? "quantity_only"}
-          disabled={!canEdit || busy}
-          onSave={(value) => saveMatrix.mutate(value)}
-          organizationId={organizationId}
-          productId={product.productId}
-        />
-      ) : pricing.data ? (
-        <PricingForm
-          value={pricing.data}
-          options={options.data?.options ?? []}
-          disabled={!canEdit || busy}
-          onSave={(value) => savePricing.mutate(value)}
-          organizationId={organizationId}
-          productId={product.productId}
-        />
-      ) : (
-        <p className="v2-proof-empty">Loading pricing…</p>
-      )}
+          /> : recipe.isError ? <p className="v2-proof-empty">A recipe is not available for this Draft.</p> : <p className="v2-proof-empty">Loading materials…</p>}</section>
+          <section id="production" className="v2-product-builder-section"><h2>Production requirements</h2><p className="v2-product-note">Production units are authored in Basics so their conditions can use the same stable Product option identities.</p><ProductionSummary specification={general.data.general.productionUnitSpecification} /></section>
+          <section id="routing" className="v2-product-builder-section">{routing.data ? <RoutingPolicyForm value={routing.data} templates={routeTemplates.data?.templates ?? []} disabled={!canEdit || busy} onSave={(value) => saveRouting.mutate(value)} /> : <p className="v2-proof-empty">Loading Routing settings…</p>}</section>
+          <section id="review" className="v2-product-builder-section"><DraftReview general={general.data} options={options.data} pricing={pricing.data} matrix={matrix.data} formula={formula.data} optionPricing={optionPricing.data} recipe={recipe.data} routing={routing.data} canPublish={canEdit} publishing={publishing} publish={publish} /></section>
+        </main>
+        <aside className="v2-product-builder-rail"><PricingDiagnostic organizationId={organizationId} productId={product.productId} options={options.data?.options ?? []} requiresDimensions={general.data.general.measurementMode === "dimensions_required"} /><DraftReadiness general={general.data} recipe={recipe.data} routing={routing.data} /></aside>
+      </div>
     </section>
   );
 };
@@ -1004,6 +926,17 @@ const DraftReview = ({ general, options, pricing, matrix, formula, optionPricing
     </div>
   </section>
 );
+const ProductionSummary = ({ specification }: Readonly<{ specification: ProductDraftGeneral["productionUnitSpecification"] }>) => specification?.rules.length ? <ul className="v2-product-summary-list">{specification.rules.map((rule) => <li key={rule.key}><strong>{rule.side ?? rule.key}</strong>{rule.sourcePageIndex !== undefined ? ` · page ${rule.sourcePageIndex + 1}` : ""}{rule.layerKey ? ` · ${rule.layerKey}` : ""}{rule.when ? ` · when ${rule.when.selectionKey} = ${String(rule.when.equals)}` : " · always"}</li>)}</ul> : <p className="v2-product-note">No production-unit specification has been configured.</p>;
+
+/** This is a read-only view over the canonical Draft pricing resolver; it never calculates price in React. */
+const PricingDiagnostic = ({ organizationId, productId, options, requiresDimensions }: Readonly<{ organizationId: string; productId: string; options: readonly ProductDraftOption[]; requiresDimensions: boolean }>) => {
+  const [quantity, setQuantity] = useState("1"), [width, setWidth] = useState(""), [height, setHeight] = useState(""), [selections, setSelections] = useState<Record<string, unknown>>({});
+  const preview = useMutation({ mutationFn: () => productApi.previewDraftPricing(organizationId, productId, { quantity: Number(quantity), ...(requiresDimensions ? { width: Number(width), height: Number(height) } : {}), selections }) });
+  const result = preview.data;
+  return <section className="v2-product-pricing-preview" aria-label="Canonical pricing diagnostic"><h2>Pricing test</h2><p>Server-authoritative diagnostic. Nothing on this card is persisted.</p><label>Quantity<input type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>{requiresDimensions && <><label>Width (in)<input inputMode="decimal" value={width} onChange={(event) => setWidth(event.target.value)} /></label><label>Height (in)<input inputMode="decimal" value={height} onChange={(event) => setHeight(event.target.value)} /></label></>}{options.filter((option) => option.inputType === "select").map((option) => <label key={option.optionId}>{option.label}<select value={String(selections[option.optionId] ?? option.defaultValue ?? "")} onChange={(event) => setSelections((current) => ({ ...current, [option.optionId]: event.target.value }))}><option value="">Select…</option>{option.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}</select></label>)}<button type="button" onClick={() => preview.mutate()} disabled={preview.isPending || !quantity || (requiresDimensions && (!width || !height))}>{preview.isPending ? "Resolving…" : "Test canonical price"}</button>{result && <><PreviewResult result={result} /><details open><summary>Resolver evidence</summary>{result.breakdown.length ? <ul>{result.breakdown.map((item, index) => <li key={`${item.label}-${index}`}>{item.label}: {dollars(item.cents)}</li>)}</ul> : <p>No component breakdown is available.</p>}{result.explanation.matrix && <p>Matrix row: {result.explanation.matrix.rowId} · selections {result.explanation.matrix.selectedValues.join(", ")}</p>}{result.explanation.formula && <p>Formula: {result.explanation.formula.expression}</p>}{result.explanation.optionImpacts.length ? <p>Option impacts: {result.explanation.optionImpacts.map((impact) => `${impact.selectionKey} (${impact.kind})`).join(", ")}</p> : null}{result.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details></>}{preview.error && <p className="v2-product-version-message">{(preview.error as { message?: string }).message ?? "Pricing preview is unavailable."}</p>}</section>;
+};
+
+const DraftReadiness = ({ general, recipe, routing }: Readonly<{ general: ProductDraftGeneralRead; recipe?: ProductRecipe | null; routing?: ProductDraftRouting | null }>) => <section className="v2-product-builder-readiness" aria-label="Draft readiness"><h2>Draft readiness</h2><ul><li>{general.general.displayName ? "✓" : "○"} Product basics</li><li>{recipe?.components.length ? "✓" : "○"} Recipe components</li><li>{general.general.productionUnitSpecification?.rules.length ? "✓" : "○"} Production units</li><li>{routing?.routing.kind === "route_required" || routing?.routing.kind === "no_route" ? "✓" : "○"} Routing policy</li></ul><p>Publish validation remains server-authoritative.</p></section>;
 const GeneralForm = ({
   value,
   conditionOptions: productionOptions,

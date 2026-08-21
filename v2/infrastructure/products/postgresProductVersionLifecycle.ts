@@ -171,6 +171,17 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     const all = await this.client.query<VersionRow>("SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 ORDER BY updated_at DESC,id DESC LIMIT $3", [input.organizationId, input.productId, historyLimit + 3]);
     return { draftId: inserted.rows[0]!.id, lifecycle: lifecycle(all.rows, activeId) };
   }
+  async createProductWithInitialDraft(input: Parameters<NonNullable<ProductVersionTransaction["createProductWithInitialDraft"]>>[0]) {
+    const productId = randomUUID(), draftId = randomUUID(), now = new Date();
+    // A new identity begins inactive and without an Active pointer.  Existing
+    // publication validation is the only operation that can activate it.
+    const tree = { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { general: { displayName: input.displayName, category: null, description: null, storefrontVisible: false, measurementMode: "dimensions_required", workflowIntent: "standard_production", requiresProofApproval: false, requiresProductionJob: false, productionUnitSpecification: null }, pricingV2: { base: {} } } };
+    const valid = validateOptionTreeV2(tree as any), complete = optionTreeV2Schema.safeParse(tree);
+    if (!valid.ok || !complete.success) throw new V2ApplicationError("CONFLICT", "The initial Product Draft could not be initialized.");
+    await this.client.query("INSERT INTO products(id,organization_id,name,description,is_active,measurement_mode,workflow_intent,requires_proof_approval,requires_production_job,created_at,updated_at) VALUES($1,$2,$3,$3,FALSE,'dimensions_required','standard_production',FALSE,FALSE,$4,$4)", [productId, input.organizationId, input.displayName, now]);
+    const inserted = await this.client.query<{ id: string; updated_at: Date }>("INSERT INTO pbv2_tree_versions(id,organization_id,product_id,status,schema_version,tree_json,created_by_user_id,updated_by_user_id,created_at,updated_at) VALUES($1,$2,$3,'DRAFT',2,$4::jsonb,$5,$5,$6,$6) RETURNING id,updated_at", [draftId, input.organizationId, productId, JSON.stringify(tree), input.staffActorUserId ?? null, now]);
+    return { productId, draftVersionId: inserted.rows[0]!.id, draftUpdatedAt: inserted.rows[0]!.updated_at.toISOString() };
+  }
   async succeed(organizationId: string, requestId: string, draftId: string, result: unknown) { await this.requests.succeed(this.client, organizationId, requestId, { resourceType: "product_version", resourceId: draftId, resultJson: result }); }
   async attribute(input: Parameters<ProductVersionTransaction["attribute"]>[0]) { await this.requests.recordAttribution(this.client, { organizationId: input.organizationId, operationRequestId: input.requestId, operation: input.operation, resourceType: "product_version", resourceId: input.resourceId, principalKind: input.principalKind, principalSubject: input.principalSubject, staffActorUserId: input.staffActorUserId }); }
   async audit(input: Parameters<ProductVersionTransaction["audit"]>[0]) { await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,'product_draft_created','product_version',$4,$5,$6,$7,'[]'::jsonb)", [input.organizationId,input.requestId,input.operation,input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId ?? null]); }

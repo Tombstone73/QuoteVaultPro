@@ -266,6 +266,21 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
       );
     }
   });
+  router.post("/", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const body = request.body as Record<string, unknown>;
+      const businessRequestId = typeof body.businessRequestId === "string" ? body.businessRequestId.trim() : "";
+      const displayName = typeof body.displayName === "string" ? body.displayName : "";
+      if (!businessRequestId || !displayName.trim()) return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "A Product name and business request are required." } });
+      const result = await dependencies.lifecycle.createProductWithInitialDraft({ principal, organizationId, operationId: businessRequestId, businessRequest: { id: businessRequestId, payloadFingerprint: businessRequestId } }, { displayName, businessRequestId });
+      return result.ok ? response.status(201).json({ ok: true, data: result.value }) : response.status(result.error.code === "FORBIDDEN" ? 403 : result.error.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+    } catch (error) {
+      const value = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Product creation is unavailable.");
+      return response.status(value.code === "FORBIDDEN" ? 403 : value.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: value.code, message: value.publicMessage } });
+    }
+  });
   router.post("/:productId/drafts", async (request, response) => {
     try {
       const organizationId = (request.params as Record<string, string>)
