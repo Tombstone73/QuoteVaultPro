@@ -2,9 +2,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import React, { useEffect, useRef, useState } from "react";
 import { artworkApi, newBusinessRequestId, orderApi, quoteApi, type OrderResult, type QuoteResult, type Selection } from "./api";
 import type { DraftLineArtwork } from "./ArtworkLineIntake";
+import { CustomerLookup } from "./CustomerLookup";
 import { QuoteLineEditor } from "./QuoteLineEditor";
-import { emptyQuoteLineDraft, type QuoteLineMutationInput } from "./quoteFormModel";
-import { useQuoteFormContacts, useQuoteFormCustomers, useQuoteFormProducts } from "./quoteFormQueries";
+import { defaultContactForCustomer, emptyQuoteLineDraft, type QuoteLineMutationInput } from "./quoteFormModel";
+import { useQuoteFormContacts, useQuoteFormProducts } from "./quoteFormQueries";
 
 type EntryMode = "quote" | "order";
 
@@ -52,17 +53,13 @@ export const SalesEntryWorkspace = ({
   const [failedUploads, setFailedUploads] = useState<readonly PendingArtworkUpload[]>([]);
   const [createdOrderId, setCreatedOrderId] = useState("");
   const [lineVersion, setLineVersion] = useState(0);
-  const customerRef = useRef<HTMLSelectElement>(null);
   const requestId = useRef("");
-  const customers = useQuoteFormCustomers(sessionScope, organizationId);
   const contacts = useQuoteFormContacts(sessionScope, organizationId, customerId);
   const products = useQuoteFormProducts(sessionScope, organizationId);
 
-  useEffect(() => { customerRef.current?.focus(); }, []);
   useEffect(() => {
-    if (!customerId || contactId || contacts.data?.length !== 1) return;
-    const only = contacts.data[0]?.contactId;
-    if (only) setContactId(only);
+    const next = defaultContactForCustomer(customerId, contactId, contacts.data ?? []);
+    if (next !== contactId) setContactId(next);
   }, [contactId, contacts.data, customerId]);
 
   const payload = () => ({
@@ -119,7 +116,7 @@ export const SalesEntryWorkspace = ({
       <div><button className="link-button" type="button" onClick={onCancel}>← {mode === "quote" ? "Quotes" : "Orders"}</button><h1>New {mode === "quote" ? "Quote" : "Order"}</h1><p>{mode === "quote" ? "Build a draft commercial proposal." : "Create a confirmed commercial Order without a Quote."}</p></div>
     </header>
     <div className="v2-sales-entry-meta">
-      <label className="field">Customer<select ref={customerRef} aria-label="Customer" value={customerId} onChange={(event) => { setCustomerId(event.target.value); setContactId(""); }}><option value="">Select Customer</option>{(customers.data ?? []).map((customer) => customer.customerId ? <option key={customer.customerId} value={customer.customerId}>{customer.displayName}</option> : null)}</select></label>
+      <CustomerLookup organizationId={organizationId} sessionScope={sessionScope} customerId={customerId} onChange={(customer) => { setCustomerId(customer?.customerId ?? ""); setContactId(""); }} />
       <label className="field">Contact<select aria-label="Contact" value={contactId} disabled={!customerId} onChange={(event) => setContactId(event.target.value)}><option value="">Select Contact</option>{(contacts.data ?? []).map((contact) => contact.contactId ? <option key={contact.contactId} value={contact.contactId}>{contact.displayName}</option> : null)}</select></label>
       <label className="field">PO #<input aria-label="PO #" value={purchaseOrderNumber} onChange={(event) => setPurchaseOrderNumber(event.target.value)} /></label>
       <label className="field">Requested Due<input aria-label="Requested Due" type="date" value={requestedDueDate} onChange={(event) => setRequestedDueDate(event.target.value)} /></label>

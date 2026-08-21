@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { orderApi, quoteApi } from "./api";
+import { customerApi, orderApi, quoteApi } from "./api";
 
 export const quoteKeys = {
   quote: (sessionScope: string, organizationId: string, quoteId: string) =>
@@ -28,6 +28,23 @@ export const quoteFormKeys = {
     ["v2", sessionScope, organizationId, "quote-form", "configuration", productId] as const,
 };
 
+/** Customer is CRM-owned. Sales asks CRM for a bounded, tenant-scoped search result. */
+export const customerLookupKeys = {
+  search: (sessionScope: string, organizationId: string, query: string) =>
+    ["v2", sessionScope, organizationId, "customer-lookup", query.trim().toLocaleLowerCase()] as const,
+};
+
+export const customerLookupQueryOptions = (
+  sessionScope: string,
+  organizationId: string,
+  query: string,
+  enabled = true,
+) => ({
+  queryKey: customerLookupKeys.search(sessionScope, organizationId, query),
+  queryFn: () => customerApi.list(organizationId, query.trim()),
+  enabled: Boolean(enabled && sessionScope && organizationId && query.trim()),
+});
+
 export const quoteFormQueryOptions = {
   customers: (sessionScope: string, organizationId: string) => ({
     queryKey: quoteFormKeys.customers(sessionScope, organizationId),
@@ -53,6 +70,12 @@ export const quoteFormQueryOptions = {
 
 export const useQuoteFormCustomers = (sessionScope: string, organizationId: string) =>
   useQuery(quoteFormQueryOptions.customers(sessionScope, organizationId));
+export const useCustomerLookup = (
+  sessionScope: string,
+  organizationId: string,
+  query: string,
+  enabled = true,
+) => useQuery(customerLookupQueryOptions(sessionScope, organizationId, query, enabled));
 export const useQuoteFormContacts = (
   sessionScope: string,
   organizationId: string,

@@ -25,6 +25,7 @@ import {
   beginConfigurationSelectionResolution,
   changeDraftProduct,
   clearContactForCustomerChange,
+  defaultContactForCustomer,
   configurationInputSupported,
   draftFromQuoteLine,
   emptyQuoteLineDraft,
@@ -165,6 +166,10 @@ const testSelectorsAndContactReset = () => {
     customerId: "customer-b",
     contactId: "",
   });
+  assert.equal(defaultContactForCustomer("customer-a", "", [{ contactId: "contact-a" }]), "contact-a");
+  assert.equal(defaultContactForCustomer("customer-a", "contact-a", [{ contactId: "contact-b" }]), "contact-a");
+  assert.equal(defaultContactForCustomer("customer-b", "", [{ contactId: "contact-b" }, { contactId: "contact-c" }]), "");
+  assert.equal(defaultContactForCustomer("", "", [{ contactId: "contact-a" }]), "");
 };
 
 const testCreateAndMeasurementPayloads = () => {

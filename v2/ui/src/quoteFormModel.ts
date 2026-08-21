@@ -124,6 +124,16 @@ export const clearContactForCustomerChange = (customerId: string) => ({
   contactId: "",
 });
 
+/** A Customer's sole active Contact is a convenience default, never a stale carryover. */
+export const defaultContactForCustomer = (
+  customerId: string,
+  currentContactId: string,
+  contacts: readonly Readonly<{ contactId?: string }>[],
+): string =>
+  customerId && !currentContactId && contacts.length === 1
+    ? contacts[0]?.contactId ?? ""
+    : currentContactId;
+
 export const markOverrideUnavailable = (
   current: UiBootstrap | undefined,
 ): UiBootstrap | undefined =>
