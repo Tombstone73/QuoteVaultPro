@@ -1184,6 +1184,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body.draftVersionId !== "string" ||
           typeof body.expectedDraftUpdatedAt !== "string" ||
           typeof body.expression !== "string" ||
+          Object.prototype.hasOwnProperty.call(body, "formulaId") ||
           !variables ||
           typeof variables !== "object" ||
           Array.isArray(variables)

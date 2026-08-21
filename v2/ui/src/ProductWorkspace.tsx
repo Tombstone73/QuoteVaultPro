@@ -1871,27 +1871,32 @@ const FormulaForm = ({
           onSave(draft);
         }}
       >
-        <h2>Formula</h2>
+        <h2>{value.formulaName ? "Shared Formula" : "Formula"}</h2>
         {value.formulaName && <p>{value.formulaName}</p>}
         <label>
           Expression
           <textarea
-            disabled={disabled || !value.editable}
+            disabled={disabled || !value.expressionEditable}
             value={expression}
             onChange={(event) => setExpression(event.target.value)}
           />
         </label>
-        {Object.entries(variables).map(([name, number]) => (
-          <label key={name}>
-            {name}
+        {value.variablesEditable && !value.expressionEditable && (
+          <p className="v2-product-note">The Formula Library identity and expression are shared and read only. These inputs apply only to this ProductVersion.</p>
+        )}
+        {value.inputs.length > 0 && <h3>Product Formula Inputs</h3>}
+        {value.inputs.map((input) => (
+          <label key={input.key}>
+            {input.label}{input.unit === "in" ? " (in)" : input.unit === "sq_ft" ? " (sq ft)" : ""}
             <input
-              disabled={disabled || !value.editable}
+              disabled={disabled || !value.variablesEditable}
               inputMode="decimal"
-              value={String(number)}
+              min={input.minimum}
+              value={String(variables[input.key] ?? "")}
               onChange={(event) =>
                 setVariables((current) => ({
                   ...current,
-                  [name]: Number(event.target.value),
+                  [input.key]: Number(event.target.value),
                 }))
               }
             />
