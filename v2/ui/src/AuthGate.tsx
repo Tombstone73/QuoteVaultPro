@@ -1,7 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { v2AuthApi, type V2AuthSession } from "./auth";
 
 type State = "loading" | "login" | "organization" | "authenticated";
+export type AuthSessionControls = Readonly<{ displayName: string; busy: boolean; signOut: () => void }>;
+export const AuthSessionControlsContext = createContext<AuthSessionControls | null>(null);
+export const useAuthSessionControls = () => useContext(AuthSessionControlsContext);
 const persistOrganization = (organizationId: string | null): void => { try { if (organizationId) sessionStorage.setItem("ph.v2.organization-id", organizationId); else sessionStorage.removeItem("ph.v2.organization-id"); } catch {} };
 
 export const AuthGate = ({ children }: { children: ReactNode }) => {
@@ -14,5 +17,5 @@ export const AuthGate = ({ children }: { children: ReactNode }) => {
   if (state === "loading") return <main className="v2-auth"><p>Restoring secure session…</p></main>;
   if (state === "login") return <main className="v2-auth"><form className="v2-auth-card" onSubmit={login}><p className="eyebrow">PrintersHero V2</p><h1>Staff sign in</h1><p>Use your existing PrintersHero Staff email and password.</p><label>Email<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{error && <p className="notice error">{error}</p>}<button className="button" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button></form></main>;
   if (state === "organization") return <main className="v2-auth"><section className="v2-auth-card"><p className="eyebrow">PrintersHero V2</p><h1>Select organization</h1><p>{session?.staff.displayName}, choose the organization for this session.</p>{session?.organizations.map((organization) => <button key={organization.id} className="button secondary" disabled={busy} onClick={() => void selectOrganization(organization.id)}>{organization.name}</button>)}{error && <p className="notice error">{error}</p>}</section></main>;
-  return <><header className="v2-auth-session"><span>{session?.staff.displayName}</span><button className="button secondary" disabled={busy} onClick={() => void logout()}>Sign out</button></header>{children}</>;
+  return <AuthSessionControlsContext.Provider value={{ displayName: session?.staff.displayName ?? "Authenticated staff", busy, signOut: () => void logout() }}>{children}</AuthSessionControlsContext.Provider>;
 };

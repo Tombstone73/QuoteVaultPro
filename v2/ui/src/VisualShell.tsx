@@ -46,6 +46,7 @@ import {
 } from "lucide-react";
 import type { VisualAppearance, VisualTheme } from "./appearance";
 import { InventoryWorkspace } from "./InventoryWorkspace";
+import { useAuthSessionControls } from "./AuthGate";
 
 export type V2VisualPage = "home" | "quotes" | "orders" | "customers" | "contacts" | "products" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "appearance";
 
@@ -171,6 +172,7 @@ export const V2VisualShell = ({
   const collapsed = appearance.sidebar === "collapsed";
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [newOpen, setNewOpen] = useState(false);
+  const session = useAuthSessionControls();
   const ThemeIcon = themeIcon[appearance.theme];
   const nextTheme =
     themeOrder[(themeOrder.indexOf(appearance.theme) + 1) % themeOrder.length]!;
@@ -266,13 +268,10 @@ export const V2VisualShell = ({
             <button type="button" className="v2-quiet-button" title="Bug reporting is not yet a V2 workspace" disabled>
               <Bug aria-hidden /> <span>Report a Problem</span>
             </button>
-            <div className="v2-session-identity" aria-label="Authenticated V2 staff session">
-              <div>
-                <strong>Authenticated staff</strong>
-                <span>V2 session</span>
-              </div>
-              <b>V2</b>
-            </div>
+            {session && <div className="v2-auth-session" aria-label="Authenticated V2 staff session">
+              <span title={session.displayName}>{session.displayName}</span>
+              <button className="button secondary" disabled={session.busy} onClick={session.signOut}>Sign out</button>
+            </div>}
           </div>
         </header>
         <main className="v2-workspace">{typeof window !== "undefined" && window.location.pathname === "/inventory" ? <InventoryWorkspace /> : children}</main>
