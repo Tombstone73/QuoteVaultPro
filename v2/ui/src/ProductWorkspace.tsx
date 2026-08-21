@@ -944,6 +944,8 @@ const Builder = ({
         )
       ) : tab === "routing" ? (
         routing.data ? <RoutingPolicyForm value={routing.data} templates={routeTemplates.data?.templates ?? []} disabled={!canEdit || busy} onSave={(value) => saveRouting.mutate(value)} /> : <p className="v2-proof-empty">Loading Routing settings…</p>
+      ) : tab === "review" ? (
+        <DraftReview general={general.data} options={options.data} pricing={pricing.data} matrix={matrix.data} formula={formula.data} optionPricing={optionPricing.data} recipe={recipe.data} routing={routing.data} canPublish={canEdit} publishing={publishing} publish={publish} />
       ) : formula.data ? (
         <FormulaForm
           value={formula.data}
@@ -970,8 +972,6 @@ const Builder = ({
           organizationId={organizationId}
           productId={product.productId}
         />
-      ) : tab === "review" ? (
-        <DraftReview general={general.data} options={options.data} pricing={pricing.data} matrix={matrix.data} formula={formula.data} optionPricing={optionPricing.data} recipe={recipe.data} routing={routing.data} canPublish={canEdit} publishing={publishing} publish={publish} />
       ) : (
         <p className="v2-proof-empty">Loading pricing…</p>
       )}
