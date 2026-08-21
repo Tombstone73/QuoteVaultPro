@@ -675,12 +675,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     return selected;
   }, [previewSelectionKeys, previewState.selectedOptionValues]);
 
+  // This signature is the complete request identity. Response-derived runtime
+  // selections may rebuild the display-only visibility groups, but must not
+  // schedule another request when the outbound payload is unchanged.
   const requestSignature = useMemo(
     () =>
       JSON.stringify({
         treeJson: treeForPreview,
-        width: previewWidth,
-        height: previewHeight,
+        ...(nonDimensionalPricing ? {} : { width: previewWidth, height: previewHeight }),
         quantity: previewState.quantity,
         pricingFormulaOverride,
         manualFormulaText,
@@ -689,9 +691,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
         pricingProfileKey,
         pricingProfileConfig,
         measurementMode,
+        productPrimaryMaterialId,
+        debug: true,
         optionSelectionsJson: selectionPayload,
       }),
-    [treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, measurementMode, selectionPayload],
+    [treeForPreview, nonDimensionalPricing, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, measurementMode, productPrimaryMaterialId, selectionPayload],
   );
 
   const inputErrors = useMemo(() => {
@@ -1059,21 +1063,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           signal: controller.signal,
-          body: JSON.stringify({
-            treeJson: treeForPreview,
-            ...(nonDimensionalPricing ? {} : { width: previewWidth, height: previewHeight }),
-            quantity: previewState.quantity,
-            pricingFormulaOverride,
-            manualFormulaText,
-            pricingFormulaId,
-            formulaSourceMode,
-            pricingProfileKey,
-            pricingProfileConfig,
-            measurementMode,
-            productPrimaryMaterialId,
-            debug: true,
-            optionSelectionsJson: selectionPayload,
-          }),
+          body: requestSignature,
         });
 
         const json = (await res.json().catch(() => ({}))) as PricingPreviewApiResponse;
@@ -1115,7 +1105,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [hasInputErrors, requestSignature, treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
+  }, [hasInputErrors, requestSignature]);
 
   return (
     <aside data-testid="pricing-validation-panel" className="h-auto w-full min-w-0 max-w-full overflow-visible bg-card">

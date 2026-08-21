@@ -10,6 +10,7 @@ import { PricingValidationPanel } from "./PricingValidationPanel";
   unobserve() {}
   disconnect() {}
 };
+(globalThis as any).HTMLElement.prototype.scrollIntoView = (globalThis as any).HTMLElement.prototype.scrollIntoView ?? (() => {});
 
 async function renderPanel(treeJson: unknown, measurementMode?: "dimensions_required" | "quantity_only") {
   const container = document.createElement("div");
@@ -37,6 +38,23 @@ async function renderPanel(treeJson: unknown, measurementMode?: "dimensions_requ
       document.body.innerHTML = "";
     },
   };
+}
+
+async function settlePricingPreview(ms = 300) {
+  await act(async () => {
+    jest.advanceTimersByTime(ms);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function changeInput(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(input.ownerDocument.defaultView!.HTMLInputElement.prototype, "value")?.set;
+    valueSetter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
 }
 
 describe("PricingValidationPanel fixed-size preview", () => {
@@ -286,11 +304,15 @@ describe("PricingValidationPanel fixed-size preview", () => {
       meta: { requiresDimensions: true, pricingV2: { base: { perSqftCents: 150 } } },
     });
 
-    await act(async () => {
-      jest.advanceTimersByTime(300);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await settlePricingPreview();
+
+    // Response debug data must only update presentation. It must not become a
+    // second pricing request when the editor is otherwise idle.
+    await settlePricingPreview(2_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body).toMatchObject({ width: 24, height: 36, quantity: 1, optionSelectionsJson: {} });
 
     expect(container.textContent).toContain("Effective choices");
     expect(container.textContent).toContain("Print Sides: Double-sided");
@@ -298,6 +320,116 @@ describe("PricingValidationPanel fixed-size preview", () => {
     expect(container.textContent).toContain("$5.50");
     expect(container.textContent).toContain("Last ceil() input");
     expect(container.textContent).not.toContain("Pre-ceil sqft total");
+
+    await cleanup();
+    jest.useRealTimers();
+  });
+
+  it("recalculates once for each real dimension, quantity, and explicit option input change", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true, data: { unitPrice: 9, totalPrice: 9, breakdown: { basePrice: 9, optionsPrice: 0, total: 9 } } }),
+    }));
+    (globalThis as any).fetch = fetchMock;
+
+    const { container, cleanup } = await renderPanel({
+      schemaVersion: 2,
+      rootNodeIds: ["notes"],
+      nodes: {
+        group_notes: { id: "group_notes", kind: "group", type: "GROUP", status: "ENABLED", label: "Options" },
+        notes: { id: "notes", kind: "question", type: "INPUT", status: "ENABLED", label: "Notes", input: { type: "select", selectionKey: "notes" }, choices: [{ value: "rush", label: "Rush" }] },
+      },
+      edges: [{ id: "e1", status: "DISABLED", fromNodeId: "group_notes", toNodeId: "notes" }],
+      meta: { requiresDimensions: true, pricingV2: { base: { perSqftCents: 150 } } },
+    });
+
+    await settlePricingPreview();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const numberInputs = Array.from(container.querySelectorAll('input[type="number"]')) as HTMLInputElement[];
+    await changeInput(numberInputs[0], "25");
+    await settlePricingPreview();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await changeInput(numberInputs[1], "37");
+    await settlePricingPreview();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await changeInput(numberInputs[2], "2");
+    await settlePricingPreview();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    const optionTrigger = Array.from(container.querySelectorAll('button')).find((button) => button.getAttribute("role") === "combobox");
+    expect(optionTrigger).toBeTruthy();
+    await act(async () => {
+      optionTrigger?.click();
+    });
+    const rushOption = Array.from(document.querySelectorAll('[role="option"]')).find((option) => option.textContent === "Rush");
+    expect(rushOption).toBeTruthy();
+    await act(async () => {
+      (rushOption as HTMLElement | undefined)?.click();
+    });
+    await settlePricingPreview();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    const lastBody = JSON.parse(String((fetchMock.mock.calls[4] as unknown as [string, RequestInit])[1].body));
+    expect(lastBody).toMatchObject({ width: 25, height: 37, quantity: 2, optionSelectionsJson: { notes: { value: "rush" } } });
+
+    await settlePricingPreview(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    await cleanup();
+    jest.useRealTimers();
+  });
+
+  it("does not loop when a backend default changes conditional option visibility", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          unitPrice: 14.5,
+          totalPrice: 14.5,
+          breakdown: { basePrice: 9, optionsPrice: 5.5, total: 14.5 },
+          debug: {
+            runtimeSelectionContext: {
+              selectedChoices: { materialFamily: "ACM", printSides: "double" },
+              resolvedChoices: {
+                materialFamily: { selectionKey: "materialFamily", optionLabel: "Material", choiceValue: "ACM", choiceLabel: "ACM" },
+                printSides: { selectionKey: "printSides", optionLabel: "Print Sides", choiceValue: "double", choiceLabel: "Double-sided" },
+              },
+            },
+            optionPriceContributions: [{ optionId: "printSides", selectionKey: "printSides", optionLabel: "Print Sides", choiceValue: "double", choiceLabel: "Double-sided", amountCents: 550 }],
+          },
+        },
+      }),
+    }));
+    (globalThis as any).fetch = fetchMock;
+
+    const { container, cleanup } = await renderPanel({
+      schemaVersion: 2,
+      rootNodeIds: ["materialFamily"],
+      nodes: {
+        group_material: { id: "group_material", kind: "group", type: "GROUP", status: "ENABLED", label: "Material" },
+        materialFamily: { id: "materialFamily", kind: "question", type: "INPUT", status: "ENABLED", label: "Material", input: { type: "select", selectionKey: "materialFamily" }, choices: [{ value: "ACM", label: "ACM" }] },
+        group_print: { id: "group_print", kind: "group", type: "GROUP", status: "ENABLED", label: "Print", visibility: { rules: [{ type: "equals", selectionKey: "materialFamily", value: "ACM" }] } },
+        printSides: { id: "printSides", kind: "question", type: "INPUT", status: "ENABLED", label: "Print Sides", input: { type: "select", selectionKey: "printSides" }, choices: [{ value: "double", label: "Double-sided" }] },
+      },
+      edges: [
+        { id: "e1", status: "DISABLED", fromNodeId: "group_material", toNodeId: "materialFamily" },
+        { id: "e2", status: "DISABLED", fromNodeId: "group_print", toNodeId: "printSides" },
+      ],
+      meta: { requiresDimensions: true, pricingV2: { base: { perSqftCents: 150 } } },
+    });
+
+    await settlePricingPreview();
+    await settlePricingPreview(2_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Print Sides");
+    expect(container.textContent).toContain("$5.50");
 
     await cleanup();
     jest.useRealTimers();
