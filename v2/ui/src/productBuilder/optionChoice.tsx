@@ -43,8 +43,8 @@ export function ChoiceEditor({
         <ReferenceButton
           type="button"
           variant="ghost"
-          size="icon"
-          className="size-7 text-muted-foreground hover:text-late"
+          size="compactIcon"
+          className="text-muted-foreground hover:text-late"
           disabled={disabled}
           onClick={onRemove}
           aria-label="Delete choice"

@@ -34,7 +34,7 @@ export function RecipeEditor({ components, materials, options, primaryMaterialNa
               {line.replacesPbv2Compatibility ? <Chip tone="accent">Replaces compatibility requirement</Chip> : <Chip>Additional</Chip>}
               {conditionOption ? <span className="truncate text-[0.6875rem] text-muted-foreground">When {conditionOption.label} = {line.condition?.choiceValue}</span> : <span className="text-[0.6875rem] text-muted-foreground">Always</span>}
             </div>
-            <ReferenceButton variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-late" aria-label="Remove recipe line" disabled={disabled} onClick={() => onChange(components.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton>
+            <ReferenceButton variant="ghost" size="compactIcon" className="shrink-0 text-muted-foreground hover:text-late" aria-label="Remove recipe line" disabled={disabled} onClick={() => onChange(components.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton>
           </div>
           <div className="mt-2 grid gap-2 @container sm:grid-cols-2 lg:grid-cols-4">
             <Cell label="Material"><select value={line.materialId} disabled={disabled} onChange={(event) => { const selected = materialFor(event.target.value); update(index, (current) => ({ ...current, materialId: event.target.value, materialName: selected?.name, materialSku: selected?.sku })); }}><option value="">Select material</option>{materials.map((item) => <option key={item.materialId} value={item.materialId}>{item.name}</option>)}</select></Cell>
@@ -48,7 +48,7 @@ export function RecipeEditor({ components, materials, options, primaryMaterialNa
         </div>;
       })}
     </div>
-    <ReferenceButton variant="outline" size="sm" className="h-7 gap-1" disabled={disabled || materials.length === 0} onClick={() => { const material = materials[0]; if (!material) return; onChange([...components, { materialId: material.materialId, materialName: material.name, materialSku: material.sku, quantity: "1", unit: material.unit, quantityKind: "per_piece" }]); }}><Plus className="size-3.5" />Add material requirement</ReferenceButton>
+    <ReferenceButton variant="outline" size="compact" className="gap-1" disabled={disabled || materials.length === 0} onClick={() => { const material = materials[0]; if (!material) return; onChange([...components, { materialId: material.materialId, materialName: material.name, materialSku: material.sku, quantity: "1", unit: material.unit, quantityKind: "per_piece" }]); }}><Plus className="size-3.5" />Add material requirement</ReferenceButton>
 
     <PrimaryMaterialAndWeight primaryMaterialName={primaryMaterialName} />
   </div>;

@@ -212,8 +212,8 @@ function OptionEditor({
           {onJumpToRules && <button type="button" className="text-[0.75rem] text-muted-foreground hover:text-foreground" onClick={onJumpToRules}>View conditions</button>}
           <ReferenceButton
             variant="outline"
-            size="sm"
-            className="h-7 gap-1"
+            size="compact"
+            className="gap-1"
             disabled={disabled || !isChoice}
             title={isChoice ? undefined : "This input type does not use choices."}
             onClick={() => onChange({ ...option, choices: [...option.choices, { choiceValue: `choice_${option.choices.length + 1}`, label: "New choice" }] })}

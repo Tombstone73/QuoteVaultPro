@@ -20,7 +20,11 @@ const buttonVariants = {
 const buttonSizes = {
   default: "h-9 px-4 py-2",
   sm: "h-8 rounded-md px-3 text-xs",
+  /** Equivalent to the reference Button's size="sm" plus its h-7 override. */
+  compact: "h-7 rounded-md px-2.5 text-xs",
   icon: "size-8",
+  /** Equivalent to the reference icon Button's compact size-7 override. */
+  compactIcon: "size-7",
 } as const;
 
 export function ReferenceButton({ variant = "default", size = "default", className, type = "button", ...props }: Readonly<ButtonHTMLAttributes<HTMLButtonElement> & {
