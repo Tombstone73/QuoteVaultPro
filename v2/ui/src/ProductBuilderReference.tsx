@@ -101,7 +101,10 @@ export const ProductBuilderReference = ({
   const sectionJumpRef = useRef<((section: ProductBuilderSection) => void) | null>(null);
   const initialised = useRef<string | null>(null);
 
-  const sourceReady = !productId || Boolean(generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data);
+  const sourceReady = !productId || Boolean(
+    generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data
+    && formulaRead.isFetched && matrixRead.isFetched && impactsRead.isFetched,
+  );
   useEffect(() => {
     if (!productId) { if (initialised.current !== "new") { setDraft(blankState()); initialised.current = "new"; } return; }
     if (!sourceReady || initialised.current === productId) return;
