@@ -43,7 +43,7 @@ export function PricingPreviewRail({ productId, measurementMode, options, recipe
         </Cell>)}
       </div>
 
-      <button type="button" className="button secondary mt-2.5" disabled={!productId || loading} aria-busy={loading || undefined} onClick={onPreview}>{loading ? "Resolving…" : "Preview price"}</button>
+      <button type="button" className="button secondary mt-2.5 text-[0.75rem]" disabled={!productId || loading} aria-busy={loading || undefined} onClick={onPreview}>{loading ? "Resolving…" : "Preview price"}</button>
       {loading && <p className="mt-2.5 text-[0.6875rem] text-muted-foreground" role="status">Resolving the canonical server pricing preview…</p>}
       {!loading && error && <p className="mt-2.5 rounded-md border border-late/40 bg-late/10 px-2.5 py-2 text-[0.75rem] text-late" role="alert">{error}</p>}
       {!loading && !error && (result ? <PreviewResult result={result} /> : <p className="mt-2.5 text-[0.6875rem] text-muted-foreground">Preview calls the canonical server pricing service; no client calculation is used.</p>)}

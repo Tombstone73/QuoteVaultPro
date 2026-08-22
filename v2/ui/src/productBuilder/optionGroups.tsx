@@ -77,11 +77,11 @@ export function OptionGroupsSection({
             {options.length}
           </span>
         </div>
-        <button type="button" className="button h-8 w-full gap-1.5" disabled={disabled} onClick={addOption}>
+        <button type="button" className="button h-8 w-full gap-1.5 text-[0.75rem]" disabled={disabled} onClick={addOption}>
           <Plus className="size-4" />
           Add option group
         </button>
-        <button type="button" className="button secondary h-8 w-full gap-1.5" disabled title={groupPersistenceUnavailable}>
+        <button type="button" className="button secondary h-8 w-full gap-1.5 text-[0.75rem]" disabled title={groupPersistenceUnavailable}>
           <ListOrdered className="size-4" />
           Import template
         </button>

@@ -10,7 +10,7 @@ export const builderControlClass = "rounded-md border border-input bg-transparen
  * route. Native controls are the sole shell adaptation: V2 has no shadcn runtime.
  */
 export function Cell({ label, hint, children, className }: Readonly<{ label?: string; hint?: ReactNode; children: ReactNode; className?: string }>) {
-  return <div className={`grid min-w-0 gap-1.5 ${className ?? ""}`}>
+  return <div className={`grid min-w-0 gap-1.5 text-[0.8125rem] ${className ?? ""}`}>
     {label && <span className="text-[0.75rem]">{label}</span>}
     {children}
     {hint && <p className="text-[0.6875rem] leading-snug text-muted-foreground">{hint}</p>}
