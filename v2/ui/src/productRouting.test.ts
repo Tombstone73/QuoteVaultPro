@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { artworkPath, contactPath, customerPath, fulfillmentPath, invoicePath, newProductBuilderPath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkPath, contactPath, customerPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.deepEqual(readProductLocation("/products/product-a"), { productId: "product-a" });
@@ -7,7 +7,11 @@ assert.deepEqual(readProductLocation("/products/product%2Da"), { productId: "pro
 assert.equal(readProductLocation("/products/%2Fwrong"), null);
 assert.equal(readProductLocation("/quotes"), null);
 assert.equal(productPath("product a"), "/products/product%20a");
-assert.deepEqual(readProductBuilderLocation("/product-builder"), {});
+assert.equal(legacyProductEditorRedirect("/products/product-a", "?draft=1"), "/product-builder/product-a?draft=1");
+assert.equal(legacyProductEditorRedirect("/products/product-a/edit", "?draftTreeVersionId=legacy-tree"), "/product-builder/product-a?draft=1");
+assert.equal(legacyProductEditorRedirect("/products/product-a", "?draft=0"), null);
+assert.equal(legacyProductEditorRedirect("/products/%2Fwrong/edit"), null);
+assert.equal(readProductBuilderLocation("/product-builder"), null);
 assert.deepEqual(readProductBuilderLocation("/product-builder/product-a"), { productId: "product-a" });
 assert.equal(readProductBuilderLocation("/product-builder/%2Fwrong"), null);
 assert.equal(productBuilderPath("product a"), "/product-builder/product%20a?draft=1");

@@ -83,16 +83,10 @@ export const ProductWorkspace = ({
   openNewProduct?: () => void;
 }>) => {
   const [query, setQuery] = useState(""),
-    [page, setPage] = useState(1),
-    [editing, setEditing] = useState(builderMode);
+    [page, setPage] = useState(1);
   useEffect(() => {
-    if (builderMode) setEditing(true);
-  }, [builderMode, productId]);
-  useEffect(() => {
-    if (builderMode || !productId || new URLSearchParams(window.location.search).get("draft") !== "1") return;
-    window.history.replaceState({}, "", productBuilderPath(productId));
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  }, [builderMode, productId]);
+    if (builderMode && !newProduct && !productId) backToCatalog();
+  }, [backToCatalog, builderMode, newProduct, productId]);
   const list = useQuery({
     queryKey: keys.list(sessionScope, organizationId, query, page),
     queryFn: () => productApi.list(organizationId, query, page),
@@ -144,8 +138,8 @@ export const ProductWorkspace = ({
       void client.invalidateQueries({
         queryKey: keys.list(sessionScope, organizationId, query, page),
       });
-      window.history.pushState({}, "", builderMode ? productBuilderPath(productId) : productPath(productId));
-      setEditing(false);
+      window.history.pushState({}, "", productPath(productId));
+      window.dispatchEvent(new PopStateEvent("popstate"));
     },
   });
   if (!organizationId || !canView)
@@ -155,34 +149,15 @@ export const ProductWorkspace = ({
       </section>
     );
   if (newProduct)
-    return <NewProductBuilder organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openEditor={openEditor} back={backToCatalog} />;
+    return <NewProductBuilder organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openEditor={openEditor} />;
+  if (productId && builderMode)
+    return <ProductDraftEntry state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} publish={() => { if (detail.data) publishDraft.mutate(detail.data); }} publishing={publishDraft.isPending} back={backToCatalog} />;
   if (productId)
-    return (
-      <Detail
-        state={detail}
-        canEdit={canEdit}
-        organizationId={organizationId}
-        sessionScope={sessionScope}
-        editing={editing}
-        creatingDraft={createDraft.isPending}
-        draftCreationError={(createDraft.error as { message?: string } | null)?.message}
-        publishingDraft={publishDraft.isPending}
-        publishError={(publishDraft.error as { message?: string } | null)?.message}
-        createDraft={(product) => createDraft.mutate(product)}
-        publishDraft={(product) => publishDraft.mutate(product)}
-        openDraft={() => {
-          window.history.pushState({}, "", productBuilderPath(productId));
-          window.dispatchEvent(new PopStateEvent("popstate"));
-        }}
-        closeDraft={() => {
-          if (builderMode) backToCatalog();
-          else window.history.pushState({}, "", productPath(productId));
-          setEditing(false);
-        }}
-        back={backToCatalog}
-      />
-    );
-  if (builderMode) return <section className="v2-products"><p className="v2-proof-empty">Choose a Product from the Product Catalog.</p></section>;
+    return <Detail state={detail} canEdit={canEdit} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} openDraft={() => {
+      window.history.pushState({}, "", productBuilderPath(productId));
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }} back={backToCatalog} />;
+  if (builderMode) return <section className="v2-products"><p className="v2-proof-empty">Opening Products…</p></section>;
   return (
     <section className="v2-products" aria-label="Products">
       <header className="v2-products-heading">
@@ -277,8 +252,8 @@ export const ProductWorkspace = ({
   );
 };
 
-const NewProductBuilder = ({ organizationId, sessionScope, canEdit, openEditor, back }: Readonly<{ organizationId: string; sessionScope: string; canEdit: boolean; openEditor: (id: string) => void; back: () => void }>) => {
-  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} back={back} openProduct={openEditor} newProduct />;
+const NewProductBuilder = ({ organizationId, sessionScope, canEdit, openEditor }: Readonly<{ organizationId: string; sessionScope: string; canEdit: boolean; openEditor: (id: string) => void }>) => {
+  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openCreatedProduct={openEditor} newProduct />;
 };
 const Field = ({ label, value }: { label: string; value: string }) => (
   <div>
@@ -315,41 +290,20 @@ const ActiveDefinition = ({ value }: { value: ProductActiveDefinition }) => (
 const Detail = ({
   state,
   canEdit,
-  organizationId,
-  sessionScope,
-  editing,
   creatingDraft,
   draftCreationError,
-  publishingDraft,
-  publishError,
   createDraft,
-  publishDraft,
   openDraft,
-  closeDraft,
   back,
 }: {
   state: ReturnType<typeof useQuery<ProductWorkspaceDetail>>;
   canEdit: boolean;
-  organizationId: string;
-  sessionScope: string;
-  editing: boolean;
   creatingDraft: boolean;
   draftCreationError?: string;
-  publishingDraft: boolean;
-  publishError?: string;
   createDraft: (product: ProductWorkspaceDetail) => void;
-  publishDraft: (product: ProductWorkspaceDetail) => void;
   openDraft: () => void;
-  closeDraft: () => void;
   back: () => void;
 }) => {
-  const automaticDraftRequest = useRef("");
-  const sourceProduct = state.data;
-  useEffect(() => {
-    if (!sourceProduct || !editing || !canEdit || sourceProduct.versions.draft || !sourceProduct.versions.active || automaticDraftRequest.current === sourceProduct.productId) return;
-    automaticDraftRequest.current = sourceProduct.productId;
-    createDraft(sourceProduct);
-  }, [canEdit, createDraft, editing, sourceProduct]);
   if (state.isLoading)
     return (
       <section className="v2-products">
@@ -366,20 +320,6 @@ const Detail = ({
       </section>
     );
   const product = state.data;
-  if (editing && !product.versions.draft && product.versions.active)
-    return <section className="v2-products v2-product-builder"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">{draftCreationError ?? (creatingDraft ? "Preparing an editable Draft…" : "Preparing an editable Draft…")}</p></section>;
-  if (editing && product.versions.draft)
-    return (
-      <Builder
-        product={product}
-        organizationId={organizationId}
-        sessionScope={sessionScope}
-        canEdit={canEdit}
-        publish={() => publishDraft(product)}
-        publishing={publishingDraft}
-        back={closeDraft}
-      />
-    );
   const versions = product.versions;
   return (
     <section className="v2-products v2-product-detail">
@@ -480,18 +420,7 @@ const Detail = ({
           <header>
             <h2>Versions</h2>
             {canEdit && versions.draft ? (
-              <>
-                <button type="button" onClick={openDraft}>
-                  Edit Draft
-                </button>
-                <button
-                  type="button"
-                  disabled={publishingDraft}
-                  onClick={() => publishDraft(product)}
-                >
-                  {publishingDraft ? "Publishing…" : "Publish Draft"}
-                </button>
-              </>
+              <button type="button" onClick={openDraft}>Edit Draft</button>
             ) : canEdit && versions.active ? (
               <button
                 type="button"
@@ -533,9 +462,7 @@ const Detail = ({
               </ul>
             </>
           )}
-          {publishError && (
-            <p className="v2-product-version-message">{publishError}</p>
-          )}
+          {draftCreationError && <p className="v2-product-version-message">{draftCreationError}</p>}
         </article>
       </div>
       {product.activeDefinition && <ActiveDefinition value={product.activeDefinition} />}
@@ -543,34 +470,43 @@ const Detail = ({
   );
 };
 
-const Builder = ({
-  product,
+const ProductDraftEntry = ({
+  state,
+  canEdit,
   organizationId,
   sessionScope,
-  canEdit,
+  creatingDraft,
+  draftCreationError,
+  createDraft,
   publish,
   publishing,
   back,
 }: Readonly<{
-  product: ProductWorkspaceDetail;
+  state: ReturnType<typeof useQuery<ProductWorkspaceDetail>>;
+  canEdit: boolean;
   organizationId: string;
   sessionScope: string;
-  canEdit: boolean;
+  creatingDraft: boolean;
+  draftCreationError?: string;
+  createDraft: (product: ProductWorkspaceDetail) => void;
   publish: () => void;
   publishing: boolean;
   back: () => void;
-}>) => (
-  <ProductBuilderReference
-    organizationId={organizationId}
-    sessionScope={sessionScope}
-    product={product}
-    canEdit={canEdit}
-    back={back}
-    publish={publish}
-    publishing={publishing}
-    openProduct={(id) => {
-      window.history.pushState({}, "", productBuilderPath(id));
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    }}
-  />
-);
+}>) => {
+  const automaticDraftRequest = useRef("");
+  const product = state.data;
+  useEffect(() => {
+    if (!product || !canEdit || product.versions.draft || !product.versions.active || automaticDraftRequest.current === product.productId) return;
+    automaticDraftRequest.current = product.productId;
+    createDraft(product);
+  }, [canEdit, createDraft, product]);
+  if (state.isLoading)
+    return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
+  if (state.isError || !product)
+    return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">Product not found.</p></section>;
+  if (!canEdit)
+    return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">You do not have permission to edit this Product.</p></section>;
+  if (!product.versions.draft)
+    return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">{draftCreationError ?? (creatingDraft ? "Preparing an editable Draft…" : "This Product has no editable Draft.")}</p></section>;
+  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} />;
+};

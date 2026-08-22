@@ -73,10 +73,10 @@ const clone = <T,>(value: T): T => structuredClone(value);
 const key = (scope: string, org: string, id: string, part: string) => ["v2", scope, org, "reference-product-builder", id, part] as const;
 
 export const ProductBuilderReference = ({
-  organizationId, sessionScope, product, canEdit, back, publish, publishing, openProduct, newProduct = false,
+  organizationId, sessionScope, product, canEdit, publish, publishing, openCreatedProduct, newProduct = false,
 }: Readonly<{
-  organizationId: string; sessionScope: string; product?: ProductWorkspaceDetail; canEdit: boolean; back: () => void;
-  publish?: () => void; publishing?: boolean; openProduct: (id: string) => void; newProduct?: boolean;
+  organizationId: string; sessionScope: string; product?: ProductWorkspaceDetail; canEdit: boolean;
+  publish?: () => void; publishing?: boolean; openCreatedProduct?: (id: string) => void; newProduct?: boolean;
 }>) => {
   const productId = product?.productId;
   const client = useQueryClient();
@@ -89,13 +89,11 @@ export const ProductBuilderReference = ({
   const recipeRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "recipe"), queryFn: () => productApi.draftRecipe(organizationId, productId!), enabled: Boolean(productId), retry: false });
   const routingRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "routing"), queryFn: () => productApi.draftRouting(organizationId, productId!), enabled: Boolean(productId), retry: false });
   const materials = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "materials"), queryFn: () => productApi.materials(organizationId, productId!), enabled: Boolean(productId) });
-  const catalog = useQuery({ queryKey: ["v2", sessionScope, organizationId, "products", "picker"], queryFn: () => productApi.list(organizationId, "", 1) });
   const templates = useQuery({ queryKey: ["v2", sessionScope, organizationId, "routing", "picker"], queryFn: () => routingApi.workspace(organizationId), retry: false });
   const [draft, setDraft] = useState<DraftState>(() => blankState());
   const [dirty, setDirty] = useState<ReadonlySet<DirtySection>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [pendingProduct, setPendingProduct] = useState<string | null>(null);
   const [previewInputs, setPreviewInputs] = useState({ quantity: "1", width: "24", height: "18", selections: {} as Record<string, unknown> });
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof productApi.previewDraftPricing>> | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -147,7 +145,10 @@ export const ProductBuilderReference = ({
       if (dirty.has("recipe")) { const value = await productApi.saveDraftRecipe(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, components: draft.recipe }); revision = value.draftUpdatedAt; saved.push("recipe"); }
       if (dirty.has("routing")) { const value = await productApi.saveDraftRouting(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, routing: draft.routing }); revision = value.draftUpdatedAt; saved.push("routing"); }
       setDirty(new Set());
-      if (!productId) openProduct(id);
+      if (!productId) {
+        if (!openCreatedProduct) throw new Error("New Product navigation is unavailable.");
+        openCreatedProduct(id);
+      }
       else {
         await Promise.all([generalRead.refetch(), optionsRead.refetch(), pricingRead.refetch(), formulaRead.refetch(), matrixRead.refetch(), impactsRead.refetch(), recipeRead.refetch(), routingRead.refetch()]);
         void client.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "products"] });
@@ -236,16 +237,9 @@ export const ProductBuilderReference = ({
     title={draft.general.displayName || "Untitled product"}
     lifecycle={<><Chip tone={product?.versions.active ? "ok" : "neutral"}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</Chip>{newProduct && <span className="text-[0.6875rem] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <Chip tone="warn">Unsaved</Chip>}</>}
     subtitle={lifecycleSubtitle}
-    picker={<select className="text-[0.8125rem]" aria-label="Choose Product" value={productId ?? ""} onChange={(event) => { if (dirty.size) { setPendingProduct(event.target.value); return; } openProduct(event.target.value); }} disabled={catalog.isLoading}><option value="">{newProduct ? "New Product" : "Choose Product"}</option>{catalog.data?.items.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select>}
     onSave={() => void runSave()} saving={saving} onPublish={publish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} findings={{ errors: issueCount, warnings: 0 }}
     sectionJumpRef={sectionJumpRef}
     rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={setPreviewInputs} result={preview} loading={previewLoading} error={previewError} onPreview={() => void runPreview()} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={issueCount ? [{ severity: "error", code: "PRODUCT_NAME_REQUIRED", message: "Product name is required.", section: "basics" }] : []} />}
-    pendingSwitch={pendingProduct ? {
-      productName: draft.general.displayName,
-      onKeepEditing: () => setPendingProduct(null),
-      onSaveAndSwitch: () => { const selected = pendingProduct; void runSave().then((saved) => { if (saved) { setPendingProduct(null); openProduct(selected); } }); },
-      onDiscardAndSwitch: () => { const selected = pendingProduct; setPendingProduct(null); openProduct(selected); },
-    } : undefined}
   >{{
     basics: <BasicsSection general={draft.general} productTypeLabel={product?.productType?.displayName} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
     options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><Disclosure label={`Option visibility conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,

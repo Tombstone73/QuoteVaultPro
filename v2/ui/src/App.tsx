@@ -54,7 +54,7 @@ import { ArtworkWorkspace } from "./ArtworkWorkspace";
 import { RoutingWorkspace } from "./RoutingWorkspace";
 import { CommandCenter } from "./CommandCenter";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
-import { pushArtworkLocation, pushContactLocation, pushCustomerLocation, pushFulfillmentLocation, pushInvoiceLocation, pushNewProductBuilderLocation, pushOrderLocation, pushProductBuilderLocation, pushProductLocation, pushProductionLocation, pushProofingLocation, pushQuoteLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
+import { legacyProductEditorRedirect, productPath, pushArtworkLocation, pushContactLocation, pushCustomerLocation, pushFulfillmentLocation, pushInvoiceLocation, pushNewProductBuilderLocation, pushOrderLocation, pushProductBuilderLocation, pushProductLocation, pushProductionLocation, pushProofingLocation, pushQuoteLocation, pushWorkspaceLocation, readWorkspaceLocation } from "./productRouting";
 
 const errorText = (error: unknown) => {
   const value = error as ApiError;
@@ -208,6 +208,8 @@ export const App = ({
   }, [queryClient]);
   useEffect(() => {
     const applyBrowserLocation = () => {
+      const redirect = legacyProductEditorRedirect() ?? (window.location.pathname === "/product-builder" ? productPath() : null);
+      if (redirect) window.history.replaceState({}, "", redirect);
       const location = readWorkspaceLocation();
       if (!location) return;
       setPage(location.page);

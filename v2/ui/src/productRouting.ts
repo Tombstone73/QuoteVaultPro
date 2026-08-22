@@ -21,15 +21,33 @@ export const readProductLocation = (pathname = window.location.pathname): Produc
 };
 export const productPath = (id?: string) => id ? `/products/${encodeURIComponent(id)}` : "/products";
 export const pushProductLocation = (id?: string) => window.history.pushState({}, "", productPath(id));
+/**
+ * Old editable Product URLs never select a ProductVersion in V2.  They retain
+ * only the Product identity; the canonical Builder then reads or creates the
+ * current server-authoritative Draft through the normal lifecycle.
+ */
+export const legacyProductEditorRedirect = (
+  pathname?: string,
+  search?: string,
+): string | null => {
+  const currentPathname = pathname ?? (typeof window === "undefined" ? "" : window.location.pathname);
+  const currentSearch = search ?? (typeof window === "undefined" ? "" : window.location.search);
+  const parts = currentPathname.split("/").filter(Boolean);
+  const id = parts[0] === "products" ? productId(parts[1] ?? "") : undefined;
+  if (!id) return null;
+  if (parts.length === 2 && new URLSearchParams(currentSearch).get("draft") === "1")
+    return productBuilderPath(id);
+  if (parts.length === 3 && parts[2] === "edit") return productBuilderPath(id);
+  return null;
+};
 export const readProductBuilderLocation = (pathname = window.location.pathname): ProductBuilderLocation | null => {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "products" && parts[1] === "new") return { newProduct: true };
-  if (parts.length === 1 && parts[0] === "product-builder") return {};
   if (parts.length === 2 && parts[0] === "product-builder") return productId(parts[1]) ? { productId: productId(parts[1]) } : null;
   return null;
 };
-export const productBuilderPath = (id?: string) => id ? `/product-builder/${encodeURIComponent(id)}?draft=1` : "/product-builder";
-export const pushProductBuilderLocation = (id?: string) => window.history.pushState({}, "", productBuilderPath(id));
+export const productBuilderPath = (id: string) => `/product-builder/${encodeURIComponent(id)}?draft=1`;
+export const pushProductBuilderLocation = (id: string) => window.history.pushState({}, "", productBuilderPath(id));
 export const newProductBuilderPath = () => "/products/new";
 export const pushNewProductBuilderLocation = () => window.history.pushState({}, "", newProductBuilderPath());
 export const readCustomerLocation = (pathname = window.location.pathname): CustomerLocation | null => {
