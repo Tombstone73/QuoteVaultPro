@@ -38,11 +38,19 @@ body {
   margin: 0;
   background: var(--ph-app);
 }
-button,
-input,
-textarea,
-select {
-  font: inherit;
+/*
+ * Keep native controls on the active appearance font without letting this
+ * baseline reset outrank Tailwind's typography utilities.  The Product
+ * Builder port (and other V2 views) uses those utilities for the approved
+ * visual hierarchy.
+ */
+@layer base {
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
 }
 .app {
   min-height: 100vh;
