@@ -14,13 +14,26 @@ import { Cell, Chip, ReferenceButton, Segmented } from "./referencePrimitives";
  * Presentation port of reference/lovable-ui/src/components/app/product-editor/pricing-engine.tsx.
  * V2 supplies the canonical draft and accepts staged edits; all pricing evaluation remains server-owned.
  */
-export function PricingEngine({ pricing, formula, options = [], disabled, onPricingChange, onFormulaChange }: Readonly<{
+export const legacyFormulaCandidate = (formula?: ProductDraftFormulaPricing): string | null => {
+  if (formula?.source !== "unsupported_legacy") return null;
+  const expression = formula.legacyExpression?.trim() || formula.expression.trim();
+  return expression || null;
+};
+
+export const legacyFormulaCanBeAdopted = (formula: ProductDraftFormulaPricing | undefined, disabled: boolean | undefined, hasHandler: boolean): boolean => Boolean(
+  !disabled && hasHandler && formula?.source === "unsupported_legacy" && formula.canAdoptLegacyFormula && legacyFormulaCandidate(formula),
+);
+
+export function PricingEngine({ pricing, formula, options = [], disabled, adoptingLegacyFormula, legacyFormulaError, onPricingChange, onFormulaChange, onAdoptLegacyFormula }: Readonly<{
   pricing?: ProductDraftPricing;
   formula?: ProductDraftFormulaPricing;
   options?: readonly ProductDraftOption[];
   disabled?: boolean;
+  adoptingLegacyFormula?: boolean;
+  legacyFormulaError?: string | null;
   onPricingChange: (next: ProductDraftPricing) => void;
   onFormulaChange: (next: Pick<ProductDraftFormulaPricing, "expression" | "variables" | "allowRotation" | "rotationControl">) => void;
+  onAdoptLegacyFormula?: () => void;
 }>) {
   const [tierTab, setTierTab] = useState<"qty" | "size">("qty");
   const [varsOpen, setVarsOpen] = useState(false);
@@ -29,6 +42,9 @@ export function PricingEngine({ pricing, formula, options = [], disabled, onPric
 
   const editable = !disabled && pricing.editable;
   const advanced = pricing.mode === "formula" || pricing.mode === "advanced" || pricing.mode === "matrix";
+  // Formula provenance remains commercially material even when the rate
+  // editor is otherwise in simple mode.
+  const showFormulaDetails = advanced || Boolean(formula);
   const tiers = pricing.tiers;
   // The formula input contract is the only canonical ProductVersion home for
   // computed-sheet dimensions. Keep the Lovable controls visible, but never
@@ -39,6 +55,8 @@ export function PricingEngine({ pricing, formula, options = [], disabled, onPric
   const computedSheetUsage = pricing.tierBasis === "computed_sheet_usage" || Boolean(sheetWidth || sheetLength);
   const formulaVariableEditable = Boolean(!disabled && formula?.editable && formula.variablesEditable);
   const rotationEditable = Boolean(!disabled && formula?.rotationEditable);
+  const legacyExpression = legacyFormulaCandidate(formula);
+  const canAdoptLegacyFormula = legacyFormulaCanBeAdopted(formula, disabled, Boolean(onAdoptLegacyFormula));
   const rotationOptions = options.filter((option) => (option.inputType === "select" || option.inputType === "multiselect") && option.choices.length > 0);
   const controlledOption = rotationOptions.find((option) => option.optionId === formula?.rotationControl?.optionId);
   const updateRotation = (change: Partial<Pick<ProductDraftFormulaPricing, "allowRotation" | "rotationControl">>) => onFormulaChange({
@@ -78,23 +96,25 @@ export function PricingEngine({ pricing, formula, options = [], disabled, onPric
       </Cell>
     </div>
 
-    {advanced && <>
+    {showFormulaDetails && <>
       <div className="space-y-2">
         <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Price source</div>
-        <SourceCard active={Boolean(formula)} title="Formula library" badge="Reference">
-          <Cell label="Formula source"><input readOnly value={formula?.formulaName ?? formula?.source ?? "No Formula selected"} /></Cell>
-          <Cell label="Expression"><input readOnly value={formula?.expression ?? "No Formula expression"} /></Cell>
+        <SourceCard active={Boolean(formula)} title={formula?.source === "unsupported_legacy" ? "Legacy formula" : formula?.source === "embedded_editable" ? "ProductVersion formula" : "Formula library"} badge={formula?.source === "unsupported_legacy" ? "Legacy-compatible" : formula?.source === "embedded_editable" ? "Draft" : "Reference"}>
+          <Cell label={formula?.source === "unsupported_legacy" ? "Legacy expression" : "Formula source"}><input readOnly value={formula?.source === "unsupported_legacy" ? (legacyExpression ?? "No legacy formula supplied") : (formula?.formulaName ?? formula?.source ?? "No Formula selected")} /></Cell>
+          {formula?.source !== "unsupported_legacy" && <Cell label="Expression"><input readOnly={!formula?.expressionEditable} disabled={Boolean(disabled) || !formula?.expressionEditable} value={formula?.expression ?? ""} onChange={(event) => formula && onFormulaChange({ expression: event.target.value, variables: formula.variables, allowRotation: formula.allowRotation, ...(formula.rotationControl ? { rotationControl: formula.rotationControl } : {}) })} placeholder="No Formula expression" /></Cell>}
+          {formula?.source === "unsupported_legacy" && <div className="mt-2 flex flex-wrap items-center gap-2"><ReferenceButton size="compact" disabled={!canAdoptLegacyFormula || adoptingLegacyFormula} onClick={onAdoptLegacyFormula}>{adoptingLegacyFormula ? "Adopting…" : "Adopt into Draft"}</ReferenceButton><span className="text-[0.6875rem] text-muted-foreground">Creates an editable ProductVersion formula from this legacy expression.</span></div>}
+          {legacyFormulaError && <p role="alert" className="mt-1 text-[0.6875rem] text-late">{legacyFormulaError}</p>}
           {formula?.inputs.length ? <div className="mt-2 grid gap-2 sm:grid-cols-2">{formula.inputs.map((input) => <Cell key={input.key} label={input.label}><input disabled={!editable || !formula.editable || !formula.variablesEditable} inputMode="decimal" value={String(formula.variables[input.key] ?? "")} onChange={(event) => onFormulaChange({ expression: formula.expression, variables: { ...formula.variables, [input.key]: event.target.value === "" ? 0 : Number(event.target.value) }, allowRotation: formula.allowRotation, ...(formula.rotationControl ? { rotationControl: formula.rotationControl } : {}) })} /></Cell>)}</div> : null}
-          <p className="mt-1 text-[0.6875rem] text-muted-foreground">Formula Library expressions are reference-only. ProductVersion inputs are editable where the canonical contract allows.</p>
+          <p className="mt-1 text-[0.6875rem] text-muted-foreground">{formula?.source === "unsupported_legacy" ? "Legacy compatibility data is read-only until it is explicitly adopted into this Product Draft." : "Formula Library expressions are reference-only. ProductVersion Formula expressions and inputs are editable where the canonical contract allows."}</p>
           <button type="button" onClick={() => setVarsOpen(!varsOpen)} className="mt-1.5 inline-flex items-center gap-1 text-[0.75rem] text-primary hover:underline">{varsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}Available pricing variables</button>
           {varsOpen && <dl className="mt-1.5 grid gap-x-4 gap-y-1 rounded-md border border-border bg-surface-2 p-2.5 text-[0.6875rem] sm:grid-cols-2">{(formula?.supportedRuntimeVariables ?? []).map((name) => <div key={name} className="flex gap-2"><dt className="num shrink-0 font-medium">{name}</dt><dd className="text-muted-foreground">Canonical server runtime variable</dd></div>)}</dl>}
         </SourceCard>
       </div>
 
-      <div className="rounded-md border border-border p-3">
+      {advanced && <div className="rounded-md border border-border p-3">
         <div className="flex flex-wrap items-center justify-between gap-2"><Segmented value={tierTab} onChange={setTierTab} items={[{ id: "qty", label: `Quantity tiers (${tiers.length})` }, { id: "size", label: "Size tiers" }]} /><ReferenceButton variant="outline" size="compact" disabled={!editable} className="gap-1" onClick={addTier}><Plus className="size-3.5" />Add {tierTab === "qty" ? "qty" : "size"} tier</ReferenceButton></div>
         {tiers.length === 0 ? <p className="mt-2.5 text-[0.75rem] italic text-muted-foreground">No tiers — every quantity prices at list.</p> : <div className="mt-2.5 space-y-1.5"><div className="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground"><span>From</span><span>To</span><span>Per piece</span><span>Per sq ft</span><span className="w-8" /></div>{tiers.map((tier, index) => <div key={tier.tierId} className="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2"><input className="num h-8 text-[0.8125rem]" type="number" min="1" disabled={!editable} value={tier.minimum} onChange={(event) => updateTier(index, { minimum: Number(event.target.value) })} /><input className="num h-8 text-[0.8125rem]" type="number" min={tier.minimum} placeholder="∞" disabled={!editable} value={tier.maximum ?? ""} onChange={(event) => updateTier(index, { maximum: event.target.value === "" ? null : Number(event.target.value) })} /><MoneyInput disabled={!editable} value={tier.perPieceCents} onChange={(value) => updateTier(index, { perPieceCents: value })} /><MoneyInput disabled={!editable} value={tier.perSqftCents} onChange={(value) => updateTier(index, { perSqftCents: value })} /><ReferenceButton variant="ghost" size="icon" disabled={!editable} aria-label="Remove tier" className="size-8 text-muted-foreground hover:text-late" onClick={() => onPricingChange({ ...pricing, tiers: pricing.tiers.filter((_, position) => position !== index) })}><Trash2 className="size-3.5" /></ReferenceButton></div>)}</div>}
-      </div>
+      </div>}
     </>}
     {computedSheetUsage && <div className="rounded-md border border-border p-3">
       <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Computed sheet usage</div>

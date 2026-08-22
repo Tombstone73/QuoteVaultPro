@@ -74,6 +74,30 @@ describe("CanonicalProductPublishOperations", () => {
     expect(validation.treeJson.status).toBe("DRAFT");
   });
 
+  it("blocks publication until a Draft inheriting a legacy Product Formula owns a canonical Formula", () => {
+    const legacyExpression = "ceil((((w+.25)*(h+.25))*q)/144)*p";
+    const legacy = target();
+    legacy.product = { ...legacy.product, pricingEngine: "pricingFormula", pricingFormula: legacyExpression };
+    legacy.tree.treeJson = directMatrixTree();
+
+    const missing = validateCanonicalProductPublishTarget(legacy as any);
+    expect(missing.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED" }),
+    ]));
+
+    const embedded = structuredClone(legacy) as any;
+    embedded.tree.treeJson.meta.pricingFormula = legacyExpression;
+    expect(validateCanonicalProductPublishTarget(embedded).errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED" }),
+    ]));
+
+    const intentionallyChanged = structuredClone(legacy) as any;
+    intentionallyChanged.tree.treeJson.meta.pricingFormula = `${legacyExpression} + 0`;
+    expect(validateCanonicalProductPublishTarget(intentionallyChanged).errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED" }),
+    ]));
+  });
+
   it("requires an actor, rejects another tenant, and is shared by the UI route", async () => {
     const service = new CanonicalProductPublishOperations({ get: async ({ organizationId }: any) => organizationId === "org_1" ? target() : null, publish: async () => null } as any, () => ({ treeJson: { schemaVersion: 2 }, findings: [], warnings: [], errors: [] }));
     const proposal = await service.propose({ organizationId: "org_1", productId: "product_1" });

@@ -94,6 +94,8 @@ export const ProductBuilderReference = ({
   const [dirty, setDirty] = useState<ReadonlySet<DirtySection>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [adoptingLegacyFormula, setAdoptingLegacyFormula] = useState(false);
+  const [legacyFormulaError, setLegacyFormulaError] = useState<string | null>(null);
   const [previewInputs, setPreviewInputs] = useState({ quantity: "1", width: "24", height: "18", selections: {} as Record<string, unknown> });
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof productApi.previewDraftPricing>> | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -164,6 +166,26 @@ export const ProductBuilderReference = ({
       return false;
     } finally { setSaving(false); }
   };
+
+  const adoptLegacyFormula = useCallback(async () => {
+    if (!productId || !canEdit || adoptingLegacyFormula || formulaRead.data?.source !== "unsupported_legacy") return;
+    setAdoptingLegacyFormula(true);
+    setLegacyFormulaError(null);
+    try {
+      const value = await productApi.adoptLegacyDraftFormula(organizationId, productId, newBusinessRequestId(), {
+        draftVersionId: formulaRead.data.draftVersionId,
+        expectedDraftUpdatedAt: formulaRead.data.draftUpdatedAt,
+      });
+      setDraft((current) => ({ ...current, formula: { expression: value.expression, variables: clone(value.variables), allowRotation: value.allowRotation, ...(value.rotationControl ? { rotationControl: clone(value.rotationControl) } : {}) } }));
+      setDirty((current) => { const next = new Set(current); next.delete("formula"); return next; });
+      await Promise.all([generalRead.refetch(), optionsRead.refetch(), pricingRead.refetch(), formulaRead.refetch(), matrixRead.refetch(), impactsRead.refetch(), recipeRead.refetch(), routingRead.refetch()]);
+    } catch (error) {
+      const detail = error as { message?: string };
+      setLegacyFormulaError(detail.message ?? "The legacy Formula could not be adopted into this Draft.");
+    } finally {
+      setAdoptingLegacyFormula(false);
+    }
+  }, [adoptingLegacyFormula, canEdit, formulaRead, generalRead, impactsRead, matrixRead, optionsRead, organizationId, pricingRead, productId, recipeRead, routingRead]);
 
   const issueCount = !draft.general.displayName.trim() ? 1 : 0;
   const routeTemplates = templates.data?.templates ?? [];
@@ -255,7 +277,7 @@ export const ProductBuilderReference = ({
   >{{
     basics: <BasicsSection general={draft.general} productTypeLabel={product?.productType?.displayName} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
     options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><Disclosure label={`Option visibility conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
-    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} options={draft.options} disabled={!canEdit || saving} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, tierBasis: pricing.tierBasis, tiers: pricing.tiers } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{draft.matrix && <MatrixPricing matrix={draft.matrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
+    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} options={draft.options} disabled={!canEdit || saving} adoptingLegacyFormula={adoptingLegacyFormula} legacyFormulaError={legacyFormulaError} onAdoptLegacyFormula={() => void adoptLegacyFormula()} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, tierBasis: pricing.tierBasis, tiers: pricing.tiers } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{draft.matrix && <MatrixPricing matrix={draft.matrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
     materials: <div className="space-y-4"><Sub title="Recipe"><RecipeEditor components={draft.recipe} materials={materials.data?.items ?? []} options={draft.options} primaryMaterialName={product?.primaryMaterialName} disabled={!canEdit || saving} onChange={(recipe) => patch("recipe", (value) => ({ ...value, recipe }))} /></Sub></div>,
     production: <ProductionUnits specification={draft.general.productionUnitSpecification} options={draft.options} selectionKeys={optionSelectionKeys} disabled={!canEdit || saving} onChange={(productionUnitSpecification) => patch("general", (value) => ({ ...value, general: { ...value.general, productionUnitSpecification } }))} />,
     routing: <RoutingSection routing={draft.routing} templates={routeTemplates} disabled={!canEdit || saving} onChange={(routing) => patch("routing", (value) => ({ ...value, routing }))} />,

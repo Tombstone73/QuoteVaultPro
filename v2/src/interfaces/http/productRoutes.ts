@@ -1078,6 +1078,29 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
       );
     }
   });
+  router.post(
+    "/:productId/draft/pricing/formula/adopt-legacy",
+    async (request, response) => {
+      try {
+        const organizationId = (request.params as Record<string, string>).organizationId;
+        const principal = await dependencies.principals.principal(request, organizationId);
+        if (!new AuthorityPolicy().decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed)
+          return deny(response, 403, "FORBIDDEN", "Product Draft editing is unavailable.");
+        const body = request.body as Record<string, unknown>;
+        if (typeof body.businessRequestId !== "string" || typeof body.draftVersionId !== "string" || typeof body.expectedDraftUpdatedAt !== "string")
+          return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "Legacy Formula adoption settings are invalid." } });
+        const result = await dependencies.lifecycle.adoptLegacyProductFormula(
+          { principal, organizationId, operationId: body.businessRequestId, businessRequest: { id: body.businessRequestId, payloadFingerprint: body.businessRequestId } },
+          { productId: request.params.productId, businessRequestId: body.businessRequestId, draftVersionId: body.draftVersionId, expectedDraftUpdatedAt: body.expectedDraftUpdatedAt },
+        );
+        return result.ok
+          ? response.status(200).json({ ok: true, data: result.value })
+          : response.status(result.error.code === "VALIDATION_ERROR" ? 400 : result.error.code === "FORBIDDEN" ? 403 : result.error.code === "NOT_FOUND" ? 404 : 409).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+      } catch {
+        return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "Legacy Formula adoption settings are invalid." } });
+      }
+    },
+  );
   router.patch(
     "/:productId/draft/option-pricing",
     async (request, response) => {

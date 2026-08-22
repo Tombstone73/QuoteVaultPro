@@ -7,9 +7,9 @@ import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePri
 import { auditLogs, materials, pbv2TreeVersions, pricingFormulas, products } from "@shared/schema";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../pbv2MaterialValidation";
 
-type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId">;
+type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId" | "pricingFormula">;
 type TreeRecord = Pick<typeof pbv2TreeVersions.$inferSelect, "id" | "organizationId" | "productId" | "status" | "schemaVersion" | "treeJson" | "publishedAt" | "updatedAt">;
-export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>; pricingFormula?: { id: string; isActive: boolean } | null };
+export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>; pricingFormula?: { id: string; isActive: boolean; expression: string | null } | null };
 type PublishRepository = {
   get(input: { organizationId: string; productId?: string; treeVersionId?: string }): Promise<CanonicalProductPublishTarget | null>;
   publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
@@ -26,6 +26,22 @@ function stable(value: unknown): string {
 function fingerprint(value: unknown): string { return createHash("sha256").update(stable(value)).digest("hex"); }
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
 function mergeFindings(...groups: readonly Finding[][]): Finding[] { return groups.flat(); }
+const formulaText = (value: unknown): string => typeof value === "string" ? value.trim() : "";
+const legacyFormulaCanonicalizationFindings = (target: CanonicalProductPublishTarget, treeJson: Record<string, unknown>): Finding[] => {
+  // The compatibility resolver recognizes the persisted legacy expression
+  // independently of the old engine label, so publication must protect every
+  // Draft for which that expression remains the effective fallback.
+  const legacyExpression = formulaText(target.product.pricingFormula);
+  if (!legacyExpression) return [];
+  const libraryExpression = target.pricingFormula?.isActive ? formulaText(target.pricingFormula.expression) : "";
+  // Formula Library has higher canonical resolver precedence, so a valid
+  // active library expression means the legacy row is not the effective
+  // source that this Draft must preserve.
+  if (libraryExpression) return [];
+  const embeddedExpression = formulaText((treeJson.meta as Record<string, unknown> | undefined)?.pricingFormula);
+  if (embeddedExpression) return [];
+  return [{ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED", severity: "ERROR", message: "A Draft inheriting a legacy Product Formula must own a canonical ProductVersion Formula before publication.", path: "tree.meta.pricingFormula" } as Finding];
+};
 
 const repository: PublishRepository = {
   async get(input) {
@@ -36,11 +52,11 @@ const repository: PublishRepository = {
         ? await db.select({ id: pbv2TreeVersions.id, organizationId: pbv2TreeVersions.organizationId, productId: pbv2TreeVersions.productId, status: pbv2TreeVersions.status, schemaVersion: pbv2TreeVersions.schemaVersion, treeJson: pbv2TreeVersions.treeJson, publishedAt: pbv2TreeVersions.publishedAt, updatedAt: pbv2TreeVersions.updatedAt }).from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.productId, input.productId), eq(pbv2TreeVersions.status, "DRAFT"))).orderBy(desc(pbv2TreeVersions.updatedAt)).limit(1)
         : [];
     if (!tree) return null;
-    const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
+    const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId, pricingFormula: products.pricingFormula }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
     if (!product || (input.productId && product.id !== input.productId)) return null;
     const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
-    const [pricingFormula] = product.pricingFormulaId ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, product.pricingFormulaId))).limit(1) : [];
+    const [pricingFormula] = product.pricingFormulaId ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive, expression: pricingFormulas.expression }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, product.pricingFormulaId))).limit(1) : [];
     return { product, tree, materials: materialRows, pricingFormula: pricingFormula ?? null };
   },
   async publish(input) {
@@ -110,7 +126,7 @@ export function validateCanonicalProductPublishTarget(target: CanonicalProductPu
   const formulaFindings: Finding[] = target.product.pricingEngine === "formulaLibrary" && (!target.product.pricingFormulaId || !target.pricingFormula?.isActive)
     ? [{ code: "PBV2_E_FORMULA_LIBRARY_REFERENCE_MISSING", severity: "ERROR", message: "Formula Library pricing requires an active Formula Library entry in this organization.", path: "product.pricingFormulaId" } as Finding]
     : [];
-  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings);
+  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings, legacyFormulaCanonicalizationFindings(target, treeJson));
   return { treeJson, findings, warnings: findings.filter((item) => item.severity === "WARNING"), errors: findings.filter((item) => item.severity === "ERROR") };
 }
 
