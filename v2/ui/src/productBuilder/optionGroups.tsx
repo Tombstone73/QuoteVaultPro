@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, GripVertical, Layers, ListOrdered, Plus, Trash2 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import type { ProductDraftOption } from "../api";
-import { Cell, Chip, Toggle } from "./referencePrimitives";
+import { Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
 import { ChoiceEditor, InputTypePicker } from "./optionChoice";
 
 const createOption = (): ProductDraftOption => ({
@@ -77,14 +77,14 @@ export function OptionGroupsSection({
             {options.length}
           </span>
         </div>
-        <button type="button" className="button h-8 w-full gap-1.5 text-[0.75rem]" disabled={disabled} onClick={addOption}>
+        <ReferenceButton size="sm" className="w-full gap-1.5" disabled={disabled} onClick={addOption}>
           <Plus className="size-4" />
           Add option group
-        </button>
-        <button type="button" className="button secondary h-8 w-full gap-1.5 text-[0.75rem]" disabled title={groupPersistenceUnavailable}>
+        </ReferenceButton>
+        <ReferenceButton variant="outline" size="sm" className="w-full gap-1.5" disabled title={groupPersistenceUnavailable}>
           <ListOrdered className="size-4" />
           Import template
-        </button>
+        </ReferenceButton>
         <p className="text-[0.6875rem] text-muted-foreground">{groupPersistenceUnavailable}</p>
         <ul className="space-y-1.5">
           {options.map((entry) => (
@@ -176,16 +176,17 @@ function OptionEditor({
             onChange={(event) => onChange({ ...option, label: event.target.value })}
           />
         </Cell>
-        <button
-          type="button"
-          className="mt-6 flex h-8 items-center gap-1.5 text-[0.75rem] text-muted-foreground hover:text-late disabled:cursor-not-allowed"
+        <ReferenceButton
+          variant="ghost"
+          size="sm"
+          className="mt-6 gap-1.5 text-muted-foreground hover:text-late"
           disabled={disabled || !option.canRemove}
           title={option.removalReason}
           onClick={onDelete}
         >
           <Trash2 className="size-3.5" />
           Delete option
-        </button>
+        </ReferenceButton>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <Toggle
@@ -209,16 +210,17 @@ function OptionEditor({
         <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Choices</div>
         <div className="flex items-center gap-2">
           {onJumpToRules && <button type="button" className="text-[0.75rem] text-muted-foreground hover:text-foreground" onClick={onJumpToRules}>View conditions</button>}
-          <button
-            type="button"
-            className="button secondary h-7 gap-1 text-[0.75rem]"
+          <ReferenceButton
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1"
             disabled={disabled || !isChoice}
             title={isChoice ? undefined : "This input type does not use choices."}
             onClick={() => onChange({ ...option, choices: [...option.choices, { choiceValue: `choice_${option.choices.length + 1}`, label: "New choice" }] })}
           >
             <Plus className="size-3.5" />
             Add choice
-          </button>
+          </ReferenceButton>
         </div>
       </div>
       <div className="rounded-md border border-border">

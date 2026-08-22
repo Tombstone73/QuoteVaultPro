@@ -1,7 +1,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import React from "react";
 import type { ProductDraftOption, ProductMaterial, ProductRecipeComponent } from "../api";
-import { Cell, Chip, Picker, Sub, Toggle } from "./referencePrimitives";
+import { Cell, Chip, Picker, ReferenceButton, Sub, Toggle } from "./referencePrimitives";
 
 /** Direct presentation port of the approved Lovable Recipe editor. V2 keeps
  * canonical IDs behind the controls; inventory normalization is Material-owned
@@ -34,7 +34,7 @@ export function RecipeEditor({ components, materials, options, primaryMaterialNa
               {line.replacesPbv2Compatibility ? <Chip tone="accent">Replaces compatibility requirement</Chip> : <Chip>Additional</Chip>}
               {conditionOption ? <span className="truncate text-[0.6875rem] text-muted-foreground">When {conditionOption.label} = {line.condition?.choiceValue}</span> : <span className="text-[0.6875rem] text-muted-foreground">Always</span>}
             </div>
-            <button type="button" className="size-7 shrink-0 text-muted-foreground hover:text-late" aria-label="Remove recipe line" disabled={disabled} onClick={() => onChange(components.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></button>
+            <ReferenceButton variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-late" aria-label="Remove recipe line" disabled={disabled} onClick={() => onChange(components.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton>
           </div>
           <div className="mt-2 grid gap-2 @container sm:grid-cols-2 lg:grid-cols-4">
             <Cell label="Material"><select value={line.materialId} disabled={disabled} onChange={(event) => { const selected = materialFor(event.target.value); update(index, (current) => ({ ...current, materialId: event.target.value, materialName: selected?.name, materialSku: selected?.sku })); }}><option value="">Select material</option>{materials.map((item) => <option key={item.materialId} value={item.materialId}>{item.name}</option>)}</select></Cell>
@@ -48,7 +48,7 @@ export function RecipeEditor({ components, materials, options, primaryMaterialNa
         </div>;
       })}
     </div>
-    <button type="button" className="button secondary h-7 gap-1 text-[0.75rem]" disabled={disabled || materials.length === 0} onClick={() => { const material = materials[0]; if (!material) return; onChange([...components, { materialId: material.materialId, materialName: material.name, materialSku: material.sku, quantity: "1", unit: material.unit, quantityKind: "per_piece" }]); }}><Plus className="size-3.5" />Add material requirement</button>
+    <ReferenceButton variant="outline" size="sm" className="h-7 gap-1" disabled={disabled || materials.length === 0} onClick={() => { const material = materials[0]; if (!material) return; onChange([...components, { materialId: material.materialId, materialName: material.name, materialSku: material.sku, quantity: "1", unit: material.unit, quantityKind: "per_piece" }]); }}><Plus className="size-3.5" />Add material requirement</ReferenceButton>
 
     <PrimaryMaterialAndWeight primaryMaterialName={primaryMaterialName} />
   </div>;

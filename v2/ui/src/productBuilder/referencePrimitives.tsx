@@ -1,8 +1,34 @@
 import { ChevronDown } from "lucide-react";
-import React, { useState, type ReactNode } from "react";
+import React, { useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 
 /** Native-control adaptation of Lovable's Input/Select/Textarea visual contract. */
 export const builderControlClass = "rounded-md border border-input bg-transparent shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted-foreground";
+
+/**
+ * Direct, dependency-free port of Lovable's shared Button primitive.  It uses
+ * only the existing V2 theme tokens; Product Builder supplies no button
+ * styling of its own.
+ */
+const buttonVariants = {
+  default: "bg-primary text-primary-foreground shadow hover:bg-primary/90",
+  destructive: "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+  outline: "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",
+  secondary: "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+  ghost: "hover:bg-accent hover:text-accent-foreground",
+  link: "text-primary underline-offset-4 hover:underline",
+} as const;
+const buttonSizes = {
+  default: "h-9 px-4 py-2",
+  sm: "h-8 rounded-md px-3 text-xs",
+  icon: "size-8",
+} as const;
+
+export function ReferenceButton({ variant = "default", size = "default", className, type = "button", ...props }: Readonly<ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: keyof typeof buttonVariants;
+  size?: keyof typeof buttonSizes;
+}>) {
+  return <button type={type} className={`inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 ${buttonVariants[variant]} ${buttonSizes[size]} ${className ?? ""}`} {...props} />;
+}
 
 /**
  * Presentation port of reference/lovable-ui/src/components/app/product-editor/fields.tsx

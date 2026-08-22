@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import React, { useState } from "react";
 import type { ProductDraftOption } from "../api";
-import { Cell, Chip, Picker } from "./referencePrimitives";
+import { Cell, Chip, Picker, ReferenceButton } from "./referencePrimitives";
 
 /**
  * Direct presentation port of Lovable's option-choice.tsx. Pricing impacts,
@@ -40,15 +40,17 @@ export function ChoiceEditor({
         />
         <Chip>{choice.choiceValue}</Chip>
         <span className="flex-1" />
-        <button
+        <ReferenceButton
           type="button"
-          className="size-7 text-muted-foreground hover:text-late disabled:cursor-not-allowed"
+          variant="ghost"
+          size="icon"
+          className="size-7 text-muted-foreground hover:text-late"
           disabled={disabled}
           onClick={onRemove}
           aria-label="Delete choice"
         >
           <Trash2 className="size-3.5" />
-        </button>
+        </ReferenceButton>
       </div>
 
       {open && (
