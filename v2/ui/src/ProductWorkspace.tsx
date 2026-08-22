@@ -84,13 +84,14 @@ export const ProductWorkspace = ({
 }>) => {
   const [query, setQuery] = useState(""),
     [page, setPage] = useState(1),
-    [editing, setEditing] = useState(
-      () =>
-        typeof window !== "undefined" &&
-        builderMode || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("draft") === "1"),
-    );
+    [editing, setEditing] = useState(builderMode);
   useEffect(() => {
-    if (builderMode || new URLSearchParams(window.location.search).get("draft") === "1") setEditing(true);
+    if (builderMode) setEditing(true);
+  }, [builderMode, productId]);
+  useEffect(() => {
+    if (builderMode || !productId || new URLSearchParams(window.location.search).get("draft") !== "1") return;
+    window.history.replaceState({}, "", productBuilderPath(productId));
+    window.dispatchEvent(new PopStateEvent("popstate"));
   }, [builderMode, productId]);
   const list = useQuery({
     queryKey: keys.list(sessionScope, organizationId, query, page),
@@ -115,8 +116,8 @@ export const ProductWorkspace = ({
       void client.invalidateQueries({
         queryKey: keys.detail(sessionScope, organizationId, productId),
       });
-      window.history.pushState({}, "", builderMode ? productBuilderPath(productId) : `${productPath(productId)}?draft=1`);
-      setEditing(true);
+      window.history.pushState({}, "", productBuilderPath(productId));
+      window.dispatchEvent(new PopStateEvent("popstate"));
     },
   });
   const publishDraft = useMutation({
@@ -170,8 +171,8 @@ export const ProductWorkspace = ({
         createDraft={(product) => createDraft.mutate(product)}
         publishDraft={(product) => publishDraft.mutate(product)}
         openDraft={() => {
-          window.history.pushState({}, "", builderMode ? productBuilderPath(productId) : `${productPath(productId)}?draft=1`);
-          setEditing(true);
+          window.history.pushState({}, "", productBuilderPath(productId));
+          window.dispatchEvent(new PopStateEvent("popstate"));
         }}
         closeDraft={() => {
           if (builderMode) backToCatalog();
