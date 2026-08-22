@@ -500,7 +500,7 @@ export const QuoteLineEditor = ({
 
   return (
     <div className="line-editor">
-      <div className="grid">
+      <div className="v2-legacy-grid">
         <SelectionField
           label="Product"
           value={draft.productId}
