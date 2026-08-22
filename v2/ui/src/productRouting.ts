@@ -1,4 +1,4 @@
-export type ProductLocation = Readonly<{ productId?: string }>;
+export type ProductLocation = Readonly<Record<string, never>>;
 export type ProductBuilderLocation = Readonly<{ productId?: string; newProduct?: true }>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
@@ -16,27 +16,24 @@ const productId = (value: string): string | undefined => {
 export const readProductLocation = (pathname = window.location.pathname): ProductLocation | null => {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "products") return {};
-  if (parts.length === 2 && parts[0] === "products") return productId(parts[1]) ? { productId: productId(parts[1]) } : null;
   return null;
 };
 export const productPath = (id?: string) => id ? `/products/${encodeURIComponent(id)}` : "/products";
 export const pushProductLocation = (id?: string) => window.history.pushState({}, "", productPath(id));
 /**
- * Old editable Product URLs never select a ProductVersion in V2.  They retain
- * only the Product identity; the canonical Builder then reads or creates the
+ * Every former existing-Product URL now enters the single canonical Builder.
+ * The URL retains only the Product identity; the Builder reads or creates the
  * current server-authoritative Draft through the normal lifecycle.
  */
 export const legacyProductEditorRedirect = (
   pathname?: string,
-  search?: string,
+  _search?: string,
 ): string | null => {
   const currentPathname = pathname ?? (typeof window === "undefined" ? "" : window.location.pathname);
-  const currentSearch = search ?? (typeof window === "undefined" ? "" : window.location.search);
   const parts = currentPathname.split("/").filter(Boolean);
   const id = parts[0] === "products" ? productId(parts[1] ?? "") : undefined;
-  if (!id) return null;
-  if (parts.length === 2 && new URLSearchParams(currentSearch).get("draft") === "1")
-    return productBuilderPath(id);
+  if (!id || parts[1] === "new") return null;
+  if (parts.length === 2) return productBuilderPath(id);
   if (parts.length === 3 && parts[2] === "edit") return productBuilderPath(id);
   return null;
 };

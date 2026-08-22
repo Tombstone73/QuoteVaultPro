@@ -192,7 +192,14 @@ export const ProductBuilderReference = ({
       label: `Draft ${generalRead.data.draftVersionId.slice(0, 8)}`,
       statusLabel: generalRead.data.lifecycle,
     } : undefined,
-  }), [generalRead.data, product?.versions.active]);
+    history: product?.versions.history.map((version) => ({
+      label: version.productVersionId.slice(0, 8),
+      statusLabel: version.status[0].toUpperCase() + version.status.slice(1),
+      publishedLabel: version.publishedAt ? `Published ${new Date(version.publishedAt).toLocaleDateString()}` : undefined,
+      createdLabel: `Created ${new Date(version.createdAt).toLocaleDateString()}`,
+    })),
+    historyHasMore: product?.versions.historyHasMore,
+  }), [generalRead.data, product?.versions.active, product?.versions.history, product?.versions.historyHasMore]);
   /** The active Product read model and persisted Draft read model are the
    * only change sources displayed here. Local, unsaved controls deliberately
    * remain marked Unsaved rather than being represented as canonical history. */

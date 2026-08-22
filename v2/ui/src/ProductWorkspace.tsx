@@ -4,8 +4,6 @@ import {
   newBusinessRequestId,
   productApi,
   type ProductCatalogItem,
-  type ProductActiveDefinition,
-  type ProductVersionSummary,
   type ProductWorkspaceDetail,
 } from "./api";
 import { productBuilderPath, productPath } from "./productRouting";
@@ -26,16 +24,6 @@ const initials = (value: string) =>
     .map((word) => word[0])
     .join("")
     .toUpperCase() || "P";
-const date = (value?: string) =>
-  value
-    ? new Intl.DateTimeFormat(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      }).format(new Date(value))
-    : dash;
-const dollars = (value?: number) =>
-  value === undefined ? dash : (value / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
 const status = (product: ProductCatalogItem) =>
   product.lifecycle === "active_with_draft"
     ? "Active · Draft"
@@ -65,9 +53,8 @@ export const ProductWorkspace = ({
   canView,
   canEdit,
   builderMode = false,
-  openProduct,
   backToCatalog,
-  openEditor = openProduct,
+  openEditor,
   openNewProduct = backToCatalog,
 }: Readonly<{
   organizationId: string;
@@ -77,9 +64,8 @@ export const ProductWorkspace = ({
   canView: boolean;
   canEdit: boolean;
   builderMode?: boolean;
-  openProduct: (id: string) => void;
   backToCatalog: () => void;
-  openEditor?: (id: string) => void;
+  openEditor: (id: string) => void;
   openNewProduct?: () => void;
 }>) => {
   const [query, setQuery] = useState(""),
@@ -138,7 +124,9 @@ export const ProductWorkspace = ({
       void client.invalidateQueries({
         queryKey: keys.list(sessionScope, organizationId, query, page),
       });
-      window.history.pushState({}, "", productPath(productId));
+      // Publishing closes the Draft. Return to the catalog rather than
+      // immediately creating another Draft for the newly ACTIVE version.
+      window.history.pushState({}, "", productPath());
       window.dispatchEvent(new PopStateEvent("popstate"));
     },
   });
@@ -150,13 +138,8 @@ export const ProductWorkspace = ({
     );
   if (newProduct)
     return <NewProductBuilder organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openEditor={openEditor} />;
-  if (productId && builderMode)
-    return <ProductDraftEntry state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} publish={() => { if (detail.data) publishDraft.mutate(detail.data); }} publishing={publishDraft.isPending} back={backToCatalog} />;
   if (productId)
-    return <Detail state={detail} canEdit={canEdit} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} openDraft={() => {
-      window.history.pushState({}, "", productBuilderPath(productId));
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    }} back={backToCatalog} />;
+    return <ProductDraftEntry state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} publish={() => { if (detail.data) publishDraft.mutate(detail.data); }} publishing={publishDraft.isPending} back={backToCatalog} />;
   if (builderMode) return <section className="v2-products"><p className="v2-proof-empty">Opening Products…</p></section>;
   return (
     <section className="v2-products" aria-label="Products">
@@ -213,7 +196,7 @@ export const ProductWorkspace = ({
             {list.data?.items.map((product) => (
               <tr key={product.productId}>
                 <td>
-                  <button className="v2-products-link" type="button" onClick={() => openProduct(product.productId)}>
+                  <button className="v2-products-link" type="button" onClick={() => openEditor(product.productId)}>
                     <i>{initials(product.displayName)}</i>
                     <b>{product.displayName}</b>
                   </button>
@@ -255,221 +238,6 @@ export const ProductWorkspace = ({
 const NewProductBuilder = ({ organizationId, sessionScope, canEdit, openEditor }: Readonly<{ organizationId: string; sessionScope: string; canEdit: boolean; openEditor: (id: string) => void }>) => {
   return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openCreatedProduct={openEditor} newProduct />;
 };
-const Field = ({ label, value }: { label: string; value: string }) => (
-  <div>
-    <dt>{label}</dt>
-    <dd>{value}</dd>
-  </div>
-);
-const VersionRow = ({ version }: { version: ProductVersionSummary }) => (
-  <li>
-    <span>
-      <em className={`v2-product-status ${version.status}`}>
-        {version.status[0].toUpperCase() + version.status.slice(1)}
-      </em>
-      {version.publishedAt
-        ? `Published ${date(version.publishedAt)}`
-        : `Updated ${date(version.updatedAt)}`}
-    </span>
-    <small>Created {date(version.createdAt)}</small>
-  </li>
-);
-const ActiveDefinition = ({ value }: { value: ProductActiveDefinition }) => (
-  <section className="v2-product-definition" aria-label="Active Product definition">
-    <header><div><h2>Active Product definition</h2><p>This is the immutable configuration currently used by Sales.</p></div><small>Active version</small></header>
-    <div className="v2-product-definition-grid">
-      <article><h3>Options</h3>{value.options.length ? <ul>{value.options.map(option => <li key={option.label}><strong>{option.label}</strong>{option.required ? " · Required" : " · Optional"}{option.defaultLabel ? ` · Default: ${option.defaultLabel}` : ""}{option.choices.length ? <span>{option.choices.map(choice => choice.label).join(" · ")}</span> : null}</li>)}</ul> : <p className="muted">No configurable options.</p>}</article>
-      <article><h3>Pricing</h3><p><strong>{value.pricing.mode === "matrix_formula" ? "Matrix + Formula" : value.pricing.mode[0].toUpperCase() + value.pricing.mode.slice(1)}</strong></p>{value.pricing.perSquareFootCents !== undefined && <p>Rate per sq ft: {dollars(value.pricing.perSquareFootCents)}</p>}{value.pricing.perPieceCents !== undefined && <p>Rate per piece: {dollars(value.pricing.perPieceCents)}</p>}{value.pricing.minimumChargeCents !== undefined && <p>Minimum charge: {dollars(value.pricing.minimumChargeCents)}</p>}{value.pricing.tierBasis && <p>Tier basis: {value.pricing.tierBasis.replaceAll("_", " ")}</p>}{value.pricing.formula && <details><summary>{value.pricing.formula.name ?? "Formula"}</summary><code>{value.pricing.formula.expression}</code>{Object.keys(value.pricing.formula.variables).length ? <p>Variables: {Object.entries(value.pricing.formula.variables).map(([key, amount]) => `${key} = ${amount}`).join(", ")}</p> : null}</details>}{value.pricing.matrix && <details><summary>Matrix: {value.pricing.matrix.dimensions.join(" × ")}</summary><p>{value.pricing.matrix.pricingUnit === "per_piece" ? "Per piece" : "Per sq ft"}</p><ul>{value.pricing.matrix.rows.map((row,index)=><li key={index}>{row.selections.join(" · ")} — {dollars(row.baseRateCents)}{row.tierCount ? ` · ${row.tierCount} tier${row.tierCount === 1 ? "" : "s"}` : ""}{row.computedSheetTiers ? " · computed-sheet tiers" : ""}</li>)}</ul></details>}</article>
-      <article><h3>Materials / Recipe</h3>{value.recipe.length ? <ul>{value.recipe.map(component => <li key={component.componentId}><strong>{component.materialName}</strong> — {component.quantity} {component.unit} per {component.basis.replace(/^per_/u, "")}{component.condition ? ` · ${component.condition}` : ""}{component.replacesCompatibility ? " · replaces compatibility rule" : ""}</li>)}</ul> : <p className="muted">No recipe is defined.</p>}</article>
-      <article><h3>Production</h3>{value.productionUnits.length ? <ul>{value.productionUnits.map(unit => <li key={unit.key}><strong>{unit.side ?? unit.key}</strong>{unit.condition ? ` · ${unit.condition}` : " · Always"}</li>)}</ul> : <p className="muted">Production units are unconfigured.</p>}</article>
-      <article><h3>Routing</h3>{value.routing ? <><p><strong>{value.routing.mode === "route_required" ? "Route required" : value.routing.mode === "no_route" ? "No route" : "Unconfigured"}</strong></p>{value.routing.templateName && <p>{value.routing.templateName}{value.routing.revision ? ` · revision ${value.routing.revision}` : ""}</p>}{value.routing.steps.length ? <p>{value.routing.steps.join(" → ")}</p> : null}</> : <p className="muted">No version-owned routing specification.</p>}</article>
-    </div>
-  </section>
-);
-
-const Detail = ({
-  state,
-  canEdit,
-  creatingDraft,
-  draftCreationError,
-  createDraft,
-  openDraft,
-  back,
-}: {
-  state: ReturnType<typeof useQuery<ProductWorkspaceDetail>>;
-  canEdit: boolean;
-  creatingDraft: boolean;
-  draftCreationError?: string;
-  createDraft: (product: ProductWorkspaceDetail) => void;
-  openDraft: () => void;
-  back: () => void;
-}) => {
-  if (state.isLoading)
-    return (
-      <section className="v2-products">
-        <p className="v2-proof-empty">Loading Product…</p>
-      </section>
-    );
-  if (state.isError || !state.data)
-    return (
-      <section className="v2-products">
-        <button className="v2-products-back" onClick={back}>
-          ← Products
-        </button>
-        <p className="v2-proof-empty">Product not found.</p>
-      </section>
-    );
-  const product = state.data;
-  const versions = product.versions;
-  return (
-    <section className="v2-products v2-product-detail">
-      <button className="v2-products-back" onClick={back}>
-        ← Products
-      </button>
-      <header className="v2-products-heading">
-        <div>
-          <h1>{product.displayName}</h1>
-          <p>
-            {[product.category, product.productType?.displayName]
-              .filter(Boolean)
-              .join(" · ") || "Product"}
-          </p>
-        </div>
-        <em className={`v2-product-status ${product.lifecycle}`}>
-          {status(product)}
-        </em>
-      </header>
-      <div className="v2-product-detail-grid">
-        <article>
-          <h2>Product details</h2>
-          <dl>
-            <Field label="Measurement" value={basis(product)} />
-            <Field
-              label="Workflow"
-              value={
-                product.workflowIntent === "service_fee"
-                  ? "Service / fee"
-                  : product.workflowIntent === "fulfillment_only"
-                    ? "Fulfillment only"
-                    : "Standard production"
-              }
-            />
-            <Field
-              label="Configurable options"
-              value={
-                product.configurableOptionCount
-                  ? `${product.configurableOptionCount} option${product.configurableOptionCount === 1 ? "" : "s"}`
-                  : dash
-              }
-            />
-          </dl>
-        </article>
-        <article>
-          <h2>Pricing</h2>
-          <dl>
-            <Field label="Method" value={product.pricingSummary} />
-            <Field
-              label="Current version"
-              value={product.activeVersion?.label ?? dash}
-            />
-            <Field
-              label="Draft"
-              value={product.hasDraft ? "Available" : dash}
-            />
-          </dl>
-        </article>
-        <article>
-          <h2>Production policy</h2>
-          <dl>
-            <Field
-              label="Product Type"
-              value={product.productType?.displayName ?? dash}
-            />
-            <Field
-              label="Route policy"
-              value={
-                product.productType?.routePolicy === "route_required"
-                  ? "Route required"
-                  : product.productType?.routePolicy === "no_route"
-                    ? "No route"
-                    : product.productType
-                      ? "Unconfigured"
-                      : dash
-              }
-            />
-            <Field
-              label="Proof required"
-              value={product.requiresProofApproval ? "Yes" : "No"}
-            />
-            <Field
-              label="Production required"
-              value={product.requiresProductionJob ? "Yes" : "No"}
-            />
-          </dl>
-        </article>
-        <article>
-          <h2>Primary Material</h2>
-          <dl>
-            <Field
-              label="Material"
-              value={product.primaryMaterialName ?? dash}
-            />
-          </dl>
-        </article>
-        <article className="v2-product-versions">
-          <header>
-            <h2>Versions</h2>
-            {canEdit && versions.draft ? (
-              <button type="button" onClick={openDraft}>Edit Draft</button>
-            ) : canEdit && versions.active ? (
-              <button
-                type="button"
-                disabled={creatingDraft}
-                onClick={() => createDraft(product)}
-              >
-                {creatingDraft ? "Creating Draft…" : "Create Draft"}
-              </button>
-            ) : null}
-          </header>
-          <dl>
-            <Field
-              label="Active"
-              value={
-                versions.active
-                  ? `Published ${date(versions.active.publishedAt ?? versions.active.updatedAt)}`
-                  : dash
-              }
-            />
-            <Field
-              label="Draft"
-              value={
-                versions.draft
-                  ? `Updated ${date(versions.draft.updatedAt)}`
-                  : dash
-              }
-            />
-          </dl>
-          {versions.history.length > 0 && (
-            <>
-              <h3>History</h3>
-              <ul>
-                {versions.history.map((version, index) => (
-                  <VersionRow
-                    key={`${version.status}-${version.createdAt}-${index}`}
-                    version={version}
-                  />
-                ))}
-              </ul>
-            </>
-          )}
-          {draftCreationError && <p className="v2-product-version-message">{draftCreationError}</p>}
-        </article>
-      </div>
-      {product.activeDefinition && <ActiveDefinition value={product.activeDefinition} />}
-    </section>
-  );
-};
-
 const ProductDraftEntry = ({
   state,
   canEdit,

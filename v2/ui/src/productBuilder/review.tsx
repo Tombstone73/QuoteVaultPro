@@ -7,6 +7,14 @@ import { Chip } from "./referencePrimitives";
 export type ReviewLifecycle = Readonly<{
   activeVersion?: Readonly<{ label: string; publishedLabel?: string }>;
   draftVersion?: Readonly<{ label: string; statusLabel?: string }>;
+  /** Immutable ProductVersion history from the canonical Product read model. */
+  history?: readonly Readonly<{
+    label: string;
+    statusLabel: string;
+    publishedLabel?: string;
+    createdLabel: string;
+  }>[];
+  historyHasMore?: boolean;
 }>;
 
 export type ReviewChange = Readonly<{
@@ -107,6 +115,24 @@ export function ReviewSummary({
           <p className="px-3 py-2 text-[0.75rem] text-muted-foreground">No canonical ProductVersion changes were supplied.</p>
         )}
       </div>
+
+      {lifecycle?.history && lifecycle.history.length > 0 && (
+        <div className="rounded-md border border-border">
+          <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+            <span className="text-[0.75rem] font-bold uppercase tracking-wide">Version history</span>
+            <span className="text-[0.6875rem] text-muted-foreground">Immutable published history</span>
+          </header>
+          <ul className="divide-y divide-border">
+            {lifecycle.history.map((version) => (
+              <li key={version.label} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-3 py-1.5 text-[0.75rem]">
+                <span className="min-w-0 truncate"><span className="font-medium">{version.statusLabel}</span> · {version.label}</span>
+                <span className="text-right text-[0.6875rem] text-muted-foreground">{version.publishedLabel ?? version.createdLabel}</span>
+              </li>
+            ))}
+          </ul>
+          {lifecycle.historyHasMore && <p className="border-t border-border px-3 py-1.5 text-[0.6875rem] text-muted-foreground">Additional canonical historical versions are available.</p>}
+        </div>
+      )}
 
       <div
         aria-live="polite"
