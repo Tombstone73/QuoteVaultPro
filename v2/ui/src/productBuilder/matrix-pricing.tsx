@@ -5,6 +5,7 @@ import type {
   ProductDraftPricingTier,
 } from "../api";
 import { Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
+import { ProductBuilderMoneyInput as MoneyRate } from "./money-input";
 
 type Value = string | number | boolean;
 type Dimension = ProductDraftPricingMatrix["dimensions"][number];
@@ -319,9 +320,12 @@ export function MatrixPricing({
                               className="p-1"
                             >
                               <div className="flex gap-1">
-                                <MoneyRate
-                                  disabled={!editable || !row}
-                                  value={row?.baseRateCents ?? null}
+                                 <MoneyRate
+                                   disabled={!editable || !row}
+                                   value={row?.baseRateCents ?? null}
+                                   ariaLabel="Matrix rate"
+                                   className="h-7 w-[88px]"
+                                   placeholder="—"
                                   onChange={(baseRateCents) =>
                                     row &&
                                     updateRow(row.rowId, { baseRateCents })
@@ -346,6 +350,7 @@ export function MatrixPricing({
                                   computed={
                                     row.tierBasis === "computed_sheet_usage"
                                   }
+                                  pricingUnit={matrix.pricingUnit}
                                   disabled={!editable}
                                   onChange={(change) =>
                                     updateRow(row.rowId, {
@@ -395,6 +400,7 @@ export function MatrixPricing({
 function TierRow({
   tier,
   computed,
+  pricingUnit,
   disabled,
   onChange,
   onComputed,
@@ -402,6 +408,7 @@ function TierRow({
 }: Readonly<{
   tier: ProductDraftPricingTier;
   computed: boolean;
+  pricingUnit: ProductDraftPricingMatrix["pricingUnit"];
   disabled: boolean;
   onChange: (change: Partial<ProductDraftPricingTier>) => void;
   onComputed: (computed: boolean) => void;
@@ -429,8 +436,14 @@ function TierRow({
       <MoneyRate
         disabled={disabled}
         value={tier.perPieceCents ?? tier.perSqftCents}
+        ariaLabel="Matrix tier rate"
+        className="h-7 w-[88px]"
         onChange={(value) =>
-          onChange({ perPieceCents: value, perSqftCents: null })
+          onChange(
+            pricingUnit === "per_square_foot"
+              ? { perPieceCents: null, perSqftCents: value }
+              : { perPieceCents: value, perSqftCents: null },
+          )
         }
       />
       <ReferenceButton
@@ -442,38 +455,6 @@ function TierRow({
       >
         <Trash2 className="size-3" />
       </ReferenceButton>
-    </div>
-  );
-}
-function MoneyRate({
-  value,
-  onChange,
-  disabled,
-}: Readonly<{
-  value: number | null;
-  onChange: (value: number | null) => void;
-  disabled?: boolean;
-}>) {
-  return (
-    <div className="relative">
-      <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[0.75rem] text-muted-foreground">
-        $
-      </span>
-      <input
-        aria-label="Matrix rate"
-        className="num h-7 w-[88px] pl-5 text-[0.8125rem]"
-        placeholder="—"
-        disabled={disabled}
-        inputMode="decimal"
-        value={value == null ? "" : (value / 100).toFixed(2)}
-        onChange={(event) =>
-          onChange(
-            event.target.value === ""
-              ? null
-              : Math.round(Number(event.target.value) * 100),
-          )
-        }
-      />
     </div>
   );
 }

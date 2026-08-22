@@ -70,6 +70,7 @@
     "v2:m5:operational-parity": "jest --runInBand v2/tests/parity/operationalSpineParity.test.ts",
     "v2:m5:financial-parity": "jest --runInBand v2/tests/parity/financialSpineParity.test.ts",
     "v2:pricing:parity:pure": "tsx v2/tests/modules/pricingParityCorrections.pure.ts && tsx v2/tests/modules/legacyFormulaDraftAuthoring.pure.ts",
+    "v2:ui:test:money": "tsx v2/ui/src/productBuilder/money-input.test.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:dotenv": "node -r dotenv/config ./node_modules/drizzle-kit/bin.cjs migrate",
