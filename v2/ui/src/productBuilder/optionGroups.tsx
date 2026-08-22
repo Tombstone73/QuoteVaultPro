@@ -70,10 +70,10 @@ export function OptionGroupsSection({
   return (
     <div className="grid gap-3 lg:grid-cols-[264px_minmax(0,1fr)]">
       <div className="space-y-2">
-        <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="flex items-center gap-2 text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">
           <Layers className="size-3.5" />
           Option groups
-          <span className="num ml-auto rounded border border-border px-1.5 text-[11px] text-foreground">
+          <span className="num ml-auto rounded border border-border px-1.5 text-[0.6875rem] text-foreground">
             {options.length}
           </span>
         </div>
@@ -85,7 +85,7 @@ export function OptionGroupsSection({
           <ListOrdered className="size-4" />
           Import template
         </button>
-        <p className="text-[11px] text-muted-foreground">{groupPersistenceUnavailable}</p>
+        <p className="text-[0.6875rem] text-muted-foreground">{groupPersistenceUnavailable}</p>
         <ul className="space-y-1.5">
           {options.map((entry) => (
             <li
@@ -109,10 +109,10 @@ export function OptionGroupsSection({
               >
                 <GripVertical className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-semibold">
+                  <span className="block truncate text-[0.8125rem] font-semibold">
                     {entry.label || "Untitled option"}
                   </span>
-                  <span className="num block text-[11px] text-muted-foreground">
+                  <span className="num block text-[0.6875rem] text-muted-foreground">
                     {entry.choices.length} choice{entry.choices.length === 1 ? "" : "s"}
                   </span>
                   <span className="mt-1 flex flex-wrap gap-1">
@@ -124,7 +124,7 @@ export function OptionGroupsSection({
             </li>
           ))}
         </ul>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-[0.6875rem] text-muted-foreground">
           Drag options to reorder — order follows through to quoting and the storefront.
         </p>
       </div>
@@ -141,7 +141,7 @@ export function OptionGroupsSection({
           }}
         />
       ) : (
-        <div className="grid place-items-center rounded-md border border-dashed border-border p-10 text-[13px] text-muted-foreground">
+        <div className="grid place-items-center rounded-md border border-dashed border-border p-10 text-[0.8125rem] text-muted-foreground">
           Add an option group to start configuring choices.
         </div>
       )}
@@ -170,7 +170,7 @@ function OptionEditor({
       <div className="flex flex-wrap items-start gap-3">
         <Cell label="Option label" className="min-w-[200px] flex-1">
           <input
-            className="h-8 text-[13px]"
+            className="h-8 text-[0.8125rem]"
             value={option.label}
             disabled={disabled}
             onChange={(event) => onChange({ ...option, label: event.target.value })}
@@ -178,7 +178,7 @@ function OptionEditor({
         </Cell>
         <button
           type="button"
-          className="mt-6 flex h-8 items-center gap-1.5 text-[12px] text-muted-foreground hover:text-late disabled:cursor-not-allowed"
+          className="mt-6 flex h-8 items-center gap-1.5 text-[0.75rem] text-muted-foreground hover:text-late disabled:cursor-not-allowed"
           disabled={disabled || !option.canRemove}
           title={option.removalReason}
           onClick={onDelete}
@@ -206,12 +206,12 @@ function OptionEditor({
         </div>
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
-        <div className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Choices</div>
+        <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Choices</div>
         <div className="flex items-center gap-2">
-          {onJumpToRules && <button type="button" className="text-[12px] text-muted-foreground hover:text-foreground" onClick={onJumpToRules}>View conditions</button>}
+          {onJumpToRules && <button type="button" className="text-[0.75rem] text-muted-foreground hover:text-foreground" onClick={onJumpToRules}>View conditions</button>}
           <button
             type="button"
-            className="button secondary h-7 gap-1 text-[12px]"
+            className="button secondary h-7 gap-1 text-[0.75rem]"
             disabled={disabled || !isChoice}
             title={isChoice ? undefined : "This input type does not use choices."}
             onClick={() => onChange({ ...option, choices: [...option.choices, { choiceValue: `choice_${option.choices.length + 1}`, label: "New choice" }] })}
@@ -226,12 +226,12 @@ function OptionEditor({
           <button type="button" onClick={() => setOpen((value) => !value)} className="text-muted-foreground hover:text-foreground" aria-label={open ? "Collapse choices" : "Expand choices"}>
             {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
           </button>
-          <span className="text-[13px] font-semibold">Configured choices</span>
-          <span className="num text-[11px] text-muted-foreground">{option.choices.length} choice{option.choices.length === 1 ? "" : "s"}</span>
+          <span className="text-[0.8125rem] font-semibold">Configured choices</span>
+          <span className="num text-[0.6875rem] text-muted-foreground">{option.choices.length} choice{option.choices.length === 1 ? "" : "s"}</span>
         </div>
         {open && <div className="space-y-2 border-t border-border p-3">
-          {!isChoice && <p className="text-[12px] italic text-muted-foreground">This input type does not use choices.</p>}
-          {isChoice && option.choices.length === 0 && <p className="text-[12px] italic text-muted-foreground">No choices yet — this option will be skipped at quote time.</p>}
+          {!isChoice && <p className="text-[0.75rem] italic text-muted-foreground">This input type does not use choices.</p>}
+          {isChoice && option.choices.length === 0 && <p className="text-[0.75rem] italic text-muted-foreground">No choices yet — this option will be skipped at quote time.</p>}
           {isChoice && option.choices.map((choice, choiceIndex) => <ChoiceEditor
             key={`${choice.choiceValue}-${choiceIndex}`}
             choice={choice}

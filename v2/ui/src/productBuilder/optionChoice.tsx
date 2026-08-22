@@ -33,7 +33,7 @@ export function ChoiceEditor({
           {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         </button>
         <input
-          className="h-7 max-w-[220px] border-transparent bg-transparent text-[13px] font-medium hover:border-border focus:border-border"
+          className="h-7 max-w-[220px] border-transparent bg-transparent text-[0.8125rem] font-medium hover:border-border focus:border-border"
           value={choice.label}
           disabled={disabled}
           onChange={(event) => onChange({ ...choice, label: event.target.value })}
@@ -56,7 +56,7 @@ export function ChoiceEditor({
           <div className="grid gap-3 @[520px]:grid-cols-2">
             <Cell label="Label">
               <input
-                className="h-8 text-[13px]"
+                className="h-8 text-[0.8125rem]"
                 value={choice.label}
                 disabled={disabled}
                 onChange={(event) => onChange({ ...choice, label: event.target.value })}
@@ -64,7 +64,7 @@ export function ChoiceEditor({
             </Cell>
             <Cell label="Value" hint="Stable key stored on the Order Line.">
               <input
-                className="num h-8 text-[13px]"
+                className="num h-8 text-[0.8125rem]"
                 value={choice.choiceValue}
                 disabled={disabled}
                 onChange={(event) => onChange({ ...choice, choiceValue: event.target.value })}
@@ -73,8 +73,8 @@ export function ChoiceEditor({
           </div>
 
           <div className="rounded-md border border-border p-3">
-            <div className="text-[12px] font-semibold">Canonical ownership</div>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
+            <div className="text-[0.75rem] font-semibold">Canonical ownership</div>
+            <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
               Use stable choice identity here. Pricing impacts are edited in Pricing; material requirements
               are edited in Materials &amp; recipe.
             </p>

@@ -72,29 +72,29 @@ export function ReviewSummary({
       <dl className="divide-y divide-border rounded-md border border-border">
         {rows.map((row) => (
           <div key={row.label} className="grid grid-cols-[minmax(0,1fr)] gap-0.5 px-3 py-1.5 sm:grid-cols-[160px_minmax(0,1fr)] sm:gap-3">
-            <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{row.label}</dt>
-            <dd className="min-w-0 text-[13px]">{row.value}</dd>
+            <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">{row.label}</dt>
+            <dd className="min-w-0 text-[0.8125rem]">{row.value}</dd>
           </div>
         ))}
       </dl>
 
       <div className="rounded-md border border-border">
         <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-          <span className="text-[12px] font-bold uppercase tracking-wide">
+          <span className="text-[0.75rem] font-bold uppercase tracking-wide">
             {active ? `Changes vs ${active.label}` : "Draft lifecycle"}
           </span>
           {draft && <Chip>{draft.label}</Chip>}
-          {draft?.statusLabel && <span className="text-[11px] text-muted-foreground">{draft.statusLabel}</span>}
-          {active?.publishedLabel && <span className="ml-auto text-[11px] text-muted-foreground">{active.publishedLabel}</span>}
+          {draft?.statusLabel && <span className="text-[0.6875rem] text-muted-foreground">{draft.statusLabel}</span>}
+          {active?.publishedLabel && <span className="ml-auto text-[0.6875rem] text-muted-foreground">{active.publishedLabel}</span>}
         </header>
         {changes.length > 0 ? (
           <ul className="divide-y divide-border">
             {changes.map((change, index) => (
               <li key={`${change.section}:${change.label}:${index}`} className="grid grid-cols-[minmax(0,1fr)] gap-1 px-3 py-1.5 sm:grid-cols-[110px_minmax(0,1fr)_auto] sm:items-center sm:gap-3">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{change.section}</span>
-                <span className="min-w-0 truncate text-[13px]">{change.label}</span>
+                <span className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">{change.section}</span>
+                <span className="min-w-0 truncate text-[0.8125rem]">{change.label}</span>
                 {change.from !== undefined && change.to !== undefined && (
-                  <span className="flex shrink-0 items-center gap-1.5 text-[12px]">
+                  <span className="flex shrink-0 items-center gap-1.5 text-[0.75rem]">
                     <span className="num text-muted-foreground line-through">{change.from}</span>
                     <ArrowRight className="size-3 text-muted-foreground" aria-hidden />
                     <span className="num font-medium">{change.to}</span>
@@ -104,13 +104,13 @@ export function ReviewSummary({
             ))}
           </ul>
         ) : (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">No canonical ProductVersion changes were supplied.</p>
+          <p className="px-3 py-2 text-[0.75rem] text-muted-foreground">No canonical ProductVersion changes were supplied.</p>
         )}
       </div>
 
       <div
         aria-live="polite"
-        className={`rounded-md border px-3 py-2 text-[12px] ${validationStatus === "invalid" ? "border-late/50 bg-late/10 text-late" : validationStatus === "valid" ? "border-ok/50 bg-ok/10 text-ok" : "border-border bg-surface-2 text-muted-foreground"}`}
+        className={`rounded-md border px-3 py-2 text-[0.75rem] ${validationStatus === "invalid" ? "border-late/50 bg-late/10 text-late" : validationStatus === "valid" ? "border-ok/50 bg-ok/10 text-ok" : "border-border bg-surface-2 text-muted-foreground"}`}
       >
         {validationStatus === "valid" ? (
           <span className="flex items-center gap-1.5"><CheckCircle2 className="size-3.5" />{validationSummary}</span>

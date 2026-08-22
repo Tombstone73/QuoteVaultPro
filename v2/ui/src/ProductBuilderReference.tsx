@@ -234,7 +234,7 @@ export const ProductBuilderReference = ({
   if (productId && !sourceReady) return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
   return <LovableProductBuilderRoot
     title={draft.general.displayName || "Untitled product"}
-    lifecycle={<><Chip tone={product?.versions.active ? "ok" : "neutral"}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</Chip>{newProduct && <span className="text-[11px] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <Chip tone="warn">Unsaved</Chip>}</>}
+    lifecycle={<><Chip tone={product?.versions.active ? "ok" : "neutral"}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</Chip>{newProduct && <span className="text-[0.6875rem] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <Chip tone="warn">Unsaved</Chip>}</>}
     subtitle={lifecycleSubtitle}
     picker={<select aria-label="Choose Product" value={productId ?? ""} onChange={(event) => { if (dirty.size) { setPendingProduct(event.target.value); return; } openProduct(event.target.value); }} disabled={catalog.isLoading}><option value="">{newProduct ? "New Product" : "Choose Product"}</option>{catalog.data?.items.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select>}
     onSave={() => void runSave()} saving={saving} onPublish={publish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} findings={{ errors: issueCount, warnings: 0 }}

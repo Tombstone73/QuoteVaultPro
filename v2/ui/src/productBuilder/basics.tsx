@@ -28,16 +28,16 @@ export function BasicsSection({
   return <div className="space-y-3">
     <div className="grid gap-3 sm:grid-cols-2">
       <Cell label="Product name">
-        <input className="h-8 w-full text-[13px]" disabled={disabled} value={general.displayName} onChange={(event) => patch({ displayName: event.target.value })} />
+        <input className="h-8 w-full text-[0.8125rem]" disabled={disabled} value={general.displayName} onChange={(event) => patch({ displayName: event.target.value })} />
       </Cell>
       <Cell label="Shop name" hint="Short internal name shown in queues and station screens. This field is not yet available in V2.">
-        <input className="h-8 w-full text-[13px]" disabled placeholder="Not available in V2" aria-label="Shop name is not available in V2" />
+        <input className="h-8 w-full text-[0.8125rem]" disabled placeholder="Not available in V2" aria-label="Shop name is not available in V2" />
       </Cell>
       <Cell label="Description" className="sm:col-span-2">
-        <textarea className="min-h-[60px] w-full text-[13px]" disabled={disabled} value={general.description ?? ""} onChange={(event) => patch({ description: event.target.value || null })} />
+        <textarea className="min-h-[60px] w-full text-[0.8125rem]" disabled={disabled} value={general.description ?? ""} onChange={(event) => patch({ description: event.target.value || null })} />
       </Cell>
       <Cell label="Category">
-        <input className="h-8 w-full text-[13px]" disabled={disabled} value={general.category ?? ""} onChange={(event) => patch({ category: event.target.value || null })} />
+        <input className="h-8 w-full text-[0.8125rem]" disabled={disabled} value={general.category ?? ""} onChange={(event) => patch({ category: event.target.value || null })} />
       </Cell>
       <Cell label="Product type" hint="Drives sheet yield and usage math. Product type is read-only in V2.">
         <Picker value={productType} disabled items={[productType]} onChange={() => undefined} />
@@ -62,9 +62,9 @@ export function BasicsSection({
     </div>
     <Disclosure label="AI parsing hints (optional)" icon={<Sparkles className="size-3.5" />}>
       <div className="space-y-2.5">
-        <p className="text-[12px] text-muted-foreground">Only used when inbound email and RFQ text is matched to catalog products. Not required to publish.</p>
+        <p className="text-[0.75rem] text-muted-foreground">Only used when inbound email and RFQ text is matched to catalog products. Not required to publish.</p>
         <Toggle label="Use the customer-facing description" hint={unsupportedReason} checked={false} disabled onChange={() => undefined} />
-        <textarea className="min-h-[76px] w-full text-[13px]" disabled placeholder="Not available in V2" aria-label="Dedicated AI parsing description is not available in V2" />
+        <textarea className="min-h-[76px] w-full text-[0.8125rem]" disabled placeholder="Not available in V2" aria-label="Dedicated AI parsing description is not available in V2" />
       </div>
     </Disclosure>
   </div>;
