@@ -35,7 +35,26 @@ import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
  * canonical V2 draft read/mutate contracts.
  */
 
-type DirtySection = "general" | "options" | "pricing" | "matrix" | "formula" | "impacts" | "recipe" | "routing";
+export type DirtySection = "general" | "options" | "pricing" | "matrix" | "formula" | "impacts" | "recipe" | "routing";
+export type PublishDraftRevision = Readonly<{ draftVersionId: string; expectedDraftUpdatedAt: string }>;
+export type PublishGate = Readonly<{ allowed: boolean; reason?: string }>;
+
+/** Pure client-side guard only. The canonical publisher remains the readiness
+ * and revision authority once this gate permits an attempt. */
+export const publishGateForDraft = (input: Readonly<{
+  canEdit: boolean; persisted: boolean; dirty: ReadonlySet<DirtySection>; saving: boolean; publishing: boolean;
+  localErrors: number; saveError: string | null; requiresReconciliation: boolean;
+}>): PublishGate => {
+  if (!input.canEdit) return { allowed: false, reason: "You do not have permission to publish this Product." };
+  if (!input.persisted) return { allowed: false, reason: "Save Changes must create the Product Draft before it can be published." };
+  if (input.saving) return { allowed: false, reason: "Save Changes is still persisting this Draft." };
+  if (input.publishing) return { allowed: false, reason: "Publishing is already in progress." };
+  if (input.requiresReconciliation) return { allowed: false, reason: "This Draft changed elsewhere. Refresh and reconcile before publishing." };
+  if (input.saveError) return { allowed: false, reason: "Resolve the latest Save Changes error before publishing." };
+  if (input.dirty.size) return { allowed: false, reason: "Save Changes before publishing. Unsaved edits are not part of the canonical Draft." };
+  if (input.localErrors) return { allowed: false, reason: "Fix local blocking issues before publishing." };
+  return { allowed: true };
+};
 type DraftState = Readonly<{
   general: ProductDraftGeneral;
   options: readonly ProductDraftOption[];
@@ -73,10 +92,10 @@ const clone = <T,>(value: T): T => structuredClone(value);
 const key = (scope: string, org: string, id: string, part: string) => ["v2", scope, org, "reference-product-builder", id, part] as const;
 
 export const ProductBuilderReference = ({
-  organizationId, sessionScope, product, canEdit, publish, publishing, openCreatedProduct, newProduct = false,
+  organizationId, sessionScope, product, canEdit, publish, publishing, publishError, openCreatedProduct, newProduct = false,
 }: Readonly<{
   organizationId: string; sessionScope: string; product?: ProductWorkspaceDetail; canEdit: boolean;
-  publish?: () => void; publishing?: boolean; openCreatedProduct?: (id: string) => void; newProduct?: boolean;
+  publish?: (revision: PublishDraftRevision) => void; publishing?: boolean; publishError?: { code?: string; message?: string } | null; openCreatedProduct?: (id: string) => void; newProduct?: boolean;
 }>) => {
   const productId = product?.productId;
   const client = useQueryClient();
@@ -93,6 +112,7 @@ export const ProductBuilderReference = ({
   const [draft, setDraft] = useState<DraftState>(() => blankState());
   const [dirty, setDirty] = useState<ReadonlySet<DirtySection>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [requiresReconciliation, setRequiresReconciliation] = useState(false);
   const [saving, setSaving] = useState(false);
   const [adoptingLegacyFormula, setAdoptingLegacyFormula] = useState(false);
   const [legacyFormulaError, setLegacyFormulaError] = useState<string | null>(null);
@@ -102,6 +122,7 @@ export const ProductBuilderReference = ({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const sectionJumpRef = useRef<((section: ProductBuilderSection) => void) | null>(null);
   const initialised = useRef<string | null>(null);
+  const authoritativeDraft = useRef<PublishDraftRevision | null>(null);
 
   const sourceReady = !productId || Boolean(
     generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data
@@ -119,36 +140,45 @@ export const ProductBuilderReference = ({
     });
     initialised.current = productId;
     setDirty(new Set()); setSaveError(null);
+    authoritativeDraft.current = { draftVersionId: generalRead.data!.draftVersionId, expectedDraftUpdatedAt: generalRead.data!.draftUpdatedAt };
+    setRequiresReconciliation(false);
   }, [productId, sourceReady, generalRead.data, optionsRead.data, pricingRead.data, formulaRead.data, matrixRead.data, impactsRead.data, recipeRead.data, routingRead.data]);
+  useEffect(() => {
+    if (!publishError) return;
+    setSaveError(publishError.message ?? "Canonical publication readiness failed. Save and reconcile before trying again.");
+    if (publishError.code === "STALE_STATE") setRequiresReconciliation(true);
+  }, [publishError]);
 
   const patch = useCallback((section: DirtySection, update: (current: DraftState) => DraftState) => {
     setDraft((current) => update(clone(current)));
     setDirty((current) => new Set([...current, section]));
   }, []);
   const runSave = async (): Promise<boolean> => {
-    if (!canEdit || saving) return false;
+    if (!canEdit || saving || requiresReconciliation) return false;
     if (!draft.general.displayName.trim()) { setSaveError("Product name is required before saving."); sectionJumpRef.current?.("basics"); return false; }
     setSaving(true); setSaveError(null);
     const saved: DirtySection[] = [];
     try {
-      let id = productId; let version = generalRead.data?.draftVersionId; let revision = generalRead.data?.draftUpdatedAt;
+      let id = productId; let version = authoritativeDraft.current?.draftVersionId ?? generalRead.data?.draftVersionId; let revision = authoritativeDraft.current?.expectedDraftUpdatedAt ?? generalRead.data?.draftUpdatedAt;
       if (!id) {
         const created = await productApi.createProduct(organizationId, newBusinessRequestId(), draft.general.displayName.trim());
         id = created.productId; version = created.draftVersionId; revision = created.draftUpdatedAt;
+        authoritativeDraft.current = { draftVersionId: version, expectedDraftUpdatedAt: revision };
       }
       if (!id || !version || !revision) throw new Error("The Product Draft could not be prepared for saving.");
       const request = () => newBusinessRequestId();
-      if (!productId || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: draft.general }); revision = value.draftUpdatedAt; version = value.draftVersionId; saved.push("general"); }
-      if (dirty.has("options")) { const value = await productApi.saveDraftOptions(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, options: draft.options }); revision = value.draftUpdatedAt; saved.push("options"); }
-      if (dirty.has("formula")) { const value = await productApi.saveDraftFormula(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, expression: draft.formula.expression, variables: draft.formula.variables, allowRotation: draft.formula.allowRotation, ...(draft.formula.rotationControl ? { rotationControl: draft.formula.rotationControl } : {}) }); revision = value.draftUpdatedAt; saved.push("formula"); }
-      if (dirty.has("pricing")) { const value = await productApi.saveDraftPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, base: { perPieceCents: draft.pricing.perPieceCents, perSqftCents: draft.pricing.perSqftCents, minimumChargeCents: draft.pricing.minimumChargeCents }, tierBasis: draft.pricing.tierBasis, tiers: draft.pricing.tiers }); revision = value.draftUpdatedAt; saved.push("pricing"); }
-      if (dirty.has("matrix") && draft.matrix) { const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, matrixId: draft.matrix.matrixId, pricingUnit: draft.matrix.pricingUnit, dimensions: draft.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: draft.matrix.rows }); revision = value.draftUpdatedAt; saved.push("matrix"); }
+      const savedSection = (section: DirtySection, value: PublishDraftRevision) => { version = value.draftVersionId; revision = value.expectedDraftUpdatedAt; authoritativeDraft.current = value; saved.push(section); setDirty((current) => { const next = new Set(current); next.delete(section); return next; }); };
+      if (!productId || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: draft.general }); savedSection("general", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("options")) { const value = await productApi.saveDraftOptions(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, options: draft.options }); savedSection("options", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("formula")) { const value = await productApi.saveDraftFormula(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, expression: draft.formula.expression, variables: draft.formula.variables, allowRotation: draft.formula.allowRotation, ...(draft.formula.rotationControl ? { rotationControl: draft.formula.rotationControl } : {}) }); savedSection("formula", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("pricing")) { const value = await productApi.saveDraftPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, base: { perPieceCents: draft.pricing.perPieceCents, perSqftCents: draft.pricing.perSqftCents, minimumChargeCents: draft.pricing.minimumChargeCents }, tierBasis: draft.pricing.tierBasis, tiers: draft.pricing.tiers }); savedSection("pricing", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("matrix") && draft.matrix) { const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, matrixId: draft.matrix.matrixId, pricingUnit: draft.matrix.pricingUnit, dimensions: draft.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: draft.matrix.rows }); savedSection("matrix", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       if (dirty.has("impacts")) {
         for (const option of draft.impacts) { const node = await productApi.saveDraftOptionPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, optionId: option.optionId, impact: option.nodeImpact }); revision = node.draftUpdatedAt; for (const choice of option.choices) { const response = await productApi.saveDraftOptionPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, optionId: option.optionId, choiceValue: choice.choiceValue, impact: choice.impact }); revision = response.draftUpdatedAt; } }
-        saved.push("impacts");
+        savedSection("impacts", { draftVersionId: version, expectedDraftUpdatedAt: revision });
       }
-      if (dirty.has("recipe")) { const value = await productApi.saveDraftRecipe(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, components: draft.recipe }); revision = value.draftUpdatedAt; saved.push("recipe"); }
-      if (dirty.has("routing")) { const value = await productApi.saveDraftRouting(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, routing: draft.routing }); revision = value.draftUpdatedAt; saved.push("routing"); }
+      if (dirty.has("recipe")) { const value = await productApi.saveDraftRecipe(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, components: draft.recipe }); savedSection("recipe", { draftVersionId: value.productVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("routing")) { const value = await productApi.saveDraftRouting(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, routing: draft.routing }); savedSection("routing", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       setDirty(new Set());
       if (!productId) {
         if (!openCreatedProduct) throw new Error("New Product navigation is unavailable.");
@@ -161,7 +191,8 @@ export const ProductBuilderReference = ({
       return true;
     } catch (error) {
       const detail = error as { code?: string; message?: string };
-      const prefix = detail.code === "STALE_STATE" ? "This Draft changed elsewhere. Your local edits were kept; refresh and reconcile before saving again." : "Save stopped after " + (saved.length ? `${saved.join(", ")} saved. ` : "") ;
+      if (detail.code === "STALE_STATE") setRequiresReconciliation(true);
+      const prefix = detail.code === "STALE_STATE" ? "This Draft changed elsewhere. Your local edits were kept; refresh and reconcile before saving or publishing." : "Save stopped after " + (saved.length ? `${saved.join(", ")} saved. ` : "") ;
       setSaveError(prefix + (detail.message ?? "Unable to save this Draft."));
       return false;
     } finally { setSaving(false); }
@@ -178,6 +209,9 @@ export const ProductBuilderReference = ({
       });
       setDraft((current) => ({ ...current, formula: { expression: value.expression, variables: clone(value.variables), allowRotation: value.allowRotation, ...(value.rotationControl ? { rotationControl: clone(value.rotationControl) } : {}) } }));
       setDirty((current) => { const next = new Set(current); next.delete("formula"); return next; });
+      authoritativeDraft.current = { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt };
+      setSaveError(null);
+      setRequiresReconciliation(false);
       await Promise.all([generalRead.refetch(), optionsRead.refetch(), pricingRead.refetch(), formulaRead.refetch(), matrixRead.refetch(), impactsRead.refetch(), recipeRead.refetch(), routingRead.refetch()]);
     } catch (error) {
       const detail = error as { message?: string };
@@ -188,6 +222,11 @@ export const ProductBuilderReference = ({
   }, [adoptingLegacyFormula, canEdit, formulaRead, generalRead, impactsRead, matrixRead, optionsRead, organizationId, pricingRead, productId, recipeRead, routingRead]);
 
   const issueCount = !draft.general.displayName.trim() ? 1 : 0;
+  const publishGate = publishGateForDraft({ canEdit, persisted: Boolean(productId), dirty, saving, publishing: Boolean(publishing), localErrors: issueCount, saveError, requiresReconciliation });
+  const requestPublish = useCallback(() => {
+    if (!publishGate.allowed || !publish || !authoritativeDraft.current) return;
+    publish(authoritativeDraft.current);
+  }, [publish, publishGate]);
   const routeTemplates = templates.data?.templates ?? [];
   const optionSelectionKeys = useMemo<Record<string, string>>(() => Object.fromEntries((impactsRead.data?.options ?? []).map((option) => [option.optionId, option.selectionKey])), [impactsRead.data]);
   /** Preserve the server-owned pricing mode/editability metadata while making
@@ -271,7 +310,7 @@ export const ProductBuilderReference = ({
     title={draft.general.displayName || "Untitled product"}
     lifecycle={<><Chip tone={product?.versions.active ? "ok" : "neutral"}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</Chip>{newProduct && <span className="text-[0.6875rem] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <Chip tone="warn">Unsaved</Chip>}</>}
     subtitle={lifecycleSubtitle}
-    onSave={() => void runSave()} saving={saving} onPublish={publish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} findings={{ errors: issueCount, warnings: 0 }}
+    onSave={() => void runSave()} saving={saving} onPublish={requestPublish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} publishDisabled={!publishGate.allowed} publishBlockedReason={publishGate.reason} findings={{ errors: issueCount, warnings: 0 }}
     sectionJumpRef={sectionJumpRef}
   rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} selectionKeys={optionSelectionKeys} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={setPreviewInputs} result={preview} loading={previewLoading} error={previewError} onPreview={() => void runPreview()} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={issueCount ? [{ severity: "error", code: "PRODUCT_NAME_REQUIRED", message: "Product name is required.", section: "basics" }] : []} />}
   >{{
@@ -286,6 +325,6 @@ export const ProductBuilderReference = ({
       { label: "Measurement", value: draft.general.measurementMode },
       { label: "Workflow", value: draft.general.workflowIntent },
       { label: "Routing", value: draft.routing.kind },
-    ]} lifecycle={reviewLifecycle} changes={reviewChanges} findings={reviewFindings} validation={{ status: issueCount ? "invalid" : "unknown", summary: issueCount ? "Product name is required before saving or publishing." : "Publishing runs canonical server validation and readiness checks." }} />,
+    ]} lifecycle={reviewLifecycle} changes={reviewChanges} findings={reviewFindings} validation={{ status: issueCount || !publishGate.allowed ? "invalid" : "unknown", summary: issueCount ? "Product name is required before saving or publishing." : publishGate.reason ?? "Publishing runs canonical server validation and readiness checks." }} />,
   }}</LovableProductBuilderRoot>;
 };

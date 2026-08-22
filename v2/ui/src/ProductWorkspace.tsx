@@ -7,7 +7,7 @@ import {
   type ProductWorkspaceDetail,
 } from "./api";
 import { productBuilderPath, productPath } from "./productRouting";
-import { ProductBuilderReference } from "./ProductBuilderReference";
+import { ProductBuilderReference, type PublishDraftRevision } from "./ProductBuilderReference";
 
 const keys = {
   list: (s: string, o: string, q: string, p: number) =>
@@ -101,9 +101,16 @@ export const ProductWorkspace = ({
     },
   });
   const publishDraft = useMutation({
-    mutationFn: (product: ProductWorkspaceDetail) => {
+    mutationFn: async (input: Readonly<{ productId: string; revision: PublishDraftRevision }>) => {
+      // Read immediately before publish so the browser cannot race a just-saved
+      // Draft revision or publish a parent query-cache snapshot from before Save.
+      const product = await productApi.get(organizationId, input.productId);
       const draft = product.versions.draft;
-      if (!draft) throw new Error("A Product Draft is required before publication.");
+      if (!draft || draft.productVersionId !== input.revision.draftVersionId || draft.updatedAt !== input.revision.expectedDraftUpdatedAt) {
+        const error = new Error("This Draft changed elsewhere. Refresh and reconcile before publishing.");
+        Object.assign(error, { code: "STALE_STATE" });
+        throw error;
+      }
       return productApi.publishDraft(
         organizationId,
         product.productId,
@@ -139,7 +146,7 @@ export const ProductWorkspace = ({
   if (newProduct)
     return <NewProductBuilder organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openEditor={openEditor} />;
   if (productId)
-    return <ProductDraftEntry state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} publish={() => { if (detail.data) publishDraft.mutate(detail.data); }} publishing={publishDraft.isPending} back={backToCatalog} />;
+    return <ProductDraftEntry state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} publish={(revision) => publishDraft.mutate({ productId, revision })} publishing={publishDraft.isPending} publishError={publishDraft.error as { code?: string; message?: string } | null} back={backToCatalog} />;
   if (builderMode) return <section className="v2-products"><p className="v2-proof-empty">Opening Products…</p></section>;
   return (
     <section className="v2-products" aria-label="Products">
@@ -248,6 +255,7 @@ const ProductDraftEntry = ({
   createDraft,
   publish,
   publishing,
+  publishError,
   back,
 }: Readonly<{
   state: ReturnType<typeof useQuery<ProductWorkspaceDetail>>;
@@ -257,8 +265,9 @@ const ProductDraftEntry = ({
   creatingDraft: boolean;
   draftCreationError?: string;
   createDraft: (product: ProductWorkspaceDetail) => void;
-  publish: () => void;
+  publish: (revision: PublishDraftRevision) => void;
   publishing: boolean;
+  publishError?: { code?: string; message?: string } | null;
   back: () => void;
 }>) => {
   const automaticDraftRequest = useRef("");
@@ -276,5 +285,5 @@ const ProductDraftEntry = ({
     return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">You do not have permission to edit this Product.</p></section>;
   if (!product.versions.draft)
     return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">{draftCreationError ?? (creatingDraft ? "Preparing an editable Draft…" : "This Product has no editable Draft.")}</p></section>;
-  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} />;
+  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} publishError={publishError} />;
 };
