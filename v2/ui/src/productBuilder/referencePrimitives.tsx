@@ -1,6 +1,9 @@
 import { ChevronDown } from "lucide-react";
 import React, { useState, type ReactNode } from "react";
 
+/** Native-control adaptation of Lovable's Input/Select/Textarea visual contract. */
+export const builderControlClass = "rounded-md border border-input bg-transparent shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted-foreground";
+
 /**
  * Presentation port of reference/lovable-ui/src/components/app/product-editor/fields.tsx
  * plus the page-local Section/Sub/Disclosure primitives from its product-builder
@@ -15,7 +18,7 @@ export function Cell({ label, hint, children, className }: Readonly<{ label?: st
 }
 
 export function Picker<T extends string>({ value, onChange, items, className, disabled }: Readonly<{ value: T; onChange: (value: T) => void; items: readonly T[]; className?: string; disabled?: boolean }>) {
-  return <select className={`h-8 min-w-0 w-full text-[0.8125rem] ${className ?? ""}`} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as T)}>
+  return <select className={`${builderControlClass} h-8 min-w-0 w-full text-[0.8125rem] ${className ?? ""}`} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as T)}>
     {items.map((item) => <option key={item} value={item}>{item}</option>)}
   </select>;
 }
