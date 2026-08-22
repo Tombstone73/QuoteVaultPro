@@ -50,7 +50,9 @@ const selectTier = (tiers: readonly PricingTierRule[] | undefined, basis: number
  * The optional override is supplied by the resolved ProductVersion boundary so
  * a legacy ninth sheet function argument cannot disagree with the nesting
  * evidence used to select computed-sheet tiers. Direct legacy evaluator users
- * without an override retain their historical ninth-argument behavior.
+ * without an override retain their historical ninth-argument behavior. The
+ * numeric runtime bridge is deliberately normalized here only; it is never a
+ * second persisted rotation policy.
  */
 export const evaluateResolvedFormula = (expression: string, variables: Record<string, number>, resolvedAllowRotation?: boolean): number => {
   const tokens = expression.match(/\s*(ceil|sheet_consumption_sqft|[A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)|[(),+\-*/])/gu);
@@ -66,7 +68,12 @@ export const evaluateResolvedFormula = (expression: string, variables: Record<st
       const args:number[]=[];
       while (true) { args.push(sum()); const separator=take(); if (separator === ")") break; if (separator !== ",") throw new Error("sheet_consumption_sqft arguments are invalid."); }
       if (args.length !== 8 && args.length !== 9) throw new Error("sheet_consumption_sqft requires eight or nine arguments.");
-      return sheetConsumptionSqft(args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,args[6]!,args[7]!,resolvedAllowRotation ?? args[8] ?? false);
+      const runtimeRotation = typeof variables.allow_rotation === "number"
+        ? variables.allow_rotation === 1
+        : typeof (variables as Record<string, unknown>).allowRotation === "boolean"
+          ? (variables as Record<string, unknown>).allowRotation as boolean
+          : undefined;
+      return sheetConsumptionSqft(args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,args[6]!,args[7]!,resolvedAllowRotation ?? runtimeRotation ?? args[8] ?? false);
     }
     if (token === "-") return -factor();
     if (token && /^(?:\d|\.)/u.test(token)) return Number(token);

@@ -1193,7 +1193,10 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             "Product Draft editing is unavailable.",
           );
         const body = request.body as Record<string, unknown>,
-          variables = body.variables;
+          variables = body.variables,
+          rotationControl = body.rotationControl,
+          rotationControlRecord = rotationControl && typeof rotationControl === "object" && !Array.isArray(rotationControl) ? rotationControl as Record<string, unknown> : undefined,
+          rotationChoiceValues = rotationControlRecord?.allowWhenChoiceValues;
         if (
           typeof body.businessRequestId !== "string" ||
           typeof body.draftVersionId !== "string" ||
@@ -1201,6 +1204,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body.expression !== "string" ||
           typeof body.allowRotation !== "boolean" ||
           Object.prototype.hasOwnProperty.call(body, "formulaId") ||
+          (rotationControl !== undefined && (!rotationControlRecord || typeof rotationControlRecord.optionId !== "string" || !rotationControlRecord.optionId || !Array.isArray(rotationChoiceValues) || rotationChoiceValues.length === 0 || rotationChoiceValues.some((value: unknown) => typeof value !== "string" || !value))) ||
           !variables ||
           typeof variables !== "object" ||
           Array.isArray(variables)
@@ -1232,6 +1236,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             expression: body.expression,
             variables: variables as Record<string, number>,
             allowRotation: body.allowRotation,
+            ...(rotationControlRecord === undefined ? {} : { rotationControl: { optionId: rotationControlRecord.optionId as string, allowWhenChoiceValues: rotationChoiceValues as string[] } }),
           },
         );
         return result.ok

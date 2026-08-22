@@ -140,6 +140,16 @@ export type PricingV2Base = {
 
 export type Pbv2TierBasis = "line_item_quantity" | "computed_sheet_usage";
 
+/**
+ * Optional ProductVersion policy narrowing when an otherwise permitted sheet
+ * rotation may be used.  `optionId` is the stable PBV2 question-node identity;
+ * `allowWhenChoiceValues` contains stable choice values, never display labels.
+ */
+export type PricingV2RotationControl = {
+  optionId: string;
+  allowWhenChoiceValues: string[];
+};
+
 export type PricingV2 = {
   unitSystem?: "imperial" | "metric";
   /**
@@ -149,6 +159,11 @@ export type PricingV2 = {
    * frozen with the ProductVersion.
    */
   allowRotation?: boolean;
+  /**
+   * A configured option may disallow rotation for individual line-item
+   * selections. It can never turn rotation on when `allowRotation` is false.
+   */
+  rotationControl?: PricingV2RotationControl;
   tierBasis?: Pbv2TierBasis;
   base?: PricingV2Base;
   qtyTiers?: PricingV2Tier[];
@@ -567,9 +582,15 @@ export const pricingV2BaseSchema: z.ZodType<PricingV2Base> = z.object({
 
 export const pbv2TierBasisSchema: z.ZodType<Pbv2TierBasis> = z.enum(["line_item_quantity", "computed_sheet_usage"]);
 
+export const pricingV2RotationControlSchema: z.ZodType<PricingV2RotationControl> = z.object({
+  optionId: z.string().min(1),
+  allowWhenChoiceValues: z.array(z.string().min(1)).min(1),
+});
+
 export const pricingV2Schema: z.ZodType<PricingV2> = z.object({
   unitSystem: z.enum(["imperial", "metric"]).optional(),
   allowRotation: z.boolean().optional(),
+  rotationControl: pricingV2RotationControlSchema.optional(),
   tierBasis: pbv2TierBasisSchema.optional(),
   base: pricingV2BaseSchema.optional(),
   qtyTiers: z.array(pricingV2TierSchema).optional(),

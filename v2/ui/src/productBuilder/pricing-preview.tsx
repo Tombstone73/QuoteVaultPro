@@ -46,7 +46,7 @@ export function PricingPreviewRail({ productId, measurementMode, options, recipe
       <ReferenceButton variant="outline" size="sm" className="mt-2.5" disabled={!productId || loading} aria-busy={loading || undefined} onClick={onPreview}>{loading ? "Resolving…" : "Preview price"}</ReferenceButton>
       {loading && <p className="mt-2.5 text-[0.6875rem] text-muted-foreground" role="status">Resolving the canonical server pricing preview…</p>}
       {!loading && error && <p className="mt-2.5 rounded-md border border-late/40 bg-late/10 px-2.5 py-2 text-[0.75rem] text-late" role="alert">{error}</p>}
-      {!loading && !error && (result ? <PreviewResult result={result} /> : <p className="mt-2.5 text-[0.6875rem] text-muted-foreground">Preview calls the canonical server pricing service; no client calculation is used.</p>)}
+      {!loading && !error && (result ? <PreviewResult result={result} options={options} /> : <p className="mt-2.5 text-[0.6875rem] text-muted-foreground">Preview calls the canonical server pricing service; no client calculation is used.</p>)}
     </Card>
 
     <Card title="Material resolution"><dl className="space-y-1 text-[0.75rem]">{recipe.length ? recipe.map((component, index) => <Row key={`${component.componentId ?? component.materialId}:${index}`} label={component.materialName ?? component.materialId} value={`${component.quantity} ${component.unit}${component.condition ? " · conditional" : ""}`} muted={Boolean(component.condition)} />) : <Row label="Recipe" value="No lines" muted />}</dl>{onJump && <RailJump target="materials" label="Edit materials" onJump={onJump} />}</Card>
@@ -61,10 +61,13 @@ export function PricingPreviewRail({ productId, measurementMode, options, recipe
   </div>;
 }
 
-function PreviewResult({ result }: Readonly<{ result: ProductDraftPricingPreview }>) {
+function PreviewResult({ result, options }: Readonly<{ result: ProductDraftPricingPreview; options: readonly ProductDraftOption[] }>) {
+  const rotation = result.explanation.computedSheetUsage;
+  const controlledOption = rotation?.rotationControl ? options.find((option) => option.optionId === rotation.rotationControl!.optionId) : undefined;
+  const selectedRotationChoices = controlledOption && rotation?.rotationControl ? rotation.rotationControl.selectedChoiceValues.map((value) => controlledOption.choices.find((choice) => choice.choiceValue === value)?.label ?? value).join(", ") : undefined;
   return <><dl className="mt-2.5 space-y-1 border-t border-border pt-2 text-[0.75rem]">
     {result.dimensions && <Row label="Area" value={`${result.dimensions.areaSquareFeet.toFixed(2)} sq ft`} />}
-    {result.explanation.computedSheetUsage && <><Row label="Computed sheets" value={String(result.explanation.computedSheetUsage.sheetCount)} />{result.explanation.computedSheetUsage.allowRotation !== undefined && <Row label="Rotation" value={result.explanation.computedSheetUsage.allowRotation ? "ON" : "OFF"} />}</>}
+    {rotation && <><Row label="Computed sheets" value={String(rotation.sheetCount)} />{rotation.productAllowsRotation !== undefined && <Row label="Allow rotation" value={rotation.productAllowsRotation ? "ON" : "OFF"} />}{rotation.rotationControl && <Row label={controlledOption?.label ?? "Rotation control"} value={selectedRotationChoices || "No selection"} />}{rotation.effectiveRotation !== undefined ? <Row label="Effective rotation" value={rotation.effectiveRotation ? "ON" : "OFF"} /> : rotation.allowRotation !== undefined && <Row label="Rotation" value={rotation.allowRotation ? "ON" : "OFF"} />}</>}
     {result.tier && <Row label="Pricing tier" value={`${result.tier.basis}: ${result.tier.value}`} />}
     {result.breakdown.map((entry, index) => <Row key={`${entry.label}:${index}`} label={entry.label} value={money(entry.cents)} muted />)}
     <Row label="Minimum charge" value={result.minimumChargeApplied ? "Applied" : "Not applied"} muted />

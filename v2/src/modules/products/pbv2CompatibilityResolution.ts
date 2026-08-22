@@ -134,8 +134,17 @@ const numberVariable = (
 };
 
 type ResolvedRotationPolicy = Readonly<{
+  /** Effective nesting policy after the optional line-item option control. */
   allowRotation: boolean;
+  productAllowsRotation: boolean;
+  optionAllowsRotation: boolean;
   source: "product_version.pricingV2.allowRotation" | "legacy.pricingFormulaVariables.allow_rotation" | "legacy.formulaVariables.allow_rotation" | "legacy.product.pricing_profile_config.allowRotation" | "legacy.formulaLibrary.allow_rotation" | "default.false";
+  rotationControl?: Readonly<{
+    optionId: string;
+    selectionKey: string;
+    selectedChoiceValues: readonly string[];
+    allowWhenChoiceValues: readonly string[];
+  }>;
 }>;
 
 /**
@@ -151,7 +160,7 @@ export const resolveProductVersionRotationPolicy = (
   formulaConfig: JsonValue | null | undefined,
 ): ResolvedRotationPolicy => {
   if (typeof pricingV2.allowRotation === "boolean") {
-    return { allowRotation: pricingV2.allowRotation, source: "product_version.pricingV2.allowRotation" };
+    return { allowRotation: pricingV2.allowRotation, productAllowsRotation: pricingV2.allowRotation, optionAllowsRotation: true, source: "product_version.pricingV2.allowRotation" };
   }
   const legacySources: readonly [unknown, ResolvedRotationPolicy["source"]][] = [
     [record(meta.pricingFormulaVariables)?.allow_rotation ?? record(meta.pricingFormulaVariables)?.allowRotation, "legacy.pricingFormulaVariables.allow_rotation"],
@@ -161,9 +170,50 @@ export const resolveProductVersionRotationPolicy = (
   ];
   for (const [value, source] of legacySources) {
     const resolved = parseFormulaBoolean(value);
-    if (resolved !== null) return { allowRotation: resolved, source };
+    if (resolved !== null) return { allowRotation: resolved, productAllowsRotation: resolved, optionAllowsRotation: true, source };
   }
-  return { allowRotation: false, source: "default.false" };
+  return { allowRotation: false, productAllowsRotation: false, optionAllowsRotation: true, source: "default.false" };
+};
+
+/**
+ * Resolves a ProductVersion rotation policy against the already canonicalized
+ * runtime selections.  This deliberately refers to the PBV2 node id and
+ * choice values only; labels, product type, Material, and Formula identity are
+ * not pricing authorities.
+ */
+const resolveEffectiveRotationPolicy = (
+  productPolicy: ResolvedRotationPolicy,
+  tree: OptionTreeV2,
+  pricingV2: Readonly<Record<string, unknown>>,
+  selections: Readonly<Record<string, JsonValue>>,
+): ApplicationResult<ResolvedRotationPolicy> => {
+  // A ProductVersion-level off switch is absolute. A stale optional control
+  // cannot re-enable rotation or alter the price in this state.
+  if (!productPolicy.productAllowsRotation) return success(productPolicy);
+  const control = record(pricingV2.rotationControl);
+  if (!control) return success(productPolicy);
+  const optionId = typeof control.optionId === "string" ? control.optionId : null;
+  const allowWhenChoiceValues = Array.isArray(control.allowWhenChoiceValues) && control.allowWhenChoiceValues.every(value => typeof value === "string" && value.length > 0)
+    ? control.allowWhenChoiceValues as string[]
+    : null;
+  if (!optionId || !allowWhenChoiceValues?.length) return validation("The configured rotation-control option is invalid.");
+  const option = tree.nodes[optionId];
+  if (!option || option.kind !== "question") return validation("The configured rotation-control option no longer exists.");
+  const choiceValues = new Set((option.choices ?? []).map(choice => choice.value));
+  if (allowWhenChoiceValues.some(value => !choiceValues.has(value))) return validation("The configured rotation-control choice no longer exists.");
+  const selectionKey = keyFor(option);
+  const rawSelection = selections[selectionKey];
+  const selectedChoiceValues = (Array.isArray(rawSelection) ? rawSelection : rawSelection == null ? [] : [rawSelection]);
+  if (!selectedChoiceValues.length || selectedChoiceValues.some(value => typeof value !== "string")) return validation("The configured rotation-control option requires a selected choice.");
+  const selected = selectedChoiceValues as string[];
+  const optionAllowsRotation = selected.some(value => allowWhenChoiceValues.includes(value));
+  return success({
+    allowRotation: productPolicy.productAllowsRotation && optionAllowsRotation,
+    productAllowsRotation: productPolicy.productAllowsRotation,
+    optionAllowsRotation,
+    source: productPolicy.source,
+    rotationControl: { optionId, selectionKey, selectedChoiceValues: selected, allowWhenChoiceValues },
+  });
 };
 
 /**
@@ -197,7 +247,22 @@ const resolveFormulaSheetEstimate = (
     return validation("The active sheet-pricing formula is missing valid sheet-yield variables.");
   }
   try {
-    return success(estimatePricingSheetUsage({ pieceWidthIn: width, pieceHeightIn: height, quantity, sheetWidthIn, sheetLengthIn, usableDropMinimumIn, billableLengthIncrementIn, minimumBillableSqft, allowRotation: rotation.allowRotation, allowRotationSource: rotation.source }));
+    const estimate = estimatePricingSheetUsage({ pieceWidthIn: width, pieceHeightIn: height, quantity, sheetWidthIn, sheetLengthIn, usableDropMinimumIn, billableLengthIncrementIn, minimumBillableSqft, allowRotation: rotation.allowRotation, allowRotationSource: rotation.source });
+    return success({
+      ...estimate,
+      facts: {
+        ...estimate.facts,
+        productAllowsRotation: rotation.productAllowsRotation,
+        optionAllowsRotation: rotation.optionAllowsRotation,
+        effectiveRotation: rotation.allowRotation,
+        ...(rotation.rotationControl ? {
+          rotationControlOptionId: rotation.rotationControl.optionId,
+          rotationControlSelectionKey: rotation.rotationControl.selectionKey,
+          rotationControlSelectedChoiceValues: rotation.rotationControl.selectedChoiceValues,
+          rotationControlAllowWhenChoiceValues: rotation.rotationControl.allowWhenChoiceValues,
+        } : {}),
+      },
+    });
   } catch {
     return validation("The active sheet-pricing formula could not resolve a valid sheet-yield estimate.");
   }
@@ -256,7 +321,10 @@ export const resolveActivePbv2PricingInput = (
   if (!resolvedOptionImpacts.ok) return resolvedOptionImpacts;
   const resolvedBaseRateOverrides = baseRateOverrides(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedBaseRateOverrides.ok) return resolvedBaseRateOverrides;
-  const rotation = resolveProductVersionRotationPolicy(pricingV2, meta, source.legacyProductPricingConfig, source.formula?.config);
+  const productRotation = resolveProductVersionRotationPolicy(pricingV2, meta, source.legacyProductPricingConfig, source.formula?.config);
+  const resolvedRotation = resolveEffectiveRotationPolicy(productRotation, tree, pricingV2, visibility.effectiveSelections as Record<string, JsonValue>);
+  if (!resolvedRotation.ok) return resolvedRotation;
+  const rotation = resolvedRotation.value;
   // `allow_rotation` remains a numeric runtime argument for the small Formula
   // evaluator only. Its value is derived from the typed ProductVersion policy,
   // never persisted as a numeric Formula input.
@@ -299,7 +367,18 @@ export const resolveActivePbv2PricingInput = (
       quantity: input.quantity,
       ...(dimensions ? { dimensions } : {}),
       selections: visibility.effectiveSelections as Record<string, JsonValue>,
-      derivedFacts: quantityOnly ? { measurementMode: "quantity_only" } as Record<string, JsonValue> : {} as Record<string, JsonValue>,
+      derivedFacts: {
+        ...(quantityOnly ? { measurementMode: "quantity_only" } : {}),
+        productAllowsRotation: rotation.productAllowsRotation,
+        optionAllowsRotation: rotation.optionAllowsRotation,
+        effectiveRotation: rotation.allowRotation,
+        ...(rotation.rotationControl ? {
+          rotationControlOptionId: rotation.rotationControl.optionId,
+          rotationControlSelectionKey: rotation.rotationControl.selectionKey,
+          rotationControlSelectedChoiceValues: rotation.rotationControl.selectedChoiceValues,
+          rotationControlAllowWhenChoiceValues: rotation.rotationControl.allowWhenChoiceValues,
+        } : {}),
+      } as Record<string, JsonValue>,
       productFacts: { measurementMode: quantityOnly ? "quantity_only" : "dimensions_required", pricingProfileKey: source.productPricingProfileKey ?? "default" },
       productionRequirements,
     },
