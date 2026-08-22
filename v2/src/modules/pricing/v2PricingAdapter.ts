@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { evaluate as evaluateMathExpression } from "mathjs";
 import { brandedId, canonicalJson, decimalText, money, type JsonValue } from "../shared/commercialValues.js";
-import { sheetConsumptionSqft } from "../../../../shared/pbv2/formulaHelpers.js";
+import { formulaHelperScope, sheetConsumptionSqft } from "../../../../shared/pbv2/formulaHelpers.js";
 import { rollNestingBillableSqft } from "../../../../shared/pbv2/rollMediaLayout.js";
 import {
   assertPricingCalculationRequest,
@@ -123,6 +124,22 @@ export const evaluateResolvedFormula = (expression: string, variables: Record<st
   const result = sum();
   if (cursor !== tokens.length || !Number.isFinite(result)) throw new Error("Invalid pricing formula result.");
   return result;
+};
+
+/**
+ * V1 Option `addFormula` impacts use mathjs plus the shared PBV2 helper scope.
+ * Keep that broader, established expression compatibility isolated to the
+ * legacy impact form; Product Formula Library validation remains its own
+ * explicit ProductVersion concern.
+ */
+const evaluateLegacyOptionImpactFormula = (expression: string, variables: Record<string, number>, resolvedAllowRotation?: boolean): number => {
+  if (!expression.trim()) throw new Error("Option pricing formula is empty.");
+  const value = Number(evaluateMathExpression(expression, {
+    ...variables,
+    ...formulaHelperScope(resolvedAllowRotation ?? variables.allow_rotation ?? false),
+  }));
+  if (!Number.isFinite(value)) throw new Error("Option pricing formula produced a non-finite amount.");
+  return value;
 };
 
 const numericFormulaVariables = (values: Readonly<Record<string, unknown>>): Record<string, number> =>
@@ -266,7 +283,7 @@ export class V2PricingParityAdapter implements PricingPort {
         : rule.kind === "percent_of_line_subtotal" ? runningCents * (Number(rule.percentBasisPoints ?? 0) / 10_000)
         : baseCentsForEffects * (amount - 1);
       const formulaImpactCents = rule.kind === "formula"
-        ? evaluateResolvedFormula(rule.formula ?? "", formulaVariables, resolvedAllowRotation) * 100
+        ? evaluateLegacyOptionImpactFormula(rule.formula ?? "", formulaVariables, resolvedAllowRotation) * 100
         : undefined;
       const impactCents = roundCents(formulaImpactCents ?? rawImpactCents);
       runningCents += impactCents;

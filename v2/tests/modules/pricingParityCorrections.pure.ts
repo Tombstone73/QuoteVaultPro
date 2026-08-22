@@ -81,12 +81,12 @@ const run = async (): Promise<void> => {
     optionImpacts: [
       { id: "linear", selectionKey: "linear", whenValue: "yes", kind: "per_linear_foot", amount: 100 },
       { id: "inch", selectionKey: "inch", whenValue: "yes", kind: "per_inch", amount: 10 },
-      { id: "formula", selectionKey: "formula", whenValue: "yes", kind: "formula", formula: "q * 1.25" },
+      { id: "formula", selectionKey: "formula", whenValue: "yes", kind: "formula", formula: "max(q, 3) * 1.25" },
       { id: "options-percent", selectionKey: "pct", whenValue: "yes", kind: "percent_of_options_subtotal", percentBasisPoints: 1000 as never },
       { id: "line-percent", selectionKey: "line", whenValue: "yes", kind: "percent_of_line_subtotal", percentBasisPoints: 1000 as never },
     ],
   }, { quantity: 2, width: "12", height: "12", selections: { linear: "yes", inch: "yes", formula: "yes", pct: "yes", line: "yes" } }));
-  assert.equal(impacts.calculatedLineAmount.cents, 1055, "V1 linear/inch/formula/subtotal impact ordering is retained");
+  assert.equal(impacts.calculatedLineAmount.cents, 1207, "V1 linear/inch/formula/subtotal impact ordering is retained");
 
   const overrides = await adapter.calculate(request("override-targets", {
     base: { perPieceCents: 100, perSquareFootCents: decimalText("100"), }, minimumChargeCents: 300,
