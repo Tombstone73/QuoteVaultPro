@@ -1,11 +1,11 @@
 import { ChevronDown, ChevronRight, GripVertical, Layers, ListOrdered, Plus, Trash2 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import type { ProductDraftOption } from "../api";
-import { Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
+import { builderControlClass, Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
 import { ChoiceEditor, InputTypePicker } from "./optionChoice";
 
-const createOption = (): ProductDraftOption => ({
-  optionId: crypto.randomUUID(),
+export const createNewProductDraftOption = (): ProductDraftOption => ({
+  optionId: `new:${crypto.randomUUID()}`,
   label: "New option",
   inputType: "select",
   required: false,
@@ -13,6 +13,22 @@ const createOption = (): ProductDraftOption => ({
   choices: [{ choiceValue: "choice", label: "Choice" }],
   canRemove: true,
 });
+
+export const appendNewProductDraftOption = (options: readonly ProductDraftOption[]): readonly ProductDraftOption[] => [
+  ...options,
+  createNewProductDraftOption(),
+];
+
+/**
+ * The select's DOM value is the canonical PBV2 choice value, never its label.
+ * Keeping the edit in this small handler makes the staged-options mutation
+ * explicit and independently testable.
+ */
+export const applyDefaultChoice = (
+  option: ProductDraftOption,
+  choiceValue: string,
+  onChange: (next: ProductDraftOption) => void,
+) => onChange({ ...option, defaultValue: choiceValue || null });
 
 /**
  * Direct presentation port of Lovable's option-groups.tsx. V2 persists a
@@ -51,9 +67,10 @@ export function OptionGroupsSection({
   };
 
   const addOption = () => {
-    const next = createOption();
-    onChange([...options, next]);
-    setSelected(next.optionId);
+    const next = appendNewProductDraftOption(options);
+    const added = next.at(-1)!;
+    onChange(next);
+    setSelected(added.optionId);
   };
 
   const reorder = (fromId: string, toId: string) => {
@@ -164,6 +181,19 @@ function OptionEditor({
 }>) {
   const [open, setOpen] = useState(true);
   const isChoice = option.inputType === "select" || option.inputType === "multiselect";
+  const hasChoices = isChoice && option.choices.length > 0;
+  const defaultChoices = Array.isArray(option.defaultValue) ? option.defaultValue : [];
+
+  const setDefaultChoice = (choiceValue: string) => {
+    applyDefaultChoice(option, choiceValue, onChange);
+  };
+
+  const setDefaultChoices = (choiceValue: string, selected: boolean) => {
+    const next = selected
+      ? [...new Set([...defaultChoices, choiceValue])]
+      : defaultChoices.filter((value) => value !== choiceValue);
+    onChange({ ...option, defaultValue: next.length ? next : null });
+  };
 
   return (
     <div className={`min-w-0 space-y-3 rounded-md border border-border p-3 ${disabled ? "opacity-60" : ""}`}>
@@ -206,6 +236,32 @@ function OptionEditor({
           </Cell>
         </div>
       </div>
+      {hasChoices && <div className="rounded-md border border-border bg-surface-2 px-2.5 py-2">
+        {option.inputType === "select" ? <Cell label="Default choice" hint="Used when a line does not select a value.">
+          <select
+            aria-label="Default choice"
+            className={`${builderControlClass} h-8 w-full text-[0.8125rem]`}
+            value={typeof option.defaultValue === "string" ? option.defaultValue : ""}
+            disabled={disabled}
+            onChange={(event) => setDefaultChoice(event.target.value)}
+          >
+            <option value="">No default</option>
+            {option.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}
+          </select>
+        </Cell> : <Cell label="Default choices" hint="Used when a line does not select values.">
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 py-1">
+            {option.choices.map((choice) => <label key={choice.choiceValue} className="inline-flex items-center gap-1.5 text-[0.8125rem]">
+              <input
+                type="checkbox"
+                checked={defaultChoices.includes(choice.choiceValue)}
+                disabled={disabled}
+                onChange={(event) => setDefaultChoices(choice.choiceValue, event.target.checked)}
+              />
+              {choice.label}
+            </label>)}
+          </div>
+        </Cell>}
+      </div>}
       <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
         <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Choices</div>
         <div className="flex items-center gap-2">
