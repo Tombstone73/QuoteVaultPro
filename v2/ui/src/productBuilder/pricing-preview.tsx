@@ -5,15 +5,17 @@ import { Cell, ReferenceButton } from "./referencePrimitives";
 
 export type PricingPreviewInputs = Readonly<{ quantity: string; width: string; height: string; selections: Record<string, unknown> }>;
 export type PreviewFinding = Readonly<{ severity: "error" | "warning" | "info"; code: string; message: string; section: string }>;
+export const previewSelectionKey = (optionId: string, selectionKeys: Readonly<Record<string, string>>): string => selectionKeys[optionId] ?? optionId;
 
 /**
  * Presentation port of reference/lovable-ui/src/components/app/product-editor/pricing-preview.tsx.
  * It renders canonical V2 preview results only; it never runs a client-side calculator.
  */
-export function PricingPreviewRail({ productId, measurementMode, options, recipe, production, inputs, onInputsChange, result, loading, error, onPreview, findings, onJump }: Readonly<{
+export function PricingPreviewRail({ productId, measurementMode, options, selectionKeys, recipe, production, inputs, onInputsChange, result, loading, error, onPreview, findings, onJump }: Readonly<{
   productId?: string;
   measurementMode: "dimensions_required" | "quantity_only";
   options: readonly ProductDraftOption[];
+  selectionKeys: Readonly<Record<string, string>>;
   recipe: readonly ProductRecipeComponent[];
   production: ProductProductionUnitSpecification | null;
   inputs: PricingPreviewInputs;
@@ -36,11 +38,11 @@ export function PricingPreviewRail({ productId, measurementMode, options, recipe
       </div> : <div className="grid grid-cols-3 gap-2"><Cell label="Qty"><input className="num h-8 text-[0.8125rem]" type="number" min="1" value={inputs.quantity} onChange={(event) => onInputsChange({ ...inputs, quantity: event.target.value })} /></Cell></div>}
 
       <div className="mt-2.5 space-y-2">
-        {visible.map((option) => <Cell key={option.optionId} label={option.label}>
-          {option.choices.length ? <select value={String(inputs.selections[option.optionId] ?? option.defaultValue ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [option.optionId]: event.target.value } })}>
+        {visible.map((option) => { const selectionKey = previewSelectionKey(option.optionId, selectionKeys); return <Cell key={option.optionId} label={option.label}>
+          {option.choices.length ? <select value={String(inputs.selections[selectionKey] ?? option.defaultValue ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })}>
             <option value="">Select</option>{option.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}
-          </select> : <input className="h-8 text-[0.8125rem]" placeholder="Free text at quote time" value={String(inputs.selections[option.optionId] ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [option.optionId]: event.target.value } })} />}
-        </Cell>)}
+          </select> : <input className="h-8 text-[0.8125rem]" placeholder="Free text at quote time" value={String(inputs.selections[selectionKey] ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })} />}
+        </Cell>;})}
       </div>
 
       <ReferenceButton variant="outline" size="sm" className="mt-2.5" disabled={!productId || loading} aria-busy={loading || undefined} onClick={onPreview}>{loading ? "Resolving…" : "Preview price"}</ReferenceButton>
