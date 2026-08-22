@@ -18,7 +18,7 @@ export function PricingEngine({ pricing, formula, disabled, onPricingChange, onF
   formula?: ProductDraftFormulaPricing;
   disabled?: boolean;
   onPricingChange: (next: ProductDraftPricing) => void;
-  onFormulaChange: (next: Pick<ProductDraftFormulaPricing, "expression" | "variables">) => void;
+  onFormulaChange: (next: Pick<ProductDraftFormulaPricing, "expression" | "variables" | "allowRotation">) => void;
 }>) {
   const [tierTab, setTierTab] = useState<"qty" | "size">("qty");
   const [varsOpen, setVarsOpen] = useState(false);
@@ -36,9 +36,11 @@ export function PricingEngine({ pricing, formula, disabled, onPricingChange, onF
   const sheetLength = formulaInput(["sheet_length", "sheetLength"]);
   const computedSheetUsage = pricing.tierBasis === "computed_sheet_usage" || Boolean(sheetWidth || sheetLength);
   const formulaVariableEditable = Boolean(!disabled && formula?.editable && formula.variablesEditable);
+  const rotationEditable = Boolean(!disabled && formula?.rotationEditable);
   const updateFormulaVariable = (key: string, raw: string) => onFormulaChange({
     expression: formula?.expression ?? "",
     variables: { ...(formula?.variables ?? {}), [key]: raw === "" ? 0 : Number(raw) },
+    allowRotation: formula?.allowRotation ?? false,
   });
   const updateBase = (field: keyof ProductDraftPricing["base"], value: number | null) => onPricingChange({ ...pricing, base: { ...pricing.base, [field]: value } });
   const updateTier = (index: number, change: Partial<ProductDraftPricingTier>) => onPricingChange({ ...pricing, tiers: pricing.tiers.map((tier, position) => position === index ? { ...tier, ...change } : tier) });
@@ -70,7 +72,7 @@ export function PricingEngine({ pricing, formula, disabled, onPricingChange, onF
         <SourceCard active={Boolean(formula)} title="Formula library" badge="Reference">
           <Cell label="Formula source"><input readOnly value={formula?.formulaName ?? formula?.source ?? "No Formula selected"} /></Cell>
           <Cell label="Expression"><input readOnly value={formula?.expression ?? "No Formula expression"} /></Cell>
-          {formula?.inputs.length ? <div className="mt-2 grid gap-2 sm:grid-cols-2">{formula.inputs.map((input) => <Cell key={input.key} label={input.label}><input disabled={!editable || !formula.editable || !formula.variablesEditable} inputMode="decimal" value={String(formula.variables[input.key] ?? "")} onChange={(event) => onFormulaChange({ expression: formula.expression, variables: { ...formula.variables, [input.key]: event.target.value === "" ? 0 : Number(event.target.value) } })} /></Cell>)}</div> : null}
+          {formula?.inputs.length ? <div className="mt-2 grid gap-2 sm:grid-cols-2">{formula.inputs.map((input) => <Cell key={input.key} label={input.label}><input disabled={!editable || !formula.editable || !formula.variablesEditable} inputMode="decimal" value={String(formula.variables[input.key] ?? "")} onChange={(event) => onFormulaChange({ expression: formula.expression, variables: { ...formula.variables, [input.key]: event.target.value === "" ? 0 : Number(event.target.value) }, allowRotation: formula.allowRotation })} /></Cell>)}</div> : null}
           <p className="mt-1 text-[0.6875rem] text-muted-foreground">Formula Library expressions are reference-only. ProductVersion inputs are editable where the canonical contract allows.</p>
           <button type="button" onClick={() => setVarsOpen(!varsOpen)} className="mt-1.5 inline-flex items-center gap-1 text-[0.75rem] text-primary hover:underline">{varsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}Available pricing variables</button>
           {varsOpen && <dl className="mt-1.5 grid gap-x-4 gap-y-1 rounded-md border border-border bg-surface-2 p-2.5 text-[0.6875rem] sm:grid-cols-2">{(formula?.supportedRuntimeVariables ?? []).map((name) => <div key={name} className="flex gap-2"><dt className="num shrink-0 font-medium">{name}</dt><dd className="text-muted-foreground">Canonical server runtime variable</dd></div>)}</dl>}
@@ -105,13 +107,13 @@ export function PricingEngine({ pricing, formula, disabled, onPricingChange, onF
         </Cell>
         <Cell label="Rotation" hint="Allow rotated / mixed layouts when nesting.">
           <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-surface-2 px-2 text-[0.75rem] text-muted-foreground">
-            <input type="checkbox" disabled checked={false} readOnly aria-label="Allow rotation" />
+            <input type="checkbox" disabled={!rotationEditable} checked={formula?.allowRotation ?? false} onChange={(event) => onFormulaChange({ expression: formula?.expression ?? "", variables: formula?.variables ?? {}, allowRotation: event.target.checked })} aria-label="Allow rotation" />
             <span>Allow rotation</span>
           </label>
         </Cell>
       </div>
       {(!sheetWidth || !sheetLength) && <p className="mt-2 text-[0.6875rem] text-muted-foreground">Sheet dimensions are unavailable because the canonical Draft formula input contract does not expose them.</p>}
-      <p className="mt-1 text-[0.6875rem] text-muted-foreground">Rotation is read-only because the canonical V2 Draft pricing contract does not expose a rotation setting.</p>
+      <p className="mt-1 text-[0.6875rem] text-muted-foreground">Rotation is stored with the canonical Draft pricing configuration and resolved by the server preview.</p>
     </div>}
     {!pricing.editable && <p className="text-[0.6875rem] text-muted-foreground">{pricing.unavailableReason ?? "Pricing is read-only for this Product Draft."}</p>}
     <p className="text-[0.6875rem] text-muted-foreground">Pricing changes are saved to the product draft when you click Save Changes.</p>

@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import { PostgresCustomersCompatibilityReader } from "../../infrastructure/compatibility/postgresCustomersRead";
 import { PostgresProductsCompatibilityReader } from "../../infrastructure/compatibility/postgresProductsRead";
 import { resolveActivePbv2PricingInput } from "../../src/modules/products/pbv2CompatibilityResolution";
+import type { ResolvedPricingInput } from "../../src/modules/products/contracts";
 import { brandedId, currencyCode, type OrganizationId } from "../../src/modules/shared/commercialValues";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
 import { sheetConsumptionSqft } from "../../../shared/pbv2/formulaHelpers";
@@ -132,6 +133,60 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(resolved.value.nestingEstimate?.facts).toMatchObject({ totalSheetCount: 1, billedSheetSqft: 3 });
     const result = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" }, nestingEstimate: resolved.value.nestingEstimate });
     expect(result.calculatedLineAmount.cents).toBe(Math.round(sheetConsumptionSqft(24, 18, 1, 48, 96, 0, 1, 0) * 100));
+  });
+
+  test("typed ProductVersion rotation is authoritative for nesting and Formula pricing while legacy rotation remains read-compatible", async () => {
+    const formula = {
+      id: "formula-sheet", code: "SHEET", profileKey: "formula",
+      expression: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      // Formula-library boolean values are historical compatibility input only.
+      config: { variables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 0, billable_length_increment: 1, minimum_billable_sqft: 32, allow_rotation: true } },
+      updatedAt: "2026-08-15T01:02:03.000Z",
+    };
+    const sourceFor = (allowRotation: boolean | undefined, legacy: unknown = undefined, legacyProductPricingConfig: any = undefined) => ({
+      id: `tree-rotation-${String(allowRotation)}`, schemaVersion: 2, publishedAt: null,
+      treeJson: {
+        ...tree,
+        meta: {
+          ...tree.meta,
+          ...(allowRotation === undefined ? {} : { pricingV2: { ...tree.meta.pricingV2, allowRotation } }),
+          ...(legacy === undefined ? {} : { formulaVariables: { allow_rotation: legacy } }),
+          pricingFormula: undefined,
+        },
+      },
+      productMeasurementMode: "dimensions_required" as const,
+      productPricingProfileKey: "formula",
+      ...(legacyProductPricingConfig === undefined ? {} : { legacyProductPricingConfig }),
+      formula,
+    });
+    const resolve = (source: ReturnType<typeof sourceFor>) => resolveActivePbv2PricingInput(product, source, {
+      organizationId: org, productId, quantity: 5, dimensions: { width: "24" as any, height: "36" as any, unit: "in" },
+    });
+
+    const canonicalOff = resolve(sourceFor(false, true));
+    const canonicalOn = resolve(sourceFor(true, false));
+    const legacyOn = resolve(sourceFor(undefined, 1));
+    const productLegacyOn = resolve(sourceFor(undefined, undefined, { allowRotation: "yes" }));
+    expect(canonicalOff.ok).toBe(true);
+    expect(canonicalOn.ok).toBe(true);
+    expect(legacyOn.ok).toBe(true);
+    expect(productLegacyOn.ok).toBe(true);
+    if (!canonicalOff.ok || !canonicalOn.ok || !legacyOn.ok || !productLegacyOn.ok) return;
+    expect(canonicalOff.value.nestingEstimate?.facts).toMatchObject({ allowRotation: false, allowRotationSource: "product_version.pricingV2.allowRotation", totalSheetCount: 2 });
+    expect(canonicalOn.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, allowRotationSource: "product_version.pricingV2.allowRotation", totalSheetCount: 1 });
+    expect(legacyOn.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, allowRotationSource: "legacy.formulaVariables.allow_rotation", totalSheetCount: 1 });
+    expect(productLegacyOn.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, allowRotationSource: "legacy.product.pricing_profile_config.allowRotation", totalSheetCount: 1 });
+    const calculate = (resolved: ResolvedPricingInput) => new V2PricingParityAdapter().calculate({
+      organizationId: org,
+      sellableProduct: { ...resolved.sellableProduct, pricingConfiguration: { ...resolved.sellableProduct.pricingConfiguration, contentHash: resolved.resolvedConfiguration.pricingConfigurationContentHash } },
+      resolvedConfiguration: resolved.resolvedConfiguration,
+      rules: resolved.rules,
+      nestingEstimate: resolved.nestingEstimate,
+      pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" },
+    });
+    expect((await calculate(canonicalOff.value)).calculatedLineAmount.cents).toBe(8800);
+    expect((await calculate(canonicalOn.value)).calculatedLineAmount.cents).toBe(4400);
+    expect((await calculate(legacyOn.value)).calculatedLineAmount.cents).toBe(4400);
   });
 
   test("published computed-sheet matrix pricing supplies one canonical sheet estimate to Pricing", async () => {

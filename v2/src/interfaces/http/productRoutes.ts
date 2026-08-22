@@ -1199,6 +1199,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body.draftVersionId !== "string" ||
           typeof body.expectedDraftUpdatedAt !== "string" ||
           typeof body.expression !== "string" ||
+          typeof body.allowRotation !== "boolean" ||
           Object.prototype.hasOwnProperty.call(body, "formulaId") ||
           !variables ||
           typeof variables !== "object" ||
@@ -1230,6 +1231,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
             expression: body.expression,
             variables: variables as Record<string, number>,
+            allowRotation: body.allowRotation,
           },
         );
         return result.ok

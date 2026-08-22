@@ -40,7 +40,7 @@ type DraftState = Readonly<{
   general: ProductDraftGeneral;
   options: readonly ProductDraftOption[];
   pricing: ProductDraftPricing["base"] & Readonly<{ tierBasis: ProductDraftPricing["tierBasis"]; tiers: ProductDraftPricing["tiers"] }>;
-  formula: Readonly<{ expression: string; variables: Record<string, number> }>;
+  formula: Readonly<{ expression: string; variables: Record<string, number>; allowRotation: boolean }>;
   matrix: ProductDraftPricingMatrix | null;
   impacts: ProductDraftOptionPricing["options"];
   recipe: readonly ProductRecipeComponent[];
@@ -62,7 +62,7 @@ const blankState = (name = ""): DraftState => ({
   general: blankGeneral(name),
   options: [],
   pricing: { perPieceCents: null, perSqftCents: null, minimumChargeCents: null, tierBasis: null, tiers: [] },
-  formula: { expression: "", variables: {} },
+  formula: { expression: "", variables: {}, allowRotation: false },
   matrix: null,
   impacts: [],
   recipe: [],
@@ -108,7 +108,7 @@ export const ProductBuilderReference = ({
     setDraft({
       general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options),
       pricing: { ...clone(pricingRead.data!.base), tierBasis: pricingRead.data!.tierBasis, tiers: clone(pricingRead.data!.tiers) },
-      formula: formulaRead.data ? { expression: formulaRead.data.expression, variables: clone(formulaRead.data.variables) } : { expression: "", variables: {} },
+      formula: formulaRead.data ? { expression: formulaRead.data.expression, variables: clone(formulaRead.data.variables), allowRotation: formulaRead.data.allowRotation } : { expression: "", variables: {}, allowRotation: false },
       matrix: matrixRead.data ? clone(matrixRead.data) : null,
       impacts: impactsRead.data ? clone(impactsRead.data.options) : [], recipe: clone(recipeRead.data!.components), routing: clone(routingRead.data!.routing),
     });
@@ -135,7 +135,7 @@ export const ProductBuilderReference = ({
       const request = () => newBusinessRequestId();
       if (!productId || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: draft.general }); revision = value.draftUpdatedAt; version = value.draftVersionId; saved.push("general"); }
       if (dirty.has("options")) { const value = await productApi.saveDraftOptions(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, options: draft.options }); revision = value.draftUpdatedAt; saved.push("options"); }
-      if (dirty.has("formula")) { const value = await productApi.saveDraftFormula(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, expression: draft.formula.expression, variables: draft.formula.variables }); revision = value.draftUpdatedAt; saved.push("formula"); }
+      if (dirty.has("formula")) { const value = await productApi.saveDraftFormula(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, expression: draft.formula.expression, variables: draft.formula.variables, allowRotation: draft.formula.allowRotation }); revision = value.draftUpdatedAt; saved.push("formula"); }
       if (dirty.has("pricing")) { const value = await productApi.saveDraftPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, base: { perPieceCents: draft.pricing.perPieceCents, perSqftCents: draft.pricing.perSqftCents, minimumChargeCents: draft.pricing.minimumChargeCents }, tierBasis: draft.pricing.tierBasis, tiers: draft.pricing.tiers }); revision = value.draftUpdatedAt; saved.push("pricing"); }
       if (dirty.has("matrix") && draft.matrix) { const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, matrixId: draft.matrix.matrixId, pricingUnit: draft.matrix.pricingUnit, dimensions: draft.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: draft.matrix.rows }); revision = value.draftUpdatedAt; saved.push("matrix"); }
       if (dirty.has("impacts")) {
@@ -182,6 +182,7 @@ export const ProductBuilderReference = ({
     ...formulaRead.data,
     expression: draft.formula.expression,
     variables: draft.formula.variables,
+    allowRotation: draft.formula.allowRotation,
   }), [draft.formula, formulaRead.data]);
   const reviewLifecycle = useMemo(() => ({
     activeVersion: product?.versions.active ? {

@@ -45,7 +45,14 @@ const selectTier = (tiers: readonly PricingTierRule[] | undefined, basis: number
  * participates here. Expressions are dollar-valued, matching characterized V1
  * PBV2 formula behavior; the result is rounded once when converted to cents.
  */
-export const evaluateResolvedFormula = (expression: string, variables: Record<string, number>): number => {
+/**
+ * `allowRotation` is a ProductVersion pricing policy, not a Formula argument.
+ * The optional override is supplied by the resolved ProductVersion boundary so
+ * a legacy ninth sheet function argument cannot disagree with the nesting
+ * evidence used to select computed-sheet tiers. Direct legacy evaluator users
+ * without an override retain their historical ninth-argument behavior.
+ */
+export const evaluateResolvedFormula = (expression: string, variables: Record<string, number>, resolvedAllowRotation?: boolean): number => {
   const tokens = expression.match(/\s*(ceil|sheet_consumption_sqft|[A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)|[(),+\-*/])/gu);
   if (!tokens || tokens.join("").replace(/\s/gu, "") !== expression.replace(/\s/gu, "")) throw new Error("Unsupported pricing formula expression.");
   let cursor = 0;
@@ -59,7 +66,7 @@ export const evaluateResolvedFormula = (expression: string, variables: Record<st
       const args:number[]=[];
       while (true) { args.push(sum()); const separator=take(); if (separator === ")") break; if (separator !== ",") throw new Error("sheet_consumption_sqft arguments are invalid."); }
       if (args.length !== 8 && args.length !== 9) throw new Error("sheet_consumption_sqft requires eight or nine arguments.");
-      return sheetConsumptionSqft(args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,args[6]!,args[7]!,args[8] ?? false);
+      return sheetConsumptionSqft(args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,args[6]!,args[7]!,resolvedAllowRotation ?? args[8] ?? false);
     }
     if (token === "-") return -factor();
     if (token && /^(?:\d|\.)/u.test(token)) return Number(token);
@@ -132,6 +139,7 @@ export class V2PricingParityAdapter implements PricingPort {
     const baseRateDollars = perSquareFootCents / 100;
     const unitPriceDollars = perPieceCents / 100;
     const nestingFacts = request.nestingEstimate?.facts ?? {};
+    const resolvedAllowRotation = nestingFacts.allowRotation === true;
     const billedSqft = typeof nestingFacts.billedSheetSqft === "number" ? nestingFacts.billedSheetSqft : typeof nestingFacts.billableSqft === "number" ? nestingFacts.billableSqft : 0;
     const formulaVariables = {
       ...numericFormulaVariables(rules.formula?.variables ?? {}),
@@ -150,7 +158,7 @@ export class V2PricingParityAdapter implements PricingPort {
 
     if (quantityOnly && rules.formula) warnings.push({ code: "QUANTITY_ONLY_FORMULA_IGNORED", message: "Quantity-only pricing used its resolved per-piece rate and ignored a stale area/formula path." });
     const rawBaseCents = rules.formula && !quantityOnly
-      ? evaluateResolvedFormula(rules.formula.expression, formulaVariables) * 100
+      ? evaluateResolvedFormula(rules.formula.expression, formulaVariables, resolvedAllowRotation) * 100
       : rules.base.flatFeeCents ?? (perPieceCents * configuration.quantity + perSquareFootCents * totalSqft);
     let runningCents = roundCents(rawBaseCents);
     const baseCentsForEffects = runningCents;

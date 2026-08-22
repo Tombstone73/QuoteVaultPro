@@ -3,7 +3,7 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 import { canonicalJson, decimalText, type JsonValue } from "../shared/commercialValues.js";
 import type { PricingBaseRateOverride, PricingMatrixRow, PricingOptionRule, PricingRules, PricingTierRule } from "../pricing/contracts.js";
 import { getPbv2FixedDimensions } from "../../../../shared/pbv2/fixedDimensions.js";
-import { extractFormulaVariables } from "../../../../shared/pbv2/formulaHelpers.js";
+import { extractFormulaVariables, parseFormulaBoolean } from "../../../../shared/pbv2/formulaHelpers.js";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBaseRateCents } from "../../../../shared/productOptionPricingMatrix.js";
 import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../../shared/optionTreeV2Runtime.js";
 import type { OptionTreeV2, PricingImpact, PricingV2Tier } from "../../../../shared/optionTreeV2.js";
@@ -18,6 +18,8 @@ export type ActivePbv2CompatibilityRecord = Readonly<{
   treeJson: unknown;
   productMeasurementMode: "dimensions_required" | "quantity_only";
   productPricingProfileKey: string | null;
+  /** Read-only V1 compatibility input; never a target for V2 ProductVersion writes. */
+  legacyProductPricingConfig?: JsonValue | null;
   formula: Readonly<{ id: string; code: string | null; profileKey: string; expression: string | null; config: JsonValue | null; updatedAt: string }> | null;
 }>;
 
@@ -131,6 +133,39 @@ const numberVariable = (
   return Number.isFinite(number) && (options.allowZero ? number >= 0 : number > 0) ? number : null;
 };
 
+type ResolvedRotationPolicy = Readonly<{
+  allowRotation: boolean;
+  source: "product_version.pricingV2.allowRotation" | "legacy.pricingFormulaVariables.allow_rotation" | "legacy.formulaVariables.allow_rotation" | "legacy.product.pricing_profile_config.allowRotation" | "legacy.formulaLibrary.allow_rotation" | "default.false";
+}>;
+
+/**
+ * Rotation is a typed ProductVersion pricing decision.  Older trees and
+ * Formula Library configurations historically placed it among loosely typed
+ * variables; read those values only at this compatibility boundary.  New V2
+ * writes must use `meta.pricingV2.allowRotation`.
+ */
+export const resolveProductVersionRotationPolicy = (
+  pricingV2: Readonly<Record<string, unknown>>,
+  meta: Readonly<Record<string, unknown>>,
+  legacyProductPricingConfig: JsonValue | null | undefined,
+  formulaConfig: JsonValue | null | undefined,
+): ResolvedRotationPolicy => {
+  if (typeof pricingV2.allowRotation === "boolean") {
+    return { allowRotation: pricingV2.allowRotation, source: "product_version.pricingV2.allowRotation" };
+  }
+  const legacySources: readonly [unknown, ResolvedRotationPolicy["source"]][] = [
+    [record(meta.pricingFormulaVariables)?.allow_rotation ?? record(meta.pricingFormulaVariables)?.allowRotation, "legacy.pricingFormulaVariables.allow_rotation"],
+    [record(meta.formulaVariables)?.allow_rotation ?? record(meta.formulaVariables)?.allowRotation, "legacy.formulaVariables.allow_rotation"],
+    [record(legacyProductPricingConfig)?.allowRotation ?? record(legacyProductPricingConfig)?.allow_rotation ?? record(record(legacyProductPricingConfig)?.formulaVariables)?.allow_rotation, "legacy.product.pricing_profile_config.allowRotation"],
+    [record(record(formulaConfig)?.variables)?.allow_rotation ?? record(record(formulaConfig)?.variables)?.allowRotation ?? record(formulaConfig)?.allowRotation, "legacy.formulaLibrary.allow_rotation"],
+  ];
+  for (const [value, source] of legacySources) {
+    const resolved = parseFormulaBoolean(value);
+    if (resolved !== null) return { allowRotation: resolved, source };
+  }
+  return { allowRotation: false, source: "default.false" };
+};
+
 /**
  * Formula-library sheet consumption needs deterministic pricing facts before the
  * Pricing domain selects its computed-sheet tier. This stays a Product/PBV2
@@ -143,6 +178,7 @@ const resolveFormulaSheetEstimate = (
   variables: Readonly<Record<string, JsonValue>>,
   dimensions: ResolveActivePricingInput["dimensions"] | undefined,
   quantity: number,
+  rotation: ResolvedRotationPolicy,
 ): ApplicationResult<ResolvedPricingInput["nestingEstimate"]> => {
   if (!formulaNeedsSheetEstimate(expression)) return success(undefined);
   if (!dimensions) return validation("The active sheet-pricing formula requires effective dimensions.");
@@ -160,9 +196,8 @@ const resolveFormulaSheetEstimate = (
   if (sheetWidthIn == null || sheetLengthIn == null || usableDropMinimumIn == null || billableLengthIncrementIn == null || minimumBillableSqft == null) {
     return validation("The active sheet-pricing formula is missing valid sheet-yield variables.");
   }
-  const allowRotation = variables.allow_rotation === true || variables.allowRotation === true;
   try {
-    return success(estimatePricingSheetUsage({ pieceWidthIn: width, pieceHeightIn: height, quantity, sheetWidthIn, sheetLengthIn, usableDropMinimumIn, billableLengthIncrementIn, minimumBillableSqft, allowRotation }));
+    return success(estimatePricingSheetUsage({ pieceWidthIn: width, pieceHeightIn: height, quantity, sheetWidthIn, sheetLengthIn, usableDropMinimumIn, billableLengthIncrementIn, minimumBillableSqft, allowRotation: rotation.allowRotation, allowRotationSource: rotation.source }));
   } catch {
     return validation("The active sheet-pricing formula could not resolve a valid sheet-yield estimate.");
   }
@@ -221,8 +256,12 @@ export const resolveActivePbv2PricingInput = (
   if (!resolvedOptionImpacts.ok) return resolvedOptionImpacts;
   const resolvedBaseRateOverrides = baseRateOverrides(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedBaseRateOverrides.ok) return resolvedBaseRateOverrides;
-  const formulaVariables = { ...extractFormulaVariables(record(source.formula?.config)), ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables) } as Record<string, JsonValue>;
-  const nestingEstimate = resolveFormulaSheetEstimate(expression, formulaVariables, dimensions, input.quantity);
+  const rotation = resolveProductVersionRotationPolicy(pricingV2, meta, source.legacyProductPricingConfig, source.formula?.config);
+  // `allow_rotation` remains a numeric runtime argument for the small Formula
+  // evaluator only. Its value is derived from the typed ProductVersion policy,
+  // never persisted as a numeric Formula input.
+  const formulaVariables = { ...extractFormulaVariables(record(source.formula?.config)), ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables), allow_rotation: rotation.allowRotation ? 1 : 0 } as Record<string, JsonValue>;
+  const nestingEstimate = resolveFormulaSheetEstimate(expression, formulaVariables, dimensions, input.quantity, rotation);
   if (!nestingEstimate.ok) return nestingEstimate;
   let productionRequirements;
   try { productionRequirements=resolveProductionRequirementSnapshot(meta.productionUnitSpecification,visibility.effectiveSelections as Record<string,JsonValue>); }
@@ -240,7 +279,7 @@ export const resolveActivePbv2PricingInput = (
       id: source.formula?.id ?? `embedded:${source.id}`,
       source: source.formula ? "library" as const : "embedded" as const,
       version: source.formula?.updatedAt ?? source.publishedAt ?? `schema-${source.schemaVersion}`,
-      contentHash: stableHash({ expression, variables: formulaVariables, formula: source.formula ? { id: source.formula.id, config: source.formula.config, profileKey: source.formula.profileKey } : null }),
+      contentHash: stableHash({ expression, variables: formulaVariables, allowRotation: rotation.allowRotation, formula: source.formula ? { id: source.formula.id, config: source.formula.config, profileKey: source.formula.profileKey } : null }),
       expression,
       variables: formulaVariables,
     } } : {}),

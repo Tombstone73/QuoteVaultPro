@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { formulaFromTree } from "../../infrastructure/products/postgresProductVersionLifecycle";
+import { draftMeasurementMode, formulaFromTree } from "../../infrastructure/products/postgresProductVersionLifecycle";
 import { productFormulaInputsFromLibraryConfig, validateProductFormulaInput } from "../../src/modules/products/productFormulaInputs";
 
 const libraryRow = {
@@ -14,7 +14,7 @@ const libraryRow = {
   formula_config: { variables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 24, billable_length_increment: 12, minimum_billable_sqft: 3, unsupported: 99 } },
   draft_id: "draft-a",
   draft_updated_at: new Date("2026-08-21T00:00:00.000Z"),
-  draft_tree_json: { meta: { pricingFormula: "copied expression", formulaVariables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 24, billable_length_increment: 12, minimum_billable_sqft: 3 } } },
+  draft_tree_json: { meta: { pricingFormula: "copied expression", formulaVariables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 24, billable_length_increment: 12, minimum_billable_sqft: 3 }, pricingV2: { allowRotation: true } } },
 };
 
 describe("ProductVersion Formula Library inputs", () => {
@@ -32,8 +32,15 @@ describe("ProductVersion Formula Library inputs", () => {
       editable: true,
       expressionEditable: false,
       variablesEditable: true,
+      rotationEditable: true,
       expression: libraryRow.formula_expression,
+      allowRotation: true,
     });
     expect(value.inputs.map((input) => input.key)).toEqual(["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"]);
+  });
+
+  test("uses the saved Draft measurement mode before the Product identity fallback", () => {
+    expect(draftMeasurementMode({ meta: { general: { measurementMode: "quantity_only" } } }, "dimensions_required")).toBe("quantity_only");
+    expect(draftMeasurementMode({ meta: { general: { measurementMode: "invalid" } } }, "dimensions_required")).toBe("dimensions_required");
   });
 });

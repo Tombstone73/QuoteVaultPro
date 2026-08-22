@@ -16,6 +16,8 @@ export const estimatePricingSheetUsage = (input: Readonly<{
   billableLengthIncrementIn: number;
   minimumBillableSqft: number;
   allowRotation?: boolean;
+  /** The Product/PBV2 boundary that supplied the resolved policy. */
+  allowRotationSource?: string;
 }>): NestingEstimateEvidence => {
   const result = calculateSheetYield(
     input.pieceWidthIn,
@@ -27,7 +29,7 @@ export const estimatePricingSheetUsage = (input: Readonly<{
     input.billableLengthIncrementIn,
     input.minimumBillableSqft,
     input.allowRotation ?? false,
-    "pricing-request",
+    input.allowRotationSource ?? "pricing-request",
   );
   return {
     estimateId: `sheet-yield:${input.pieceWidthIn}x${input.pieceHeightIn}:${input.quantity}:${input.sheetWidthIn}x${input.sheetLengthIn}:${input.allowRotation ? "rotated" : "normal"}`,

@@ -64,6 +64,7 @@ export function PricingPreviewRail({ productId, measurementMode, options, recipe
 function PreviewResult({ result }: Readonly<{ result: ProductDraftPricingPreview }>) {
   return <><dl className="mt-2.5 space-y-1 border-t border-border pt-2 text-[0.75rem]">
     {result.dimensions && <Row label="Area" value={`${result.dimensions.areaSquareFeet.toFixed(2)} sq ft`} />}
+    {result.explanation.computedSheetUsage && <><Row label="Computed sheets" value={String(result.explanation.computedSheetUsage.sheetCount)} />{result.explanation.computedSheetUsage.allowRotation !== undefined && <Row label="Rotation" value={result.explanation.computedSheetUsage.allowRotation ? "ON" : "OFF"} />}</>}
     {result.tier && <Row label="Pricing tier" value={`${result.tier.basis}: ${result.tier.value}`} />}
     {result.breakdown.map((entry, index) => <Row key={`${entry.label}:${index}`} label={entry.label} value={money(entry.cents)} muted />)}
     <Row label="Minimum charge" value={result.minimumChargeApplied ? "Applied" : "Not applied"} muted />

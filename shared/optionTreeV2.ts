@@ -142,6 +142,13 @@ export type Pbv2TierBasis = "line_item_quantity" | "computed_sheet_usage";
 
 export type PricingV2 = {
   unitSystem?: "imperial" | "metric";
+  /**
+   * ProductVersion-owned sheet nesting policy.  This is deliberately a typed
+   * boolean rather than a Formula input: Formula variables are numeric runtime
+   * values, while orientation is a commercial pricing decision that must be
+   * frozen with the ProductVersion.
+   */
+  allowRotation?: boolean;
   tierBasis?: Pbv2TierBasis;
   base?: PricingV2Base;
   qtyTiers?: PricingV2Tier[];
@@ -562,6 +569,7 @@ export const pbv2TierBasisSchema: z.ZodType<Pbv2TierBasis> = z.enum(["line_item_
 
 export const pricingV2Schema: z.ZodType<PricingV2> = z.object({
   unitSystem: z.enum(["imperial", "metric"]).optional(),
+  allowRotation: z.boolean().optional(),
   tierBasis: pbv2TierBasisSchema.optional(),
   base: pricingV2BaseSchema.optional(),
   qtyTiers: z.array(pricingV2TierSchema).optional(),

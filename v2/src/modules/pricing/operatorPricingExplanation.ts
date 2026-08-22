@@ -7,7 +7,7 @@ import type { PricingResult } from "./contracts.js";
  */
 export type OperatorPricingExplanation = Readonly<{
   dimensions?: Readonly<{ widthIn: string; heightIn: string; areaPerPieceSqft: string; totalAreaSqft: string }>;
-  computedSheetUsage?: Readonly<{ sheetCount: number; billedSquareFeet?: number }>;
+  computedSheetUsage?: Readonly<{ sheetCount: number; billedSquareFeet?: number; allowRotation?: boolean }>;
   tier?: Readonly<{ basis: "quantity" | "square_foot" | "computed_sheet"; value: string; selectedTierId: string; rateCents: number }>;
   matrix?: Readonly<{ rowId: string; selectedValues: readonly string[] }>;
   formula?: Readonly<{ source: "library" | "embedded"; expression: string; baseRateCents?: number }>;
@@ -25,11 +25,12 @@ export const explainPricingResult = (value: PricingResult): OperatorPricingExpla
   const facts = value.nestingEstimate?.facts;
   const sheetCount = finiteNumber(facts?.totalSheetCount ?? facts?.computedSheets);
   const billedSquareFeet = finiteNumber(facts?.billedSheetSqft ?? facts?.billableSqft);
+  const allowRotation = typeof facts?.allowRotation === "boolean" ? facts.allowRotation : undefined;
   const basePrice = value.formula?.variables.base_price;
   const baseRateCents = typeof basePrice === "number" && Number.isFinite(basePrice) ? Math.round(basePrice * 100) : undefined;
   return {
     ...(width != null && height != null ? { dimensions: { widthIn: decimal(width), heightIn: decimal(height), areaPerPieceSqft: decimal(width * height / 144), totalAreaSqft: decimal(width * height * quantity / 144) } } : {}),
-    ...(sheetCount != null ? { computedSheetUsage: { sheetCount, ...(billedSquareFeet == null ? {} : { billedSquareFeet }) } } : {}),
+    ...(sheetCount != null ? { computedSheetUsage: { sheetCount, ...(billedSquareFeet == null ? {} : { billedSquareFeet }), ...(allowRotation === undefined ? {} : { allowRotation }) } } : {}),
     ...(value.tier ? { tier: { basis: value.tier.source, value: value.tier.basisValue, selectedTierId: value.tier.selectedTierId, rateCents: Math.round(Number(value.tier.selectedRate)) } } : {}),
     ...(value.matrix ? { matrix: { rowId: value.matrix.rowId, selectedValues: value.matrix.selectedValueKeys } } : {}),
     ...(value.formula ? { formula: { source: value.formula.source, expression: value.formula.resolvedExpression, ...(baseRateCents == null ? {} : { baseRateCents }) } } : {}),
