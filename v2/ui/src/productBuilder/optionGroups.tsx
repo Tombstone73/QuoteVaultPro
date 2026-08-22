@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, GripVertical, Layers, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, Layers, ListOrdered, Plus, Trash2 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import type { ProductDraftOption } from "../api";
 import { Cell, Chip, Toggle } from "./referencePrimitives";
@@ -38,6 +38,7 @@ export function OptionGroupsSection({
     [options, selected],
   );
   const optionIndex = options.findIndex((entry) => entry.optionId === option?.optionId);
+  const groupPersistenceUnavailable = "V2 currently persists a flat, ordered option collection. Group metadata and templates have no canonical V2 contract.";
 
   useEffect(() => {
     if (option && option.optionId !== selected && !options.some((entry) => entry.optionId === selected)) {
@@ -80,6 +81,11 @@ export function OptionGroupsSection({
           <Plus className="size-4" />
           Add option group
         </button>
+        <button type="button" className="button secondary h-8 w-full gap-1.5" disabled title={groupPersistenceUnavailable}>
+          <ListOrdered className="size-4" />
+          Import template
+        </button>
+        <p className="text-[11px] text-muted-foreground">{groupPersistenceUnavailable}</p>
         <ul className="space-y-1.5">
           {options.map((entry) => (
             <li

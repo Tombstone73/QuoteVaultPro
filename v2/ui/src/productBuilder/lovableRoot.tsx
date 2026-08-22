@@ -17,8 +17,9 @@ const SECTIONS = [
 ] as const;
 export type ProductBuilderSection = (typeof SECTIONS)[number]["id"];
 
-export function LovableProductBuilderRoot({ title, lifecycle, picker, onSave, onPublish, saving, publishing, findings, children, rail, pendingSwitch, canEdit = false, persisted = false, saveError, sectionJumpRef }: Readonly<{
+export function LovableProductBuilderRoot({ title, lifecycle, subtitle, picker, onSave, onPublish, saving, publishing, findings, children, rail, pendingSwitch, canEdit = false, persisted = false, saveError, sectionJumpRef }: Readonly<{
   title: string; lifecycle: ReactNode; picker: ReactNode; onSave: () => void; onPublish?: () => void;
+  subtitle?: ReactNode;
   saving?: boolean; publishing?: boolean; findings: Readonly<{ errors: number; warnings: number }>;
   children: Readonly<Partial<Record<ProductBuilderSection, ReactNode>>>; rail: ReactNode;
   pendingSwitch?: Readonly<{ productName: string; onKeepEditing: () => void; onSaveAndSwitch: () => void; onDiscardAndSwitch: () => void }>;
@@ -42,6 +43,7 @@ export function LovableProductBuilderRoot({ title, lifecycle, picker, onSave, on
   return <div className="p-4 pb-24 product-builder-reference-port">
     <PageHeader
       title={<span className="flex flex-wrap items-center gap-2">{title}{lifecycle}</span>}
+      subtitle={subtitle}
       actions={<><div className="w-[190px] [&>select]:w-full">{picker}</div>{canEdit && <button type="button" className="button secondary h-8" disabled={saving} onClick={onSave}>{saving ? "Saving…" : "Save Changes"}</button>}<button type="button" className="button secondary h-8" onClick={() => jumpTo("review")}>Review</button>{canEdit && persisted && onPublish && <button type="button" className="button h-8" disabled={publishing || findings.errors > 0} onClick={onPublish}>{publishing ? "Publishing…" : "Publish"}</button>}</>}
     />
     {saveError && <p role="alert" className="v2-product-version-message">{saveError}</p>}
@@ -54,6 +56,6 @@ const hints: Record<ProductBuilderSection, string> = { basics: "Identity, measur
 
 /** Literal PageHeader port from reference/lovable-ui/src/components/app/primitives.tsx.
  * The V2 shell supplies the surrounding application navigation. */
-function PageHeader({ title, actions }: Readonly<{ title: ReactNode; actions?: ReactNode }>) {
-  return <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3"><div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">{title}</h1></div>{actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}</div>;
+function PageHeader({ title, subtitle, actions }: Readonly<{ title: ReactNode; subtitle?: ReactNode; actions?: ReactNode }>) {
+  return <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3"><div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">{title}</h1>{subtitle && <p className="mt-0.5 text-[11px] text-muted-foreground">{subtitle}</p>}</div>{actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}</div>;
 }

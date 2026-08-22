@@ -1,15 +1,17 @@
 import { Plus, Trash2 } from "lucide-react";
 import React from "react";
 import type { ProductDraftOption, ProductMaterial, ProductRecipeComponent } from "../api";
-import { Cell, Chip, Picker, Toggle } from "./referencePrimitives";
+import { Cell, Chip, Picker, Sub, Toggle } from "./referencePrimitives";
 
 /** Direct presentation port of the approved Lovable Recipe editor. V2 keeps
  * canonical IDs behind the controls; inventory normalization is Material-owned
  * and intentionally has no editable UI toggle. */
-export function RecipeEditor({ components, materials, options, disabled, onChange }: Readonly<{
+export function RecipeEditor({ components, materials, options, primaryMaterialName, disabled, onChange }: Readonly<{
   components: readonly ProductRecipeComponent[];
   materials: readonly ProductMaterial[];
   options: readonly ProductDraftOption[];
+  /** Canonical catalog read-model fact; V2 has no ProductVersion primary-material mutation. */
+  primaryMaterialName?: string;
   disabled?: boolean;
   onChange: (components: readonly ProductRecipeComponent[]) => void;
 }>) {
@@ -47,5 +49,48 @@ export function RecipeEditor({ components, materials, options, disabled, onChang
       })}
     </div>
     <button type="button" className="button secondary h-7 gap-1 text-[12px]" disabled={disabled || materials.length === 0} onClick={() => { const material = materials[0]; if (!material) return; onChange([...components, { materialId: material.materialId, materialName: material.name, materialSku: material.sku, quantity: "1", unit: material.unit, quantityKind: "per_piece" }]); }}><Plus className="size-3.5" />Add material requirement</button>
+
+    <PrimaryMaterialAndWeight primaryMaterialName={primaryMaterialName} />
   </div>;
+}
+
+/**
+ * Literal Lovable primary-material/weight panel. V2 recipe components do not
+ * define a Product-level primary-material, shipping, weight, or trim contract;
+ * those facts remain unavailable rather than being fabricated in the client.
+ */
+function PrimaryMaterialAndWeight({ primaryMaterialName }: Readonly<{ primaryMaterialName?: string }>) {
+  const unavailable = "Not available in the current canonical V2 Product contract.";
+
+  return <Sub title="Primary material & weight">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Cell label="Primary material" hint={unavailable}>
+        <input className="h-8 text-[13px]" readOnly value={primaryMaterialName ?? "Not configured"} aria-label="Primary material" />
+      </Cell>
+      <Cell label="Shipping policy" hint={unavailable}>
+        <select disabled aria-label="Shipping policy"><option>Not available in V2</option></select>
+      </Cell>
+      <Cell label="Material weight" hint="Resolved from the material record. V2 does not expose this Product-level projection.">
+        <input className="num h-8 text-[13px]" readOnly value="Not configured" aria-label="Material weight" />
+      </Cell>
+      <Cell label="Weight basis" hint={unavailable}>
+        <select disabled aria-label="Weight basis"><option>Not available in V2</option></select>
+      </Cell>
+      <Cell label="Fallback weight" hint={unavailable}>
+        <input className="num h-8 text-[13px]" readOnly value="Not configured" aria-label="Fallback weight" />
+      </Cell>
+      <Cell label="Fallback unit" hint={unavailable}>
+        <select disabled aria-label="Fallback unit"><option>Not available in V2</option></select>
+      </Cell>
+      <Cell label="Trim allowance — width (in)" hint={unavailable}>
+        <input className="num h-8 text-[13px]" readOnly value="Not configured" aria-label="Trim allowance width" />
+      </Cell>
+      <Cell label="Trim allowance — height (in)" hint={unavailable}>
+        <input className="num h-8 text-[13px]" readOnly value="Not configured" aria-label="Trim allowance height" />
+      </Cell>
+    </div>
+    <p className="mt-2 text-[11px] text-muted-foreground">
+      V2 currently owns material consumption through Recipe components. Product-level primary material, shipping, weight, fallback, and trim fields have no canonical read/write contract.
+    </p>
+  </Sub>;
 }

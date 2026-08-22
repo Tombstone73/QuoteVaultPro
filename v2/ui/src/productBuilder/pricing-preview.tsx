@@ -51,6 +51,12 @@ export function PricingPreviewRail({ productId, measurementMode, options, recipe
 
     <Card title="Material resolution"><dl className="space-y-1 text-[12px]">{recipe.length ? recipe.map((component, index) => <Row key={`${component.componentId ?? component.materialId}:${index}`} label={component.materialName ?? component.materialId} value={`${component.quantity} ${component.unit}${component.condition ? " · conditional" : ""}`} muted={Boolean(component.condition)} />) : <Row label="Recipe" value="No lines" muted />}</dl>{onJump && <RailJump target="materials" label="Edit materials" onJump={onJump} />}</Card>
     <Card title="Production resolution"><dl className="space-y-1 text-[12px]">{production?.rules.length ? production.rules.map((unit) => <Row key={unit.key} label={unit.key} value={unit.side ? `${unit.side} required` : "Required"} muted={Boolean(unit.when)} />) : <Row label="Units" value="Unconfigured" muted />}</dl>{onJump && <RailJump target="production" label="Edit production" onJump={onJump} />}</Card>
+    <Card title="Weight resolution">
+      <Cell label="Weight">
+        <input className="num h-8 text-[13px]" disabled readOnly value="Not available" aria-describedby="weight-resolution-unavailable" />
+      </Cell>
+      <p id="weight-resolution-unavailable" className="mt-2 text-[11px] text-muted-foreground">Weight resolution is unavailable because the canonical V2 preview contract does not expose material-weight values.</p>
+    </Card>
     <Card title="Validation findings" note={`${findings.length} finding${findings.length === 1 ? "" : "s"}`}><div className="space-y-2">{findings.length === 0 ? <p className="flex items-center gap-1.5 text-[12px] text-ok"><CheckCircle2 className="size-3.5" />No local presentation finding. Publish remains server-validated.</p> : findings.map((finding) => <FindingRow key={`${finding.code}:${finding.message}`} finding={finding} onJump={onJump} />)}</div></Card>
   </div>;
 }
