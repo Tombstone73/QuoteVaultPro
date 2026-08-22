@@ -7,7 +7,7 @@ import { legacyFormulaCanBeAdopted, legacyFormulaCandidate, PricingEngine } from
 const pricing: ProductDraftPricing = {
   productId: "product-1", draftVersionId: "draft-1", draftUpdatedAt: "2026-08-22T00:00:00.000Z", lifecycle: "draft",
   measurementMode: "dimensions_required", mode: "simple_base", editable: false,
-  base: { perPieceCents: null, perSqftCents: 300, minimumChargeCents: 500 }, tierBasis: null, tiers: [],
+  base: { perPieceCents: null, perSqftCents: 300, minimumChargeCents: 500 }, flatFeeCents: null, tierBasis: null, tiers: [], tierSets: { quantity: [], squareFoot: [], computedSheetUsage: [] },
 };
 const legacyFormula: ProductDraftFormulaPricing = {
   productId: "product-1", draftVersionId: "draft-1", draftUpdatedAt: "2026-08-22T00:00:00.000Z", lifecycle: "draft",

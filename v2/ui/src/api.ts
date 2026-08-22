@@ -120,36 +120,470 @@ export type SalesListPage<T> = Readonly<{
     currencies: readonly string[];
   }>;
 }>;
-export type ProductLifecycle = "active" | "inactive" | "draft" | "active_with_draft";
-export type ProductCatalogItem = Readonly<{ productId:string; displayName:string; category?:string; lifecycle:ProductLifecycle; measurementMode:"dimensions_required"|"quantity_only"; pricingSummary:string; productType?:Readonly<{displayName:string;routePolicy:"route_required"|"no_route"|"unconfigured"}>; primaryMaterialName?:string; activeVersion?:Readonly<{label:string;publishedAt?:string}>; hasDraft:boolean }>;
-export type ProductionRequirementPreview = Readonly<{ state:"configured"; specificationFingerprint:string; units:readonly Readonly<{key:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number}>[] }>|Readonly<{state:"unconfigured";reason:"product_specification_absent"}>;
-export type ProductVersionSummary = Readonly<{productVersionId:string;status:"active"|"draft"|"deprecated"|"archived";createdAt:string;updatedAt:string;publishedAt?:string;editable:boolean}>;
-export type ProductVersionLifecycle = Readonly<{active?:ProductVersionSummary;draft?:ProductVersionSummary;history:readonly ProductVersionSummary[];historyLimit:number;historyHasMore:boolean;canCreateDraft:boolean}>;
-export type ProductActiveDefinition=Readonly<{productVersionId:string;options:readonly Readonly<{label:string;inputType:string;required:boolean;defaultLabel?:string;choices:readonly Readonly<{label:string;value:string|number|boolean}>[]}>[];pricing:Readonly<{mode:"unconfigured"|"simple"|"formula"|"matrix"|"matrix_formula";perPieceCents?:number;perSquareFootCents?:number;minimumChargeCents?:number;tierBasis?:"quantity"|"square_foot"|"computed_sheet_usage";tiers:readonly Readonly<{minimum:number;maximum:number|null;perPieceCents?:number;perSquareFootCents?:number;minimumChargeCents?:number}>[];formula?:Readonly<{name?:string;expression:string;variables:Readonly<Record<string,number>>}>;matrix?:Readonly<{pricingUnit:"per_piece"|"per_square_foot";dimensions:readonly string[];rows:readonly Readonly<{selections:readonly string[];baseRateCents:number;tierCount:number;computedSheetTiers:boolean}>[]}>}>;recipe:readonly Readonly<{componentId:string;materialName:string;materialSku?:string;quantity:string;unit:string;basis:string;condition?:string;replacesCompatibility:boolean}>[];productionUnits:readonly Readonly<{key:string;side?:string;condition?:string}>[];routing?:Readonly<{mode:"route_required"|"no_route"|"unconfigured";templateName?:string;revision?:string;fingerprint?:string;steps:readonly string[]}>}>;
-export type ProductProductionUnitRule=Readonly<{key:string;side?:"front"|"back";sourcePageIndex?:number;layerKey?:string;layerOrder?:number;when?:Readonly<{selectionKey:string;equals:string|number|boolean}>}>;
-export type ProductProductionUnitSpecification=Readonly<{schemaVersion:1;rules:readonly ProductProductionUnitRule[]}>;
-export type ProductDraftGeneral = Readonly<{displayName:string;category:string|null;description:string|null;storefrontVisible:boolean;measurementMode:"dimensions_required"|"quantity_only";workflowIntent:"standard_production"|"fulfillment_only"|"service_fee";requiresProofApproval:boolean;requiresProductionJob:boolean;productionUnitSpecification:ProductProductionUnitSpecification|null}>;
-export type ProductDraftGeneralRead = Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";general:ProductDraftGeneral}>;
-export type ProductDraftOptionInputType="boolean"|"select"|"multiselect"|"number"|"text"|"textarea";
-export type ProductDraftOption=Readonly<{optionId:string;label:string;inputType:ProductDraftOptionInputType;required:boolean;defaultValue:string|number|boolean|null|readonly string[];choices:readonly Readonly<{choiceValue:string;label:string}>[];canRemove:boolean;removalReason?:string}>;
-export type ProductDraftOptionsRead=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";options:readonly ProductDraftOption[]}>;
-export type ProductDraftPricingTier=Readonly<{tierId:string;minimum:number;maximum:number|null;perPieceCents:number|null;perSqftCents:number|null;minimumChargeCents:number|null}>;
-export type ProductDraftPricing=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";measurementMode:"dimensions_required"|"quantity_only";mode:"simple_base"|"simple_with_tiers"|"matrix"|"formula"|"advanced"|"unconfigured";editable:boolean;unavailableReason?:string;base:Readonly<{perPieceCents:number|null;perSqftCents:number|null;minimumChargeCents:number|null}>;tierBasis:"quantity"|"square_foot"|"computed_sheet_usage"|null;tiers:readonly ProductDraftPricingTier[]}>;
-export type PricingExplanation=Readonly<{dimensions?:Readonly<{widthIn:string;heightIn:string;areaPerPieceSqft:string;totalAreaSqft:string}>;computedSheetUsage?:Readonly<{sheetCount:number;billedSquareFeet?:number;allowRotation?:boolean;productAllowsRotation?:boolean;optionAllowsRotation?:boolean;effectiveRotation?:boolean;rotationControl?:Readonly<{optionId:string;selectionKey:string;selectedChoiceValues:readonly string[];allowWhenChoiceValues:readonly string[]}>}>;tier?:Readonly<{basis:"quantity"|"square_foot"|"computed_sheet";value:string;selectedTierId:string;rateCents:number}>;matrix?:Readonly<{rowId:string;selectedValues:readonly string[]}>;formula?:Readonly<{source:"library"|"embedded";expression:string;baseRateCents?:number}>;optionImpacts:readonly Readonly<{selectionKey:string;kind:string;cents:number}>[];minimumChargeApplied:boolean}>;
-export type ProductDraftPricingPreview=Readonly<{quantity:number;dimensions?:Readonly<{width:number;height:number;unit:"in";areaSquareFeet:number}>;calculatedUnitAmount:Readonly<{cents:number;currency:string}>;calculatedLineAmount:Readonly<{cents:number;currency:string}>;minimumChargeApplied:boolean;tier?:Readonly<{basis:"quantity"|"square_foot"|"computed_sheet";value:string}>;breakdown:readonly Readonly<{label:string;cents:number;currency:string}>[];explanation:PricingExplanation;warnings:readonly string[]}>;
-export type ProductDraftPricingMatrix=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";editable:boolean;unavailableReason?:string;matrixId:string;pricingUnit:"per_piece"|"per_square_foot";dimensions:readonly Readonly<{selectionKey:string;label:string;values:readonly Readonly<{value:string|number|boolean;label:string}>[]}>[];rows:readonly Readonly<{rowId:string;combination:Record<string,string|number|boolean>;baseRateCents:number;tierBasis:"quantity"|"computed_sheet_usage"|null;tiers:readonly ProductDraftPricingTier[]}>[];warnings:readonly string[]}>;
-export type ProductRotationControl=Readonly<{optionId:string;allowWhenChoiceValues:readonly string[]}>;
-export type ProductDraftFormulaPricing=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";source:"embedded_editable"|"library_product_inputs_editable"|"library_reference_read_only"|"unsupported_legacy";editable:boolean;expressionEditable:boolean;variablesEditable:boolean;rotationEditable:boolean;inputs:readonly Readonly<{key:string;label:string;unit?:"in"|"sq_ft";minimum?:number;exclusiveMinimum?:boolean}>[];unavailableReason?:string;formulaId?:string;formulaName?:string;expression:string;legacyExpression?:string;canAdoptLegacyFormula?:boolean;variables:Record<string,number>;allowRotation:boolean;rotationControl?:ProductRotationControl;supportedRuntimeVariables:readonly string[];warnings:readonly string[]}>;
-export type ProductDraftOptionPricingImpact=Readonly<{type:"fixed"|"per_item"|"per_square_foot"|"percent_of_base"|"multiplier";value:number}>;
-export type ProductDraftOptionPricing=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";options:readonly Readonly<{optionId:string;selectionKey:string;label:string;nodeImpact:ProductDraftOptionPricingImpact|null;choices:readonly Readonly<{choiceValue:string;label:string;impact:ProductDraftOptionPricingImpact|null;editable:boolean;readOnlyReason?:string}>[]}>[]}>;
-export type ProductRecipeComponent=Readonly<{componentId?:string;materialId:string;materialName?:string;materialSku?:string|null;quantity:string;unit:"each"|"square_foot"|"linear_foot"|"sheet"|"roll";quantityKind:"per_line"|"per_piece"|"per_area";condition?:Readonly<{type:"selected";optionId:string;choiceValue:string}>;replacesPbv2Compatibility?:boolean}>;
-export type ProductRecipe=Readonly<{recipeId:string;productId:string;productVersionId:string;draftUpdatedAt:string;lifecycle:"draft"|"active"|"historical";components:readonly ProductRecipeComponent[]}>;
-export type ProductDraftRouting=Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string;lifecycle:"draft";routing:Readonly<{kind:"route_required";routeTemplateId:string;routeTemplateName:string;steps:readonly Readonly<{position:number;kind:"proofing"|"prepress"|"production"|"fulfillment"}>[];sourceTemplateRevision?:string;sourceTemplateFingerprint?:string}>|Readonly<{kind:"no_route"|"unconfigured"}>}>;
-export type PublishedProductVersion=Readonly<{productId:string;productName:string;productVersionId:string;productUpdatedAt:string;productVersionUpdatedAt:string;publishedAt?:string;alreadyPublished:boolean;operationReference:"products.publish_configuration.v1"}>;
-export type ProductMaterial=Readonly<{materialId:string;name:string;sku:string|null;unit:ProductRecipeComponent["unit"]}>;
-export type ProductWorkspaceDetail = Readonly<ProductCatalogItem & { productUpdatedAt:string; description?:string; workflowIntent:"standard_production"|"fulfillment_only"|"service_fee"; requiresProductionJob:boolean; requiresProofApproval:boolean; configurableOptionCount:number;activeDefinition?:ProductActiveDefinition;versions:ProductVersionLifecycle }>;
-export type ProductCatalogPage = Readonly<{items:readonly ProductCatalogItem[];page:number;pageSize:number;total:number;hasMore:boolean}>;
-export type CreatedProductWithInitialDraft = Readonly<{productId:string;draftVersionId:string;draftUpdatedAt:string}>;
+export type ProductLifecycle =
+  "active" | "inactive" | "draft" | "active_with_draft";
+export type ProductCatalogItem = Readonly<{
+  productId: string;
+  displayName: string;
+  category?: string;
+  lifecycle: ProductLifecycle;
+  measurementMode: "dimensions_required" | "quantity_only";
+  pricingSummary: string;
+  productType?: Readonly<{
+    displayName: string;
+    routePolicy: "route_required" | "no_route" | "unconfigured";
+  }>;
+  primaryMaterialName?: string;
+  activeVersion?: Readonly<{ label: string; publishedAt?: string }>;
+  hasDraft: boolean;
+}>;
+export type ProductionRequirementPreview =
+  | Readonly<{
+      state: "configured";
+      specificationFingerprint: string;
+      units: readonly Readonly<{
+        key: string;
+        side?: "front" | "back";
+        sourcePageIndex?: number;
+        layerKey?: string;
+        layerOrder?: number;
+      }>[];
+    }>
+  | Readonly<{ state: "unconfigured"; reason: "product_specification_absent" }>;
+export type ProductVersionSummary = Readonly<{
+  productVersionId: string;
+  status: "active" | "draft" | "deprecated" | "archived";
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+  editable: boolean;
+}>;
+export type ProductVersionLifecycle = Readonly<{
+  active?: ProductVersionSummary;
+  draft?: ProductVersionSummary;
+  history: readonly ProductVersionSummary[];
+  historyLimit: number;
+  historyHasMore: boolean;
+  canCreateDraft: boolean;
+}>;
+export type ProductActiveDefinition = Readonly<{
+  productVersionId: string;
+  options: readonly Readonly<{
+    label: string;
+    inputType: string;
+    required: boolean;
+    defaultLabel?: string;
+    choices: readonly Readonly<{
+      label: string;
+      value: string | number | boolean;
+    }>[];
+  }>[];
+  pricing: Readonly<{
+    mode: "unconfigured" | "simple" | "formula" | "matrix" | "matrix_formula";
+    perPieceCents?: number;
+    perSquareFootCents?: number;
+    minimumChargeCents?: number;
+    tierBasis?: "quantity" | "square_foot" | "computed_sheet_usage";
+    tiers: readonly Readonly<{
+      minimum: number;
+      maximum: number | null;
+      perPieceCents?: number;
+      perSquareFootCents?: number;
+      minimumChargeCents?: number;
+    }>[];
+    formula?: Readonly<{
+      name?: string;
+      expression: string;
+      variables: Readonly<Record<string, number>>;
+    }>;
+    matrix?: Readonly<{
+      pricingUnit: "per_piece" | "per_square_foot";
+      dimensions: readonly string[];
+      rows: readonly Readonly<{
+        selections: readonly string[];
+        baseRateCents: number;
+        tierCount: number;
+        computedSheetTiers: boolean;
+      }>[];
+    }>;
+  }>;
+  recipe: readonly Readonly<{
+    componentId: string;
+    materialName: string;
+    materialSku?: string;
+    quantity: string;
+    unit: string;
+    basis: string;
+    condition?: string;
+    replacesCompatibility: boolean;
+  }>[];
+  productionUnits: readonly Readonly<{
+    key: string;
+    side?: string;
+    condition?: string;
+  }>[];
+  routing?: Readonly<{
+    mode: "route_required" | "no_route" | "unconfigured";
+    templateName?: string;
+    revision?: string;
+    fingerprint?: string;
+    steps: readonly string[];
+  }>;
+}>;
+export type ProductProductionUnitRule = Readonly<{
+  key: string;
+  side?: "front" | "back";
+  sourcePageIndex?: number;
+  layerKey?: string;
+  layerOrder?: number;
+  when?: Readonly<{ selectionKey: string; equals: string | number | boolean }>;
+}>;
+export type ProductProductionUnitSpecification = Readonly<{
+  schemaVersion: 1;
+  rules: readonly ProductProductionUnitRule[];
+}>;
+export type ProductDraftGeneral = Readonly<{
+  displayName: string;
+  category: string | null;
+  description: string | null;
+  storefrontVisible: boolean;
+  measurementMode: "dimensions_required" | "quantity_only";
+  workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
+  requiresProofApproval: boolean;
+  requiresProductionJob: boolean;
+  productionUnitSpecification: ProductProductionUnitSpecification | null;
+}>;
+export type ProductDraftGeneralRead = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  general: ProductDraftGeneral;
+}>;
+export type ProductDraftOptionInputType =
+  "boolean" | "select" | "multiselect" | "number" | "text" | "textarea";
+export type ProductDraftOption = Readonly<{
+  optionId: string;
+  label: string;
+  inputType: ProductDraftOptionInputType;
+  required: boolean;
+  defaultValue: string | number | boolean | null | readonly string[];
+  choices: readonly Readonly<{ choiceValue: string; label: string }>[];
+  canRemove: boolean;
+  removalReason?: string;
+}>;
+export type ProductDraftOptionsRead = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  options: readonly ProductDraftOption[];
+}>;
+export type ProductDraftPricingTier = Readonly<{
+  tierId: string;
+  minimum: number;
+  maximum: number | null;
+  perPieceCents: number | null;
+  perSqftCents: number | null;
+  minimumChargeCents: number | null;
+}>;
+export type ProductDraftPricingTierSets = Readonly<{
+  quantity: readonly ProductDraftPricingTier[];
+  squareFoot: readonly ProductDraftPricingTier[];
+  computedSheetUsage: readonly ProductDraftPricingTier[];
+}>;
+export type ProductDraftPricing = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  measurementMode: "dimensions_required" | "quantity_only";
+  mode:
+    | "simple_base"
+    | "simple_with_tiers"
+    | "matrix"
+    | "formula"
+    | "advanced"
+    | "unconfigured";
+  editable: boolean;
+  unavailableReason?: string;
+  base: Readonly<{
+    perPieceCents: number | null;
+    perSqftCents: number | null;
+    minimumChargeCents: number | null;
+  }>;
+  flatFeeCents: number | null;
+  tierBasis: "quantity" | "square_foot" | "computed_sheet_usage" | null;
+  tiers: readonly ProductDraftPricingTier[];
+  tierSets: ProductDraftPricingTierSets;
+}>;
+export type PricingExplanation = Readonly<{
+  dimensions?: Readonly<{
+    widthIn: string;
+    heightIn: string;
+    areaPerPieceSqft: string;
+    totalAreaSqft: string;
+  }>;
+  computedSheetUsage?: Readonly<{
+    sheetCount: number;
+    billedSquareFeet?: number;
+    allowRotation?: boolean;
+    productAllowsRotation?: boolean;
+    optionAllowsRotation?: boolean;
+    effectiveRotation?: boolean;
+    rotationControl?: Readonly<{
+      optionId: string;
+      selectionKey: string;
+      selectedChoiceValues: readonly string[];
+      allowWhenChoiceValues: readonly string[];
+    }>;
+  }>;
+  tier?: Readonly<{
+    basis: "quantity" | "square_foot" | "computed_sheet";
+    value: string;
+    selectedTierId: string;
+    rateCents: number;
+  }>;
+  matrix?: Readonly<{ rowId: string; selectedValues: readonly string[] }>;
+  formula?: Readonly<{
+    source: "library" | "embedded";
+    expression: string;
+    baseRateCents?: number;
+  }>;
+  optionImpacts: readonly Readonly<{
+    selectionKey: string;
+    kind: string;
+    cents: number;
+  }>[];
+  minimumChargeApplied: boolean;
+}>;
+export type ProductDraftPricingPreview = Readonly<{
+  quantity: number;
+  dimensions?: Readonly<{
+    width: number;
+    height: number;
+    unit: "in";
+    areaSquareFeet: number;
+  }>;
+  calculatedUnitAmount: Readonly<{ cents: number; currency: string }>;
+  calculatedLineAmount: Readonly<{ cents: number; currency: string }>;
+  minimumChargeApplied: boolean;
+  tier?: Readonly<{
+    basis: "quantity" | "square_foot" | "computed_sheet";
+    value: string;
+  }>;
+  breakdown: readonly Readonly<{
+    label: string;
+    cents: number;
+    currency: string;
+  }>[];
+  explanation: PricingExplanation;
+  warnings: readonly string[];
+}>;
+export type ProductDraftPricingMatrix = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  editable: boolean;
+  unavailableReason?: string;
+  active: boolean;
+  matrixId: string;
+  pricingUnit: "per_piece" | "per_square_foot";
+  availableDimensions: readonly Readonly<{
+    selectionKey: string;
+    label: string;
+    values: readonly Readonly<{
+      value: string | number | boolean;
+      label: string;
+    }>[];
+  }>[];
+  dimensions: readonly Readonly<{
+    selectionKey: string;
+    label: string;
+    values: readonly Readonly<{
+      value: string | number | boolean;
+      label: string;
+    }>[];
+  }>[];
+  rows: readonly Readonly<{
+    rowId: string;
+    combination: Record<string, string | number | boolean>;
+    baseRateCents: number | null;
+    tierBasis: "quantity" | "computed_sheet_usage" | null;
+    tiers: readonly ProductDraftPricingTier[];
+  }>[];
+  warnings: readonly string[];
+}>;
+export type ProductRotationControl = Readonly<{
+  optionId: string;
+  allowWhenChoiceValues: readonly string[];
+}>;
+export type ProductDraftFormulaPricing = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  source:
+    | "none"
+    | "embedded_editable"
+    | "library_product_inputs_editable"
+    | "library_reference_read_only"
+    | "unsupported_legacy";
+  editable: boolean;
+  expressionEditable: boolean;
+  variablesEditable: boolean;
+  rotationEditable: boolean;
+  inputs: readonly Readonly<{
+    key: string;
+    label: string;
+    unit?: "in" | "sq_ft";
+    minimum?: number;
+    exclusiveMinimum?: boolean;
+  }>[];
+  unavailableReason?: string;
+  formulaId?: string;
+  formulaName?: string;
+  expression: string;
+  legacyExpression?: string;
+  canAdoptLegacyFormula?: boolean;
+  variables: Record<string, number>;
+  allowRotation: boolean;
+  rotationControl?: ProductRotationControl;
+  supportedRuntimeVariables: readonly string[];
+  warnings: readonly string[];
+}>;
+export type ProductFormulaLibraryEntry = Readonly<{
+  id: string;
+  name: string;
+  code?: string | null;
+  expression: string;
+  config?: unknown;
+}>;
+export type ProductDraftOptionPricingImpact =
+  | Readonly<{
+      type:
+        | "fixed"
+        | "per_item"
+        | "per_square_foot"
+        | "per_linear_foot"
+        | "per_inch"
+        | "percent_of_base"
+        | "percent_of_options_subtotal"
+        | "percent_of_line_subtotal"
+        | "multiplier";
+      value: number;
+    }>
+  | Readonly<{ type: "formula"; formula: string }>;
+export type ProductDraftOptionPricingOverride = Readonly<{
+  mode: "set" | "add" | "multiply";
+  target: "per_square_foot" | "per_piece" | "minimum_charge";
+  value: number;
+}>;
+export type ProductDraftOptionPricing = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  options: readonly Readonly<{
+    optionId: string;
+    selectionKey: string;
+    label: string;
+    nodeImpact: ProductDraftOptionPricingImpact | null;
+    nodeImpacts: readonly ProductDraftOptionPricingImpact[];
+    choices: readonly Readonly<{
+      choiceValue: string;
+      label: string;
+      impact: ProductDraftOptionPricingImpact | null;
+      impacts: readonly ProductDraftOptionPricingImpact[];
+      override: ProductDraftOptionPricingOverride | null;
+      editable: boolean;
+      readOnlyReason?: string;
+    }>[];
+  }>[];
+}>;
+export type ProductRecipeComponent = Readonly<{
+  componentId?: string;
+  materialId: string;
+  materialName?: string;
+  materialSku?: string | null;
+  quantity: string;
+  unit: "each" | "square_foot" | "linear_foot" | "sheet" | "roll";
+  quantityKind: "per_line" | "per_piece" | "per_area";
+  condition?: Readonly<{
+    type: "selected";
+    optionId: string;
+    choiceValue: string;
+  }>;
+  replacesPbv2Compatibility?: boolean;
+}>;
+export type ProductRecipe = Readonly<{
+  recipeId: string;
+  productId: string;
+  productVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft" | "active" | "historical";
+  components: readonly ProductRecipeComponent[];
+}>;
+export type ProductDraftRouting = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+  lifecycle: "draft";
+  routing:
+    | Readonly<{
+        kind: "route_required";
+        routeTemplateId: string;
+        routeTemplateName: string;
+        steps: readonly Readonly<{
+          position: number;
+          kind: "proofing" | "prepress" | "production" | "fulfillment";
+        }>[];
+        sourceTemplateRevision?: string;
+        sourceTemplateFingerprint?: string;
+      }>
+    | Readonly<{ kind: "no_route" | "unconfigured" }>;
+}>;
+export type PublishedProductVersion = Readonly<{
+  productId: string;
+  productName: string;
+  productVersionId: string;
+  productUpdatedAt: string;
+  productVersionUpdatedAt: string;
+  publishedAt?: string;
+  alreadyPublished: boolean;
+  operationReference: "products.publish_configuration.v1";
+}>;
+export type ProductMaterial = Readonly<{
+  materialId: string;
+  name: string;
+  sku: string | null;
+  unit: ProductRecipeComponent["unit"];
+}>;
+export type ProductWorkspaceDetail = Readonly<
+  ProductCatalogItem & {
+    productUpdatedAt: string;
+    description?: string;
+    workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
+    requiresProductionJob: boolean;
+    requiresProofApproval: boolean;
+    configurableOptionCount: number;
+    activeDefinition?: ProductActiveDefinition;
+    versions: ProductVersionLifecycle;
+  }
+>;
+export type ProductCatalogPage = Readonly<{
+  items: readonly ProductCatalogItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
+}>;
+export type CreatedProductWithInitialDraft = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  draftUpdatedAt: string;
+}>;
 export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentAvailability = Readonly<{
   orderId: string;
@@ -219,7 +653,11 @@ export type OrderListItem = Readonly<{
   updatedAt: string;
   draftInvoice?: { invoiceId: string; lifecycle: "draft"; totalCents: number };
   routing: "routed" | "no_route";
-  activeRecordClassification?: "CLOSED_HISTORY" | "ACTIVE_BUT_CAN_REMAIN_LEGACY" | "ACTIVE_REQUIRES_CUTOVER_STRATEGY" | "AMBIGUOUS";
+  activeRecordClassification?:
+    | "CLOSED_HISTORY"
+    | "ACTIVE_BUT_CAN_REMAIN_LEGACY"
+    | "ACTIVE_REQUIRES_CUTOVER_STRATEGY"
+    | "AMBIGUOUS";
 }>;
 export type OrderRead = Readonly<{
   order: Readonly<{
@@ -267,7 +705,10 @@ export type OrderRead = Readonly<{
 export type OrderResult = Readonly<{
   order: OrderRead;
   draftInvoiceId: string;
-  lineCorrelations?: readonly Readonly<{ clientLineKey: string; orderLineId: string }>[];
+  lineCorrelations?: readonly Readonly<{
+    clientLineKey: string;
+    orderLineId: string;
+  }>[];
 }>;
 export type InvoiceRead = Readonly<{
   source?: "v2" | "legacy";
@@ -520,7 +961,54 @@ export type ProductionWorkProjection = Readonly<{
   completedGoodQuantity: number;
   unitQuantitySatisfied: boolean;
 }>;
-export type ProductionMaterialProjection=Readonly<{usage:Readonly<{productionWorkId:string;facts:readonly Readonly<{consumptionId:string;materialId:string;materialName:string;materialSku:string|null;requirementId?:string;quantity:string;unit:ProductRecipeComponent["unit"];kind:"consumed"|"waste"|"correction";correctsConsumptionId?:string;createdAt:string}>[];comparison:readonly Readonly<{materialId:string;materialName:string;materialSku:string|null;requirementId?:string;unit:ProductRecipeComponent["unit"];expectedQuantity:string;consumedQuantity:string;wasteQuantity:string;correctionQuantity:string;totalPhysicalUsageQuantity:string;varianceQuantity:string}>[]}>;inventory:Readonly<{balances:readonly Readonly<{materialId:string;materialName:string;materialSku:string|null;unit:ProductRecipeComponent["unit"];onHandQuantity:string;reservedQuantity:string;availableQuantity:string}>[];facts:readonly Readonly<{consumptionId:string;status:"applied"|"unapplied"|"blocked"|"retryable";lastFailureCode?:string;lastFailureMessage?:string;attemptCount:number}>[]}>}>;
+export type ProductionMaterialProjection = Readonly<{
+  usage: Readonly<{
+    productionWorkId: string;
+    facts: readonly Readonly<{
+      consumptionId: string;
+      materialId: string;
+      materialName: string;
+      materialSku: string | null;
+      requirementId?: string;
+      quantity: string;
+      unit: ProductRecipeComponent["unit"];
+      kind: "consumed" | "waste" | "correction";
+      correctsConsumptionId?: string;
+      createdAt: string;
+    }>[];
+    comparison: readonly Readonly<{
+      materialId: string;
+      materialName: string;
+      materialSku: string | null;
+      requirementId?: string;
+      unit: ProductRecipeComponent["unit"];
+      expectedQuantity: string;
+      consumedQuantity: string;
+      wasteQuantity: string;
+      correctionQuantity: string;
+      totalPhysicalUsageQuantity: string;
+      varianceQuantity: string;
+    }>[];
+  }>;
+  inventory: Readonly<{
+    balances: readonly Readonly<{
+      materialId: string;
+      materialName: string;
+      materialSku: string | null;
+      unit: ProductRecipeComponent["unit"];
+      onHandQuantity: string;
+      reservedQuantity: string;
+      availableQuantity: string;
+    }>[];
+    facts: readonly Readonly<{
+      consumptionId: string;
+      status: "applied" | "unapplied" | "blocked" | "retryable";
+      lastFailureCode?: string;
+      lastFailureMessage?: string;
+      attemptCount: number;
+    }>[];
+  }>;
+}>;
 export type Selection = Readonly<{
   customerId?: string;
   contactId?: string;
@@ -549,7 +1037,12 @@ export type ProductConfiguration = Readonly<{
     }>[];
   }>[];
 }>;
-export type SalesLinePricingPreview = Readonly<{ calculatedUnitAmount: Readonly<{ cents: number; currency: string }>; calculatedLineAmount: Readonly<{ cents: number; currency: string }>; currency: string; explanation: PricingExplanation }>;
+export type SalesLinePricingPreview = Readonly<{
+  calculatedUnitAmount: Readonly<{ cents: number; currency: string }>;
+  calculatedLineAmount: Readonly<{ cents: number; currency: string }>;
+  currency: string;
+  explanation: PricingExplanation;
+}>;
 const csrfTokens = new Map<string, string>();
 let sessionScope: string | undefined;
 const csrfKey = (organizationId: string) =>
@@ -579,14 +1072,18 @@ const withSearch = (
 const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   // FormData owns its multipart boundary. Supplying JSON here would make a
   // legitimate binary upload unreadable by the HTTP boundary.
-  const isMultipart = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const isMultipart =
+    typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(url, {
     cache: "no-store",
     credentials: "include",
     ...init,
     // init may carry only the CSRF header. JSON remains the default for the
     // normal V2 command path; multipart is explicitly left to the browser.
-    headers: { ...(isMultipart ? {} : { "content-type": "application/json" }), ...(init?.headers ?? {}) },
+    headers: {
+      ...(isMultipart ? {} : { "content-type": "application/json" }),
+      ...(init?.headers ?? {}),
+    },
   });
   // Every authenticated Quote/form response carries the trusted host's opaque
   // session epoch. Detect a replacement before its body can update the old
@@ -653,16 +1150,37 @@ export const quoteApi = {
         body: JSON.stringify({ selections }),
       },
     ),
-  previewLinePricing: (organizationId: string, productId: string, input: Readonly<{ quantity: number; selections: Record<string, unknown>; dimensions?: Readonly<{ width: string; height: string; unit: "in" | "ft" | "mm" }> }>) =>
+  previewLinePricing: (
+    organizationId: string,
+    productId: string,
+    input: Readonly<{
+      quantity: number;
+      selections: Record<string, unknown>;
+      dimensions?: Readonly<{
+        width: string;
+        height: string;
+        unit: "in" | "ft" | "mm";
+      }>;
+    }>,
+  ) =>
     request<SalesLinePricingPreview>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/products/${encodeURIComponent(productId)}/pricing-preview`,
-      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) },
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify(input),
+      },
     ),
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
     ),
-  legacy: (organizationId: string, recordId: string) => request<LegacyCommercialDetail>(endpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`)),
+  legacy: (organizationId: string, recordId: string) =>
+    request<LegacyCommercialDetail>(
+      endpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`),
+    ),
   list: (
     organizationId: string,
     query?: Readonly<{
@@ -729,13 +1247,17 @@ export const quoteApi = {
     quoteId: string,
     businessRequestId: string,
     expectedRevision: string,
-  ) => request<QuoteAcceptanceResult>(
-    endpoint(organizationId, `/${encodeURIComponent(quoteId)}/accept`), {
-      method: "POST",
-      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
-      body: JSON.stringify({ businessRequestId, expectedRevision }),
-    },
-  ),
+  ) =>
+    request<QuoteAcceptanceResult>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/accept`),
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, expectedRevision }),
+      },
+    ),
   convert: (
     organizationId: string,
     quoteId: string,
@@ -811,7 +1333,9 @@ export const orderApi = {
       orderEndpoint(organizationId),
       {
         method: "POST",
-        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
         body: JSON.stringify({ ...input, businessRequestId }),
       },
     );
@@ -835,7 +1359,10 @@ export const orderApi = {
         orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}`),
       ),
     ),
-  legacy: (organizationId: string, recordId: string) => request<LegacyCommercialDetail>(orderEndpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`)),
+  legacy: (organizationId: string, recordId: string) =>
+    request<LegacyCommercialDetail>(
+      orderEndpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`),
+    ),
   patch: async (
     organizationId: string,
     orderId: string,
@@ -866,7 +1393,11 @@ export type LegacyCommercialDetail = Readonly<{
   requestedDueDate?: string;
   updatedAt: string;
   readOnly: true;
-  activeRecordClassification?: "CLOSED_HISTORY" | "ACTIVE_BUT_CAN_REMAIN_LEGACY" | "ACTIVE_REQUIRES_CUTOVER_STRATEGY" | "AMBIGUOUS";
+  activeRecordClassification?:
+    | "CLOSED_HISTORY"
+    | "ACTIVE_BUT_CAN_REMAIN_LEGACY"
+    | "ACTIVE_REQUIRES_CUTOVER_STRATEGY"
+    | "AMBIGUOUS";
 }>;
 export const invoiceApi = {
   list: (
@@ -910,19 +1441,46 @@ export type CustomerWorkspaceRead = Readonly<{
     companyName?: string;
     email?: string;
     phone?: string;
-    billingAddress?: Readonly<{ lines: readonly string[]; city?: string; region?: string; postalCode?: string; countryCode?: string }>;
-    shippingAddress?: Readonly<{ lines: readonly string[]; city?: string; region?: string; postalCode?: string; countryCode?: string }>;
+    billingAddress?: Readonly<{
+      lines: readonly string[];
+      city?: string;
+      region?: string;
+      postalCode?: string;
+      countryCode?: string;
+    }>;
+    shippingAddress?: Readonly<{
+      lines: readonly string[];
+      city?: string;
+      region?: string;
+      postalCode?: string;
+      countryCode?: string;
+    }>;
   }>;
-  contacts: readonly Readonly<{ contactId: string; displayName: string; email?: string; phone?: string }>[];
+  contacts: readonly Readonly<{
+    contactId: string;
+    displayName: string;
+    email?: string;
+    phone?: string;
+  }>[];
 }>;
 export type CustomerCatalogItem = Readonly<{
-  customerId: string; displayName: string; companyName: string; email?: string; phone?: string;
-  primaryContact?: Readonly<{ contactId: string; displayName: string; email?: string; phone?: string }>;
+  customerId: string;
+  displayName: string;
+  companyName: string;
+  email?: string;
+  phone?: string;
+  primaryContact?: Readonly<{
+    contactId: string;
+    displayName: string;
+    email?: string;
+    phone?: string;
+  }>;
 }>;
 export const customerApi = {
-  list: (organizationId: string, query = "") => request<{ items: readonly CustomerCatalogItem[] }>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/customers${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-  ),
+  list: (organizationId: string, query = "") =>
+    request<{ items: readonly CustomerCatalogItem[] }>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/customers${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+    ),
   get: (organizationId: string, customerId: string) =>
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,
@@ -937,59 +1495,346 @@ export type ContactCatalogItem = Readonly<{
   customerName: string;
   primary: boolean;
 }>;
-export type ContactWorkspaceRead = ContactCatalogItem & Readonly<{
-  customerPresentation: CustomerWorkspaceRead["presentation"];
-  relatedContacts: readonly ContactCatalogItem[];
-}>;
+export type ContactWorkspaceRead = ContactCatalogItem &
+  Readonly<{
+    customerPresentation: CustomerWorkspaceRead["presentation"];
+    relatedContacts: readonly ContactCatalogItem[];
+  }>;
 export const contactApi = {
-  list: (organizationId: string, query = "") => request<{ items: readonly ContactCatalogItem[]; total: number; accounts: number }>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/contacts${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-  ),
-  get: (organizationId: string, contactId: string) => request<ContactWorkspaceRead>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/contacts/${encodeURIComponent(contactId)}`,
-  ),
+  list: (organizationId: string, query = "") =>
+    request<{
+      items: readonly ContactCatalogItem[];
+      total: number;
+      accounts: number;
+    }>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/contacts${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+    ),
+  get: (organizationId: string, contactId: string) =>
+    request<ContactWorkspaceRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/contacts/${encodeURIComponent(contactId)}`,
+    ),
 };
 export const productApi = {
-  list: (organizationId: string, query = "", page = 1) => request<ProductCatalogPage>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products?q=${encodeURIComponent(query)}&page=${page}&pageSize=50`,
-  ),
-  get: (organizationId: string, productId: string) => request<ProductWorkspaceDetail>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,
-  ),
-  createProduct: (organizationId:string,businessRequestId:string,displayName:string) => request<CreatedProductWithInitialDraft>(`/v2/organizations/${encodeURIComponent(organizationId)}/products`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""}, body:JSON.stringify({businessRequestId,displayName}) }),
-  createDraft: (organizationId:string,productId:string,businessRequestId:string,expectedActiveVersionUpdatedAt:string) => request<ProductVersionLifecycle>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/drafts`,
-    {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,expectedActiveVersionUpdatedAt})},
-  ),
-  publishDraft:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedProductUpdatedAt:string;expectedDraftUpdatedAt:string;confirmWarnings?:boolean;activateProduct?:boolean}>)=>request<PublishedProductVersion>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/publish`,
-    {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})},
-  ),
-  draftGeneral: (organizationId:string,productId:string) => request<ProductDraftGeneralRead>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/general`,
-  ),
-  saveDraftGeneral: (organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;general:ProductDraftGeneral}>) => request<ProductDraftGeneralRead>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/general`,
-    {method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})},
-  ),
-  draftOptions:(organizationId:string,productId:string)=>request<ProductDraftOptionsRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/options`),
-  saveDraftOptions:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;options:readonly ProductDraftOption[]}>)=>request<ProductDraftOptionsRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/options`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  draftPricing:(organizationId:string,productId:string)=>request<ProductDraftPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing`),
-  saveDraftPricing:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;base:ProductDraftPricing["base"];tierBasis:ProductDraftPricing["tierBasis"];tiers:readonly ProductDraftPricingTier[]}>)=>request<ProductDraftPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  previewDraftPricing:(organizationId:string,productId:string,input:Readonly<{quantity:number;width?:number;height?:number;selections?:Record<string,unknown>}>)=>request<ProductDraftPricingPreview>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/preview`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify(input)}),
-  draftPricingMatrix:(organizationId:string,productId:string)=>request<ProductDraftPricingMatrix>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/matrix`),
-  saveDraftPricingMatrix:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;matrixId:string;pricingUnit:"per_piece"|"per_square_foot";dimensions:readonly string[];rows:ProductDraftPricingMatrix["rows"]}>)=>request<ProductDraftPricingMatrix>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/matrix`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  draftFormula:(organizationId:string,productId:string)=>request<ProductDraftFormulaPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula`),
-  saveDraftFormula:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;expression:string;variables:Record<string,number>;allowRotation:boolean;rotationControl?:ProductRotationControl}>)=>request<ProductDraftFormulaPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  adoptLegacyDraftFormula:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string}>)=>request<ProductDraftFormulaPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula/adopt-legacy`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  draftOptionPricing:(organizationId:string,productId:string)=>request<ProductDraftOptionPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/option-pricing`),
-  saveDraftOptionPricing:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;optionId:string;choiceValue?:string;impact:ProductDraftOptionPricingImpact|null}>)=>request<ProductDraftOptionPricing>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/option-pricing`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  draftRecipe:(organizationId:string,productId:string)=>request<ProductRecipe>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/recipe`),
-  activeRecipe:(organizationId:string,productId:string)=>request<ProductRecipe>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/active/recipe`),
-  materials:(organizationId:string,productId:string,query="")=>request<{items:readonly ProductMaterial[]}>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/materials?q=${encodeURIComponent(query)}`),
-  saveDraftRecipe:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;components:readonly ProductRecipeComponent[]}>)=>request<ProductRecipe>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/recipe`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
-  draftRouting:(organizationId:string,productId:string)=>request<ProductDraftRouting>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/routing`),
-  saveDraftRouting:(organizationId:string,productId:string,businessRequestId:string,input:Readonly<{draftVersionId:string;expectedDraftUpdatedAt:string;routing:ProductDraftRouting["routing"]}>)=>request<ProductDraftRouting>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/routing`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify({businessRequestId,...input})}),
+  /** Shared Formula Library is read-only from Product Builder. */
+  listFormulaLibrary: () =>
+    request<readonly ProductFormulaLibraryEntry[]>("/api/pricing-formulas"),
+  list: (organizationId: string, query = "", page = 1) =>
+    request<ProductCatalogPage>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products?q=${encodeURIComponent(query)}&page=${page}&pageSize=50`,
+    ),
+  get: (organizationId: string, productId: string) =>
+    request<ProductWorkspaceDetail>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,
+    ),
+  createProduct: (
+    organizationId: string,
+    businessRequestId: string,
+    displayName: string,
+  ) =>
+    request<CreatedProductWithInitialDraft>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, displayName }),
+      },
+    ),
+  createDraft: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    expectedActiveVersionUpdatedAt: string,
+  ) =>
+    request<ProductVersionLifecycle>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/drafts`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({
+          businessRequestId,
+          expectedActiveVersionUpdatedAt,
+        }),
+      },
+    ),
+  publishDraft: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedProductUpdatedAt: string;
+      expectedDraftUpdatedAt: string;
+      confirmWarnings?: boolean;
+      activateProduct?: boolean;
+    }>,
+  ) =>
+    request<PublishedProductVersion>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/publish`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftGeneral: (organizationId: string, productId: string) =>
+    request<ProductDraftGeneralRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/general`,
+    ),
+  saveDraftGeneral: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      general: ProductDraftGeneral;
+    }>,
+  ) =>
+    request<ProductDraftGeneralRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/general`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftOptions: (organizationId: string, productId: string) =>
+    request<ProductDraftOptionsRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/options`,
+    ),
+  saveDraftOptions: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      options: readonly ProductDraftOption[];
+    }>,
+  ) =>
+    request<ProductDraftOptionsRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/options`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftPricing: (organizationId: string, productId: string) =>
+    request<ProductDraftPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing`,
+    ),
+  saveDraftPricing: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      base: ProductDraftPricing["base"];
+      flatFeeCents: number | null;
+      tierBasis: ProductDraftPricing["tierBasis"];
+      tiers: readonly ProductDraftPricingTier[];
+      tierSets?: ProductDraftPricingTierSets;
+    }>,
+  ) =>
+    request<ProductDraftPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  previewDraftPricing: (
+    organizationId: string,
+    productId: string,
+    input: Readonly<{
+      quantity: number;
+      width?: number;
+      height?: number;
+      selections?: Record<string, unknown>;
+    }>,
+  ) =>
+    request<ProductDraftPricingPreview>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/preview`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify(input),
+      },
+    ),
+  draftPricingMatrix: (organizationId: string, productId: string) =>
+    request<ProductDraftPricingMatrix>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/matrix`,
+    ),
+  saveDraftPricingMatrix: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      active: boolean;
+      matrixId: string;
+      pricingUnit: "per_piece" | "per_square_foot";
+      dimensions: readonly string[];
+      rows: ProductDraftPricingMatrix["rows"];
+    }>,
+  ) =>
+    request<ProductDraftPricingMatrix>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/matrix`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftFormula: (organizationId: string, productId: string) =>
+    request<ProductDraftFormulaPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula`,
+    ),
+  saveDraftFormula: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      source: "embedded" | "library";
+      formulaId?: string;
+      expression: string;
+      variables: Record<string, number>;
+      allowRotation: boolean;
+      rotationControl?: ProductRotationControl;
+    }>,
+  ) =>
+    request<ProductDraftFormulaPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  adoptLegacyDraftFormula: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{ draftVersionId: string; expectedDraftUpdatedAt: string }>,
+  ) =>
+    request<ProductDraftFormulaPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/pricing/formula/adopt-legacy`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftOptionPricing: (organizationId: string, productId: string) =>
+    request<ProductDraftOptionPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/option-pricing`,
+    ),
+  saveDraftOptionPricing: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      optionId: string;
+      choiceValue?: string;
+      /** Compatibility single-impact write. */ impact?: ProductDraftOptionPricingImpact | null;
+      /** Ordered canonical impact write. */ impacts?: readonly ProductDraftOptionPricingImpact[];
+      override?: ProductDraftOptionPricingOverride | null;
+    }>,
+  ) =>
+    request<ProductDraftOptionPricing>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/option-pricing`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftRecipe: (organizationId: string, productId: string) =>
+    request<ProductRecipe>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/recipe`,
+    ),
+  activeRecipe: (organizationId: string, productId: string) =>
+    request<ProductRecipe>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/active/recipe`,
+    ),
+  materials: (organizationId: string, productId: string, query = "") =>
+    request<{ items: readonly ProductMaterial[] }>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/materials?q=${encodeURIComponent(query)}`,
+    ),
+  saveDraftRecipe: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      components: readonly ProductRecipeComponent[];
+    }>,
+  ) =>
+    request<ProductRecipe>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/recipe`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  draftRouting: (organizationId: string, productId: string) =>
+    request<ProductDraftRouting>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/routing`,
+    ),
+  saveDraftRouting: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      routing: ProductDraftRouting["routing"];
+    }>,
+  ) =>
+    request<ProductDraftRouting>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/routing`,
+      {
+        method: "PATCH",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
 };
 export const financeApi = {
   overview: (organizationId: string) =>
@@ -1009,7 +1854,10 @@ export const financeApi = {
     ),
   legacyInvoice: (organizationId: string, invoiceId: string) =>
     request<FinancialInvoiceRead>(
-      financeEndpoint(organizationId, `/invoices/legacy/${encodeURIComponent(invoiceId)}`),
+      financeEndpoint(
+        organizationId,
+        `/invoices/legacy/${encodeURIComponent(invoiceId)}`,
+      ),
     ),
   recordPayment: (
     organizationId: string,
@@ -1061,9 +1909,17 @@ export const financeApi = {
     ),
 };
 export const artworkApi = {
-  workspace: (organizationId: string, query = "") => request<{ items: readonly (ArtworkOrderProjection & Readonly<{ orderNumber: string; customerDisplayName: string; lineDescription: string }>)[] }>(
-    `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-  ),
+  workspace: (organizationId: string, query = "") =>
+    request<{
+      items: readonly (ArtworkOrderProjection &
+        Readonly<{
+          orderNumber: string;
+          customerDisplayName: string;
+          lineDescription: string;
+        }>)[];
+    }>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+    ),
   forOrder: (organizationId: string, orderId: string) =>
     request<readonly ArtworkOrderProjection[]>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`,
@@ -1089,12 +1945,39 @@ export const artworkApi = {
         body: JSON.stringify({ businessRequestId, usage }),
       },
     ),
-  upload: (organizationId: string, businessRequestId: string, input: Readonly<{ orderId: string; orderLineId: string; purpose: "customer_supplied" | "production" | "proof" | "reference"; side?: "front" | "back"; file: File }>) => {
+  upload: (
+    organizationId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      orderId: string;
+      orderLineId: string;
+      purpose: "customer_supplied" | "production" | "proof" | "reference";
+      side?: "front" | "back";
+      file: File;
+    }>,
+  ) => {
     const body = new FormData();
-    body.append("businessRequestId", businessRequestId); body.append("orderId", input.orderId); body.append("orderLineId", input.orderLineId); body.append("purpose", input.purpose);
+    body.append("businessRequestId", businessRequestId);
+    body.append("orderId", input.orderId);
+    body.append("orderLineId", input.orderLineId);
+    body.append("purpose", input.purpose);
     if (input.side) body.append("side", input.side);
     body.append("file", input.file);
-    return request<Readonly<{ artworkFile: ArtworkOrderProjection["file"]; assignment: ArtworkOrderProjection["assignment"] }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/uploads`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body });
+    return request<
+      Readonly<{
+        artworkFile: ArtworkOrderProjection["file"];
+        assignment: ArtworkOrderProjection["assignment"];
+      }>
+    >(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/uploads`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body,
+      },
+    );
   },
 };
 const proofEndpoint = (org: string, suffix = "") =>
@@ -1158,7 +2041,11 @@ export const proofingApi = {
       org,
       `/versions/${encodeURIComponent(proofVersionId)}/respond`,
       businessRequestId,
-      { outcome, ...(comment?.trim() ? { comment: comment.trim() } : {}), ...(recordedCustomerId ? { recordedCustomerId } : {}) },
+      {
+        outcome,
+        ...(comment?.trim() ? { comment: comment.trim() } : {}),
+        ...(recordedCustomerId ? { recordedCustomerId } : {}),
+      },
     ),
 };
 const prepressEndpoint = (org: string, suffix = "") =>
@@ -1263,18 +2150,105 @@ export const productionApi = {
       businessRequestId,
       {},
     ),
-  materials:(org:string,workId:string)=>request<ProductionMaterialProjection>(productionEndpoint(org,`/works/${encodeURIComponent(workId)}/materials`)),
-  recordMaterial:(org:string,workId:string,attemptId:string,businessRequestId:string,input:Readonly<{materialId:string;requirementId?:string;quantity:string;unit:ProductRecipeComponent["unit"];kind:"consumed"|"waste"|"correction";correctsConsumptionId?:string}>)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/attempts/${encodeURIComponent(attemptId)}/materials`,businessRequestId,input as Record<string,unknown>),
-  reserveMaterials:(org:string,workId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/reservations`,businessRequestId,{}),
-  releaseUnusedMaterials:(org:string,workId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/release-unused`,businessRequestId,{}),
-  reconcileMaterial:(org:string,workId:string,consumptionId:string,businessRequestId:string)=>productionMutation<unknown>(org,`/works/${encodeURIComponent(workId)}/reconciliation/${encodeURIComponent(consumptionId)}`,businessRequestId,{}),
+  materials: (org: string, workId: string) =>
+    request<ProductionMaterialProjection>(
+      productionEndpoint(org, `/works/${encodeURIComponent(workId)}/materials`),
+    ),
+  recordMaterial: (
+    org: string,
+    workId: string,
+    attemptId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      materialId: string;
+      requirementId?: string;
+      quantity: string;
+      unit: ProductRecipeComponent["unit"];
+      kind: "consumed" | "waste" | "correction";
+      correctsConsumptionId?: string;
+    }>,
+  ) =>
+    productionMutation<unknown>(
+      org,
+      `/works/${encodeURIComponent(workId)}/attempts/${encodeURIComponent(attemptId)}/materials`,
+      businessRequestId,
+      input as Record<string, unknown>,
+    ),
+  reserveMaterials: (org: string, workId: string, businessRequestId: string) =>
+    productionMutation<unknown>(
+      org,
+      `/works/${encodeURIComponent(workId)}/reservations`,
+      businessRequestId,
+      {},
+    ),
+  releaseUnusedMaterials: (
+    org: string,
+    workId: string,
+    businessRequestId: string,
+  ) =>
+    productionMutation<unknown>(
+      org,
+      `/works/${encodeURIComponent(workId)}/release-unused`,
+      businessRequestId,
+      {},
+    ),
+  reconcileMaterial: (
+    org: string,
+    workId: string,
+    consumptionId: string,
+    businessRequestId: string,
+  ) =>
+    productionMutation<unknown>(
+      org,
+      `/works/${encodeURIComponent(workId)}/reconciliation/${encodeURIComponent(consumptionId)}`,
+      businessRequestId,
+      {},
+    ),
 };
-export type InventoryMaterialBalance = Readonly<{ materialId:string; materialName:string; materialSku:string|null; unit:ProductRecipeComponent["unit"]; onHandQuantity:string; reservedQuantity:string; availableQuantity:string }>;
-export type InventoryReceipt = Readonly<{ movementId:string; materialId:string; quantity:string; unit:ProductRecipeComponent["unit"]; kind:"receipt"; onHandDelta:string; reservedDelta:string; reason:string; createdAt:string }>;
-const inventoryEndpoint = (org: string, suffix = "") => `/v2/organizations/${encodeURIComponent(org)}/inventory${suffix}`;
+export type InventoryMaterialBalance = Readonly<{
+  materialId: string;
+  materialName: string;
+  materialSku: string | null;
+  unit: ProductRecipeComponent["unit"];
+  onHandQuantity: string;
+  reservedQuantity: string;
+  availableQuantity: string;
+}>;
+export type InventoryReceipt = Readonly<{
+  movementId: string;
+  materialId: string;
+  quantity: string;
+  unit: ProductRecipeComponent["unit"];
+  kind: "receipt";
+  onHandDelta: string;
+  reservedDelta: string;
+  reason: string;
+  createdAt: string;
+}>;
+const inventoryEndpoint = (org: string, suffix = "") =>
+  `/v2/organizations/${encodeURIComponent(org)}/inventory${suffix}`;
 export const inventoryApi = {
-  materials: (org:string) => request<readonly InventoryMaterialBalance[]>(inventoryEndpoint(org,"/materials")),
-  receive: (org:string, materialId:string, businessRequestId:string, input:Readonly<{quantity:string;reason:string}>) => request<InventoryReceipt>(inventoryEndpoint(org,`/materials/${encodeURIComponent(materialId)}/receipts`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""}, body:JSON.stringify({businessRequestId,...input}) }),
+  materials: (org: string) =>
+    request<readonly InventoryMaterialBalance[]>(
+      inventoryEndpoint(org, "/materials"),
+    ),
+  receive: (
+    org: string,
+    materialId: string,
+    businessRequestId: string,
+    input: Readonly<{ quantity: string; reason: string }>,
+  ) =>
+    request<InventoryReceipt>(
+      inventoryEndpoint(
+        org,
+        `/materials/${encodeURIComponent(materialId)}/receipts`,
+      ),
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
 };
 const fulfillmentEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/fulfillment${suffix}`;
@@ -1318,14 +2292,98 @@ export const fulfillmentApi = {
     fulfillmentMutation(org, orderId, method, businessRequestId, allocations),
 };
 export type RoutingWorkspaceRead = Readonly<{
-  templates: readonly Readonly<{ routeTemplateId: string; name: string; active: boolean; revision: string; definitionFingerprint: string; steps: readonly Readonly<{ position: number; kind: string }>[] }> [];
-  instances: readonly Readonly<{ routeInstanceId: string; state: string; revision: string; currentStepId?: string; currentPrerequisite?: Readonly<{ satisfied: boolean; reason?: string }>; sourceTemplate: Readonly<{ routeTemplateId: string; revision: string; definitionFingerprint: string }>; orderId: string; orderNumber: string; orderLineId: string; lineDescription: string; steps: readonly Readonly<{ routeInstanceStepId: string; position: number; kind: string }>[] }> [];
+  templates: readonly Readonly<{
+    routeTemplateId: string;
+    name: string;
+    active: boolean;
+    revision: string;
+    definitionFingerprint: string;
+    steps: readonly Readonly<{ position: number; kind: string }>[];
+  }>[];
+  instances: readonly Readonly<{
+    routeInstanceId: string;
+    state: string;
+    revision: string;
+    currentStepId?: string;
+    currentPrerequisite?: Readonly<{ satisfied: boolean; reason?: string }>;
+    sourceTemplate: Readonly<{
+      routeTemplateId: string;
+      revision: string;
+      definitionFingerprint: string;
+    }>;
+    orderId: string;
+    orderNumber: string;
+    orderLineId: string;
+    lineDescription: string;
+    steps: readonly Readonly<{
+      routeInstanceStepId: string;
+      position: number;
+      kind: string;
+    }>[];
+  }>[];
 }>;
 export const routingApi = {
-  workspace: (org: string) => request<RoutingWorkspaceRead>(`/v2/organizations/${encodeURIComponent(org)}/routing/workspace`),
-  completeCurrent:(org:string,routeInstanceId:string,businessRequestId:string,expectedRevision:string)=>request<Readonly<{ routeInstance: RoutingWorkspaceRead["instances"][number] }>>(`/v2/organizations/${encodeURIComponent(org)}/routing/instances/${encodeURIComponent(routeInstanceId)}/complete-current`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,expectedRevision})}),
-  createTemplate:(org:string,businessRequestId:string,input:Readonly<{name:string;steps:readonly Readonly<{position:number;kind:"proofing"|"prepress"|"production"|"fulfillment"}>[]}>)=>request<RoutingWorkspaceRead["templates"][number]>(`/v2/organizations/${encodeURIComponent(org)}/routing/templates`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...input})}),
-  updateTemplate:(org:string,routeTemplateId:string,businessRequestId:string,input:Readonly<{expectedRevision:string;name:string;active:boolean;steps:readonly Readonly<{position:number;kind:"proofing"|"prepress"|"production"|"fulfillment"}>[]}>)=>request<RoutingWorkspaceRead["templates"][number]>(`/v2/organizations/${encodeURIComponent(org)}/routing/templates/${encodeURIComponent(routeTemplateId)}/update`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...input})}),
+  workspace: (org: string) =>
+    request<RoutingWorkspaceRead>(
+      `/v2/organizations/${encodeURIComponent(org)}/routing/workspace`,
+    ),
+  completeCurrent: (
+    org: string,
+    routeInstanceId: string,
+    businessRequestId: string,
+    expectedRevision: string,
+  ) =>
+    request<
+      Readonly<{ routeInstance: RoutingWorkspaceRead["instances"][number] }>
+    >(
+      `/v2/organizations/${encodeURIComponent(org)}/routing/instances/${encodeURIComponent(routeInstanceId)}/complete-current`,
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+        body: JSON.stringify({ businessRequestId, expectedRevision }),
+      },
+    ),
+  createTemplate: (
+    org: string,
+    businessRequestId: string,
+    input: Readonly<{
+      name: string;
+      steps: readonly Readonly<{
+        position: number;
+        kind: "proofing" | "prepress" | "production" | "fulfillment";
+      }>[];
+    }>,
+  ) =>
+    request<RoutingWorkspaceRead["templates"][number]>(
+      `/v2/organizations/${encodeURIComponent(org)}/routing/templates`,
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
+  updateTemplate: (
+    org: string,
+    routeTemplateId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      expectedRevision: string;
+      name: string;
+      active: boolean;
+      steps: readonly Readonly<{
+        position: number;
+        kind: "proofing" | "prepress" | "production" | "fulfillment";
+      }>[];
+    }>,
+  ) =>
+    request<RoutingWorkspaceRead["templates"][number]>(
+      `/v2/organizations/${encodeURIComponent(org)}/routing/templates/${encodeURIComponent(routeTemplateId)}/update`,
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

@@ -3,7 +3,7 @@ import { ProductVersionLifecycleApplicationService, type ProductDraftOptionPrici
 import type { OperationContext } from "../../src/application/operation";
 import { V2ApplicationError } from "../../src/errors/applicationError";
 
-const value: ProductDraftOptionPricing = { productId: "product", draftVersionId: "draft", draftUpdatedAt: "2026-08-18T12:00:00.000Z", lifecycle: "draft", options: [{ optionId: "finish", selectionKey: "finish", label: "Finish", nodeImpact: null, choices: [{ choiceValue: "matte", label: "Matte", impact: { type: "fixed", value: 250 }, editable: true }, { choiceValue: "conditional", label: "Conditional", impact: null, editable: false, readOnlyReason: "This pricing rule is read only." }] }] };
+const value: ProductDraftOptionPricing = { productId: "product", draftVersionId: "draft", draftUpdatedAt: "2026-08-18T12:00:00.000Z", lifecycle: "draft", options: [{ optionId: "finish", selectionKey: "finish", label: "Finish", nodeImpact: null, nodeImpacts: [], choices: [{ choiceValue: "matte", label: "Matte", impact: { type: "fixed", value: 250 }, impacts: [{ type: "fixed", value: 250 }], override: null, editable: true }, { choiceValue: "conditional", label: "Conditional", impact: null, impacts: [], override: null, editable: false, readOnlyReason: "This pricing rule is read only." }] }] };
 const context = (id: string, capabilities: readonly any[] = ["product.edit"]): OperationContext => ({ organizationId: "org-a", operationId: id, businessRequest: { id, payloadFingerprint: id }, principal: { kind: "staff", organizationId: "org-a", userId: "staff", authority: { membershipId: "membership", capabilities } } });
 
 class Runner implements ProductVersionTransactionRunner {
@@ -40,5 +40,12 @@ describe("P6C Draft Option Pricing command", () => {
   test("rejects invalid values before persistence", async () => {
     const service = new ProductVersionLifecycleApplicationService(new Runner());
     await expect(service.updateDraftOptionPricing(context("invalid"), { productId: "product", draftVersionId: "draft", expectedDraftUpdatedAt: value.draftUpdatedAt, businessRequestId: "invalid", optionId: "finish", choiceValue: "matte", impact: { type: "fixed", value: Number.NaN } })).resolves.toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+  });
+
+  test("accepts an ordered advanced impact list and only established choice override targets", async () => {
+    const service = new ProductVersionLifecycleApplicationService(new Runner());
+    const input = { productId: "product", draftVersionId: "draft", expectedDraftUpdatedAt: value.draftUpdatedAt, businessRequestId: "advanced", optionId: "finish", choiceValue: "matte", impacts: [{ type: "per_linear_foot" as const, value: 25 }, { type: "per_inch" as const, value: 2 }, { type: "formula" as const, formula: "max(q, 3) * 1.25" }, { type: "percent_of_options_subtotal" as const, value: 10 }, { type: "percent_of_line_subtotal" as const, value: 5 }], override: { mode: "set" as const, target: "per_square_foot" as const, value: 125 } };
+    await expect(service.updateDraftOptionPricing(context("advanced"), input)).resolves.toMatchObject({ ok: true });
+    await expect(service.updateDraftOptionPricing(context("invalid-target"), { ...input, businessRequestId: "invalid-target", expectedDraftUpdatedAt: "2026-08-18T12:01:00.000Z", override: { mode: "set", target: "invented_target" as any, value: 1 } })).resolves.toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
   });
 });

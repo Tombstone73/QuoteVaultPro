@@ -273,6 +273,12 @@ export type OptionTreeV2 = {
     notes?: string;
     baseWeightOz?: number;
     pricingProfileKey?: string;
+    /** Formula Library selection staged with this ProductVersion. The shared
+     * Formula remains tenant-owned and read-only from Product Builder. */
+    pricingFormulaId?: string;
+    /** Explicitly prevents an inherited Product-level library reference from
+     * shadowing a ProductVersion-owned embedded formula. */
+    pricingFormulaSource?: "library" | "embedded";
     pricingFormula?: string;
     formulaOutputMeaning?: "billable" | "final_price" | "generic";
     outputMeaning?: "billable" | "final_price" | "generic";
@@ -734,6 +740,8 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       notes: z.string().optional(),
       baseWeightOz: z.number().optional(),
       pricingProfileKey: z.string().optional(),
+      pricingFormulaId: z.string().optional(),
+      pricingFormulaSource: z.enum(["library", "embedded"]).optional(),
       pricingFormula: z.string().optional(),
       formulaOutputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),
       outputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),

@@ -321,6 +321,7 @@ export const resolveActivePbv2PricingInput = (
   if (!quantityOnly && sellableProduct.requiresDimensions && !dimensions) return validation("This product requires effective dimensions.");
 
   const meta = record(tree.meta) ?? {};
+  const general = record(meta.general) ?? {};
   const pricingV2 = record(meta.pricingV2) ?? {};
   const base = record(pricingV2.base) ?? {};
   const qtyTiers = Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers as PricingV2Tier[] : [];
@@ -387,7 +388,12 @@ export const resolveActivePbv2PricingInput = (
     ...numericSelections,
     allow_rotation: rotation.allowRotation ? 1 : 0,
   } as Record<string, JsonValue>;
-  const isFeeProfile = source.productPricingProfileKey === "fee";
+  // ProductVersion General owns the V2 workflow intent.  Preserve the legacy
+  // profile-key compatibility path, but let a canonical service-fee Draft use
+  // the same central flat-fee semantics before it is published.
+  const isFeeProfile =
+    source.productPricingProfileKey === "fee" ||
+    general.workflowIntent === "service_fee";
   const flatFeeDollars = numberVariable(formulaVariables, "flatFee", { allowZero: true });
   if (isFeeProfile && flatFeeDollars == null) return validation("Price not configured: Fee / Service products require a Flat Fee Amount.");
   const nestingEstimate = resolveFormulaSheetEstimate(expression, formulaVariables, dimensions, input.quantity, rotation);
@@ -444,7 +450,10 @@ export const resolveActivePbv2PricingInput = (
           rotationControlAllowWhenChoiceValues: rotation.rotationControl.allowWhenChoiceValues,
         } : {}),
       } as Record<string, JsonValue>,
-      productFacts: { measurementMode: quantityOnly ? "quantity_only" : "dimensions_required", pricingProfileKey: source.productPricingProfileKey ?? "default" },
+      productFacts: {
+        measurementMode: quantityOnly ? "quantity_only" : "dimensions_required",
+        pricingProfileKey: isFeeProfile ? "fee" : source.productPricingProfileKey ?? "default",
+      },
       productionRequirements,
     },
     rules,

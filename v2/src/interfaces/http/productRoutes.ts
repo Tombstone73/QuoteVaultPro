@@ -21,7 +21,10 @@ import type {
   RecipeComponentInput,
 } from "../../modules/products/productRecipes.js";
 import type { ProductPublicationApplicationService } from "../../modules/products/productPublication.js";
-import type { ProductDraftRouting, ProductRoutingApplicationService } from "../../modules/products/productRouting.js";
+import type {
+  ProductDraftRouting,
+  ProductRoutingApplicationService,
+} from "../../modules/products/productRouting.js";
 
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
@@ -33,7 +36,10 @@ export type ProductActiveDefinition = Readonly<{
     inputType: string;
     required: boolean;
     defaultLabel?: string;
-    choices: readonly Readonly<{ label: string; value: string | number | boolean }>[];
+    choices: readonly Readonly<{
+      label: string;
+      value: string | number | boolean;
+    }>[];
   }>[];
   pricing: Readonly<{
     mode: "unconfigured" | "simple" | "formula" | "matrix" | "matrix_formula";
@@ -41,12 +47,27 @@ export type ProductActiveDefinition = Readonly<{
     perSquareFootCents?: number;
     minimumChargeCents?: number;
     tierBasis?: "quantity" | "square_foot" | "computed_sheet_usage";
-    tiers: readonly Readonly<{ minimum: number; maximum: number | null; perPieceCents?: number; perSquareFootCents?: number; minimumChargeCents?: number }>[];
-    formula?: Readonly<{ name?: string; expression: string; variables: Readonly<Record<string, number>> }>;
+    tiers: readonly Readonly<{
+      minimum: number;
+      maximum: number | null;
+      perPieceCents?: number;
+      perSquareFootCents?: number;
+      minimumChargeCents?: number;
+    }>[];
+    formula?: Readonly<{
+      name?: string;
+      expression: string;
+      variables: Readonly<Record<string, number>>;
+    }>;
     matrix?: Readonly<{
       pricingUnit: "per_piece" | "per_square_foot";
       dimensions: readonly string[];
-      rows: readonly Readonly<{ selections: readonly string[]; baseRateCents: number; tierCount: number; computedSheetTiers: boolean }>[];
+      rows: readonly Readonly<{
+        selections: readonly string[];
+        baseRateCents: number;
+        tierCount: number;
+        computedSheetTiers: boolean;
+      }>[];
     }>;
   }>;
   recipe: readonly Readonly<{
@@ -59,7 +80,11 @@ export type ProductActiveDefinition = Readonly<{
     condition?: string;
     replacesCompatibility: boolean;
   }>[];
-  productionUnits: readonly Readonly<{ key: string; side?: string; condition?: string }>[];
+  productionUnits: readonly Readonly<{
+    key: string;
+    side?: string;
+    condition?: string;
+  }>[];
   routing?: Readonly<{
     mode: "route_required" | "no_route" | "unconfigured";
     templateName?: string;
@@ -171,7 +196,12 @@ export interface ProductRecipeReadPort {
     productId: string,
   ): Promise<ProductRecipe | null>;
 }
-export interface ProductDraftRoutingReadPort { read(organizationId: string, productId: string): Promise<ProductDraftRouting | null>; }
+export interface ProductDraftRoutingReadPort {
+  read(
+    organizationId: string,
+    productId: string,
+  ): Promise<ProductDraftRouting | null>;
+}
 export interface ProductMaterialSearchPort {
   list(
     organizationId: string,
@@ -245,19 +275,30 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           "Product access is unavailable.",
         );
       const q = typeof request.query.q === "string" ? request.query.q : "";
-      return response
-        .status(200)
-        .json({
-          ok: true,
-          data: await dependencies.workspace.list(organizationId, {
-            query: q,
-            page: positive(request.query.page, 1, 100000),
-            pageSize: positive(request.query.pageSize, 50, 100),
-          }),
-        });
+      return response.status(200).json({
+        ok: true,
+        data: await dependencies.workspace.list(organizationId, {
+          query: q,
+          page: positive(request.query.page, 1, 100000),
+          pageSize: positive(request.query.pageSize, 50, 100),
+        }),
+      });
     } catch (error) {
       if (error instanceof V2ApplicationError)
-        return response.status(error.code === "FORBIDDEN" ? 403 : error.code === "NOT_FOUND" || error.code === "WRONG_TENANT" ? 404 : error.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: error.code, message: error.publicMessage } });
+        return response
+          .status(
+            error.code === "FORBIDDEN"
+              ? 403
+              : error.code === "NOT_FOUND" || error.code === "WRONG_TENANT"
+                ? 404
+                : error.code === "VALIDATION_ERROR"
+                  ? 400
+                  : 409,
+          )
+          .json({
+            ok: false,
+            error: { code: error.code, message: error.publicMessage },
+          });
       return deny(
         response,
         403,
@@ -268,17 +309,76 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
   });
   router.post("/", async (request, response) => {
     try {
-      const organizationId = (request.params as Record<string, string>).organizationId;
-      const principal = await dependencies.principals.principal(request, organizationId);
+      const organizationId = (request.params as Record<string, string>)
+        .organizationId;
+      const principal = await dependencies.principals.principal(
+        request,
+        organizationId,
+      );
       const body = request.body as Record<string, unknown>;
-      const businessRequestId = typeof body.businessRequestId === "string" ? body.businessRequestId.trim() : "";
-      const displayName = typeof body.displayName === "string" ? body.displayName : "";
-      if (!businessRequestId || !displayName.trim()) return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "A Product name and business request are required." } });
-      const result = await dependencies.lifecycle.createProductWithInitialDraft({ principal, organizationId, operationId: businessRequestId, businessRequest: { id: businessRequestId, payloadFingerprint: businessRequestId } }, { displayName, businessRequestId });
-      return result.ok ? response.status(201).json({ ok: true, data: result.value }) : response.status(result.error.code === "FORBIDDEN" ? 403 : result.error.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+      const businessRequestId =
+        typeof body.businessRequestId === "string"
+          ? body.businessRequestId.trim()
+          : "";
+      const displayName =
+        typeof body.displayName === "string" ? body.displayName : "";
+      if (!businessRequestId || !displayName.trim())
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "A Product name and business request are required.",
+          },
+        });
+      const result = await dependencies.lifecycle.createProductWithInitialDraft(
+        {
+          principal,
+          organizationId,
+          operationId: businessRequestId,
+          businessRequest: {
+            id: businessRequestId,
+            payloadFingerprint: businessRequestId,
+          },
+        },
+        { displayName, businessRequestId },
+      );
+      return result.ok
+        ? response.status(201).json({ ok: true, data: result.value })
+        : response
+            .status(
+              result.error.code === "FORBIDDEN"
+                ? 403
+                : result.error.code === "VALIDATION_ERROR"
+                  ? 400
+                  : 409,
+            )
+            .json({
+              ok: false,
+              error: {
+                code: result.error.code,
+                message: result.error.publicMessage,
+              },
+            });
     } catch (error) {
-      const value = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Product creation is unavailable.");
-      return response.status(value.code === "FORBIDDEN" ? 403 : value.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: value.code, message: value.publicMessage } });
+      const value =
+        error instanceof V2ApplicationError
+          ? error
+          : new V2ApplicationError(
+              "INTERNAL_ERROR",
+              "Product creation is unavailable.",
+            );
+      return response
+        .status(
+          value.code === "FORBIDDEN"
+            ? 403
+            : value.code === "VALIDATION_ERROR"
+              ? 400
+              : 409,
+        )
+        .json({
+          ok: false,
+          error: { code: value.code, message: value.publicMessage },
+        });
     }
   });
   router.post("/:productId/drafts", async (request, response) => {
@@ -318,16 +418,14 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           ? body.expectedActiveVersionUpdatedAt
           : "";
       if (!businessRequestId || !expectedActiveVersionUpdatedAt)
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message:
-                "A business request and current Active version state are required.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message:
+              "A business request and current Active version state are required.",
+          },
+        });
       const result = await dependencies.lifecycle.createDraft(
         {
           principal,
@@ -365,7 +463,20 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             });
     } catch (error) {
       if (error instanceof V2ApplicationError)
-        return response.status(error.code === "FORBIDDEN" ? 403 : error.code === "NOT_FOUND" || error.code === "WRONG_TENANT" ? 404 : error.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: error.code, message: error.publicMessage } });
+        return response
+          .status(
+            error.code === "FORBIDDEN"
+              ? 403
+              : error.code === "NOT_FOUND" || error.code === "WRONG_TENANT"
+                ? 404
+                : error.code === "VALIDATION_ERROR"
+                  ? 400
+                  : 409,
+          )
+          .json({
+            ok: false,
+            error: { code: error.code, message: error.publicMessage },
+          });
       return deny(
         response,
         403,
@@ -376,26 +487,90 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
   });
   router.post("/:productId/draft/publish", async (request, response) => {
     try {
-      const organizationId = (request.params as Record<string, string>).organizationId;
-      const principal = await dependencies.principals.principal(request, organizationId);
+      const organizationId = (request.params as Record<string, string>)
+        .organizationId;
+      const principal = await dependencies.principals.principal(
+        request,
+        organizationId,
+      );
       const body = request.body as Record<string, unknown>;
-      if (typeof body.businessRequestId !== "string" || typeof body.draftVersionId !== "string" || typeof body.expectedProductUpdatedAt !== "string" || typeof body.expectedDraftUpdatedAt !== "string")
-        return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "A Draft and its current revisions are required." } });
-      const result = await dependencies.publication.publish({ principal, organizationId, operationId: body.businessRequestId, businessRequest: { id: body.businessRequestId, payloadFingerprint: body.businessRequestId } }, {
-        productId: request.params.productId,
-        draftVersionId: body.draftVersionId,
-        expectedProductUpdatedAt: body.expectedProductUpdatedAt,
-        expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
-        businessRequestId: body.businessRequestId,
-        confirmWarnings: body.confirmWarnings === true,
-        activateProduct: body.activateProduct === true,
-      });
+      if (
+        typeof body.businessRequestId !== "string" ||
+        typeof body.draftVersionId !== "string" ||
+        typeof body.expectedProductUpdatedAt !== "string" ||
+        typeof body.expectedDraftUpdatedAt !== "string"
+      )
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "A Draft and its current revisions are required.",
+          },
+        });
+      const result = await dependencies.publication.publish(
+        {
+          principal,
+          organizationId,
+          operationId: body.businessRequestId,
+          businessRequest: {
+            id: body.businessRequestId,
+            payloadFingerprint: body.businessRequestId,
+          },
+        },
+        {
+          productId: request.params.productId,
+          draftVersionId: body.draftVersionId,
+          expectedProductUpdatedAt: body.expectedProductUpdatedAt,
+          expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
+          businessRequestId: body.businessRequestId,
+          confirmWarnings: body.confirmWarnings === true,
+          activateProduct: body.activateProduct === true,
+        },
+      );
       return result.ok
         ? response.status(200).json({ ok: true, data: result.value })
-        : response.status(result.error.code === "FORBIDDEN" ? 403 : result.error.code === "NOT_FOUND" || result.error.code === "WRONG_TENANT" ? 404 : result.error.code === "VALIDATION_ERROR" ? 400 : result.error.code === "RETRYABLE_FAILURE" ? 503 : 409).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+        : response
+            .status(
+              result.error.code === "FORBIDDEN"
+                ? 403
+                : result.error.code === "NOT_FOUND" ||
+                    result.error.code === "WRONG_TENANT"
+                  ? 404
+                  : result.error.code === "VALIDATION_ERROR"
+                    ? 400
+                    : result.error.code === "RETRYABLE_FAILURE"
+                      ? 503
+                      : 409,
+            )
+            .json({
+              ok: false,
+              error: {
+                code: result.error.code,
+                message: result.error.publicMessage,
+              },
+            });
     } catch (error) {
-      const value = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Product publication is unavailable.");
-      return response.status(value.code === "FORBIDDEN" ? 403 : value.code === "NOT_FOUND" ? 404 : value.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok: false, error: { code: value.code, message: value.publicMessage } });
+      const value =
+        error instanceof V2ApplicationError
+          ? error
+          : new V2ApplicationError(
+              "INTERNAL_ERROR",
+              "Product publication is unavailable.",
+            );
+      return response
+        .status(
+          value.code === "FORBIDDEN"
+            ? 403
+            : value.code === "NOT_FOUND"
+              ? 404
+              : value.code === "VALIDATION_ERROR"
+                ? 400
+                : 409,
+        )
+        .json({
+          ok: false,
+          error: { code: value.code, message: value.publicMessage },
+        });
     }
   });
   router.get("/:productId/active/recipe", async (request, response) => {
@@ -498,16 +673,14 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
         !expectedDraftUpdatedAt ||
         !Array.isArray(components)
       )
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message:
-                "A Draft, its current revision, and recipe components are required.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message:
+              "A Draft, its current revision, and recipe components are required.",
+          },
+        });
       const result = await dependencies.recipes.updateDraftRecipe(
         {
           principal,
@@ -546,15 +719,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
               },
             });
     } catch {
-      return response
-        .status(400)
-        .json({
-          ok: false,
-          error: {
-            code: "VALIDATION_ERROR",
-            message: "Recipe settings are invalid.",
-          },
-        });
+      return response.status(400).json({
+        ok: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Recipe settings are invalid.",
+        },
+      });
     }
   });
   router.get("/:productId/materials", async (request, response) => {
@@ -568,12 +739,10 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           "Product access is unavailable.",
         );
       const q = typeof request.query.q === "string" ? request.query.q : "";
-      return response
-        .status(200)
-        .json({
-          ok: true,
-          data: { items: await dependencies.materials.list(organizationId, q) },
-        });
+      return response.status(200).json({
+        ok: true,
+        data: { items: await dependencies.materials.list(organizationId, q) },
+      });
     } catch {
       return deny(
         response,
@@ -664,16 +833,14 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
         !general ||
         typeof general !== "object"
       )
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message:
-                "A Draft, its current revision, and General settings are required.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message:
+              "A Draft, its current revision, and General settings are required.",
+          },
+        });
       const result = await dependencies.lifecycle.updateDraftGeneral(
         {
           principal,
@@ -800,16 +967,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
         !expectedDraftUpdatedAt ||
         !Array.isArray(options)
       )
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message:
-                "A Draft, its current revision, and options are required.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "A Draft, its current revision, and options are required.",
+          },
+        });
       const result = await dependencies.lifecycle.updateDraftOptions(
         {
           principal,
@@ -919,8 +1083,12 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             draftVersionId: body.draftVersionId,
             expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
             base: body.base,
+            ...(body.flatFeeCents === undefined
+              ? {}
+              : { flatFeeCents: body.flatFeeCents }),
             tierBasis: body.tierBasis,
             tiers: body.tiers,
+            ...(body.tierSets === undefined ? {} : { tierSets: body.tierSets }),
           },
         );
       return result.ok
@@ -943,15 +1111,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
               },
             });
     } catch {
-      return response
-        .status(400)
-        .json({
-          ok: false,
-          error: {
-            code: "VALIDATION_ERROR",
-            message: "Draft Pricing settings are invalid.",
-          },
-        });
+      return response.status(400).json({
+        ok: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Draft Pricing settings are invalid.",
+        },
+      });
     }
   });
   router.post(
@@ -975,31 +1141,27 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           (width !== undefined && typeof width !== "number") ||
           (height !== undefined && typeof height !== "number")
         )
-          return response
-            .status(400)
-            .json({
-              ok: false,
-              error: {
-                code: "VALIDATION_ERROR",
-                message: "Preview inputs are invalid.",
-              },
-            });
-        return response
-          .status(200)
-          .json({
-            ok: true,
-            data: await dependencies.draftPreview.preview(
-              organizationId,
-              request.params.productId,
-              {
-                quantity,
-                width: width as number | undefined,
-                height: height as number | undefined,
-                selections: body.selections as
-                  Record<string, unknown> | undefined,
-              },
-            ),
+          return response.status(400).json({
+            ok: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Preview inputs are invalid.",
+            },
           });
+        return response.status(200).json({
+          ok: true,
+          data: await dependencies.draftPreview.preview(
+            organizationId,
+            request.params.productId,
+            {
+              quantity,
+              width: width as number | undefined,
+              height: height as number | undefined,
+              selections: body.selections as
+                Record<string, unknown> | undefined,
+            },
+          ),
+        });
       } catch (error) {
         const value = error as V2ApplicationError;
         return response
@@ -1082,22 +1244,81 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
     "/:productId/draft/pricing/formula/adopt-legacy",
     async (request, response) => {
       try {
-        const organizationId = (request.params as Record<string, string>).organizationId;
-        const principal = await dependencies.principals.principal(request, organizationId);
-        if (!new AuthorityPolicy().decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed)
-          return deny(response, 403, "FORBIDDEN", "Product Draft editing is unavailable.");
+        const organizationId = (request.params as Record<string, string>)
+          .organizationId;
+        const principal = await dependencies.principals.principal(
+          request,
+          organizationId,
+        );
+        if (
+          !new AuthorityPolicy().decide(principal, {
+            capability: "product.edit",
+            resource: { organizationId },
+          }).allowed
+        )
+          return deny(
+            response,
+            403,
+            "FORBIDDEN",
+            "Product Draft editing is unavailable.",
+          );
         const body = request.body as Record<string, unknown>;
-        if (typeof body.businessRequestId !== "string" || typeof body.draftVersionId !== "string" || typeof body.expectedDraftUpdatedAt !== "string")
-          return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "Legacy Formula adoption settings are invalid." } });
+        if (
+          typeof body.businessRequestId !== "string" ||
+          typeof body.draftVersionId !== "string" ||
+          typeof body.expectedDraftUpdatedAt !== "string"
+        )
+          return response.status(400).json({
+            ok: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Legacy Formula adoption settings are invalid.",
+            },
+          });
         const result = await dependencies.lifecycle.adoptLegacyProductFormula(
-          { principal, organizationId, operationId: body.businessRequestId, businessRequest: { id: body.businessRequestId, payloadFingerprint: body.businessRequestId } },
-          { productId: request.params.productId, businessRequestId: body.businessRequestId, draftVersionId: body.draftVersionId, expectedDraftUpdatedAt: body.expectedDraftUpdatedAt },
+          {
+            principal,
+            organizationId,
+            operationId: body.businessRequestId,
+            businessRequest: {
+              id: body.businessRequestId,
+              payloadFingerprint: body.businessRequestId,
+            },
+          },
+          {
+            productId: request.params.productId,
+            businessRequestId: body.businessRequestId,
+            draftVersionId: body.draftVersionId,
+            expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
+          },
         );
         return result.ok
           ? response.status(200).json({ ok: true, data: result.value })
-          : response.status(result.error.code === "VALIDATION_ERROR" ? 400 : result.error.code === "FORBIDDEN" ? 403 : result.error.code === "NOT_FOUND" ? 404 : 409).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+          : response
+              .status(
+                result.error.code === "VALIDATION_ERROR"
+                  ? 400
+                  : result.error.code === "FORBIDDEN"
+                    ? 403
+                    : result.error.code === "NOT_FOUND"
+                      ? 404
+                      : 409,
+              )
+              .json({
+                ok: false,
+                error: {
+                  code: result.error.code,
+                  message: result.error.publicMessage,
+                },
+              });
       } catch {
-        return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "Legacy Formula adoption settings are invalid." } });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Legacy Formula adoption settings are invalid.",
+          },
+        });
       }
     },
   );
@@ -1129,18 +1350,24 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body?.draftVersionId !== "string" ||
           typeof body?.expectedDraftUpdatedAt !== "string" ||
           typeof body?.optionId !== "string" ||
-          (body.impact !== null &&
-            (!body.impact || typeof body.impact !== "object"))
+          (!Object.hasOwn(body, "impact") &&
+            !Object.hasOwn(body, "impacts") &&
+            !Object.hasOwn(body, "override")) ||
+          (Object.hasOwn(body, "impact") &&
+            body.impact !== null &&
+            (!body.impact || typeof body.impact !== "object")) ||
+          (Object.hasOwn(body, "impacts") && !Array.isArray(body.impacts)) ||
+          (Object.hasOwn(body, "override") &&
+            body.override !== null &&
+            (!body.override || typeof body.override !== "object"))
         )
-          return response
-            .status(400)
-            .json({
-              ok: false,
-              error: {
-                code: "VALIDATION_ERROR",
-                message: "Option pricing is invalid.",
-              },
-            });
+          return response.status(400).json({
+            ok: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Option pricing is invalid.",
+            },
+          });
         const result = await dependencies.lifecycle.updateDraftOptionPricing(
           {
             principal,
@@ -1160,7 +1387,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             ...(typeof body.choiceValue === "string"
               ? { choiceValue: body.choiceValue }
               : {}),
-            impact: body.impact,
+            ...(Object.hasOwn(body, "impact") ? { impact: body.impact } : {}),
+            ...(Object.hasOwn(body, "impacts")
+              ? { impacts: body.impacts }
+              : {}),
+            ...(Object.hasOwn(body, "override")
+              ? { override: body.override }
+              : {}),
           },
         );
         return result.ok
@@ -1181,15 +1414,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
                 },
               });
       } catch {
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message: "Option pricing is invalid.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Option pricing is invalid.",
+          },
+        });
       }
     },
   );
@@ -1218,29 +1449,43 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
         const body = request.body as Record<string, unknown>,
           variables = body.variables,
           rotationControl = body.rotationControl,
-          rotationControlRecord = rotationControl && typeof rotationControl === "object" && !Array.isArray(rotationControl) ? rotationControl as Record<string, unknown> : undefined,
+          rotationControlRecord =
+            rotationControl &&
+            typeof rotationControl === "object" &&
+            !Array.isArray(rotationControl)
+              ? (rotationControl as Record<string, unknown>)
+              : undefined,
           rotationChoiceValues = rotationControlRecord?.allowWhenChoiceValues;
         if (
           typeof body.businessRequestId !== "string" ||
           typeof body.draftVersionId !== "string" ||
           typeof body.expectedDraftUpdatedAt !== "string" ||
+          (body.source !== "embedded" && body.source !== "library") ||
           typeof body.expression !== "string" ||
           typeof body.allowRotation !== "boolean" ||
-          Object.prototype.hasOwnProperty.call(body, "formulaId") ||
-          (rotationControl !== undefined && (!rotationControlRecord || typeof rotationControlRecord.optionId !== "string" || !rotationControlRecord.optionId || !Array.isArray(rotationChoiceValues) || rotationChoiceValues.length === 0 || rotationChoiceValues.some((value: unknown) => typeof value !== "string" || !value))) ||
+          (body.source === "library" &&
+            (typeof body.formulaId !== "string" || !body.formulaId.trim())) ||
+          (body.source === "embedded" && body.formulaId !== undefined) ||
+          (rotationControl !== undefined &&
+            (!rotationControlRecord ||
+              typeof rotationControlRecord.optionId !== "string" ||
+              !rotationControlRecord.optionId ||
+              !Array.isArray(rotationChoiceValues) ||
+              rotationChoiceValues.length === 0 ||
+              rotationChoiceValues.some(
+                (value: unknown) => typeof value !== "string" || !value,
+              ))) ||
           !variables ||
           typeof variables !== "object" ||
           Array.isArray(variables)
         )
-          return response
-            .status(400)
-            .json({
-              ok: false,
-              error: {
-                code: "VALIDATION_ERROR",
-                message: "Formula settings are invalid.",
-              },
-            });
+          return response.status(400).json({
+            ok: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Formula settings are invalid.",
+            },
+          });
         const result = await dependencies.lifecycle.updateDraftFormulaPricing(
           {
             principal,
@@ -1256,10 +1501,21 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             businessRequestId: body.businessRequestId,
             draftVersionId: body.draftVersionId,
             expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
+            source: body.source,
+            ...(body.source === "library"
+              ? { formulaId: (body.formulaId as string).trim() }
+              : {}),
             expression: body.expression,
             variables: variables as Record<string, number>,
             allowRotation: body.allowRotation,
-            ...(rotationControlRecord === undefined ? {} : { rotationControl: { optionId: rotationControlRecord.optionId as string, allowWhenChoiceValues: rotationChoiceValues as string[] } }),
+            ...(rotationControlRecord === undefined
+              ? {}
+              : {
+                  rotationControl: {
+                    optionId: rotationControlRecord.optionId as string,
+                    allowWhenChoiceValues: rotationChoiceValues as string[],
+                  },
+                }),
           },
         );
         return result.ok
@@ -1282,15 +1538,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
                 },
               });
       } catch {
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message: "Formula settings are invalid.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Formula settings are invalid.",
+          },
+        });
       }
     },
   );
@@ -1358,15 +1612,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           !Array.isArray(body?.dimensions) ||
           !Array.isArray(body?.rows)
         )
-          return response
-            .status(400)
-            .json({
-              ok: false,
-              error: {
-                code: "VALIDATION_ERROR",
-                message: "Matrix settings are invalid.",
-              },
-            });
+          return response.status(400).json({
+            ok: false,
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "Matrix settings are invalid.",
+            },
+          });
         const result = await dependencies.lifecycle.updateDraftPricingMatrix(
           {
             principal,
@@ -1382,6 +1634,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             businessRequestId: body.businessRequestId,
             draftVersionId: body.draftVersionId,
             expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
+            active: body.active,
             matrixId: body.matrixId,
             pricingUnit: body.pricingUnit,
             dimensions: body.dimensions,
@@ -1408,40 +1661,126 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
                 },
               });
       } catch {
-        return response
-          .status(400)
-          .json({
-            ok: false,
-            error: {
-              code: "VALIDATION_ERROR",
-              message: "Matrix settings are invalid.",
-            },
-          });
+        return response.status(400).json({
+          ok: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Matrix settings are invalid.",
+          },
+        });
       }
     },
   );
   router.get("/:productId/draft/routing", async (request, response) => {
     try {
       const { organizationId, allowed } = await principalFor(request);
-      if (!allowed) return deny(response, 403, "FORBIDDEN", "Product access is unavailable.");
-      const routing = await dependencies.draftRouting.read(organizationId, request.params.productId);
-      return routing ? response.status(200).json({ ok: true, data: routing }) : deny(response, 404, "NOT_FOUND", "Product Draft Routing is unavailable.");
-    } catch { return deny(response, 403, "FORBIDDEN", "Authenticated access is required."); }
+      if (!allowed)
+        return deny(
+          response,
+          403,
+          "FORBIDDEN",
+          "Product access is unavailable.",
+        );
+      const routing = await dependencies.draftRouting.read(
+        organizationId,
+        request.params.productId,
+      );
+      return routing
+        ? response.status(200).json({ ok: true, data: routing })
+        : deny(
+            response,
+            404,
+            "NOT_FOUND",
+            "Product Draft Routing is unavailable.",
+          );
+    } catch {
+      return deny(
+        response,
+        403,
+        "FORBIDDEN",
+        "Authenticated access is required.",
+      );
+    }
   });
   router.patch("/:productId/draft/routing", async (request, response) => {
     try {
-      const organizationId = (request.params as Record<string, string>).organizationId;
-      const principal = await dependencies.principals.principal(request, organizationId);
+      const organizationId = (request.params as Record<string, string>)
+        .organizationId;
+      const principal = await dependencies.principals.principal(
+        request,
+        organizationId,
+      );
       const body = request.body as Record<string, unknown>;
-      if (typeof body?.businessRequestId !== "string" || typeof body?.draftVersionId !== "string" || typeof body?.expectedDraftUpdatedAt !== "string" || !body?.routing || typeof body.routing !== "object")
-        throw new V2ApplicationError("VALIDATION_ERROR", "Draft Routing settings are invalid.");
-      const result = await dependencies.routing.updateDraftRouting({ principal, organizationId, operationId: body.businessRequestId, businessRequest: { id: body.businessRequestId, payloadFingerprint: body.businessRequestId } }, {
-        productId: request.params.productId, businessRequestId: body.businessRequestId, draftVersionId: body.draftVersionId, expectedDraftUpdatedAt: body.expectedDraftUpdatedAt, routing: body.routing as any,
-      });
-      return result.ok ? response.status(200).json({ ok:true,data:result.value }) : response.status(result.error.code === "VALIDATION_ERROR" ? 400 : result.error.code === "FORBIDDEN" ? 403 : result.error.code === "NOT_FOUND" ? 404 : 409).json({ ok:false,error:{code:result.error.code,message:result.error.publicMessage} });
+      if (
+        typeof body?.businessRequestId !== "string" ||
+        typeof body?.draftVersionId !== "string" ||
+        typeof body?.expectedDraftUpdatedAt !== "string" ||
+        !body?.routing ||
+        typeof body.routing !== "object"
+      )
+        throw new V2ApplicationError(
+          "VALIDATION_ERROR",
+          "Draft Routing settings are invalid.",
+        );
+      const result = await dependencies.routing.updateDraftRouting(
+        {
+          principal,
+          organizationId,
+          operationId: body.businessRequestId,
+          businessRequest: {
+            id: body.businessRequestId,
+            payloadFingerprint: body.businessRequestId,
+          },
+        },
+        {
+          productId: request.params.productId,
+          businessRequestId: body.businessRequestId,
+          draftVersionId: body.draftVersionId,
+          expectedDraftUpdatedAt: body.expectedDraftUpdatedAt,
+          routing: body.routing as any,
+        },
+      );
+      return result.ok
+        ? response.status(200).json({ ok: true, data: result.value })
+        : response
+            .status(
+              result.error.code === "VALIDATION_ERROR"
+                ? 400
+                : result.error.code === "FORBIDDEN"
+                  ? 403
+                  : result.error.code === "NOT_FOUND"
+                    ? 404
+                    : 409,
+            )
+            .json({
+              ok: false,
+              error: {
+                code: result.error.code,
+                message: result.error.publicMessage,
+              },
+            });
     } catch (error) {
-      const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("VALIDATION_ERROR", "Draft Routing settings are invalid.");
-      return response.status(cause.code === "FORBIDDEN" ? 403 : cause.code === "NOT_FOUND" ? 404 : cause.code === "VALIDATION_ERROR" ? 400 : 409).json({ ok:false,error:{code:cause.code,message:cause.publicMessage} });
+      const cause =
+        error instanceof V2ApplicationError
+          ? error
+          : new V2ApplicationError(
+              "VALIDATION_ERROR",
+              "Draft Routing settings are invalid.",
+            );
+      return response
+        .status(
+          cause.code === "FORBIDDEN"
+            ? 403
+            : cause.code === "NOT_FOUND"
+              ? 404
+              : cause.code === "VALIDATION_ERROR"
+                ? 400
+                : 409,
+        )
+        .json({
+          ok: false,
+          error: { code: cause.code, message: cause.publicMessage },
+        });
     }
   });
   router.get("/:productId", async (request, response) => {

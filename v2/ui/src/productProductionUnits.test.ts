@@ -7,7 +7,7 @@ import {
   productionUnitAuthoringMode,
 } from "./productProductionUnits";
 
-const options = [{ optionId: "opt_sides", selectionKey: "print_sides", label: "Print Sides", nodeImpact: null, choices: [{ choiceValue: "single_sided", label: "Single sided", impact: null, editable: true }, { choiceValue: "double_sided", label: "Double sided", impact: null, editable: true }] }];
+const options = [{ optionId: "opt_sides", selectionKey: "print_sides", label: "Print Sides", nodeImpact: null, nodeImpacts: [], choices: [{ choiceValue: "single_sided", label: "Single sided", impact: null, impacts: [], override: null, editable: true }, { choiceValue: "double_sided", label: "Double sided", impact: null, impacts: [], override: null, editable: true }] }];
 assert.deepEqual(presetProductionUnitSpecification("front"), { schemaVersion: 1, rules: [{ key: "front", side: "front" }] });
 assert.deepEqual(presetProductionUnitSpecification("front-back"), { schemaVersion: 1, rules: [{ key: "front", side: "front" }, { key: "back", side: "back" }] });
 const conditional = conditionalProductionUnitSpecification("always", conditionToken("print_sides", "double_sided"), options);

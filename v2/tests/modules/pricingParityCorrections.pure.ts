@@ -130,6 +130,16 @@ const run = async (): Promise<void> => {
     const priced = await adapter.calculate(request("fee-flat", fee.value.rules, { quantity: 3 }));
     assert.equal(priced.calculatedLineAmount.cents, 7499);
   }
+  const workflowFee = resolveActivePbv2PricingInput(sellable("workflow-fee"), {
+    id: "tree", schemaVersion: 2, publishedAt: "2026-08-22T00:00:00.000Z",
+    treeJson: activeTree({ general: { workflowIntent: "service_fee" }, pricingFormulaVariables: { flatFee: 74.99 } }),
+    productMeasurementMode: "quantity_only", productPricingProfileKey: "default", formula: null,
+  }, { organizationId, productId: brandedId<"ProductId">("workflow-fee"), quantity: 3 });
+  assert.equal(workflowFee.ok, true);
+  if (workflowFee.ok) {
+    const priced = await adapter.calculate(request("workflow-fee-flat", workflowFee.value.rules, { quantity: 3 }));
+    assert.equal(priced.calculatedLineAmount.cents, 7499, "service_fee workflow intent uses the ProductVersion flat fee exactly once per line");
+  }
   const invalidFee = resolveActivePbv2PricingInput(sellable("bad-fee"), {
     id: "tree", schemaVersion: 2, publishedAt: "2026-08-22T00:00:00.000Z", treeJson: activeTree(), productMeasurementMode: "quantity_only", productPricingProfileKey: "fee", formula: null,
   }, { organizationId, productId: brandedId<"ProductId">("bad-fee"), quantity: 3 });
