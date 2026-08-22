@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
+import { evaluateResolvedFormula, V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
 import { estimatePricingSheetUsage } from "../../src/modules/pricing/pricingNestingEstimate";
 import type { PricingCalculationRequest, PricingRules, ResolvedProductConfiguration } from "../../src/modules/pricing/contracts";
 import { brandedId, currencyCode, decimalText, percentageBasisPoints, type OrganizationId } from "../../src/modules/shared/commercialValues";
@@ -200,12 +200,37 @@ describe("M1.2 Pricing parity adapter", () => {
     expect(result.warnings.map((warning) => warning.code)).toContain("COMPUTED_SHEET_USAGE_UNAVAILABLE");
   });
 
-  test("unmatched matrix safely uses explicit base pricing and records the characterized warning", async () => {
-    const result = await adapter.calculate(requestFor({ id: "matrix-fallback", quantity: 1, width: "12", height: "12", selections: { thickness: "unknown" }, rules: {
+  test("unmatched matrix fails closed instead of pricing from the scalar base", async () => {
+    await expect(adapter.calculate(requestFor({ id: "matrix-fallback", quantity: 1, width: "12", height: "12", selections: { thickness: "unknown" }, rules: {
       base: { perSquareFootCents: decimalText("500") }, matrix: { id: "matrix", dimensions: ["thickness"], rows: [{ id: "known", when: { thickness: "known" }, perSquareFootCents: decimalText("450") }] },
+    } }))).rejects.toMatchObject({ code: "PBV2_PRICING_MATRIX_ROW_NOT_FOUND" });
+  });
+
+  test("a matrix with a missing required dimension fails closed", async () => {
+    await expect(adapter.calculate(requestFor({ id: "matrix-missing-dimension", quantity: 1, rules: {
+      base: { perPieceCents: 500 }, matrix: { id: "matrix", dimensions: ["thickness", "sides"], rows: [{ id: "known", when: { thickness: "4mm", sides: "single" }, perPieceCents: 450 }] },
+      }, selections: { thickness: "4mm" } }))).rejects.toMatchObject({ code: "PBV2_PRICING_MATRIX_ROW_NOT_FOUND" });
+  });
+
+  test("V1 roll nesting formula uses the shared roll layout helper", async () => {
+    const result = await adapter.calculate(requestFor({ id: "roll-nesting", quantity: 100, width: "4", height: "4", rules: {
+      base: { perSquareFootCents: decimalText("100") },
+      formula: {
+        id: "roll-nesting", source: "embedded", version: "v1", contentHash: "sha256:roll-v1",
+        expression: "roll_nesting_billable_sqft(w,h,q,printable_width,piece_allowance_x,piece_allowance_y,billing_width_increment,billing_length_increment) * base_price",
+        variables: { printable_width: 50, piece_allowance_x: 0.25, piece_allowance_y: 0.25, billing_width_increment: 12, billing_length_increment: 12, allow_rotation: 0 },
+      },
     } }));
-    expect(result.calculatedLineAmount.cents).toBe(500);
-    expect(result.warnings.map((warning) => warning.code)).toContain("MATRIX_ROW_NO_MATCH");
+    expect(result.calculatedLineAmount.cents).toBe(1600);
+    expect(result.formula?.variables).toMatchObject({ printable_width: 50, piece_allowance_x: 0.25, billing_width_increment: 12 });
+  });
+
+  test("formula dollars use V1 epsilon-safe final-cent rounding", async () => {
+    expect(evaluateResolvedFormula("1.005", {})).toBe(1.005);
+    const result = await adapter.calculate(requestFor({ id: "half-cent", quantity: 1, width: "1", height: "1", rules: {
+      base: {}, formula: { id: "half-cent", source: "embedded", version: "v1", contentHash: "sha256:half-cent", expression: "1.005", variables: {} },
+    } }));
+    expect(result.calculatedLineAmount.cents).toBe(101);
   });
 
   test("evidence fingerprint is stable for identical input and changes with meaningful rules", async () => {

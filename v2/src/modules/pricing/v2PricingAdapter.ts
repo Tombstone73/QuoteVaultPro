@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { brandedId, canonicalJson, decimalText, money, type JsonValue } from "../shared/commercialValues.js";
 import { sheetConsumptionSqft } from "../../../../shared/pbv2/formulaHelpers.js";
+import { rollNestingBillableSqft } from "../../../../shared/pbv2/rollMediaLayout.js";
 import {
   assertPricingCalculationRequest,
   assertPricingResultEvidence,
@@ -12,10 +13,17 @@ import {
   type PricingTierRule,
 } from "./contracts.js";
 
-const roundCents = (value: number): number => {
+/**
+ * V1's commercial boundary rounds currency with a small epsilon before the
+ * final integer-cent conversion.  Keep that one policy at the V2 money
+ * boundary instead of teaching individual formula or impact forms about IEEE
+ * binary representation.
+ */
+export const roundCommercialCents = (value: number): number => {
   if (!Number.isFinite(value)) throw new Error("Pricing calculation produced a non-finite amount.");
-  return Math.round(value);
+  return Math.round(value + Number.EPSILON * 100);
 };
+const roundCents = roundCommercialCents;
 const asNumber = (value: string | undefined): number => value == null ? 0 : Number(value);
 /** Optional contract fields are semantically absent, not a source of hash drift. */
 const canonicalEvidence = (value: unknown): unknown => {
@@ -34,6 +42,24 @@ const canonicalEvidence = (value: unknown): unknown => {
 };
 const sha256 = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(canonicalEvidence(value))).digest("hex")}`;
 const selected = (actual: unknown, expected: unknown): boolean => actual === expected;
+
+const matrixRowNotFound = (matrixId: string): Error & Readonly<{ code: "PBV2_PRICING_MATRIX_ROW_NOT_FOUND" }> => {
+  const error = new Error(`PBV2 pricing matrix '${matrixId}' has no row for the resolved selection values.`) as Error & { code: "PBV2_PRICING_MATRIX_ROW_NOT_FOUND" };
+  error.code = "PBV2_PRICING_MATRIX_ROW_NOT_FOUND";
+  return error;
+};
+
+const resolveMatrixRow = (matrix: NonNullable<PricingCalculationRequest["rules"]["matrix"]>, selections: Readonly<Record<string, JsonValue>>) => {
+  // A matrix declares its complete dimensional key. Missing/stale selections
+  // are configuration errors, never permission to calculate from scalar base
+  // pricing. Rows are also required to cover every declared dimension so a
+  // malformed partial row cannot accidentally price a higher-dimensional tree.
+  if (!matrix.dimensions.every((key) => Object.hasOwn(selections, key))) return undefined;
+  return matrix.rows.find((row) =>
+    matrix.dimensions.every((key) => Object.hasOwn(row.when, key) && selected(selections[key], row.when[key]))
+    && Object.keys(row.when).length === matrix.dimensions.length,
+  );
+};
 
 const selectTier = (tiers: readonly PricingTierRule[] | undefined, basis: number): PricingTierRule | undefined =>
   tiers?.filter((tier) => basis >= tier.minQuantity && (tier.maxQuantity == null || basis <= tier.maxQuantity))
@@ -55,7 +81,7 @@ const selectTier = (tiers: readonly PricingTierRule[] | undefined, basis: number
  * second persisted rotation policy.
  */
 export const evaluateResolvedFormula = (expression: string, variables: Record<string, number>, resolvedAllowRotation?: boolean): number => {
-  const tokens = expression.match(/\s*(ceil|sheet_consumption_sqft|[A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)|[(),+\-*/])/gu);
+  const tokens = expression.match(/\s*(ceil|sheet_consumption_sqft|roll_nesting_billable_sqft|[A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)|[(),+\-*/])/gu);
   if (!tokens || tokens.join("").replace(/\s/gu, "") !== expression.replace(/\s/gu, "")) throw new Error("Unsupported pricing formula expression.");
   let cursor = 0;
   const take = (): string | undefined => tokens[cursor++]?.trim();
@@ -74,6 +100,18 @@ export const evaluateResolvedFormula = (expression: string, variables: Record<st
           ? (variables as Record<string, unknown>).allowRotation as boolean
           : undefined;
       return sheetConsumptionSqft(args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,args[6]!,args[7]!,resolvedAllowRotation ?? runtimeRotation ?? args[8] ?? false);
+    }
+    if (token === "roll_nesting_billable_sqft") {
+      if (take() !== "(") throw new Error("roll_nesting_billable_sqft requires parentheses.");
+      const args:number[]=[];
+      while (true) { args.push(sum()); const separator=take(); if (separator === ")") break; if (separator !== ",") throw new Error("roll_nesting_billable_sqft arguments are invalid."); }
+      if (args.length !== 8 && args.length !== 9) throw new Error("roll_nesting_billable_sqft requires eight or nine arguments.");
+      const runtimeRotation = typeof variables.allow_rotation === "number"
+        ? variables.allow_rotation === 1
+        : typeof (variables as Record<string, unknown>).allowRotation === "boolean"
+          ? (variables as Record<string, unknown>).allowRotation as boolean
+          : undefined;
+      return rollNestingBillableSqft(args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,args[6]!,args[7]!,resolvedAllowRotation ?? runtimeRotation ?? args[8] ?? false);
     }
     if (token === "-") return -factor();
     if (token && /^(?:\d|\.)/u.test(token)) return Number(token);
@@ -111,7 +149,7 @@ export class V2PricingParityAdapter implements PricingPort {
     const quantityOnly = configuration.productFacts.measurementMode === "quantity_only" || configuration.productFacts.pricingProfileKey === "qty_only";
     const dimensions = configuration.dimensions;
     const selections = configuration.selections;
-    const matrixRow = rules.matrix?.rows.find((row) => Object.entries(row.when).every(([key, value]) => selected(selections[key], value)));
+    const matrixRow = rules.matrix ? resolveMatrixRow(rules.matrix, selections) : undefined;
     const effectiveTierBasis = matrixRow?.tierBasis ?? rules.tierBasis;
     const selectedAreaOption = rules.optionImpacts?.some((rule) => rule.kind === "per_square_foot" && (rule.whenValue === undefined || selected(selections[rule.selectionKey], rule.whenValue)));
     const usesGeometry = Boolean(
@@ -134,30 +172,72 @@ export class V2PricingParityAdapter implements PricingPort {
       : tierBasis === "square_foot" ? totalSqft : configuration.quantity;
     if (tierBasis === "computed_sheet" && basis == null) warnings.push({ code: "COMPUTED_SHEET_USAGE_UNAVAILABLE", message: "Computed-sheet tiers were not evaluated because no supplied nesting estimate included a sheet count." });
 
-    if (rules.matrix && !matrixRow) warnings.push({ code: "MATRIX_ROW_NO_MATCH", message: "No resolved matrix row matched the normalized selection values; the declared base rule was used." });
-    const tier = basis == null ? undefined : selectTier(matrixRow?.tiers ?? rules.tiers, basis);
-    const perPieceCents = tier?.perPieceCents ?? matrixRow?.perPieceCents ?? rules.base.perPieceCents ?? 0;
-    let perSquareFootCents = asNumber(tier?.perSquareFootCents ?? matrixRow?.perSquareFootCents ?? rules.base.perSquareFootCents);
-    const activeOverrides=(rules.baseRateOverrides ?? []).filter(rule=>selected(selections[rule.selectionKey],rule.whenValue));
-    const setters=activeOverrides.filter(rule=>rule.kind==="set_per_square_foot");
-    if(setters.length>1)throw new Error("Conflicting PBV2 pricing overrides: multiple active choices set the per-square-foot base rate.");
-    if(setters[0])perSquareFootCents=setters[0].amountCents;
-    for(const override of activeOverrides.filter(rule=>rule.kind==="add_per_square_foot"))perSquareFootCents+=override.amountCents;
+    if (rules.matrix && !matrixRow) throw matrixRowNotFound(rules.matrix.id);
+    const matrixTier = basis == null ? undefined : selectTier(matrixRow?.tiers, basis);
+    const familyTiers = (rules.tierFamilies ?? []).map((family) => ({
+      basis: family.basis,
+      tier: selectTier(family.tiers, family.basis === "quantity" ? configuration.quantity : family.basis === "square_foot" ? totalSqft : computedSheets ?? Number.NaN),
+    }));
+    // V1 resolves the quantity schedule and then lets a matching square-foot
+    // schedule override only the rates it declares. Matrix row tiers remain the
+    // most-specific schedule for a matched Matrix configuration.
+    const productTiers = familyTiers.map((entry) => entry.tier).filter((entry): entry is PricingTierRule => Boolean(entry));
+    const legacyTier = basis == null ? undefined : selectTier(rules.tiers, basis);
+    const rateTiers = [...productTiers, legacyTier, matrixTier].filter((entry): entry is PricingTierRule => Boolean(entry));
+    const lastDefined = <T,>(pick: (tier: PricingTierRule) => T | undefined): T | undefined => {
+      for (let index = rateTiers.length - 1; index >= 0; index -= 1) {
+        const value = pick(rateTiers[index]!);
+        if (value !== undefined) return value;
+      }
+      return undefined;
+    };
+    let perPieceCents = lastDefined((tier) => tier.perPieceCents) ?? matrixRow?.perPieceCents ?? rules.base.perPieceCents ?? 0;
+    let perSquareFootCents = asNumber(lastDefined((tier) => tier.perSquareFootCents) ?? matrixRow?.perSquareFootCents ?? rules.base.perSquareFootCents);
+    let minimumChargeCents = lastDefined((tier) => tier.minimumChargeCents) ?? rules.minimumChargeCents;
+    const activeOverrides = (rules.baseRateOverrides ?? []).filter((rule) => selected(selections[rule.selectionKey], rule.whenValue));
+    const applyOverrides = (target: "per_square_foot" | "per_piece" | "minimum_charge", initial: number): number => {
+      const matching = activeOverrides.filter((rule) => rule.kind.endsWith(target));
+      if (matching.length === 0) return initial;
+      const setters = matching.filter((rule) => rule.kind === `set_${target}`);
+      if (setters.length > 1) throw new Error(`Conflicting PBV2 pricing overrides: multiple active choices set ${target}.`);
+      let value = setters[0]?.amountCents ?? initial;
+      for (const rule of matching.filter((entry) => entry.kind === `add_${target}`)) value += rule.amountCents ?? 0;
+      for (const rule of matching.filter((entry) => entry.kind === `multiply_${target}`)) value *= rule.factor ?? 1;
+      // A V1 per-square-foot rate may legitimately retain fractional cents
+      // until the final line calculation (for example 137.5¢/sq ft). Fixed
+      // piece/minimum targets remain discrete cents when an override changes
+      // them.
+      return target === "per_square_foot" ? value : roundCents(value);
+    };
+    perSquareFootCents = applyOverrides("per_square_foot", perSquareFootCents);
+    perPieceCents = applyOverrides("per_piece", perPieceCents);
+    minimumChargeCents = minimumChargeCents == null ? undefined : applyOverrides("minimum_charge", minimumChargeCents);
     const baseRateDollars = perSquareFootCents / 100;
     const unitPriceDollars = perPieceCents / 100;
     const nestingFacts = request.nestingEstimate?.facts ?? {};
-    const resolvedAllowRotation = nestingFacts.allowRotation === true;
+    // ProductVersion nesting evidence is authoritative when supplied. Legacy
+    // formula-only products have no estimate, so retain their declared formula
+    // variable rather than silently forcing rotation off.
+    const resolvedAllowRotation = typeof nestingFacts.allowRotation === "boolean" ? nestingFacts.allowRotation : undefined;
     const billedSqft = typeof nestingFacts.billedSheetSqft === "number" ? nestingFacts.billedSheetSqft : typeof nestingFacts.billableSqft === "number" ? nestingFacts.billableSqft : 0;
     const formulaVariables = {
       ...numericFormulaVariables(rules.formula?.variables ?? {}),
       q: configuration.quantity,
+      quantity: configuration.quantity,
       w: width,
       h: height,
+      width,
+      height,
       sqft: quantityOnly ? 0 : width * height / 144,
       total_sqft: totalSqft,
+      totalSqft,
       computed_sheets: computedSheets ?? 0,
       billed_sqft: billedSqft,
+      linear_feet: width / 12,
+      linearFeet: width / 12,
+      inches: width,
       base_price: baseRateDollars,
+      basePrice: baseRateDollars,
       p: baseRateDollars,
       sheet_price: unitPriceDollars,
       unitPrice: unitPriceDollars,
@@ -175,25 +255,36 @@ export class V2PricingParityAdapter implements PricingPort {
     for (const rule of rules.optionImpacts ?? []) {
       if (rule.whenValue !== undefined && !selected(selections[rule.selectionKey], rule.whenValue)) continue;
       const amount = rule.amount ?? 0;
+      const optionsSubtotalCents = runningCents - baseCentsForEffects;
       const rawImpactCents = rule.kind === "fixed" ? amount
         : rule.kind === "per_unit" ? amount * configuration.quantity
         : rule.kind === "per_square_foot" ? amount * totalSqft
-        // Characterized PBV2 choice percentages are additive against the base,
-        // not compounded against earlier option impacts.
+        : rule.kind === "per_linear_foot" ? amount * (width / 12) * configuration.quantity
+        : rule.kind === "per_inch" ? amount * width * configuration.quantity
         : rule.kind === "percent" ? baseCentsForEffects * (Number(rule.percentBasisPoints ?? 0) / 10_000)
+        : rule.kind === "percent_of_options_subtotal" ? optionsSubtotalCents * (Number(rule.percentBasisPoints ?? 0) / 10_000)
+        : rule.kind === "percent_of_line_subtotal" ? runningCents * (Number(rule.percentBasisPoints ?? 0) / 10_000)
         : baseCentsForEffects * (amount - 1);
-      const impactCents = roundCents(rawImpactCents);
+      const formulaImpactCents = rule.kind === "formula"
+        ? evaluateResolvedFormula(rule.formula ?? "", formulaVariables, resolvedAllowRotation) * 100
+        : undefined;
+      const impactCents = roundCents(formulaImpactCents ?? rawImpactCents);
       runningCents += impactCents;
       const basisEvidence: Readonly<Record<string, JsonValue>> = rule.kind === "per_unit" ? { quantity: configuration.quantity }
         : rule.kind === "per_square_foot" ? { totalSqft: decimalText(String(totalSqft)) }
         : rule.kind === "percent" ? { baseLineCents: baseCentsForEffects, percentBasisPoints: Number(rule.percentBasisPoints ?? 0) }
+        : rule.kind === "percent_of_options_subtotal" ? { optionsSubtotalCents, percentBasisPoints: Number(rule.percentBasisPoints ?? 0) }
+        : rule.kind === "percent_of_line_subtotal" ? { lineSubtotalCents: runningCents - impactCents, percentBasisPoints: Number(rule.percentBasisPoints ?? 0) }
+        : rule.kind === "per_linear_foot" ? { linearFeet: decimalText(String((width / 12) * configuration.quantity)) }
+        : rule.kind === "per_inch" ? { inches: decimalText(String(width * configuration.quantity)) }
+        : rule.kind === "formula" ? { formula: rule.formula ?? "" }
         : rule.kind === "multiplier" ? { baseLineCents: baseCentsForEffects, multiplier: amount }
         : {};
       optionImpacts.push({ selectionKey: rule.selectionKey, effectId: rule.id, kind: rule.kind, amount: money(sellableProduct.pricingCurrency, impactCents), ...(rule.percentBasisPoints == null ? {} : { percentBasisPoints: rule.percentBasisPoints }), basis: basisEvidence });
       components.push({ kind: "option", label: rule.id, amount: money(sellableProduct.pricingCurrency, impactCents) });
     }
 
-    const effectiveMinimumChargeCents = tier?.minimumChargeCents ?? rules.minimumChargeCents;
+    const effectiveMinimumChargeCents = minimumChargeCents;
     const beforeMinimumCents = runningCents;
     // Characterized V1 quantity-only pricing ignores stale geometry and a line minimum.
     if (!quantityOnly && effectiveMinimumChargeCents != null && runningCents < effectiveMinimumChargeCents) {
@@ -228,7 +319,12 @@ export class V2PricingParityAdapter implements PricingPort {
       components,
       optionImpacts,
       minimumChargeApplied: runningCents !== beforeMinimumCents,
-      ...(tier ? { tier: { source: tierBasis, basisValue: decimalText(String(basis)), selectedTierId: tier.id, selectedRate: decimalText(String(tier.perPieceCents ?? tier.perSquareFootCents ?? 0)), fallbackApplied: false } } : {}),
+      ...((matrixTier ?? productTiers.at(-1) ?? legacyTier) ? { tier: (() => {
+        const selectedTier = matrixTier ?? productTiers.at(-1) ?? legacyTier!;
+        const source = matrixTier ? tierBasis : (familyTiers.filter((entry) => entry.tier === selectedTier).at(-1)?.basis ?? tierBasis);
+        const selectedBasis = source === "quantity" ? configuration.quantity : source === "square_foot" ? totalSqft : computedSheets;
+        return { source, basisValue: decimalText(String(selectedBasis)), selectedTierId: selectedTier.id, selectedRate: decimalText(String(selectedTier.perPieceCents ?? selectedTier.perSquareFootCents ?? 0)), fallbackApplied: false };
+      })() } : {}),
       ...(matrixRow ? { matrix: { matrixId: rules.matrix!.id, rowId: matrixRow.id, selectedValueKeys: rules.matrix!.dimensions.map((key) => String(selections[key] ?? "")) } } : {}),
       ...(rules.formula && !quantityOnly ? { formula: { source: rules.formula.source, formulaId: rules.formula.id, version: rules.formula.version, contentHash: rules.formula.contentHash, resolvedExpression: rules.formula.expression, resolvedConfiguration: rules.formula.variables, variables: formulaVariables } } : {}),
       ...(request.nestingEstimate ? { nestingEstimate: request.nestingEstimate } : {}),

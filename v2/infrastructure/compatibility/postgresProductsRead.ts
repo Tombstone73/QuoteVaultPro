@@ -8,7 +8,7 @@ import { PostgresProductVersionRoutingReader } from "../products/postgresProduct
 
 type ProductRow = {
   product_id: string; product_name: string; product_type_id: string | null; measurement_mode: "dimensions_required" | "quantity_only";
-  pricing_profile_key: string | null; product_formula_id: string | null; tree_id: string; tree_schema_version: number; tree_published_at: Date | null; tree_json: unknown;
+  pricing_profile_key: string | null; product_formula_id: string | null; product_formula: string | null; tree_id: string; tree_schema_version: number; tree_published_at: Date | null; tree_json: unknown;
   pricing_profile_config: unknown | null;
   formula_id: string | null; formula_code: string | null; formula_profile_key: string | null; formula_expression: string | null; formula_config: unknown; formula_updated_at: Date | null;
 };
@@ -67,6 +67,7 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
       id: row.tree_id, schemaVersion: row.tree_schema_version, publishedAt: iso(row.tree_published_at), treeJson: row.tree_json,
       productMeasurementMode: row.measurement_mode, productPricingProfileKey: row.pricing_profile_key,
       legacyProductPricingConfig: (row.pricing_profile_config ?? null) as JsonValue | null,
+      legacyProductPricingFormula: row.product_formula,
       formula: row.formula_id && row.formula_profile_key ? {
         id: row.formula_id, code: row.formula_code, profileKey: row.formula_profile_key, expression: row.formula_expression,
         config: (row.formula_config ?? null) as JsonValue | null, updatedAt: iso(row.formula_updated_at) ?? "unknown",
@@ -94,7 +95,7 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
   }
 
   private async activeRow(organizationId: OrganizationId, productId: ProductId): Promise<ProductRow | null> {
-    const result = await this.client.query<ProductRow>(`SELECT p.id AS product_id, p.name AS product_name, p.product_type_id, p.measurement_mode, p.pricing_profile_key, p.pricing_profile_config, p.pricing_formula_id AS product_formula_id,
+    const result = await this.client.query<ProductRow>(`SELECT p.id AS product_id, p.name AS product_name, p.product_type_id, p.measurement_mode, p.pricing_profile_key, p.pricing_profile_config, p.pricing_formula_id AS product_formula_id, p.pricing_formula AS product_formula,
       t.id AS tree_id, t.schema_version AS tree_schema_version, t.published_at AS tree_published_at, t.tree_json,
       f.id AS formula_id, f.code AS formula_code, f.pricing_profile_key AS formula_profile_key, f.expression AS formula_expression, f.config AS formula_config, f.updated_at AS formula_updated_at
       FROM products p

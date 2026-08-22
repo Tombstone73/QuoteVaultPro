@@ -30,18 +30,49 @@ export type NestingEstimateEvidence = Readonly<{
   facts: Readonly<Record<string, JsonValue>>;
 }>;
 export type PricingTierRule = Readonly<{ id: string; minQuantity: number; maxQuantity?: number; perPieceCents?: number; perSquareFootCents?: DecimalText; minimumChargeCents?: number }>;
+/**
+ * A published V1 configuration can carry independent quantity and area tier
+ * schedules.  Keep those schedules distinct at the compatibility boundary;
+ * collapsing them into one list loses the commercial meaning of the other
+ * schedule.
+ */
+export type PricingTierFamily = Readonly<{ basis: "quantity" | "square_foot" | "computed_sheet"; tiers: readonly PricingTierRule[] }>;
 export type PricingMatrixRow = Readonly<{ id: string; when: Readonly<Record<string, string | boolean | number>>; tierBasis?: "quantity" | "square_foot" | "computed_sheet"; tiers?: readonly PricingTierRule[]; perPieceCents?: number; perSquareFootCents?: DecimalText }>;
-export type PricingOptionRule = Readonly<{ id: string; selectionKey: string; whenValue?: string | boolean | number; kind: "fixed" | "per_unit" | "per_square_foot" | "percent" | "multiplier"; amount?: number; percentBasisPoints?: PercentageBasisPoints }>;
-/** A deliberately narrow compatibility projection for established PBV2 choice rate overrides. */
-export type PricingBaseRateOverride = Readonly<{ id: string; selectionKey: string; whenValue: string | boolean | number; kind: "set_per_square_foot" | "add_per_square_foot"; amountCents: number }>;
+/**
+ * Typed compatibility projection for V1 PBV2 impacts. Formula values are
+ * dollar-valued, matching the established PBV2 evaluator contract; all other
+ * monetary quantities are cents unless their kind documents a multiplier.
+ */
+export type PricingOptionRule = Readonly<{
+  id: string;
+  selectionKey: string;
+  whenValue?: string | boolean | number;
+  kind: "fixed" | "per_unit" | "per_square_foot" | "per_linear_foot" | "per_inch" | "percent" | "percent_of_options_subtotal" | "percent_of_line_subtotal" | "multiplier" | "formula";
+  amount?: number;
+  percentBasisPoints?: PercentageBasisPoints;
+  formula?: string;
+}>;
+/** A typed compatibility projection for established PBV2 choice base-rate overrides. */
+export type PricingBaseRateOverride = Readonly<{
+  id: string;
+  selectionKey: string;
+  whenValue: string | boolean | number;
+  kind: "set_per_square_foot" | "add_per_square_foot" | "multiply_per_square_foot" | "set_per_piece" | "add_per_piece" | "multiply_per_piece" | "set_minimum_charge" | "add_minimum_charge" | "multiply_minimum_charge";
+  /** cents for set/add rules; present as a compatibility field for all kinds. */
+  amountCents?: number;
+  /** scalar factor for multiply rules. */
+  factor?: number;
+}>;
 /** Explicit resolved pricing inputs supplied by a future Product/PBV2 compatibility reader. */
 export type PricingRules = Readonly<{
   base: Readonly<{ perPieceCents?: number; perSquareFootCents?: DecimalText; flatFeeCents?: number }>;
   minimumChargeCents?: number;
   tierBasis?: "quantity" | "square_foot" | "computed_sheet";
   tiers?: readonly PricingTierRule[];
+  /** Independent V1 tier schedules; canonical consumers select each expressly. */
+  tierFamilies?: readonly PricingTierFamily[];
   matrix?: Readonly<{ id: string; dimensions: readonly string[]; rows: readonly PricingMatrixRow[] }>;
-  formula?: Readonly<{ id: string; source: "library" | "embedded"; version: string; contentHash: string; expression: string; variables: Readonly<Record<string, JsonValue>> }>;
+  formula?: Readonly<{ id: string; source: "library" | "embedded" | "legacy_product"; version: string; contentHash: string; expression: string; variables: Readonly<Record<string, JsonValue>> }>;
   optionImpacts?: readonly PricingOptionRule[];
   baseRateOverrides?: readonly PricingBaseRateOverride[];
 }>;
@@ -67,7 +98,7 @@ export type PricingComponent = Readonly<{ kind: "base" | "option" | "minimum_cha
 export type PricingOptionImpact = Readonly<{
   selectionKey: string;
   effectId: string;
-  kind: "fixed" | "percent" | "multiplier" | "per_unit" | "per_square_foot";
+  kind: PricingOptionRule["kind"];
   amount: Money;
   percentBasisPoints?: PercentageBasisPoints;
   /** Canonical inputs used for this impact; this is evidence, never a PBV2 tree. */
@@ -75,7 +106,7 @@ export type PricingOptionImpact = Readonly<{
 }>;
 export type PricingTierEvidence = Readonly<{ source: "quantity" | "square_foot" | "computed_sheet"; basisValue: DecimalText; selectedTierId: string; selectedRate: DecimalText; fallbackApplied: boolean }>;
 export type PricingMatrixEvidence = Readonly<{ matrixId: string; rowId: string; columnId?: string; selectedValueKeys: readonly string[] }>;
-export type PricingFormulaEvidence = Readonly<{ source: "library" | "embedded"; formulaId?: string; version: string; contentHash: string; resolvedExpression: string; resolvedConfiguration: Readonly<Record<string, JsonValue>>; variables: Readonly<Record<string, JsonValue>> }>;
+export type PricingFormulaEvidence = Readonly<{ source: "library" | "embedded" | "legacy_product"; formulaId?: string; version: string; contentHash: string; resolvedExpression: string; resolvedConfiguration: Readonly<Record<string, JsonValue>>; variables: Readonly<Record<string, JsonValue>> }>;
 export type RoundingStage = Readonly<{ stage: string; mode: string; precision: number }>;
 export type RoundingEvidence = Readonly<{ policyId: string; policyVersion: string; stages: readonly RoundingStage[] }>;
 

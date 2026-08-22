@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { canonicalJson, decimalText, type JsonValue } from "../shared/commercialValues.js";
-import type { PricingBaseRateOverride, PricingMatrixRow, PricingOptionRule, PricingRules, PricingTierRule } from "../pricing/contracts.js";
+import type { PricingBaseRateOverride, PricingMatrixRow, PricingOptionRule, PricingRules, PricingTierFamily, PricingTierRule } from "../pricing/contracts.js";
 import { getPbv2FixedDimensions } from "../../../../shared/pbv2/fixedDimensions.js";
 import { extractFormulaVariables, parseFormulaBoolean } from "../../../../shared/pbv2/formulaHelpers.js";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBaseRateCents } from "../../../../shared/productOptionPricingMatrix.js";
@@ -20,6 +20,8 @@ export type ActivePbv2CompatibilityRecord = Readonly<{
   productPricingProfileKey: string | null;
   /** Read-only V1 compatibility input; never a target for V2 ProductVersion writes. */
   legacyProductPricingConfig?: JsonValue | null;
+  /** Read-only V1 formula fallback; only used when no newer Formula source exists. */
+  legacyProductPricingFormula?: string | null;
   formula: Readonly<{ id: string; code: string | null; profileKey: string; expression: string | null; config: JsonValue | null; updatedAt: string }> | null;
 }>;
 
@@ -38,7 +40,7 @@ const tier = (input: PricingV2Tier, fallbackId: string): PricingTierRule => ({
 const keyFor = (node: any): string => typeof node?.input?.selectionKey === "string" ? node.input.selectionKey : typeof node?.key === "string" ? node.key : node.id;
 const supportedFormula = (expression: string): boolean => {
   if (!/^[\s\w.,()+\-*/]+$/u.test(expression)) return false;
-  return !/\b(?!ceil\s*\(|sheet_consumption_sqft\s*\()[A-Za-z_]\w*\s*\(/u.test(expression);
+  return !/\b(?!ceil\s*\(|sheet_consumption_sqft\s*\(|roll_nesting_billable_sqft\s*\()[A-Za-z_]\w*\s*\(/u.test(expression);
 };
 
 const impactRule = (
@@ -47,7 +49,6 @@ const impactRule = (
   selectionKey: string,
   whenValue: string | boolean | number | undefined,
 ): PricingOptionRule | null => {
-  if (impact.applyWhen) return null;
   switch (impact.mode) {
     case "addFlat": return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "fixed", amount: impact.amountCents };
     case "addCents": return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "fixed", amount: impact.cents };
@@ -55,15 +56,19 @@ const impactRule = (
     case "addPerSqft": return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "per_square_foot", amount: impact.amountCents };
     case "percentOfBase": return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "percent", percentBasisPoints: Math.round(impact.percent * 100) as PricingOptionRule["percentBasisPoints"] };
     case "multiplier": return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "multiplier", amount: impact.factor };
-    case "addPercent":
-      return impact.basis == null || impact.basis === "base"
-        ? { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "percent", percentBasisPoints: Math.round(impact.percent * 100) as PricingOptionRule["percentBasisPoints"] }
-        : null;
+    case "addPercent": {
+      const kind = impact.basis == null || impact.basis === "base"
+        ? "percent"
+        : impact.basis === "optionsSubtotal" ? "percent_of_options_subtotal" : "percent_of_line_subtotal";
+      return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind, percentBasisPoints: Math.round(impact.percent * 100) as PricingOptionRule["percentBasisPoints"] };
+    }
     case "addPerUnit":
       if (impact.unit === "perPiece" || impact.unit === "perQty") return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "per_unit", amount: impact.centsPerUnit };
       if (impact.unit === "perSqft") return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "per_square_foot", amount: impact.centsPerUnit };
+      if (impact.unit === "perLinearFoot") return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "per_linear_foot", amount: impact.centsPerUnit };
+      if (impact.unit === "perInch") return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "per_inch", amount: impact.centsPerUnit };
       return null;
-    case "addFormula": return null;
+    case "addFormula": return { id, selectionKey, ...(whenValue === undefined ? {} : { whenValue }), kind: "formula", formula: impact.formula };
   }
 };
 
@@ -83,13 +88,19 @@ const optionImpacts = (tree: OptionTreeV2, visibleNodeIds: readonly string[], se
     const selectedValues = Array.isArray(selectedValue) ? selectedValue : [selectedValue];
     if (selectedValues.some((value) => typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")) return validation(`The selected pricing option '${selectionKey}' has an unsupported value.`);
     const selectedChoices = (node.choices ?? []).filter((choice) => selectedValues.includes(choice.value));
+    const selectedNode = node.input?.type === "boolean"
+      ? selectedValue === true
+      : selectedValues.length > 0 && selectedValues.some(value => value !== undefined && value !== null && value !== "");
     const impacts: Array<{ impact: PricingImpact; id: string; whenValue?: string | boolean | number }> = [];
-    for (const [index, impact] of (node.pricingImpact ?? []).entries()) impacts.push({ impact, id: `${node.id}:node:${index}` });
+    if (selectedNode) for (const [index, impact] of (node.pricingImpact ?? []).entries()) impacts.push({ impact, id: `${node.id}:node:${index}` });
     for (const choice of selectedChoices) {
       if (choice.priceDeltaCents != null) impacts.push({ impact: { mode: "addFlat", amountCents: choice.priceDeltaCents }, id: `${node.id}:${choice.value}:delta`, whenValue: choice.value });
       for (const [index, impact] of (choice.pricingImpact ?? []).entries()) impacts.push({ impact, id: `${node.id}:${choice.value}:${index}`, whenValue: choice.value });
     }
     for (const entry of impacts) {
+      // V1's `applyWhenOk` compatibility evaluator intentionally treated these
+      // legacy predicates as eligible.  Preserve that behavior here rather
+      // than making historical prices depend on a newly interpreted condition.
       const mapped = impactRule(entry.impact, entry.id, selectionKey, entry.whenValue);
       if (!mapped) return validation(`The selected pricing option '${selectionKey}' uses an unsupported pricing impact.`);
       rules.push(mapped);
@@ -109,10 +120,26 @@ const baseRateOverrides = (tree: OptionTreeV2, visibleNodeIds: readonly string[]
       const override = choice.pricingOverride;
       if (!override || override.mode === "none") continue;
       const amount = override.amount;
-      if ((override.mode !== "set_base_rate" && override.mode !== "add_base_rate") || override.unit !== "perSqft" || (override.appliesTo !== undefined && override.appliesTo !== "area") || typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 0) {
+      const target = override.unit === "perSqft"
+        ? "per_square_foot"
+        : override.unit === "perPiece" ? "per_piece"
+        : override.unit === "minimumCharge" ? "minimum_charge" : null;
+      if (!target || typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
         return validation(`The selected pricing option '${selectionKey}' uses an unsupported pricing override.`);
       }
-      rules.push({ id: `${node.id}:${choice.value}:base-rate`, selectionKey, whenValue: choice.value, kind: override.mode === "set_base_rate" ? "set_per_square_foot" : "add_per_square_foot", amountCents: amount });
+      if ((override.mode === "set_base_rate" || override.mode === "add_base_rate") && !Number.isSafeInteger(amount)) {
+        return validation(`The selected pricing option '${selectionKey}' uses an invalid cents-based pricing override.`);
+      }
+      const kind = override.mode === "set_base_rate"
+        ? `set_${target}`
+        : override.mode === "add_base_rate" ? `add_${target}`
+        : override.mode === "multiply_base_rate" ? `multiply_${target}` : null;
+      if (!kind) return validation(`The selected pricing option '${selectionKey}' uses an unsupported pricing override.`);
+      rules.push({
+        id: `${node.id}:${choice.value}:base-rate`, selectionKey, whenValue: choice.value,
+        kind: kind as PricingBaseRateOverride["kind"],
+        ...(override.mode === "multiply_base_rate" ? { factor: amount } : { amountCents: amount }),
+      });
     }
   }
   return success(rules.sort((left, right) => left.selectionKey.localeCompare(right.selectionKey) || String(left.whenValue).localeCompare(String(right.whenValue)) || left.kind.localeCompare(right.kind)));
@@ -298,7 +325,13 @@ export const resolveActivePbv2PricingInput = (
   const base = record(pricingV2.base) ?? {};
   const qtyTiers = Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers as PricingV2Tier[] : [];
   const sqftTiers = Array.isArray(pricingV2.sqftTiers) ? pricingV2.sqftTiers as PricingV2Tier[] : [];
-  if (qtyTiers.length && sqftTiers.length) return validation("This active configuration combines quantity and square-foot tier systems; compatibility mapping is not yet proven.");
+  // V1 allowed both schedules to be published together.  Preserve both typed
+  // families instead of rejecting a valid historical ProductVersion or
+  // arbitrarily selecting one at this compatibility boundary.
+  const tierFamilies: PricingTierFamily[] = [
+    ...(qtyTiers.length ? [{ basis: "quantity" as const, tiers: qtyTiers.map((entry, index) => tier(entry, `quantity-tier-${index}`)) }] : []),
+    ...(sqftTiers.length ? [{ basis: "square_foot" as const, tiers: sqftTiers.map((entry, index) => tier(entry, `square-foot-tier-${index}`)) }] : []),
+  ];
   const matrix = extractProductOptionPricingMatrix(tree);
   const matrixRows: PricingMatrixRow[] = (matrix?.rows ?? []).map((row, index) => {
     const variables = row.variables ?? row.values ?? {};
@@ -314,8 +347,21 @@ export const resolveActivePbv2PricingInput = (
       // Variables are resolved formula inputs, not raw matrix data; only base_price is carried through rates above.
     };
   });
-  const expression = source.formula?.expression ?? (typeof meta.pricingFormula === "string" ? meta.pricingFormula : undefined);
-  if (source.formula && (!source.formula.expression || !source.formula.expression.trim())) return validation("The active Formula Library entry has no supported expression.");
+  const embeddedExpression = typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? meta.pricingFormula.trim() : undefined;
+  const libraryExpression = source.formula?.expression?.trim() || undefined;
+  const legacyProductExpression = source.legacyProductPricingFormula?.trim() || undefined;
+  // The canonical Formula Library remains the primary configured authority.
+  // A ProductVersion embedded expression is the established compatibility
+  // fallback, followed only then by the legacy Product row expression.
+  const formulaResolution = libraryExpression && source.formula
+      ? { expression: libraryExpression, source: "library" as const, id: source.formula.id, version: source.formula.updatedAt }
+      : embeddedExpression
+        ? { expression: embeddedExpression, source: "embedded" as const, id: `embedded:${source.id}`, version: source.publishedAt ?? `schema-${source.schemaVersion}` }
+      : legacyProductExpression
+        ? { expression: legacyProductExpression, source: "legacy_product" as const, id: `legacy-product:${source.id}`, version: source.publishedAt ?? `schema-${source.schemaVersion}` }
+        : undefined;
+  if (source.formula && !libraryExpression && !embeddedExpression) return validation("The active Formula Library entry has no supported expression.");
+  const expression = formulaResolution?.expression;
   if (expression && !supportedFormula(expression)) return validation("The active formula uses an unsupported compatibility function.");
   const resolvedOptionImpacts = optionImpacts(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
   if (!resolvedOptionImpacts.ok) return resolvedOptionImpacts;
@@ -328,7 +374,22 @@ export const resolveActivePbv2PricingInput = (
   // `allow_rotation` remains a numeric runtime argument for the small Formula
   // evaluator only. Its value is derived from the typed ProductVersion policy,
   // never persisted as a numeric Formula input.
-  const formulaVariables = { ...extractFormulaVariables(record(source.formula?.config)), ...record(meta.pricingFormulaVariables), ...record(meta.formulaVariables), allow_rotation: rotation.allowRotation ? 1 : 0 } as Record<string, JsonValue>;
+  const legacyConfig = record(source.legacyProductPricingConfig);
+  const numericSelections = Object.fromEntries(
+    Object.entries(visibility.effectiveSelections).filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
+  );
+  const formulaVariables = {
+    ...extractFormulaVariables(record(source.formula?.config)),
+    ...record(meta.pricingFormulaVariables),
+    ...record(meta.formulaVariables),
+    ...record(legacyConfig?.variables),
+    ...record(legacyConfig?.formulaVariables),
+    ...numericSelections,
+    allow_rotation: rotation.allowRotation ? 1 : 0,
+  } as Record<string, JsonValue>;
+  const isFeeProfile = source.productPricingProfileKey === "fee";
+  const flatFeeDollars = numberVariable(formulaVariables, "flatFee", { allowZero: true });
+  if (isFeeProfile && flatFeeDollars == null) return validation("Price not configured: Fee / Service products require a Flat Fee Amount.");
   const nestingEstimate = resolveFormulaSheetEstimate(expression, formulaVariables, dimensions, input.quantity, rotation);
   if (!nestingEstimate.ok) return nestingEstimate;
   let productionRequirements;
@@ -338,16 +399,20 @@ export const resolveActivePbv2PricingInput = (
     base: {
       ...(typeof base.perPieceCents === "number" ? { perPieceCents: Math.round(base.perPieceCents) } : {}),
       ...(decimal(base.perSqftCents) ? { perSquareFootCents: decimal(base.perSqftCents)! } : {}),
+      ...(isFeeProfile && flatFeeDollars != null ? { flatFeeCents: Math.round(flatFeeDollars * 100) } : {}),
     },
     ...(typeof base.minimumChargeCents === "number" ? { minimumChargeCents: Math.round(base.minimumChargeCents) } : {}),
-    ...(pricingV2.tierBasis === "computed_sheet_usage" ? { tierBasis: "computed_sheet" as const } : sqftTiers.length ? { tierBasis: "square_foot" as const } : {}),
-    ...((qtyTiers.length || sqftTiers.length) ? { tiers: (qtyTiers.length ? qtyTiers : sqftTiers).map((entry, index) => tier(entry, `tier-${index}`)) } : {}),
-    ...(matrix && matrixRows.length ? { matrix: { id: matrix.id ?? `matrix:${source.id}`, dimensions: matrix.dimensions, rows: matrixRows } } : {}),
-    ...(expression ? { formula: {
-      id: source.formula?.id ?? `embedded:${source.id}`,
-      source: source.formula ? "library" as const : "embedded" as const,
-      version: source.formula?.updatedAt ?? source.publishedAt ?? `schema-${source.schemaVersion}`,
-      contentHash: stableHash({ expression, variables: formulaVariables, allowRotation: rotation.allowRotation, formula: source.formula ? { id: source.formula.id, config: source.formula.config, profileKey: source.formula.profileKey } : null }),
+    ...(pricingV2.tierBasis === "computed_sheet_usage" ? { tierBasis: "computed_sheet" as const, tiers: qtyTiers.map((entry, index) => tier(entry, `computed-sheet-tier-${index}`)) } : {}),
+    ...(tierFamilies.length ? { tierFamilies } : {}),
+    // An empty or incomplete persisted matrix is still a Matrix-priced
+    // configuration. Carry it to the Pricing boundary so it fails closed
+    // instead of silently becoming scalar base pricing.
+    ...(matrix ? { matrix: { id: matrix.id ?? `matrix:${source.id}`, dimensions: matrix.dimensions, rows: matrixRows } } : {}),
+    ...(expression && !isFeeProfile ? { formula: {
+      id: formulaResolution!.id,
+      source: formulaResolution!.source,
+      version: formulaResolution!.version,
+      contentHash: stableHash({ expression, source: formulaResolution!.source, variables: formulaVariables, allowRotation: rotation.allowRotation, formula: source.formula ? { id: source.formula.id, config: source.formula.config, profileKey: source.formula.profileKey } : null }),
       expression,
       variables: formulaVariables,
     } } : {}),

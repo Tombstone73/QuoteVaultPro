@@ -69,6 +69,7 @@
     "v2:m5:commercial-parity": "jest --runInBand v2/tests/parity/commercialSpineParity.test.ts",
     "v2:m5:operational-parity": "jest --runInBand v2/tests/parity/operationalSpineParity.test.ts",
     "v2:m5:financial-parity": "jest --runInBand v2/tests/parity/financialSpineParity.test.ts",
+    "v2:pricing:parity:pure": "tsx v2/tests/modules/pricingParityCorrections.pure.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:dotenv": "node -r dotenv/config ./node_modules/drizzle-kit/bin.cjs migrate",
