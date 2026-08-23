@@ -8,7 +8,7 @@
  */
 import { Pool } from "pg";
 import { planLegacyFormulaFreezeInventory, type LegacyFormulaEvidence, type LegacyFormulaFreezeCandidate } from "../src/modules/pricing/legacyFormulaFreezeInventory.js";
-import { assertFormulaFreezeTargetMatchesExpected, expectedFormulaFreezeTargetFromEnvironment, parseFormulaFreezeTargetIdentity } from "../src/modules/pricing/formulaFreezeTargetIdentity.js";
+import { selectFormulaFreezeInventoryConnection } from "../src/modules/pricing/formulaFreezeTargetIdentity.js";
 
 type Row = Readonly<{
   organization_id: string;
@@ -81,16 +81,12 @@ const candidateFrom = (row: Row): LegacyFormulaFreezeCandidate => {
 
 async function main(): Promise<void> {
   const organizationId = argument("--organization-id") ?? process.env.FORMULA_FREEZE_INVENTORY_ORGANIZATION_ID;
-  const connectionString = process.env.FORMULA_FREEZE_INVENTORY_DATABASE_URL;
   if (!organizationId) throw new Error("Provide --organization-id (or FORMULA_FREEZE_INVENTORY_ORGANIZATION_ID) to keep the report tenant-scoped.");
-  if (!connectionString) throw new Error("FORMULA_FREEZE_INVENTORY_DATABASE_URL is required; this tool will not fall back to an application database URL.");
-  const expectedTarget = expectedFormulaFreezeTargetFromEnvironment(process.env);
-  const target = parseFormulaFreezeTargetIdentity(connectionString, expectedTarget);
-  assertFormulaFreezeTargetMatchesExpected(target, expectedTarget);
+  const connection = selectFormulaFreezeInventoryConnection(process.env);
   // Deliberately emits no URL, username, password, token, or other credential.
   // This happens before a Pool exists so mismatch cannot open a connection.
-  process.stdout.write(`${JSON.stringify({ target, connection: "not_opened" })}\n`);
-  const pool = new Pool({ connectionString, max: 1 });
+  process.stdout.write(`${JSON.stringify({ target: connection.target, connectionSource: connection.source, connection: "not_opened" })}\n`);
+  const pool = new Pool({ connectionString: connection.connectionString, max: 1 });
   try {
     const client = await pool.connect();
     let transactionOpen = false;
