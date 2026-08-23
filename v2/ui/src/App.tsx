@@ -453,6 +453,14 @@ export const App = ({
             setProductBuilderId(id);
             setNewProductBuilder(false);
           }}
+          openCreatedProduct={(id) => {
+            // The New Product Builder has already replaced /products/new with
+            // the canonical Draft URL while preserving its local first-Save
+            // state. This only synchronizes the application router once the
+            // section writes have completed.
+            setProductBuilderId(id);
+            setNewProductBuilder(false);
+          }}
           openNewProduct={() => {
             pushNewProductBuilderLocation();
             setProductBuilderId("");

@@ -7,7 +7,7 @@ import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePri
 import { auditLogs, materials, pbv2TreeVersions, pricingFormulas, products, v2FormulaRevisions, v2ProductVersionFormulaRevisionBindings } from "@shared/schema";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../pbv2MaterialValidation";
 
-type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId" | "pricingFormula">;
+type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "category" | "description" | "measurementMode" | "workflowIntent" | "requiresProofApproval" | "requiresProductionJob" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId" | "pricingFormula">;
 type TreeRecord = Pick<typeof pbv2TreeVersions.$inferSelect, "id" | "organizationId" | "productId" | "status" | "schemaVersion" | "treeJson" | "publishedAt" | "updatedAt">;
 export type CanonicalProductPublishTarget = {
   product: ProductRecord;
@@ -19,7 +19,7 @@ export type CanonicalProductPublishTarget = {
 };
 type PublishRepository = {
   get(input: { organizationId: string; productId?: string; treeVersionId?: string }): Promise<CanonicalProductPublishTarget | null>;
-  publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; formulaRevision?: CanonicalProductPublishTarget["formulaRevision"]; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
+  publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; basics: ProductBasicsProjection; formulaRevision?: CanonicalProductPublishTarget["formulaRevision"]; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
 };
 
 class PublishStoreStaleError extends Error {}
@@ -34,6 +34,62 @@ function fingerprint(value: unknown): string { return createHash("sha256").updat
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
 function mergeFindings(...groups: readonly Finding[][]): Finding[] { return groups.flat(); }
 const formulaText = (value: unknown): string => typeof value === "string" ? value.trim() : "";
+type ProductBasicsProjection = Pick<ProductRecord, "name" | "category" | "description" | "measurementMode" | "workflowIntent" | "requiresProofApproval" | "requiresProductionJob" | "isActive">;
+const record = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+
+/**
+ * Draft Basics are versioned authoring state.  This is their one-way, publish
+ * time projection into the Product row consumed by catalog and sales reads.
+ * Draft saves deliberately never call this function against the live row.
+ */
+export const productBasicsProjection = (
+  treeJson: Record<string, unknown>,
+  product: ProductRecord,
+  activateLegacyProduct = false,
+): ProductBasicsProjection => {
+  const meta = record(treeJson.meta);
+  const general = record(meta?.general);
+  // Older PBV2 trees predate versioned Basics. Preserve their Product-row
+  // facts, retaining the legacy route's explicit activation behavior only for
+  // that compatibility case.
+  if (!general) return {
+    name: product.name,
+    category: product.category,
+    description: product.description,
+    measurementMode: product.measurementMode,
+    workflowIntent: product.workflowIntent,
+    requiresProofApproval: product.requiresProofApproval,
+    requiresProductionJob: product.requiresProductionJob,
+    isActive: activateLegacyProduct ? true : product.isActive,
+  };
+  const displayName = typeof general.displayName === "string" ? general.displayName.trim() : "";
+  const category = general.category === null || general.category === undefined || general.category === "" ? null : typeof general.category === "string" ? general.category.trim() : undefined;
+  const description = general.description === null || general.description === undefined || general.description === "" ? null : typeof general.description === "string" ? general.description.trim() : undefined;
+  if (!displayName || displayName.length > 160 || category === undefined || (category !== null && category.length > 100) || description === undefined || (description !== null && description.length > 2000)
+    || typeof general.storefrontVisible !== "boolean" || typeof general.requiresProofApproval !== "boolean" || typeof general.requiresProductionJob !== "boolean"
+    || (general.measurementMode !== "dimensions_required" && general.measurementMode !== "quantity_only")
+    || (general.workflowIntent !== "standard_production" && general.workflowIntent !== "fulfillment_only" && general.workflowIntent !== "service_fee")
+    || (general.workflowIntent !== "standard_production" && (general.requiresProofApproval || general.requiresProductionJob))) {
+    throw new Error("Draft Basics cannot be projected to the Product row.");
+  }
+  return {
+    name: displayName,
+    category,
+    // The legacy Product column is non-null while Draft Basics intentionally
+    // permits an empty description. The Product name is the established
+    // initial-create fallback and keeps the projection deterministic.
+    description: description ?? displayName,
+    measurementMode: general.measurementMode,
+    workflowIntent: general.workflowIntent,
+    requiresProofApproval: general.requiresProofApproval,
+    requiresProductionJob: general.requiresProductionJob,
+    isActive: general.storefrontVisible,
+  };
+};
+const productBasicsProjectionFindings = (treeJson: Record<string, unknown>, product: ProductRecord): Finding[] => {
+  try { productBasicsProjection(treeJson, product); return []; }
+  catch { return [{ code: "PBV2_E_PRODUCT_BASICS_PROJECTION_INVALID", severity: "ERROR", message: "Draft Basics cannot be projected to the Product identity.", path: "tree.meta.general" } as Finding]; }
+};
 /** ProductVersion formula selection is staged in the Draft tree.  At publish
  * it is projected atomically into the legacy Product identity pointer used by
  * all existing sales readers; an embedded ProductVersion Formula explicitly
@@ -75,7 +131,7 @@ const repository: PublishRepository = {
         ? await db.select({ id: pbv2TreeVersions.id, organizationId: pbv2TreeVersions.organizationId, productId: pbv2TreeVersions.productId, status: pbv2TreeVersions.status, schemaVersion: pbv2TreeVersions.schemaVersion, treeJson: pbv2TreeVersions.treeJson, publishedAt: pbv2TreeVersions.publishedAt, updatedAt: pbv2TreeVersions.updatedAt }).from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.productId, input.productId), eq(pbv2TreeVersions.status, "DRAFT"))).orderBy(desc(pbv2TreeVersions.updatedAt)).limit(1)
         : [];
     if (!tree) return null;
-    const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId, pricingFormula: products.pricingFormula }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
+    const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, category: products.category, description: products.description, measurementMode: products.measurementMode, workflowIntent: products.workflowIntent, requiresProofApproval: products.requiresProofApproval, requiresProductionJob: products.requiresProductionJob, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId, pricingFormula: products.pricingFormula }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
     if (!product || (input.productId && product.id !== input.productId)) return null;
     const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
@@ -132,14 +188,28 @@ const repository: PublishRepository = {
         await tx.update(pbv2TreeVersions).set({ status: "DEPRECATED", updatedAt: now, updatedByUserId: input.actorUserId }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, input.product.pbv2ActiveTreeVersionId), eq(pbv2TreeVersions.status, "ACTIVE")));
       }
       const nextTreeJson = { ...input.treeJson, schemaVersion: 2, status: "ACTIVE" };
+      const basics = input.basics;
       const [tree] = await tx.update(pbv2TreeVersions).set({ status: "ACTIVE", publishedAt: now, updatedAt: now, updatedByUserId: input.actorUserId, treeJson: nextTreeJson }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, input.tree.id), eq(pbv2TreeVersions.productId, input.product.id), eq(pbv2TreeVersions.status, "DRAFT"))).returning();
       if (!tree) throw new PublishStoreStaleError();
       const pointerCondition = input.product.pbv2ActiveTreeVersionId ? eq(products.pbv2ActiveTreeVersionId, input.product.pbv2ActiveTreeVersionId) : isNull(products.pbv2ActiveTreeVersionId);
       const projectedFormulaId = input.formulaRevision ? null : formulaLibraryProjection(nextTreeJson as Record<string, unknown>);
-      const [product] = await tx.update(products).set({ pbv2ActiveTreeVersionId: tree.id, optionTreeJson: nextTreeJson, ...(projectedFormulaId === undefined ? {} : { pricingFormulaId: projectedFormulaId, pricingEngine: projectedFormulaId ? "formulaLibrary" : "pricingFormula" }), ...(input.activateProduct ? { isActive: true } : {}), updatedAt: now }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.product.id), pointerCondition)).returning();
+      const [product] = await tx.update(products).set({
+        pbv2ActiveTreeVersionId: tree.id,
+        optionTreeJson: nextTreeJson,
+        name: basics.name,
+        category: basics.category,
+        description: basics.description,
+        measurementMode: basics.measurementMode,
+        workflowIntent: basics.workflowIntent,
+        requiresProofApproval: basics.requiresProofApproval,
+        requiresProductionJob: basics.requiresProductionJob,
+        isActive: basics.isActive,
+        ...(projectedFormulaId === undefined ? {} : { pricingFormulaId: projectedFormulaId, pricingEngine: projectedFormulaId ? "formulaLibrary" : "pricingFormula" }),
+        updatedAt: now,
+      }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.product.id), pointerCondition)).returning();
       if (!product) throw new PublishStoreStaleError();
-      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_configuration_published", description: `Published PBV2 configuration ${tree.id} for Product ${product.name}.`, oldValues: { activeTreeVersionId: input.product.pbv2ActiveTreeVersionId, draftTreeVersionId: input.tree.id, draftStatus: input.tree.status }, newValues: { activeTreeVersionId: tree.id, treeStatus: tree.status, operationReference: "products.publish_configuration.v1", reference: input.reference } });
-      if (input.activateProduct && !input.product.isActive) await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_lifecycle_updated", description: "Product activated after its confirmed PBV2 configuration was published.", oldValues: { isActive: false }, newValues: { isActive: true, operationReference: "products.update_lifecycle.v1", reference: input.reference } });
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_configuration_published", description: `Published PBV2 configuration ${tree.id} for Product ${product.name}.`, oldValues: { activeTreeVersionId: input.product.pbv2ActiveTreeVersionId, draftTreeVersionId: input.tree.id, draftStatus: input.tree.status, basics: productBasicsProjection(input.tree.treeJson as Record<string, unknown>, input.product) }, newValues: { activeTreeVersionId: tree.id, treeStatus: tree.status, basics, operationReference: "products.publish_configuration.v1", reference: input.reference } });
+      if (product.isActive !== input.product.isActive) await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_lifecycle_updated", description: `Product ${product.isActive ? "activated" : "deactivated"} with its confirmed PBV2 configuration.`, oldValues: { isActive: input.product.isActive }, newValues: { isActive: product.isActive, operationReference: "products.update_lifecycle.v1", reference: input.reference } });
       return { product, tree };
     });
   },
@@ -165,7 +235,7 @@ export function validateCanonicalProductPublishTarget(target: CanonicalProductPu
   const formulaFindings: Finding[] = !target.formulaRevision && (projectedFormulaId === undefined ? target.product.pricingEngine === "formulaLibrary" : projectedFormulaId !== null) && (!(projectedFormulaId === undefined ? target.product.pricingFormulaId : projectedFormulaId) || !target.pricingFormula?.isActive)
     ? [{ code: "PBV2_E_FORMULA_LIBRARY_REFERENCE_MISSING", severity: "ERROR", message: "Formula Library pricing requires an active Formula Library entry in this organization.", path: "product.pricingFormulaId" } as Finding]
     : [];
-  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings, legacyFormulaCanonicalizationFindings(target, treeJson));
+  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings, productBasicsProjectionFindings(treeJson, target.product), legacyFormulaCanonicalizationFindings(target, treeJson));
   return { treeJson, findings, warnings: findings.filter((item) => item.severity === "WARNING"), errors: findings.filter((item) => item.severity === "ERROR") };
 }
 
@@ -201,15 +271,16 @@ export class CanonicalProductPublishOperations {
     if (validation.errors.length) throw new CanonicalProductPublishError("PBV2_PUBLISH_INVALID", validation.errors[0]?.message ?? "PBV2 publish validation failed.", validation.findings);
     if (validation.warnings.length && input.confirmWarnings !== true) throw new CanonicalProductPublishError("PBV2_PUBLISH_WARNINGS_CONFIRM_REQUIRED", "PBV2 publish has warnings that must be included in the confirmed plan.", validation.findings);
     const reference = input.auditContext?.reference ?? `${input.auditContext?.source ?? "application"}:${target.product.id}:${target.tree.id}:${input.expectedTreeUpdatedAt}`;
+    const basics = productBasicsProjection(validation.treeJson, target.product, input.activateProduct === true);
     let result: Awaited<ReturnType<PublishRepository["publish"]>>;
     try {
-      result = await this.store.publish({ organizationId: input.organizationId, actorUserId: input.actorUserId, product: target.product, tree: target.tree, treeJson: validation.treeJson, formulaRevision: target.formulaRevision, reference, activateProduct: input.activateProduct === true });
+      result = await this.store.publish({ organizationId: input.organizationId, actorUserId: input.actorUserId, product: target.product, tree: target.tree, treeJson: validation.treeJson, basics, formulaRevision: target.formulaRevision, reference, activateProduct: input.activateProduct === true });
     } catch (error) {
       if (error instanceof PublishStoreStaleError) throw new CanonicalProductPublishError("PBV2_PUBLISH_STALE", "The Product or PBV2 DRAFT changed during publication. Review it again.");
       throw error;
     }
     if (!result) throw new CanonicalProductPublishError("PBV2_PUBLISH_STALE", "The Product or PBV2 DRAFT changed during publication. Review it again.");
-    return { ...result, appliedChanges: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, ...(input.activateProduct && !target.product.isActive ? [{ field: "Lifecycle", before: "inactive", after: "active" }] : [])], operationReference: "products.publish_configuration.v1" as const, auditReference: reference };
+    return { ...result, appliedChanges: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, ...(result.product.isActive !== target.product.isActive ? [{ field: "Lifecycle", before: target.product.isActive ? "active" : "inactive", after: result.product.isActive ? "active" : "inactive" }] : [])], operationReference: "products.publish_configuration.v1" as const, auditReference: reference };
   }
 }
 

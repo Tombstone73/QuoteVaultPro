@@ -55,6 +55,7 @@ export const ProductWorkspace = ({
   builderMode = false,
   backToCatalog,
   openEditor,
+  openCreatedProduct = openEditor,
   openNewProduct = backToCatalog,
 }: Readonly<{
   organizationId: string;
@@ -66,6 +67,8 @@ export const ProductWorkspace = ({
   builderMode?: boolean;
   backToCatalog: () => void;
   openEditor: (id: string) => void;
+  /** Sync application routing after a New Product's first Save has completed. */
+  openCreatedProduct?: (id: string) => void;
   openNewProduct?: () => void;
 }>) => {
   const [query, setQuery] = useState(""),
@@ -144,7 +147,7 @@ export const ProductWorkspace = ({
       </section>
     );
   if (newProduct)
-    return <NewProductBuilder organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openEditor={openEditor} />;
+    return <NewProductBuilder organizationId={organizationId} sessionScope={sessionScope} canEdit={canEdit} openEditor={openCreatedProduct} />;
   if (productId)
     return <ProductDraftEntry state={detail} canEdit={canEdit} organizationId={organizationId} sessionScope={sessionScope} creatingDraft={createDraft.isPending} draftCreationError={(createDraft.error as { message?: string } | null)?.message} createDraft={(product) => createDraft.mutate(product)} publish={(revision) => publishDraft.mutate({ productId, revision })} publishing={publishDraft.isPending} publishError={publishDraft.error as { code?: string; message?: string } | null} back={backToCatalog} />;
   if (builderMode) return <section className="v2-products"><p className="v2-proof-empty">Opening Products…</p></section>;

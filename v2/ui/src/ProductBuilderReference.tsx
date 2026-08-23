@@ -6,6 +6,7 @@ import {
   productApi,
   routingApi,
   type FormulaDomainListEntry,
+  type CreatedProductWithInitialDraft,
   type ProductDraftFormulaPricing,
   type ProductDraftGeneral,
   type ProductDraftOption,
@@ -30,8 +31,9 @@ import { acceptsLivePreviewResponse, prepareLivePreview, presentLivePreview } fr
 import { ReviewSummary } from "./productBuilder/review";
 import type { ProductBuilderSection } from "./productBuilder/lovableRoot";
 import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
-import { pushWorkspaceLocation } from "./productRouting";
+import { pushWorkspaceLocation, replaceProductBuilderLocation } from "./productRouting";
 import type { ProductOptionRule } from "../../../shared/productOptionRules";
+import { adoptFirstSaveIdentity, firstSaveRequestHistoryKey, firstSaveRequestId, firstSaveRequestIdFromHistory } from "./productBuilder/firstSaveIdentity";
 
 /*
  * This file is a direct production port of reference/lovable-ui's
@@ -196,7 +198,8 @@ export const ProductBuilderReference = ({
   organizationId: string; sessionScope: string; product?: ProductWorkspaceDetail; canEdit: boolean;
   publish?: (revision: PublishDraftRevision) => void; publishing?: boolean; publishError?: { code?: string; message?: string } | null; openCreatedProduct?: (id: string) => void; newProduct?: boolean;
 }>) => {
-  const productId = product?.productId;
+  const [adoptedIdentity, setAdoptedIdentity] = useState<CreatedProductWithInitialDraft | null>(null);
+  const productId = product?.productId ?? adoptedIdentity?.productId;
   const client = useQueryClient();
   const generalRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "general"), queryFn: () => productApi.draftGeneral(organizationId, productId!), enabled: Boolean(productId) });
   const optionsRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "options"), queryFn: () => productApi.draftOptions(organizationId, productId!), enabled: Boolean(productId) });
@@ -232,6 +235,7 @@ export const ProductBuilderReference = ({
   const sectionJumpRef = useRef<((section: ProductBuilderSection) => void) | null>(null);
   const initialised = useRef<string | null>(null);
   const authoritativeDraft = useRef<PublishDraftRevision | null>(null);
+  const pendingCreateRequestId = useRef<string | null>(typeof window === "undefined" ? null : firstSaveRequestIdFromHistory(window.history.state));
 
   const sourceReady = !productId || Boolean(
     generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data
@@ -300,6 +304,9 @@ export const ProductBuilderReference = ({
   }, [previewConfiguration.effectiveSelections]);
   useEffect(() => {
     if (!productId) { if (initialised.current !== "new") { setDraft(blankState()); initialised.current = "new"; } return; }
+    // A first Save adopts a server-created Draft immediately and deliberately
+    // keeps the local staged state until its independent section saves settle.
+    if (adoptedIdentity && !product?.productId) { initialised.current = productId; return; }
     if (!sourceReady || initialised.current === productId) return;
     setDraft({
       general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options), optionRules: clone(optionsRead.data!.optionRules ?? []),
@@ -320,7 +327,7 @@ export const ProductBuilderReference = ({
     setDirty(new Set()); setSaveError(null);
     authoritativeDraft.current = { draftVersionId: generalRead.data!.draftVersionId, expectedDraftUpdatedAt: generalRead.data!.draftUpdatedAt };
     setRequiresReconciliation(false);
-  }, [productId, sourceReady, generalRead.data, optionsRead.data, pricingRead.data, formulaRead.data, matrixRead.data, impactsRead.data, recipeRead.data, routingRead.data]);
+  }, [adoptedIdentity, product?.productId, productId, sourceReady, generalRead.data, optionsRead.data, pricingRead.data, formulaRead.data, matrixRead.data, impactsRead.data, recipeRead.data, routingRead.data]);
   useEffect(() => {
     if (!publishError) return;
     setSaveError(publishError.message ?? "Canonical publication readiness failed. Save and reconcile before trying again.");
@@ -339,8 +346,17 @@ export const ProductBuilderReference = ({
     try {
       let id = productId; let version = authoritativeDraft.current?.draftVersionId ?? generalRead.data?.draftVersionId; let revision = authoritativeDraft.current?.expectedDraftUpdatedAt ?? generalRead.data?.draftUpdatedAt;
       if (!id) {
-        const created = await productApi.createProduct(organizationId, newBusinessRequestId(), draft.general.displayName.trim());
+        const businessRequestId = firstSaveRequestId(pendingCreateRequestId.current, newBusinessRequestId);
+        pendingCreateRequestId.current = businessRequestId;
+        window.history.replaceState({ ...(window.history.state ?? {}), [firstSaveRequestHistoryKey]: businessRequestId }, "");
+        const created = await productApi.createProduct(organizationId, businessRequestId, draft.general.displayName.trim());
         id = created.productId; version = created.draftVersionId; revision = created.draftUpdatedAt;
+        setAdoptedIdentity(adoptFirstSaveIdentity(created));
+        // Replace the transient New Product URL now, but do not dispatch a
+        // route transition that would discard local sections if a later write
+        // fails. The parent router is synchronized after a full first Save.
+        replaceProductBuilderLocation(id);
+        initialised.current = id;
         authoritativeDraft.current = { draftVersionId: version, expectedDraftUpdatedAt: revision };
       }
       if (!id || !version || !revision) throw new Error("The Product Draft could not be prepared for saving.");
@@ -358,7 +374,7 @@ export const ProductBuilderReference = ({
         setDraft(state);
         savedSection("options", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
-      if (!productId || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: state.general }); savedSection("general", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (!adoptedIdentity || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: state.general }); savedSection("general", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       if (dirty.has("formula")) {
         if (!state.formula.formulaRevisionId) throw new Error("Select an active Formula revision before saving this Product Draft.");
         const value = await productApi.saveDraftFormula(organizationId, id, request(), {
@@ -387,8 +403,9 @@ export const ProductBuilderReference = ({
       if (dirty.has("recipe")) { const value = await productApi.saveDraftRecipe(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, components: state.recipe }); savedSection("recipe", { draftVersionId: value.productVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       if (dirty.has("routing")) { const value = await productApi.saveDraftRouting(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, routing: state.routing }); savedSection("routing", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       setDirty(new Set());
-      if (!productId) {
+      if (!product?.productId) {
         if (!openCreatedProduct) throw new Error("New Product navigation is unavailable.");
+        pendingCreateRequestId.current = null;
         openCreatedProduct(id);
       }
       else {

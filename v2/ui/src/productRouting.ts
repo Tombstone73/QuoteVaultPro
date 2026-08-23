@@ -45,6 +45,10 @@ export const readProductBuilderLocation = (pathname = window.location.pathname):
 };
 export const productBuilderPath = (id: string) => `/product-builder/${encodeURIComponent(id)}?draft=1`;
 export const pushProductBuilderLocation = (id: string) => window.history.pushState({}, "", productBuilderPath(id));
+/** Adopt a newly-created Product without leaving an obsolete /products/new
+ * history entry behind. The Builder keeps its local Draft state until the
+ * section-by-section first Save has either completed or reported a failure. */
+export const replaceProductBuilderLocation = (id: string) => window.history.replaceState({}, "", productBuilderPath(id));
 export const newProductBuilderPath = () => "/products/new";
 export const pushNewProductBuilderLocation = () => window.history.pushState({}, "", newProductBuilderPath());
 export const readCustomerLocation = (pathname = window.location.pathname): CustomerLocation | null => {

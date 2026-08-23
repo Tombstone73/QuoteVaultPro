@@ -1,10 +1,10 @@
 import { jest } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { CanonicalProductPublishOperations, validateCanonicalProductPublishTarget } from "../services/products/canonicalProductPublishOperations";
+import { CanonicalProductPublishOperations, productBasicsProjection, validateCanonicalProductPublishTarget } from "../services/products/canonicalProductPublishOperations";
 
 describe("CanonicalProductPublishOperations", () => {
-  const target = () => ({ product: { id: "product_1", organizationId: "org_1", name: "Styrene", isActive: false, primaryMaterialId: null, pbv2ActiveTreeVersionId: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, tree: { id: "tree_1", organizationId: "org_1", productId: "product_1", status: "DRAFT", schemaVersion: 2, treeJson: { schemaVersion: 2 }, publishedAt: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, materials: [] });
+  const target = () => ({ product: { id: "product_1", organizationId: "org_1", name: "Styrene", category: "Signs", description: "Styrene", measurementMode: "dimensions_required" as const, workflowIntent: "standard_production" as const, requiresProofApproval: false, requiresProductionJob: true, isActive: false, primaryMaterialId: null, pbv2ActiveTreeVersionId: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, tree: { id: "tree_1", organizationId: "org_1", productId: "product_1", status: "DRAFT", schemaVersion: 2, treeJson: { schemaVersion: 2 }, publishedAt: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, materials: [] });
   const directMatrixTree = (basePrice = 7500) => ({
     schemaVersion: 2,
     status: "DRAFT",
@@ -27,7 +27,7 @@ describe("CanonicalProductPublishOperations", () => {
     const proposal = await service.propose({ organizationId: "org_1", productId: "product_1" });
     expect(proposal).toMatchObject({ treeVersionId: "tree_1", operationReference: "products.publish_configuration.v1" });
     const result = await service.execute({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", treeVersionId: "tree_1", expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt, activateProduct: true, auditContext: { source: "assistant_go", reference: "plan_1" } });
-    expect(calls[0]).toMatchObject({ activateProduct: true, reference: "plan_1" });
+    expect(calls[0]).toMatchObject({ activateProduct: true, reference: "plan_1", basics: { name: "Styrene", measurementMode: "dimensions_required", isActive: true } });
     expect(result.appliedChanges).toEqual([{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, { field: "Lifecycle", before: "inactive", after: "active" }]);
     current = { ...current, tree: { ...current.tree, updatedAt: new Date("2026-08-13T00:02:00.000Z") } };
     await expect(service.execute({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", treeVersionId: "tree_1", expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt })).rejects.toMatchObject({ code: "PBV2_PUBLISH_STALE" });
@@ -113,5 +113,50 @@ describe("CanonicalProductPublishOperations", () => {
     expect(route).toContain("canonicalProductPublishOperations.execute");
     expect(route).toContain("const activateProduct = (req.body as any)?.activateProduct === true;");
     expect(route).toContain("activateProduct, auditContext");
+  });
+
+  it("projects validated Draft Basics only when publishing, with deterministic description fallback", () => {
+    const current = target().product;
+    const draft = {
+      schemaVersion: 2,
+      meta: { general: { displayName: "Quantity Sticker", category: "Stickers", description: null, storefrontVisible: true, measurementMode: "quantity_only", workflowIntent: "fulfillment_only", requiresProofApproval: false, requiresProductionJob: false } },
+    };
+    expect(productBasicsProjection(draft, current as any)).toEqual({ name: "Quantity Sticker", category: "Stickers", description: "Quantity Sticker", measurementMode: "quantity_only", workflowIntent: "fulfillment_only", requiresProofApproval: false, requiresProductionJob: false, isActive: true });
+    expect(productBasicsProjection({ schemaVersion: 2 }, current as any)).toMatchObject({ name: "Styrene", measurementMode: "dimensions_required", isActive: false });
+  });
+
+  it("fails publish validation instead of partially projecting malformed Draft Basics", () => {
+    const invalid = target();
+    invalid.tree.treeJson = { schemaVersion: 2, meta: { general: { displayName: "", storefrontVisible: "yes", measurementMode: "wrong" } } };
+    expect(validateCanonicalProductPublishTarget(invalid as any).errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_PRODUCT_BASICS_PROJECTION_INVALID" }),
+    ]));
+  });
+
+  it("keeps Product-row projection inside the one canonical publisher transaction", async () => {
+    const source = await readFile(path.resolve(process.cwd(), "server/services/products/canonicalProductPublishOperations.ts"), "utf8");
+    expect(source).toContain("return db.transaction(async (tx) => {");
+    expect(source).toContain("measurementMode: basics.measurementMode");
+    expect(source).toContain("workflowIntent: basics.workflowIntent");
+    expect(source).toContain("requiresProofApproval: basics.requiresProofApproval");
+    expect(source).toContain("requiresProductionJob: basics.requiresProductionJob");
+    expect(source).toContain("isActive: basics.isActive");
+  });
+
+  it("allows one competing publish to atomically project Basics and rejects the stale contender", async () => {
+    let current: any = target();
+    current.tree.treeJson = { schemaVersion: 2, meta: { general: { displayName: "Qty product", category: null, description: "Ready", storefrontVisible: true, measurementMode: "quantity_only", workflowIntent: "fulfillment_only", requiresProofApproval: false, requiresProductionJob: false } } };
+    const publish = jest.fn(async (input: any) => {
+      if (current.tree.status !== "DRAFT") return null;
+      current = { ...current, product: { ...current.product, ...input.basics, pbv2ActiveTreeVersionId: current.tree.id }, tree: { ...current.tree, status: "ACTIVE", updatedAt: new Date("2026-08-13T00:01:00.000Z") } };
+      return current;
+    });
+    const service = new CanonicalProductPublishOperations({ get: async () => current, publish } as any, (value) => ({ treeJson: value.tree.treeJson, findings: [], warnings: [], errors: [] }));
+    const proposal = await service.propose({ organizationId: "org_1", productId: "product_1" });
+    const execute = () => service.execute({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", treeVersionId: "tree_1", expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt });
+    const [first, second] = await Promise.allSettled([execute(), execute()]);
+    expect([first.status, second.status].sort()).toEqual(["fulfilled", "rejected"]);
+    expect(current.product).toMatchObject({ name: "Qty product", measurementMode: "quantity_only", workflowIntent: "fulfillment_only", isActive: true });
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 });

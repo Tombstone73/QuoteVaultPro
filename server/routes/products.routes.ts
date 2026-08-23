@@ -1048,57 +1048,30 @@ export function registerProductRoutes(
               };
               console.log('[PBV2_AUTO_ACTIVATE] blocked by publish validation', { draftId: draft.id, errorCount: publishValidation.errors.length });
             } else {
-              // Validation passed, activate the tree
-              const publishedAt = new Date();
-
-              await db.transaction(async (tx) => {
-                // Check for previous active version
-                const [productRecord] = await tx
-                  .select({ pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
-                  .from(products)
-                  .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
-                  .limit(1);
-
-                const previousActiveId = productRecord?.pbv2ActiveTreeVersionId;
-
-                // Deprecate previous active if different
-                if (previousActiveId && previousActiveId !== draft.id) {
-                  await tx
-                    .update(pbv2TreeVersions)
-                    .set({ status: "DEPRECATED", updatedAt: publishedAt, updatedByUserId: userId ?? null })
-                    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, previousActiveId)));
-                }
-
-                // Activate this version
-                const nextTreeJson = {
-                  ...(draft as any).treeJson,
-                  schemaVersion: 2, // Preserve v2 schema
-                  status: "ACTIVE",
-                };
-
-                await tx
-                  .update(pbv2TreeVersions)
-                  .set({
-                    status: "ACTIVE",
-                    publishedAt,
-                    updatedAt: publishedAt,
-                    updatedByUserId: userId ?? null,
-                    treeJson: nextTreeJson,
-                  })
-                  .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)));
-
-                // Update product pointer AND sync optionTreeJson for client-side rendering
-                await tx
-                  .update(products)
-                  .set({ pbv2ActiveTreeVersionId: draft.id, optionTreeJson: nextTreeJson, updatedAt: publishedAt })
-                  .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)));
+              // Auto activation is still a publish operation.  It must use the
+              // same locked transaction and Product-row projection as every
+              // other Draft→ACTIVE transition; a second hand-written pointer
+              // update would reintroduce Product/ProductVersion divergence.
+              const proposal = await canonicalProductPublishOperations.propose({ organizationId, treeVersionId: draft.id });
+              await canonicalProductPublishOperations.execute({
+                organizationId,
+                actorUserId: userId,
+                productId: proposal.productId,
+                treeVersionId: proposal.treeVersionId,
+                expectedProductUpdatedAt: proposal.expectedProductUpdatedAt,
+                expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt,
+                confirmWarnings: true,
+                // Compatibility-only fallback for pre-Basics trees. Modern
+                // Builder Drafts project meta.general.storefrontVisible.
+                activateProduct: true,
+                auditContext: { source: "product_editor", reference: `route:PUT:/api/pbv2/tree-versions/${draft.id}:auto_on_save` },
               });
 
               activationResult = {
                 success: true,
                 activated: true,
                 message: 'Draft saved and activated successfully',
-                findings: publishValidation.warnings.length > 0 ? publishValidation.findings : undefined,
+                findings: proposal.warnings.length > 0 ? proposal.warnings : undefined,
               };
               console.log('[PBV2_AUTO_ACTIVATE] activation succeeded', { draftId: draft.id, productId, pbv2ActiveTreeVersionId: draft.id });
             }
