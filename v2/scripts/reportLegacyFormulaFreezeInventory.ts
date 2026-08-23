@@ -8,13 +8,14 @@
  */
 import { Pool } from "pg";
 import { planLegacyFormulaFreezeInventory, type LegacyFormulaEvidence, type LegacyFormulaFreezeCandidate } from "../src/modules/pricing/legacyFormulaFreezeInventory.js";
+import { assertFormulaFreezeTargetMatchesExpected, expectedFormulaFreezeTargetFromEnvironment, parseFormulaFreezeTargetIdentity } from "../src/modules/pricing/formulaFreezeTargetIdentity.js";
 
 type Row = Readonly<{
   organization_id: string;
   product_id: string;
   product_name: string;
   product_version_id: string;
-  status: "ACTIVE" | "DEPRECATED";
+  status: "ACTIVE" | "DEPRECATED" | "DRAFT";
   tree_json: unknown;
   legacy_formula_id: string | null;
   legacy_formula_expression: string | null;
@@ -52,7 +53,10 @@ const candidateFrom = (row: Row): LegacyFormulaFreezeCandidate => {
     source: "legacy_formula_library",
     formulaId: row.legacy_formula_id,
     expression: row.legacy_formula_expression,
-    declaredInputs: object(row.legacy_formula_config)?.variables,
+    // `config.variables` is legacy value/configuration evidence, not a typed
+    // Formula input declaration. Only an explicit structured declaration is
+    // reported as declaration evidence.
+    declaredInputs: object(row.legacy_formula_config)?.declaredInputs,
     inputValues: formulaVariables,
   });
   if (text(meta?.pricingFormula)) evidence.push({
@@ -68,6 +72,7 @@ const candidateFrom = (row: Row): LegacyFormulaFreezeCandidate => {
   return {
     organizationId: row.organization_id,
     productId: row.product_id,
+    productName: row.product_name,
     productVersionId: row.product_version_id,
     lifecycle: row.status,
     evidence,
@@ -79,6 +84,12 @@ async function main(): Promise<void> {
   const connectionString = process.env.FORMULA_FREEZE_INVENTORY_DATABASE_URL;
   if (!organizationId) throw new Error("Provide --organization-id (or FORMULA_FREEZE_INVENTORY_ORGANIZATION_ID) to keep the report tenant-scoped.");
   if (!connectionString) throw new Error("FORMULA_FREEZE_INVENTORY_DATABASE_URL is required; this tool will not fall back to an application database URL.");
+  const expectedTarget = expectedFormulaFreezeTargetFromEnvironment(process.env);
+  const target = parseFormulaFreezeTargetIdentity(connectionString, expectedTarget);
+  assertFormulaFreezeTargetMatchesExpected(target, expectedTarget);
+  // Deliberately emits no URL, username, password, token, or other credential.
+  // This happens before a Pool exists so mismatch cannot open a connection.
+  process.stdout.write(`${JSON.stringify({ target, connection: "not_opened" })}\n`);
   const pool = new Pool({ connectionString, max: 1 });
   try {
     const client = await pool.connect();
@@ -121,7 +132,7 @@ async function main(): Promise<void> {
           ON legacy_formula.organization_id=product.organization_id
          AND legacy_formula.id=product.pricing_formula_id
         WHERE version.organization_id=$1
-          AND version.status IN ('ACTIVE','DEPRECATED')
+          AND version.status IN ('DRAFT','ACTIVE','DEPRECATED')
         ORDER BY product.name,version.updated_at,version.id
       `, [organizationId])).rows;
       await client.query("ROLLBACK");

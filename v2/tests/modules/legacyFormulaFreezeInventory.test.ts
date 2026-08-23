@@ -4,6 +4,7 @@ import { planLegacyFormulaFreeze, type LegacyFormulaFreezeCandidate } from "../.
 const candidate = (evidence: LegacyFormulaFreezeCandidate["evidence"]): LegacyFormulaFreezeCandidate => ({
   organizationId: "tenant-a",
   productId: "product-a",
+  productName: "Formula test product",
   productVersionId: "version-a",
   lifecycle: "ACTIVE",
   evidence,
@@ -22,6 +23,7 @@ describe("legacy Formula freeze inventory", () => {
       expression: "q * 3",
       candidateFormulaId: "formula-a",
       candidateFormulaRevisionId: "revision-7",
+      productName: "Formula test product",
       compatibilityBindingRequired: true,
       declaredInputEvidence: [{ key: "p", type: "number" }],
       inputValueEvidence: { p: 3 },
@@ -64,6 +66,21 @@ describe("legacy Formula freeze inventory", () => {
       expression: "ceil((((w+.25)*(h+.25))*q)/144)*p",
       compatibilityBindingRequired: true,
     });
+  });
+
+  test("reports observed legacy values without inventing typed input declarations", () => {
+    const result = planLegacyFormulaFreeze(candidate([
+      { source: "legacy_product_formula", expression: "q * p", inputValues: { p: 3, allow_rotation: true } },
+    ]));
+    expect(result).toMatchObject({ inputValueEvidence: { p: 3, allow_rotation: true } });
+    expect(result.declaredInputEvidence).toBeUndefined();
+  });
+
+  test("preserves Draft lifecycle and Product name in the emitted plan", () => {
+    const result = planLegacyFormulaFreeze({ ...candidate([
+      { source: "embedded_product_version", expression: "q * p" },
+    ]), productName: "Open Formula Draft", lifecycle: "DRAFT" });
+    expect(result).toMatchObject({ productName: "Open Formula Draft", lifecycle: "DRAFT" });
   });
 
   test("leaves non-Formula ProductVersions outside the backfill", () => {

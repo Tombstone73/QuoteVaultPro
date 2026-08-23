@@ -69,14 +69,14 @@ const run = async (): Promise<void> => {
   assert.equal(runner.revisions.length, 2);
   assert.deepEqual(runner.revisions[0], first, "revision one is immutable when revision two is appended");
 
-  const freeze = planLegacyFormulaFreeze({ organizationId: "tenant-a", productId: "product-a", productVersionId: "version-a", lifecycle: "ACTIVE", evidence: [
+  const freeze = planLegacyFormulaFreeze({ organizationId: "tenant-a", productId: "product-a", productName: "Formula test product", productVersionId: "version-a", lifecycle: "ACTIVE", evidence: [
     { source: "legacy_product_formula", expression: "q * 1" },
     { source: "legacy_formula_library", formulaId: "legacy-formula", formulaRevisionId: "revision-7", expression: "q * 3", inputValues: { p: 3 } },
   ] });
   assert.equal(freeze.disposition, "bind_existing_revision");
   assert.equal(freeze.currentSource, "legacy_formula_library");
   assert.equal(freeze.compatibilityBindingRequired, true);
-  const ambiguous = planLegacyFormulaFreeze({ organizationId: "tenant-a", productId: "product-a", productVersionId: "version-a", lifecycle: "ACTIVE", evidence: [
+  const ambiguous = planLegacyFormulaFreeze({ organizationId: "tenant-a", productId: "product-a", productName: "Formula test product", productVersionId: "version-a", lifecycle: "ACTIVE", evidence: [
     { source: "legacy_formula_library", formulaId: "legacy-formula", expression: "q" },
     { source: "legacy_formula_library", formulaId: "legacy-formula", expression: "q + 1" },
   ] });

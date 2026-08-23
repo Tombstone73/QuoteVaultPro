@@ -21,6 +21,7 @@ export type LegacyFormulaEvidence = Readonly<{
 export type LegacyFormulaFreezeCandidate = Readonly<{
   organizationId: string;
   productId: string;
+  productName: string;
   productVersionId: string;
   lifecycle: "ACTIVE" | "DEPRECATED" | "DRAFT";
   evidence: readonly LegacyFormulaEvidence[];
@@ -29,6 +30,7 @@ export type LegacyFormulaFreezeCandidate = Readonly<{
 export type LegacyFormulaFreezePlan = Readonly<{
   organizationId: string;
   productId: string;
+  productName: string;
   productVersionId: string;
   lifecycle: LegacyFormulaFreezeCandidate["lifecycle"];
   disposition: "already_frozen" | "bind_existing_revision" | "create_revision_and_bind" | "ambiguous" | "not_formula_backed";
@@ -74,6 +76,7 @@ export const planLegacyFormulaFreeze = (candidate: LegacyFormulaFreezeCandidate)
       return {
         organizationId: candidate.organizationId,
         productId: candidate.productId,
+        productName: candidate.productName,
         productVersionId: candidate.productVersionId,
         lifecycle: candidate.lifecycle,
         disposition: "ambiguous",
@@ -89,6 +92,7 @@ export const planLegacyFormulaFreeze = (candidate: LegacyFormulaFreezeCandidate)
       return {
         organizationId: candidate.organizationId,
         productId: candidate.productId,
+        productName: candidate.productName,
         productVersionId: candidate.productVersionId,
         lifecycle: candidate.lifecycle,
         disposition: "ambiguous",
@@ -101,6 +105,7 @@ export const planLegacyFormulaFreeze = (candidate: LegacyFormulaFreezeCandidate)
     const common = {
       organizationId: candidate.organizationId,
       productId: candidate.productId,
+      productName: candidate.productName,
       productVersionId: candidate.productVersionId,
       lifecycle: candidate.lifecycle,
       currentSource: source,
@@ -129,6 +134,7 @@ export const planLegacyFormulaFreeze = (candidate: LegacyFormulaFreezeCandidate)
   return {
     organizationId: candidate.organizationId,
     productId: candidate.productId,
+    productName: candidate.productName,
     productVersionId: candidate.productVersionId,
     lifecycle: candidate.lifecycle,
     disposition: "not_formula_backed",

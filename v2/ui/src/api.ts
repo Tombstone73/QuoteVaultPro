@@ -479,8 +479,19 @@ export type FormulaDomainListEntry = Readonly<{
   visibility: "product_scoped" | "library";
   status: "active" | "inactive" | "archived";
   currentRevisionId: string;
-  revision: Readonly<{ formulaRevisionId: string; revisionNumber: number; expression: string; declaredInputs: readonly unknown[] }>;
+  revision: FormulaDomainRevision;
   usageCount?: number;
+}>;
+export type FormulaDomainRevision = Readonly<{
+  formulaRevisionId: string;
+  formulaId: string;
+  organizationId: string;
+  revisionNumber: number;
+  expression: string;
+  declaredInputs: readonly FormulaDomainDeclaredInput[];
+  validationEvidence: Readonly<Record<string, unknown>>;
+  createdAt: string;
+  createdByUserId?: string;
 }>;
 export type FormulaDomainDeclaredInput = Readonly<{
   key: string;
@@ -1877,12 +1888,18 @@ export const productApi = {
     ),
 };
 export const formulaApi = {
-  list: (organizationId: string, query = "") =>
-    request<readonly FormulaDomainListEntry[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas${query ? `?q=${encodeURIComponent(query)}` : ""}`),
+  list: (organizationId: string, input: string | Readonly<{ query?: string; includeInactive?: boolean }> = "") => {
+    const options = typeof input === "string" ? { query: input } : input;
+    const params = new URLSearchParams();
+    if (options.query) params.set("q", options.query);
+    if (options.includeInactive) params.set("includeInactive", "true");
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return request<readonly FormulaDomainListEntry[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas${suffix}`);
+  },
   get: (organizationId: string, formulaId: string) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}`),
   revisions: (organizationId: string, formulaId: string) =>
-    request<readonly FormulaDomainListEntry["revision"][]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/revisions`),
+    request<readonly FormulaDomainRevision[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/revisions`),
   usage: (organizationId: string, formulaId: string) =>
     request<readonly Readonly<{ productId: string; productVersionId: string; formulaRevisionId: string; revisionNumber: number; productName: string; versionStatus: string }>[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/usage`),
   create: (organizationId: string, businessRequestId: string, input: Readonly<{ name: string; description?: string; visibility: "product_scoped" | "library"; definition: FormulaDomainDefinition }>) =>
