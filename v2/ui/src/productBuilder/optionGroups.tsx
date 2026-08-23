@@ -4,15 +4,19 @@ import type { ProductDraftOption } from "../api";
 import { builderControlClass, Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
 import { ChoiceEditor, InputTypePicker } from "./optionChoice";
 
-export const createNewProductDraftOption = (): ProductDraftOption => ({
-  optionId: `new:${crypto.randomUUID()}`,
+export const createNewProductDraftOption = (): ProductDraftOption => {
+  const optionId = `new:${crypto.randomUUID()}`;
+  return {
+  optionId,
+  selectionKey: optionId,
   label: "New option",
   inputType: "select",
   required: false,
   defaultValue: null,
   choices: [{ choiceValue: "choice", label: "Choice" }],
   canRemove: true,
-});
+  };
+};
 
 export const appendNewProductDraftOption = (options: readonly ProductDraftOption[]): readonly ProductDraftOption[] => [
   ...options,

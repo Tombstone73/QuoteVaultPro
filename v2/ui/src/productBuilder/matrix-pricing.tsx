@@ -265,7 +265,9 @@ export function MatrixPricing({
                         onChange={(event) =>
                           setSlice((value) => ({
                             ...value,
-                            [dimension.selectionKey]: event.target.value,
+                            [dimension.selectionKey]: dimension.values.find(
+                              (choice) => String(choice.value) === event.target.value,
+                            )?.value ?? event.target.value,
                           }))
                         }
                       >

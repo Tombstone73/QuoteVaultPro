@@ -5,7 +5,8 @@ import type { PricingBaseRateOverride, PricingMatrixRow, PricingOptionRule, Pric
 import { getPbv2FixedDimensions } from "../../../../shared/pbv2/fixedDimensions.js";
 import { extractFormulaVariables, parseFormulaBoolean } from "../../../../shared/pbv2/formulaHelpers.js";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrixBaseRateCents } from "../../../../shared/productOptionPricingMatrix.js";
-import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../../shared/optionTreeV2Runtime.js";
+import { validateOptionTreeV2 } from "../../../../shared/optionTreeV2Runtime.js";
+import { resolveProductOptionConfiguration } from "../../../../shared/productOptionConfigurationResolver.js";
 import type { OptionTreeV2, PricingImpact, PricingV2Tier } from "../../../../shared/optionTreeV2.js";
 import type { ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "./contracts.js";
 import { resolveProductionRequirementSnapshot } from "../shared/productionRequirements.js";
@@ -348,8 +349,9 @@ export const resolveActivePbv2PricingInput = (
   if (!parsed.ok) return validation("The active pricing configuration is invalid.");
   const tree = source.treeJson as OptionTreeV2;
   const explicit = input.selections ?? {};
-  const visibility = resolveRuntimeVisibility(tree, explicit);
+  const visibility = resolveProductOptionConfiguration(tree, explicit);
   if (visibility.hiddenSelectionWarnings.length) return validation("A selection is unknown, hidden, or unavailable for this product configuration.");
+  if (!visibility.isValidForPricing) return validation(visibility.errors[0]?.message ?? "The current Product option selections are invalid.");
   const visible = new Set(visibility.visibleNodeIds);
   for (const node of Object.values(tree.nodes)) {
     if (!visible.has(node.id) || node.kind === "group" || !node.input?.required) continue;

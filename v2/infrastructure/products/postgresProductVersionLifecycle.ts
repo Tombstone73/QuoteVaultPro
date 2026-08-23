@@ -4,12 +4,16 @@ import type { Pool, PoolClient } from "pg";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import { validateOptionTreeV2 } from "../../../shared/optionTreeV2Runtime.js";
 import { optionTreeV2Schema } from "../../../shared/optionTreeV2.js";
+import { readProductOptionRules, resolveProductOptionConfiguration } from "../../../shared/productOptionConfigurationResolver.js";
+import { validateTreeForPublish } from "../../../shared/pbv2/validator/validatePublish.js";
+import { DEFAULT_VALIDATE_OPTS } from "../../../shared/pbv2/validator/types.js";
 import type {
   ProductDraftFormulaPricing,
   ProductDraftGeneral,
   ProductDraftGeneralRead,
   ProductDraftOption,
   ProductDraftOptionChoice,
+  ProductDraftOptionRule,
   ProductDraftOptionsRead,
   ProductDraftOptionPricing,
   ProductDraftOptionPricingImpact,
@@ -344,6 +348,9 @@ const optionsFromTree = (tree: unknown): readonly ProductDraftOption[] => {
               {
                 choiceValue: value.value,
                 label: value.label,
+                ...(Array.isArray(value.visibilityRules)
+                  ? { visibilityRules: structuredClone(value.visibilityRules) as ProductDraftOptionChoice["visibilityRules"] }
+                  : {}),
               } satisfies ProductDraftOptionChoice,
             ]
           : [];
@@ -352,10 +359,14 @@ const optionsFromTree = (tree: unknown): readonly ProductDraftOption[] => {
     return [
       {
         optionId: node.id,
+        selectionKey: optionSelectionKey(node),
         label: typeof node.label === "string" ? node.label : node.id,
         inputType: type as ProductDraftOption["inputType"],
         required: Boolean(input.required),
         defaultValue: optionDefault(input),
+        ...(record(node.visibility) && Object.keys(record(node.visibility)).length
+          ? { visibility: structuredClone(record(node.visibility)) as ProductDraftOption["visibility"] }
+          : {}),
         choices,
         canRemove: true,
       } satisfies ProductDraftOption,
@@ -374,6 +385,7 @@ type UpdateDraftOptionsTransactionInput = Readonly<{
   draftVersionId: string;
   expectedDraftUpdatedAt: string;
   options: readonly ProductDraftOption[];
+  optionRules?: readonly ProductDraftOptionRule[];
   staffActorUserId?: string;
 }>;
 type DraftOptionsAuditInput = Readonly<{
@@ -404,6 +416,7 @@ export class PostgresProductDraftOptionsReader {
           draftUpdatedAt: row.draft_updated_at.toISOString(),
           lifecycle: "draft",
           options: optionsFromTree(row.draft_tree_json),
+          optionRules: readProductOptionRules(row.draft_tree_json),
         }
       : null;
   }
@@ -608,6 +621,20 @@ const optionSelectionKey = (node: Record<string, unknown>) => {
         ? node.id
         : "";
 };
+const remapOptionRuleReferences = (
+  rules: readonly ProductDraftOptionRule[],
+  selectionKeys: ReadonlyMap<string, string>,
+): readonly ProductDraftOptionRule[] => rules.map((raw) => {
+  const rule = structuredClone(raw) as ProductDraftOptionRule;
+  const when = rule.when as { all?: Array<{ optionGroup: string }>; any?: Array<{ optionGroup: string }> };
+  for (const condition of [...(when.all ?? []), ...(when.any ?? [])]) {
+    condition.optionGroup = selectionKeys.get(condition.optionGroup) ?? condition.optionGroup;
+  }
+  for (const action of [...(rule.then ?? []), ...(rule.else ?? [])]) {
+    action.targetOptionGroup = selectionKeys.get(action.targetOptionGroup) ?? action.targetOptionGroup;
+  }
+  return rule;
+});
 const removalError = (
   next: Record<string, unknown>,
   needles: readonly string[],
@@ -1275,6 +1302,15 @@ export class PostgresProductDraftPricingPreview {
         ? { nestingEstimate: resolved.value.nestingEstimate }
         : {}),
     });
+    const configuration = resolveProductOptionConfiguration(
+      row.draft_tree_json as any,
+      input.selections ?? {},
+    );
+    const nodes = record(record(row.draft_tree_json).nodes);
+    const visibleOptionSelectionKeys = configuration.visibleNodeIds.flatMap((nodeId) => {
+      const node = record(nodes[nodeId]);
+      return node.kind === "group" ? [] : [optionSelectionKey(node)];
+    }).filter(Boolean);
     const area = dimensions ? (input.width! * input.height!) / 144 : undefined;
     return {
       quantity: input.quantity,
@@ -1307,6 +1343,15 @@ export class PostgresProductDraftPricingPreview {
       })),
       explanation: explainPricingResult(value),
       warnings: value.warnings.map((warning) => warning.message),
+      configuration: {
+        effectiveSelections: configuration.effectiveSelections,
+        visibleOptionSelectionKeys,
+        hiddenOptionSelectionKeys: configuration.hiddenOptionGroups,
+        disabledOptionSelectionKeys: configuration.disabledOptionGroups,
+        requiredOptionSelectionKeys: configuration.requiredOptionGroups,
+        clearedOptionSelectionKeys: configuration.clearedOptionGroups,
+        defaultedOptionSelectionKeys: configuration.defaultedOptionGroups,
+      },
     };
   }
 }
@@ -2711,6 +2756,11 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     const generatedIds = new Map<string, string>();
     for (const option of input.options) {
       if (currentById.has(option.optionId)) {
+        if (currentById.get(option.optionId)!.selectionKey !== option.selectionKey)
+          throw new V2ApplicationError(
+            "CONFLICT",
+            "An existing option's stable selection identity cannot be changed.",
+          );
         nextIds.add(option.optionId);
         continue;
       }
@@ -2833,7 +2883,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         selectionKey:
           typeof priorInput.selectionKey === "string"
             ? priorInput.selectionKey
-            : id,
+            : option.selectionKey,
       };
       if (defaultValue === null) delete inputValue.defaultValue;
       else inputValue.defaultValue = defaultValue;
@@ -2854,6 +2904,26 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     const retainedRoots = roots.filter((id) => !currentById.has(id));
     tree.nodes = nodes;
     tree.rootNodeIds = [...retainedRoots, ...optionIds];
+    if (input.optionRules !== undefined) {
+      if (!Array.isArray(input.optionRules))
+        throw new V2ApplicationError("VALIDATION_ERROR", "Product option rules are invalid.");
+      const selectionKeys = new Map<string, string>(input.options.map((option) => [option.optionId, option.selectionKey]));
+      for (const [temporaryId, generatedId] of generatedIds) {
+        selectionKeys.set(generatedId, selectionKeys.get(temporaryId)!);
+      }
+      tree.optionRules = remapOptionRuleReferences(input.optionRules, selectionKeys);
+      delete tree.rules;
+      const meta = record(tree.meta);
+      if (Object.prototype.hasOwnProperty.call(meta, "optionRules")) {
+        delete meta.optionRules;
+        tree.meta = meta;
+      }
+      const ruleErrors = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS).errors.filter(
+        (finding) => finding.path.startsWith("tree.optionRules"),
+      );
+      if (ruleErrors.length)
+        throw new V2ApplicationError("VALIDATION_ERROR", ruleErrors[0]!.message);
+    }
     const valid = validateOptionTreeV2(tree as any);
     const complete = optionTreeV2Schema.safeParse(tree);
     if (!valid.ok || !complete.success)
@@ -2884,6 +2954,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       draftUpdatedAt: updated.rows[0].updated_at.toISOString(),
       lifecycle: "draft",
       options: optionsFromTree(tree),
+      optionRules: readProductOptionRules(tree),
     };
   }
   async auditDraftOptions(input: DraftOptionsAuditInput) {

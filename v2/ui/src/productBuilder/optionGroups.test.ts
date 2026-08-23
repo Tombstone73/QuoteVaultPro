@@ -3,6 +3,7 @@ import { appendNewProductDraftOption } from "./optionGroups";
 
 const persisted = {
   optionId: "opt_persisted_finish",
+  selectionKey: "opt_persisted_finish",
   label: "Finish",
   inputType: "select" as const,
   required: true,

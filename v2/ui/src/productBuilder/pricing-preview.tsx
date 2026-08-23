@@ -1,20 +1,78 @@
 import React from "react";
 import { AlertTriangle, Calculator, CheckCircle2, Info, XCircle } from "lucide-react";
 import type { ProductDraftOption, ProductDraftPricingPreview, ProductRecipeComponent, ProductProductionUnitSpecification } from "../api";
+import type { ProductOptionRule } from "../../../../shared/productOptionRules";
+import { resolveProductOptionConfiguration } from "../../../../shared/productOptionConfigurationResolver";
 import { Cell, ReferenceButton } from "./referencePrimitives";
 
 export type PricingPreviewInputs = Readonly<{ quantity: string; width: string; height: string; selections: Record<string, unknown> }>;
 export type PreviewFinding = Readonly<{ severity: "error" | "warning" | "info"; code: string; message: string; section: string }>;
 export const previewSelectionKey = (optionId: string, selectionKeys: Readonly<Record<string, string>>): string => selectionKeys[optionId] ?? optionId;
+export const visiblePreviewOptions = (
+  options: readonly ProductDraftOption[],
+  selectionKeys: Readonly<Record<string, string>>,
+  configuration: ProductDraftPricingPreview["configuration"] | undefined,
+) => options.filter((option) => {
+  if (!["select", "boolean", "number", "text"].includes(option.inputType)) return false;
+  return !configuration || configuration.visibleOptionSelectionKeys.includes(previewSelectionKey(option.optionId, selectionKeys));
+});
+/**
+ * Immediate Builder feedback uses the exact shared ProductVersion resolver.
+ * The server returns the same projection with the price preview; this local
+ * call only determines which authoring controls are currently applicable.
+ */
+export const resolvePreviewConfiguration = (
+  options: readonly ProductDraftOption[],
+  rules: readonly ProductOptionRule[],
+  selections: Readonly<Record<string, unknown>>,
+): ProductDraftPricingPreview["configuration"] => {
+  const tree = {
+    schemaVersion: 2,
+    rootNodeIds: options.map((option) => option.optionId),
+    nodes: Object.fromEntries(options.map((option) => [option.optionId, {
+      id: option.optionId,
+      kind: "question",
+      label: option.label,
+      ...(option.visibility ? { visibility: option.visibility } : {}),
+      input: {
+        type: option.inputType,
+        selectionKey: option.selectionKey,
+        required: option.required,
+        ...(option.defaultValue === null ? {} : { defaultValue: option.defaultValue }),
+      },
+      choices: option.choices.map((choice) => ({
+        value: choice.choiceValue,
+        label: choice.label,
+        ...(choice.visibilityRules?.length ? { visibilityRules: choice.visibilityRules } : {}),
+      })),
+    }])),
+    optionRules: rules,
+  } as any;
+  const value = resolveProductOptionConfiguration(tree, selections);
+  return {
+    effectiveSelections: value.effectiveSelections,
+    visibleOptionSelectionKeys: options
+      .filter((option) => value.visibleNodeIds.includes(option.optionId))
+      .map((option) => option.selectionKey),
+    hiddenOptionSelectionKeys: options
+      .filter((option) => !value.visibleNodeIds.includes(option.optionId))
+      .map((option) => option.selectionKey),
+    disabledOptionSelectionKeys: value.disabledOptionGroups,
+    requiredOptionSelectionKeys: value.requiredOptionGroups,
+    clearedOptionSelectionKeys: value.clearedOptionGroups,
+    defaultedOptionSelectionKeys: value.defaultedOptionGroups,
+  };
+};
 
 /**
  * Presentation port of reference/lovable-ui/src/components/app/product-editor/pricing-preview.tsx.
  * It renders canonical V2 preview results only; it never runs a client-side calculator.
  */
-export function PricingPreviewRail({ productId, measurementMode, options, selectionKeys, recipe, production, inputs, onInputsChange, result, loading, error, onPreview, findings, onJump }: Readonly<{
+export function PricingPreviewRail({ productId, measurementMode, options, rules, selectionKeys, recipe, production, inputs, onInputsChange, result, loading, error, onPreview, findings, onJump }: Readonly<{
   productId?: string;
   measurementMode: "dimensions_required" | "quantity_only";
   options: readonly ProductDraftOption[];
+  rules: readonly ProductOptionRule[];
   selectionKeys: Readonly<Record<string, string>>;
   recipe: readonly ProductRecipeComponent[];
   production: ProductProductionUnitSpecification | null;
@@ -27,7 +85,9 @@ export function PricingPreviewRail({ productId, measurementMode, options, select
   findings: readonly PreviewFinding[];
   onJump?: (section: string) => void;
 }>) {
-  const visible = options.filter((option) => option.inputType === "select" || option.inputType === "boolean" || option.inputType === "number" || option.inputType === "text");
+  const immediateConfiguration = resolvePreviewConfiguration(options, rules, inputs.selections);
+  const configuration = result?.configuration ?? immediateConfiguration;
+  const visible = visiblePreviewOptions(options, selectionKeys, configuration);
 
   return <div className="space-y-3">
     <Card icon={<Calculator className="size-3.5 text-primary" />} title="Configuration preview" note="Server-calculated">
@@ -38,17 +98,17 @@ export function PricingPreviewRail({ productId, measurementMode, options, select
       </div> : <div className="grid grid-cols-3 gap-2"><Cell label="Qty"><input className="num h-8 text-[0.8125rem]" type="number" min="1" value={inputs.quantity} onChange={(event) => onInputsChange({ ...inputs, quantity: event.target.value })} /></Cell></div>}
 
       <div className="mt-2.5 space-y-2">
-        {visible.map((option) => { const selectionKey = previewSelectionKey(option.optionId, selectionKeys); return <Cell key={option.optionId} label={option.label}>
-          {option.choices.length ? <select value={String(inputs.selections[selectionKey] ?? option.defaultValue ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })}>
+        {visible.map((option) => { const selectionKey = previewSelectionKey(option.optionId, selectionKeys), disabled = Boolean(configuration?.disabledOptionSelectionKeys.includes(selectionKey)), required = Boolean(configuration?.requiredOptionSelectionKeys.includes(selectionKey)); return <Cell key={option.optionId} label={option.label} hint={required ? "Required for this configuration" : undefined}>
+          {option.choices.length ? <select disabled={disabled} value={String(inputs.selections[selectionKey] ?? option.defaultValue ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })}>
             <option value="">Select</option>{option.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}
-          </select> : <input className="h-8 text-[0.8125rem]" placeholder="Free text at quote time" value={String(inputs.selections[selectionKey] ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })} />}
+          </select> : <input disabled={disabled} className="h-8 text-[0.8125rem]" placeholder="Free text at quote time" value={String(inputs.selections[selectionKey] ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })} />}
         </Cell>;})}
       </div>
 
       <ReferenceButton variant="outline" size="sm" className="mt-2.5" disabled={!productId || loading} aria-busy={loading || undefined} onClick={onPreview}>{loading ? "Resolving…" : "Preview price"}</ReferenceButton>
       {loading && <p className="mt-2.5 text-[0.6875rem] text-muted-foreground" role="status">Resolving the canonical server pricing preview…</p>}
       {!loading && error && <p className="mt-2.5 rounded-md border border-late/40 bg-late/10 px-2.5 py-2 text-[0.75rem] text-late" role="alert">{error}</p>}
-      {!loading && !error && (result ? <PreviewResult result={result} options={options} /> : <p className="mt-2.5 text-[0.6875rem] text-muted-foreground">Preview calls the canonical server pricing service; no client calculation is used.</p>)}
+      {!loading && !error && (result ? <><PreviewResult result={result} options={options} />{(configuration?.clearedOptionSelectionKeys.length || configuration?.defaultedOptionSelectionKeys.length) ? <p className="mt-2 text-[0.6875rem] text-muted-foreground">Configuration rules applied: {configuration.clearedOptionSelectionKeys.length ? `${configuration.clearedOptionSelectionKeys.length} cleared` : ""}{configuration.clearedOptionSelectionKeys.length && configuration.defaultedOptionSelectionKeys.length ? ", " : ""}{configuration.defaultedOptionSelectionKeys.length ? `${configuration.defaultedOptionSelectionKeys.length} defaulted` : ""}.</p> : null}</> : <p className="mt-2.5 text-[0.6875rem] text-muted-foreground">Preview calls the canonical server pricing service; no client calculation is used.</p>)}
     </Card>
 
     <Card title="Material resolution"><dl className="space-y-1 text-[0.75rem]">{recipe.length ? recipe.map((component, index) => <Row key={`${component.componentId ?? component.materialId}:${index}`} label={component.materialName ?? component.materialId} value={`${component.quantity} ${component.unit}${component.condition ? " · conditional" : ""}`} muted={Boolean(component.condition)} />) : <Row label="Recipe" value="No lines" muted />}</dl>{onJump && <RailJump target="materials" label="Edit materials" onJump={onJump} />}</Card>

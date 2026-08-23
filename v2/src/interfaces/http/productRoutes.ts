@@ -960,7 +960,8 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body.expectedDraftUpdatedAt === "string"
             ? body.expectedDraftUpdatedAt
             : "",
-        options = body.options as readonly ProductDraftOption[];
+        options = body.options as readonly ProductDraftOption[],
+        optionRules = body.optionRules;
       if (
         !businessRequestId ||
         !draftVersionId ||
@@ -990,6 +991,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           draftVersionId,
           expectedDraftUpdatedAt,
           options,
+          ...(optionRules === undefined ? {} : { optionRules: optionRules as any }),
         },
       );
       return result.ok
@@ -1605,6 +1607,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body?.businessRequestId !== "string" ||
           typeof body?.draftVersionId !== "string" ||
           typeof body?.expectedDraftUpdatedAt !== "string" ||
+          typeof body?.active !== "boolean" ||
           typeof body?.matrixId !== "string" ||
           (body?.pricingUnit !== "per_piece" &&
             body?.pricingUnit !== "per_square_foot") ||

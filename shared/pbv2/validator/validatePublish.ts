@@ -1090,6 +1090,100 @@ function validateProductOptionRules(
   }
 }
 
+/**
+ * Full option rules can mutate selections and visibility.  Their references
+ * therefore form a Product-configuration dependency graph separate from the
+ * native node-visibility graph below.  Reject only direct, proven feedback
+ * loops and identical-condition opposing actions; independent conditions keep
+ * their established ordered evaluation semantics.
+ */
+function validateProductOptionRuleDependencySafety(
+  tree: Record<string, unknown>,
+  findings: Finding[],
+): void {
+  const edges = new Map<string, Set<string>>();
+  const actionByConditionTarget = new Map<string, { action: string; ruleId: string; path: string }>();
+  const feedbackActions = new Set(["show", "hide", "disable", "enable", "clear", "set_default"]);
+  const opposite = (left: string, right: string) =>
+    (left === "show" && right === "hide") ||
+    (left === "hide" && right === "show") ||
+    (left === "enable" && right === "disable") ||
+    (left === "disable" && right === "enable");
+
+  for (const collection of getRuleCollections(tree)) {
+    if (!Array.isArray(collection.value)) continue;
+    collection.value.forEach((rawRule, ruleIndex) => {
+      const rule = asRecord(rawRule);
+      if (!rule || rule.enabled === false) return;
+      const ruleId = isNonEmptyString((rule as any).id) ? String((rule as any).id) : `rule_${ruleIndex + 1}`;
+      const when = asRecord((rule as any).when);
+      const conditions = Array.isArray((when as any)?.all)
+        ? (when as any).all
+        : Array.isArray((when as any)?.any)
+          ? (when as any).any
+          : [];
+      const sources = (conditions as unknown[])
+        .map((entry: unknown) => asRecord(entry))
+        .map((condition: Record<string, unknown> | null) => condition && isNonEmptyString((condition as any).optionGroup) ? String((condition as any).optionGroup) : null)
+        .filter((value: string | null): value is string => Boolean(value));
+      const conditionKey = stableStringify(when);
+      for (const branch of ["then", "else"] as const) {
+        const actions = Array.isArray((rule as any)[branch]) ? (rule as any)[branch] : [];
+        actions.forEach((rawAction: unknown, actionIndex: number) => {
+          const action = asRecord(rawAction);
+          const actionType = typeof (action as any)?.action === "string" ? String((action as any).action) : "";
+          const target = isNonEmptyString((action as any)?.targetOptionGroup) ? String((action as any).targetOptionGroup) : "";
+          if (!target || !feedbackActions.has(actionType)) return;
+          const path = `${collection.path}[${ruleIndex}].${branch}[${actionIndex}]`;
+          for (const source of sources) {
+            const next = edges.get(source) ?? new Set<string>();
+            next.add(target);
+            edges.set(source, next);
+          }
+          const key = `${conditionKey}:${branch}:${target}`;
+          const prior = actionByConditionTarget.get(key);
+          if (prior && opposite(prior.action, actionType)) {
+            findings.push(errorFinding({
+              code: "PBV2_E_OPTION_RULE_ACTION_CONFLICT",
+              message: `Rules '${prior.ruleId}' and '${ruleId}' apply opposing ${prior.action}/${actionType} actions to '${target}' for the same condition.`,
+              path,
+              entityId: ruleId,
+              context: { targetOptionGroup: target, ruleIds: [prior.ruleId, ruleId] },
+            }));
+          }
+          actionByConditionTarget.set(key, { action: actionType, ruleId, path });
+        });
+      }
+    });
+  }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const stack: string[] = [];
+  const visit = (node: string): string[] | null => {
+    if (visiting.has(node)) return [...stack.slice(stack.indexOf(node)), node];
+    if (visited.has(node)) return null;
+    visiting.add(node); stack.push(node);
+    for (const target of edges.get(node) ?? []) {
+      const cycle = visit(target);
+      if (cycle) return cycle;
+    }
+    stack.pop(); visiting.delete(node); visited.add(node);
+    return null;
+  };
+  for (const node of edges.keys()) {
+    const cycle = visit(node);
+    if (!cycle) continue;
+    findings.push(errorFinding({
+      code: "PBV2_E_OPTION_RULE_DEPENDENCY_CYCLE",
+      message: "Option rules contain a visibility/default dependency cycle.",
+      path: "tree.optionRules",
+      context: { cycle },
+    }));
+    break;
+  }
+}
+
 function getMatrixRowMatch(row: Record<string, unknown>): { key: "match" | "when" | "combination"; value: unknown } | null {
   if (Object.prototype.hasOwnProperty.call(row, "match")) return { key: "match", value: (row as any).match };
   if (Object.prototype.hasOwnProperty.call(row, "when")) return { key: "when", value: (row as any).when };
@@ -1630,6 +1724,7 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
 
   const optionContext = getInputOptionContext(nodes);
   validateProductOptionRules(t, findings, optionContext);
+  validateProductOptionRuleDependencySafety(t, findings);
   validatePricingMatrices(t, findings, optionContext);
 
   const visibilityDependencyEdges: Array<[string, string]> = [];

@@ -22,13 +22,15 @@ import { RecipeEditor } from "./productBuilder/recipe";
 import { ProductionUnits, RoutingSection } from "./productBuilder/production-routing";
 import { PricingEngine, OptionImpactsEditor } from "./productBuilder/pricing-engine";
 import { MatrixPricing } from "./productBuilder/matrix-pricing";
-import { PricingPreviewRail } from "./productBuilder/pricing-preview";
+import { PricingPreviewRail, resolvePreviewConfiguration } from "./productBuilder/pricing-preview";
 import { BasicsSection } from "./productBuilder/basics";
 import { RuleCards, projectCanonicalConditions } from "./productBuilder/ruleCards";
+import { OptionRulesSection } from "./productBuilder/option-rules";
 import { ReviewSummary } from "./productBuilder/review";
 import type { ProductBuilderSection } from "./productBuilder/lovableRoot";
 import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
 import { pushWorkspaceLocation } from "./productRouting";
+import type { ProductOptionRule } from "../../../shared/productOptionRules";
 
 /*
  * This file is a direct production port of reference/lovable-ui's
@@ -61,6 +63,7 @@ export const publishGateForDraft = (input: Readonly<{
 export type ProductBuilderDraftState = Readonly<{
   general: ProductDraftGeneral;
   options: readonly ProductDraftOption[];
+  optionRules: readonly ProductOptionRule[];
   pricing: ProductDraftPricing["base"] & Readonly<{ flatFeeCents: number | null; tierBasis: ProductDraftPricing["tierBasis"]; tiers: ProductDraftPricing["tiers"]; tierSets: ProductDraftPricing["tierSets"] }>;
   /** Formula expressions are Formula-domain owned. A Product Draft stages
    * only an intentionally selected immutable revision and declared input
@@ -123,7 +126,15 @@ export const remapProductBuilderDraftOptionReferences = (
         },
       } : {}),
     },
-    options: draft.options.map((option) => ({ ...option, optionId: remapKey(option.optionId, mapping) })),
+    options: draft.options.map((option) => ({ ...option, optionId: remapKey(option.optionId, mapping), selectionKey: remapKey(option.selectionKey, mapping) })),
+    optionRules: (draft.optionRules ?? []).map((rule) => ({
+      ...rule,
+      when: Array.isArray(rule.when.all)
+        ? { all: rule.when.all.map((condition) => ({ ...condition, optionGroup: remapKey(condition.optionGroup, mapping) })) }
+        : { any: (rule.when.any ?? []).map((condition) => ({ ...condition, optionGroup: remapKey(condition.optionGroup, mapping) })) },
+      then: rule.then.map((action) => ({ ...action, targetOptionGroup: remapKey(action.targetOptionGroup, mapping) })),
+      ...(rule.else ? { else: rule.else.map((action) => ({ ...action, targetOptionGroup: remapKey(action.targetOptionGroup, mapping) })) } : {}),
+    })),
     formula: {
       ...draft.formula,
       ...(draft.formula.rotationControl ? {
@@ -161,6 +172,7 @@ const blankGeneral = (name = ""): ProductDraftGeneral => ({
 const blankState = (name = ""): DraftState => ({
   general: blankGeneral(name),
   options: [],
+  optionRules: [],
   pricing: { perPieceCents: null, perSqftCents: null, minimumChargeCents: null, flatFeeCents: null, tierBasis: null, tiers: [], tierSets: { quantity: [], squareFoot: [], computedSheetUsage: [] } },
   formula: { source: "formula_revision", expression: "", inputValues: {}, allowRotation: false },
   matrix: null,
@@ -224,7 +236,7 @@ export const ProductBuilderReference = ({
     if (!productId) { if (initialised.current !== "new") { setDraft(blankState()); initialised.current = "new"; } return; }
     if (!sourceReady || initialised.current === productId) return;
     setDraft({
-      general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options),
+      general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options), optionRules: clone(optionsRead.data!.optionRules ?? []),
       pricing: { ...clone(pricingRead.data!.base), flatFeeCents: pricingRead.data!.flatFeeCents, tierBasis: pricingRead.data!.tierBasis, tiers: clone(pricingRead.data!.tiers), tierSets: clone(pricingRead.data!.tierSets) },
       formula: formulaRead.data ? {
         source: "formula_revision",
@@ -274,9 +286,9 @@ export const ProductBuilderReference = ({
       const savedSection = (section: DirtySection, value: PublishDraftRevision) => { version = value.draftVersionId; revision = value.expectedDraftUpdatedAt; authoritativeDraft.current = value; saved.push(section); setDirty((current) => { const next = new Set(current); next.delete(section); return next; }); };
       if (dirty.has("options")) {
         const submitted = state.options;
-        const value = await productApi.saveDraftOptions(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, options: submitted });
+        const value = await productApi.saveDraftOptions(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, options: submitted, optionRules: state.optionRules });
         const mapping = optionIdMappingFromSaved(submitted, value.options);
-        state = remapProductBuilderDraftOptionReferences({ ...state, options: clone(value.options) }, mapping);
+        state = remapProductBuilderDraftOptionReferences({ ...state, options: clone(value.options), optionRules: clone(value.optionRules ?? state.optionRules) }, mapping);
         setDraft(state);
         savedSection("options", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
@@ -296,7 +308,12 @@ export const ProductBuilderReference = ({
         savedSection("formula", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
       if (dirty.has("pricing")) { const value = await productApi.saveDraftPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, base: { perPieceCents: state.pricing.perPieceCents, perSqftCents: state.pricing.perSqftCents, minimumChargeCents: state.pricing.minimumChargeCents }, flatFeeCents: state.pricing.flatFeeCents, tierBasis: state.pricing.tierBasis, tiers: state.pricing.tiers, tierSets: state.pricing.tierSets }); savedSection("pricing", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
-      if (dirty.has("matrix") && state.matrix) { const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, active: state.matrix.active, matrixId: state.matrix.matrixId, pricingUnit: state.matrix.pricingUnit, dimensions: state.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: state.matrix.rows }); savedSection("matrix", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("matrix") && state.matrix) {
+        const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, active: state.matrix.active, matrixId: state.matrix.matrixId, pricingUnit: state.matrix.pricingUnit, dimensions: state.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: state.matrix.rows });
+        state = { ...state, matrix: clone(value) };
+        setDraft(state);
+        savedSection("matrix", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
+      }
       if (dirty.has("impacts")) {
         for (const option of state.impacts) { const node = await productApi.saveDraftOptionPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, optionId: option.optionId, impacts: option.nodeImpacts }); revision = node.draftUpdatedAt; for (const choice of option.choices) { const response = await productApi.saveDraftOptionPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, optionId: option.optionId, choiceValue: choice.choiceValue, impacts: choice.impacts, override: choice.override }); revision = response.draftUpdatedAt; } }
         savedSection("impacts", { draftVersionId: version, expectedDraftUpdatedAt: revision });
@@ -338,7 +355,7 @@ export const ProductBuilderReference = ({
     publish(authoritativeDraft.current);
   }, [publish, publishGate]);
   const routeTemplates = templates.data?.templates ?? [];
-  const optionSelectionKeys = useMemo<Record<string, string>>(() => Object.fromEntries(draft.impacts.map((option) => [option.optionId, option.selectionKey])), [draft.impacts]);
+  const optionSelectionKeys = useMemo<Record<string, string>>(() => Object.fromEntries(draft.options.map((option) => [option.optionId, option.selectionKey])), [draft.options]);
   /** Preserve the server-owned pricing mode/editability metadata while making
    * every editable value come from the staged Draft.  This is not a pricing
    * calculation: the server remains the only preview/save authority. */
@@ -437,9 +454,13 @@ export const ProductBuilderReference = ({
       const value = await productApi.previewDraftPricing(organizationId, productId, {
         quantity: Number(previewInputs.quantity),
         ...(draft.general.measurementMode === "dimensions_required" ? { width: Number(previewInputs.width), height: Number(previewInputs.height) } : {}),
-        selections: previewInputs.selections,
+        selections: resolvePreviewConfiguration(draft.options, draft.optionRules, previewInputs.selections).effectiveSelections,
       });
       setPreview(value);
+      setPreviewInputs((current) => ({
+        ...current,
+        selections: { ...value.configuration.effectiveSelections },
+      }));
     } catch (error) {
       setPreview(null);
       const detail = error as { message?: string };
@@ -447,7 +468,7 @@ export const ProductBuilderReference = ({
     } finally {
       setPreviewLoading(false);
     }
-  }, [draft.general.measurementMode, organizationId, previewInputs, previewLoading, productId]);
+  }, [draft.general.measurementMode, draft.optionRules, draft.options, organizationId, previewInputs, previewLoading, productId]);
   if (productId && !sourceReady) return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
   return <LovableProductBuilderRoot
     title={draft.general.displayName || "Untitled product"}
@@ -455,10 +476,10 @@ export const ProductBuilderReference = ({
     subtitle={lifecycleSubtitle}
     onSave={() => void runSave()} saving={saving} onPublish={requestPublish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} publishDisabled={!publishGate.allowed} publishBlockedReason={publishGate.reason} findings={{ errors: issueCount, warnings: 0 }}
     sectionJumpRef={sectionJumpRef}
-  rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} selectionKeys={optionSelectionKeys} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={setPreviewInputs} result={preview} loading={previewLoading} error={previewError} onPreview={() => void runPreview()} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={reviewFindings.map((finding, index) => ({ severity: finding.severity, code: `PRODUCT_DRAFT_${index}`, message: finding.message, section: finding.message.startsWith("Product name") ? "basics" : "pricing" }))} />}
+  rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} rules={draft.optionRules} selectionKeys={optionSelectionKeys} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={(next) => { setPreviewInputs(next); setPreview(null); setPreviewError(null); }} result={preview} loading={previewLoading} error={previewError} onPreview={() => void runPreview()} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={reviewFindings.map((finding, index) => ({ severity: finding.severity, code: `PRODUCT_DRAFT_${index}`, message: finding.message, section: finding.message.startsWith("Product name") ? "basics" : "pricing" }))} />}
   >{{
     basics: <BasicsSection general={draft.general} productTypeLabel={product?.productType?.displayName} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
-    options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><Disclosure label={`Option visibility conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
+    options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><OptionRulesSection options={draft.options} rules={draft.optionRules} disabled={!canEdit || saving} onChange={(optionRules) => patch("options", (value) => ({ ...value, optionRules }))} /><Disclosure label={`Recipe & production conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
     pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} formulaLibrary={formulaLibrary.data ?? []} formulaRevisions={formulaRevisions.data ?? []} options={draft.options} serviceFee={draft.general.workflowIntent === "service_fee"} disabled={!canEdit || saving} onManageFormulaLibrary={() => { pushWorkspaceLocation("formulas"); window.dispatchEvent(new PopStateEvent("popstate")); }} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, flatFeeCents: pricing.flatFeeCents, tierBasis: pricing.tierBasis, tiers: pricing.tiers, tierSets: pricing.tierSets } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{stagedMatrix && <MatrixPricing matrix={stagedMatrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
     materials: <div className="space-y-4"><Sub title="Recipe"><RecipeEditor components={draft.recipe} materials={materials.data?.items ?? []} options={draft.options} primaryMaterialName={product?.primaryMaterialName} disabled={!canEdit || saving} onChange={(recipe) => patch("recipe", (value) => ({ ...value, recipe }))} /></Sub></div>,
     production: <ProductionUnits specification={draft.general.productionUnitSpecification} options={draft.options} selectionKeys={optionSelectionKeys} disabled={!canEdit || saving} onChange={(productionUnitSpecification) => patch("general", (value) => ({ ...value, general: { ...value.general, productionUnitSpecification } }))} />,

@@ -19,6 +19,8 @@ import {
 import type { OperatorPricingExplanation } from "../pricing/operatorPricingExplanation.js";
 import type { ProductFormulaInput } from "./productFormulaInputs.js";
 import type { FormulaDeclaredInput, FormulaInputValue } from "../pricing/formulaDomain.js";
+import type { ProductOptionRule } from "../../../../shared/productOptionRules.js";
+import type { VisibilityConfig, VisibilityRule } from "../../../../shared/optionTreeV2.js";
 
 export type ProductVersionStatus =
   "active" | "draft" | "deprecated" | "archived";
@@ -89,23 +91,30 @@ export type ProductDraftOptionDefault =
 export type ProductDraftOptionChoice = Readonly<{
   choiceValue: string;
   label: string;
+  visibilityRules?: readonly VisibilityRule[];
 }>;
 export type ProductDraftOption = Readonly<{
   optionId: string;
+  /** Stable PBV2 selection identity used by conditional rules and pricing. */
+  selectionKey: string;
   label: string;
   inputType: ProductDraftOptionInputType;
   required: boolean;
   defaultValue: ProductDraftOptionDefault;
+  visibility?: VisibilityConfig;
   choices: readonly ProductDraftOptionChoice[];
   canRemove: boolean;
   removalReason?: string;
 }>;
+/** ProductVersion-owned rules; canonical V2 writes use tree.optionRules. */
+export type ProductDraftOptionRule = ProductOptionRule;
 export type ProductDraftOptionsRead = Readonly<{
   productId: string;
   draftVersionId: string;
   draftUpdatedAt: string;
   lifecycle: "draft";
   options: readonly ProductDraftOption[];
+  optionRules: readonly ProductDraftOptionRule[];
 }>;
 export type UpdateProductDraftOptionsInput = Readonly<{
   productId: string;
@@ -113,6 +122,8 @@ export type UpdateProductDraftOptionsInput = Readonly<{
   expectedDraftUpdatedAt: string;
   businessRequestId: string;
   options: readonly ProductDraftOption[];
+  /** Omit during an options-only save to preserve existing rules. */
+  optionRules?: readonly ProductDraftOptionRule[];
 }>;
 export type ProductDraftPricingMode =
   | "simple_base"
@@ -180,6 +191,17 @@ export type ProductDraftPricingPreview = Readonly<{
   }>[];
   explanation: OperatorPricingExplanation;
   warnings: readonly string[];
+  /** Server-resolved ProductVersion configuration state. UI consumers must
+   * render this projection rather than recreating rule behavior locally. */
+  configuration: Readonly<{
+    effectiveSelections: Readonly<Record<string, unknown>>;
+    visibleOptionSelectionKeys: readonly string[];
+    hiddenOptionSelectionKeys: readonly string[];
+    disabledOptionSelectionKeys: readonly string[];
+    requiredOptionSelectionKeys: readonly string[];
+    clearedOptionSelectionKeys: readonly string[];
+    defaultedOptionSelectionKeys: readonly string[];
+  }>;
 }>;
 export type ProductDraftPricingMatrixDimension = Readonly<{
   selectionKey: string;
@@ -449,6 +471,7 @@ export interface ProductVersionTransaction {
       draftVersionId: string;
       expectedDraftUpdatedAt: string;
       options: readonly ProductDraftOption[];
+      optionRules?: readonly ProductDraftOptionRule[];
       staffActorUserId?: string;
     }>,
   ): Promise<ProductDraftOptionsRead>;
@@ -613,6 +636,7 @@ const optionsFingerprint = (input: UpdateProductDraftOptionsInput) =>
         draftVersionId: input.draftVersionId,
         expectedDraftUpdatedAt: input.expectedDraftUpdatedAt,
         options: input.options,
+        optionRules: input.optionRules,
       }),
     )
     .digest("hex");
@@ -923,19 +947,24 @@ const validOptions = (
       "Product options are invalid.",
     );
   const ids = new Set<string>();
+  const selectionKeys = new Set<string>();
   return options.map((option, index) => {
     if (
       !option ||
       typeof option !== "object" ||
       typeof option.optionId !== "string" ||
       !option.optionId.trim() ||
-      ids.has(option.optionId)
+      typeof option.selectionKey !== "string" ||
+      !option.selectionKey.trim() ||
+      ids.has(option.optionId) ||
+      selectionKeys.has(option.selectionKey)
     )
       throw new V2ApplicationError(
         "VALIDATION_ERROR",
         "Product options are invalid.",
       );
     ids.add(option.optionId);
+    selectionKeys.add(option.selectionKey);
     const label = typeof option.label === "string" ? option.label.trim() : "";
     if (
       !label ||
@@ -1388,6 +1417,7 @@ export class ProductVersionLifecycleApplicationService {
           draftVersionId: input.draftVersionId,
           expectedDraftUpdatedAt: input.expectedDraftUpdatedAt,
           options,
+          ...(input.optionRules === undefined ? {} : { optionRules: input.optionRules }),
           staffActorUserId: staffActorId(context.principal),
         });
         await tx.attribute({

@@ -1,3 +1,5 @@
+import type { ProductOptionRule } from "../../../shared/productOptionRules";
+
 export type ApiError = Readonly<{ code: string; message: string }>;
 export type QuoteSellingInstruction = Readonly<
   | { kind: "calculated" }
@@ -266,11 +268,13 @@ export type ProductDraftOptionInputType =
   "boolean" | "select" | "multiselect" | "number" | "text" | "textarea";
 export type ProductDraftOption = Readonly<{
   optionId: string;
+  selectionKey: string;
   label: string;
   inputType: ProductDraftOptionInputType;
   required: boolean;
   defaultValue: string | number | boolean | null | readonly string[];
-  choices: readonly Readonly<{ choiceValue: string; label: string }>[];
+  choices: readonly Readonly<{ choiceValue: string; label: string; visibilityRules?: readonly unknown[] }>[];
+  visibility?: Readonly<{ rules?: readonly unknown[] }>;
   canRemove: boolean;
   removalReason?: string;
 }>;
@@ -280,6 +284,7 @@ export type ProductDraftOptionsRead = Readonly<{
   draftUpdatedAt: string;
   lifecycle: "draft";
   options: readonly ProductDraftOption[];
+  optionRules: readonly ProductOptionRule[];
 }>;
 export type ProductDraftPricingTier = Readonly<{
   tierId: string;
@@ -381,6 +386,15 @@ export type ProductDraftPricingPreview = Readonly<{
   }>[];
   explanation: PricingExplanation;
   warnings: readonly string[];
+  configuration: Readonly<{
+    effectiveSelections: Readonly<Record<string, unknown>>;
+    visibleOptionSelectionKeys: readonly string[];
+    hiddenOptionSelectionKeys: readonly string[];
+    disabledOptionSelectionKeys: readonly string[];
+    requiredOptionSelectionKeys: readonly string[];
+    clearedOptionSelectionKeys: readonly string[];
+    defaultedOptionSelectionKeys: readonly string[];
+  }>;
 }>;
 export type ProductDraftPricingMatrix = Readonly<{
   productId: string;
@@ -1687,6 +1701,7 @@ export const productApi = {
       draftVersionId: string;
       expectedDraftUpdatedAt: string;
       options: readonly ProductDraftOption[];
+      optionRules?: readonly ProductOptionRule[];
     }>,
   ) =>
     request<ProductDraftOptionsRead>(

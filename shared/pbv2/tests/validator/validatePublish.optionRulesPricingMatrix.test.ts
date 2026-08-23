@@ -132,6 +132,22 @@ describe("pbv2/validator/validatePublish option rules and pricing matrix", () =>
     expectError(makeTree({ rules: [{ ...validBannerRule(), ...patch }] }), code);
   });
 
+  test("blocks a full option-rule visibility/default dependency cycle", () => {
+    const tree = makeTree({
+      rules: [
+        {
+          id: "rule_a", when: { all: [{ optionGroup: "thickness", operator: "equals", value: "choice_3mm" }] },
+          then: [{ action: "hide", targetOptionGroup: "sides" }],
+        },
+        {
+          id: "rule_b", when: { all: [{ optionGroup: "sides", operator: "equals", value: "choice_single" }] },
+          then: [{ action: "set_default", targetOptionGroup: "thickness", value: "choice_3mm" }],
+        },
+      ],
+    });
+    expectError(tree, "PBV2_E_OPTION_RULE_DEPENDENCY_CYCLE");
+  });
+
   test("valid ACM pricing matrix passes", () => {
     const result = validateTreeForPublish(makeTree({ pricingMatrix: validAcmMatrix() }) as any, DEFAULT_VALIDATE_OPTS);
     expect(result.errors).toHaveLength(0);
