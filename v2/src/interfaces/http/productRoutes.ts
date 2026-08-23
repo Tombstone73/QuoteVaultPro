@@ -1460,12 +1460,13 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
           typeof body.businessRequestId !== "string" ||
           typeof body.draftVersionId !== "string" ||
           typeof body.expectedDraftUpdatedAt !== "string" ||
-          (body.source !== "embedded" && body.source !== "library") ||
-          typeof body.expression !== "string" ||
+          (body.source !== "embedded" && body.source !== "library" && body.source !== "formula_revision") ||
           typeof body.allowRotation !== "boolean" ||
           (body.source === "library" &&
             (typeof body.formulaId !== "string" || !body.formulaId.trim())) ||
           (body.source === "embedded" && body.formulaId !== undefined) ||
+          (body.source === "formula_revision" && (typeof body.formulaRevisionId !== "string" || !body.formulaRevisionId.trim() || !body.inputValues || typeof body.inputValues !== "object" || Array.isArray(body.inputValues))) ||
+          (body.source !== "formula_revision" && (typeof body.expression !== "string" || !variables || typeof variables !== "object" || Array.isArray(variables))) ||
           (rotationControl !== undefined &&
             (!rotationControlRecord ||
               typeof rotationControlRecord.optionId !== "string" ||
@@ -1474,10 +1475,7 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
               rotationChoiceValues.length === 0 ||
               rotationChoiceValues.some(
                 (value: unknown) => typeof value !== "string" || !value,
-              ))) ||
-          !variables ||
-          typeof variables !== "object" ||
-          Array.isArray(variables)
+              )))
         )
           return response.status(400).json({
             ok: false,
@@ -1505,8 +1503,9 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
             ...(body.source === "library"
               ? { formulaId: (body.formulaId as string).trim() }
               : {}),
-            expression: body.expression,
-            variables: variables as Record<string, number>,
+            ...(body.source === "formula_revision"
+              ? { formulaRevisionId: (body.formulaRevisionId as string).trim(), inputValues: body.inputValues as Record<string, number | boolean> }
+              : { expression: body.expression as string, variables: variables as Record<string, number> }),
             allowRotation: body.allowRotation,
             ...(rotationControlRecord === undefined
               ? {}

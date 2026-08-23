@@ -24,7 +24,7 @@ export type OperatorPricingExplanation = Readonly<{
   }>;
   tier?: Readonly<{ basis: "quantity" | "square_foot" | "computed_sheet"; value: string; selectedTierId: string; rateCents: number }>;
   matrix?: Readonly<{ rowId: string; selectedValues: readonly string[] }>;
-  formula?: Readonly<{ source: "library" | "embedded" | "legacy_product"; expression: string; baseRateCents?: number }>;
+  formula?: Readonly<{ source: "formula_revision" | "library" | "embedded" | "legacy_product"; expression: string; baseRateCents?: number }>;
   optionImpacts: readonly Readonly<{ selectionKey: string; kind: string; cents: number }>[];
   minimumChargeApplied: boolean;
 }>;

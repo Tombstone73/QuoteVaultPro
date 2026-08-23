@@ -50,6 +50,11 @@ import {
   validateProductFormulaInput,
 } from "../../src/modules/products/productFormulaInputs.js";
 import { extractFormulaVariables } from "../../../shared/pbv2/formulaHelpers.js";
+import {
+  validateFormulaRevisionInputValues,
+  type FormulaDeclaredInput,
+  type FormulaInputValue,
+} from "../../src/modules/pricing/formulaDomain.js";
 
 type VersionRow = {
   id: string;
@@ -890,6 +895,12 @@ type FormulaRow = PricingRow & {
   formula_name: string | null;
   formula_expression: string | null;
   formula_config: unknown | null;
+  formula_revision_id?: string | null;
+  formula_revision_formula_id?: string | null;
+  formula_revision_number?: number | null;
+  formula_revision_expression?: string | null;
+  formula_revision_declared_inputs?: unknown;
+  formula_input_values?: unknown;
 };
 const rotationControlFromTree = (
   pricing: Record<string, unknown>,
@@ -968,12 +979,42 @@ export const formulaFromTree = (
       ...record(profile.variables),
       ...record(profile.formulaVariables),
     }),
+    revisionInputs = Array.isArray(row.formula_revision_declared_inputs)
+      ? row.formula_revision_declared_inputs as FormulaDeclaredInput[]
+      : [],
+    revisionValues = record(row.formula_input_values) as Record<string, FormulaInputValue>,
     explicitEmbedded = meta.pricingFormulaSource === "embedded",
     libraryReference = !explicitEmbedded && Boolean(row.product_formula_id),
     library = Boolean(row.product_formula_id && row.formula_id),
     inputs = library
       ? productFormulaInputsFromLibraryConfig(row.formula_config)
       : Object.keys(variables).map((key) => ({ key, label: key }));
+  if (row.formula_revision_id && row.formula_revision_formula_id && row.formula_revision_number && row.formula_revision_expression) {
+    const canonicalInputs = validateFormulaRevisionInputValues(revisionInputs, revisionValues);
+    const revisionRotation = resolveProductVersionRotationPolicy(pricing, meta, row.pricing_profile_config as any, null);
+    return {
+      productId: row.product_id,
+      draftVersionId: row.draft_id,
+      draftUpdatedAt: row.draft_updated_at.toISOString(),
+      lifecycle: "draft",
+      source: "formula_revision",
+      editable: true,
+      expressionEditable: false,
+      variablesEditable: true,
+      rotationEditable: /\bsheet_consumption_sqft\s*\(/iu.test(row.formula_revision_expression),
+      inputs: revisionInputs,
+      formulaId: row.formula_revision_formula_id,
+      formulaRevisionId: row.formula_revision_id,
+      formulaRevisionNumber: row.formula_revision_number,
+      expression: row.formula_revision_expression,
+      variables: Object.fromEntries(Object.entries(canonicalInputs).filter(([, value]) => typeof value === "number")) as Record<string, number>,
+      inputValues: canonicalInputs,
+      allowRotation: revisionRotation.allowRotation,
+      ...(rotationControlFromTree(pricing) ? { rotationControl: rotationControlFromTree(pricing) } : {}),
+      supportedRuntimeVariables: formulaRuntimeVariables,
+      warnings: /\b(computed_sheets|billed_sqft)\b/u.test(row.formula_revision_expression) ? ["Preview uses available pricing inputs; sheet estimates are not supplied here."] : [],
+    };
+  }
   const hasFormula = Boolean(embedded || libraryReference || legacyExpression);
   const source =
       library && inputs.length
@@ -1035,6 +1076,7 @@ export const formulaFromTree = (
         }
       : {}),
     variables,
+    inputValues: variables,
     allowRotation: rotation.allowRotation,
     ...(rotationControl ? { rotationControl } : {}),
     supportedRuntimeVariables: formulaRuntimeVariables,
@@ -1052,7 +1094,7 @@ export class PostgresProductDraftFormulaReader {
     productId: string,
   ): Promise<ProductDraftFormulaPricing | null> {
     const result = await this.pool.query<FormulaRow>(
-      `SELECT p.id product_id,p.measurement_mode,COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) product_formula_id,p.pricing_profile_config,p.pricing_engine,p.pricing_formula product_formula,d.id draft_id,d.updated_at draft_updated_at,d.tree_json draft_tree_json,f.id formula_id,f.name formula_name,f.expression formula_expression,f.config formula_config FROM products p JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id AND d.status='DRAFT' LEFT JOIN pricing_formulas f ON f.id=COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) AND f.organization_id=p.organization_id AND f.is_active=TRUE WHERE p.organization_id=$1 AND p.id=$2 ORDER BY d.updated_at DESC,d.id DESC LIMIT 1`,
+      `SELECT p.id product_id,p.measurement_mode,COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) product_formula_id,p.pricing_profile_config,p.pricing_engine,p.pricing_formula product_formula,d.id draft_id,d.updated_at draft_updated_at,d.tree_json draft_tree_json,f.id formula_id,f.name formula_name,f.expression formula_expression,f.config formula_config,b.formula_revision_id,b.formula_id formula_revision_formula_id,fr.revision_number formula_revision_number,fr.expression formula_revision_expression,fr.declared_inputs formula_revision_declared_inputs,b.input_values formula_input_values FROM products p JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id AND d.status='DRAFT' LEFT JOIN v2_product_version_formula_revision_bindings b ON b.organization_id=d.organization_id AND b.product_id=d.product_id AND b.product_version_id=d.id LEFT JOIN formula_revisions fr ON fr.id=b.formula_revision_id AND fr.formula_id=b.formula_id AND fr.organization_id=b.organization_id LEFT JOIN pricing_formulas f ON f.id=COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) AND f.organization_id=p.organization_id AND f.is_active=TRUE WHERE p.organization_id=$1 AND p.id=$2 ORDER BY d.updated_at DESC,d.id DESC LIMIT 1`,
       [organizationId, productId],
     );
     return result.rows[0] ? formulaFromTree(result.rows[0]!) : null;
@@ -1108,9 +1150,15 @@ export class PostgresProductDraftPricingPreview {
         formula_expression: string | null;
         formula_config: unknown;
         formula_updated_at: Date | null;
+        formula_revision_id: string | null;
+        formula_revision_formula_id: string | null;
+        formula_revision_number: number | null;
+        formula_revision_expression: string | null;
+        formula_revision_declared_inputs: unknown;
+        formula_input_values: unknown;
       }
     >(
-      `SELECT p.id product_id,p.measurement_mode,p.pricing_profile_key,p.pricing_profile_config,COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) pricing_formula_id,d.id draft_id,d.updated_at draft_updated_at,d.tree_json draft_tree_json,d.schema_version,f.id formula_id,f.code formula_code,f.pricing_profile_key formula_profile_key,f.expression formula_expression,f.config formula_config,f.updated_at formula_updated_at FROM products p JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id AND d.status='DRAFT' LEFT JOIN pricing_formulas f ON f.id=COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) AND f.organization_id=p.organization_id AND f.is_active=TRUE WHERE p.organization_id=$1 AND p.id=$2 ORDER BY d.updated_at DESC,d.id DESC LIMIT 1`,
+      `SELECT p.id product_id,p.measurement_mode,p.pricing_profile_key,p.pricing_profile_config,COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) pricing_formula_id,d.id draft_id,d.updated_at draft_updated_at,d.tree_json draft_tree_json,d.schema_version,f.id formula_id,f.code formula_code,f.pricing_profile_key formula_profile_key,f.expression formula_expression,f.config formula_config,f.updated_at formula_updated_at,b.formula_revision_id,b.formula_id formula_revision_formula_id,fr.revision_number formula_revision_number,fr.expression formula_revision_expression,fr.declared_inputs formula_revision_declared_inputs,b.input_values formula_input_values FROM products p JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id AND d.status='DRAFT' LEFT JOIN v2_product_version_formula_revision_bindings b ON b.organization_id=d.organization_id AND b.product_id=d.product_id AND b.product_version_id=d.id LEFT JOIN formula_revisions fr ON fr.id=b.formula_revision_id AND fr.formula_id=b.formula_id AND fr.organization_id=b.organization_id LEFT JOIN pricing_formulas f ON f.id=COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) AND f.organization_id=p.organization_id AND f.is_active=TRUE WHERE p.organization_id=$1 AND p.id=$2 ORDER BY d.updated_at DESC,d.id DESC LIMIT 1`,
       [organizationId, productId],
     );
     const row = result.rows[0];
@@ -1162,6 +1210,9 @@ export class PostgresProductDraftPricingPreview {
           };
     const explicitEmbedded = record(record(row.draft_tree_json).meta)
       .pricingFormulaSource === "embedded";
+    const formulaRevision = row.formula_revision_id && row.formula_revision_formula_id && row.formula_revision_number && row.formula_revision_expression
+      ? { id: row.formula_revision_id, formulaId: row.formula_revision_formula_id, revisionNumber: row.formula_revision_number, expression: row.formula_revision_expression, declaredInputs: (row.formula_revision_declared_inputs ?? []) as any, inputValues: (row.formula_input_values ?? {}) as any, createdAt: row.draft_updated_at.toISOString() }
+      : null;
     const formula =
       !explicitEmbedded &&
       row.formula_id &&
@@ -1187,6 +1238,7 @@ export class PostgresProductDraftPricingPreview {
         productMeasurementMode: measurementMode,
         productPricingProfileKey: row.pricing_profile_key,
         legacyProductPricingConfig: row.pricing_profile_config as any,
+        formulaRevision,
         formula,
       },
       {
@@ -1344,6 +1396,16 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         input.staffActorUserId ?? null,
         now,
       ],
+    );
+    // ProductVersion bindings, like the tree and Recipe snapshots, are copied
+    // into the mutable Draft. The ACTIVE binding is never retargeted.
+    await this.client.query(
+      `INSERT INTO v2_product_version_formula_revision_bindings(
+         organization_id,product_id,product_version_id,formula_id,formula_revision_id,input_values,created_by_user_id
+       ) SELECT organization_id,product_id,$4,formula_id,formula_revision_id,input_values,$5
+         FROM v2_product_version_formula_revision_bindings
+        WHERE organization_id=$1 AND product_id=$2 AND product_version_id=$3`,
+      [input.organizationId, input.productId, activeId, inserted.rows[0]!.id, input.staffActorUserId ?? null],
     );
     // A recipe belongs to a Product Version, never to the mutable Product row.
     // Starting a new draft therefore copies the current active definition and its
@@ -2000,7 +2062,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       : never,
   ): Promise<ProductDraftFormulaPricing> {
     const locked = await this.client.query<FormulaRow & { status: string }>(
-      `SELECT p.id product_id,p.measurement_mode,COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) product_formula_id,p.pricing_profile_config,p.pricing_engine,p.pricing_formula product_formula,d.id draft_id,d.updated_at draft_updated_at,d.tree_json draft_tree_json,d.status,f.id formula_id,f.name formula_name,f.expression formula_expression,f.config formula_config FROM products p JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id LEFT JOIN pricing_formulas f ON f.id=COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) AND f.organization_id=p.organization_id AND f.is_active=TRUE WHERE p.organization_id=$1 AND p.id=$2 AND d.id=$3 FOR UPDATE OF p,d`,
+      `SELECT p.id product_id,p.measurement_mode,COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) product_formula_id,p.pricing_profile_config,p.pricing_engine,p.pricing_formula product_formula,d.id draft_id,d.updated_at draft_updated_at,d.tree_json draft_tree_json,d.status,f.id formula_id,f.name formula_name,f.expression formula_expression,f.config formula_config,b.formula_revision_id,b.formula_id formula_revision_formula_id,fr.revision_number formula_revision_number,fr.expression formula_revision_expression,fr.declared_inputs formula_revision_declared_inputs,b.input_values formula_input_values FROM products p JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id LEFT JOIN v2_product_version_formula_revision_bindings b ON b.organization_id=d.organization_id AND b.product_id=d.product_id AND b.product_version_id=d.id LEFT JOIN formula_revisions fr ON fr.id=b.formula_revision_id AND fr.formula_id=b.formula_id AND fr.organization_id=b.organization_id LEFT JOIN pricing_formulas f ON f.id=COALESCE(NULLIF(d.tree_json #>> '{meta,pricingFormulaId}',''),p.pricing_formula_id) AND f.organization_id=p.organization_id AND f.is_active=TRUE WHERE p.organization_id=$1 AND p.id=$2 AND d.id=$3 FOR UPDATE OF p,d`,
       [input.organizationId, input.productId, input.draftVersionId],
     );
     const row = locked.rows[0];
@@ -2019,6 +2081,62 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         "STALE_STATE",
         "This Draft changed elsewhere. Refresh and try again.",
       );
+    if (input.formula.source === "formula_revision") {
+      if (!input.formula.formulaRevisionId?.trim())
+        throw new V2ApplicationError("VALIDATION_ERROR", "A Formula revision is required.");
+      const selected = await this.client.query<{
+        revision_id: string; formula_id: string; revision_number: number; expression: string; declared_inputs: unknown;
+      }>(
+        `SELECT r.id revision_id,r.formula_id,r.revision_number,r.expression,r.declared_inputs
+         FROM formula_revisions r
+         JOIN v2_formula_identities f ON f.id=r.formula_id AND f.organization_id=r.organization_id
+         WHERE r.organization_id=$1 AND r.id=$2 AND f.status='active' LIMIT 1`,
+        [input.organizationId, input.formula.formulaRevisionId],
+      );
+      const revision = selected.rows[0];
+      if (!revision) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Formula revision is unavailable.");
+      const declarations = Array.isArray(revision.declared_inputs) ? revision.declared_inputs as FormulaDeclaredInput[] : [];
+      const inputValues = validateFormulaRevisionInputValues(declarations, input.formula.inputValues ?? {});
+      const numericInputValues = Object.fromEntries(
+        Object.entries(inputValues).filter(([, value]) => typeof value === "number"),
+      ) as Record<string, number>;
+      try {
+        evaluateResolvedFormula(revision.expression, {
+          ...Object.fromEntries(formulaRuntimeVariables.map((key) => [key, 1])),
+          ...numericInputValues,
+        }, input.formula.allowRotation);
+      } catch (error) {
+        throw new V2ApplicationError("VALIDATION_ERROR", error instanceof Error ? error.message : "Formula expression is invalid.");
+      }
+      const tree = structuredClone(record(row.draft_tree_json));
+      assertRotationControlReferences(tree, input.formula.rotationControl);
+      const meta = structuredClone(record(tree.meta));
+      const pricingV2: Record<string, unknown> = { ...record(meta.pricingV2), allowRotation: input.formula.allowRotation };
+      if (input.formula.rotationControl) pricingV2.rotationControl = { optionId: input.formula.rotationControl.optionId, allowWhenChoiceValues: [...input.formula.rotationControl.allowWhenChoiceValues] };
+      else delete pricingV2.rotationControl;
+      // Formula expressions and values are Formula-domain / binding owned. Do
+      // not create another ProductVersion JSON authority during transition.
+      delete meta.pricingFormula;
+      delete meta.pricingFormulaId;
+      delete meta.pricingFormulaSource;
+      delete meta.pricingFormulaVariables;
+      delete meta.formulaVariables;
+      tree.meta = { ...meta, pricingV2 };
+      const valid = validateOptionTreeV2(tree as any), complete = optionTreeV2Schema.safeParse(tree);
+      if (!valid.ok || !complete.success) throw new V2ApplicationError("VALIDATION_ERROR", "The resulting Product Formula is invalid.");
+      await this.client.query(
+        `INSERT INTO v2_product_version_formula_revision_bindings(organization_id,product_id,product_version_id,formula_id,formula_revision_id,input_values,created_by_user_id)
+         VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)
+         ON CONFLICT (organization_id,product_version_id) DO UPDATE SET formula_id=EXCLUDED.formula_id,formula_revision_id=EXCLUDED.formula_revision_id,input_values=EXCLUDED.input_values`,
+        [input.organizationId, input.productId, input.draftVersionId, revision.formula_id, revision.revision_id, JSON.stringify(inputValues), input.staffActorUserId ?? null],
+      );
+      const updated = await this.client.query<{ updated_at: Date }>(
+        "UPDATE pbv2_tree_versions SET tree_json=$1::jsonb,updated_at=now(),updated_by_user_id=$2 WHERE organization_id=$3 AND product_id=$4 AND id=$5 AND status='DRAFT' RETURNING updated_at",
+        [JSON.stringify(tree), input.staffActorUserId ?? null, input.organizationId, input.productId, input.draftVersionId],
+      );
+      if (!updated.rows[0]) throw new V2ApplicationError("CONFLICT", "Only the current Draft can be edited.");
+      return formulaFromTree({ ...row, draft_tree_json: tree, draft_updated_at: updated.rows[0].updated_at, formula_revision_id: revision.revision_id, formula_revision_formula_id: revision.formula_id, formula_revision_number: revision.revision_number, formula_revision_expression: revision.expression, formula_revision_declared_inputs: declarations, formula_input_values: inputValues });
+    }
     const currentRead = formulaFromTree(row);
     const selectedLibrary = input.formula.source === "library"
       ? await this.client.query<{id:string;name:string;expression:string;config:unknown}>(
@@ -2048,7 +2166,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       expressionEditable: true,
       variablesEditable: true,
       editable: true,
-      inputs: Object.keys(input.formula.variables).map((key) => ({ key, label: key })),
+      inputs: Object.keys(input.formula.variables ?? {}).map((key) => ({ key, label: key })),
     } : currentRead;
     if (!current || (!current.editable && !current.rotationEditable))
       throw new V2ApplicationError(
@@ -2062,7 +2180,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     // above; embedded mode owns the submitted ProductVersion expression.
     const expression = input.formula.source === "library"
       ? library!.expression.trim()
-      : input.formula.expression.trim();
+      : (input.formula.expression ?? "").trim();
     if (!expression || expression.length > 1000)
       throw new V2ApplicationError(
         "VALIDATION_ERROR",
@@ -2078,7 +2196,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       ? {}
       : { ...current.variables };
     if (current.expressionEditable) {
-      for (const [key, value] of Object.entries(input.formula.variables)) {
+      for (const [key, value] of Object.entries(input.formula.variables ?? {})) {
         if (
           !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(key) ||
           formulaRuntimeVariables.includes(
@@ -2096,7 +2214,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       const editableInputs = new Map(
         current.inputs.map((value) => [value.key, value]),
       );
-      for (const [key, value] of Object.entries(input.formula.variables)) {
+      for (const [key, value] of Object.entries(input.formula.variables ?? {})) {
         const definition = editableInputs.get(key);
         if (!definition) {
           if (variables[key] !== value)
@@ -2124,7 +2242,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
             `${definition.label} is required.`,
           );
     } else {
-      for (const [key, value] of Object.entries(input.formula.variables))
+      for (const [key, value] of Object.entries(input.formula.variables ?? {}))
         if (variables[key] !== value)
           throw new V2ApplicationError(
             "VALIDATION_ERROR",

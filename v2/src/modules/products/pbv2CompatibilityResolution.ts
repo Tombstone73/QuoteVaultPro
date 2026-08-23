@@ -10,6 +10,7 @@ import type { OptionTreeV2, PricingImpact, PricingV2Tier } from "../../../../sha
 import type { ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "./contracts.js";
 import { resolveProductionRequirementSnapshot } from "../shared/productionRequirements.js";
 import { estimatePricingSheetUsage } from "../pricing/pricingNestingEstimate.js";
+import { validateFormulaRevisionInputValues, type FormulaDeclaredInput } from "../pricing/formulaDomain.js";
 
 export type ActivePbv2CompatibilityRecord = Readonly<{
   id: string;
@@ -22,6 +23,22 @@ export type ActivePbv2CompatibilityRecord = Readonly<{
   legacyProductPricingConfig?: JsonValue | null;
   /** Read-only V1 formula fallback; only used when no newer Formula source exists. */
   legacyProductPricingFormula?: string | null;
+  /**
+   * Canonical, immutable ProductVersion Formula binding.  This deliberately
+   * arrives with the ProductVersion read rather than through the mutable
+   * Formula identity's current revision pointer.
+   */
+  formulaRevision?: Readonly<{
+    id: string;
+    formulaId: string;
+    revisionNumber: number;
+    expression: string;
+    declaredInputs: JsonValue;
+    inputValues: JsonValue;
+    createdAt: string;
+  }> | null;
+  /** Legacy Formula Library compatibility only. New ProductVersion authoring
+   * binds `formulaRevision` above. */
   formula: Readonly<{ id: string; code: string | null; profileKey: string; expression: string | null; config: JsonValue | null; updatedAt: string }> | null;
 }>;
 
@@ -348,20 +365,25 @@ export const resolveActivePbv2PricingInput = (
       // Variables are resolved formula inputs, not raw matrix data; only base_price is carried through rates above.
     };
   });
+  const revisionExpression = source.formulaRevision?.expression.trim() || undefined;
   const embeddedExpression = typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? meta.pricingFormula.trim() : undefined;
   const libraryExpression = source.formula?.expression?.trim() || undefined;
   const legacyProductExpression = source.legacyProductPricingFormula?.trim() || undefined;
-  // The canonical Formula Library remains the primary configured authority.
-  // A ProductVersion embedded expression is the established compatibility
-  // fallback, followed only then by the legacy Product row expression.
-  const formulaResolution = libraryExpression && source.formula
+  // A ProductVersion FormulaRevision binding is the only canonical authority.
+  // The remaining paths preserve priced historical ProductVersions while they
+  // are explicitly frozen/canonicalized; none follows a Formula identity's
+  // mutable current-revision pointer.
+  const formulaResolution = revisionExpression && source.formulaRevision
+      ? { expression: revisionExpression, source: "formula_revision" as const, id: source.formulaRevision.id, version: `revision-${source.formulaRevision.revisionNumber}` }
+      : libraryExpression && source.formula
       ? { expression: libraryExpression, source: "library" as const, id: source.formula.id, version: source.formula.updatedAt }
       : embeddedExpression
         ? { expression: embeddedExpression, source: "embedded" as const, id: `embedded:${source.id}`, version: source.publishedAt ?? `schema-${source.schemaVersion}` }
       : legacyProductExpression
         ? { expression: legacyProductExpression, source: "legacy_product" as const, id: `legacy-product:${source.id}`, version: source.publishedAt ?? `schema-${source.schemaVersion}` }
         : undefined;
-  if (source.formula && !libraryExpression && !embeddedExpression) return validation("The active Formula Library entry has no supported expression.");
+  if (source.formulaRevision && !revisionExpression) return validation("The active Formula revision has no supported expression.");
+  if (source.formula && !libraryExpression && !embeddedExpression && !revisionExpression) return validation("The active Formula Library entry has no supported expression.");
   const expression = formulaResolution?.expression;
   if (expression && !supportedFormula(expression)) return validation("The active formula uses an unsupported compatibility function.");
   const resolvedOptionImpacts = optionImpacts(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>);
@@ -379,12 +401,31 @@ export const resolveActivePbv2PricingInput = (
   const numericSelections = Object.fromEntries(
     Object.entries(visibility.effectiveSelections).filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
   );
+  let revisionInputValues: Record<string, unknown> = {};
+  if (source.formulaRevision) {
+    try {
+      revisionInputValues = { ...validateFormulaRevisionInputValues(
+        Array.isArray(source.formulaRevision.declaredInputs) ? source.formulaRevision.declaredInputs as FormulaDeclaredInput[] : [],
+        record(source.formulaRevision.inputValues) ?? {},
+      ) };
+    } catch (error) {
+      return validation(error instanceof Error ? error.message : "The ProductVersion Formula inputs are invalid.");
+    }
+  }
   const formulaVariables = {
-    ...extractFormulaVariables(record(source.formula?.config)),
-    ...record(meta.pricingFormulaVariables),
-    ...record(meta.formulaVariables),
-    ...record(legacyConfig?.variables),
-    ...record(legacyConfig?.formulaVariables),
+    ...(source.formulaRevision
+      ? {
+          // A revision binding is the authoritative ProductVersion input map.
+          // Do not let stale legacy tree metadata shadow its typed values.
+          ...revisionInputValues,
+        }
+      : {
+          ...extractFormulaVariables(record(source.formula?.config)),
+          ...record(meta.pricingFormulaVariables),
+          ...record(meta.formulaVariables),
+          ...record(legacyConfig?.variables),
+          ...record(legacyConfig?.formulaVariables),
+        }),
     ...numericSelections,
     allow_rotation: rotation.allowRotation ? 1 : 0,
   } as Record<string, JsonValue>;
@@ -418,7 +459,7 @@ export const resolveActivePbv2PricingInput = (
       id: formulaResolution!.id,
       source: formulaResolution!.source,
       version: formulaResolution!.version,
-      contentHash: stableHash({ expression, source: formulaResolution!.source, variables: formulaVariables, allowRotation: rotation.allowRotation, formula: source.formula ? { id: source.formula.id, config: source.formula.config, profileKey: source.formula.profileKey } : null }),
+      contentHash: stableHash({ expression, source: formulaResolution!.source, variables: formulaVariables, allowRotation: rotation.allowRotation, formulaRevision: source.formulaRevision ? { id: source.formulaRevision.id, formulaId: source.formulaRevision.formulaId, revisionNumber: source.formulaRevision.revisionNumber, declaredInputs: source.formulaRevision.declaredInputs } : null, formula: source.formula ? { id: source.formula.id, config: source.formula.config, profileKey: source.formula.profileKey } : null }),
       expression,
       variables: formulaVariables,
     } } : {}),

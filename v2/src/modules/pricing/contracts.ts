@@ -72,7 +72,7 @@ export type PricingRules = Readonly<{
   /** Independent V1 tier schedules; canonical consumers select each expressly. */
   tierFamilies?: readonly PricingTierFamily[];
   matrix?: Readonly<{ id: string; dimensions: readonly string[]; rows: readonly PricingMatrixRow[] }>;
-  formula?: Readonly<{ id: string; source: "library" | "embedded" | "legacy_product"; version: string; contentHash: string; expression: string; variables: Readonly<Record<string, JsonValue>> }>;
+  formula?: Readonly<{ id: string; source: "formula_revision" | "library" | "embedded" | "legacy_product"; version: string; contentHash: string; expression: string; variables: Readonly<Record<string, JsonValue>> }>;
   optionImpacts?: readonly PricingOptionRule[];
   baseRateOverrides?: readonly PricingBaseRateOverride[];
 }>;
@@ -106,7 +106,7 @@ export type PricingOptionImpact = Readonly<{
 }>;
 export type PricingTierEvidence = Readonly<{ source: "quantity" | "square_foot" | "computed_sheet"; basisValue: DecimalText; selectedTierId: string; selectedRate: DecimalText; fallbackApplied: boolean }>;
 export type PricingMatrixEvidence = Readonly<{ matrixId: string; rowId: string; columnId?: string; selectedValueKeys: readonly string[] }>;
-export type PricingFormulaEvidence = Readonly<{ source: "library" | "embedded" | "legacy_product"; formulaId?: string; version: string; contentHash: string; resolvedExpression: string; resolvedConfiguration: Readonly<Record<string, JsonValue>>; variables: Readonly<Record<string, JsonValue>> }>;
+export type PricingFormulaEvidence = Readonly<{ source: "formula_revision" | "library" | "embedded" | "legacy_product"; formulaId?: string; version: string; contentHash: string; resolvedExpression: string; resolvedConfiguration: Readonly<Record<string, JsonValue>>; variables: Readonly<Record<string, JsonValue>> }>;
 export type RoundingStage = Readonly<{ stage: string; mode: string; precision: number }>;
 export type RoundingEvidence = Readonly<{ policyId: string; policyVersion: string; stages: readonly RoundingStage[] }>;
 

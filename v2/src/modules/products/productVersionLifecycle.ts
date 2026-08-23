@@ -18,6 +18,7 @@ import {
 } from "../shared/productionRequirements.js";
 import type { OperatorPricingExplanation } from "../pricing/operatorPricingExplanation.js";
 import type { ProductFormulaInput } from "./productFormulaInputs.js";
+import type { FormulaDeclaredInput, FormulaInputValue } from "../pricing/formulaDomain.js";
 
 export type ProductVersionStatus =
   "active" | "draft" | "deprecated" | "archived";
@@ -229,6 +230,7 @@ export type ProductRotationControl = Readonly<{
 }>;
 export type ProductDraftFormulaSource =
   | "none"
+  | "formula_revision"
   | "embedded_editable"
   | "library_product_inputs_editable"
   | "library_reference_read_only"
@@ -243,14 +245,19 @@ export type ProductDraftFormulaPricing = Readonly<{
   expressionEditable: boolean;
   variablesEditable: boolean;
   rotationEditable: boolean;
-  inputs: readonly ProductFormulaInput[];
+  /** Canonical revisions declare their own typed ProductVersion inputs. Legacy
+   * compatibility projections remain readable until canonicalized. */
+  inputs: readonly (ProductFormulaInput | FormulaDeclaredInput)[];
   unavailableReason?: string;
   formulaId?: string;
+  formulaRevisionId?: string;
+  formulaRevisionNumber?: number;
   formulaName?: string;
   expression: string;
   /** Exact Product-row compatibility expression; never accepted from a client write. */ legacyExpression?: string;
   canAdoptLegacyFormula?: boolean;
   variables: Readonly<Record<string, number>>;
+  inputValues: Readonly<Record<string, FormulaInputValue>>;
   allowRotation: boolean;
   rotationControl?: ProductRotationControl;
   supportedRuntimeVariables: readonly string[];
@@ -261,10 +268,15 @@ export type UpdateProductDraftFormulaPricingInput = Readonly<{
   draftVersionId: string;
   expectedDraftUpdatedAt: string;
   businessRequestId: string;
-  source: "embedded" | "library";
+  /** FormulaRevision is the sole new-authoring path. The other values remain
+   * temporary compatibility inputs for an existing Draft UI until its Formula
+   * controls migrate to the Formula-domain API. */
+  source: "formula_revision" | "embedded" | "library";
   formulaId?: string;
-  expression: string;
-  variables: Readonly<Record<string, number>>;
+  formulaRevisionId?: string;
+  expression?: string;
+  variables?: Readonly<Record<string, number>>;
+  inputValues?: Readonly<Record<string, FormulaInputValue>>;
   allowRotation: boolean;
   rotationControl?: ProductRotationControl;
 }>;

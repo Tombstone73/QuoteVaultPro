@@ -4,15 +4,22 @@ import type { Finding } from "@shared/pbv2/findings";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
-import { auditLogs, materials, pbv2TreeVersions, pricingFormulas, products } from "@shared/schema";
+import { auditLogs, materials, pbv2TreeVersions, pricingFormulas, products, v2FormulaRevisions, v2ProductVersionFormulaRevisionBindings } from "@shared/schema";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../pbv2MaterialValidation";
 
 type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId" | "pricingFormula">;
 type TreeRecord = Pick<typeof pbv2TreeVersions.$inferSelect, "id" | "organizationId" | "productId" | "status" | "schemaVersion" | "treeJson" | "publishedAt" | "updatedAt">;
-export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>; pricingFormula?: { id: string; isActive: boolean; expression: string | null } | null };
+export type CanonicalProductPublishTarget = {
+  product: ProductRecord;
+  tree: TreeRecord;
+  materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>;
+  pricingFormula?: { id: string; isActive: boolean; expression: string | null } | null;
+  /** A Draft binding is promoted with the same immutable ProductVersion row. */
+  formulaRevision?: { id: string; formulaId: string; expression: string } | null;
+};
 type PublishRepository = {
   get(input: { organizationId: string; productId?: string; treeVersionId?: string }): Promise<CanonicalProductPublishTarget | null>;
-  publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
+  publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; formulaRevision?: CanonicalProductPublishTarget["formulaRevision"]; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
 };
 
 class PublishStoreStaleError extends Error {}
@@ -48,6 +55,7 @@ const legacyFormulaCanonicalizationFindings = (target: CanonicalProductPublishTa
   // Draft for which that expression remains the effective fallback.
   const legacyExpression = formulaText(target.product.pricingFormula);
   if (!legacyExpression) return [];
+  if (formulaText(target.formulaRevision?.expression) === legacyExpression) return [];
   const libraryExpression = target.pricingFormula?.isActive ? formulaText(target.pricingFormula.expression) : "";
   // Formula Library has higher canonical resolver precedence, so a valid
   // active library expression means the legacy row is not the effective
@@ -71,10 +79,22 @@ const repository: PublishRepository = {
     if (!product || (input.productId && product.id !== input.productId)) return null;
     const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
-    const projectedFormulaId = formulaLibraryProjection(tree.treeJson as Record<string, unknown>);
+    const [formulaRevision] = await db.select({ id: v2FormulaRevisions.id, formulaId: v2FormulaRevisions.formulaId, expression: v2FormulaRevisions.expression })
+      .from(v2ProductVersionFormulaRevisionBindings)
+      .innerJoin(v2FormulaRevisions, and(
+        eq(v2FormulaRevisions.id, v2ProductVersionFormulaRevisionBindings.formulaRevisionId),
+        eq(v2FormulaRevisions.formulaId, v2ProductVersionFormulaRevisionBindings.formulaId),
+        eq(v2FormulaRevisions.organizationId, v2ProductVersionFormulaRevisionBindings.organizationId),
+      ))
+      .where(and(
+        eq(v2ProductVersionFormulaRevisionBindings.organizationId, input.organizationId),
+        eq(v2ProductVersionFormulaRevisionBindings.productId, tree.productId),
+        eq(v2ProductVersionFormulaRevisionBindings.productVersionId, tree.id),
+      )).limit(1);
+    const projectedFormulaId = formulaRevision ? null : formulaLibraryProjection(tree.treeJson as Record<string, unknown>);
     const formulaId = projectedFormulaId === undefined ? product.pricingFormulaId : projectedFormulaId;
     const [pricingFormula] = formulaId ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive, expression: pricingFormulas.expression }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, formulaId))).limit(1) : [];
-    return { product, tree, materials: materialRows, pricingFormula: pricingFormula ?? null };
+    return { product, tree, materials: materialRows, pricingFormula: pricingFormula ?? null, formulaRevision: formulaRevision ?? null };
   },
   async publish(input) {
     const { db } = await import("../../db");
@@ -115,7 +135,7 @@ const repository: PublishRepository = {
       const [tree] = await tx.update(pbv2TreeVersions).set({ status: "ACTIVE", publishedAt: now, updatedAt: now, updatedByUserId: input.actorUserId, treeJson: nextTreeJson }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, input.tree.id), eq(pbv2TreeVersions.productId, input.product.id), eq(pbv2TreeVersions.status, "DRAFT"))).returning();
       if (!tree) throw new PublishStoreStaleError();
       const pointerCondition = input.product.pbv2ActiveTreeVersionId ? eq(products.pbv2ActiveTreeVersionId, input.product.pbv2ActiveTreeVersionId) : isNull(products.pbv2ActiveTreeVersionId);
-      const projectedFormulaId = formulaLibraryProjection(nextTreeJson as Record<string, unknown>);
+      const projectedFormulaId = input.formulaRevision ? null : formulaLibraryProjection(nextTreeJson as Record<string, unknown>);
       const [product] = await tx.update(products).set({ pbv2ActiveTreeVersionId: tree.id, optionTreeJson: nextTreeJson, ...(projectedFormulaId === undefined ? {} : { pricingFormulaId: projectedFormulaId, pricingEngine: projectedFormulaId ? "formulaLibrary" : "pricingFormula" }), ...(input.activateProduct ? { isActive: true } : {}), updatedAt: now }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.product.id), pointerCondition)).returning();
       if (!product) throw new PublishStoreStaleError();
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "product", entityId: product.id, actionType: "product_configuration_published", description: `Published PBV2 configuration ${tree.id} for Product ${product.name}.`, oldValues: { activeTreeVersionId: input.product.pbv2ActiveTreeVersionId, draftTreeVersionId: input.tree.id, draftStatus: input.tree.status }, newValues: { activeTreeVersionId: tree.id, treeStatus: tree.status, operationReference: "products.publish_configuration.v1", reference: input.reference } });
@@ -141,8 +161,8 @@ export function validateCanonicalProductPublishTarget(target: CanonicalProductPu
   const publishCandidate = String((treeJson as any).status).toUpperCase() === "ACTIVE" ? { ...treeJson, status: "DRAFT" } : treeJson;
   const publish = validateTreeForPublish(publishCandidate as any, DEFAULT_VALIDATE_OPTS);
   const materialFindings = validatePbv2MaterialReferences({ treeJson, productPrimaryMaterialId: target.product.primaryMaterialId, materials: target.materials });
-  const projectedFormulaId = formulaLibraryProjection(treeJson);
-  const formulaFindings: Finding[] = (projectedFormulaId === undefined ? target.product.pricingEngine === "formulaLibrary" : projectedFormulaId !== null) && (!(projectedFormulaId === undefined ? target.product.pricingFormulaId : projectedFormulaId) || !target.pricingFormula?.isActive)
+  const projectedFormulaId = target.formulaRevision ? null : formulaLibraryProjection(treeJson);
+  const formulaFindings: Finding[] = !target.formulaRevision && (projectedFormulaId === undefined ? target.product.pricingEngine === "formulaLibrary" : projectedFormulaId !== null) && (!(projectedFormulaId === undefined ? target.product.pricingFormulaId : projectedFormulaId) || !target.pricingFormula?.isActive)
     ? [{ code: "PBV2_E_FORMULA_LIBRARY_REFERENCE_MISSING", severity: "ERROR", message: "Formula Library pricing requires an active Formula Library entry in this organization.", path: "product.pricingFormulaId" } as Finding]
     : [];
   const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings, legacyFormulaCanonicalizationFindings(target, treeJson));
@@ -183,7 +203,7 @@ export class CanonicalProductPublishOperations {
     const reference = input.auditContext?.reference ?? `${input.auditContext?.source ?? "application"}:${target.product.id}:${target.tree.id}:${input.expectedTreeUpdatedAt}`;
     let result: Awaited<ReturnType<PublishRepository["publish"]>>;
     try {
-      result = await this.store.publish({ organizationId: input.organizationId, actorUserId: input.actorUserId, product: target.product, tree: target.tree, treeJson: validation.treeJson, reference, activateProduct: input.activateProduct === true });
+      result = await this.store.publish({ organizationId: input.organizationId, actorUserId: input.actorUserId, product: target.product, tree: target.tree, treeJson: validation.treeJson, formulaRevision: target.formulaRevision, reference, activateProduct: input.activateProduct === true });
     } catch (error) {
       if (error instanceof PublishStoreStaleError) throw new CanonicalProductPublishError("PBV2_PUBLISH_STALE", "The Product or PBV2 DRAFT changed during publication. Review it again.");
       throw error;

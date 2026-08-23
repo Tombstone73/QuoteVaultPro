@@ -125,6 +125,24 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(resolved.ok && resolved.value.rules.formula?.contentHash).toMatch(/^sha256:/);
   });
 
+  test("an immutable ProductVersion FormulaRevision wins over all legacy Formula sources", () => {
+    const resolved = resolveActivePbv2PricingInput(product, {
+      id: "tree-revision-a", schemaVersion: 2, publishedAt: "2026-08-22T00:00:00.000Z",
+      treeJson: { ...tree, meta: { ...tree.meta, pricingFormula: "3" } },
+      productMeasurementMode: "dimensions_required", productPricingProfileKey: "default",
+      formulaRevision: {
+        id: "formula-revision-1", formulaId: "formula-identity-a", revisionNumber: 1,
+        expression: "ceil(sqft) * base_price", declaredInputs: [], inputValues: {},
+        createdAt: "2026-08-22T00:00:00.000Z",
+      },
+      legacyProductPricingFormula: "4",
+      formula: { id: "legacy-library", code: "LEGACY", profileKey: "formula", expression: "5", config: null, updatedAt: "2026-08-22T01:00:00.000Z" },
+    }, { organizationId: org, productId, quantity: 1 });
+    expect(resolved.ok && resolved.value.rules.formula).toMatchObject({
+      source: "formula_revision", id: "formula-revision-1", version: "revision-1", expression: "ceil(sqft) * base_price",
+    });
+  });
+
   test("Formula Library sheet_consumption_sqft uses the established helper and configured variables", async () => {
     const source = { id: "tree-a", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: { ...tree, meta: { ...tree.meta, pricingFormula: undefined } }, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: { id: "formula-sheet", code: "SHEET", profileKey: "formula", expression: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price", config: { variables: { sheet_width: 48, sheet_length: 96, usable_drop_min: 0, billable_length_increment: 1, minimum_billable_sqft: 0 } }, updatedAt: "2026-08-15T01:02:03.000Z" } };
     const resolved = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, dimensions: { width: "24" as any, height: "18" as any, unit: "in" } });

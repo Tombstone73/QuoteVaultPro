@@ -121,6 +121,18 @@ const run = async (): Promise<void> => {
   assert.equal(libraryWins.ok, true);
   if (libraryWins.ok) assert.equal(libraryWins.value.rules.formula?.source, "library");
 
+  const revisionWins = resolveActivePbv2PricingInput(sellable("revision-wins"), {
+    id: "tree", schemaVersion: 2, publishedAt: "2026-08-22T00:00:00.000Z", treeJson: activeTree({ pricingV2: { base: { perSqftCents: 300 } }, pricingFormula: "3" }), productMeasurementMode: "dimensions_required", productPricingProfileKey: "square_foot",
+    formulaRevision: { id: "revision-1", formulaId: "identity-1", revisionNumber: 1, expression: "ceil((((w+.25)*(h+.25))*q)/144)*p", declaredInputs: [], inputValues: {}, createdAt: "2026-08-22T00:00:00.000Z" },
+    legacyProductPricingFormula: "4", formula: { id: "legacy-library", code: "legacy", profileKey: "square_foot", expression: "5", config: null, updatedAt: "2026-08-22T00:00:00.000Z" },
+  }, { organizationId, productId: brandedId<"ProductId">("revision-wins"), quantity: 1, dimensions: { width: decimalText("12"), height: decimalText("12"), unit: "in" } });
+  assert.equal(revisionWins.ok, true);
+  if (revisionWins.ok) {
+    assert.equal(revisionWins.value.rules.formula?.source, "formula_revision", "an immutable ProductVersion FormulaRevision wins over mutable/legacy sources");
+    const priced = await adapter.calculate(request("revision-wins", revisionWins.value.rules, { width: "12", height: "12" }));
+    assert.equal(priced.calculatedLineAmount.cents, 600, "revision binding preserves the established Formula result");
+  }
+
   const fee = resolveActivePbv2PricingInput(sellable("fee"), {
     id: "tree", schemaVersion: 2, publishedAt: "2026-08-22T00:00:00.000Z", treeJson: activeTree(), productMeasurementMode: "quantity_only", productPricingProfileKey: "fee",
     legacyProductPricingConfig: { formulaVariables: { flatFee: 74.99 } }, formula: null,

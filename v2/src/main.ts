@@ -22,6 +22,7 @@ import { composeAuthenticatedProductionRuntime, type AuthenticatedProductionRunt
 import { composeAuthenticatedFulfillmentRuntime, type AuthenticatedFulfillmentRuntimeDependencies } from "../infrastructure/fulfillment/authenticatedFulfillmentRuntime.js";
 import { composeAuthenticatedRoutingRuntime, type AuthenticatedRoutingRuntimeDependencies } from "../infrastructure/routing/authenticatedRoutingRuntime.js";
 import { composeAuthenticatedInventoryRuntime, type AuthenticatedInventoryRuntimeDependencies } from "../infrastructure/inventory/authenticatedInventoryRuntime.js";
+import { composeAuthenticatedFormulaRuntime, type AuthenticatedFormulaRuntimeDependencies } from "../infrastructure/pricing/authenticatedFormulaRuntime.js";
 
 export type RunningV2Server = Readonly<{
   close: () => Promise<void>;
@@ -41,6 +42,7 @@ export const startV2Server = async (
     authenticatedFulfillment?: AuthenticatedFulfillmentRuntimeDependencies;
     authenticatedRouting?: AuthenticatedRoutingRuntimeDependencies;
     authenticatedInventory?: AuthenticatedInventoryRuntimeDependencies;
+    authenticatedFormulas?: AuthenticatedFormulaRuntimeDependencies;
   }> = {},
 ): Promise<RunningV2Server> => {
   const quote = dependencies.authenticatedQuote
@@ -57,7 +59,8 @@ export const startV2Server = async (
   const fulfillment = dependencies.authenticatedFulfillment ? composeAuthenticatedFulfillmentRuntime(dependencies.authenticatedFulfillment) : undefined;
   const routing = dependencies.authenticatedRouting ? composeAuthenticatedRoutingRuntime(dependencies.authenticatedRouting) : undefined;
   const inventory = dependencies.authenticatedInventory ? composeAuthenticatedInventoryRuntime(dependencies.authenticatedInventory) : undefined;
-  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress, production, fulfillment, routing, undefined, inventory);
+  const formulas = dependencies.authenticatedFormulas ? composeAuthenticatedFormulaRuntime(dependencies.authenticatedFormulas) : undefined;
+  const app = createV2HttpApp(config, logger, undefined, quote, order, billing, artwork, proofing, prepress, production, fulfillment, routing, undefined, inventory, formulas);
   const server = await new Promise<Server>((resolve, reject) => {
     const instance = app.listen(config.port, () => resolve(instance));
     instance.once("error", reject);

@@ -26,6 +26,7 @@ import { createContactRouter, type ContactHttpDependencies } from "./contactRout
 import { createProductRouter, type ProductHttpDependencies } from "./productRoutes.js";
 import { createRoutingRouter, type RoutingHttpDependencies } from "./routingRoutes.js";
 import { createInventoryRouter, type InventoryHttpDependencies } from "./inventoryRoutes.js";
+import { createFormulaRouter, type FormulaHttpDependencies } from "./formulaRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -49,6 +50,7 @@ export type AuthenticatedProductionRouteRuntime = Readonly<{ dependencies: Produ
 export type AuthenticatedFulfillmentRouteRuntime = Readonly<{ dependencies: FulfillmentHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedRoutingRouteRuntime = Readonly<{ dependencies: RoutingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedInventoryRouteRuntime = Readonly<{ dependencies: InventoryHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedFormulaRouteRuntime = Readonly<{ dependencies: FormulaHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -65,6 +67,7 @@ export const createV2HttpApp = (
   routing?: AuthenticatedRoutingRouteRuntime,
   configure?: (app: Express) => void,
   inventory?: AuthenticatedInventoryRouteRuntime,
+  formulas?: AuthenticatedFormulaRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -271,6 +274,8 @@ export const createV2HttpApp = (
     app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFulfillmentRouter(fulfillment.dependencies));
   if (routing)
     app.use("/v2/organizations/:organizationId/routing",routing.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createRoutingRouter(routing.dependencies));
+  if (formulas)
+    app.use("/v2/organizations/:organizationId/formulas",formulas.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFormulaRouter(formulas.dependencies));
 
   app.use((_request, response) =>
     response.status(404).json({ code: "NOT_FOUND" }),

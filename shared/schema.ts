@@ -609,6 +609,41 @@ export type UpdatePricingFormula = z.infer<typeof updatePricingFormulaSchema>;
 export type PricingFormula = typeof pricingFormulas.$inferSelect;
 
 // ============================================================
+// V2 FORMULA DOMAIN
+// ============================================================
+// `pricing_formulas` remains the V1 compatibility source. New V2 Formula
+// authoring is identity -> immutable revision; Products bind a revision.
+export const formulaVisibility = pgEnum("v2_formula_visibility", ["product_scoped", "library"]);
+export const formulaStatus = pgEnum("v2_formula_status", ["active", "inactive", "archived"]);
+
+export const v2FormulaIdentities = pgTable("v2_formula_identities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  normalizedName: varchar("normalized_name", { length: 255 }).notNull(),
+  description: text("description"),
+  visibility: formulaVisibility("visibility").notNull().default("product_scoped"),
+  status: formulaStatus("status").notNull().default("active"),
+  currentRevisionId: varchar("current_revision_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+}, (table) => [index("v2_formula_identities_catalog_idx").on(table.organizationId, table.status, table.visibility, table.normalizedName)]);
+
+export const v2FormulaRevisions = pgTable("formula_revisions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  formulaId: varchar("formula_id").notNull(),
+  revisionNumber: integer("revision_number").notNull(),
+  expression: text("expression").notNull(),
+  declaredInputs: jsonb("declared_inputs").notNull(),
+  validationEvidence: jsonb("validation_evidence").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+}, (table) => [index("formula_revisions_formula_idx").on(table.organizationId, table.formulaId, table.revisionNumber)]);
+
+// ============================================================
 // PRODUCTS
 // ============================================================
 
@@ -922,6 +957,27 @@ export const updatePbv2TreeVersionSchema = insertPbv2TreeVersionSchema.partial()
 export type InsertPbv2TreeVersion = z.infer<typeof insertPbv2TreeVersionSchema>;
 export type UpdatePbv2TreeVersion = z.infer<typeof updatePbv2TreeVersionSchema>;
 export type Pbv2TreeVersion = typeof pbv2TreeVersions.$inferSelect;
+
+/** Immutable Formula revision selected by one ProductVersion.  The database
+ * trigger permits retargeting only while that ProductVersion remains a Draft. */
+export const v2ProductVersionFormulaRevisionBindings = pgTable(
+  "v2_product_version_formula_revision_bindings",
+  {
+    organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    productId: varchar("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+    productVersionId: varchar("product_version_id").notNull().references(() => pbv2TreeVersions.id, { onDelete: "restrict" }),
+    formulaId: varchar("formula_id").notNull().references(() => v2FormulaIdentities.id, { onDelete: "restrict" }),
+    formulaRevisionId: varchar("formula_revision_id").notNull().references(() => v2FormulaRevisions.id, { onDelete: "restrict" }),
+    inputValues: jsonb("input_values").$type<Record<string, number | boolean>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.productVersionId] }),
+    index("v2_product_version_formula_revision_formula_idx").on(table.organizationId, table.formulaId, table.formulaRevisionId),
+  ],
+);
+export type V2ProductVersionFormulaRevisionBinding = typeof v2ProductVersionFormulaRevisionBindings.$inferSelect;
 
 export const productIntakeSessionSourceTypeValues = ["json_upload", "json_paste", "text_description"] as const;
 export const productIntakeSessionStatusValues = ["analyzed", "needs_answers", "ready_for_draft", "draft_created", "abandoned"] as const;

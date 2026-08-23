@@ -96,6 +96,12 @@ describe("CanonicalProductPublishOperations", () => {
     expect(validateCanonicalProductPublishTarget(intentionallyChanged).errors).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED" }),
     ]));
+
+    const revisionBound = structuredClone(legacy) as any;
+    revisionBound.formulaRevision = { id: "formula-revision-1", formulaId: "formula-1", expression: legacyExpression };
+    expect(validateCanonicalProductPublishTarget(revisionBound).errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED" }),
+    ]));
   });
 
   it("requires an actor, rejects another tenant, and is shared by the UI route", async () => {

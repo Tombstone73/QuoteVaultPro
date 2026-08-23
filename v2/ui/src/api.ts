@@ -426,6 +426,7 @@ export type ProductDraftFormulaPricing = Readonly<{
   lifecycle: "draft";
   source:
     | "none"
+    | "formula_revision"
     | "embedded_editable"
     | "library_product_inputs_editable"
     | "library_reference_read_only"
@@ -437,17 +438,26 @@ export type ProductDraftFormulaPricing = Readonly<{
   inputs: readonly Readonly<{
     key: string;
     label: string;
+    type?: "number" | "integer" | "boolean";
+    required?: boolean;
+    defaultValue?: number | boolean;
+    maximum?: number;
     unit?: "in" | "sq_ft";
     minimum?: number;
     exclusiveMinimum?: boolean;
   }>[];
   unavailableReason?: string;
   formulaId?: string;
+  formulaRevisionId?: string;
+  formulaRevisionNumber?: number;
   formulaName?: string;
   expression: string;
   legacyExpression?: string;
   canAdoptLegacyFormula?: boolean;
   variables: Record<string, number>;
+  /** Present for canonical FormulaRevision bindings; omitted by temporary
+   * legacy Formula compatibility reads. */
+  inputValues?: Record<string, number | boolean>;
   allowRotation: boolean;
   rotationControl?: ProductRotationControl;
   supportedRuntimeVariables: readonly string[];
@@ -459,6 +469,34 @@ export type ProductFormulaLibraryEntry = Readonly<{
   code?: string | null;
   expression: string;
   config?: unknown;
+}>;
+/** Formula-domain read model. New authoring must use V2 Formula revisions,
+ * not the mutable legacy `/api/pricing-formulas` endpoint. */
+export type FormulaDomainListEntry = Readonly<{
+  formulaId: string;
+  name: string;
+  description?: string;
+  visibility: "product_scoped" | "library";
+  status: "active" | "inactive" | "archived";
+  currentRevisionId: string;
+  revision: Readonly<{ formulaRevisionId: string; revisionNumber: number; expression: string; declaredInputs: readonly unknown[] }>;
+  usageCount?: number;
+}>;
+export type FormulaDomainDeclaredInput = Readonly<{
+  key: string;
+  label: string;
+  description?: string;
+  type: "number" | "integer" | "boolean";
+  required: boolean;
+  defaultValue?: number | boolean;
+  minimum?: number;
+  maximum?: number;
+  unit?: "in" | "sq_ft";
+  authorable: boolean;
+}>;
+export type FormulaDomainDefinition = Readonly<{
+  expression: string;
+  declaredInputs: readonly FormulaDomainDeclaredInput[];
 }>;
 export type ProductDraftOptionPricingImpact =
   | Readonly<{
@@ -1717,10 +1755,12 @@ export const productApi = {
     input: Readonly<{
       draftVersionId: string;
       expectedDraftUpdatedAt: string;
-      source: "embedded" | "library";
+      source: "formula_revision" | "embedded" | "library";
       formulaId?: string;
-      expression: string;
-      variables: Record<string, number>;
+      formulaRevisionId?: string;
+      expression?: string;
+      variables?: Record<string, number>;
+      inputValues?: Record<string, number | boolean>;
       allowRotation: boolean;
       rotationControl?: ProductRotationControl;
     }>,
@@ -1835,6 +1875,26 @@ export const productApi = {
         body: JSON.stringify({ businessRequestId, ...input }),
       },
     ),
+};
+export const formulaApi = {
+  list: (organizationId: string, query = "") =>
+    request<readonly FormulaDomainListEntry[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas${query ? `?q=${encodeURIComponent(query)}` : ""}`),
+  get: (organizationId: string, formulaId: string) =>
+    request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}`),
+  revisions: (organizationId: string, formulaId: string) =>
+    request<readonly FormulaDomainListEntry["revision"][]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/revisions`),
+  usage: (organizationId: string, formulaId: string) =>
+    request<readonly Readonly<{ productId: string; productVersionId: string; formulaRevisionId: string; revisionNumber: number; productName: string; versionStatus: string }>[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/usage`),
+  create: (organizationId: string, businessRequestId: string, input: Readonly<{ name: string; description?: string; visibility: "product_scoped" | "library"; definition: FormulaDomainDefinition }>) =>
+    request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+  revise: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; definition: FormulaDomainDefinition }>) =>
+    request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/revisions`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+  updateMetadata: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; name: string; description: string | null }>) =>
+    request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/metadata`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+  setVisibility: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; visibility: "product_scoped" | "library" }>) =>
+    request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/visibility`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+  setStatus: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; status: "active" | "inactive" | "archived" }>) =>
+    request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/status`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
 };
 export const financeApi = {
   overview: (organizationId: string) =>
