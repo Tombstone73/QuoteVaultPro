@@ -17,7 +17,11 @@
 import { createHash } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import type { OperationContext } from "../src/application/operation.js";
+import type { Principal } from "../src/authorization/principals.js";
+import { PermissionSetPrincipalIssuer } from "../src/authorization/permissionSets.js";
 import { validateFormulaRevisionInputValues, type FormulaDeclaredInput } from "../src/modules/pricing/formulaDomain.js";
+import { canonicalJson } from "../src/modules/shared/commercialValues.js";
+import { PostgresPermissionAuthorityReader } from "../infrastructure/authorization/postgresPermissionAuthorityRead.js";
 import { FormulaDomainApplicationService } from "../src/modules/pricing/formulaDomain.js";
 import { selectFormulaFreezeRehearsalConnection } from "../src/modules/pricing/formulaFreezeRehearsalTargetIdentity.js";
 import { PostgresFormulaDomainTransactionRunner } from "../infrastructure/pricing/postgresFormulaDomain.js";
@@ -28,18 +32,15 @@ type State = Readonly<{ organizationId: string; productId: string; productVersio
 const required = (value: string | undefined, name: string): string => { const value1 = value?.trim(); if (!value1) throw new Error(`${name} is required.`); return value1; };
 const arg = (name: string): string => { const index = process.argv.indexOf(name); return required(index < 0 ? undefined : process.argv[index + 1], name); };
 const exactFlag = (name: string) => process.argv.filter((value) => value === name).length === 1;
-const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// ProductVersion JSON is semantically unordered.  The immutable-state proof
+// must not depend on the key order returned by a particular PostgreSQL driver.
+const digest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const parseInputValues = (): Readonly<Record<string, unknown>> => {
   const raw = arg("--input-values-json");
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error("--input-values-json must be valid JSON."); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("--input-values-json must be a JSON object.");
   return value as Record<string, unknown>;
-};
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
-  return JSON.stringify(value);
 };
 
 const loadState = async (client: PoolClient, input: Readonly<{ organizationId: string; productId: string; productVersionId: string; formulaId: string; formulaRevisionId: string }>): Promise<Readonly<{ state: State; declaredInputs: readonly FormulaDeclaredInput[] }>> => {
@@ -69,11 +70,11 @@ const loadState = async (client: PoolClient, input: Readonly<{ organizationId: s
 };
 const sameBinding = (actual: Binding | undefined, expected: Binding) => Boolean(actual && actual.formulaId === expected.formulaId && actual.formulaRevisionId === expected.formulaRevisionId && canonicalJson(actual.inputValues ?? {}) === canonicalJson(expected.inputValues));
 const output = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const context = (organizationId: string, actorUserId: string, businessRequestId: string): OperationContext => ({
+const context = (organizationId: string, principal: Principal, businessRequestId: string): OperationContext => ({
   organizationId,
   operationId: businessRequestId,
   businessRequest: { id: businessRequestId, payloadFingerprint: businessRequestId },
-  principal: { kind: "staff", organizationId, userId: actorUserId, authority: { membershipId: `formula-freeze-rehearsal:${organizationId}:${actorUserId}`, capabilities: ["pricing.configure"] } },
+  principal,
 });
 
 async function main(): Promise<void> {
@@ -95,6 +96,14 @@ async function main(): Promise<void> {
     let clientReleased = false;
     try {
       await client.query("BEGIN READ ONLY"); transactionOpen = true;
+      // Rehearsals remain clone-only, but their write path must exercise the
+      // same fresh permission-set issuance as the deployed Formula runtime.
+      const principal = apply
+        ? await new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(client)).issue(
+          { subjectId: actorUserId!, authenticationMethod: "session", authenticatedAt: new Date() },
+          { organizationId: input.organizationId },
+        )
+        : undefined;
       const before = await loadState(client, input);
       const normalizedValues = validateFormulaRevisionInputValues(before.declaredInputs, rawInputValues);
       const expected: Binding = { formulaId: input.formulaId, formulaRevisionId: input.formulaRevisionId, inputValues: normalizedValues };
@@ -108,7 +117,7 @@ async function main(): Promise<void> {
       client.release();
       clientReleased = true;
       const service = new FormulaDomainApplicationService(new PostgresFormulaDomainTransactionRunner(pool));
-      const saved = await service.freezeHistoricalProductVersion(context(input.organizationId, actorUserId!, businessRequestId!), {
+      const saved = await service.freezeHistoricalProductVersion(context(input.organizationId, principal!, businessRequestId!), {
         businessRequestId: businessRequestId!, productVersionId: input.productVersionId, formulaRevisionId: input.formulaRevisionId,
         inputValues: normalizedValues, expectedLifecycle: before.state.lifecycle,
       });
