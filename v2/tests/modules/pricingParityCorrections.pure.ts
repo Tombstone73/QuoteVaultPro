@@ -121,6 +121,123 @@ const run = async (): Promise<void> => {
   assert.equal(libraryWins.ok, true);
   if (libraryWins.ok) assert.equal(libraryWins.value.rules.formula?.source, "library");
 
+  // A shared Formula Library supplies its expression and defaults, never a
+  // ProductVersion's commercial input values.  These two ProductVersions use
+  // the same legacy expression but deliberately retain different sheet policy.
+  const sheetExpression = "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price";
+  const librarySheetDefaults = {
+    sheet_width: 48,
+    sheet_length: 96,
+    usable_drop_min: 24,
+    billable_length_increment: 12,
+    minimum_billable_sqft: 3,
+  };
+  const productAInputs = {
+    sheet_width: 48,
+    sheet_length: 96,
+    usable_drop_min: 0,
+    billable_length_increment: 1,
+    minimum_billable_sqft: 32,
+  };
+  const productBInputs = {
+    sheet_width: 60,
+    sheet_length: 120,
+    usable_drop_min: 2,
+    billable_length_increment: 6,
+    minimum_billable_sqft: 20,
+  };
+  const librarySheetFormula = {
+    id: "shared-sheet-formula", code: "SHEET", profileKey: "formula", expression: sheetExpression,
+    config: { variables: librarySheetDefaults }, updatedAt: "2026-08-23T00:00:00.000Z",
+  };
+  const resolveSharedSheetFormula = (id: string, treeMeta: Record<string, unknown>, legacyProductPricingConfig?: Record<string, unknown>, formulaRevision?: any) =>
+    resolveActivePbv2PricingInput(sellable(id), {
+      id: `${id}-tree`, schemaVersion: 2, publishedAt: "2026-08-23T00:00:00.000Z",
+      treeJson: activeTree(treeMeta), productMeasurementMode: "dimensions_required", productPricingProfileKey: "flat_goods",
+      ...(legacyProductPricingConfig ? { legacyProductPricingConfig } : {}),
+      ...(formulaRevision ? { formulaRevision } : {}), formula: librarySheetFormula,
+    }, { organizationId, productId: brandedId<"ProductId">(id), quantity: 1, dimensions: { width: decimalText("24"), height: decimalText("18"), unit: "in" } });
+  const productA = resolveSharedSheetFormula("product-a-inputs", { formulaVariables: productAInputs });
+  const productB = resolveSharedSheetFormula("product-b-inputs", { pricingFormulaVariables: productBInputs });
+  assert.equal(productA.ok, true);
+  assert.equal(productB.ok, true);
+  if (productA.ok) {
+    assert.equal(productA.value.rules.formula?.source, "library");
+    assert.deepEqual(productA.value.rules.formula?.variables, { ...productAInputs, allow_rotation: 0 }, "Product A's ProductVersion input values override shared Formula defaults");
+  }
+  if (productB.ok) assert.deepEqual(productB.value.rules.formula?.variables, { ...productBInputs, allow_rotation: 0 }, "Product B retains its own ProductVersion input values for the same shared Formula");
+
+  const compatibilityFallback = resolveSharedSheetFormula("compatibility-input-fallback", {}, { formulaVariables: productBInputs });
+  const libraryFallback = resolveSharedSheetFormula("library-input-fallback", {});
+  assert.equal(compatibilityFallback.ok, true);
+  assert.equal(libraryFallback.ok, true);
+  if (compatibilityFallback.ok) assert.deepEqual(compatibilityFallback.value.rules.formula?.variables, { ...productBInputs, allow_rotation: 0 }, "an older ProductVersion without tree inputs retains the Product compatibility fallback");
+  if (libraryFallback.ok) assert.deepEqual(libraryFallback.value.rules.formula?.variables, { ...librarySheetDefaults, allow_rotation: 0 }, "shared Formula defaults are used only when no ProductVersion or Product compatibility inputs exist");
+
+  const declaredSheetInputs = Object.keys(productAInputs).map((key) => ({ key, label: key, type: "number" as const, required: true, minimum: 0, authorable: true }));
+  const boundRevision = resolveSharedSheetFormula("bound-sheet-inputs", { formulaVariables: productBInputs }, { formulaVariables: librarySheetDefaults }, {
+    id: "sheet-revision-1", formulaId: "sheet-formula-identity", revisionNumber: 1, expression: sheetExpression,
+    declaredInputs: declaredSheetInputs, inputValues: productAInputs, createdAt: "2026-08-23T00:00:00.000Z",
+  });
+  assert.equal(boundRevision.ok, true);
+  if (boundRevision.ok) {
+    assert.equal(boundRevision.value.rules.formula?.source, "formula_revision");
+    assert.deepEqual(boundRevision.value.rules.formula?.variables, { ...productAInputs, allow_rotation: 0 }, "a FormulaRevision binding preserves its ProductVersion-owned input map after the shared Formula changes");
+  }
+
+  // Exercise the resolver and canonical adapter together: the shared library
+  // still has conflicting defaults, but these ProductVersion-owned sheet
+  // inputs preserve the established Coroplast-style commercial vectors.
+  const coroplastStyleTree = (allowRotation: boolean) => activeTree({
+    formulaVariables: productAInputs,
+    pricingV2: {
+      base: { perSqftCents: 137.5 },
+      tierBasis: "computed_sheet_usage",
+      allowRotation,
+      qtyTiers: [
+        { id: "sheet-1", minQty: 1, perSqftCents: 137.5 },
+        { id: "sheet-10", minQty: 10, perSqftCents: 103 },
+        { id: "sheet-51", minQty: 51, perSqftCents: 94 },
+      ],
+    },
+  });
+  const resolveCoroplastStyle = (id: string, width: string, height: string, quantity: number, allowRotation: boolean) =>
+    resolveActivePbv2PricingInput(sellable(id), {
+      id: `${id}-tree`, schemaVersion: 2, publishedAt: "2026-08-23T00:00:00.000Z",
+      treeJson: coroplastStyleTree(allowRotation), productMeasurementMode: "dimensions_required", productPricingProfileKey: "flat_goods",
+      formula: librarySheetFormula,
+    }, { organizationId, productId: brandedId<"ProductId">(id), quantity, dimensions: { width: decimalText(width), height: decimalText(height), unit: "in" } });
+  const priceResolvedFormula = async (resolved: ReturnType<typeof resolveCoroplastStyle>) => {
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) throw new Error(resolved.error.publicMessage);
+    return adapter.calculate({
+      organizationId,
+      sellableProduct: {
+        ...resolved.value.sellableProduct,
+        pricingConfiguration: {
+          ...resolved.value.sellableProduct.pricingConfiguration,
+          version: resolved.value.resolvedConfiguration.pricingConfigurationVersion,
+          contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash,
+        },
+      },
+      resolvedConfiguration: resolved.value.resolvedConfiguration,
+      rules: resolved.value.rules,
+      nestingEstimate: resolved.value.nestingEstimate,
+      pricingContext: { channel: "staff", effectiveAt: "2026-08-23T00:00:00.000Z" },
+    });
+  };
+  const rotationOff = resolveCoroplastStyle("coroplast-style-off", "24", "36", 5, false);
+  const rotationOn = resolveCoroplastStyle("coroplast-style-on", "24", "36", 5, true);
+  assert.equal(rotationOff.ok && rotationOff.value.nestingEstimate?.facts.effectiveRotation, false);
+  assert.equal(rotationOn.ok && rotationOn.value.nestingEstimate?.facts.effectiveRotation, true);
+  assert.equal((await priceResolvedFormula(rotationOff)).calculatedLineAmount.cents, 8800);
+  assert.equal((await priceResolvedFormula(rotationOn)).calculatedLineAmount.cents, 4400);
+  for (const [quantity, expectedCents] of [[8, 4400], [10, 4400], [91, 32960], [100, 32960], [101, 36256]] as const) {
+    const resolved = resolveCoroplastStyle(`coroplast-style-default-${quantity}`, "24", "18", quantity, false);
+    assert.equal(resolved.ok && resolved.value.nestingEstimate?.facts.effectiveRotation, false);
+    assert.equal((await priceResolvedFormula(resolved)).calculatedLineAmount.cents, expectedCents);
+  }
+
   const revisionWins = resolveActivePbv2PricingInput(sellable("revision-wins"), {
     id: "tree", schemaVersion: 2, publishedAt: "2026-08-22T00:00:00.000Z", treeJson: activeTree({ pricingV2: { base: { perSqftCents: 300 } }, pricingFormula: "3" }), productMeasurementMode: "dimensions_required", productPricingProfileKey: "square_foot",
     formulaRevision: { id: "revision-1", formulaId: "identity-1", revisionNumber: 1, expression: "ceil((((w+.25)*(h+.25))*q)/144)*p", declaredInputs: [], inputValues: {}, createdAt: "2026-08-22T00:00:00.000Z" },

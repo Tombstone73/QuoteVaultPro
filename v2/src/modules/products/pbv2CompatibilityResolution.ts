@@ -177,6 +177,32 @@ const numberVariable = (
   return Number.isFinite(number) && (options.allowZero ? number >= 0 : number > 0) ? number : null;
 };
 
+/**
+ * Formula expressions may still come from a shared legacy Formula Library
+ * record while a ProductVersion is being transitioned.  Its config is only a
+ * default input map; it must never replace inputs frozen in the ProductVersion
+ * tree.  The Product row compatibility config remains between those two
+ * layers so an older ProductVersion with no tree values keeps its established
+ * fallback behavior.
+ */
+const resolveUnboundFormulaInputValues = (
+  meta: Readonly<Record<string, unknown>>,
+  legacyProductPricingConfig: JsonValue | null | undefined,
+  formulaConfig: JsonValue | null | undefined,
+): Record<string, unknown> => {
+  const legacyProductConfig = record(legacyProductPricingConfig);
+  return {
+    // Least specific: shared Formula Library defaults / legacy parameters.
+    ...extractFormulaVariables(record(formulaConfig)),
+    // Product compatibility facts are still more specific than shared defaults.
+    ...record(legacyProductConfig?.variables),
+    ...record(legacyProductConfig?.formulaVariables),
+    // Immutable ProductVersion tree facts are the historical commercial input.
+    ...record(meta.pricingFormulaVariables),
+    ...record(meta.formulaVariables),
+  };
+};
+
 type ResolvedRotationPolicy = Readonly<{
   /** Effective nesting policy after the optional line-item option control. */
   allowRotation: boolean;
@@ -397,7 +423,6 @@ export const resolveActivePbv2PricingInput = (
   // `allow_rotation` remains a numeric runtime argument for the small Formula
   // evaluator only. Its value is derived from the typed ProductVersion policy,
   // never persisted as a numeric Formula input.
-  const legacyConfig = record(source.legacyProductPricingConfig);
   const numericSelections = Object.fromEntries(
     Object.entries(visibility.effectiveSelections).filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
   );
@@ -420,11 +445,11 @@ export const resolveActivePbv2PricingInput = (
           ...revisionInputValues,
         }
       : {
-          ...extractFormulaVariables(record(source.formula?.config)),
-          ...record(meta.pricingFormulaVariables),
-          ...record(meta.formulaVariables),
-          ...record(legacyConfig?.variables),
-          ...record(legacyConfig?.formulaVariables),
+          ...resolveUnboundFormulaInputValues(
+            meta,
+            source.legacyProductPricingConfig,
+            source.formula?.config,
+          ),
         }),
     ...numericSelections,
     allow_rotation: rotation.allowRotation ? 1 : 0,
