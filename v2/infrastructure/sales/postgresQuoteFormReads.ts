@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import type { QuoteFormReadPort } from "../../src/interfaces/http/quoteRoutes.js";
-import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../../shared/optionTreeV2Runtime.js";
+import { validateOptionTreeV2 } from "../../../shared/optionTreeV2Runtime.js";
+import { resolveProductOptionConfiguration } from "../../../shared/productOptionConfigurationResolver.js";
 import type { OptionTreeV2 } from "../../../shared/optionTreeV2.js";
 import { resolveProductionRequirementSnapshot } from "../../src/modules/shared/productionRequirements.js";
 
@@ -45,20 +46,21 @@ export class PostgresQuoteFormReads implements QuoteFormReadPort {
     const row = result.rows[0];
     if (!row || !validateOptionTreeV2(row.tree_json as OptionTreeV2).ok) return null;
     const tree = row.tree_json as OptionTreeV2;
-    const visibility = resolveRuntimeVisibility(tree, selections as never);
+    const configuration = resolveProductOptionConfiguration(tree, selections as never);
     const productionRequirements = resolveProductionRequirementSnapshot(
       (tree.meta as Readonly<Record<string, unknown>> | undefined)?.productionUnitSpecification,
-      visibility.effectiveSelections as never,
+      configuration.effectiveSelections as never,
     );
     return {
       productId, displayName: row.name, measurementMode: row.measurement_mode,
       requiresDimensions: row.measurement_mode === "dimensions_required", supportedDimensionUnits: ["in"],
-      effectiveSelections: visibility.effectiveSelections,
+      effectiveSelections: configuration.effectiveSelections,
       productionRequirements,
-      fields: visibility.visibleNodeIds.flatMap((id) => {
+      fields: configuration.visibleNodeIds.flatMap((id) => {
         const node = tree.nodes[id];
         if (!node || node.kind === "group" || !node.input) return [];
-        return [{ selectionKey: node.input.selectionKey, label: node.label, inputType: node.input.type, required: Boolean(node.input.required), defaultValue: node.input.defaultValue, choices: (node.choices ?? []).map((choice) => ({ value: choice.value, label: choice.label })) }];
+        const selectionKey = node.input.selectionKey ?? node.id;
+        return [{ selectionKey, label: node.label, inputType: node.input.type, required: configuration.requiredOptionGroups.includes(selectionKey) || Boolean(node.input.required), defaultValue: node.input.defaultValue, choices: (node.choices ?? []).map((choice) => ({ value: choice.value, label: choice.label })) }];
       }),
     };
   }
