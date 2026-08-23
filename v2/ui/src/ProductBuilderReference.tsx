@@ -26,6 +26,7 @@ import { PricingPreviewRail, resolvePreviewConfiguration } from "./productBuilde
 import { BasicsSection } from "./productBuilder/basics";
 import { RuleCards, projectCanonicalConditions } from "./productBuilder/ruleCards";
 import { OptionRulesSection } from "./productBuilder/option-rules";
+import { acceptsLivePreviewResponse, prepareLivePreview, presentLivePreview } from "./productBuilder/livePricingPreview";
 import { ReviewSummary } from "./productBuilder/review";
 import type { ProductBuilderSection } from "./productBuilder/lovableRoot";
 import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
@@ -43,6 +44,11 @@ import type { ProductOptionRule } from "../../../shared/productOptionRules";
 export type DirtySection = "general" | "options" | "pricing" | "matrix" | "formula" | "impacts" | "recipe" | "routing";
 export type PublishDraftRevision = Readonly<{ draftVersionId: string; expectedDraftUpdatedAt: string }>;
 export type PublishGate = Readonly<{ allowed: boolean; reason?: string }>;
+type ConfirmedPricingPreview = Readonly<{
+  productId: string;
+  fingerprint: string;
+  value: Awaited<ReturnType<typeof productApi.previewDraftPricing>>;
+}>;
 
 /** Pure client-side guard only. The canonical publisher remains the readiness
  * and revision authority once this gate permits an attempt. */
@@ -221,9 +227,8 @@ export const ProductBuilderReference = ({
   const [requiresReconciliation, setRequiresReconciliation] = useState(false);
   const [saving, setSaving] = useState(false);
   const [previewInputs, setPreviewInputs] = useState({ quantity: "1", width: "24", height: "18", selections: {} as Record<string, unknown> });
-  const [preview, setPreview] = useState<Awaited<ReturnType<typeof productApi.previewDraftPricing>> | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [confirmedPreview, setConfirmedPreview] = useState<ConfirmedPricingPreview | null>(null);
+  const [debouncedPreviewFingerprint, setDebouncedPreviewFingerprint] = useState<string | null>(null);
   const sectionJumpRef = useRef<((section: ProductBuilderSection) => void) | null>(null);
   const initialised = useRef<string | null>(null);
   const authoritativeDraft = useRef<PublishDraftRevision | null>(null);
@@ -232,6 +237,67 @@ export const ProductBuilderReference = ({
     generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data
     && formulaRead.isFetched && matrixRead.isFetched && impactsRead.isFetched,
   );
+  /** The shared resolver may update the configuration UI immediately, but it
+   * never calculates pricing. This preparation only prevents a misleading
+   * server request until the current configuration is complete. */
+  const previewConfiguration = useMemo(
+    () => resolvePreviewConfiguration(draft.options, draft.optionRules, previewInputs.selections),
+    [draft.optionRules, draft.options, previewInputs.selections],
+  );
+  const previewOptionLabels = useMemo(
+    () => Object.fromEntries(draft.options.map((option) => [option.selectionKey, option.label])),
+    [draft.options],
+  );
+  const livePreviewPreparation = useMemo(() => prepareLivePreview({
+    measurementMode: draft.general.measurementMode,
+    quantity: previewInputs.quantity,
+    width: previewInputs.width,
+    height: previewInputs.height,
+    configuration: previewConfiguration,
+    optionLabels: previewOptionLabels,
+  }), [draft.general.measurementMode, previewConfiguration, previewInputs.height, previewInputs.quantity, previewInputs.width, previewOptionLabels]);
+  const currentPreviewFingerprint = livePreviewPreparation.kind === "ready" ? livePreviewPreparation.request.fingerprint : null;
+  /** 300ms keeps typing fluid while still making every settled configuration
+   * request a canonical server preview. */
+  useEffect(() => {
+    if (!currentPreviewFingerprint) { setDebouncedPreviewFingerprint(null); return; }
+    const timer = window.setTimeout(() => setDebouncedPreviewFingerprint(currentPreviewFingerprint), 300);
+    return () => window.clearTimeout(timer);
+  }, [currentPreviewFingerprint]);
+  const debouncedPreviewRequest = livePreviewPreparation.kind === "ready" && livePreviewPreparation.request.fingerprint === debouncedPreviewFingerprint
+    ? livePreviewPreparation.request
+    : null;
+  /** React Query owns request/cache identity. A response remains attached to
+   * its fingerprinted key, and is accepted below only if that fingerprint is
+   * still the rendered configuration. Older requests can never repaint it. */
+  const livePricingPreview = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "reference-product-builder", productId ?? "new", "live-pricing-preview", debouncedPreviewRequest?.fingerprint ?? "incomplete"],
+    queryFn: () => {
+      if (!productId || !debouncedPreviewRequest) throw new Error("A complete saved Product Draft is required before pricing can be previewed.");
+      return productApi.previewDraftPricing(organizationId, productId, debouncedPreviewRequest.payload);
+    },
+    enabled: Boolean(productId && sourceReady && debouncedPreviewRequest),
+    retry: false,
+    staleTime: 0,
+  });
+  useEffect(() => {
+    if (!livePricingPreview.data || !productId || !acceptsLivePreviewResponse(currentPreviewFingerprint, debouncedPreviewRequest?.fingerprint ?? null)) return;
+    setConfirmedPreview({ productId, fingerprint: debouncedPreviewRequest!.fingerprint, value: livePricingPreview.data });
+    setPreviewInputs((current) => {
+      const effectiveSelections = livePricingPreview.data.configuration.effectiveSelections;
+      return JSON.stringify(current.selections) === JSON.stringify(effectiveSelections)
+        ? current
+        : { ...current, selections: { ...effectiveSelections } };
+    });
+  }, [currentPreviewFingerprint, debouncedPreviewRequest, livePricingPreview.data, productId]);
+  /** Apply shared rule clear/default effects before the request reaches the
+   * server, so a hidden stale selection can never be priced. */
+  useEffect(() => {
+    const effectiveSelections = previewConfiguration.effectiveSelections;
+    setPreviewInputs((current) => JSON.stringify(current.selections) === JSON.stringify(effectiveSelections)
+      ? current
+      : { ...current, selections: { ...effectiveSelections } });
+  }, [previewConfiguration.effectiveSelections]);
   useEffect(() => {
     if (!productId) { if (initialised.current !== "new") { setDraft(blankState()); initialised.current = "new"; } return; }
     if (!sourceReady || initialised.current === productId) return;
@@ -327,6 +393,9 @@ export const ProductBuilderReference = ({
       }
       else {
         await Promise.all([generalRead.refetch(), optionsRead.refetch(), pricingRead.refetch(), formulaRead.refetch(), matrixRead.refetch(), impactsRead.refetch(), recipeRead.refetch(), routingRead.refetch()]);
+        // The Draft just advanced server-side. Keep the same input fingerprint
+        // but force its canonical preview cache entry to be re-authorized.
+        await client.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "reference-product-builder", id, "live-pricing-preview"] });
         void client.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "products"] });
       }
       return true;
@@ -446,29 +515,23 @@ export const ProductBuilderReference = ({
     production: draft.general.productionUnitSpecification,
     selectionKeys: optionSelectionKeys,
   }), [draft.general.productionUnitSpecification, draft.options, draft.recipe, optionSelectionKeys]);
-  const runPreview = useCallback(async () => {
-    if (!productId || previewLoading) return;
-    setPreviewLoading(true);
-    setPreviewError(null);
-    try {
-      const value = await productApi.previewDraftPricing(organizationId, productId, {
-        quantity: Number(previewInputs.quantity),
-        ...(draft.general.measurementMode === "dimensions_required" ? { width: Number(previewInputs.width), height: Number(previewInputs.height) } : {}),
-        selections: resolvePreviewConfiguration(draft.options, draft.optionRules, previewInputs.selections).effectiveSelections,
-      });
-      setPreview(value);
-      setPreviewInputs((current) => ({
-        ...current,
-        selections: { ...value.configuration.effectiveSelections },
-      }));
-    } catch (error) {
-      setPreview(null);
-      const detail = error as { message?: string };
-      setPreviewError(detail.message ?? "The canonical pricing preview could not be resolved.");
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [draft.general.measurementMode, draft.optionRules, draft.options, organizationId, previewInputs, previewLoading, productId]);
+  const currentConfirmedPreview = confirmedPreview && confirmedPreview.productId === productId
+    ? { fingerprint: confirmedPreview.fingerprint, value: confirmedPreview.value }
+    : null;
+  const previewPresentation = presentLivePreview({
+    currentFingerprint: currentPreviewFingerprint,
+    responseFingerprint: debouncedPreviewRequest?.fingerprint ?? null,
+    debouncing: livePreviewPreparation.kind === "ready" && debouncedPreviewRequest?.fingerprint !== currentPreviewFingerprint,
+    fetching: livePricingPreview.isFetching,
+    serverError: livePricingPreview.isError ? (livePricingPreview.error as { message?: string }).message ?? "The canonical pricing preview could not be resolved." : null,
+    confirmed: currentConfirmedPreview,
+  });
+  const displayedPreview = previewPresentation.confirmed?.value ?? null;
+  const previewIsUpdating = previewPresentation.updating;
+  const previewError = previewPresentation.error;
+  const retryPreview = useCallback(() => {
+    if (livePreviewPreparation.kind === "ready") void livePricingPreview.refetch();
+  }, [livePricingPreview, livePreviewPreparation.kind]);
   if (productId && !sourceReady) return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
   return <LovableProductBuilderRoot
     title={draft.general.displayName || "Untitled product"}
@@ -476,7 +539,7 @@ export const ProductBuilderReference = ({
     subtitle={lifecycleSubtitle}
     onSave={() => void runSave()} saving={saving} onPublish={requestPublish} publishing={publishing} canEdit={canEdit} persisted={Boolean(productId)} saveError={saveError} publishDisabled={!publishGate.allowed} publishBlockedReason={publishGate.reason} findings={{ errors: issueCount, warnings: 0 }}
     sectionJumpRef={sectionJumpRef}
-  rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} rules={draft.optionRules} selectionKeys={optionSelectionKeys} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={(next) => { setPreviewInputs(next); setPreview(null); setPreviewError(null); }} result={preview} loading={previewLoading} error={previewError} onPreview={() => void runPreview()} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={reviewFindings.map((finding, index) => ({ severity: finding.severity, code: `PRODUCT_DRAFT_${index}`, message: finding.message, section: finding.message.startsWith("Product name") ? "basics" : "pricing" }))} />}
+  rail={<PricingPreviewRail productId={productId} measurementMode={draft.general.measurementMode} options={draft.options} rules={draft.optionRules} selectionKeys={optionSelectionKeys} recipe={draft.recipe} production={draft.general.productionUnitSpecification} inputs={previewInputs} onInputsChange={setPreviewInputs} result={displayedPreview} loading={previewIsUpdating} error={previewError} stale={previewPresentation.stale || previewIsUpdating || Boolean(previewError)} canRetry={Boolean(previewError)} onPreview={retryPreview} onJump={(id) => sectionJumpRef.current?.(id as ProductBuilderSection)} findings={reviewFindings.map((finding, index) => ({ severity: finding.severity, code: `PRODUCT_DRAFT_${index}`, message: finding.message, section: finding.message.startsWith("Product name") ? "basics" : "pricing" }))} />}
   >{{
     basics: <BasicsSection general={draft.general} productTypeLabel={product?.productType?.displayName} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
     options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><OptionRulesSection options={draft.options} rules={draft.optionRules} disabled={!canEdit || saving} onChange={(optionRules) => patch("options", (value) => ({ ...value, optionRules }))} /><Disclosure label={`Recipe & production conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
