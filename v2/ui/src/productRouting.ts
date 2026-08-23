@@ -3,7 +3,7 @@ export type ProductBuilderLocation = Readonly<{ productId?: string; newProduct?:
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
 export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "artwork"; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "prepress" }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "artwork"; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "prepress" | "formulas" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -136,7 +136,7 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   const proofing = readProofingLocation(pathname);
   if (proofing) return { page: "proofing", ...proofing };
   const page = pathname.replace(/^\/+|\/+$/gu, "");
-  return page === "appearance" || page === "routing" || page === "payments" || page === "prepress" ? { page } : null;
+  return page === "appearance" || page === "routing" || page === "payments" || page === "prepress" || page === "formulas" ? { page } : null;
 };
 export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
 export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));
@@ -156,5 +156,5 @@ export const artworkPath = (orderId?: string, lineId?: string) => orderId ? line
 export const pushArtworkLocation = (orderId?: string, lineId?: string) => window.history.pushState({}, "", artworkPath(orderId, lineId));
 export const proofingPath = (proofWorkId?: string, orderId?: string, lineId?: string) => proofWorkId ? `/proofing/works/${encodeURIComponent(proofWorkId)}` : orderId && lineId ? `/proofing/orders/${encodeURIComponent(orderId)}/lines/${encodeURIComponent(lineId)}` : "/proofing";
 export const pushProofingLocation = (proofWorkId?: string, orderId?: string, lineId?: string) => window.history.pushState({}, "", proofingPath(proofWorkId, orderId, lineId));
-export const workspacePath = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress") => `/${page}`;
-export const pushWorkspaceLocation = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress") => window.history.pushState({}, "", workspacePath(page));
+export const workspacePath = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas") => `/${page}`;
+export const pushWorkspaceLocation = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas") => window.history.pushState({}, "", workspacePath(page));

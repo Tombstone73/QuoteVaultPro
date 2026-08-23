@@ -4,6 +4,7 @@ import {
   FormulaDomainApplicationService,
   type FormulaDomainTransactionRunner,
   type FormulaIdentity,
+  evaluateFormulaDefinition,
   validateFormulaDefinition,
   validateFormulaRevisionInputValues,
 } from "../../src/modules/pricing/formulaDomain.js";
@@ -57,6 +58,11 @@ const run = async (): Promise<void> => {
   assert.deepEqual(validateFormulaRevisionInputValues(inputs, { p: 3 }), { p: 3, copies: 1, allow_rotation: false });
   assert.throws(() => validateFormulaRevisionInputValues(inputs, { p: 3, unknown: 1 }), /not declared/);
   assert.throws(() => validateFormulaDefinition({ ...definition, expression: "unsupported_function(q)", }), /Formula expression is invalid/);
+  const evaluated = evaluateFormulaDefinition({ definition, width: 12, height: 24, quantity: 2, inputValues: { p: 3, copies: 2 } });
+  assert.equal(evaluated.result, 6, "Formula Tester uses the canonical evaluator with runtime geometry and declared inputs");
+  assert.deepEqual(evaluated.inputValues, { p: 3, copies: 2, allow_rotation: false });
+  assert.throws(() => evaluateFormulaDefinition({ definition, width: 0, height: 24, quantity: 1, inputValues: { p: 3 } }), /Width must be a positive finite number/);
+  assert.throws(() => evaluateFormulaDefinition({ definition, width: 12, height: 24, quantity: 1, inputValues: { p: 3, undeclared: 1 } }), /not declared/);
 
   const runner = new Runner();
   const service = new FormulaDomainApplicationService(runner);

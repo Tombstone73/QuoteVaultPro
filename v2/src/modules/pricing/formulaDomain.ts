@@ -28,6 +28,31 @@ export type FormulaRevisionDefinition = Readonly<{
   declaredInputs: readonly FormulaDeclaredInput[];
   validationEvidence?: Readonly<Record<string, unknown>>;
 }>;
+/**
+ * A transient Formula-domain evaluation request.  This deliberately accepts a
+ * definition rather than a ProductVersion: Formula Tester must be able to
+ * validate an unsaved revision without reading or changing commercial data.
+ */
+export type FormulaEvaluationInput = Readonly<{
+  definition: FormulaRevisionDefinition;
+  width: number;
+  height: number;
+  quantity: number;
+  /** Values for this revision's declared inputs only. */
+  inputValues?: Readonly<Record<string, unknown>>;
+  /** Optional tester rate for Formulae that use the standard p/base_price aliases. */
+  basePrice?: number;
+}>;
+export type FormulaEvaluationResult = Readonly<{
+  expression: string;
+  result: number;
+  width: number;
+  height: number;
+  quantity: number;
+  inputValues: Readonly<Record<string, FormulaInputValue>>;
+  /** Safe diagnostic scope supplied to the canonical Formula evaluator. */
+  variables: Readonly<Record<string, number>>;
+}>;
 export type FormulaRevision = Readonly<FormulaRevisionDefinition & {
   formulaRevisionId: string;
   formulaId: string;
@@ -128,6 +153,63 @@ export const validateFormulaInputValues = (declaredInputs: readonly FormulaDecla
 };
 /** Stable ProductVersion-binding validation entry point. */
 export const validateFormulaRevisionInputValues = validateFormulaInputValues;
+
+const positiveFinite = (value: unknown, label: string): number => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new V2ApplicationError("VALIDATION_ERROR", `${label} must be a positive finite number.`);
+  }
+  return value;
+};
+
+/**
+ * Evaluates a Formula through the same restricted V2 evaluator used by the
+ * canonical pricing spine.  It has no transaction, persistence, or
+ * ProductVersion dependency, so Formula Tester cannot accidentally mutate a
+ * Formula or product while typing.
+ */
+export const evaluateFormulaDefinition = (input: FormulaEvaluationInput): FormulaEvaluationResult => {
+  const definition = validateFormulaDefinition(input.definition);
+  const width = positiveFinite(input.width, "Width");
+  const height = positiveFinite(input.height, "Height");
+  const quantity = positiveFinite(input.quantity, "Quantity");
+  const requestedBasePrice = input.basePrice === undefined ? undefined : (() => {
+    if (typeof input.basePrice !== "number" || !Number.isFinite(input.basePrice) || input.basePrice < 0) {
+      throw new V2ApplicationError("VALIDATION_ERROR", "Base price must be a non-negative finite number.");
+    }
+    return input.basePrice;
+  })();
+  const inputValues = validateFormulaInputValues(definition.declaredInputs, input.inputValues ?? {});
+  const declaredScope = Object.fromEntries(Object.entries(inputValues).map(([key, value]) => [key, typeof value === "boolean" ? (value ? 1 : 0) : value]));
+  const declaredRate = [declaredScope.p, declaredScope.base_price, declaredScope.basePrice]
+    .find((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const basePrice = requestedBasePrice ?? declaredRate ?? 1;
+  const sqft = width * height / 144;
+  // Runtime geometry remains authoritative even if an invalid old definition
+  // attempted to declare one of these aliases.  Domain definitions are
+  // otherwise allowed to declare p/base_price for legacy-compatible use.
+  const variables = {
+    ...declaredScope,
+    w: width,
+    h: height,
+    q: quantity,
+    width,
+    height,
+    quantity,
+    sqft,
+    total_sqft: sqft * quantity,
+    totalSqft: sqft * quantity,
+    base_price: basePrice,
+    basePrice,
+    p: basePrice,
+  };
+  try {
+    const result = evaluateResolvedFormula(definition.expression, variables);
+    if (!Number.isFinite(result)) throw new Error("Formula returned a non-finite result.");
+    return { expression: definition.expression, result, width, height, quantity, inputValues, variables };
+  } catch (error) {
+    throw new V2ApplicationError("VALIDATION_ERROR", error instanceof Error ? `Formula could not be evaluated: ${error.message}` : "Formula could not be evaluated.");
+  }
+};
 
 export type CreateFormulaInput = Readonly<{ businessRequestId: string; name: string; description?: string; visibility: FormulaVisibility; definition: FormulaRevisionDefinition }>;
 export type ReviseFormulaInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; definition: FormulaRevisionDefinition }>;

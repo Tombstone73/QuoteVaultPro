@@ -76,6 +76,8 @@ export type UiBootstrap = Readonly<{
     customerView?: boolean;
     productView?: boolean;
     productEdit?: boolean;
+    /** Formula-domain authoring is deliberately separate from Product editing. */
+    pricingConfigure?: boolean;
     quoteOverridePrice: boolean;
     quoteCreate?: boolean;
     quoteEdit?: boolean;
@@ -508,6 +510,24 @@ export type FormulaDomainDeclaredInput = Readonly<{
 export type FormulaDomainDefinition = Readonly<{
   expression: string;
   declaredInputs: readonly FormulaDomainDeclaredInput[];
+}>;
+/** Server-authoritative, no-persistence Formula Tester contract. */
+export type FormulaDomainEvaluationInput = Readonly<{
+  definition: FormulaDomainDefinition;
+  width: number;
+  height: number;
+  quantity: number;
+  inputValues?: Readonly<Record<string, number | boolean>>;
+  basePrice?: number;
+}>;
+export type FormulaDomainEvaluationResult = Readonly<{
+  expression: string;
+  result: number;
+  width: number;
+  height: number;
+  quantity: number;
+  inputValues: Readonly<Record<string, number | boolean>>;
+  variables: Readonly<Record<string, number>>;
 }>;
 export type ProductDraftOptionPricingImpact =
   | Readonly<{
@@ -1902,6 +1922,8 @@ export const formulaApi = {
     request<readonly FormulaDomainRevision[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/revisions`),
   usage: (organizationId: string, formulaId: string) =>
     request<readonly Readonly<{ productId: string; productVersionId: string; formulaRevisionId: string; revisionNumber: number; productName: string; versionStatus: string }>[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/usage`),
+  evaluate: (organizationId: string, input: FormulaDomainEvaluationInput) =>
+    request<FormulaDomainEvaluationResult>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/test`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
   create: (organizationId: string, businessRequestId: string, input: Readonly<{ name: string; description?: string; visibility: "product_scoped" | "library"; definition: FormulaDomainDefinition }>) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
   revise: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; definition: FormulaDomainDefinition }>) =>

@@ -47,7 +47,7 @@ const app = () => {
     },
     service: {} as FormulaHttpDependencies["service"],
   };
-  return express().use("/v2/organizations/:organizationId/formulas", createFormulaRouter(dependencies));
+  return express().use(express.json()).use("/v2/organizations/:organizationId/formulas", createFormulaRouter(dependencies));
 };
 
 describe("V2 Formula-domain HTTP routes", () => {
@@ -67,5 +67,33 @@ describe("V2 Formula-domain HTTP routes", () => {
     await request(app()).get("/v2/organizations/org-a/formulas/missing/revisions").expect(404, { ok: false, error: { code: "NOT_FOUND", message: "The tenant-scoped Formula was not found." } });
     await request(app()).get("/v2/organizations/org-a/formulas/missing/usage").expect(404, { ok: false, error: { code: "NOT_FOUND", message: "The tenant-scoped Formula was not found." } });
     await request(app()).get("/v2/organizations/org-b/formulas/formula-a/revisions").expect(404);
+  });
+
+  test("evaluates an unsaved Formula definition through the server Formula-domain contract without persistence", async () => {
+    await request(app())
+      .post("/v2/organizations/org-a/formulas/test")
+      .send({
+        definition: {
+          expression: "ceil(total_sqft) * p + copies",
+          declaredInputs: [
+            { key: "copies", label: "Copies", type: "integer", required: true, minimum: 1, authorable: true },
+          ],
+        },
+        width: 12,
+        height: 12,
+        quantity: 2,
+        basePrice: 3,
+        inputValues: { copies: 2 },
+      })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({ ok: true, data: { expression: "ceil(total_sqft) * p + copies", result: 8, width: 12, height: 12, quantity: 2, inputValues: { copies: 2 } } });
+        expect(body.data.variables).toMatchObject({ w: 12, h: 12, q: 2, sqft: 1, total_sqft: 2, p: 3 });
+      });
+
+    await request(app())
+      .post("/v2/organizations/org-a/formulas/test")
+      .send({ definition: { expression: "copies", declaredInputs: [{ key: "copies", label: "Copies", type: "integer", required: true, authorable: true }] }, width: 1, height: 1, quantity: 1 })
+      .expect(400, { ok: false, error: { code: "VALIDATION_ERROR", message: "Formula input 'Copies' is required." } });
   });
 });

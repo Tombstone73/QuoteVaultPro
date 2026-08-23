@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ProductDraftFormulaPricing, ProductDraftPricing } from "../api";
-import { legacyFormulaCanBeAdopted, legacyFormulaCandidate, PricingEngine } from "./pricing-engine";
+import type { FormulaDomainListEntry, FormulaDomainRevision, ProductDraftFormulaPricing, ProductDraftPricing } from "../api";
+import { PricingEngine } from "./pricing-engine";
 
 const pricing: ProductDraftPricing = {
   productId: "product-1", draftVersionId: "draft-1", draftUpdatedAt: "2026-08-22T00:00:00.000Z", lifecycle: "draft",
@@ -16,15 +16,26 @@ const legacyFormula: ProductDraftFormulaPricing = {
   variables: {}, allowRotation: false, inputs: [], supportedRuntimeVariables: ["q", "w", "h", "p"], warnings: [],
 };
 
-assert.equal(legacyFormulaCandidate(legacyFormula), "ceil((((w+.25)*(h+.25))*q)/144)*p");
-assert.equal(legacyFormulaCanBeAdopted(legacyFormula, false, true), true);
-assert.equal(legacyFormulaCanBeAdopted(legacyFormula, true, true), false);
-assert.equal(legacyFormulaCanBeAdopted({ ...legacyFormula, canAdoptLegacyFormula: false }, false, true), false);
-
-const markup = renderToStaticMarkup(<PricingEngine pricing={pricing} formula={legacyFormula} onPricingChange={() => {}} onFormulaChange={() => {}} onAdoptLegacyFormula={() => {}} />);
-assert.match(markup, /Legacy formula/);
+const markup = renderToStaticMarkup(<PricingEngine pricing={pricing} formula={legacyFormula} formulaLibrary={[]} formulaRevisions={[]} onPricingChange={() => {}} onFormulaChange={() => {}} />);
+assert.match(markup, /Legacy compatibility Formula is read-only/);
 assert.match(markup, /ceil\(\(\(\(w\+\.25\)/);
-assert.match(markup, /Adopt into Draft/);
-assert.doesNotMatch(markup, /No Formula expression/);
+assert.match(markup, /Select a canonical Formula revision/);
+assert.doesNotMatch(markup, /Adopt into Draft/);
 
-console.log("Product Builder legacy Formula adoption UI tests passed.");
+const revision: FormulaDomainRevision = {
+  formulaRevisionId: "revision-2", formulaId: "formula-1", organizationId: "org-1", revisionNumber: 2,
+  expression: "ceil((w * h * q) / 144) * p", declaredInputs: [{ key: "roll_width", label: "Roll width", type: "number", required: true, defaultValue: 54, unit: "in", authorable: true }],
+  validationEvidence: {}, createdAt: "2026-08-22T00:00:00.000Z",
+};
+const formulaEntry: FormulaDomainListEntry = { formulaId: "formula-1", name: "Roll material", visibility: "library", status: "active", currentRevisionId: revision.formulaRevisionId, revision };
+const canonicalFormula: ProductDraftFormulaPricing = { ...legacyFormula, source: "formula_revision", formulaId: formulaEntry.formulaId, formulaRevisionId: revision.formulaRevisionId, formulaRevisionNumber: 2, formulaName: formulaEntry.name, expression: revision.expression, inputValues: { roll_width: 54 }, legacyExpression: undefined };
+const canonicalMarkup = renderToStaticMarkup(<PricingEngine pricing={{ ...pricing, editable: true }} formula={canonicalFormula} formulaLibrary={[formulaEntry]} formulaRevisions={[revision]} onPricingChange={() => {}} onFormulaChange={() => {}} />);
+assert.match(canonicalMarkup, /Select Formula/);
+assert.match(canonicalMarkup, /Revision 2/);
+assert.match(canonicalMarkup, /Product-specific Formula Inputs/);
+assert.match(canonicalMarkup, /Roll width/);
+assert.match(canonicalMarkup, /New Formula/);
+assert.match(canonicalMarkup, /Manage Formula Library/);
+assert.doesNotMatch(canonicalMarkup, /Embedded ProductVersion Formula/);
+
+console.log("Product Builder legacy Formula compatibility UI tests passed.");

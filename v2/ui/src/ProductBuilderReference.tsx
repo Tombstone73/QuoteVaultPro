@@ -2,8 +2,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   newBusinessRequestId,
+  formulaApi,
   productApi,
   routingApi,
+  type FormulaDomainListEntry,
   type ProductDraftFormulaPricing,
   type ProductDraftGeneral,
   type ProductDraftOption,
@@ -26,6 +28,7 @@ import { RuleCards, projectCanonicalConditions } from "./productBuilder/ruleCard
 import { ReviewSummary } from "./productBuilder/review";
 import type { ProductBuilderSection } from "./productBuilder/lovableRoot";
 import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
+import { pushWorkspaceLocation } from "./productRouting";
 
 /*
  * This file is a direct production port of reference/lovable-ui's
@@ -59,7 +62,18 @@ export type ProductBuilderDraftState = Readonly<{
   general: ProductDraftGeneral;
   options: readonly ProductDraftOption[];
   pricing: ProductDraftPricing["base"] & Readonly<{ flatFeeCents: number | null; tierBasis: ProductDraftPricing["tierBasis"]; tiers: ProductDraftPricing["tiers"]; tierSets: ProductDraftPricing["tierSets"] }>;
-  formula: Readonly<{ source: "embedded" | "library"; formulaId?: string; expression: string; variables: Record<string, number>; allowRotation: boolean; rotationControl?: ProductDraftFormulaPricing["rotationControl"] }>;
+  /** Formula expressions are Formula-domain owned. A Product Draft stages
+   * only an intentionally selected immutable revision and declared input
+   * values; it never owns a second Formula expression. */
+  formula: Readonly<{
+    source: "formula_revision";
+    formulaId?: string;
+    formulaRevisionId?: string;
+    expression: string;
+    inputValues: Record<string, number | boolean>;
+    allowRotation: boolean;
+    rotationControl?: ProductDraftFormulaPricing["rotationControl"];
+  }>;
   matrix: ProductDraftPricingMatrix | null;
   impacts: ProductDraftOptionPricing["options"];
   recipe: readonly ProductRecipeComponent[];
@@ -148,7 +162,7 @@ const blankState = (name = ""): DraftState => ({
   general: blankGeneral(name),
   options: [],
   pricing: { perPieceCents: null, perSqftCents: null, minimumChargeCents: null, flatFeeCents: null, tierBasis: null, tiers: [], tierSets: { quantity: [], squareFoot: [], computedSheetUsage: [] } },
-  formula: { source: "embedded", expression: "", variables: {}, allowRotation: false },
+  formula: { source: "formula_revision", expression: "", inputValues: {}, allowRotation: false },
   matrix: null,
   impacts: [],
   recipe: [],
@@ -170,7 +184,12 @@ export const ProductBuilderReference = ({
   const optionsRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "options"), queryFn: () => productApi.draftOptions(organizationId, productId!), enabled: Boolean(productId) });
   const pricingRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "pricing"), queryFn: () => productApi.draftPricing(organizationId, productId!), enabled: Boolean(productId) });
   const formulaRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "formula"), queryFn: () => productApi.draftFormula(organizationId, productId!), enabled: Boolean(productId), retry: false });
-  const formulaLibrary = useQuery({ queryKey: ["v2", sessionScope, "pricing-formula-library"], queryFn: () => productApi.listFormulaLibrary(), retry: false });
+  const formulaLibrary = useQuery<readonly FormulaDomainListEntry[]>({
+    queryKey: ["v2", sessionScope, organizationId, "formulas", "picker"],
+    queryFn: () => formulaApi.list(organizationId, { includeInactive: true }),
+    enabled: Boolean(organizationId && sessionScope),
+    retry: false,
+  });
   const matrixRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "matrix"), queryFn: () => productApi.draftPricingMatrix(organizationId, productId!), enabled: Boolean(productId), retry: false });
   const impactsRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "impacts"), queryFn: () => productApi.draftOptionPricing(organizationId, productId!), enabled: Boolean(productId), retry: false });
   const recipeRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "recipe"), queryFn: () => productApi.draftRecipe(organizationId, productId!), enabled: Boolean(productId), retry: false });
@@ -178,12 +197,17 @@ export const ProductBuilderReference = ({
   const materials = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "materials"), queryFn: () => productApi.materials(organizationId, productId!), enabled: Boolean(productId) });
   const templates = useQuery({ queryKey: ["v2", sessionScope, organizationId, "routing", "picker"], queryFn: () => routingApi.workspace(organizationId), retry: false });
   const [draft, setDraft] = useState<DraftState>(() => blankState());
+  const selectedFormulaId = draft.formula.formulaId ?? formulaRead.data?.formulaId ?? "";
+  const formulaRevisions = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "formulas", selectedFormulaId, "revisions", "picker"],
+    queryFn: () => formulaApi.revisions(organizationId, selectedFormulaId),
+    enabled: Boolean(organizationId && sessionScope && selectedFormulaId),
+    retry: false,
+  });
   const [dirty, setDirty] = useState<ReadonlySet<DirtySection>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
   const [requiresReconciliation, setRequiresReconciliation] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [adoptingLegacyFormula, setAdoptingLegacyFormula] = useState(false);
-  const [legacyFormulaError, setLegacyFormulaError] = useState<string | null>(null);
   const [previewInputs, setPreviewInputs] = useState({ quantity: "1", width: "24", height: "18", selections: {} as Record<string, unknown> });
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof productApi.previewDraftPricing>> | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -202,7 +226,15 @@ export const ProductBuilderReference = ({
     setDraft({
       general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options),
       pricing: { ...clone(pricingRead.data!.base), flatFeeCents: pricingRead.data!.flatFeeCents, tierBasis: pricingRead.data!.tierBasis, tiers: clone(pricingRead.data!.tiers), tierSets: clone(pricingRead.data!.tierSets) },
-      formula: formulaRead.data ? { source: formulaRead.data.source.startsWith("library") ? "library" : "embedded", ...(formulaRead.data.formulaId ? { formulaId: formulaRead.data.formulaId } : {}), expression: formulaRead.data.expression, variables: clone(formulaRead.data.variables), allowRotation: formulaRead.data.allowRotation, ...(formulaRead.data.rotationControl ? { rotationControl: clone(formulaRead.data.rotationControl) } : {}) } : { source: "embedded", expression: "", variables: {}, allowRotation: false },
+      formula: formulaRead.data ? {
+        source: "formula_revision",
+        ...(formulaRead.data.formulaId ? { formulaId: formulaRead.data.formulaId } : {}),
+        ...(formulaRead.data.formulaRevisionId ? { formulaRevisionId: formulaRead.data.formulaRevisionId } : {}),
+        expression: formulaRead.data.expression,
+        inputValues: clone(formulaRead.data.inputValues ?? {}),
+        allowRotation: formulaRead.data.allowRotation,
+        ...(formulaRead.data.rotationControl ? { rotationControl: clone(formulaRead.data.rotationControl) } : {}),
+      } : { source: "formula_revision", expression: "", inputValues: {}, allowRotation: false },
       matrix: matrixRead.data ? clone(matrixRead.data) : null,
       impacts: impactsRead.data ? clone(impactsRead.data.options) : [], recipe: clone(recipeRead.data!.components), routing: clone(routingRead.data!.routing),
     });
@@ -249,7 +281,20 @@ export const ProductBuilderReference = ({
         savedSection("options", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
       if (!productId || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: state.general }); savedSection("general", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
-      if (dirty.has("formula")) { const value = await productApi.saveDraftFormula(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, source: state.formula.source, ...(state.formula.formulaId ? { formulaId: state.formula.formulaId } : {}), expression: state.formula.expression, variables: state.formula.variables, allowRotation: state.formula.allowRotation, ...(state.formula.rotationControl ? { rotationControl: state.formula.rotationControl } : {}) }); savedSection("formula", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (dirty.has("formula")) {
+        if (!state.formula.formulaRevisionId) throw new Error("Select an active Formula revision before saving this Product Draft.");
+        const value = await productApi.saveDraftFormula(organizationId, id, request(), {
+          draftVersionId: version,
+          expectedDraftUpdatedAt: revision,
+          source: "formula_revision",
+          ...(state.formula.formulaId ? { formulaId: state.formula.formulaId } : {}),
+          formulaRevisionId: state.formula.formulaRevisionId,
+          inputValues: state.formula.inputValues,
+          allowRotation: state.formula.allowRotation,
+          ...(state.formula.rotationControl ? { rotationControl: state.formula.rotationControl } : {}),
+        });
+        savedSection("formula", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
+      }
       if (dirty.has("pricing")) { const value = await productApi.saveDraftPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, base: { perPieceCents: state.pricing.perPieceCents, perSqftCents: state.pricing.perSqftCents, minimumChargeCents: state.pricing.minimumChargeCents }, flatFeeCents: state.pricing.flatFeeCents, tierBasis: state.pricing.tierBasis, tiers: state.pricing.tiers, tierSets: state.pricing.tierSets }); savedSection("pricing", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       if (dirty.has("matrix") && state.matrix) { const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, active: state.matrix.active, matrixId: state.matrix.matrixId, pricingUnit: state.matrix.pricingUnit, dimensions: state.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: state.matrix.rows }); savedSection("matrix", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       if (dirty.has("impacts")) {
@@ -277,36 +322,12 @@ export const ProductBuilderReference = ({
     } finally { setSaving(false); }
   };
 
-  const adoptLegacyFormula = useCallback(async () => {
-    if (!productId || !canEdit || adoptingLegacyFormula || formulaRead.data?.source !== "unsupported_legacy") return;
-    setAdoptingLegacyFormula(true);
-    setLegacyFormulaError(null);
-    try {
-      const value = await productApi.adoptLegacyDraftFormula(organizationId, productId, newBusinessRequestId(), {
-        draftVersionId: formulaRead.data.draftVersionId,
-        expectedDraftUpdatedAt: formulaRead.data.draftUpdatedAt,
-      });
-      setDraft((current) => ({ ...current, formula: { source: "embedded", expression: value.expression, variables: clone(value.variables), allowRotation: value.allowRotation, ...(value.rotationControl ? { rotationControl: clone(value.rotationControl) } : {}) } }));
-      setDirty((current) => { const next = new Set(current); next.delete("formula"); return next; });
-      authoritativeDraft.current = { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt };
-      setSaveError(null);
-      setRequiresReconciliation(false);
-      await Promise.all([generalRead.refetch(), optionsRead.refetch(), pricingRead.refetch(), formulaRead.refetch(), matrixRead.refetch(), impactsRead.refetch(), recipeRead.refetch(), routingRead.refetch()]);
-    } catch (error) {
-      const detail = error as { message?: string };
-      setLegacyFormulaError(detail.message ?? "The legacy Formula could not be adopted into this Draft.");
-    } finally {
-      setAdoptingLegacyFormula(false);
-    }
-  }, [adoptingLegacyFormula, canEdit, formulaRead, generalRead, impactsRead, matrixRead, optionsRead, organizationId, pricingRead, productId, recipeRead, routingRead]);
-
   const localPricingFindings = useMemo(() => {
     const findings: string[] = [];
     const authorsFormula = pricingRead.data?.mode === "formula" || dirty.has("formula");
     if (draft.general.workflowIntent === "service_fee" && draft.pricing.flatFeeCents === null) findings.push("Service fee Products require a Flat Fee Amount before publication.");
     if (draft.matrix?.active && (!draft.matrix.dimensions.length || draft.matrix.rows.some((row) => row.baseRateCents === null))) findings.push("Matrix pricing must contain a rate for every selected Option combination.");
-    if (authorsFormula && draft.formula.source === "library" && !draft.formula.formulaId) findings.push("Choose an active Formula Library entry before publication.");
-    if (authorsFormula && draft.formula.source === "embedded" && !draft.formula.expression.trim()) findings.push("Enter an embedded Formula expression before publication.");
+    if (authorsFormula && !draft.formula.formulaRevisionId) findings.push("Choose an active Formula revision before publication.");
     for (const option of draft.impacts) for (const impact of [...option.nodeImpacts, ...option.choices.flatMap((choice) => choice.impacts)]) if (impact.type === "formula" && !impact.formula.trim()) findings.push("Formula option impacts require an expression.");
     return findings;
   }, [draft, dirty, pricingRead.data?.mode]);
@@ -353,12 +374,11 @@ export const ProductBuilderReference = ({
     };
     return {
     ...source,
-    source: draft.formula.source === "library"
-      ? source.inputs.length ? "library_product_inputs_editable" : "library_reference_read_only"
-      : "embedded_editable",
+    source: draft.formula.formulaRevisionId ? "formula_revision" : source.source,
     ...(draft.formula.formulaId ? { formulaId: draft.formula.formulaId } : {}),
+    ...(draft.formula.formulaRevisionId ? { formulaRevisionId: draft.formula.formulaRevisionId } : {}),
     expression: draft.formula.expression,
-    variables: draft.formula.variables,
+    inputValues: draft.formula.inputValues,
     allowRotation: draft.formula.allowRotation,
     ...(draft.formula.rotationControl ? { rotationControl: draft.formula.rotationControl } : {}),
   };
@@ -439,7 +459,7 @@ export const ProductBuilderReference = ({
   >{{
     basics: <BasicsSection general={draft.general} productTypeLabel={product?.productType?.displayName} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
     options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><Disclosure label={`Option visibility conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
-    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} formulaLibrary={formulaLibrary.data ?? []} options={draft.options} serviceFee={draft.general.workflowIntent === "service_fee"} disabled={!canEdit || saving} adoptingLegacyFormula={adoptingLegacyFormula} legacyFormulaError={legacyFormulaError} onAdoptLegacyFormula={() => void adoptLegacyFormula()} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, flatFeeCents: pricing.flatFeeCents, tierBasis: pricing.tierBasis, tiers: pricing.tiers, tierSets: pricing.tierSets } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{stagedMatrix && <MatrixPricing matrix={stagedMatrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
+    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} formulaLibrary={formulaLibrary.data ?? []} formulaRevisions={formulaRevisions.data ?? []} options={draft.options} serviceFee={draft.general.workflowIntent === "service_fee"} disabled={!canEdit || saving} onManageFormulaLibrary={() => { pushWorkspaceLocation("formulas"); window.dispatchEvent(new PopStateEvent("popstate")); }} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, flatFeeCents: pricing.flatFeeCents, tierBasis: pricing.tierBasis, tiers: pricing.tiers, tierSets: pricing.tierSets } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{stagedMatrix && <MatrixPricing matrix={stagedMatrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
     materials: <div className="space-y-4"><Sub title="Recipe"><RecipeEditor components={draft.recipe} materials={materials.data?.items ?? []} options={draft.options} primaryMaterialName={product?.primaryMaterialName} disabled={!canEdit || saving} onChange={(recipe) => patch("recipe", (value) => ({ ...value, recipe }))} /></Sub></div>,
     production: <ProductionUnits specification={draft.general.productionUnitSpecification} options={draft.options} selectionKeys={optionSelectionKeys} disabled={!canEdit || saving} onChange={(productionUnitSpecification) => patch("general", (value) => ({ ...value, general: { ...value.general, productionUnitSpecification } }))} />,
     routing: <RoutingSection routing={draft.routing} templates={routeTemplates} disabled={!canEdit || saving} onChange={(routing) => patch("routing", (value) => ({ ...value, routing }))} />,
