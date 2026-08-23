@@ -6,7 +6,7 @@ import type {
   VisibilityConfig,
   VisibilityRule,
 } from "./optionTreeV2";
-import { validateOptionTreeV2 as validateOptionTreeV2Minimal } from "./optionTreeV2";
+import { validateOptionTreeV2Graph } from "./optionTreeV2GraphValidation";
 
 type SelectionRecord = Record<string, unknown>;
 
@@ -424,5 +424,5 @@ export function resolveVisibleNodes(tree: OptionTreeV2, selections: LineItemOpti
 }
 
 export function validateOptionTreeV2(tree: OptionTreeV2): { ok: true } | { ok: false; errors: string[] } {
-  return validateOptionTreeV2Minimal(tree);
+  return validateOptionTreeV2Graph(tree);
 }
