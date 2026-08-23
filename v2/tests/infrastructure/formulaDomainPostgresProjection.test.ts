@@ -29,6 +29,7 @@ type Revision = { id: string; organizationId: string; formulaId: string; revisio
 class FormulaDomainPoolDouble {
   readonly formulas: Formula[] = [];
   readonly revisions: Revision[] = [];
+  readonly queries: string[] = [];
   private readonly requests = new Map<string, any>();
   private transactionSnapshot: { formulas: Formula[]; revisions: Revision[]; requests: Map<string, any> } | undefined;
   private nextId = 0;
@@ -38,6 +39,7 @@ class FormulaDomainPoolDouble {
 
   async query<T = any>(sql: string, values: readonly unknown[] = []): Promise<{ rows: T[] }> {
     const compact = sql.replace(/\s+/gu, " ").trim();
+    this.queries.push(compact);
     if (compact === "BEGIN") {
       this.transactionSnapshot = { formulas: structuredClone(this.formulas), revisions: structuredClone(this.revisions), requests: new Map(this.requests) };
       return { rows: [] };
@@ -159,6 +161,7 @@ describe("Postgres Formula-domain detail projection", () => {
     expect(pool.revisions).toHaveLength(2);
     expect(pool.revisions[0]?.expression).toBe(revisionOne.expression);
     expect(pool.revisions[0]?.declaredInputs).toEqual(revisionOne.declaredInputs);
+    expect(pool.queries.find((query) => query.startsWith("SELECT COALESCE(max(revision_number)"))).not.toContain("FOR UPDATE");
   });
 
   test("detail, list, and revisions preserve the mapper contract and tenant isolation", async () => {

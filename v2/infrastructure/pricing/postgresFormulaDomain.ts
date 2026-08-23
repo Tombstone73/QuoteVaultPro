@@ -57,7 +57,10 @@ class Transaction implements FormulaDomainTransaction {
   async revise(input:Parameters<FormulaDomainTransaction["revise"]>[0]):Promise<FormulaIdentity>{
     const header=(await this.client.query<IdentityRow>(`${select} WHERE f.organization_id=$1 AND f.id=$2 FOR UPDATE`,[input.organizationId,input.formulaId])).rows[0];if(!header)throw new V2ApplicationError("NOT_FOUND","The tenant-scoped Formula was not found.");if(header.current_revision_id!==input.expectedCurrentRevisionId)throw new V2ApplicationError("STALE_STATE","The Formula changed elsewhere. Refresh and try again.");if(header.status==="archived")throw new V2ApplicationError("CONFLICT","Archived Formulas cannot be revised.");
     const definition=validateFormulaDefinition(input.definition), revisionId=randomUUID();
-    const next=(await this.client.query<{revision_number:number}>("SELECT COALESCE(max(revision_number),0)+1 revision_number FROM formula_revisions WHERE organization_id=$1 AND formula_id=$2 FOR UPDATE",[input.organizationId,input.formulaId])).rows[0]!.revision_number;
+    // The Formula identity row above is already locked FOR UPDATE and is the
+    // serialization point for appending a revision. PostgreSQL forbids a row
+    // lock on an aggregate query, so the sequence read must remain lock-free.
+    const next=(await this.client.query<{revision_number:number}>("SELECT COALESCE(max(revision_number),0)+1 revision_number FROM formula_revisions WHERE organization_id=$1 AND formula_id=$2",[input.organizationId,input.formulaId])).rows[0]!.revision_number;
     await this.client.query("INSERT INTO formula_revisions(id,organization_id,formula_id,revision_number,expression,declared_inputs,validation_evidence,created_by_user_id) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)",[revisionId,input.organizationId,input.formulaId,next,definition.expression,JSON.stringify(definition.declaredInputs),JSON.stringify(definition.validationEvidence??{}),input.staffActorUserId??null]);
     await this.client.query("UPDATE v2_formula_identities SET current_revision_id=$1,updated_at=now(),updated_by_user_id=$2 WHERE organization_id=$3 AND id=$4",[revisionId,input.staffActorUserId??null,input.organizationId,input.formulaId]);
     return this.read(input.organizationId,input.formulaId);
