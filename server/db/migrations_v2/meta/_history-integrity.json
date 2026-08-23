@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 220,
+  "entryCount": 221,
   "immutableThrough": {
-    "idx": 225,
-    "when": 1788048000071,
-    "tag": "0224_v2_inventory_reservation_inventory_unit_guard"
+    "idx": 226,
+    "when": 1788048000072,
+    "tag": "0225_v2_formula_domain_foundation"
   },
-  "canonicalSha256": "b8c8015b41acd5b7221e5e9b64bc601c1a617fc4e7dde35b80768a44af9d591b"
+  "canonicalSha256": "ce0edeec6947e4bf41a6aa5e056b03fc73c940adf18e1937f53dd7674cb58bed"
 }

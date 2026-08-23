@@ -69,4 +69,10 @@ describe("V2 migration history integrity guard", () => {
     fs.writeFileSync(path.join(fixture.migrations, "0001_first.sql"), "select 999;\n");
     expect(run(fixture.root)).toThrow(/historical migration SQL or journal metadata changed/i);
   });
+
+  test("fails closed when an SQL migration is absent from the Drizzle journal", () => {
+    const fixture = createFixture();
+    fs.writeFileSync(path.join(fixture.migrations, "0002_orphan.sql"), "select 3;\n");
+    expect(run(fixture.root)).toThrow(/SQL file\(s\) are absent from the journal.*0002_orphan/i);
+  });
 });

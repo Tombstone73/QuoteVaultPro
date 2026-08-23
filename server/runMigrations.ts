@@ -177,11 +177,43 @@ type ReleaseCheck =
   | { type: "column_nullable"; table: string; column: string; label: string }
   | { type: "table_exists"; table: string; label: string }
   | { type: "index_exists"; index: string; label: string }
+  | { type: "constraint_exists"; table: string; constraint: string; label: string }
+  | { type: "trigger_exists"; table: string; trigger: string; label: string }
   | { type: "enum_value_exists"; enumType: string; value: string; label: string }
   | { type: "exact_foreign_key"; table: string; column: string; referencesTable: string; referencesColumn: string; onDelete: "SET NULL"; label: string }
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // Migration 0225 — Formula revisions and ProductVersion bindings are a
+  // runtime pricing dependency. Verify the physical domain rather than
+  // trusting the migration ledger alone.
+  { type: "table_exists", table: "v2_formula_identities", label: "v2_formula_identities table" },
+  { type: "table_exists", table: "formula_revisions", label: "formula_revisions table" },
+  { type: "table_exists", table: "v2_product_version_formula_revision_bindings", label: "v2_product_version_formula_revision_bindings table" },
+  { type: "enum_value_exists", enumType: "v2_formula_visibility", value: "product_scoped", label: "Formula visibility supports product_scoped" },
+  { type: "enum_value_exists", enumType: "v2_formula_visibility", value: "library", label: "Formula visibility supports library" },
+  { type: "enum_value_exists", enumType: "v2_formula_status", value: "active", label: "Formula status supports active" },
+  { type: "enum_value_exists", enumType: "v2_formula_status", value: "inactive", label: "Formula status supports inactive" },
+  { type: "enum_value_exists", enumType: "v2_formula_status", value: "archived", label: "Formula status supports archived" },
+  { type: "index_exists", index: "v2_formula_identities_catalog_idx", label: "v2_formula_identities catalog index" },
+  { type: "index_exists", index: "formula_revisions_formula_idx", label: "formula_revisions formula index" },
+  { type: "index_exists", index: "v2_product_version_formula_revision_formula_idx", label: "ProductVersion Formula revision binding index" },
+  { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_name_uidx", label: "Formula identity tenant/name uniqueness" },
+  { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_pkey", label: "Formula identity primary key" },
+  { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_id_org_uidx", label: "Formula identity tenant composite identity uniqueness" },
+  { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_current_revision_tenant_fk", label: "Formula identity current revision tenant foreign key" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_number_chk", label: "Formula revision number check" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_pkey", label: "Formula revision primary key" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_expression_chk", label: "Formula revision expression check" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_formula_tenant_fk", label: "Formula revision tenant foreign key" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_formula_number_uidx", label: "Formula revision tenant/version uniqueness" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_id_formula_org_uidx", label: "Formula revision composite identity uniqueness" },
+  { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_id_org_uidx", label: "Formula revision tenant identity uniqueness" },
+  { type: "constraint_exists", table: "v2_product_version_formula_revision_bindings", constraint: "v2_product_version_formula_revision_bindings_pkey", label: "ProductVersion Formula revision binding primary key" },
+  { type: "constraint_exists", table: "v2_product_version_formula_revision_bindings", constraint: "v2_product_version_formula_revision_product_fk", label: "ProductVersion Formula revision ProductVersion foreign key" },
+  { type: "constraint_exists", table: "v2_product_version_formula_revision_bindings", constraint: "v2_product_version_formula_revision_formula_fk", label: "ProductVersion Formula revision foreign key" },
+  { type: "trigger_exists", table: "formula_revisions", trigger: "v2_formula_revision_immutable_trg", label: "Formula revision immutability trigger" },
+  { type: "trigger_exists", table: "v2_product_version_formula_revision_bindings", trigger: "v2_product_version_formula_binding_immutable_trg", label: "ProductVersion Formula revision binding immutability trigger" },
   // Migration 0178 verifies physical repair postconditions rather than trusting
   // that a migration ledger timestamp implies the intended catalog state.
   { type: "exact_foreign_key", table: "production_runs", column: "order_id", referencesTable: "orders", referencesColumn: "id", onDelete: "SET NULL", label: "production_runs.order_id has exactly one orders(id) SET NULL FK" },
@@ -306,6 +338,31 @@ async function runReleaseChecks(client: any): Promise<void> {
              WHERE schemaname = 'public' AND indexname = $1
            ) AS ok`,
           [check.index],
+        );
+        exists = res.rows[0].ok;
+      } else if (check.type === "constraint_exists") {
+        const res = await client.query(
+          `SELECT EXISTS (
+             SELECT 1
+             FROM pg_constraint c
+             JOIN pg_class relation ON relation.oid = c.conrelid
+             JOIN pg_namespace schema ON schema.oid = relation.relnamespace
+             WHERE schema.nspname = 'public' AND relation.relname = $1 AND c.conname = $2
+           ) AS ok`,
+          [check.table, check.constraint],
+        );
+        exists = res.rows[0].ok;
+      } else if (check.type === "trigger_exists") {
+        const res = await client.query(
+          `SELECT EXISTS (
+             SELECT 1
+             FROM pg_trigger tg
+             JOIN pg_class relation ON relation.oid = tg.tgrelid
+             JOIN pg_namespace schema ON schema.oid = relation.relnamespace
+             WHERE schema.nspname = 'public' AND relation.relname = $1 AND tg.tgname = $2
+               AND NOT tg.tgisinternal
+           ) AS ok`,
+          [check.table, check.trigger],
         );
         exists = res.rows[0].ok;
       } else if (check.type === "enum_value_exists") {

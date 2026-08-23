@@ -10,7 +10,7 @@
  * strictly later append.
  */
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -52,6 +52,18 @@ function loadJournal() {
     try { readFileSync(source); } catch { fail(`missing SQL source for journal tag: ${entry.tag}`); }
     tags.add(entry.tag);
     previous = entry;
+  }
+
+  // Drizzle reads only the journal. A manually added SQL file that is absent
+  // from it is silently excluded from every canonical migration run, even
+  // though it looks present in the repository and build artifact.
+  const orphanedSql = readdirSync(migrationsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+    .map((entry) => entry.name.slice(0, -".sql".length))
+    .filter((tag) => !tags.has(tag))
+    .sort();
+  if (orphanedSql.length > 0) {
+    fail(`migration SQL file(s) are absent from the journal and will not be applied: ${orphanedSql.join(", ")}`);
   }
 
   return entries;
