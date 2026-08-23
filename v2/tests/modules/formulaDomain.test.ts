@@ -38,9 +38,11 @@ class FormulaRunner implements FormulaDomainTransactionRunner {
         if (!this.identity || input.expectedCurrentRevisionId !== this.identity.currentRevisionId) throw new Error("stale revision");
         return this.identity = { ...this.identity, status: input.status, updatedAt: "2026-08-22T00:02:00.000Z" };
       },
+      freezeHistoricalBinding: async () => { throw new Error("Historical Formula freeze is not exercised by this Formula-authoring runner."); },
       attribute: async () => undefined,
       audit: async () => undefined,
       succeed: async (_organizationId: string, requestId: string, _resourceId: string, result: FormulaIdentity) => { this.requests.set(requestId, result); },
+      succeedHistoricalFreeze: async () => undefined,
     });
   }
 }

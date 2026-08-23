@@ -134,6 +134,32 @@ export type ReviseFormulaInput = Readonly<{ businessRequestId: string; formulaId
 export type UpdateFormulaMetadataInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; name: string; description?: string }>;
 export type SetFormulaVisibilityInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; visibility: FormulaVisibility }>;
 export type SetFormulaStatusInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; status: FormulaStatus }>;
+/**
+ * A ProductVersion that is already commercial history can be bound once to
+ * the immutable FormulaRevision it was proven to use.  This is deliberately
+ * separate from Draft authoring: it cannot edit the ProductVersion tree or
+ * retarget an existing binding.
+ */
+export type HistoricalFormulaLifecycle = "ACTIVE" | "DEPRECATED";
+export type HistoricalFormulaFreezeInput = Readonly<{
+  businessRequestId: string;
+  productVersionId: string;
+  formulaRevisionId: string;
+  inputValues: Readonly<Record<string, FormulaInputValue>>;
+  /** Optional optimistic assertion for a reconciliation plan. */
+  expectedLifecycle?: HistoricalFormulaLifecycle;
+}>;
+export type HistoricalFormulaRevisionBinding = Readonly<{
+  organizationId: string;
+  productId: string;
+  productVersionId: string;
+  lifecycle: HistoricalFormulaLifecycle;
+  formulaId: string;
+  formulaRevisionId: string;
+  inputValues: Readonly<Record<string, FormulaInputValue>>;
+  createdAt: string;
+  createdByUserId?: string;
+}>;
 type Actor = Readonly<{ principalKind: PrincipalKind; principalSubject: string; staffActorUserId?: string }>;
 export interface FormulaDomainTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string }> & Actor): Promise<Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>>;
@@ -142,16 +168,25 @@ export interface FormulaDomainTransaction {
   updateMetadata(input: Readonly<{ organizationId: string; formulaId: string; expectedCurrentRevisionId: string; name: string; description?: string; staffActorUserId?: string }>): Promise<FormulaIdentity>;
   setVisibility(input: Readonly<{ organizationId: string; formulaId: string; expectedCurrentRevisionId: string; visibility: FormulaVisibility; staffActorUserId?: string }>): Promise<FormulaIdentity>;
   setStatus(input: Readonly<{ organizationId: string; formulaId: string; expectedCurrentRevisionId: string; status: FormulaStatus; staffActorUserId?: string }>): Promise<FormulaIdentity>;
-  attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string }> & Actor): Promise<void>;
-  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; event: string }> & Actor): Promise<void>;
+  freezeHistoricalBinding(input: Readonly<{ organizationId: string; productVersionId: string; formulaRevisionId: string; inputValues: Readonly<Record<string, FormulaInputValue>>; expectedLifecycle?: HistoricalFormulaLifecycle; staffActorUserId?: string }>): Promise<HistoricalFormulaRevisionBinding>;
+  attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; resourceType?: "formula" | "product_version" }> & Actor): Promise<void>;
+  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string; resourceType?: "formula" | "product_version"; event: string; changes?: readonly Readonly<Record<string, unknown>>[] }> & Actor): Promise<void>;
   succeed(organizationId: string, requestId: string, resourceId: string, result: FormulaIdentity): Promise<void>;
+  succeedHistoricalFreeze(organizationId: string, requestId: string, resourceId: string, result: HistoricalFormulaRevisionBinding): Promise<void>;
 }
 export interface FormulaDomainTransactionRunner { transaction<T>(work: (tx: FormulaDomainTransaction) => Promise<T>): Promise<T>; }
 
 const actor = (context: OperationContext): Actor => ({ principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
 const fingerprint = (value: unknown) => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+const historicalFreezeFingerprint = (input: HistoricalFormulaFreezeInput): string => fingerprint({
+  ...input,
+  productVersionId: input.productVersionId.trim(),
+  formulaRevisionId: input.formulaRevisionId.trim(),
+  inputValues: Object.fromEntries(Object.entries(input.inputValues).sort(([left], [right]) => left.localeCompare(right))),
+});
 const statusOk = (value: unknown): value is FormulaStatus => value === "active" || value === "inactive" || value === "archived";
 const visibilityOk = (value: unknown): value is FormulaVisibility => value === "product_scoped" || value === "library";
+const historicalLifecycleOk = (value: unknown): value is HistoricalFormulaLifecycle => value === "ACTIVE" || value === "DEPRECATED";
 
 /** Canonical Formula authoring. Every definition edit appends an immutable revision. */
 export class FormulaDomainApplicationService {
@@ -161,5 +196,32 @@ export class FormulaDomainApplicationService {
   async updateMetadata(context: OperationContext, input: UpdateFormulaMetadataInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context, input.businessRequestId, "pricing.formula.metadata.v1", input, (tx, a) => { if (!input.formulaId.trim() || !input.expectedCurrentRevisionId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A current Formula revision is required."); return tx.updateMetadata({ organizationId: context.organizationId, formulaId: input.formulaId, expectedCurrentRevisionId: input.expectedCurrentRevisionId, name: label(input.name, "Formula name"), ...(optionalText(input.description, "Formula description") ? { description: optionalText(input.description, "Formula description") } : {}), staffActorUserId: a.staffActorUserId }); }, "formula_metadata_changed"); }
   async setVisibility(context: OperationContext, input: SetFormulaVisibilityInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context,input.businessRequestId,"pricing.formula.visibility.v1",input,(tx,a)=>{if(!input.formulaId.trim()||!input.expectedCurrentRevisionId.trim()||!visibilityOk(input.visibility))throw new V2ApplicationError("VALIDATION_ERROR","A current Formula and valid visibility are required.");return tx.setVisibility({...input,organizationId:context.organizationId,staffActorUserId:a.staffActorUserId});},"formula_visibility_changed"); }
   async setStatus(context: OperationContext, input: SetFormulaStatusInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context,input.businessRequestId,"pricing.formula.status.v1",input,(tx,a)=>{if(!input.formulaId.trim()||!input.expectedCurrentRevisionId.trim()||!statusOk(input.status))throw new V2ApplicationError("VALIDATION_ERROR","A current Formula and valid status are required.");return tx.setStatus({...input,organizationId:context.organizationId,staffActorUserId:a.staffActorUserId});},"formula_status_changed"); }
+  /**
+   * Appends the first immutable FormulaRevision binding to a historical
+   * ProductVersion.  It is intentionally an internal reconciliation command,
+   * not a Product Builder mutation path.
+   */
+  async freezeHistoricalProductVersion(context: OperationContext, input: HistoricalFormulaFreezeInput): Promise<ApplicationResult<HistoricalFormulaRevisionBinding>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!input.businessRequestId?.trim() || context.businessRequest?.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      if (!input.productVersionId?.trim() || !input.formulaRevisionId?.trim() || !input.inputValues || typeof input.inputValues !== "object" || Array.isArray(input.inputValues)) throw new V2ApplicationError("VALIDATION_ERROR", "A ProductVersion, Formula revision, and Formula input values are required.");
+      if (input.expectedLifecycle !== undefined && !historicalLifecycleOk(input.expectedLifecycle)) throw new V2ApplicationError("VALIDATION_ERROR", "Historical Formula freeze lifecycle is invalid.");
+      if (!this.authority.decide(context.principal, { capability: "pricing.configure", resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "You do not have permission to freeze historical Formula revisions.");
+      const a = actor(context), operation = "pricing.formula.historical_freeze.v1";
+      const result = await this.runner.transaction(async tx => {
+        const request = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: historicalFreezeFingerprint(input), ...a });
+        if (request.kind === "replay") return request.request.resultJson as HistoricalFormulaRevisionBinding;
+        const saved = await tx.freezeHistoricalBinding({ organizationId: context.organizationId, productVersionId: input.productVersionId.trim(), formulaRevisionId: input.formulaRevisionId.trim(), inputValues: input.inputValues, ...(input.expectedLifecycle ? { expectedLifecycle: input.expectedLifecycle } : {}), staffActorUserId: a.staffActorUserId });
+        await tx.attribute({ organizationId: context.organizationId, requestId: request.request.id, operation, resourceType: "product_version", resourceId: saved.productVersionId, ...a });
+        await tx.audit({ organizationId: context.organizationId, requestId: request.request.id, operation, resourceType: "product_version", resourceId: saved.productVersionId, event: "historical_formula_revision_frozen", changes: [{ field: "formulaRevisionId", value: saved.formulaRevisionId }, { field: "formulaId", value: saved.formulaId }, { field: "inputValues", value: saved.inputValues }], ...a });
+        await tx.succeedHistoricalFreeze(context.organizationId, request.request.id, saved.productVersionId, saved);
+        return saved;
+      });
+      return success(result);
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Historical Formula revision could not be frozen."));
+    }
+  }
   private async run(context:OperationContext,requestId:string,operation:string,input:unknown,work:(tx:FormulaDomainTransaction,a:Actor)=>Promise<FormulaIdentity>,event:string):Promise<ApplicationResult<FormulaIdentity>> { try { requireOperationPrincipalScope(context); if(!requestId?.trim()||context.businessRequest?.id!==requestId) throw new V2ApplicationError("VALIDATION_ERROR","A matching business request identity is required."); if(!this.authority.decide(context.principal,{capability:"pricing.configure",resource:{organizationId:context.organizationId}}).allowed) throw new V2ApplicationError("FORBIDDEN","You do not have permission to configure Formulas."); const a=actor(context); const result=await this.runner.transaction(async tx=>{const request=await tx.reserve({organizationId:context.organizationId,operation,businessRequestId:requestId,payloadFingerprint:fingerprint(input),...a});if(request.kind==="replay")return request.request.resultJson as FormulaIdentity;const saved=await work(tx,a);await tx.attribute({organizationId:context.organizationId,requestId:request.request.id,operation,resourceId:saved.formulaId,...a});await tx.audit({organizationId:context.organizationId,requestId:request.request.id,operation,resourceId:saved.formulaId,event,...a});await tx.succeed(context.organizationId,request.request.id,saved.formulaId,saved);return saved;});return success(result);}catch(error){return failure(error instanceof V2ApplicationError?error:new V2ApplicationError("CONFLICT","Formula could not be saved."));} }
 }

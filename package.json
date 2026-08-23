@@ -25,6 +25,8 @@
     "v2:p6a:matrix": "tsx v2/scripts/runP6aMatrixRehearsal.ts",
     "v2:p6b:formula": "tsx v2/scripts/runP6bFormulaRehearsal.ts",
     "v2:formula:freeze:inventory": "tsx v2/scripts/reportLegacyFormulaFreezeInventory.ts",
+    "v2:formula:freeze:rehearsal": "tsx v2/scripts/runFormulaFreezeHistoricalBindingRehearsal.ts",
+    "v2:formula:freeze:rehearsal:target:pure": "tsx v2/tests/modules/formulaFreezeRehearsalTargetIdentity.pure.ts",
     "v2:formula:domain:pure": "tsx v2/tests/modules/formulaDomain.pure.ts",
     "v2:p6c:option-pricing": "tsx v2/scripts/runP6cOptionPricingRehearsal.ts",
     "v2:p7a:recipes": "tsx scripts/runP7aRecipeRehearsal.ts",

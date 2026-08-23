@@ -1,15 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
-import type { FormulaDomainTransaction, FormulaDomainTransactionRunner, FormulaIdentity, FormulaRevision } from "../../src/modules/pricing/formulaDomain.js";
-import { validateFormulaDefinition, type FormulaDeclaredInput, type FormulaStatus, type FormulaVisibility } from "../../src/modules/pricing/formulaDomain.js";
+import type { FormulaDomainTransaction, FormulaDomainTransactionRunner, FormulaIdentity, FormulaRevision, HistoricalFormulaRevisionBinding, HistoricalFormulaLifecycle, FormulaInputValue } from "../../src/modules/pricing/formulaDomain.js";
+import { validateFormulaDefinition, validateFormulaRevisionInputValues, type FormulaDeclaredInput, type FormulaStatus, type FormulaVisibility } from "../../src/modules/pricing/formulaDomain.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 
 type IdentityRow = { id:string; organization_id:string; name:string; description:string|null; visibility:FormulaVisibility; status:FormulaStatus; current_revision_id:string; created_at:Date; updated_at:Date; usage_count:string };
 type RevisionRow = { id:string; organization_id:string; formula_id:string; revision_number:number; expression:string; declared_inputs:unknown; validation_evidence:unknown; created_at:Date; created_by_user_id:string|null };
+type HistoricalProductVersionRow = { id:string; product_id:string; status:string };
+type HistoricalBindingRow = { organization_id:string; product_id:string; product_version_id:string; formula_id:string; formula_revision_id:string; input_values:unknown; created_at:Date; created_by_user_id:string|null };
 const normalize = (value:string) => value.trim().toLocaleLowerCase("en-US");
 const record = (value:unknown): Record<string,unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string,unknown> : {};
+const canonicalInputValues = (values: Readonly<Record<string, FormulaInputValue>>): Readonly<Record<string, FormulaInputValue>> => Object.freeze(Object.fromEntries(Object.entries(values).sort(([left], [right]) => left.localeCompare(right))));
+const equalInputValues = (left: Readonly<Record<string, FormulaInputValue>>, right: Readonly<Record<string, FormulaInputValue>>): boolean => JSON.stringify(canonicalInputValues(left)) === JSON.stringify(canonicalInputValues(right));
 const revision = (row:RevisionRow): FormulaRevision => ({ formulaRevisionId:row.id,formulaId:row.formula_id,organizationId:row.organization_id,revisionNumber:row.revision_number,expression:row.expression,declaredInputs:validateFormulaDefinition({expression:row.expression,declaredInputs:Array.isArray(row.declared_inputs)?row.declared_inputs as FormulaDeclaredInput[]:[],validationEvidence:record(row.validation_evidence)}).declaredInputs,validationEvidence:record(row.validation_evidence),createdAt:row.created_at.toISOString(),...(row.created_by_user_id?{createdByUserId:row.created_by_user_id}:{}) });
+const historicalBinding = (row: HistoricalBindingRow, lifecycle: HistoricalFormulaLifecycle): HistoricalFormulaRevisionBinding => Object.freeze({ organizationId: row.organization_id, productId: row.product_id, productVersionId: row.product_version_id, lifecycle, formulaId: row.formula_id, formulaRevisionId: row.formula_revision_id, inputValues: canonicalInputValues(record(row.input_values) as Record<string, FormulaInputValue>), createdAt: row.created_at.toISOString(), ...(row.created_by_user_id ? { createdByUserId: row.created_by_user_id } : {}) });
 const identity = (header:IdentityRow, current:RevisionRow): FormulaIdentity => ({ formulaId:header.id,organizationId:header.organization_id,name:header.name,...(header.description?{description:header.description}:{}),visibility:header.visibility,status:header.status,currentRevisionId:header.current_revision_id,revision:revision(current),usageCount:Number(header.usage_count),createdAt:header.created_at.toISOString(),updatedAt:header.updated_at.toISOString() });
 const select = `SELECT f.id,f.organization_id,f.name,f.description,f.visibility,f.status,f.current_revision_id,f.created_at,f.updated_at,
   (SELECT count(*)::text FROM v2_product_version_formula_revision_bindings b WHERE b.organization_id=f.organization_id AND b.formula_id=f.id) usage_count
@@ -60,9 +65,68 @@ class Transaction implements FormulaDomainTransaction {
   }
   async setVisibility(input:Parameters<FormulaDomainTransaction["setVisibility"]>[0]):Promise<FormulaIdentity>{return this.updateVisibilityOrStatus(input.organizationId,input.formulaId,input.expectedCurrentRevisionId,"visibility",input.visibility,input.staffActorUserId);}
   async setStatus(input:Parameters<FormulaDomainTransaction["setStatus"]>[0]):Promise<FormulaIdentity>{return this.updateVisibilityOrStatus(input.organizationId,input.formulaId,input.expectedCurrentRevisionId,"status",input.status,input.staffActorUserId);}
+  /**
+   * The ProductVersion row is the serialization point for the first historic
+   * binding.  A published binding cannot be updated by the database trigger,
+   * so this method only ever inserts it or proves an exact replay.
+   */
+  async freezeHistoricalBinding(input: Parameters<FormulaDomainTransaction["freezeHistoricalBinding"]>[0]): Promise<HistoricalFormulaRevisionBinding> {
+    const version = (await this.client.query<HistoricalProductVersionRow>(
+      "SELECT id,product_id,status FROM pbv2_tree_versions WHERE organization_id=$1 AND id=$2 FOR UPDATE",
+      [input.organizationId, input.productVersionId],
+    )).rows[0];
+    if (!version) throw new V2ApplicationError("NOT_FOUND", "The tenant-scoped ProductVersion was not found.");
+    if (version.status !== "ACTIVE" && version.status !== "DEPRECATED") throw new V2ApplicationError("CONFLICT", "Only ACTIVE or DEPRECATED ProductVersions may receive a historical Formula freeze.");
+    const lifecycle = version.status as HistoricalFormulaLifecycle;
+    if (input.expectedLifecycle !== undefined && input.expectedLifecycle !== lifecycle) throw new V2ApplicationError("STALE_STATE", "The ProductVersion lifecycle changed elsewhere. Refresh and try again.");
+
+    const existing = (await this.client.query<HistoricalBindingRow>(
+      "SELECT organization_id,product_id,product_version_id,formula_id,formula_revision_id,input_values,created_at,created_by_user_id FROM v2_product_version_formula_revision_bindings WHERE organization_id=$1 AND product_version_id=$2 FOR UPDATE",
+      [input.organizationId, input.productVersionId],
+    )).rows[0];
+    const selected = (await this.client.query<RevisionRow>(
+      `SELECT r.id,r.organization_id,r.formula_id,r.revision_number,r.expression,r.declared_inputs,r.validation_evidence,r.created_at,r.created_by_user_id
+       FROM formula_revisions r
+       JOIN v2_formula_identities f ON f.id=r.formula_id AND f.organization_id=r.organization_id
+       WHERE r.organization_id=$1 AND r.id=$2
+       FOR KEY SHARE OF r, f`,
+      [input.organizationId, input.formulaRevisionId],
+    )).rows[0];
+    if (!selected) throw new V2ApplicationError("NOT_FOUND", "The tenant-scoped Formula revision was not found.");
+    const definition = validateFormulaDefinition({ expression: selected.expression, declaredInputs: Array.isArray(selected.declared_inputs) ? selected.declared_inputs as FormulaDeclaredInput[] : [], validationEvidence: record(selected.validation_evidence) });
+    const inputValues = canonicalInputValues(validateFormulaRevisionInputValues(definition.declaredInputs, input.inputValues));
+
+    if (existing) {
+      if (existing.product_id !== version.product_id || existing.formula_revision_id !== selected.id || existing.formula_id !== selected.formula_id) throw new V2ApplicationError("CONFLICT", "The historical ProductVersion is already frozen to a different Formula revision.");
+      const existingInputs = canonicalInputValues(validateFormulaRevisionInputValues(definition.declaredInputs, record(existing.input_values)));
+      if (!equalInputValues(existingInputs, inputValues)) throw new V2ApplicationError("CONFLICT", "The historical ProductVersion is already frozen with different Formula input values.");
+      return Object.freeze({ ...historicalBinding(existing, lifecycle), inputValues: existingInputs });
+    }
+
+    const inserted = await this.client.query<HistoricalBindingRow>(
+      `INSERT INTO v2_product_version_formula_revision_bindings(organization_id,product_id,product_version_id,formula_id,formula_revision_id,input_values,created_by_user_id)
+       VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)
+       ON CONFLICT (organization_id,product_version_id) DO NOTHING
+       RETURNING organization_id,product_id,product_version_id,formula_id,formula_revision_id,input_values,created_at,created_by_user_id`,
+      [input.organizationId, version.product_id, version.id, selected.formula_id, selected.id, JSON.stringify(inputValues), input.staffActorUserId ?? null],
+    );
+    if (inserted.rows[0]) return historicalBinding(inserted.rows[0], lifecycle);
+
+    // Defensive retry for a direct/database-level concurrent writer.  Normal
+    // callers are serialized by the locked ProductVersion above.
+    const raced = (await this.client.query<HistoricalBindingRow>(
+      "SELECT organization_id,product_id,product_version_id,formula_id,formula_revision_id,input_values,created_at,created_by_user_id FROM v2_product_version_formula_revision_bindings WHERE organization_id=$1 AND product_version_id=$2 FOR UPDATE",
+      [input.organizationId, input.productVersionId],
+    )).rows[0];
+    if (!raced || raced.product_id !== version.product_id || raced.formula_id !== selected.formula_id || raced.formula_revision_id !== selected.id) throw new V2ApplicationError("CONFLICT", "The historical ProductVersion Formula binding changed concurrently.");
+    const racedInputs = canonicalInputValues(validateFormulaRevisionInputValues(definition.declaredInputs, record(raced.input_values)));
+    if (!equalInputValues(racedInputs, inputValues)) throw new V2ApplicationError("CONFLICT", "The historical ProductVersion Formula input values changed concurrently.");
+    return Object.freeze({ ...historicalBinding(raced, lifecycle), inputValues: racedInputs });
+  }
   private async updateVisibilityOrStatus(organizationId:string,formulaId:string,expected:string,column:"visibility"|"status",value:string,userId?:string):Promise<FormulaIdentity>{const updated=await this.client.query("UPDATE v2_formula_identities SET "+column+"=$1,updated_at=now(),updated_by_user_id=$2 WHERE organization_id=$3 AND id=$4 AND current_revision_id=$5 RETURNING id",[value,userId??null,organizationId,formulaId,expected]);if(!updated.rows[0]){const exists=await this.client.query("SELECT 1 FROM v2_formula_identities WHERE organization_id=$1 AND id=$2",[organizationId,formulaId]);throw new V2ApplicationError(exists.rows[0]?"STALE_STATE":"NOT_FOUND",exists.rows[0]?"The Formula changed elsewhere. Refresh and try again.":"The tenant-scoped Formula was not found.");}return this.read(organizationId,formulaId);}
-  attribute(input:Parameters<FormulaDomainTransaction["attribute"]>[0]) {return this.requests.recordAttribution(this.client,{organizationId:input.organizationId,operationRequestId:input.requestId,operation:input.operation,resourceType:"formula",resourceId:input.resourceId,principalKind:input.principalKind,principalSubject:input.principalSubject,staffActorUserId:input.staffActorUserId});}
-  async audit(input:Parameters<FormulaDomainTransaction["audit"]>[0]){await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,'formula',$5,$6,$7,$8,'[]'::jsonb)",[input.organizationId,input.requestId,input.operation,input.event,input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId??null]);}
+  attribute(input:Parameters<FormulaDomainTransaction["attribute"]>[0]) {return this.requests.recordAttribution(this.client,{organizationId:input.organizationId,operationRequestId:input.requestId,operation:input.operation,resourceType:input.resourceType??"formula",resourceId:input.resourceId,principalKind:input.principalKind,principalSubject:input.principalSubject,staffActorUserId:input.staffActorUserId});}
+  async audit(input:Parameters<FormulaDomainTransaction["audit"]>[0]){await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)",[input.organizationId,input.requestId,input.operation,input.event,input.resourceType??"formula",input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId??null,JSON.stringify(input.changes??[])]);}
   async succeed(organizationId:string,requestId:string,resourceId:string,result:FormulaIdentity){await this.requests.succeed(this.client,organizationId,requestId,{resourceType:"formula",resourceId,resultJson:result});}
+  async succeedHistoricalFreeze(organizationId:string,requestId:string,resourceId:string,result:HistoricalFormulaRevisionBinding){await this.requests.succeed(this.client,organizationId,requestId,{resourceType:"product_version",resourceId,resultJson:result});}
 }
 export class PostgresFormulaDomainTransactionRunner implements FormulaDomainTransactionRunner { constructor(private readonly pool:Pool) {} async transaction<T>(work:(tx:FormulaDomainTransaction)=>Promise<T>):Promise<T>{const client=await this.pool.connect();try{await client.query("BEGIN");const value=await work(new Transaction(client));await client.query("COMMIT");return value;}catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}} }

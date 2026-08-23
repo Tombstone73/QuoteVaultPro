@@ -43,8 +43,11 @@ class Runner implements FormulaDomainTransactionRunner {
         return this.identity = { ...this.identity!, currentRevisionId: revision.formulaRevisionId, revision, updatedAt: revision.createdAt } as FormulaIdentity;
       },
       updateMetadata: async (input: any) => this.identity = { ...this.identity!, name: input.name, ...(input.description ? { description: input.description } : {}), updatedAt: "2026-08-22T00:00:30.000Z" },
-      setVisibility: async () => this.identity!, setStatus: async () => this.identity!, attribute: async () => undefined, audit: async () => undefined,
+      setVisibility: async () => this.identity!, setStatus: async () => this.identity!,
+      freezeHistoricalBinding: async () => { throw new Error("Historical Formula freeze is not exercised by this Formula-authoring runner."); },
+      attribute: async () => undefined, audit: async () => undefined,
       succeed: async (_organizationId: string, requestId: string, _resourceId: string, result: FormulaIdentity) => { this.requests.set(requestId, result); },
+      succeedHistoricalFreeze: async () => undefined,
     });
   }
 }
@@ -81,6 +84,69 @@ const run = async (): Promise<void> => {
     { source: "legacy_formula_library", formulaId: "legacy-formula", expression: "q + 1" },
   ] });
   assert.equal(ambiguous.disposition, "ambiguous");
+
+  // The reconciliation command is intentionally database-free at this layer.
+  // This transaction double represents the repository's single locked
+  // ProductVersion, immutable first-binding, and FormulaRevision input check.
+  const frozen = new Map<string, { formulaRevisionId: string; inputValues: Readonly<Record<string, number | boolean>> }>();
+  const freezeRequests = new Map<string, any>();
+  const audit: any[] = [];
+  let lifecycle: "ACTIVE" | "DEPRECATED" | "DRAFT" = "ACTIVE";
+  const immutableTree = JSON.stringify({ meta: { pricingFormula: "legacy" } });
+  const freezeRunner = {
+    transaction: async <T>(work: (tx: any) => Promise<T>): Promise<T> => work({
+      reserve: async (input: any) => freezeRequests.has(input.businessRequestId)
+        ? { kind: "replay", request: { id: input.businessRequestId, resultJson: freezeRequests.get(input.businessRequestId) } }
+        : { kind: "new", request: { id: input.businessRequestId, resultJson: null } },
+      freezeHistoricalBinding: async (input: any) => {
+        if (lifecycle === "DRAFT") throw new Error("Historical Formula freeze is only available for immutable ProductVersions.");
+        if (input.formulaRevisionId === "missing" || input.formulaRevisionId === "foreign") throw new Error("Formula revision is unavailable.");
+        const values = validateFormulaRevisionInputValues(inputs, input.inputValues);
+        const prior = frozen.get(input.productVersionId);
+        if (prior && (prior.formulaRevisionId !== input.formulaRevisionId || JSON.stringify(prior.inputValues) !== JSON.stringify(values))) throw new Error("Historical Formula binding already differs.");
+        if (prior) return { organizationId: input.organizationId, productId: "product-a", productVersionId: input.productVersionId, lifecycle, formulaId: "formula-a", formulaRevisionId: prior.formulaRevisionId, inputValues: prior.inputValues, createdAt: "2026-08-23T00:00:00.000Z", createdByUserId: input.staffActorUserId };
+        frozen.set(input.productVersionId, { formulaRevisionId: input.formulaRevisionId, inputValues: values });
+        return { organizationId: input.organizationId, productId: "product-a", productVersionId: input.productVersionId, lifecycle, formulaId: "formula-a", formulaRevisionId: input.formulaRevisionId, inputValues: values, createdAt: "2026-08-23T00:00:00.000Z", createdByUserId: input.staffActorUserId };
+      },
+      attribute: async () => undefined,
+      audit: async (value: any) => { audit.push(value); },
+      succeedHistoricalFreeze: async (_organizationId: string, requestId: string, _resourceId: string, result: any) => { freezeRequests.set(requestId, result); },
+    }),
+  };
+  const freezeService = new FormulaDomainApplicationService(freezeRunner as any);
+  const historicalContext = (requestId: string): OperationContext => context(requestId);
+  const freezeInput = (businessRequestId: string, inputValues: Record<string, number | boolean>, extra: Record<string, unknown> = {}) => ({ businessRequestId, productVersionId: "history-a", formulaRevisionId: "revision-a", inputValues, ...extra });
+  const active = await freezeService.freezeHistoricalProductVersion(historicalContext("history-active"), freezeInput("history-active", { p: 3 }));
+  assert.equal(active.ok, true);
+  assert.deepEqual(active.ok && active.value.inputValues, { p: 3, copies: 1, allow_rotation: false });
+  assert.equal(frozen.size, 1);
+  assert.equal(audit.length, 1);
+  assert.equal(immutableTree, JSON.stringify({ meta: { pricingFormula: "legacy" } }), "historical freeze must not rewrite ProductVersion tree JSON");
+  const exactReplay = await freezeService.freezeHistoricalProductVersion(historicalContext("history-active"), freezeInput("history-active", { p: 3 }));
+  assert.deepEqual(exactReplay, active, "same durable request replays its original binding");
+  const exactExisting = await freezeService.freezeHistoricalProductVersion(historicalContext("history-existing"), freezeInput("history-existing", { p: 3 }));
+  assert.equal(exactExisting.ok, true, "an exact existing binding is safely idempotent");
+  const [concurrentLeft, concurrentRight] = await Promise.all([
+    freezeService.freezeHistoricalProductVersion(historicalContext("history-concurrent-left"), { ...freezeInput("history-concurrent-left", { p: 3 }), productVersionId: "history-concurrent" }),
+    freezeService.freezeHistoricalProductVersion(historicalContext("history-concurrent-right"), { ...freezeInput("history-concurrent-right", { p: 3 }), productVersionId: "history-concurrent" }),
+  ]);
+  assert.equal(concurrentLeft.ok, true, "first concurrent historical freeze succeeds");
+  assert.equal(concurrentRight.ok, true, "exact concurrent historical freeze replays the same binding");
+  assert.equal(frozen.size, 2, "one existing binding plus one converged concurrent binding are present");
+  const retarget = await freezeService.freezeHistoricalProductVersion(historicalContext("history-retarget"), freezeInput("history-retarget", { p: 3 }, { formulaRevisionId: "revision-b" }));
+  const changedValues = await freezeService.freezeHistoricalProductVersion(historicalContext("history-values"), freezeInput("history-values", { p: 4 }));
+  assert.equal(retarget.ok, false);
+  assert.equal(changedValues.ok, false);
+  for (const [id, values] of [["history-missing", {}], ["history-unknown", { p: 3, unknown: 1 }], ["history-type", { p: true }], ["history-range", { p: 11 }]] as const) {
+    const invalid = await freezeService.freezeHistoricalProductVersion(historicalContext(id), freezeInput(id, values as Record<string, number | boolean>));
+    assert.equal(invalid.ok, false, `${id} must not write a Formula binding`);
+  }
+  lifecycle = "DEPRECATED";
+  const deprecated = await freezeService.freezeHistoricalProductVersion(historicalContext("history-deprecated"), { ...freezeInput("history-deprecated", { p: 3 }), productVersionId: "history-deprecated" });
+  assert.equal(deprecated.ok && deprecated.value.lifecycle, "DEPRECATED");
+  lifecycle = "DRAFT";
+  const draft = await freezeService.freezeHistoricalProductVersion(historicalContext("history-draft"), { ...freezeInput("history-draft", { p: 3 }), productVersionId: "history-draft" });
+  assert.equal(draft.ok, false, "Draft Formula binding remains on normal Product authoring path");
   process.stdout.write("Formula-domain pure tests passed.\n");
 };
 void run();
