@@ -1,6 +1,7 @@
 import { ArrowRight, ExternalLink, Eye, Plus, Trash2 } from "lucide-react";
 import React, { useState } from "react";
 import type { ProductDraftOption, ProductDraftRouting, ProductProductionUnitRule, ProductProductionUnitSpecification, RoutingWorkspaceRead } from "../api";
+import { productionUnitDisplayPage, withProductionUnitDisplayPage, withProductionUnitLayer, withProductionUnitSide } from "../productProductionUnits";
 import { Cell, Chip, ReferenceButton } from "./referencePrimitives";
 
 /** Direct presentation port of production-routing.tsx, adapted to V2's canonical generic unit schema. */
@@ -19,6 +20,10 @@ export function ProductionUnits({ specification, options, selectionKeys = {}, di
   const update = (index: number, patch: (rule: ProductProductionUnitRule) => ProductProductionUnitRule) =>
     onChange({ schemaVersion: 1, rules: rules.map((rule, position) => position === index ? patch(rule) : rule) });
   const remove = (index: number) => onChange({ schemaVersion: 1, rules: rules.filter((_, position) => position !== index) });
+  const positiveInteger = (value: string) => {
+    const parsed = Number(value);
+    return /^\d+$/u.test(value) && Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
+  };
 
   return <div className="space-y-2.5">
     <p className="text-[0.75rem] text-muted-foreground">Production units are the physical things that get made — sides, pages, layers or panels. Add a condition when a unit only exists for certain options.</p>
@@ -27,11 +32,15 @@ export function ProductionUnits({ specification, options, selectionKeys = {}, di
         const conditionOption = unit.when ? optionFor(unit.when.selectionKey) : undefined;
         return <div key={`${unit.key}-${index}`} className="rounded-md border border-border p-2.5">
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-[0.8125rem] font-semibold">{unit.key || "Untitled unit"}</span>{conditionOption ? <Chip tone="accent">When {conditionOption.label} = {String(unit.when?.equals ?? "")}</Chip> : <Chip tone="ok">Always</Chip>}</div>
+            <div className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-[0.8125rem] font-semibold">{unit.key || "Untitled unit"}</span>{unit.side && <Chip tone="neutral">{unit.side}</Chip>}{unit.sourcePageIndex !== undefined && <Chip tone="neutral">Page {unit.sourcePageIndex + 1}</Chip>}{unit.layerKey && <Chip tone="neutral">{unit.layerKey} {unit.layerOrder! + 1}</Chip>}{conditionOption ? <Chip tone="accent">When {conditionOption.label} = {String(unit.when?.equals ?? "")}</Chip> : unit.when ? <Chip tone="warn">Invalid condition</Chip> : <Chip tone="ok">Always</Chip>}</div>
             <ReferenceButton variant="ghost" size="compactIcon" className="shrink-0 text-muted-foreground hover:text-late" aria-label="Remove production unit" disabled={disabled} onClick={() => remove(index)}><Trash2 className="size-3.5" /></ReferenceButton>
           </div>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <Cell label="Unit name"><input className="h-8 text-[0.8125rem]" disabled={disabled} value={unit.key} onChange={(event) => update(index, (current) => ({ ...current, key: event.target.value }))} /></Cell>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <Cell label="Unit key" hint="Stable lowercase key used by frozen production requirements."><input className="h-8 text-[0.8125rem]" disabled={disabled} value={unit.key} onChange={(event) => update(index, (current) => ({ ...current, key: event.target.value }))} /></Cell>
+            <Cell label="Side"><select disabled={disabled} value={unit.side ?? ""} onChange={(event) => update(index, (current) => withProductionUnitSide(current, event.target.value as "" | "front" | "back"))}><option value="">Not side-specific</option><option value="front">Front</option><option value="back">Back</option></select></Cell>
+            <Cell label="Source page" hint="Optional PDF page, shown one-based."><input className="h-8 text-[0.8125rem]" type="number" min="1" step="1" inputMode="numeric" disabled={disabled} value={productionUnitDisplayPage(unit)} onChange={(event) => update(index, (current) => withProductionUnitDisplayPage(current, positiveInteger(event.target.value)))} /></Cell>
+            <Cell label="Layer key" hint="Optional production-art layer; layer order is required with it."><input className="h-8 text-[0.8125rem]" disabled={disabled} value={unit.layerKey ?? ""} onChange={(event) => update(index, (current) => withProductionUnitLayer(current, event.target.value, unit.layerOrder === undefined ? 1 : unit.layerOrder + 1))} /></Cell>
+            <Cell label="Layer order" hint="One-based within the layer."><input className="h-8 text-[0.8125rem]" type="number" min="1" step="1" inputMode="numeric" disabled={disabled || !unit.layerKey} value={unit.layerOrder === undefined ? "" : String(unit.layerOrder + 1)} onChange={(event) => update(index, (current) => withProductionUnitLayer(current, current.layerKey ?? "", positiveInteger(event.target.value)))} /></Cell>
             <Cell label="Required when"><select disabled={disabled} value={unit.when?.selectionKey ?? ""} onChange={(event) => {
               const selected = optionFor(event.target.value);
               update(index, (current) => ({ ...current, when: selected ? { selectionKey: selectionKeys[selected.optionId] ?? selected.optionId, equals: selected.choices[0]?.choiceValue ?? "" } : undefined }));
@@ -42,6 +51,7 @@ export function ProductionUnits({ specification, options, selectionKeys = {}, di
       })}
       {rules.length === 0 && <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[0.75rem] italic text-muted-foreground">No production units — nothing is manufactured for this Product.</p>}
     </div>
+    <p className="text-[0.6875rem] text-muted-foreground">Production destinations and execution routing remain owned by Routing and Production. This specification only defines frozen production-art requirements.</p>
     <ReferenceButton variant="outline" size="compact" className="gap-1" disabled={disabled} onClick={() => onChange({ schemaVersion: 1, rules: [...rules, { key: `unit_${rules.length + 1}` }] })}><Plus className="size-3.5" />Add production unit</ReferenceButton>
   </div>;
 }

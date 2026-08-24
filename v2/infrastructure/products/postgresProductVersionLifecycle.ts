@@ -986,6 +986,13 @@ const numericFormulaVariables = (value: unknown) =>
       ([, entry]) => typeof entry === "number" && Number.isFinite(entry),
     ),
   ) as Record<string, number>;
+/** A ProductVersion rotation policy is meaningful only for a canonical
+ * nesting Formula. Keep the capability tied to the server-recognized Formula
+ * contract rather than to a particular material form or editor panel. */
+const rotationCapableFormula = (expression: string): boolean =>
+  /\b(?:sheet_consumption_sqft|roll_nesting_billable_sqft)\s*\(/iu.test(
+    expression,
+  );
 export const formulaFromTree = (
   row: FormulaRow,
 ): ProductDraftFormulaPricing => {
@@ -1028,7 +1035,7 @@ export const formulaFromTree = (
       editable: true,
       expressionEditable: false,
       variablesEditable: true,
-      rotationEditable: /\bsheet_consumption_sqft\s*\(/iu.test(row.formula_revision_expression),
+      rotationEditable: rotationCapableFormula(row.formula_revision_expression),
       inputs: revisionInputs,
       formulaId: row.formula_revision_formula_id,
       formulaRevisionId: row.formula_revision_id,
@@ -1059,7 +1066,7 @@ export const formulaFromTree = (
       source === "embedded_editable" ||
       source === "library_product_inputs_editable" ||
       source === "none",
-    rotationEditable = /\bsheet_consumption_sqft\s*\(/iu.test(expression),
+    rotationEditable = rotationCapableFormula(expression),
     rotation = resolveProductVersionRotationPolicy(
       pricing,
       meta,

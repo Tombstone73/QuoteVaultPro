@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { completeMatrixRows } from "./matrix-pricing";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { completeMatrixRows, MatrixPricing } from "./matrix-pricing";
 
 const dimensions: any = [
   { selectionKey: "opt_thickness", label: "Thickness", values: [{ value: "4mm", label: "4mm" }, { value: "10mm", label: "10mm" }] },
@@ -14,5 +16,19 @@ assert.equal(rows.length, 8, "three two-choice dimensions require the full canon
 assert.equal(rows.find((row) => row.rowId === "matrix-existing")?.baseRateCents, 300, "existing canonical rows are preserved");
 assert.ok(rows.every((row) => Object.keys(row.combination).length === 3), "each staged row retains every stable dimension key");
 assert.ok(rows.filter((row) => row.rowId.startsWith("new:")).every((row) => row.baseRateCents === null), "new combinations remain visibly incomplete until an administrator supplies a rate");
+
+const tierMarkup = renderToStaticMarkup(React.createElement(MatrixPricing, {
+  matrix: {
+    productId: "product-a", draftVersionId: "draft-a", draftUpdatedAt: "2026-08-23T00:00:00.000Z", lifecycle: "draft" as const, editable: true,
+    active: true, matrixId: "matrix-a", pricingUnit: "per_piece" as const,
+    availableDimensions: dimensions, dimensions: dimensions.slice(0, 1),
+    rows: [{ rowId: "row-a", combination: { opt_thickness: "4mm" }, baseRateCents: 300, tierBasis: "quantity" as const, tiers: [{ tierId: "tier-a", minimum: 1, maximum: 24, perPieceCents: 300, perSqftCents: null, minimumChargeCents: 1500 }] }],
+    warnings: [],
+  },
+  onChange: () => {},
+}));
+assert.match(tierMarkup, /Matrix tier minimum/);
+assert.match(tierMarkup, /Matrix tier maximum/);
+assert.match(tierMarkup, /Matrix tier minimum charge/);
 
 console.log("Product Builder N-dimensional Matrix authoring tests passed.");

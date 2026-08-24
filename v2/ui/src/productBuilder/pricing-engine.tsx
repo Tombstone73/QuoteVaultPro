@@ -183,12 +183,12 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
 
       {advanced && <div className="rounded-md border border-border p-3">
         <div className="flex flex-wrap items-center justify-between gap-2"><Segmented value={tierTab} onChange={(value) => setTierTab(value as "qty" | "size" | "sheets")} items={[{ id: "qty", label: `Quantity tiers (${pricing.tierSets.quantity.length})` }, { id: "size", label: `Area tiers (${pricing.tierSets.squareFoot.length})` }, { id: "sheets", label: `Computed sheets (${pricing.tierSets.computedSheetUsage.length})` }]} /><ReferenceButton variant="outline" size="compact" disabled={!editable} className="gap-1" onClick={addTier}><Plus className="size-3.5" />Add {tierTab === "qty" ? "quantity" : tierTab === "size" ? "area" : "sheet"} tier</ReferenceButton></div>
-        {tiers.length === 0 ? <p className="mt-2.5 text-[0.75rem] italic text-muted-foreground">No tiers — every quantity prices at list.</p> : <div className="mt-2.5 space-y-1.5"><div className="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground"><span>From</span><span>To</span><span>Per piece</span><span>Per sq ft</span><span className="w-8" /></div>{tiers.map((tier, index) => <div key={tier.tierId} className="grid grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2"><input className="num h-8 text-[0.8125rem]" type="number" min="1" disabled={!editable} value={tier.minimum} onChange={(event) => updateTier(index, { minimum: Number(event.target.value) })} /><input className="num h-8 text-[0.8125rem]" type="number" min={tier.minimum} placeholder="∞" disabled={!editable} value={tier.maximum ?? ""} onChange={(event) => updateTier(index, { maximum: event.target.value === "" ? null : Number(event.target.value) })} /><MoneyInput disabled={!editable} value={tier.perPieceCents} onChange={(value) => updateTier(index, { perPieceCents: value })} /><MoneyInput disabled={!editable} value={tier.perSqftCents} onChange={(value) => updateTier(index, { perSqftCents: value })} /><ReferenceButton variant="ghost" size="icon" disabled={!editable} aria-label="Remove tier" className="size-8 text-muted-foreground hover:text-late" onClick={() => replaceTierFamily(tiers.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton></div>)}</div>}
+        {tiers.length === 0 ? <p className="mt-2.5 text-[0.75rem] italic text-muted-foreground">No tiers — every quantity prices at list.</p> : <div className="mt-2.5 space-y-1.5"><div className="grid grid-cols-[1fr_1fr_1fr_1fr_1fr_auto] gap-2 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground"><span>From</span><span>To</span><span>Per piece</span><span>Per sq ft</span><span>Min charge</span><span className="w-8" /></div>{tiers.map((tier, index) => <div key={tier.tierId} className="grid grid-cols-[1fr_1fr_1fr_1fr_1fr_auto] gap-2"><input className="num h-8 text-[0.8125rem]" type="number" min="1" disabled={!editable} value={tier.minimum} onChange={(event) => updateTier(index, { minimum: Number(event.target.value) })} /><input className="num h-8 text-[0.8125rem]" type="number" min={tier.minimum} placeholder="∞" disabled={!editable} value={tier.maximum ?? ""} onChange={(event) => updateTier(index, { maximum: event.target.value === "" ? null : Number(event.target.value) })} /><MoneyInput disabled={!editable} value={tier.perPieceCents} onChange={(value) => updateTier(index, { perPieceCents: value })} /><MoneyInput disabled={!editable} value={tier.perSqftCents} onChange={(value) => updateTier(index, { perSqftCents: value })} /><MoneyInput disabled={!editable} value={tier.minimumChargeCents} ariaLabel="Tier minimum charge" onChange={(value) => updateTier(index, { minimumChargeCents: value })} /><ReferenceButton variant="ghost" size="icon" disabled={!editable} aria-label="Remove tier" className="size-8 text-muted-foreground hover:text-late" onClick={() => replaceTierFamily(tiers.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton></div>)}</div>}
       </div>}
     </>}
     {!serviceFee && computedSheetUsage && <div className="rounded-md border border-border p-3">
       <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Computed sheet usage</div>
-      <div className="mt-2 grid gap-3 sm:grid-cols-3">
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
         <Cell label="Sheet width (in)">
           <input
             className="num h-8 text-[0.8125rem]"
@@ -207,13 +207,18 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
             onChange={(event) => sheetLength && event.target.value !== "" && updateFormulaInput(sheetLength, Number(event.target.value))}
           />
         </Cell>
-        <Cell label="Rotation" hint="Allow rotated / mixed layouts when nesting.">
-          <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-surface-2 px-2 text-[0.75rem] text-muted-foreground">
-            <input type="checkbox" disabled={!rotationEditable} checked={formula?.allowRotation ?? false} onChange={(event) => updateRotation({ allowRotation: event.target.checked })} aria-label="Allow rotation" />
-            <span>Allow rotation</span>
-          </label>
-        </Cell>
       </div>
+      {(!sheetWidth || !sheetLength) && <p className="mt-2 text-[0.6875rem] text-muted-foreground">Sheet dimensions are unavailable because the canonical Draft formula input contract does not expose them.</p>}
+    </div>}
+    {!serviceFee && rotationEditable && <div className="rounded-md border border-border p-3">
+      <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Rotation policy</div>
+      <p className="mt-1 text-[0.6875rem] text-muted-foreground">This ProductVersion policy applies to the selected canonical nesting Formula. The server remains the pricing authority.</p>
+      <Cell label="Rotation" hint="Allow rotated layouts when the selected Formula supports rotation.">
+        <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-surface-2 px-2 text-[0.75rem] text-muted-foreground">
+          <input type="checkbox" disabled={!rotationEditable} checked={formula?.allowRotation ?? false} onChange={(event) => updateRotation({ allowRotation: event.target.checked })} aria-label="Allow rotation" />
+          <span>Allow rotation</span>
+        </label>
+      </Cell>
       {formula?.allowRotation && <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <Cell label="Controlled by Product Option" hint="Optional. The selected Option decides when this Product may rotate.">
           <select disabled={!rotationEditable} value={formula.rotationControl?.optionId ?? ""} onChange={(event) => {
@@ -234,8 +239,6 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
           </div>
         </Cell>}
       </div>}
-      {(!sheetWidth || !sheetLength) && <p className="mt-2 text-[0.6875rem] text-muted-foreground">Sheet dimensions are unavailable because the canonical Draft formula input contract does not expose them.</p>}
-      <p className="mt-1 text-[0.6875rem] text-muted-foreground">Rotation is stored with the canonical Draft pricing configuration and resolved by the server preview.</p>
     </div>}
     {!pricing.editable && <p className="text-[0.6875rem] text-muted-foreground">{pricing.unavailableReason ?? "Pricing is read-only for this Product Draft."}</p>}
     <p className="text-[0.6875rem] text-muted-foreground">Pricing changes are saved to the product draft when you click Save Changes.</p>

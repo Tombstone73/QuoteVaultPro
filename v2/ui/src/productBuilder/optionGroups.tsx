@@ -34,6 +34,23 @@ export const applyDefaultChoice = (
   onChange: (next: ProductDraftOption) => void,
 ) => onChange({ ...option, defaultValue: choiceValue || null });
 
+/** Keep an option's staged default in the exact value domain declared by its
+ * input.  The server remains the final validator; this only prevents the
+ * Builder from serializing a boolean or number as UI text. */
+export const normalizeOptionDefaultForInputType = (
+  inputType: ProductDraftOption["inputType"],
+  value: ProductDraftOption["defaultValue"],
+): ProductDraftOption["defaultValue"] => {
+  if (inputType === "select") return typeof value === "string" ? value : null;
+  if (inputType === "multiselect") {
+    if (Array.isArray(value)) return value;
+    return typeof value === "string" && value ? [value] : null;
+  }
+  if (inputType === "boolean") return typeof value === "boolean" ? value : null;
+  if (inputType === "number") return typeof value === "number" && Number.isFinite(value) ? value : null;
+  return typeof value === "string" ? value : null;
+};
+
 /**
  * Direct presentation port of Lovable's option-groups.tsx. V2 persists a
  * flat, ordered option collection, not independent groups. The left master
@@ -198,6 +215,11 @@ function OptionEditor({
       : defaultChoices.filter((value) => value !== choiceValue);
     onChange({ ...option, defaultValue: next.length ? next : null });
   };
+  const setInputType = (inputType: ProductDraftOption["inputType"]) => onChange({
+    ...option,
+    inputType,
+    defaultValue: normalizeOptionDefaultForInputType(inputType, option.defaultValue),
+  });
 
   return (
     <div className={`min-w-0 space-y-3 rounded-md border border-border p-3 ${disabled ? "opacity-60" : ""}`}>
@@ -235,7 +257,7 @@ function OptionEditor({
             <InputTypePicker
               value={option.inputType}
               disabled={disabled}
-              onChange={(inputType) => onChange({ ...option, inputType})}
+              onChange={setInputType}
             />
           </Cell>
         </div>
@@ -266,6 +288,7 @@ function OptionEditor({
           </div>
         </Cell>}
       </div>}
+      {!isChoice && <TypedDefaultEditor option={option} disabled={disabled} onChange={onChange} />}
       <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
         <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Choices</div>
         <div className="flex items-center gap-2">
@@ -305,4 +328,25 @@ function OptionEditor({
       </div>
     </div>
   );
+}
+
+function TypedDefaultEditor({ option, disabled, onChange }: Readonly<{
+  option: ProductDraftOption;
+  disabled?: boolean;
+  onChange: (next: ProductDraftOption) => void;
+}>) {
+  const setDefault = (defaultValue: ProductDraftOption["defaultValue"]) => onChange({ ...option, defaultValue });
+  if (option.inputType === "boolean") {
+    const value = option.defaultValue === true ? "true" : option.defaultValue === false ? "false" : "";
+    return <div className="rounded-md border border-border bg-surface-2 px-2.5 py-2"><Cell label="Default value" hint="No default leaves this unset; true and false remain boolean values."><select aria-label="Boolean default" className={`${builderControlClass} h-8 w-full text-[0.8125rem]`} value={value} disabled={disabled} onChange={(event) => setDefault(event.target.value === "" ? null : event.target.value === "true")}><option value="">No default</option><option value="true">True</option><option value="false">False</option></select></Cell></div>;
+  }
+  if (option.inputType === "number") {
+    return <div className="rounded-md border border-border bg-surface-2 px-2.5 py-2"><Cell label="Default value" hint="Stored as a canonical number."><input aria-label="Number default" className="num h-8 w-full text-[0.8125rem]" type="number" disabled={disabled} value={typeof option.defaultValue === "number" ? option.defaultValue : ""} onChange={(event) => { const raw = event.target.value; const parsed = Number(raw); setDefault(raw === "" || !Number.isFinite(parsed) ? null : parsed); }} /></Cell></div>;
+  }
+  const label = option.inputType === "textarea" ? "Default text" : "Default value";
+  const value = typeof option.defaultValue === "string" ? option.defaultValue : "";
+  const control = option.inputType === "textarea"
+    ? <textarea aria-label="Text default" className="min-h-16 w-full text-[0.8125rem]" disabled={disabled} value={value} onChange={(event) => setDefault(event.target.value || null)} />
+    : <input aria-label="Text default" className="h-8 w-full text-[0.8125rem]" disabled={disabled} value={value} onChange={(event) => setDefault(event.target.value || null)} />;
+  return <div className="rounded-md border border-border bg-surface-2 px-2.5 py-2"><Cell label={label} hint="Used when a line does not provide a value.">{control}</Cell></div>;
 }

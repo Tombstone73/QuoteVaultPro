@@ -13,9 +13,25 @@ export const visiblePreviewOptions = (
   selectionKeys: Readonly<Record<string, string>>,
   configuration: ProductDraftPricingPreview["configuration"] | undefined,
 ) => options.filter((option) => {
-  if (!["select", "boolean", "number", "text"].includes(option.inputType)) return false;
   return !configuration || configuration.visibleOptionSelectionKeys.includes(previewSelectionKey(option.optionId, selectionKeys));
 });
+
+export const previewOptionValue = (
+  inputs: PricingPreviewInputs,
+  configuration: ProductDraftPricingPreview["configuration"],
+  selectionKey: string,
+): unknown => inputs.selections[selectionKey] ?? configuration.effectiveSelections[selectionKey];
+
+export const withPreviewSelection = (
+  inputs: PricingPreviewInputs,
+  selectionKey: string,
+  value: unknown,
+): PricingPreviewInputs => {
+  const selections = { ...inputs.selections };
+  if (value === undefined) delete selections[selectionKey];
+  else selections[selectionKey] = value;
+  return { ...inputs, selections };
+};
 /**
  * Immediate Builder feedback uses the exact shared ProductVersion resolver.
  * The server returns the same projection with the price preview; this local
@@ -114,9 +130,7 @@ export function PricingPreviewRail({ productId, measurementMode, options, rules,
         <p className="mb-1.5 num text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">Product options</p>
         <div className="space-y-2">
         {visible.map((option) => { const selectionKey = previewSelectionKey(option.optionId, selectionKeys), disabled = configuration.disabledOptionSelectionKeys.includes(selectionKey), required = configuration.requiredOptionSelectionKeys.includes(selectionKey); return <Cell key={option.optionId} label={option.label} hint={required ? "Required for this configuration" : undefined}>
-          {option.choices.length ? <select disabled={disabled} value={String(inputs.selections[selectionKey] ?? configuration.effectiveSelections[selectionKey] ?? option.defaultValue ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })}>
-            <option value="">Select</option>{option.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}
-          </select> : <input disabled={disabled} className="h-8 text-[0.8125rem]" placeholder="Free text at quote time" value={String(inputs.selections[selectionKey] ?? configuration.effectiveSelections[selectionKey] ?? "")} onChange={(event) => onInputsChange({ ...inputs, selections: { ...inputs.selections, [selectionKey]: event.target.value } })} />}
+          <PreviewOptionControl option={option} disabled={disabled} value={previewOptionValue(inputs, configuration, selectionKey)} onChange={(value) => onInputsChange(withPreviewSelection(inputs, selectionKey, value))} />
         </Cell>;})}
         </div>
       </section>}
@@ -143,6 +157,23 @@ export function PricingPreviewRail({ productId, measurementMode, options, rules,
     </CompactDisclosure>
     <CompactDisclosure title="Diagnostics" summary={`${findings.length} product finding${findings.length === 1 ? "" : "s"}`}><div className="space-y-2">{findings.length === 0 ? <p className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground"><Info className="size-3.5" />No product publication finding. Publish remains server-validated.</p> : findings.map((finding) => <FindingRow key={`${finding.code}:${finding.message}`} finding={finding} onJump={onJump} />)}</div></CompactDisclosure>
   </div>;
+}
+
+function PreviewOptionControl({ option, disabled, value, onChange }: Readonly<{
+  option: ProductDraftOption;
+  disabled: boolean;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}>) {
+  if (option.inputType === "multiselect") {
+    const selected = new Set(Array.isArray(value) ? value.map(String) : []);
+    return <fieldset aria-label={option.label} className="flex flex-wrap gap-x-3 gap-y-1.5 py-1">{option.choices.map((choice) => <label key={choice.choiceValue} className="inline-flex items-center gap-1.5 text-[0.8125rem]"><input type="checkbox" disabled={disabled} checked={selected.has(choice.choiceValue)} onChange={(event) => { const next = event.target.checked ? [...selected, choice.choiceValue] : [...selected].filter((entry) => entry !== choice.choiceValue); onChange(next.length ? next : undefined); }} />{choice.label}</label>)}</fieldset>;
+  }
+  if (option.inputType === "select") return <select aria-label={option.label} disabled={disabled} value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || undefined)}><option value="">Select</option>{option.choices.map((choice) => <option key={choice.choiceValue} value={choice.choiceValue}>{choice.label}</option>)}</select>;
+  if (option.inputType === "boolean") return <label className="inline-flex h-8 items-center gap-2 text-[0.8125rem]"><input aria-label={option.label} type="checkbox" disabled={disabled} checked={value === true} onChange={(event) => onChange(event.target.checked)} />{value === true ? "Yes" : "No"}</label>;
+  if (option.inputType === "number") return <input aria-label={option.label} disabled={disabled} className="num h-8 text-[0.8125rem]" type="number" value={typeof value === "number" ? value : ""} onChange={(event) => { const raw = event.target.value; const parsed = Number(raw); onChange(raw === "" || !Number.isFinite(parsed) ? undefined : parsed); }} />;
+  if (option.inputType === "textarea") return <textarea aria-label={option.label} disabled={disabled} className="min-h-16 w-full text-[0.8125rem]" placeholder="Free text at quote time" value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || undefined)} />;
+  return <input aria-label={option.label} disabled={disabled} className="h-8 text-[0.8125rem]" placeholder="Free text at quote time" value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || undefined)} />;
 }
 
 function PreviewResult({ result, options, stale }: Readonly<{ result: ProductDraftPricingPreview; options: readonly ProductDraftOption[]; stale?: boolean }>) {

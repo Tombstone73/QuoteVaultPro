@@ -43,4 +43,17 @@ describe("ProductVersion Formula Library inputs", () => {
     expect(draftMeasurementMode({ meta: { general: { measurementMode: "quantity_only" } } }, "dimensions_required")).toBe("quantity_only");
     expect(draftMeasurementMode({ meta: { general: { measurementMode: "invalid" } } }, "dimensions_required")).toBe("dimensions_required");
   });
+
+  test("exposes canonical roll-nesting Formula revisions for the same ProductVersion rotation policy", () => {
+    const value = formulaFromTree({
+      ...libraryRow,
+      formula_revision_id: "revision-roll-a",
+      formula_revision_formula_id: "formula-roll-a",
+      formula_revision_number: 1,
+      formula_revision_expression: "roll_nesting_billable_sqft(w,h,q,printable_width,piece_allowance_x,piece_allowance_y,billing_width_increment,billing_length_increment) * base_price",
+      formula_revision_declared_inputs: [],
+      formula_input_values: {},
+    } as any)!;
+    expect(value.rotationEditable).toBe(true);
+  });
 });

@@ -32,4 +32,29 @@ assert.equal(changes[0]?.defaultValue, "gloss");
 assert.equal(changes[0]?.optionId, "persisted-finish");
 assert.deepEqual(changes[0]?.choices, options[0]?.choices);
 
+const typedMarkup = renderToStaticMarkup(<OptionGroupsSection options={[{
+  optionId: "persisted-proof",
+  selectionKey: "proof_required",
+  label: "Proof required",
+  inputType: "boolean",
+  required: false,
+  defaultValue: false,
+  choices: [],
+  canRemove: true,
+}]} onChange={() => {}} />);
+const textareaMarkup = renderToStaticMarkup(<OptionGroupsSection options={[{
+  optionId: "persisted-notes",
+  selectionKey: "notes",
+  label: "Notes",
+  inputType: "textarea",
+  required: false,
+  defaultValue: "Handle with care",
+  choices: [],
+  canRemove: true,
+}]} onChange={() => {}} />);
+assert.match(typedMarkup, /aria-label="Boolean default"/);
+assert.match(typedMarkup, /<option value="false" selected="">False<\/option>/);
+assert.match(textareaMarkup, /aria-label="Text default"/);
+assert.match(textareaMarkup, /Handle with care/);
+
 console.log("Product Builder option default-choice presentation tests passed.");

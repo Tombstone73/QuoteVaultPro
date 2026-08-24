@@ -1,5 +1,6 @@
 import type {
   ProductDraftOptionPricing,
+  ProductProductionUnitRule,
   ProductProductionUnitSpecification,
 } from "./api";
 
@@ -93,4 +94,49 @@ export const conditionLabel = (
   return option && choice
     ? `When ${option.label} = ${choice.label}`
     : `When ${condition.selectionKey} = ${String(condition.equals)}`;
+};
+
+/**
+ * The production contract persists a zero-based source page, while the Builder
+ * presents pages the way staff see them in a PDF (starting at one).  Keep that
+ * translation at the boundary so ProductVersion truth never receives a UI
+ * display value by accident.
+ */
+export const productionUnitDisplayPage = (
+  rule: Pick<ProductProductionUnitRule, "sourcePageIndex">,
+) => rule.sourcePageIndex === undefined ? "" : String(rule.sourcePageIndex + 1);
+
+export const withProductionUnitSide = (
+  rule: ProductProductionUnitRule,
+  side: "" | "front" | "back",
+): ProductProductionUnitRule => {
+  const { side: _side, ...rest } = rule;
+  return side ? { ...rest, side } : rest;
+};
+
+export const withProductionUnitDisplayPage = (
+  rule: ProductProductionUnitRule,
+  page: number | null,
+): ProductProductionUnitRule => {
+  const { sourcePageIndex: _sourcePageIndex, ...rest } = rule;
+  if (page !== null && (!Number.isInteger(page) || page < 1))
+    throw new Error("Production source pages must be positive integers.");
+  return page === null ? rest : { ...rest, sourcePageIndex: page - 1 };
+};
+
+/** A layer is atomic in the canonical contract: a key and zero-based order are
+ * always present together.  Clearing either Builder field therefore clears the
+ * pair instead of persisting a structurally-invalid partial layer. */
+export const withProductionUnitLayer = (
+  rule: ProductProductionUnitRule,
+  layerKey: string,
+  displayOrder: number | null,
+): ProductProductionUnitRule => {
+  const { layerKey: _layerKey, layerOrder: _layerOrder, ...rest } = rule;
+  const normalizedKey = layerKey.trim();
+  if (displayOrder !== null && (!Number.isInteger(displayOrder) || displayOrder < 1))
+    throw new Error("Production layer order must be a positive integer.");
+  return normalizedKey && displayOrder !== null
+    ? { ...rest, layerKey: normalizedKey, layerOrder: displayOrder - 1 }
+    : rest;
 };

@@ -417,7 +417,7 @@ function TierRow({
   onRemove: () => void;
 }>) {
   return (
-    <div className="mt-1 flex items-center gap-1 text-[0.6875rem]">
+    <div className="mt-1 flex flex-wrap items-center gap-1 text-[0.6875rem]">
       <select
         disabled={disabled}
         value={computed ? "computed" : "quantity"}
@@ -435,6 +435,16 @@ function TierRow({
         value={tier.minimum}
         onChange={(event) => onChange({ minimum: Number(event.target.value) })}
       />
+      <input
+        aria-label="Matrix tier maximum"
+        className="w-12"
+        type="number"
+        min={tier.minimum}
+        placeholder="∞"
+        disabled={disabled}
+        value={tier.maximum ?? ""}
+        onChange={(event) => onChange({ maximum: event.target.value === "" ? null : Number(event.target.value) })}
+      />
       <MoneyRate
         disabled={disabled}
         value={tier.perPieceCents ?? tier.perSqftCents}
@@ -447,6 +457,14 @@ function TierRow({
               : { perPieceCents: value, perSqftCents: null },
           )
         }
+      />
+      <MoneyRate
+        disabled={disabled}
+        value={tier.minimumChargeCents}
+        ariaLabel="Matrix tier minimum charge"
+        className="h-7 w-[88px]"
+        placeholder="Min $"
+        onChange={(minimumChargeCents) => onChange({ minimumChargeCents })}
       />
       <ReferenceButton
         variant="ghost"

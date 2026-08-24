@@ -38,4 +38,32 @@ assert.match(canonicalMarkup, /New Formula/);
 assert.match(canonicalMarkup, /Manage Formula Library/);
 assert.doesNotMatch(canonicalMarkup, /Embedded ProductVersion Formula/);
 
+const tierPricing: ProductDraftPricing = {
+  ...pricing,
+  editable: true,
+  mode: "advanced",
+  tierBasis: "quantity",
+  tiers: [{ tierId: "tier-1", minimum: 1, maximum: 24, perPieceCents: 300, perSqftCents: null, minimumChargeCents: 1500 }],
+  tierSets: { quantity: [{ tierId: "tier-1", minimum: 1, maximum: 24, perPieceCents: 300, perSqftCents: null, minimumChargeCents: 1500 }], squareFoot: [], computedSheetUsage: [] },
+};
+const tierMarkup = renderToStaticMarkup(<PricingEngine pricing={tierPricing} formula={canonicalFormula} formulaLibrary={[formulaEntry]} formulaRevisions={[revision]} onPricingChange={() => {}} onFormulaChange={() => {}} />);
+assert.match(tierMarkup, /Min charge/);
+assert.match(tierMarkup, /Tier minimum charge/);
+
+const rollRevision: FormulaDomainRevision = {
+  ...revision,
+  formulaRevisionId: "revision-roll",
+  expression: "roll_nesting_billable_sqft(w,h,q,printable_width,piece_allowance_x,piece_allowance_y,billing_width_increment,billing_length_increment) * base_price",
+};
+const rollFormula: ProductDraftFormulaPricing = {
+  ...canonicalFormula,
+  formulaRevisionId: rollRevision.formulaRevisionId,
+  expression: rollRevision.expression,
+  rotationEditable: true,
+};
+const rollMarkup = renderToStaticMarkup(<PricingEngine pricing={{ ...pricing, editable: true }} formula={rollFormula} formulaLibrary={[formulaEntry]} formulaRevisions={[rollRevision]} options={[{ optionId: "opt-flute", selectionKey: "opt-flute", label: "Flute direction", inputType: "select", required: false, defaultValue: null, choices: [{ choiceValue: "parallel", label: "Parallel" }, { choiceValue: "perpendicular", label: "Perpendicular" }], canRemove: true }]} onPricingChange={() => {}} onFormulaChange={() => {}} />);
+assert.match(rollMarkup, /Rotation policy/);
+assert.match(rollMarkup, /Allow rotation/);
+assert.doesNotMatch(rollMarkup, /Computed sheet usage/);
+
 console.log("Product Builder legacy Formula compatibility UI tests passed.");
