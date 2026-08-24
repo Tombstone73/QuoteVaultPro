@@ -1,7 +1,8 @@
-import { Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import React from "react";
 import type { ProductDraftOption, ProductMaterial, ProductRecipeComponent } from "../api";
 import { Cell, Chip, Picker, ReferenceButton, Sub, Toggle } from "./referencePrimitives";
+import { canMoveProductBuilderItem, moveProductBuilderItem } from "./ordering";
 
 /** Direct presentation port of the approved Lovable Recipe editor. V2 keeps
  * canonical IDs behind the controls; inventory normalization is Material-owned
@@ -19,6 +20,7 @@ export function RecipeEditor({ components, materials, options, primaryMaterialNa
   const materialFor = (materialId: string) => materials.find((material) => material.materialId === materialId);
   const optionFor = (optionId: string) => selectableOptions.find((option) => option.optionId === optionId);
   const update = (index: number, patch: (component: ProductRecipeComponent) => ProductRecipeComponent) => onChange(components.map((component, position) => position === index ? patch(component) : component));
+  const move = (index: number, direction: -1 | 1) => onChange(moveProductBuilderItem(components, index, index + direction));
 
   return <div className="space-y-2.5">
     <p className="text-[0.75rem] text-muted-foreground">Recipe lines describe consumption, not price. A line with a condition is only consumed when that option choice is selected.</p>
@@ -34,7 +36,11 @@ export function RecipeEditor({ components, materials, options, primaryMaterialNa
               {line.replacesPbv2Compatibility ? <Chip tone="accent">Replaces compatibility requirement</Chip> : <Chip>Additional</Chip>}
               {conditionOption ? <span className="truncate text-[0.6875rem] text-muted-foreground">When {conditionOption.label} = {line.condition?.choiceValue}</span> : <span className="text-[0.6875rem] text-muted-foreground">Always</span>}
             </div>
-            <ReferenceButton variant="ghost" size="compactIcon" className="shrink-0 text-muted-foreground hover:text-late" aria-label="Remove recipe line" disabled={disabled} onClick={() => onChange(components.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton>
+            <span className="flex shrink-0 items-center">
+              <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground" aria-label={`Move ${material?.name ?? line.materialName ?? "recipe line"} up`} title="Move recipe line up" disabled={disabled || !canMoveProductBuilderItem(components, index, -1)} onClick={() => move(index, -1)}><ArrowUp className="size-3" /></ReferenceButton>
+              <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground" aria-label={`Move ${material?.name ?? line.materialName ?? "recipe line"} down`} title="Move recipe line down" disabled={disabled || !canMoveProductBuilderItem(components, index, 1)} onClick={() => move(index, 1)}><ArrowDown className="size-3" /></ReferenceButton>
+              <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground hover:text-late" aria-label="Remove recipe line" disabled={disabled} onClick={() => onChange(components.filter((_, position) => position !== index))}><Trash2 className="size-3.5" /></ReferenceButton>
+            </span>
           </div>
           <div className="mt-2 grid gap-2 @container sm:grid-cols-2 lg:grid-cols-4">
             <Cell label="Material"><select value={line.materialId} disabled={disabled} onChange={(event) => { const selected = materialFor(event.target.value); update(index, (current) => ({ ...current, materialId: event.target.value, materialName: selected?.name, materialSku: selected?.sku })); }}><option value="">Select material</option>{materials.map((item) => <option key={item.materialId} value={item.materialId}>{item.name}</option>)}</select></Cell>

@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from "react";
-import { Grid3x3, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Grid3x3, Plus, Trash2 } from "lucide-react";
 import type {
   ProductDraftPricingMatrix,
   ProductDraftPricingTier,
 } from "../api";
 import { Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
 import { ProductBuilderMoneyInput as MoneyRate } from "./money-input";
+import { canMoveProductBuilderItem, moveProductBuilderItem } from "./ordering";
 
 type Value = string | number | boolean;
 type Dimension = ProductDraftPricingMatrix["dimensions"][number];
@@ -80,14 +81,20 @@ export function MatrixPricing({
   const staged = (change: Partial<ProductDraftPricingMatrix>) =>
     onChange({ ...matrix, ...change });
   const setDimensions = (selectionKeys: readonly string[]) => {
-    const next = matrix.availableDimensions.filter((dimension) =>
-      selectionKeys.includes(dimension.selectionKey),
-    );
+    const available = new Map(matrix.availableDimensions.map((dimension) => [dimension.selectionKey, dimension]));
+    const next = selectionKeys.flatMap((selectionKey) => {
+      const dimension = available.get(selectionKey);
+      return dimension ? [dimension] : [];
+    });
     staged({
       active: true,
       dimensions: next,
       rows: completeMatrixRows(next, matrix.rows),
     });
+  };
+  const moveDimension = (index: number, direction: -1 | 1) => {
+    const next = moveProductBuilderItem(dimensions, index, index + direction);
+    setDimensions(next.map((dimension) => dimension.selectionKey));
   };
   const updateRow = (
     rowId: string,
@@ -201,6 +208,17 @@ export function MatrixPricing({
                   </label>
                 ))}
               </div>
+              {dimensions.length > 1 && <div className="mt-3 border-t border-border pt-2">
+                <p className="text-[0.6875rem] text-muted-foreground">Display the first selected dimension as rows, the second as columns, then use the remaining dimensions as slices.</p>
+                <ol className="mt-1.5 space-y-1">
+                  {dimensions.map((dimension, index) => <li key={dimension.selectionKey} className="flex items-center gap-1.5 rounded border border-border bg-background px-2 py-1">
+                    <span className="num w-4 text-[0.6875rem] text-muted-foreground">{index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium">{dimension.label}</span>
+                    <ReferenceButton variant="ghost" size="compactIcon" aria-label={`Move ${dimension.label} dimension up`} title="Move matrix dimension up" disabled={!editable || !canMoveProductBuilderItem(dimensions, index, -1)} onClick={() => moveDimension(index, -1)}><ArrowUp className="size-3" /></ReferenceButton>
+                    <ReferenceButton variant="ghost" size="compactIcon" aria-label={`Move ${dimension.label} dimension down`} title="Move matrix dimension down" disabled={!editable || !canMoveProductBuilderItem(dimensions, index, 1)} onClick={() => moveDimension(index, 1)}><ArrowDown className="size-3" /></ReferenceButton>
+                  </li>)}
+                </ol>
+              </div>}
             </div>
             <div className="rounded-md border border-border p-2.5">
               <div className="text-[0.75rem] font-bold uppercase tracking-wide">

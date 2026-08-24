@@ -1,8 +1,9 @@
-import { ChevronDown, ChevronRight, GripVertical, Layers, ListOrdered, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, GripVertical, Layers, ListOrdered, Plus, Trash2 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import type { ProductDraftOption } from "../api";
 import { builderControlClass, Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
 import { ChoiceEditor, InputTypePicker } from "./optionChoice";
+import { canMoveProductBuilderItem, moveProductBuilderItem } from "./ordering";
 
 export const createNewProductDraftOption = (): ProductDraftOption => {
   const optionId = `new:${crypto.randomUUID()}`;
@@ -99,11 +100,10 @@ export function OptionGroupsSection({
     const from = options.findIndex((entry) => entry.optionId === fromId);
     const to = options.findIndex((entry) => entry.optionId === toId);
     if (from < 0 || to < 0) return;
-    const next = [...options];
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved!);
-    onChange(next);
+    onChange(moveProductBuilderItem(options, from, to));
   };
+  const moveOption = (index: number, direction: -1 | 1) =>
+    onChange(moveProductBuilderItem(options, index, index + direction));
 
   return (
     <div className="grid gap-3 lg:grid-cols-[264px_minmax(0,1fr)]">
@@ -125,7 +125,7 @@ export function OptionGroupsSection({
         </ReferenceButton>
         <p className="text-[0.6875rem] text-muted-foreground">{groupPersistenceUnavailable}</p>
         <ul className="space-y-1.5">
-          {options.map((entry) => (
+          {options.map((entry, index) => (
             <li
               key={entry.optionId}
               draggable={!disabled}
@@ -136,17 +136,18 @@ export function OptionGroupsSection({
                 setDrag(null);
               }}
             >
-              <button
-                type="button"
-                onClick={() => setSelected(entry.optionId)}
-                className={`flex w-full items-start gap-2 rounded-md border px-2.5 py-2 text-left transition-colors ${
+              <div className={`flex w-full items-start gap-1 rounded-md border px-1.5 py-1.5 transition-colors ${
                   entry.optionId === option?.optionId
                     ? "border-primary/60 bg-primary/10"
                     : "border-border hover:bg-accent/60"
-                }`}
-              >
-                <GripVertical className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1">
+                }`}>
+                <GripVertical className="mt-1 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                <button
+                  type="button"
+                  onClick={() => setSelected(entry.optionId)}
+                  className="min-w-0 flex-1 px-1 py-0.5 text-left"
+                >
+                  <span className="min-w-0 flex-1">
                   <span className="block truncate text-[0.8125rem] font-semibold">
                     {entry.label || "Untitled option"}
                   </span>
@@ -157,8 +158,13 @@ export function OptionGroupsSection({
                     {entry.required && <Chip tone="late">Required</Chip>}
                     <Chip>{entry.inputType}</Chip>
                   </span>
+                  </span>
+                </button>
+                <span className="flex shrink-0 flex-col">
+                  <ReferenceButton variant="ghost" size="compactIcon" aria-label={`Move ${entry.label || "option"} up`} title="Move option up" disabled={disabled || !canMoveProductBuilderItem(options, index, -1)} onClick={() => moveOption(index, -1)}><ArrowUp className="size-3" /></ReferenceButton>
+                  <ReferenceButton variant="ghost" size="compactIcon" aria-label={`Move ${entry.label || "option"} down`} title="Move option down" disabled={disabled || !canMoveProductBuilderItem(options, index, 1)} onClick={() => moveOption(index, 1)}><ArrowDown className="size-3" /></ReferenceButton>
                 </span>
-              </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -323,6 +329,8 @@ function OptionEditor({
             disabled={disabled}
             onChange={(next) => onChange({ ...option, choices: option.choices.map((entry, index) => index === choiceIndex ? next : entry) })}
             onRemove={() => onChange({ ...option, choices: option.choices.filter((_, index) => index !== choiceIndex) })}
+            onMoveUp={canMoveProductBuilderItem(option.choices, choiceIndex, -1) ? () => onChange({ ...option, choices: moveProductBuilderItem(option.choices, choiceIndex, choiceIndex - 1) }) : undefined}
+            onMoveDown={canMoveProductBuilderItem(option.choices, choiceIndex, 1) ? () => onChange({ ...option, choices: moveProductBuilderItem(option.choices, choiceIndex, choiceIndex + 1) }) : undefined}
           />)}
         </div>}
       </div>

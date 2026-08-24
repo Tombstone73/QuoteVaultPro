@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 import React, { useMemo, useState } from "react";
 import type {
   ProductOptionRule,
@@ -9,6 +9,7 @@ import type {
 } from "../../../../shared/productOptionRules";
 import type { ProductDraftOption } from "../api";
 import { Cell, Chip, ReferenceButton, Toggle } from "./referencePrimitives";
+import { canMoveProductBuilderItem, moveProductBuilderItem } from "./ordering";
 
 type RuleOption = Readonly<{
   selectionKey: string;
@@ -90,18 +91,20 @@ export function OptionRulesSection({
     {!references.length && <p className="mt-3 text-[0.75rem] text-muted-foreground">Add an Option with a stable choice before authoring a conditional rule.</p>}
     {references.length > 0 && rules.length === 0 && <p className="mt-3 rounded border border-dashed border-border p-3 text-[0.75rem] text-muted-foreground">No conditional Option rules. Simple static required/default settings remain available above.</p>}
     <div className="mt-3 space-y-3">
-      {rules.map((rule, index) => <RuleEditor key={rule.id} rule={rule} index={index} references={references} disabled={disabled} onChange={(next) => onChange(rules.map((entry, position) => position === index ? next : entry))} onRemove={() => onChange(rules.filter((_, position) => position !== index))} />)}
+      {rules.map((rule, index) => <RuleEditor key={rule.id} rule={rule} index={index} references={references} disabled={disabled} onChange={(next) => onChange(rules.map((entry, position) => position === index ? next : entry))} onRemove={() => onChange(rules.filter((_, position) => position !== index))} onMoveUp={canMoveProductBuilderItem(rules, index, -1) ? () => onChange(moveProductBuilderItem(rules, index, index - 1)) : undefined} onMoveDown={canMoveProductBuilderItem(rules, index, 1) ? () => onChange(moveProductBuilderItem(rules, index, index + 1)) : undefined} />)}
     </div>
   </div>;
 }
 
-function RuleEditor({ rule, index, references, disabled, onChange, onRemove }: Readonly<{
+function RuleEditor({ rule, index, references, disabled, onChange, onRemove, onMoveUp, onMoveDown }: Readonly<{
   rule: ProductOptionRule;
   index: number;
   references: readonly RuleOption[];
   disabled?: boolean;
   onChange: (rule: ProductOptionRule) => void;
   onRemove: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }>) {
   const [open, setOpen] = useState(true);
   const mode: "all" | "any" = Array.isArray(rule.when.all) ? "all" : "any";
@@ -118,6 +121,8 @@ function RuleEditor({ rule, index, references, disabled, onChange, onRemove }: R
       <Chip tone={rule.enabled === false ? "neutral" : "accent"}>{rule.enabled === false ? "Disabled" : "Enabled"}</Chip>
       <span className="flex-1" />
       <Toggle label="Enabled" checked={rule.enabled !== false} disabled={disabled} onChange={(enabled) => onChange({ ...rule, enabled })} />
+      <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground" disabled={disabled || !onMoveUp} onClick={onMoveUp} aria-label={`Move rule ${index + 1} up`} title="Move rule up"><ArrowUp className="size-3" /></ReferenceButton>
+      <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground" disabled={disabled || !onMoveDown} onClick={onMoveDown} aria-label={`Move rule ${index + 1} down`} title="Move rule down"><ArrowDown className="size-3" /></ReferenceButton>
       <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground hover:text-late" disabled={disabled} onClick={onRemove} aria-label="Delete conditional rule"><Trash2 className="size-3.5" /></ReferenceButton>
     </div>
     {open && <div className="space-y-3 border-t border-border p-3">

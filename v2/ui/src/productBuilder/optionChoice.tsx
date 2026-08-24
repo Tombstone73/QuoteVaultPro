@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import React, { useState } from "react";
 import type { ProductDraftOption } from "../api";
 import { Cell, Chip, Picker, ReferenceButton } from "./referencePrimitives";
@@ -13,11 +13,15 @@ export function ChoiceEditor({
   disabled,
   onChange,
   onRemove,
+  onMoveUp,
+  onMoveDown,
 }: Readonly<{
   choice: ProductDraftOption["choices"][number];
   disabled?: boolean;
   onChange: (next: ProductDraftOption["choices"][number]) => void;
   onRemove: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }>) {
   const [open, setOpen] = useState(false);
 
@@ -40,6 +44,30 @@ export function ChoiceEditor({
         />
         <Chip>{choice.choiceValue}</Chip>
         <span className="flex-1" />
+        <ReferenceButton
+          type="button"
+          variant="ghost"
+          size="compactIcon"
+          className="text-muted-foreground"
+          disabled={disabled || !onMoveUp}
+          onClick={onMoveUp}
+          aria-label={`Move ${choice.label || "choice"} up`}
+          title="Move choice up"
+        >
+          <ArrowUp className="size-3" />
+        </ReferenceButton>
+        <ReferenceButton
+          type="button"
+          variant="ghost"
+          size="compactIcon"
+          className="text-muted-foreground"
+          disabled={disabled || !onMoveDown}
+          onClick={onMoveDown}
+          aria-label={`Move ${choice.label || "choice"} down`}
+          title="Move choice down"
+        >
+          <ArrowDown className="size-3" />
+        </ReferenceButton>
         <ReferenceButton
           type="button"
           variant="ghost"

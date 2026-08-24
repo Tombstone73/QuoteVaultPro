@@ -1,8 +1,9 @@
-import { ArrowRight, ExternalLink, Eye, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, ExternalLink, Eye, Plus, Trash2 } from "lucide-react";
 import React, { useState } from "react";
 import type { ProductDraftOption, ProductDraftRouting, ProductProductionUnitRule, ProductProductionUnitSpecification, RoutingWorkspaceRead } from "../api";
 import { productionUnitDisplayPage, withProductionUnitDisplayPage, withProductionUnitLayer, withProductionUnitSide } from "../productProductionUnits";
 import { Cell, Chip, ReferenceButton } from "./referencePrimitives";
+import { canMoveProductBuilderItem, moveProductBuilderItem } from "./ordering";
 
 /** Direct presentation port of production-routing.tsx, adapted to V2's canonical generic unit schema. */
 export function ProductionUnits({ specification, options, selectionKeys = {}, disabled, onChange }: Readonly<{
@@ -20,6 +21,7 @@ export function ProductionUnits({ specification, options, selectionKeys = {}, di
   const update = (index: number, patch: (rule: ProductProductionUnitRule) => ProductProductionUnitRule) =>
     onChange({ schemaVersion: 1, rules: rules.map((rule, position) => position === index ? patch(rule) : rule) });
   const remove = (index: number) => onChange({ schemaVersion: 1, rules: rules.filter((_, position) => position !== index) });
+  const move = (index: number, direction: -1 | 1) => onChange({ schemaVersion: 1, rules: moveProductBuilderItem(rules, index, index + direction) });
   const positiveInteger = (value: string) => {
     const parsed = Number(value);
     return /^\d+$/u.test(value) && Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
@@ -33,7 +35,11 @@ export function ProductionUnits({ specification, options, selectionKeys = {}, di
         return <div key={`${unit.key}-${index}`} className="rounded-md border border-border p-2.5">
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-[0.8125rem] font-semibold">{unit.key || "Untitled unit"}</span>{unit.side && <Chip tone="neutral">{unit.side}</Chip>}{unit.sourcePageIndex !== undefined && <Chip tone="neutral">Page {unit.sourcePageIndex + 1}</Chip>}{unit.layerKey && <Chip tone="neutral">{unit.layerKey} {unit.layerOrder! + 1}</Chip>}{conditionOption ? <Chip tone="accent">When {conditionOption.label} = {String(unit.when?.equals ?? "")}</Chip> : unit.when ? <Chip tone="warn">Invalid condition</Chip> : <Chip tone="ok">Always</Chip>}</div>
-            <ReferenceButton variant="ghost" size="compactIcon" className="shrink-0 text-muted-foreground hover:text-late" aria-label="Remove production unit" disabled={disabled} onClick={() => remove(index)}><Trash2 className="size-3.5" /></ReferenceButton>
+            <span className="flex shrink-0 items-center">
+              <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground" aria-label={`Move ${unit.key || "production unit"} up`} title="Move production unit up" disabled={disabled || !canMoveProductBuilderItem(rules, index, -1)} onClick={() => move(index, -1)}><ArrowUp className="size-3" /></ReferenceButton>
+              <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground" aria-label={`Move ${unit.key || "production unit"} down`} title="Move production unit down" disabled={disabled || !canMoveProductBuilderItem(rules, index, 1)} onClick={() => move(index, 1)}><ArrowDown className="size-3" /></ReferenceButton>
+              <ReferenceButton variant="ghost" size="compactIcon" className="text-muted-foreground hover:text-late" aria-label="Remove production unit" disabled={disabled} onClick={() => remove(index)}><Trash2 className="size-3.5" /></ReferenceButton>
+            </span>
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             <Cell label="Unit key" hint="Stable lowercase key used by frozen production requirements."><input className="h-8 text-[0.8125rem]" disabled={disabled} value={unit.key} onChange={(event) => update(index, (current) => ({ ...current, key: event.target.value }))} /></Cell>

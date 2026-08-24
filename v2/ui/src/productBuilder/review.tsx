@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, CheckCircle2, CircleAlert, Info } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, CircleAlert, Info } from "lucide-react";
 import { Chip } from "./referencePrimitives";
 
 /** Facts supplied by the V2 Product Draft lifecycle/read model. The review
@@ -27,6 +27,12 @@ export type ReviewChange = Readonly<{
 export type ReviewFinding = Readonly<{
   severity: "error" | "warning" | "info";
   message: string;
+  /** Stable diagnostic identity remains available without becoming the
+   * primary authoring experience. */
+  code?: string;
+  /** The Builder section that owns remediation, when one exists. */
+  section?: string;
+  details?: string;
 }>;
 
 export type ReviewValidation = Readonly<{
@@ -41,6 +47,8 @@ export type ReviewSummaryProps = Readonly<{
   changes?: readonly ReviewChange[];
   findings?: readonly ReviewFinding[];
   validation?: ReviewValidation;
+  /** Navigation is owned by the Builder shell; Review only requests it. */
+  onJump?: (section: string) => void;
   /**
    * Transitional compatibility for the original adapter. It supplies no
    * validation provenance, so a zero count is shown as unverified rather
@@ -61,6 +69,7 @@ export function ReviewSummary({
   changes = [],
   findings,
   validation,
+  onJump,
   errors,
   activeVersion,
   draftVersion,
@@ -74,6 +83,12 @@ export function ReviewSummary({
     ?? (validationStatus === "invalid"
       ? `${errorCount ?? 0} blocking issue${errorCount === 1 ? "" : "s"} must be fixed before publishing.`
       : "Canonical validation has not been supplied.");
+  const blockingFindings = (findings ?? []).filter((finding) => finding.severity === "error");
+  const warningFindings = (findings ?? []).filter((finding) => finding.severity === "warning");
+  const informationFindings = (findings ?? []).filter((finding) => finding.severity === "info");
+  // A local clean state is deliberately not presented as canonical publish
+  // readiness: the server validates saved Draft state during publication.
+  const hasBlockingIssues = validationStatus === "invalid" || blockingFindings.length > 0;
 
   return (
     <div className="space-y-3">
@@ -134,23 +149,27 @@ export function ReviewSummary({
         </div>
       )}
 
-      <div
-        aria-live="polite"
-        className={`rounded-md border px-3 py-2 text-[0.75rem] ${validationStatus === "invalid" ? "border-late/50 bg-late/10 text-late" : validationStatus === "valid" ? "border-ok/50 bg-ok/10 text-ok" : "border-border bg-surface-2 text-muted-foreground"}`}
-      >
-        {validationStatus === "valid" ? (
-          <span className="flex items-center gap-1.5"><CheckCircle2 className="size-3.5" />{validationSummary}</span>
-        ) : validationStatus === "invalid" ? (
-          <span className="flex items-center gap-1.5"><CircleAlert className="size-3.5" />{validationSummary}</span>
-        ) : (
-          <span className="flex items-center gap-1.5"><Info className="size-3.5" />{validationSummary}</span>
-        )}
-        {findings && findings.length > 0 && (
-          <ul className="mt-1.5 space-y-1 border-t border-current/20 pt-1.5">
-            {findings.map((finding, index) => <li key={`${finding.severity}:${finding.message}:${index}`}>{finding.message}</li>)}
-          </ul>
-        )}
-      </div>
+      <ReviewFindingGroup title="Blocking issues" findings={blockingFindings} tone="late" onJump={onJump} fallback={hasBlockingIssues ? validationSummary : "No local blocking issue is known. Save and Publish remain server-validated."} />
+      <ReviewFindingGroup title="Warnings" findings={warningFindings} tone="warn" onJump={onJump} fallback="No product warnings are currently known." />
+      {informationFindings.length > 0 && <ReviewFindingGroup title="Notes" findings={informationFindings} tone="neutral" onJump={onJump} />}
+      {!hasBlockingIssues && <div aria-live="polite" className={`rounded-md border px-3 py-2 text-[0.75rem] ${validationStatus === "valid" ? "border-ok/50 bg-ok/10 text-ok" : "border-border bg-surface-2 text-muted-foreground"}`}>
+        <span className="flex items-center gap-1.5">{validationStatus === "valid" ? <CheckCircle2 className="size-3.5" /> : <Info className="size-3.5" />}<b>{validationStatus === "valid" ? "Ready" : "Ready for server validation"}</b><span>{validationSummary}</span></span>
+      </div>}
     </div>
   );
+}
+
+function ReviewFindingGroup({ title, findings, tone, fallback, onJump }: Readonly<{
+  title: string;
+  findings: readonly ReviewFinding[];
+  tone: "late" | "warn" | "neutral";
+  fallback?: string;
+  onJump?: (section: string) => void;
+}>) {
+  const Icon = tone === "late" ? CircleAlert : tone === "warn" ? AlertTriangle : Info;
+  const className = tone === "late" ? "border-late/50 bg-late/10 text-late" : tone === "warn" ? "border-warn/50 bg-warn/10 text-warn" : "border-border bg-surface-2 text-muted-foreground";
+  return <section className={`rounded-md border px-3 py-2 text-[0.75rem] ${className}`} aria-label={title}>
+    <header className="flex items-center gap-1.5 font-semibold"><Icon className="size-3.5" />{title}{findings.length > 0 && <span className="num">({findings.length})</span>}</header>
+    {findings.length > 0 ? <ul className="mt-1.5 space-y-1.5 border-t border-current/20 pt-1.5">{findings.map((finding, index) => <li key={`${finding.severity}:${finding.code ?? finding.message}:${index}`}><p>{finding.message}</p>{finding.details && <p className="mt-0.5 text-[0.6875rem] opacity-80">{finding.details}</p>}<div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[0.6875rem] opacity-80">{finding.code && <span>Diagnostic: {finding.code}</span>}{finding.section && onJump && <button type="button" className="underline underline-offset-2 hover:opacity-100" onClick={() => onJump(finding.section!)}>Go to {finding.section}</button>}</div></li>)}</ul> : fallback && <p className="mt-1">{fallback}</p>}
+  </section>;
 }
