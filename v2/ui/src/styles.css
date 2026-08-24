@@ -810,6 +810,10 @@ button:focus-visible {
 .v2-formula-list-items b, .v2-formula-list-items small { display: block; }
 .v2-formula-list-items b { font-size: 13px; }
 .v2-formula-list-items small { margin-top: 3px; color: var(--ph-muted, #687280); font-size: 11px; }
+.v2-formula-shared { display: grid; gap: 7px; margin-top: 14px; padding: 12px 9px 4px; border-top: 1px solid var(--ph-border, #dfe3e8); }
+.v2-formula-shared h3, .v2-formula-shared p { margin: 0; }
+.v2-formula-shared h3 { font-size: 12px; }
+.v2-formula-shared p { color: var(--ph-muted, #687280); font-size: 11px; line-height: 1.45; }
 .v2-formula-status { align-self: center; font-size: 10px; font-style: normal; text-transform: capitalize; color: var(--ph-muted, #687280); }
 .v2-formula-status.active { color: var(--ph-success, #218653); }
 .v2-formula-status.archived, .v2-formula-status.inactive { color: var(--ph-warning, #9a6700); }
@@ -839,7 +843,7 @@ button:focus-visible {
 .v2-formula-input-row label { display: flex; gap: 5px; align-items: center; font-size: 12px; white-space: nowrap; }
 .v2-formula-input-card { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--ph-border, #dfe3e8); border-radius: 7px; }
 .v2-formula-input-meta { display: grid; grid-template-columns: 1.5fr repeat(4, minmax(90px, 1fr)); gap: 8px; }
-.v2-formula-tester-inputs { display: grid; grid-template-columns: repeat(3, minmax(110px, 1fr)); gap: 10px; }
+.v2-formula-tester-inputs { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 10px; }
 .v2-formula-test-result { display: grid; gap: 3px; padding: 11px; border-radius: 7px; background: var(--ph-success-bg, #e8f5ee); }
 .v2-formula-test-result small { color: var(--ph-muted, #687280); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
 .v2-formula-test-result b { font-size: 20px; }

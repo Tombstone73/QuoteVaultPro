@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   formulaApi,
@@ -53,9 +53,17 @@ const formulaKey = (organizationId: string) =>
   ["v2", organizationId, "formulas"] as const;
 const inputTypes = ["number", "integer", "boolean"] as const;
 
-const errorText = (error: unknown) =>
+const errorText = (error: unknown): string =>
   (error as { message?: string })?.message ??
   "The Formula service is unavailable.";
+
+/** A live tester request is only allowed to update the result it initiated.
+ * Network cancellation is best-effort in browsers, so this guard keeps a
+ * slower, superseded response from replacing the newest server result. */
+export const acceptsFormulaTesterResponse = (
+  currentRequestId: number,
+  responseRequestId: number,
+) => currentRequestId === responseRequestId;
 
 /** Formula-domain authoring surface. Formula expressions and revisions remain
  * owned by the canonical Formula API; this workspace stores no local formulas. */
@@ -269,6 +277,13 @@ export const FormulaLibraryWorkspace = ({
                         ? "My Formula Library"
                         : "Product-scoped"}
                     </small>
+                    <small>
+                      {formula.revision.declaredInputs.length
+                        ? formula.revision.declaredInputs
+                            .map((input) => input.label)
+                            .join(", ")
+                        : "No declared inputs"}
+                    </small>
                   </span>
                   <em className={`v2-formula-status ${formula.status}`}>
                     {formula.status}
@@ -279,6 +294,11 @@ export const FormulaLibraryWorkspace = ({
           ) : (
             <p>No Formula Library entries match this view.</p>
           )}
+          <section className="v2-formula-shared" aria-label="Shared formulas">
+            <h3>Shared Formulas</h3>
+            <p>Cross-tenant sharing is not available yet. Shared Formulas will be copied into My Formula Library, never used as a live pricing dependency.</p>
+            <button className="button secondary" type="button" disabled>Browse shared formulas (coming soon)</button>
+          </section>
         </section>
         <section className="card v2-formula-detail">
           {!selected && mode !== "create" ? (
@@ -508,13 +528,21 @@ const FormulaDetail = ({
         <p>Loading revision history…</p>
       ) : (
         <ol className="v2-formula-revisions">
-          {revisions.map((revision) => (
-            <li key={revision.formulaRevisionId}>
+          {revisions.map((revision, index) => {
+            const previous = revisions[index + 1];
+            const priorKeys = new Set(previous?.declaredInputs.map((input) => input.key) ?? []);
+            const currentKeys = new Set(revision.declaredInputs.map((input) => input.key));
+            const added = revision.declaredInputs.filter((input) => !priorKeys.has(input.key)).map((input) => input.key);
+            const removed = previous?.declaredInputs.filter((input) => !currentKeys.has(input.key)).map((input) => input.key) ?? [];
+            const revisionUsage = usage.filter((row) => row.formulaRevisionId === revision.formulaRevisionId);
+            return <li key={revision.formulaRevisionId}>
               <b>Revision {revision.revisionNumber}</b>
               <span>{new Date(revision.createdAt).toLocaleString()}</span>
+              <span>Created by {revision.createdByUserId ?? "an authorized staff member"} · {revisionUsage.length ? `${revisionUsage.length} ProductVersion${revisionUsage.length === 1 ? "" : "s"}` : "not yet used"}</span>
               <code>{revision.expression}</code>
-            </li>
-          ))}
+              <small>{previous ? `Declared inputs: ${added.length ? `added ${added.join(", ")}` : "no additions"}${removed.length ? `; removed ${removed.join(", ")}` : ""}.` : `Declared inputs: ${revision.declaredInputs.length ? revision.declaredInputs.map((input) => input.key).join(", ") : "none"}.`}{revision.validationEvidence ? " Validated by the canonical Formula evaluator." : " Validation evidence is unavailable for this revision."}</small>
+            </li>;
+          })}
         </ol>
       )}
     </section>
@@ -842,29 +870,39 @@ const FormulaTester = ({
   const [width, setWidth] = useState("12");
   const [height, setHeight] = useState("12");
   const [quantity, setQuantity] = useState("1");
+  const [basePrice, setBasePrice] = useState("1");
   const [values, setValues] = useState<Record<string, string | boolean>>({});
-  const evaluate = useMutation({
-    mutationFn: (input: Parameters<typeof formulaApi.evaluate>[1]) =>
-      formulaApi.evaluate(organizationId, input),
-  });
+  const latestRequestId = useRef(0);
+  const [evaluation, setEvaluation] = useState<Readonly<{
+    pending: boolean;
+    result?: Awaited<ReturnType<typeof formulaApi.evaluate>>;
+    error?: unknown;
+  }>>({ pending: false });
   const validInputs = useMemo(
     () =>
       stableDefinition.declaredInputs.every((input) => {
         const value = values[input.key];
-        return !input.required || (value !== undefined && value !== "");
+        return (
+          !input.required ||
+          input.defaultValue !== undefined ||
+          (value !== undefined && value !== "")
+        );
       }),
     [stableDefinition.declaredInputs, values],
   );
   useEffect(() => {
     const widthNumber = Number(width),
       heightNumber = Number(height),
-      quantityNumber = Number(quantity);
+      quantityNumber = Number(quantity),
+      basePriceNumber = Number(basePrice);
     if (
       !organizationId ||
       !stableDefinition.expression.trim() ||
       !Number.isFinite(widthNumber) ||
       !Number.isFinite(heightNumber) ||
       !Number.isFinite(quantityNumber) ||
+      !Number.isFinite(basePriceNumber) ||
+      basePriceNumber < 0 ||
       !validInputs
     )
       return;
@@ -882,17 +920,37 @@ const FormulaTester = ({
         inputValues[input.key] = number;
       }
     }
-    const timer = window.setTimeout(
-      () =>
-        evaluate.mutate({
+    const timer = window.setTimeout(() => {
+      const requestId = latestRequestId.current + 1;
+      latestRequestId.current = requestId;
+      setEvaluation((current) => ({
+        pending: true,
+        ...(current.result ? { result: current.result } : {}),
+      }));
+      void formulaApi
+        .evaluate(organizationId, {
           definition: stableDefinition,
           width: widthNumber,
           height: heightNumber,
           quantity: quantityNumber,
+          basePrice: basePriceNumber,
           inputValues,
-        }),
-      450,
-    );
+        })
+        .then((result) => {
+          if (!acceptsFormulaTesterResponse(latestRequestId.current, requestId))
+            return;
+          setEvaluation({ pending: false, result });
+        })
+        .catch((error) => {
+          if (!acceptsFormulaTesterResponse(latestRequestId.current, requestId))
+            return;
+          setEvaluation((current) => ({
+            pending: false,
+            ...(current.result ? { result: current.result } : {}),
+            error,
+          }));
+        });
+    }, 450);
     return () => window.clearTimeout(timer);
   }, [
     organizationId,
@@ -900,6 +958,7 @@ const FormulaTester = ({
     width,
     height,
     quantity,
+    basePrice,
     values,
     validInputs,
   ]);
@@ -910,7 +969,7 @@ const FormulaTester = ({
           <h3>Formula Tester</h3>
           <p>Tests this definition on the server. Nothing is saved.</p>
         </div>
-        {evaluate.isPending && <span>Testing…</span>}
+        {evaluation.pending && <span>Testing…</span>}
       </header>
       <div className="v2-formula-tester-inputs">
         <label className="field">
@@ -935,6 +994,14 @@ const FormulaTester = ({
             inputMode="numeric"
             value={quantity}
             onChange={(event) => setQuantity(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          Base price
+          <input
+            inputMode="decimal"
+            value={basePrice}
+            onChange={(event) => setBasePrice(event.target.value)}
           />
         </label>
         {stableDefinition.declaredInputs.map((input) => (
@@ -996,14 +1063,14 @@ const FormulaTester = ({
           Enter all required declared inputs to test.
         </p>
       )}
-      {evaluate.error && (
-        <div className="notice error">{errorText(evaluate.error)}</div>
+      {Boolean(evaluation.error) && (
+        <div className="notice error">{errorText(evaluation.error)}</div>
       )}
-      {evaluate.data && !evaluate.isPending && (
+      {evaluation.result && (
         <div className="v2-formula-test-result">
           <small>SERVER RESULT</small>
-          <b>{evaluate.data.result}</b>
-          <span>{evaluate.data.expression}</span>
+          <b>{evaluation.result.result}</b>
+          <span>{evaluation.result.expression}</span>
         </div>
       )}
     </section>

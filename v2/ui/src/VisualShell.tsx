@@ -64,6 +64,7 @@ type NavigationSection = Readonly<{
 
 const sections: readonly NavigationSection[] = [
   { id: "home", label: "Home", items: [{ page: "home", label: "Command Center", icon: LayoutDashboard }] },
+  { id: "pricing", label: "Pricing", items: [{ page: "formulas", label: "Formula Library", icon: Calculator }] },
   {
     id: "sales",
     label: "Sales",
@@ -80,7 +81,6 @@ const sections: readonly NavigationSection[] = [
     label: "Products",
     items: [
       { page: "products", label: "Products", icon: Package },
-      { page: "formulas", label: "Formula Library", icon: Calculator },
       { label: "Nesting", icon: Grid2X2 },
       { label: "Materials", icon: Boxes },
       { href: "/inventory", label: "Inventory", icon: Warehouse },

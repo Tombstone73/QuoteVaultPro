@@ -2149,13 +2149,13 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       if (!revision) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Formula revision is unavailable.");
       const declarations = Array.isArray(revision.declared_inputs) ? revision.declared_inputs as FormulaDeclaredInput[] : [];
       const inputValues = validateFormulaRevisionInputValues(declarations, input.formula.inputValues ?? {});
-      const numericInputValues = Object.fromEntries(
-        Object.entries(inputValues).filter(([, value]) => typeof value === "number"),
+      const evaluatorInputValues = Object.fromEntries(
+        Object.entries(inputValues).map(([key, value]) => [key, typeof value === "boolean" ? (value ? 1 : 0) : value]),
       ) as Record<string, number>;
       try {
         evaluateResolvedFormula(revision.expression, {
           ...Object.fromEntries(formulaRuntimeVariables.map((key) => [key, 1])),
-          ...numericInputValues,
+          ...evaluatorInputValues,
         }, input.formula.allowRotation);
       } catch (error) {
         throw new V2ApplicationError("VALIDATION_ERROR", error instanceof Error ? error.message : "Formula expression is invalid.");

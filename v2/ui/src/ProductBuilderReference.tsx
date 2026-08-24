@@ -427,7 +427,9 @@ export const ProductBuilderReference = ({
 
   const localPricingFindings = useMemo(() => {
     const findings: string[] = [];
-    const authorsFormula = pricingRead.data?.mode === "formula" || dirty.has("formula");
+    // Compatibility-backed Formulae remain publishable until the editor
+    // intentionally stages canonical FormulaRevision adoption.
+    const authorsFormula = dirty.has("formula");
     if (draft.general.workflowIntent === "service_fee" && draft.pricing.flatFeeCents === null) findings.push("Service fee Products require a Flat Fee Amount before publication.");
     if (draft.matrix?.active && (!draft.matrix.dimensions.length || draft.matrix.rows.some((row) => row.baseRateCents === null))) findings.push("Matrix pricing must contain a rate for every selected Option combination.");
     if (authorsFormula && !draft.formula.formulaRevisionId) findings.push("Choose an active Formula revision before publication.");
