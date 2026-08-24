@@ -77,6 +77,12 @@ describe("V2 Formula-domain HTTP routes", () => {
   test("evaluates an unsaved Formula definition through the server Formula-domain contract without persistence", async () => {
     await request(app())
       .post("/v2/organizations/org-a/formulas/test")
+      .send({ definition: { expression: "basePrice + setupFee", declaredInputs: [{ key: "setupFee", label: "Setup fee", type: "number", required: true, authorable: true }] }, width: 12, height: 12, quantity: 1, basePrice: 3, inputValues: { setupFee: 2 } })
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ result: 5, variables: { base_price: 3, basePrice: 3, p: 3 } }));
+
+    await request(app())
+      .post("/v2/organizations/org-a/formulas/test")
       .send({
         definition: {
           expression: "ceil(total_sqft) * p + copies",

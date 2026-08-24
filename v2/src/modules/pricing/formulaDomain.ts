@@ -4,6 +4,7 @@ import { requireOperationPrincipalScope } from "../../application/operation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId, type PrincipalKind } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
+import { formulaRuntimeProbeValues } from "./formulaRuntimeContract.js";
 import { evaluateResolvedFormula } from "./v2PricingAdapter.js";
 
 export type FormulaVisibility = "product_scoped" | "library";
@@ -98,7 +99,6 @@ const optionalText = (value: unknown, field: string, max = 2_000): string | unde
 const isInputType = (value: unknown): value is FormulaInputType => value === "number" || value === "integer" || value === "boolean";
 const validInputValue = (type: FormulaInputType, value: unknown): value is FormulaInputValue =>
   type === "boolean" ? typeof value === "boolean" : typeof value === "number" && Number.isFinite(value) && (type !== "integer" || Number.isInteger(value));
-const formulaRuntimeProbe = ["q", "w", "h", "sqft", "total_sqft", "computed_sheets", "billed_sqft", "base_price", "p", "sheet_price", "unitPrice", "allow_rotation"] as const;
 const probeValue = (input: FormulaDeclaredInput): number => {
   if (typeof input.defaultValue === "number") return input.defaultValue;
   if (input.minimum !== undefined) return input.minimum;
@@ -131,7 +131,7 @@ export const validateFormulaDefinition = (value: FormulaRevisionDefinition): For
   // never reaches Product/ProductVersion data.
   try {
     evaluateResolvedFormula(expression, {
-      ...Object.fromEntries(formulaRuntimeProbe.map((key) => [key, 1])),
+      ...formulaRuntimeProbeValues(),
       ...Object.fromEntries(declaredInputs.filter((input) => input.type !== "boolean").map((input) => [input.key, probeValue(input)])),
     });
   } catch (error) {

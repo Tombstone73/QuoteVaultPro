@@ -34,6 +34,7 @@ import {
   evaluateResolvedFormula,
   V2PricingParityAdapter,
 } from "../../src/modules/pricing/v2PricingAdapter.js";
+import { formulaRuntimeProbeValues, formulaRuntimeVariables } from "../../src/modules/pricing/formulaRuntimeContract.js";
 import {
   resolveActivePbv2PricingInput,
   resolveProductVersionRotationPolicy,
@@ -881,19 +882,6 @@ const matrixFromTree = (
         : [],
   };
 };
-const formulaRuntimeVariables = [
-  "q",
-  "w",
-  "h",
-  "sqft",
-  "total_sqft",
-  "computed_sheets",
-  "billed_sqft",
-  "base_price",
-  "p",
-  "sheet_price",
-  "unitPrice",
-] as const;
 const supportsLegacyFormulaAdoption = (
   expression: string,
   variables: Record<string, number>,
@@ -903,7 +891,7 @@ const supportsLegacyFormulaAdoption = (
     evaluateResolvedFormula(
       expression,
       {
-        ...Object.fromEntries(formulaRuntimeVariables.map((key) => [key, 1])),
+        ...formulaRuntimeProbeValues(),
         ...variables,
       },
       allowRotation,

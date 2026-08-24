@@ -58,6 +58,10 @@ const run = async (): Promise<void> => {
   assert.deepEqual(validateFormulaRevisionInputValues(inputs, { p: 3 }), { p: 3, copies: 1, allow_rotation: false });
   assert.throws(() => validateFormulaRevisionInputValues(inputs, { p: 3, unknown: 1 }), /not declared/);
   assert.throws(() => validateFormulaDefinition({ ...definition, expression: "unsupported_function(q)", }), /Formula expression is invalid/);
+  const basePriceDefinition = { expression: "basePrice + setupFee", declaredInputs: [{ key: "setupFee", label: "Setup fee", type: "number" as const, required: true, authorable: true }] };
+  assert.doesNotThrow(() => validateFormulaDefinition(basePriceDefinition));
+  assert.equal(evaluateFormulaDefinition({ definition: basePriceDefinition, width: 12, height: 12, quantity: 1, basePrice: 3, inputValues: { setupFee: 2 } }).result, 5, "Formula Tester and revision validation share the basePrice contract");
+  assert.throws(() => validateFormulaDefinition({ ...basePriceDefinition, expression: "definitelyNotARealVariable + setupFee" }), /Unknown pricing formula variable/);
   const evaluated = evaluateFormulaDefinition({ definition, width: 12, height: 24, quantity: 2, inputValues: { p: 3, copies: 2 } });
   assert.equal(evaluated.result, 6, "Formula Tester uses the canonical evaluator with runtime geometry and declared inputs");
   assert.deepEqual(evaluated.inputValues, { p: 3, copies: 2, allow_rotation: false });

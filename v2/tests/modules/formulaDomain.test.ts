@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import type { OperationContext } from "../../src/application/operation";
-import { FormulaDomainApplicationService, type FormulaDomainTransactionRunner, type FormulaIdentity, validateFormulaDefinition, validateFormulaRevisionInputValues } from "../../src/modules/pricing/formulaDomain";
+import { FormulaDomainApplicationService, type FormulaDomainTransactionRunner, type FormulaIdentity, evaluateFormulaDefinition, validateFormulaDefinition, validateFormulaRevisionInputValues } from "../../src/modules/pricing/formulaDomain";
 
 const context = (id: string): OperationContext => ({
   organizationId: "tenant-a",
@@ -85,6 +85,16 @@ describe("Formula domain immutable revisions", () => {
 });
 
 describe("Formula declared input contract", () => {
+  test("shares the base-price alias contract across revision validation and tester evaluation", () => {
+    const basePriceDefinition = {
+      expression: "basePrice + setupFee",
+      declaredInputs: [{ key: "setupFee", label: "Setup fee", type: "number" as const, required: true, authorable: true }],
+    };
+    expect(validateFormulaDefinition(basePriceDefinition)).toMatchObject({ expression: "basePrice + setupFee" });
+    expect(evaluateFormulaDefinition({ definition: basePriceDefinition, width: 12, height: 12, quantity: 1, basePrice: 3, inputValues: { setupFee: 2 } })).toMatchObject({ result: 5, variables: { base_price: 3, basePrice: 3, p: 3 } });
+    expect(() => validateFormulaDefinition({ ...basePriceDefinition, expression: "definitelyNotARealVariable + setupFee" })).toThrow("Unknown pricing formula variable");
+  });
+
   test("accepts typed number, integer, and boolean declarations and applies typed defaults", () => {
     const valid = validateFormulaDefinition(definition);
     expect(validateFormulaRevisionInputValues(valid.declaredInputs, { p: 3 })).toEqual({ p: 3, copies: 1, allow_rotation: false });

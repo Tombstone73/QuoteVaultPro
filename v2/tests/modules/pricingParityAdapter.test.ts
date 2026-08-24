@@ -158,6 +158,15 @@ describe("M1.2 Pricing parity adapter", () => {
     expect(result.formula?.variables.base_price).toBe(1);
   });
 
+  test("Product pricing supplies the Formula Tester basePrice compatibility alias in dollars", async () => {
+    const result = await adapter.calculate(requestFor({ id: "base-price-alias", quantity: 1, width: "12", height: "12", rules: {
+      base: { perSquareFootCents: decimalText("300") },
+      formula: { id: "base-price-alias", source: "library", version: "v1", contentHash: "sha256:base-price-alias", expression: "basePrice + 2", variables: {} },
+    } }));
+    expect(result.calculatedLineAmount.cents).toBe(500);
+    expect(result.formula?.variables).toMatchObject({ base_price: 3, basePrice: 3, p: 3 });
+  });
+
   test("percent impacts are additive against calculated base and retain impact evidence", async () => {
     const result = await adapter.calculate(requestFor({ id: "options", quantity: 1, rules: {
       base: { flatFeeCents: 10000 }, optionImpacts: [
