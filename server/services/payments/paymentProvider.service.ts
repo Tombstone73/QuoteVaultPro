@@ -9,8 +9,10 @@ import {
   type OrganizationPaymentSettings,
 } from "../../../shared/schema";
 import { normalizeInvoiceAccountingDisplay } from "../../../shared/invoiceAccountingDisplay";
+import { normalizePaymentProcessorDefault } from "../../../shared/paymentProcessorState";
 import { reconcileInvoicePaymentStateInTransaction, refreshInvoiceStatus } from "../../invoicesService";
 import { decryptAiSecret, encryptAiSecret } from "../ai/aiSecretsEncryption";
+import { resolveStripeReadiness } from "../stripeReadiness.service";
 import {
   buildHostedPtkRequest,
   EpsGatewayClient,
@@ -53,6 +55,7 @@ export type RecordHostedResultInput = {
 
 export type SafePaymentSettings = {
   provider: "none" | "stripe" | "eps";
+  stripeEnabled: boolean;
   epsEnabled: boolean;
   epsAccountNumber: string | null;
   epsApiKeyConfigured: boolean;
@@ -97,6 +100,7 @@ function getUserName(actor?: Actor): string | null {
 function getDefaultSafeSettings(): SafePaymentSettings {
   return {
     provider: "none",
+    stripeEnabled: false,
     epsEnabled: false,
     epsAccountNumber: null,
     epsApiKeyConfigured: false,
@@ -107,7 +111,7 @@ function getDefaultSafeSettings(): SafePaymentSettings {
     epsDeviceSerialNumber: null,
     epsSupportedModes: ["hosted_cnp"],
     epsReady: false,
-    missing: ["provider"],
+    missing: [],
     epsMode: "test", epsTestAccountNumber: null, epsTestApiKeyConfigured: false, epsTestApiKeyMasked: null,
     epsTestBaseUrl: "https://postransactions.com/cnp", epsLiveAccountNumber: null, epsLiveApiKeyConfigured: false,
     epsLiveApiKeyMasked: null, epsLiveBaseUrl: "https://postransactions.com/cnp",
@@ -122,7 +126,7 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
       )
     : ["hosted_cnp"];
 
-  const provider = row.provider === "eps" || row.provider === "stripe" ? row.provider : "none";
+  const configuredProvider = row.provider === "eps" || row.provider === "stripe" ? row.provider : "none";
   const epsMissing: string[] = [];
   if (!row.epsEnabled) epsMissing.push("epsEnabled");
   const epsMode = (row as any).epsMode === "live" ? "live" as const : "test" as const;
@@ -130,14 +134,23 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
   const activeEncryptedKey = epsMode === "live" ? (row as any).epsLiveEncryptedApiKey : (row as any).epsTestEncryptedApiKey;
   if (!asString(activeAccount)) epsMissing.push(`eps${epsMode === "live" ? "Live" : "Test"}AccountNumber`);
   if (!asString(activeEncryptedKey)) epsMissing.push(`eps${epsMode === "live" ? "Live" : "Test"}ApiKey`);
+  const provider = normalizePaymentProcessorDefault({
+    provider: configuredProvider,
+    stripeEnabled: Boolean(row.stripeEnabled),
+    // Async centralized readiness is applied by getPaymentSettings below.
+    stripeReady: true,
+    epsEnabled: Boolean(row.epsEnabled),
+    epsReady: epsMissing.length === 0,
+  });
   const missing = provider === "none"
-    ? ["provider"]
+    ? []
     : provider === "eps" || row.epsEnabled
       ? epsMissing
       : [];
 
   return {
     provider,
+    stripeEnabled: Boolean(row.stripeEnabled),
     epsEnabled: Boolean(row.epsEnabled),
     epsAccountNumber: asString(activeAccount) || null,
     epsApiKeyConfigured: Boolean(asString(activeEncryptedKey)),
@@ -432,13 +445,20 @@ async function audit(input: {
 }
 
 export async function getPaymentSettings(organizationId: string): Promise<SafePaymentSettings> {
-  return assertNoApiKeyLeak(toSafePaymentSettings(await getSettingsRow(organizationId)));
+  const settings = assertNoApiKeyLeak(toSafePaymentSettings(await getSettingsRow(organizationId)));
+  if (settings.provider !== "stripe") return settings;
+
+  const readiness = await resolveStripeReadiness(organizationId);
+  return readiness.readyForPayments
+    ? settings
+    : { ...settings, provider: "none", missing: [readiness.code || "stripeReadiness"] };
 }
 
 export async function updatePaymentSettings(
   organizationId: string,
   input: Partial<{
     provider: "none" | "stripe" | "eps";
+    stripeEnabled: boolean;
     epsEnabled: boolean;
     epsMode: "test" | "live";
     epsTestAccountNumber: string | null;
@@ -469,6 +489,7 @@ export async function updatePaymentSettings(
   const values = {
     organizationId,
     provider: input.provider ?? existing?.provider ?? "none",
+    stripeEnabled: input.stripeEnabled ?? existing?.stripeEnabled ?? false,
     epsEnabled: input.epsEnabled ?? existing?.epsEnabled ?? false,
     epsMode: input.epsMode ?? (existing as any)?.epsMode ?? "test",
     epsTestAccountNumber: Object.prototype.hasOwnProperty.call(input, "epsTestAccountNumber") ? asString(input.epsTestAccountNumber) || null : (existing as any)?.epsTestAccountNumber ?? null,
@@ -493,6 +514,45 @@ export async function updatePaymentSettings(
     createdAt: existing?.createdAt ?? now,
   };
 
+  const requestedProvider = values.provider === "stripe" || values.provider === "eps" ? values.provider : "none";
+  const candidate = toSafePaymentSettings(values as any);
+  let normalizedProvider = requestedProvider;
+
+  if (requestedProvider === "eps" && (!candidate.epsEnabled || !candidate.epsReady)) {
+    if (input.provider === "eps" && input.epsEnabled !== false) {
+      throw new PaymentProviderError(
+        candidate.epsEnabled
+          ? "EPS active credentials are incomplete. Complete the active EPS configuration before making EPS the default processor."
+          : "Enable EPS before making it the default processor.",
+        candidate.epsEnabled ? "EPS_NOT_READY" : "EPS_NOT_ENABLED",
+        409,
+      );
+    }
+    normalizedProvider = "none";
+  }
+
+  if (requestedProvider === "stripe") {
+    if (!values.stripeEnabled) {
+      if (input.provider === "stripe" && input.stripeEnabled !== false) {
+        throw new PaymentProviderError("Enable Stripe before making it the default processor.", "STRIPE_NOT_ENABLED", 409);
+      }
+      normalizedProvider = "none";
+    } else {
+      const readiness = await resolveStripeReadiness(organizationId);
+      if (!readiness.readyForPayments) {
+        if (input.provider === "stripe") {
+          throw new PaymentProviderError(
+            readiness.lastError || "Stripe is not ready to accept payments for this organization.",
+            readiness.code || "STRIPE_NOT_READY",
+            409,
+          );
+        }
+        normalizedProvider = "none";
+      }
+    }
+  }
+  values.provider = normalizedProvider;
+
   const [row] = await db
     .insert(organizationPaymentSettings)
     .values(values as any)
@@ -500,6 +560,7 @@ export async function updatePaymentSettings(
       target: [organizationPaymentSettings.organizationId],
       set: {
         provider: values.provider,
+        stripeEnabled: values.stripeEnabled,
         epsEnabled: values.epsEnabled,
         epsMode: values.epsMode,
         epsTestAccountNumber: values.epsTestAccountNumber,

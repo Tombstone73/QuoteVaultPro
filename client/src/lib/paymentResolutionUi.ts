@@ -66,6 +66,7 @@ export function getHostedCardUnavailableReason(input: {
   paymentSettingsProvider?: string | null;
   epsEnabled?: boolean | null;
   epsReady?: boolean | null;
+  stripeEnabled?: boolean | null;
   stripeConnected?: boolean | null;
   stripeChargesEnabled?: boolean | null;
 }): string {
@@ -83,6 +84,7 @@ export function getHostedCardUnavailableReason(input: {
   }
 
   if (configuredProvider === "stripe") {
+    if (input.stripeEnabled === false) return "Stripe is selected but disabled in Settings.";
     if (input.stripeConnected === false) return "Stripe is selected but not connected.";
     if (input.stripeChargesEnabled === false) return "Stripe is connected but charges are not enabled.";
     return "Stripe card payments are not currently available.";

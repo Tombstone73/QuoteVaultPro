@@ -394,7 +394,7 @@ export async function registerMvpInvoicingRoutes(
       const recipientHasPortalAccess = portalAccessRows.some(
         (access) => String(access.email || "").trim().toLowerCase() === String(recipientEmail).trim().toLowerCase(),
       );
-      const stripeConnected = stripeReadiness.readyForPayments;
+      const stripeConnected = paymentSettings.stripeEnabled && stripeReadiness.readyForPayments;
       const availableProviders = [
         stripeConnected ? "stripe" : null,
         paymentSettings.epsReady ? "eps" : null,
@@ -529,6 +529,11 @@ export async function registerMvpInvoicingRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
+      const paymentSettings = await getPaymentSettings(organizationId);
+      if (!paymentSettings.stripeEnabled) {
+        return res.status(409).json({ success: false, error: 'Stripe is disabled for this organization.', code: 'STRIPE_NOT_ENABLED' });
+      }
+
       const stripeReadiness = await resolveStripeReadiness(organizationId);
       const stripeAccountId = stripeReadiness.stripeAccountId;
       if (!stripeReadiness.readyForPayments || !stripeAccountId) {
@@ -539,9 +544,8 @@ export async function registerMvpInvoicingRoutes(
         });
       }
 
-      const paymentSettings = await getPaymentSettings(organizationId);
       const availableHostedPaymentProviders = [
-        "stripe",
+        paymentSettings.stripeEnabled ? "stripe" : null,
         paymentSettings.epsReady ? "eps" : null,
       ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
       const hostedPaymentResolution = resolveHostedPaymentProvider({
@@ -913,6 +917,11 @@ export async function registerMvpInvoicingRoutes(
       const { paymentIntentId } = req.body;
       if (!paymentIntentId || typeof paymentIntentId !== 'string') {
         return res.status(400).json({ success: false, error: "Missing paymentIntentId" });
+      }
+
+      const paymentSettings = await getPaymentSettings(organizationId);
+      if (!paymentSettings.stripeEnabled) {
+        return res.status(409).json({ success: false, error: 'Stripe is disabled for this organization.', code: 'STRIPE_NOT_ENABLED' });
       }
 
       const stripeReadiness = await resolveStripeReadiness(organizationId);

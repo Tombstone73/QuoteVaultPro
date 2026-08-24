@@ -240,6 +240,8 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // The stations data check confirms at least one fulfillment station row exists; the
   // OR clause handles zero-org DBs (migration inserts nothing from a cross join on zero rows).
   { type: "row_exists", table: "__drizzle_migrations_v2", where: "id >= 34", label: "migration 0034_fulfillment_station recorded in ledger (id >= 34)" },
+  // migration 0185 — explicit processor enablement state
+  { type: "column_exists", table: "organization_payment_settings", column: "stripe_enabled", label: "organization_payment_settings.stripe_enabled" },
   { type: "row_exists", table: "stations", where: "key = 'fulfillment' OR NOT EXISTS (SELECT 1 FROM organizations)", label: "stations.key='fulfillment' exists (migration 0034 data)" },
 
   // migrations 0109-0114 — customer/contact migration, portal onboarding,

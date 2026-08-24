@@ -424,6 +424,7 @@ export default function SettingsIntegrations() {
   const { data: paymentSettings } = usePaymentSettings();
   const updatePaymentSettingsMutation = useUpdatePaymentSettings();
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('none');
+  const [stripeEnabled, setStripeEnabled] = useState(false);
   const [epsEnabled, setEpsEnabled] = useState(false);
   const [epsMode, setEpsMode] = useState<'test' | 'live'>('test');
   const [epsTestAccountNumber, setEpsTestAccountNumber] = useState('');
@@ -436,6 +437,7 @@ export default function SettingsIntegrations() {
   useEffect(() => {
     if (!paymentSettings) return;
     setPaymentProvider(paymentSettings.provider);
+    setStripeEnabled(paymentSettings.stripeEnabled);
     setEpsEnabled(paymentSettings.epsEnabled);
     setEpsMode(paymentSettings.epsMode || 'test');
     setEpsTestAccountNumber(paymentSettings.epsTestAccountNumber || '');
@@ -448,8 +450,10 @@ export default function SettingsIntegrations() {
 
   const savePaymentProviderDefault = async (provider: PaymentProvider) => {
     try {
-      await updatePaymentSettingsMutation.mutateAsync({ provider });
-      setPaymentProvider(provider);
+      const next = await updatePaymentSettingsMutation.mutateAsync({ provider });
+      setPaymentProvider(next.provider);
+      setStripeEnabled(next.stripeEnabled);
+      setEpsEnabled(next.epsEnabled);
       toast({
         title: provider === 'none' ? 'Payment processor default cleared' : 'Default payment processor updated',
       });
@@ -458,10 +462,20 @@ export default function SettingsIntegrations() {
     }
   };
 
+  const saveStripeEnablement = async (enabled: boolean) => {
+    try {
+      const next = await updatePaymentSettingsMutation.mutateAsync({ stripeEnabled: enabled });
+      setStripeEnabled(next.stripeEnabled);
+      setPaymentProvider(next.provider);
+      toast({ title: enabled ? 'Stripe enabled' : 'Stripe disabled' });
+    } catch (error: any) {
+      toast({ title: 'Stripe setting failed', description: error.message, variant: 'destructive' });
+    }
+  };
+
   const saveEpsSettings = async () => {
     try {
       await updatePaymentSettingsMutation.mutateAsync({
-        provider: paymentProvider,
         epsEnabled,
         epsMode,
         epsTestAccountNumber: epsTestAccountNumber.trim() || null,
@@ -946,14 +960,10 @@ export default function SettingsIntegrations() {
   const stripePublishableKeyModeMismatch = (stripeServerMode === 'test' || stripeServerMode === 'live')
     && stripePublishableMode !== 'unknown'
     && stripePublishableMode !== stripeServerMode;
-  const stripeReady = stripeStatus?.data?.readyForPayments === true && !stripePublishableKeyModeMismatch;
-  const stripeNeedsSetup = Boolean(stripeStatus?.data?.stripeAccountId) && !stripeReady;
+  const stripeReady = stripeEnabled && stripeStatus?.data?.readyForPayments === true && !stripePublishableKeyModeMismatch;
+  const stripeNeedsSetup = stripeEnabled && !stripeReady;
   const stripeProcessorStatus = stripeReady ? "ready" : stripeNeedsSetup ? "needs_setup" : "off";
-  const epsProcessorStatus = paymentSettings?.epsReady
-    ? "ready"
-    : paymentSettings?.provider === "eps" || paymentSettings?.epsEnabled || epsEnabled
-      ? "needs_setup"
-      : "off";
+  const epsProcessorStatus = epsEnabled ? (paymentSettings?.epsReady ? "ready" : "needs_setup") : "off";
   const stripeIsDefault = paymentProvider === "stripe";
   const epsIsDefault = paymentProvider === "eps";
 
@@ -1631,10 +1641,33 @@ export default function SettingsIntegrations() {
         logoAlt="Stripe"
         description="Stripe Connect card payments for hosted invoice payment actions"
         status={stripeProcessorStatus}
+        enabled={stripeEnabled}
+        readinessLabel={stripeStatus?.data?.modeMismatch ? "Mode mismatch" : stripeReady ? (stripeStatus?.data?.readyForProductionPayments ? "Ready for live payments" : "Ready for test payments") : stripeEnabled ? "Needs setup" : "Disabled"}
         isDefault={stripeIsDefault}
         defaultExpanded={stripeIsDefault || !stripeStatus?.data?.stripeAccountId}
       >
         <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+                <div>
+                  <Label htmlFor="stripe-enabled">Enable Stripe</Label>
+                  <p className="text-xs text-muted-foreground">Make Stripe available for invoice card payments. Connection and onboarding are managed separately.</p>
+                </div>
+                <Switch id="stripe-enabled" checked={stripeEnabled} onCheckedChange={saveStripeEnablement} disabled={updatePaymentSettingsMutation.isPending} />
+              </div>
+              <div className="rounded-md border p-3">
+                <Label>Default hosted processor</Label>
+                <p className="mt-1 text-sm font-medium">
+                  {stripeIsDefault ? "Stripe is the default processor" : epsIsDefault ? "EPS is the default processor" : "No default processor selected"}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button type="button" size="sm" onClick={() => savePaymentProviderDefault('stripe')} disabled={!stripeReady || stripeIsDefault || updatePaymentSettingsMutation.isPending}>
+                    {stripeIsDefault ? 'Default processor' : 'Use Stripe as default'}
+                  </Button>
+                  {stripeIsDefault ? <Button type="button" size="sm" variant="ghost" onClick={() => savePaymentProviderDefault('none')} disabled={updatePaymentSettingsMutation.isPending}>Clear default</Button> : null}
+                </div>
+              </div>
+            </div>
             {stripeStatus?.data?.lastError ? (
               <div className="bg-destructive/10 border border-destructive/20 text-destructive rounded-lg p-3 text-sm">
                 <div className="font-semibold mb-1">Last error</div>
@@ -1671,6 +1704,10 @@ export default function SettingsIntegrations() {
                   <p className="font-medium">{stripeStatus.data.payoutsEnabled ? 'Yes' : 'No'}</p>
                 </div>
                 <div>
+                  <p className="text-muted-foreground">Card payments capability</p>
+                  <p className="font-medium">{stripeStatus.data.cardPaymentsCapability || 'Unavailable'}</p>
+                </div>
+                <div>
                   <p className="text-muted-foreground">Readiness</p>
                   <p className="font-medium">{stripeStatus.data.readyForProductionPayments ? 'Ready for live payments' : stripeStatus.data.readyForTestPayments ? 'Ready for test payments' : String(stripeStatus.data.status || 'Needs setup')}</p>
                 </div>
@@ -1689,15 +1726,6 @@ export default function SettingsIntegrations() {
             <Separator />
 
             <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                onClick={() => savePaymentProviderDefault('stripe')}
-                disabled={!stripeReady || stripeIsDefault || updatePaymentSettingsMutation.isPending}
-                variant={stripeIsDefault ? "secondary" : "default"}
-              >
-                {stripeIsDefault ? 'Default processor' : 'Use Stripe as default'}
-              </Button>
-
               <Button
                 onClick={() => stripeConnectMutation.mutate()}
                 disabled={stripeConnectMutation.isPending}
@@ -1737,6 +1765,8 @@ export default function SettingsIntegrations() {
         logoAlt="Enhanced Payment Systems"
         description="EPS hosted payment configuration for invoice payment actions"
         status={epsProcessorStatus}
+        enabled={epsEnabled}
+        readinessLabel={epsEnabled ? (paymentSettings?.epsReady ? "Ready" : "Needs setup") : "Disabled"}
         isDefault={epsIsDefault}
         defaultExpanded={epsIsDefault || !paymentSettings?.epsReady}
       >
@@ -1756,6 +1786,12 @@ export default function SettingsIntegrations() {
                 {epsIsDefault ? "EPS is the default processor" : stripeIsDefault ? "Stripe is the default processor" : "No default processor selected"}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">Only one default processor can be saved at a time.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button type="button" size="sm" onClick={() => savePaymentProviderDefault('eps')} disabled={!epsEnabled || !paymentSettings?.epsReady || epsIsDefault || updatePaymentSettingsMutation.isPending}>
+                  {epsIsDefault ? "Default processor" : "Use EPS as default"}
+                </Button>
+                {epsIsDefault ? <Button type="button" size="sm" variant="ghost" onClick={() => savePaymentProviderDefault('none')} disabled={updatePaymentSettingsMutation.isPending}>Clear default</Button> : null}
+              </div>
             </div>
 
             <div className="space-y-2 md:col-span-2">
@@ -1809,22 +1845,6 @@ export default function SettingsIntegrations() {
                 <CheckCircle2 className="mr-2 h-4 w-4" />
               )}
               Save EPS Settings
-            </Button>
-            <Button
-              type="button"
-              variant={epsIsDefault ? "secondary" : "outline"}
-              onClick={() => savePaymentProviderDefault('eps')}
-              disabled={!paymentSettings?.epsReady || epsIsDefault || updatePaymentSettingsMutation.isPending}
-            >
-              {epsIsDefault ? "Default processor" : "Use EPS as default"}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => savePaymentProviderDefault('none')}
-              disabled={paymentProvider === "none" || updatePaymentSettingsMutation.isPending}
-            >
-              Clear hosted default
             </Button>
           </div>
         </div>

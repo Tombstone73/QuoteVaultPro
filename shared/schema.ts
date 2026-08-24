@@ -5304,6 +5304,7 @@ export const organizationPaymentSettings = pgTable("organization_payment_setting
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   provider: varchar("provider", { length: 20 }).notNull().default('none'),
+  stripeEnabled: boolean("stripe_enabled").notNull().default(false),
   epsEnabled: boolean("eps_enabled").notNull().default(false),
   epsAccountNumber: text("eps_account_number"),
   epsApiKey: text("eps_api_key"),
@@ -5336,6 +5337,7 @@ export const insertOrganizationPaymentSettingsSchema = createInsertSchema(organi
   updatedAt: true,
 }).extend({
   provider: paymentProviderSchema.default('none'),
+  stripeEnabled: z.boolean().default(false),
   epsEnabled: z.boolean().default(false),
   epsAccountNumber: z.string().trim().max(100).optional().nullable(),
   epsApiKey: z.string().trim().max(500).optional().nullable(),

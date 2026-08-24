@@ -1711,15 +1711,19 @@ function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRow
 }
 
 async function getStripeAccountId(organizationId: string): Promise<string> {
+  const paymentSettings = await getPaymentSettings(organizationId);
+  if (!paymentSettings.stripeEnabled) {
+    throw new PortalAccessError(409, "Stripe is disabled for this organization");
+  }
+
   const readiness = await resolveStripeReadiness(organizationId);
   const stripeAccountId = readiness.stripeAccountId || "";
   if (!readiness.readyForPayments || !stripeAccountId) {
     throw new PortalAccessError(409, readiness.lastError || readiness.code || "Stripe is not ready for payments for this organization");
   }
 
-  const paymentSettings = await getPaymentSettings(organizationId);
   const availableHostedPaymentProviders = [
-    "stripe",
+    paymentSettings.stripeEnabled ? "stripe" : null,
     paymentSettings.epsReady ? "eps" : null,
   ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
   const hostedPaymentResolution = resolveHostedPaymentProvider({

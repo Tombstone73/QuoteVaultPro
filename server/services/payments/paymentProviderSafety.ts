@@ -1,7 +1,9 @@
 import type { EpsMode } from "./epsGatewayClient";
+import { normalizePaymentProcessorDefault } from "../../../shared/paymentProcessorState";
 
 export type SafePaymentSettings = {
   provider: "none" | "stripe" | "eps";
+  stripeEnabled: boolean;
   epsEnabled: boolean;
   epsAccountNumber: string | null;
   epsApiKeyConfigured: boolean;
@@ -33,6 +35,7 @@ function asString(value: unknown): string {
 function defaultSafePaymentSettings(): SafePaymentSettings {
   return {
     provider: "none",
+    stripeEnabled: false,
     epsEnabled: false,
     epsAccountNumber: null,
     epsApiKeyConfigured: false,
@@ -43,7 +46,7 @@ function defaultSafePaymentSettings(): SafePaymentSettings {
     epsDeviceSerialNumber: null,
     epsSupportedModes: ["hosted_cnp"],
     epsReady: false,
-    missing: ["provider"],
+    missing: [],
   };
 }
 
@@ -55,19 +58,27 @@ export function toSafePaymentSettings(row: Record<string, any> | null | undefine
       )
     : ["hosted_cnp"];
 
-  const provider = row.provider === "eps" || row.provider === "stripe" ? row.provider : "none";
+  const configuredProvider = row.provider === "eps" || row.provider === "stripe" ? row.provider : "none";
   const epsMissing: string[] = [];
   if (!row.epsEnabled) epsMissing.push("epsEnabled");
   if (!asString(row.epsAccountNumber)) epsMissing.push("epsAccountNumber");
   if (!asString(row.epsApiKey)) epsMissing.push("epsApiKey");
+  const provider = normalizePaymentProcessorDefault({
+    provider: configuredProvider,
+    stripeEnabled: Boolean(row.stripeEnabled),
+    stripeReady: true,
+    epsEnabled: Boolean(row.epsEnabled),
+    epsReady: epsMissing.length === 0,
+  });
   const missing = provider === "none"
-    ? ["provider"]
+    ? []
     : provider === "eps" || row.epsEnabled
       ? epsMissing
       : [];
 
   return {
     provider,
+    stripeEnabled: Boolean(row.stripeEnabled),
     epsEnabled: Boolean(row.epsEnabled),
     epsAccountNumber: asString(row.epsAccountNumber) || null,
     epsApiKeyConfigured: Boolean(asString(row.epsApiKey)),

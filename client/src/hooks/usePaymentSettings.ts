@@ -5,6 +5,7 @@ export type EpsPaymentMode = "hosted_cnp" | "token_cnp" | "card_present" | "ach"
 
 export type PaymentSettingsView = {
   provider: PaymentProvider;
+  stripeEnabled: boolean;
   epsEnabled: boolean;
   epsAccountNumber: string | null;
   epsApiKeyConfigured: boolean;

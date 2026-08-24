@@ -91,6 +91,7 @@ export function sendEpsPhase1Disabled(res: any, action: string) {
 
 const paymentSettingsPatchSchema = z.object({
   provider: z.enum(["none", "stripe", "eps"]).optional(),
+  stripeEnabled: z.boolean().optional(),
   epsEnabled: z.boolean().optional(),
   epsMode: z.enum(["test", "live"]).optional(),
   epsTestAccountNumber: z.string().trim().max(100).nullable().optional(),
