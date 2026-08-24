@@ -12,6 +12,7 @@ const provider = (hostedProvider: "stripe" | "eps" | null = "stripe"): PaymentPr
     ? { provider: hostedProvider, reason: "configured_default", availableProviders: [hostedProvider] }
     : { provider: null, reason: "none_available", availableProviders: [] },
   epsReady: hostedProvider === "eps",
+  stripeEnabled: hostedProvider === "stripe",
   stripeConnected: hostedProvider === "stripe",
 });
 

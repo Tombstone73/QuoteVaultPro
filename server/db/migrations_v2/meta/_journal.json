@@ -1261,6 +1261,13 @@
       "when": 1788048000031,
       "tag": "0184_permission_set_kind_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1788048000032,
+      "tag": "0185_payment_processor_enablement",
+      "breakpoints": true
     }
   ]
 }

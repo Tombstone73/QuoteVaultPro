@@ -13,8 +13,8 @@
  */
 
 import type { Express } from "express";
-import { and, eq } from "drizzle-orm";
-import { integrationConnections, auditLogs } from "@shared/schema";
+import { and, eq, sql } from "drizzle-orm";
+import { integrationConnections, auditLogs, organizationPaymentSettings } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { assertStripeServerConfig, getStripeClient } from "../lib/stripe";
@@ -216,28 +216,36 @@ export function registerStripeRoutes(
     const now = new Date();
 
     try {
-      await db
-        .insert(integrationConnections)
-        .values({
-          organizationId,
-          provider: 'stripe',
-          status: 'disconnected',
-          mode: assertStripeServerConfig().mode === 'live' ? 'live' : 'test',
-          lastError: null,
-          disconnectedAt: now,
-          updatedAt: now,
-          createdAt: now,
-        } as any)
-        .onConflictDoUpdate({
-          target: [integrationConnections.organizationId, integrationConnections.provider],
-          set: {
-            externalAccountId: null,
+      await db.transaction(async (tx) => {
+        await tx
+          .insert(integrationConnections)
+          .values({
+            organizationId,
+            provider: 'stripe',
             status: 'disconnected',
+            mode: assertStripeServerConfig().mode === 'live' ? 'live' : 'test',
             lastError: null,
             disconnectedAt: now,
             updatedAt: now,
-          } as any,
-        });
+            createdAt: now,
+          } as any)
+          .onConflictDoUpdate({
+            target: [integrationConnections.organizationId, integrationConnections.provider],
+            set: {
+              externalAccountId: null,
+              status: 'disconnected',
+              lastError: null,
+              disconnectedAt: now,
+              updatedAt: now,
+            } as any,
+          });
+
+        await tx.update(organizationPaymentSettings).set({
+          stripeEnabled: false,
+          provider: sql`CASE WHEN ${organizationPaymentSettings.provider} = 'stripe' THEN 'none' ELSE ${organizationPaymentSettings.provider} END`,
+          updatedAt: now,
+        } as any).where(eq(organizationPaymentSettings.organizationId, organizationId));
+      });
 
       try {
         await db.insert(auditLogs).values({

@@ -17,6 +17,7 @@ describe("PaymentProcessorSettingsCard", () => {
         logoAlt="Stripe"
         description="Card payments"
         status="ready"
+        enabled={true}
         isDefault
         defaultExpanded
       >
@@ -40,6 +41,7 @@ describe("PaymentProcessorSettingsCard", () => {
         logoAlt="Enhanced Payment Systems"
         description="EPS hosted payments"
         status="needs_setup"
+        enabled={false}
         isDefault={false}
       >
         <div>EPS API key</div>

@@ -335,7 +335,6 @@ export default function InvoiceDetailPage() {
   const canRecordPayment = !!invoice && isStaffUser && !['draft', 'void', 'paid'].includes(invoiceStatus) && remainingCents > 0 && !paymentActionsLocked;
   const epsHostedAvailable =
     canRecordPayment &&
-    paymentSettings.data?.provider === "eps" &&
     paymentSettings.data?.epsEnabled === true &&
     paymentSettings.data?.epsReady === true &&
     paymentSettings.data?.epsSupportedModes?.includes("hosted_cnp");
@@ -918,7 +917,9 @@ export default function InvoiceDetailPage() {
   const stripePublishableKeyModeMismatch = (stripeServerMode === 'test' || stripeServerMode === 'live')
     && stripePublishableMode !== 'unknown'
     && stripePublishableMode !== stripeServerMode;
-  const stripeChargesEnabled = stripeIntegrationStatus?.data?.readyForPayments === true && !stripePublishableKeyModeMismatch;
+  const stripeChargesEnabled = paymentSettings.data?.stripeEnabled === true
+    && stripeIntegrationStatus?.data?.readyForPayments === true
+    && !stripePublishableKeyModeMismatch;
 
   const qbConnected = quickbooksIntegrationStatus?.connected === true;
   const allDesignBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
@@ -996,6 +997,7 @@ export default function InvoiceDetailPage() {
         paymentSettingsMissing: paymentSettings.data?.missing,
         epsEnabled: paymentSettings.data?.epsEnabled,
         epsReady: paymentSettings.data?.epsReady,
+        stripeEnabled: paymentSettings.data?.stripeEnabled,
         stripeConnected,
         stripeChargesEnabled,
       })

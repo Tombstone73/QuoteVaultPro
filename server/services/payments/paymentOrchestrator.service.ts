@@ -101,7 +101,7 @@ async function getProviderSummary(organizationId: string): Promise<PaymentProvid
     resolveStripeReadiness(organizationId),
   ]);
 
-  const stripeConnected = stripeReadiness.readyForPayments;
+  const stripeConnected = settings.stripeEnabled && stripeReadiness.readyForPayments;
   const availableHostedProviders = [
     stripeConnected ? "stripe" : null,
     settings.epsReady ? "eps" : null,
@@ -117,6 +117,7 @@ async function getProviderSummary(organizationId: string): Promise<PaymentProvid
     hostedProvider: hostedResolution.provider,
     hostedResolution,
     epsReady: settings.epsReady,
+    stripeEnabled: settings.stripeEnabled,
     stripeConnected,
   };
 }

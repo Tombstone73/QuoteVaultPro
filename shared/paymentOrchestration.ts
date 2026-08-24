@@ -48,6 +48,7 @@ export type PaymentProviderSummary = {
   hostedProvider: HostedPaymentProvider | null;
   hostedResolution: HostedPaymentProviderResolution;
   epsReady: boolean;
+  stripeEnabled: boolean;
   stripeConnected: boolean;
 };
 

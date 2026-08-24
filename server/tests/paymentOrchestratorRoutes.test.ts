@@ -61,6 +61,7 @@ describe("order payment resolution route", () => {
         hostedProvider: "stripe",
         hostedResolution: { provider: "stripe", reason: "configured_default", availableProviders: ["stripe"] },
         epsReady: false,
+        stripeEnabled: true,
         stripeConnected: true,
       },
       availablePaymentMethods: ["hosted_card", "manual"],

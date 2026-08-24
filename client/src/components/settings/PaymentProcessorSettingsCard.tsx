@@ -12,6 +12,8 @@ interface PaymentProcessorSettingsCardProps {
   logoAlt: string;
   description: string;
   status: ProcessorStatus;
+  enabled: boolean;
+  readinessLabel?: string;
   isDefault: boolean;
   defaultExpanded?: boolean;
   children: ReactNode;
@@ -35,6 +37,8 @@ export function PaymentProcessorSettingsCard({
   logoAlt,
   description,
   status,
+  enabled,
+  readinessLabel,
   isDefault,
   defaultExpanded = false,
   children,
@@ -67,8 +71,11 @@ export function PaymentProcessorSettingsCard({
 
           <span className="flex shrink-0 items-center gap-2">
             {isDefault ? <Badge>Default</Badge> : <Badge variant="outline">Not default</Badge>}
+            <Badge variant={enabled ? "default" : "outline"} className={enabled ? "bg-green-500 text-white" : ""}>
+              {enabled ? "Enabled" : "Off"}
+            </Badge>
             <Badge variant={status === "ready" ? "default" : "outline"} className={statusClassName(status)}>
-              {statusLabel(status)}
+              {readinessLabel || statusLabel(status)}
             </Badge>
             <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded && "rotate-180")} />
           </span>
