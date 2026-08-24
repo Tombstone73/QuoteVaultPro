@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
-import { getDevQaMutationProvisioningConfig, getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
-import { DEV_QA_MUTATION_CAPABILITIES, devQaMutationProvisioningPlan } from "../lib/devQaMutationProvisioning";
+import { capabilityIds } from "../../v2/src/authorization/capabilities";
+import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
+import { getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
 
 const devEnv = {
   NODE_ENV: "production",
@@ -13,17 +14,11 @@ const devEnv = {
   PRINTERSHERO_DEV_QA_PASSWORD: "not-a-real-secret",
   PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID: "org_titan_001",
   PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG: "titan",
-  PRINTERSHERO_DEV_QA_MUTATION_EMAIL: "qa.mutation@example.test",
-  PRINTERSHERO_DEV_QA_MUTATION_PASSWORD: "another-not-a-real-secret",
 };
 
-describe("DEV QA provisioning guard", () => {
+describe("DEV QA full-access provisioning", () => {
   test("accepts only the deployed DEV origin and DEV cloud database", () => {
-    expect(getDevQaProvisioningConfig(devEnv)).toMatchObject({
-      email: "qa.browser@example.test",
-      organizationId: "org_titan_001",
-      organizationSlug: "titan",
-    });
+    expect(getDevQaProvisioningConfig(devEnv)).toMatchObject({ email: "qa.browser@example.test", organizationId: "org_titan_001", organizationSlug: "titan" });
   });
 
   test.each([
@@ -32,34 +27,32 @@ describe("DEV QA provisioning guard", () => {
     [{ ...devEnv, NODE_ENV: "development" }],
     [{ ...devEnv, APP_PUBLIC_WEB_ORIGIN: "https://www.printershero.com", PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN: "https://www.printershero.com" }],
     [{ ...devEnv, DATABASE_URL: "postgres://user:pass@production-db.example.com/prod" }],
-  ])("fails closed for a non-DEV provisioning environment", (env) => {
+    [{ ...devEnv, PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID: "" }],
+  ])("fails closed outside the configured DEV sandbox", (env) => {
     expect(() => getDevQaProvisioningConfig(env)).toThrow();
-    expect(() => getDevQaMutationProvisioningConfig(env)).toThrow();
   });
 
-  test("requires a distinct mutation identity and retains the DEV-only guard", () => {
-    expect(getDevQaMutationProvisioningConfig(devEnv)).toMatchObject({ mutationEmail: "qa.mutation@example.test", organizationId: "org_titan_001" });
-    expect(() => getDevQaMutationProvisioningConfig({ ...devEnv, PRINTERSHERO_DEV_QA_MUTATION_EMAIL: devEnv.PRINTERSHERO_DEV_QA_EMAIL })).toThrow("distinct");
-    expect(() => getDevQaMutationProvisioningConfig({ ...devEnv, PRINTERSHERO_DEV_QA_MUTATION_PASSWORD: "" })).toThrow();
-    expect(() => getDevQaMutationProvisioningConfig({ ...devEnv, APP_ENV: "production" })).toThrow();
+  test("reuses DEV QA Browser with an idempotent custom Staff plan", () => {
+    const plan = devQaFullAccessProvisioningPlan(getDevQaProvisioningConfig(devEnv));
+    expect(plan.account).toEqual({ email: "qa.browser@example.test", firstName: "DEV QA", lastName: "Browser", role: "admin", isAdmin: true, isPlatformAdmin: false, isPlatformDeveloper: false });
+    expect(plan.membership).toEqual({ organizationId: "org_titan_001", role: "admin" });
+    expect(plan.permissionSet).toMatchObject({ name: DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, principalKind: "staff" });
+    expect(plan.permissionSet.capabilities).toEqual(capabilityIds);
+    expect(devQaFullAccessProvisioningPlan(getDevQaProvisioningConfig(devEnv))).toEqual(plan);
   });
 
-  test("requires the configured DEV tenant before it can identify a mutation actor", () => {
-    expect(() => getDevQaMutationProvisioningConfig({ ...devEnv, PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID: "" })).toThrow("PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID");
-    expect(() => getDevQaMutationProvisioningConfig({ ...devEnv, PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG: "" })).toThrow("PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG");
+  test("includes real Product and Formula authority without a second identity or forged claims", () => {
+    expect(DEV_QA_FULL_ACCESS_CAPABILITIES).toEqual(capabilityIds);
+    expect(DEV_QA_FULL_ACCESS_CAPABILITIES).toEqual(expect.arrayContaining(["product.view", "product.edit", "pricing.configure"]));
+    expect(DEV_QA_FULL_ACCESS_CAPABILITIES).toEqual(expect.arrayContaining(["quote.create", "order.create", "payment.record", "refund.issue", "route.manageTemplates", "proof.issue", "prepress.complete", "production.complete", "fulfillment.ship", "inventory.receive"]));
   });
 
-  test("plans an idempotent least-privilege Staff set without structural Owner state", () => {
-    const plan = devQaMutationProvisioningPlan(getDevQaMutationProvisioningConfig(devEnv));
-    expect(plan.account).toEqual({ email: "qa.mutation@example.test", firstName: "DEV QA", lastName: "Mutation", role: "employee", isAdmin: false });
-    expect(plan.membership).toEqual({ organizationId: "org_titan_001", role: "member" });
-    expect(plan.permissionSet).toMatchObject({ name: "DEV QA Mutation", principalKind: "staff", capabilities: DEV_QA_MUTATION_CAPABILITIES });
-    expect(plan.permissionSet.capabilities).toEqual(["product.view", "product.edit", "pricing.configure"]);
-    expect(plan.permissionSet.capabilities).toContain("product.edit"); // Draft mutation/adoption
-    expect(plan.permissionSet.capabilities).toContain("pricing.configure"); // Formula New/revise/Add to Library
-    expect(plan.permissionSet.capabilities).not.toContain("permissions.assignStaff");
-    expect(plan.permissionSet.capabilities).not.toContain("pricing.preview");
-    expect(plan.permissionSet.capabilities).not.toContain("pricing.publish");
-    expect(devQaMutationProvisioningPlan(getDevQaMutationProvisioningConfig(devEnv))).toEqual(plan);
+  test("keeps platform and structural ownership outside the V2 QA permission set", () => {
+    expect(DEV_QA_FULL_ACCESS_CAPABILITIES).not.toContain("platform.admin" as never);
+    expect(DEV_QA_FULL_ACCESS_CAPABILITIES).not.toContain("organization.transferOwnership" as never);
+    const plan = devQaFullAccessProvisioningPlan(getDevQaProvisioningConfig(devEnv));
+    expect(plan.account.isPlatformAdmin).toBe(false);
+    expect(plan.account.isPlatformDeveloper).toBe(false);
+    expect(plan.membership.role).not.toBe("owner");
   });
 });
