@@ -177,6 +177,7 @@ describe("Postgres Formula-domain detail projection", () => {
     const reads = new PostgresFormulaDomainReads(pool as any);
     await expect(reads.get(organizationId, created.value.formulaId)).resolves.toMatchObject({ formulaId: created.value.formulaId, revision: { formulaRevisionId: created.value.currentRevisionId, expression: "sqft * rate", declaredInputs: definition("x").declaredInputs } });
     await expect(reads.list(organizationId)).resolves.toEqual([]);
+    await expect(reads.list(organizationId, { includeProductScoped: true })).resolves.toEqual([expect.objectContaining({ formulaId: created.value.formulaId, scopeProductId: "product-a" })]);
     await expect(reads.list(organizationId, { productId: "product-a" })).resolves.toEqual([expect.objectContaining({ formulaId: created.value.formulaId, scopeProductId: "product-a", revision: expect.objectContaining({ expression: "sqft * rate" }) })]);
     await expect(reads.list(organizationId, { productId: "product-b" })).resolves.toEqual([]);
     await expect(reads.revisions(organizationId, created.value.formulaId)).resolves.toEqual([expect.objectContaining({ formulaRevisionId: created.value.currentRevisionId, revisionNumber: 1, expression: "sqft * rate" })]);

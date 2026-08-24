@@ -495,10 +495,18 @@ export type FormulaDomainListEntry = Readonly<{
   visibility: "product_scoped" | "library";
   /** Stable owner for an unlisted Formula. Omitted for reusable Formulae. */
   scopeProductId?: string;
+  /** Tenant-scoped Product presentation for a Product-scoped Formula. */
+  scopeProductName?: string;
   status: "active" | "inactive" | "archived";
   currentRevisionId: string;
   revision: FormulaDomainRevision;
   usageCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  createdByUserId?: string;
+  createdByDisplayName?: string;
+  updatedByUserId?: string;
+  updatedByDisplayName?: string;
 }>;
 export type FormulaDomainRevision = Readonly<{
   formulaRevisionId: string;
@@ -510,6 +518,7 @@ export type FormulaDomainRevision = Readonly<{
   validationEvidence: Readonly<Record<string, unknown>>;
   createdAt: string;
   createdByUserId?: string;
+  createdByDisplayName?: string;
 }>;
 export type FormulaDomainDeclaredInput = Readonly<{
   key: string;
@@ -1925,12 +1934,13 @@ export const productApi = {
     ),
 };
 export const formulaApi = {
-  list: (organizationId: string, input: string | Readonly<{ query?: string; includeInactive?: boolean; productId?: string }> = "") => {
+  list: (organizationId: string, input: string | Readonly<{ query?: string; includeInactive?: boolean; productId?: string; includeProductScoped?: boolean }> = "") => {
     const options = typeof input === "string" ? { query: input } : input;
     const params = new URLSearchParams();
     if (options.query) params.set("q", options.query);
     if (options.includeInactive) params.set("includeInactive", "true");
     if (options.productId) params.set("productId", options.productId);
+    if (options.includeProductScoped) params.set("includeProductScoped", "true");
     const suffix = params.size ? `?${params.toString()}` : "";
     return request<readonly FormulaDomainListEntry[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas${suffix}`);
   },

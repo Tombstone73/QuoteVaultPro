@@ -34,4 +34,12 @@ describe("Formula scope persistence enforcement", () => {
     expect(recorder.calls[0]?.text).toContain("AND f.visibility='library'");
     expect(recorder.calls[0]).toMatchObject({ values: ["tenant-a"] });
   });
+
+  test("explicit Formula administration reads can project same-tenant Product-scoped identities without changing picker eligibility", async () => {
+    const recorder = queryRecorder();
+    const reads = new PostgresFormulaDomainReads(recorder.pool as any);
+    await reads.list("tenant-a", { includeProductScoped: true });
+    expect(recorder.calls[0]?.text).not.toContain("AND f.visibility='library'");
+    expect(recorder.calls[0]).toMatchObject({ values: ["tenant-a"] });
+  });
 });

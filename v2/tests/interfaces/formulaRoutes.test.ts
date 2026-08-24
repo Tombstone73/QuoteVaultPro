@@ -24,19 +24,19 @@ const formula = {
   },
   usageCount: 0,
 };
-const staff = (organizationId: string): StaffPrincipal => ({
+const staff = (organizationId: string, capabilities: readonly string[] = ["product.view"]): StaffPrincipal => ({
   kind: "staff",
   organizationId,
   userId: "staff-a",
-  authority: { membershipId: "membership-a", capabilities: ["product.view"] },
+  authority: { membershipId: "membership-a", capabilities: [...capabilities] },
 });
-let listInput: Readonly<{ includeInactive?: boolean; query?: string; productId?: string }> | undefined;
-const app = () => {
+let listInput: Readonly<{ includeInactive?: boolean; query?: string; productId?: string; includeProductScoped?: boolean }> | undefined;
+const app = (capabilities: readonly string[] = ["product.view"]) => {
   const dependencies: FormulaHttpDependencies = {
     principals: {
       principal: async (_request, organizationId) => {
         if (organizationId !== "org-a") throw new V2ApplicationError("WRONG_TENANT", "Foreign tenant");
-        return staff(organizationId);
+        return staff(organizationId, capabilities);
       },
     },
     reads: {
@@ -59,6 +59,9 @@ describe("V2 Formula-domain HTTP routes", () => {
     expect(listInput).toEqual({ includeInactive: true });
     await request(app()).get("/v2/organizations/org-a/formulas?productId=product-a&q=area").expect(200);
     expect(listInput).toEqual({ includeInactive: false, productId: "product-a", query: "area" });
+    await request(app()).get("/v2/organizations/org-a/formulas?includeProductScoped=true").expect(403, { ok: false, error: { code: "FORBIDDEN", message: "You do not have permission to administer Product-scoped Formulas." } });
+    await request(app(["product.view", "pricing.configure"])).get("/v2/organizations/org-a/formulas?includeProductScoped=true").expect(200);
+    expect(listInput).toEqual({ includeInactive: false, includeProductScoped: true });
     await request(app())
       .get("/v2/organizations/org-a/formulas/formula-a/revisions")
       .expect(200)

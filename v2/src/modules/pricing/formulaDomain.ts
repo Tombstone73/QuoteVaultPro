@@ -60,6 +60,9 @@ export type FormulaRevision = Readonly<FormulaRevisionDefinition & {
   revisionNumber: number;
   createdAt: string;
   createdByUserId?: string;
+  /** Read projection only. The immutable revision continues to retain its
+   * actual actor id; this is the tenant-safe label for Formula UI. */
+  createdByDisplayName?: string;
 }>;
 export type FormulaIdentity = Readonly<{
   formulaId: string;
@@ -69,12 +72,18 @@ export type FormulaIdentity = Readonly<{
   visibility: FormulaVisibility;
   /** Present only while this unlisted Formula belongs to one Product. */
   scopeProductId?: string;
+  /** Tenant-scoped Product presentation for a Product-scoped Formula. */
+  scopeProductName?: string;
   status: FormulaStatus;
   currentRevisionId: string;
   revision: FormulaRevision;
   usageCount?: number;
   createdAt: string;
   updatedAt: string;
+  createdByUserId?: string;
+  createdByDisplayName?: string;
+  updatedByUserId?: string;
+  updatedByDisplayName?: string;
 }>;
 
 const keyPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
