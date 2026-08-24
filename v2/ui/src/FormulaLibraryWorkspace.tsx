@@ -13,8 +13,12 @@ const blankEditor = (): EditorState => ({ name: "", description: "", expression:
 const editorFrom = (formula: FormulaDomainListEntry): EditorState => ({ name: formula.name, description: formula.description ?? "", expression: formula.revision.expression, visibility: formula.visibility, declaredInputs: formula.revision.declaredInputs });
 const definitionOf = (state: EditorState): FormulaDomainDefinition => ({ expression: state.expression.trim(), declaredInputs: state.declaredInputs.map((input) => ({ ...input, key: input.key.trim(), label: input.label.trim(), description: input.description?.trim() || undefined })) });
 const errorText = (error: unknown) => (error as { message?: string })?.message ?? "The Formula service is unavailable.";
+const isForbidden = (error: unknown) => (error as { code?: string } | undefined)?.code === "FORBIDDEN";
 const dateText = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(); };
 const optionalNumber = (value: string) => { const number = Number(value.trim()); return value.trim() && Number.isFinite(number) ? number : undefined; };
+/** The normal Library stays tenant-reusable only. Product-scoped identities are
+ * an explicitly privileged administration projection, never a UI filter. */
+export const formulaLibraryListInput = (query: string, productId: string | undefined, canAdministerProductScoped: boolean) => ({ query, includeInactive: true, ...(productId ? { productId } : canAdministerProductScoped ? { includeProductScoped: true } : {}) });
 
 /** Protect the last server-confirmed tester result from stale responses. */
 export const acceptsFormulaTesterResponse = (currentRequestId: number, responseRequestId: number) => currentRequestId === responseRequestId;
@@ -32,12 +36,19 @@ export const FormulaLibraryWorkspace = ({ organizationId, sessionScope, canEdit,
   const [baseline, setBaseline] = useState<EditorState>(blankEditor);
   const [compare, setCompare] = useState<FormulaDomainRevision | null>(null);
   const formulas = useQuery({
-    queryKey: [...formulaKey(organizationId), query, authoringContext?.productId ?? "", sessionScope],
-    queryFn: () => formulaApi.list(organizationId, { query, includeInactive: true, ...(authoringContext?.productId ? { productId: authoringContext.productId } : { includeProductScoped: true }) }),
+    queryKey: [...formulaKey(organizationId), "normal", query, authoringContext?.productId ?? "", sessionScope],
+    queryFn: () => formulaApi.list(organizationId, formulaLibraryListInput(query, authoringContext?.productId, false)),
     enabled: Boolean(organizationId && sessionScope),
   });
-  const visible = useMemo(() => (formulas.data ?? []).filter((formula) => statusFilter === "all" || formula.status === statusFilter), [formulas.data, statusFilter]);
-  const selected = useMemo(() => formulas.data?.find((formula) => formula.formulaId === selectedId), [formulas.data, selectedId]);
+  const administrationFormulas = useQuery({
+    queryKey: [...formulaKey(organizationId), "administration", query, sessionScope],
+    queryFn: () => formulaApi.list(organizationId, formulaLibraryListInput(query, undefined, true)),
+    enabled: Boolean(organizationId && sessionScope && canEdit && !authoringContext?.productId),
+    retry: false,
+  });
+  const formulaRows = administrationFormulas.data ?? formulas.data;
+  const visible = useMemo(() => (formulaRows ?? []).filter((formula) => statusFilter === "all" || formula.status === statusFilter), [formulaRows, statusFilter]);
+  const selected = useMemo(() => formulaRows?.find((formula) => formula.formulaId === selectedId), [formulaRows, selectedId]);
   const revisions = useQuery({ queryKey: [...formulaKey(organizationId), selected?.formulaId ?? "", "revisions", sessionScope], queryFn: () => formulaApi.revisions(organizationId, selected!.formulaId), enabled: Boolean(organizationId && sessionScope && selected?.formulaId) });
   const usage = useQuery({ queryKey: [...formulaKey(organizationId), selected?.formulaId ?? "", "usage", sessionScope], queryFn: () => formulaApi.usage(organizationId, selected!.formulaId), enabled: Boolean(organizationId && sessionScope && selected?.formulaId) });
   const refresh = () => queryClient.invalidateQueries({ queryKey: formulaKey(organizationId) });
@@ -55,7 +66,8 @@ export const FormulaLibraryWorkspace = ({ organizationId, sessionScope, canEdit,
   if (screen === "index") return <section className="v2-formula-port">
     <header className="v2-formula-port-page-header"><div><h1>Formula Library</h1><p>Reusable pricing formulas for your products.</p></div><button className="v2-formula-primary" type="button" disabled={!canEdit || busy} onClick={newFormula}><Plus />New Formula</button></header>
     {mutationError && <div className="notice error">{errorText(mutationError)}</div>}
-    <div className="v2-formula-port-filters"><div className="v2-formula-segmented" role="tablist"><button type="button" role="tab" aria-selected={tab === "mine"} className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>My formulas ({formulas.data?.length ?? 0})</button><button type="button" role="tab" aria-selected={tab === "shared"} className={tab === "shared" ? "active" : ""} onClick={() => setTab("shared")}>Shared formulas</button></div><label className="v2-formula-search"><Search /><span className="sr-only">Search formulas</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search formulas" /></label>{tab === "mine" && <label className="v2-formula-select">Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option></select><ChevronDown /></label>}</div>
+    {administrationFormulas.error && !isForbidden(administrationFormulas.error) && <div className="notice error">{errorText(administrationFormulas.error)}</div>}
+    <div className="v2-formula-port-filters"><div className="v2-formula-segmented" role="tablist"><button type="button" role="tab" aria-selected={tab === "mine"} className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>My formulas ({formulaRows?.length ?? 0})</button><button type="button" role="tab" aria-selected={tab === "shared"} className={tab === "shared" ? "active" : ""} onClick={() => setTab("shared")}>Shared formulas</button></div><label className="v2-formula-search"><Search /><span className="sr-only">Search formulas</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search formulas" /></label>{tab === "mine" && <label className="v2-formula-select">Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option></select><ChevronDown /></label>}</div>
     {tab === "shared" ? <SharedComingSoon /> : formulas.isLoading ? <Panel><Empty title="Loading formulas…" /></Panel> : formulas.error ? <div className="notice error">{errorText(formulas.error)}</div> : !visible.length ? <Panel><Empty title="No formulas match these filters" hint="Clear the search or filters, or create a new formula." /></Panel> : <FormulaTable formulas={visible} onOpen={open} onPromote={(formula) => promote.mutate(formula)} />}
   </section>;
   if (screen === "detail" && !selected) return <section className="v2-formula-port"><Panel><Empty title="Formula not found" hint="It may no longer be available to this Product Draft." /><button className="v2-formula-secondary" type="button" onClick={() => setScreen("index")}><ArrowLeft />Back to Formula Library</button></Panel></section>;
