@@ -184,6 +184,23 @@ describe("Postgres Formula-domain detail projection", () => {
     await expect(reads.get("tenant-other", created.value.formulaId)).resolves.toBeNull();
   });
 
+  test("current Formula projection joins its revision before reading optional revision attribution", async () => {
+    const pool = new FormulaDomainPoolDouble();
+    const service = new FormulaDomainApplicationService(new PostgresFormulaDomainTransactionRunner(pool as any));
+    const created = await service.create(context("postgres-join-order"), { businessRequestId: "postgres-join-order", name: "Join order", visibility: "library", definition: definition("sqft * rate") });
+    if (!created.ok) throw new Error(created.error.publicMessage);
+
+    const reads = new PostgresFormulaDomainReads(pool as any);
+    await expect(reads.list(organizationId)).resolves.toEqual([expect.objectContaining({ formulaId: created.value.formulaId })]);
+    await expect(reads.get(organizationId, created.value.formulaId)).resolves.toEqual(expect.objectContaining({ formulaId: created.value.formulaId }));
+
+    const currentQueries = pool.queries.filter((query) => query.includes("FROM v2_formula_identities f") && query.includes("revision_created_by"));
+    expect(currentQueries).not.toHaveLength(0);
+    for (const query of currentQueries) {
+      expect(query.indexOf("JOIN formula_revisions r ON r.id=f.current_revision_id")).toBeLessThan(query.indexOf("LEFT JOIN users revision_created_by ON revision_created_by.id=r.created_by_user_id"));
+    }
+  });
+
   test("an invalid definition rolls back before Formula-domain rows persist", async () => {
     const pool = new FormulaDomainPoolDouble();
     const service = new FormulaDomainApplicationService(new PostgresFormulaDomainTransactionRunner(pool as any));
