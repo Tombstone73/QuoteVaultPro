@@ -50,7 +50,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { format } from "date-fns";
-import { getStripePublishableKeyMode } from "@/lib/stripeClient";
 
 type QBConnectionStatus = {
   connected: boolean;
@@ -172,6 +171,11 @@ type StripeStatusData = {
   readyForProductionPayments?: boolean;
   readyForPayments?: boolean;
   modeMismatch?: boolean;
+  browserConfig?: {
+    available?: boolean;
+    mode?: 'test' | 'live';
+    code?: string;
+  };
 };
 
 type StripeStatusEnvelope = {
@@ -955,12 +959,8 @@ export default function SettingsIntegrations() {
     }
   };
 
-  const stripeServerMode = stripeStatus?.data?.serverMode;
-  const stripePublishableMode = getStripePublishableKeyMode((import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined);
-  const stripePublishableKeyModeMismatch = (stripeServerMode === 'test' || stripeServerMode === 'live')
-    && stripePublishableMode !== 'unknown'
-    && stripePublishableMode !== stripeServerMode;
-  const stripeReady = stripeEnabled && stripeStatus?.data?.readyForPayments === true && !stripePublishableKeyModeMismatch;
+  const stripePlatformBrowserReady = stripeStatus?.data?.browserConfig?.available === true;
+  const stripeReady = stripeEnabled && stripeStatus?.data?.readyForPayments === true && stripePlatformBrowserReady;
   const stripeNeedsSetup = stripeEnabled && !stripeReady;
   const stripeProcessorStatus = stripeReady ? "ready" : stripeNeedsSetup ? "needs_setup" : "off";
   const epsProcessorStatus = epsEnabled ? (paymentSettings?.epsReady ? "ready" : "needs_setup") : "off";
@@ -1674,10 +1674,10 @@ export default function SettingsIntegrations() {
                 <div className="break-words">{stripeStatus.data.lastError}</div>
               </div>
             ) : null}
-            {stripePublishableKeyModeMismatch ? (
+            {stripeEnabled && !stripePlatformBrowserReady ? (
               <div className="bg-destructive/10 border border-destructive/20 text-destructive rounded-lg p-3 text-sm">
-                <div className="font-semibold mb-1">Publishable key mode mismatch</div>
-                <div>The browser is using {stripePublishableMode} mode while the server is using {stripeServerMode} mode. Payments are blocked until both deployments use matching Stripe modes.</div>
+                <div className="font-semibold mb-1">Platform browser configuration unavailable</div>
+                <div>Payments are blocked until the platform publishable key is configured on the server for the current Stripe mode.</div>
               </div>
             ) : null}
 

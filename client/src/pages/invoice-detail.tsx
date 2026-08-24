@@ -39,7 +39,6 @@ import { CustomerSelect, type CustomerWithContacts } from "@/components/Customer
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import StripePayDialog from "@/components/payments/StripePayDialog";
-import { getStripePublishableKeyMode } from "@/lib/stripeClient";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
@@ -56,6 +55,7 @@ type StripeIntegrationStatusEnvelope = {
     modeMismatch?: boolean;
     serverMode?: 'test' | 'live' | 'unknown' | string;
     stripeAccountId?: string | null;
+    browserConfig?: { available?: boolean; mode?: 'test' | 'live'; code?: string };
   };
 };
 
@@ -912,14 +912,9 @@ export default function InvoiceDetailPage() {
   })();
 
   const stripeConnected = stripeIntegrationStatus?.success === true && stripeIntegrationStatus?.data?.connected === true;
-  const stripeServerMode = stripeIntegrationStatus?.data?.serverMode;
-  const stripePublishableMode = getStripePublishableKeyMode((import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined);
-  const stripePublishableKeyModeMismatch = (stripeServerMode === 'test' || stripeServerMode === 'live')
-    && stripePublishableMode !== 'unknown'
-    && stripePublishableMode !== stripeServerMode;
   const stripeChargesEnabled = paymentSettings.data?.stripeEnabled === true
     && stripeIntegrationStatus?.data?.readyForPayments === true
-    && !stripePublishableKeyModeMismatch;
+    && stripeIntegrationStatus?.data?.browserConfig?.available === true;
 
   const qbConnected = quickbooksIntegrationStatus?.connected === true;
   const allDesignBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
@@ -1351,8 +1346,6 @@ export default function InvoiceDetailPage() {
           onOpenChange={setStripePayOpen}
           invoiceId={invoiceId ?? ''}
           apiBasePath="/api/invoices"
-          stripeAccountId={stripeIntegrationStatus?.data?.stripeAccountId ?? undefined}
-          serverMode={stripeServerMode}
           onSettled={() => {
             refetch();
             invoicePayments.refetch();

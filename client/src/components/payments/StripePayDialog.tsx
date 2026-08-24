@@ -4,7 +4,7 @@ import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { getStripePromise, getStripePublishableKeyMode } from '@/lib/stripeClient';
+import { getStripePromise } from '@/lib/stripeClient';
 
 const DEV = Boolean((import.meta as any).env?.DEV);
 
@@ -263,28 +263,28 @@ export default function StripePayDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   invoiceId: string;
-  stripeAccountId?: string | null;
-  serverMode?: 'test' | 'live' | 'unknown' | string;
   apiBasePath: string;
   disabled?: boolean;
   onSettled: () => void;
 }) {
-  const publishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined;
-  const publishableKeyMode = getStripePublishableKeyMode(publishableKey);
-  const publishableKeyModeMismatch = (props.serverMode === 'test' || props.serverMode === 'live')
-    && publishableKeyMode !== 'unknown'
-    && publishableKeyMode !== props.serverMode;
   const apiBasePath = props.apiBasePath;
-  const [intentStripeAccountId, setIntentStripeAccountId] = useState<string | null>(null);
+  const [runtimeConfig, setRuntimeConfig] = useState<{
+    provider: 'stripe';
+    publishableKey: string;
+    mode: 'test' | 'live';
+    connectedAccountId: string;
+    readyForPayments: true;
+  } | null>(null);
 
-  // Singleton Stripe.js promise (cached by key + account).
-  // CRITICAL: Must match the stripeAccount used when creating the PaymentIntent on the server.
-  const stripePromise = getStripePromise(publishableKey, props.stripeAccountId ?? intentStripeAccountId);
+  // The platform key and tenant Connect account are both returned by the
+  // server after it has derived the authorized invoice scope. Never use a
+  // Vite build variable or caller-provided connected-account ID here.
+  const stripePromise = getStripePromise(runtimeConfig?.publishableKey, runtimeConfig?.connectedAccountId);
 
   const { toast } = useToast();
 
   // State machine for dialog lifecycle
-  const [state, setState] = useState<'idle' | 'creating_intent' | 'ready' | 'error'>('idle');
+  const [state, setState] = useState<'idle' | 'loading_runtime_config' | 'creating_intent' | 'ready' | 'error'>('idle');
   const [intentError, setIntentError] = useState<string | null>(null);
 
   // Freeze clientSecret and Elements options for the lifetime of an open dialog.
@@ -304,7 +304,6 @@ export default function StripePayDialog(props: {
     if (DEV) {
       console.log('[StripePayDialog] Dialog open changed', {
         open: props.open,
-        hasStripeAccount: Boolean(props.stripeAccountId),
       });
     }
 
@@ -321,36 +320,55 @@ export default function StripePayDialog(props: {
       elementsOptionsRef.current = null;
       sessionIdRef.current = null;
       intentRequestedRef.current = false;
-      setIntentStripeAccountId(null);
+      setRuntimeConfig(null);
       return;
     }
 
     // Dialog opened
     if (!props.invoiceId) return;
     if (intentRequestedRef.current) return;
-    if (publishableKeyModeMismatch) {
-      setIntentError('Stripe publishable-key mode does not match the server mode. Contact an administrator.');
-      setState('error');
-      return;
-    }
-
     // Start a new payment session.
     intentRequestedRef.current = true;
     const sessionId = nextSessionId();
     sessionIdRef.current = sessionId;
 
     if (DEV) {
-      console.log('[StripePayDialog] create-intent requested', {
+      console.log('[StripePayDialog] runtime configuration requested', {
         invoiceId: props.invoiceId,
         sessionId,
-        hasStripeAccount: Boolean(props.stripeAccountId),
       });
     }
 
     const run = async () => {
-      setState('creating_intent');
+      setState('loading_runtime_config');
       setIntentError(null);
       try {
+        const configRes = await fetch(`${apiBasePath}/${props.invoiceId}/payments/stripe/runtime-config`, {
+          method: 'GET',
+          credentials: 'include',
+        });
+        const configJson = await configRes.json().catch(() => ({}));
+        if (!configRes.ok) throw new Error((configJson as any)?.message || (configJson as any)?.error || 'Stripe is unavailable for this invoice');
+
+        const config = (configJson as any)?.data;
+        const validMode = config?.mode === 'test' || config?.mode === 'live';
+        const expectedPrefix = config?.mode === 'test' ? 'pk_test_' : 'pk_live_';
+        if (config?.provider !== 'stripe' || !validMode || typeof config?.publishableKey !== 'string'
+          || !config.publishableKey.startsWith(expectedPrefix) || typeof config?.connectedAccountId !== 'string'
+          || !config.connectedAccountId.trim() || config?.readyForPayments !== true) {
+          throw new Error('Stripe payment configuration is unavailable for this invoice.');
+        }
+
+        const frozenConfig = {
+          provider: 'stripe' as const,
+          publishableKey: config.publishableKey,
+          mode: config.mode as 'test' | 'live',
+          connectedAccountId: config.connectedAccountId.trim(),
+          readyForPayments: true as const,
+        };
+        setRuntimeConfig(frozenConfig);
+        setState('creating_intent');
+
         const res = await fetch(`${apiBasePath}/${props.invoiceId}/payments/stripe/create-intent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -362,8 +380,8 @@ export default function StripePayDialog(props: {
         const secret = (json as any)?.data?.clientSecret as string | undefined;
         if (!secret) throw new Error('Missing clientSecret');
         const nextStripeAccountId = (json as any)?.data?.stripeAccountId;
-        if (typeof nextStripeAccountId === 'string' && nextStripeAccountId.trim()) {
-          setIntentStripeAccountId(nextStripeAccountId.trim());
+        if (typeof nextStripeAccountId !== 'string' || nextStripeAccountId.trim() !== frozenConfig.connectedAccountId) {
+          throw new Error('Stripe payment account context changed. Please reopen the payment dialog.');
         }
 
         if (DEV) {
@@ -394,7 +412,7 @@ export default function StripePayDialog(props: {
 
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.invoiceId, publishableKeyModeMismatch]);
+  }, [props.open, props.invoiceId, apiBasePath]);
 
   const close = () => props.onOpenChange(false);
 
@@ -409,17 +427,11 @@ export default function StripePayDialog(props: {
           <DialogTitle>Pay Invoice</DialogTitle>
         </DialogHeader>
 
-        {!publishableKey && (
-          <div className="text-sm text-muted-foreground">
-            Online payment is not configured for this environment.
-          </div>
-        )}
-
-        {publishableKey && state === 'creating_intent' && (
+        {(state === 'loading_runtime_config' || state === 'creating_intent') && (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>
         )}
 
-        {publishableKey && state === 'error' && intentError && (
+        {state === 'error' && intentError && (
           <div className="text-sm text-destructive">{intentError}</div>
         )}
 
@@ -438,7 +450,7 @@ export default function StripePayDialog(props: {
         )}
 
         {/* Show close button if no Elements rendered */}
-        {publishableKey && !shouldRenderElements && (
+        {!shouldRenderElements && state !== 'loading_runtime_config' && state !== 'creating_intent' && (
           <DialogFooter>
             <Button variant="outline" onClick={close}>
               Close

@@ -37,7 +37,7 @@ export function parsePortalStripeValidationConfig(
 ): PortalStripeValidationConfig {
   const database = detectDatabaseRuntime(env.DATABASE_URL, env);
   const stripe = assertStripeServerConfig({ env });
-  const publishableKeyMode = keyMode(env.VITE_STRIPE_PUBLISHABLE_KEY, "pk_test_", "pk_live_");
+  const publishableKeyMode = keyMode(env.STRIPE_PUBLISHABLE_KEY, "pk_test_", "pk_live_");
   const webhookSecretStatus = stripe.webhookSecretStatus;
 
   return {

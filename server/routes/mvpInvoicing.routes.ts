@@ -32,6 +32,7 @@ import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
+import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -521,6 +522,32 @@ export async function registerMvpInvoicingRoutes(
     };
   }
 
+  // The browser configuration is scoped to an authorized invoice, rather than
+  // trusting an account/org supplied by a client. It must be fetched before a
+  // PaymentIntent is created so missing platform browser config cannot orphan
+  // a pending payment attempt.
+  app.get("/api/invoices/:id/payments/stripe/runtime-config", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel || (rel.invoice as any).organizationId !== organizationId) {
+        return res.status(404).json({ success: false, error: "Invoice not found" });
+      }
+
+      const runtimeConfig = await resolveStripeRuntimeConfig(organizationId);
+      if (!runtimeConfig.ok) {
+        return res.status(409).json({ success: false, error: runtimeConfig.error, code: runtimeConfig.code });
+      }
+
+      return res.json({ success: true, data: runtimeConfig.data });
+    } catch (error: any) {
+      console.error("[StripeRuntimeConfig] staff invoice configuration failed", { message: String(error?.message || error) });
+      return res.status(500).json({ success: false, error: "Unable to prepare Stripe payment configuration" });
+    }
+  });
+
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)
   // ------------------------------------------------------------
@@ -529,39 +556,14 @@ export async function registerMvpInvoicingRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
-      const paymentSettings = await getPaymentSettings(organizationId);
-      if (!paymentSettings.stripeEnabled) {
-        return res.status(409).json({ success: false, error: 'Stripe is disabled for this organization.', code: 'STRIPE_NOT_ENABLED' });
+      // Defense in depth: this repeats the preflight used by the browser, so a
+      // direct request cannot create an intent without valid platform browser
+      // configuration or with a stale tenant account context.
+      const runtimeConfig = await resolveStripeRuntimeConfig(organizationId);
+      if (!runtimeConfig.ok) {
+        return res.status(409).json({ success: false, error: runtimeConfig.error, code: runtimeConfig.code });
       }
-
-      const stripeReadiness = await resolveStripeReadiness(organizationId);
-      const stripeAccountId = stripeReadiness.stripeAccountId;
-      if (!stripeReadiness.readyForPayments || !stripeAccountId) {
-        return res.status(409).json({
-          success: false,
-          error: stripeReadiness.lastError || 'Stripe is not ready for payments for this organization.',
-          code: stripeReadiness.code || 'STRIPE_NOT_READY',
-        });
-      }
-
-      const availableHostedPaymentProviders = [
-        paymentSettings.stripeEnabled ? "stripe" : null,
-        paymentSettings.epsReady ? "eps" : null,
-      ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
-      const hostedPaymentResolution = resolveHostedPaymentProvider({
-        configuredDefaultProvider: paymentSettings.provider,
-        availableProviders: availableHostedPaymentProviders,
-      });
-      if (hostedPaymentResolution.provider !== "stripe") {
-        return res.status(409).json({
-          success: false,
-          error: hostedPaymentResolution.reason === "multiple_available_no_default"
-            ? "Multiple hosted payment processors are available. Select a default processor in Accounting Settings before creating an invoice payment."
-            : "Stripe is not the selected hosted payment processor for this organization.",
-          code: "PAYMENT_PROVIDER_NOT_SELECTED",
-          data: hostedPaymentResolution,
-        });
-      }
+      const stripeAccountId = runtimeConfig.data.connectedAccountId;
 
       const userId = getUserId(req.user);
       const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
@@ -704,6 +706,7 @@ export async function registerMvpInvoicingRoutes(
                 data: {
                   clientSecret: String((pi as any).client_secret),
                   paymentId: (existingPending as any).id,
+                  stripeAccountId,
                 },
               });
             }
@@ -790,7 +793,7 @@ export async function registerMvpInvoicingRoutes(
           stripePaymentIntentId: paymentIntentId,
           amountCents: amountDueCents,
         });
-        return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id } });
+        return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id, stripeAccountId } });
       }
       if (existingByIntent && ['succeeded', 'captured'].includes(String((existingByIntent as any).status || '').toLowerCase())) {
         return res.status(409).json({ success: false, error: 'Invoice is already paid' });
@@ -845,7 +848,7 @@ export async function registerMvpInvoicingRoutes(
             stripePaymentIntentId: paymentIntentId,
             amountCents: amountDueCents,
           });
-          return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id } });
+          return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id, stripeAccountId } });
         }
         if (existingAfterConflict && ['succeeded', 'captured'].includes(String((existingAfterConflict as any).status || '').toLowerCase())) {
           return res.status(409).json({ success: false, error: 'Invoice is already paid' });
@@ -878,7 +881,7 @@ export async function registerMvpInvoicingRoutes(
         } as any);
       } catch {}
 
-      return res.json({ success: true, data: { clientSecret, paymentId: payment?.id } });
+      return res.json({ success: true, data: { clientSecret, paymentId: payment?.id, stripeAccountId } });
     } catch (error: any) {
       console.error('[StripeCreateIntent] failed', {
         invoiceId: String(req?.params?.id || ''),

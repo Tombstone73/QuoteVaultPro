@@ -14,17 +14,16 @@ describe("Stripe PaymentIntent attempt safety", () => {
     expect(portal).toContain("previous portal payment is still awaiting completion");
   });
 
-  test("all payment paths use the shared fail-closed readiness boundary", () => {
+  test("all payment paths use the shared fail-closed runtime configuration boundary", () => {
     expect(source("server/routes/stripe.routes.ts")).toContain("STRIPE_MODE_MISMATCH");
-    expect(source("server/routes/mvpInvoicing.routes.ts")).toContain("resolveStripeReadiness(organizationId)");
-    expect(source("server/services/portal.service.ts")).toContain("resolveStripeReadiness(organizationId)");
+    expect(source("server/routes/mvpInvoicing.routes.ts")).toContain("resolveStripeRuntimeConfig(organizationId)");
+    expect(source("server/services/portal.service.ts")).toContain("resolveStripeRuntimeConfig(organizationId)");
   });
 
-  test("the browser blocks a publishable-key mode mismatch before requesting an intent", () => {
+  test("the browser loads server-authoritative runtime config before requesting an intent", () => {
     const dialog = source("client/src/components/payments/StripePayDialog.tsx");
-    const client = source("client/src/lib/stripeClient.ts");
-    expect(client).toContain("getStripePublishableKeyMode");
-    expect(dialog).toContain("publishableKeyModeMismatch");
-    expect(dialog).toContain("Stripe publishable-key mode does not match the server mode");
+    expect(dialog).not.toContain("VITE_STRIPE_PUBLISHABLE_KEY");
+    expect(dialog).toContain("/payments/stripe/runtime-config");
+    expect(dialog.indexOf("/payments/stripe/runtime-config")).toBeLessThan(dialog.indexOf("/payments/stripe/create-intent"));
   });
 });

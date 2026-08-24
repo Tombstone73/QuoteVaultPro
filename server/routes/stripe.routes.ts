@@ -19,6 +19,7 @@ import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { assertStripeServerConfig, getStripeClient } from "../lib/stripe";
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
+import { getStripePlatformBrowserConfig } from "../services/stripeRuntimeConfig.service";
 
 function getBaseOrigin(req: any): string {
   const origin = req?.headers?.origin;
@@ -45,12 +46,18 @@ export function registerStripeRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
 
-      const readiness = await resolveStripeReadiness(organizationId);
+      const [readiness, platformBrowserConfig] = await Promise.all([
+        resolveStripeReadiness(organizationId),
+        Promise.resolve(getStripePlatformBrowserConfig()),
+      ]);
       return res.json({
         success: true,
         data: {
           ...readiness,
           mode: readiness.serverMode,
+          browserConfig: platformBrowserConfig.ok
+            ? { available: true, mode: platformBrowserConfig.data.mode }
+            : { available: false, code: platformBrowserConfig.code },
         },
       });
     } catch (error: any) {

@@ -47,11 +47,9 @@ import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE } from "./proofingS
 import { canonicalProofingOperations } from "./canonicalProofingOperations";
 import { recordPortalFollowUpItem } from "./portalFollowUps";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
-import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
-import { getPaymentSettings } from "./payments/paymentProvider.service";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
-import { resolveStripeReadiness } from "./stripeReadiness.service";
+import { resolveStripeRuntimeConfig, type StripeBrowserRuntimeConfig } from "./stripeRuntimeConfig.service";
 
 export type PortalSessionDto = {
   userId: string;
@@ -1710,31 +1708,14 @@ function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRow
   return amountDueCents;
 }
 
+async function getStripeRuntimeConfigForOrganization(organizationId: string): Promise<StripeBrowserRuntimeConfig> {
+  const runtimeConfig = await resolveStripeRuntimeConfig(organizationId);
+  if (!runtimeConfig.ok) throw new PortalAccessError(409, runtimeConfig.error);
+  return runtimeConfig.data;
+}
+
 async function getStripeAccountId(organizationId: string): Promise<string> {
-  const paymentSettings = await getPaymentSettings(organizationId);
-  if (!paymentSettings.stripeEnabled) {
-    throw new PortalAccessError(409, "Stripe is disabled for this organization");
-  }
-
-  const readiness = await resolveStripeReadiness(organizationId);
-  const stripeAccountId = readiness.stripeAccountId || "";
-  if (!readiness.readyForPayments || !stripeAccountId) {
-    throw new PortalAccessError(409, readiness.lastError || readiness.code || "Stripe is not ready for payments for this organization");
-  }
-
-  const availableHostedPaymentProviders = [
-    paymentSettings.stripeEnabled ? "stripe" : null,
-    paymentSettings.epsReady ? "eps" : null,
-  ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
-  const hostedPaymentResolution = resolveHostedPaymentProvider({
-    configuredDefaultProvider: paymentSettings.provider,
-    availableProviders: availableHostedPaymentProviders,
-  });
-  if (hostedPaymentResolution.provider !== "stripe") {
-    throw new PortalAccessError(409, "Stripe is not the selected hosted payment processor for this organization");
-  }
-
-  return stripeAccountId;
+  return (await getStripeRuntimeConfigForOrganization(organizationId)).connectedAccountId;
 }
 
 async function markStripePaymentNonPending(paymentId: string, organizationId: string, status: "failed" | "canceled") {
@@ -1791,6 +1772,17 @@ export async function listPortalInvoicePayments(req: Request, invoiceId: string)
 
   const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
   return rows.map(mapPayment);
+}
+
+/** Browser-safe Stripe configuration, scoped to the authenticated portal invoice. */
+export async function getPortalStripeRuntimeConfig(req: Request, invoiceId: string): Promise<StripeBrowserRuntimeConfig | null> {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice) return null;
+
+  const paymentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+  assertPortalInvoicePayable(invoice, paymentRows);
+  return getStripeRuntimeConfigForOrganization(scope.organizationId);
 }
 
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {

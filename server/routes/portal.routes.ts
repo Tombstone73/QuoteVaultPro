@@ -13,6 +13,7 @@ import {
   getPortalInvoiceFileDownload,
   getPortalInvoicePdf,
   getPortalInvoice,
+  getPortalStripeRuntimeConfig,
   getPortalOrder,
   getPortalOrderFileDownload,
   getPortalProof,
@@ -345,6 +346,7 @@ export function registerPortalRoutes(
   app.get("/api/portal/invoices/:id/files", ...portalMiddlewares, portalGetById("id", listPortalInvoiceFiles));
   app.get("/api/portal/invoices/:id/files/:fileId", ...portalMiddlewares, portalFileDownload(getPortalInvoiceFileDownload));
   app.get("/api/portal/invoices/:id/payments", ...portalMiddlewares, portalGetById("id", listPortalInvoicePayments));
+  app.get("/api/portal/invoices/:id/payments/stripe/runtime-config", ...portalMiddlewares, portalGetById("id", getPortalStripeRuntimeConfig));
   app.post("/api/portal/invoices/:id/payments/stripe/create-intent", ...portalMiddlewares, portalPostById("id", createPortalStripePaymentIntent));
   app.post("/api/portal/invoices/:id/payments/stripe/confirm", ...portalMiddlewares, portalPostById("id", confirmPortalStripePayment));
   app.get("/api/portal/invoices/:id", ...portalMiddlewares, portalGetById("id", getPortalInvoice));

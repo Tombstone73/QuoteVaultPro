@@ -17,8 +17,10 @@ account migration. Do not replace Connect with platform charges as a shortcut.
 5. Create/configure the live Stripe webhook endpoint for connected-account
    events at `/api/payments/stripe/webhook`, then set its live signing secret as
    Railway MAIN `STRIPE_WEBHOOK_SECRET`.
-6. Set Vercel Production `VITE_STRIPE_PUBLISHABLE_KEY` to the matching
-   `pk_live_` key, then deploy/restart the applicable services.
+6. Set Railway MAIN `STRIPE_PUBLISHABLE_KEY` to the matching `pk_live_`
+   platform key, then restart the backend. This browser-safe key is returned
+   only by the authenticated, invoice-scoped Stripe runtime-config endpoint;
+   it is not a Vercel/Vite build variable and it is never tenant-specific.
 7. Reconnect Stripe from V1 MAIN. The mode guard will only create/onboard a
    live connected account after the obsolete test association is disconnected.
 8. Complete Titan Graphics' real Express onboarding, including business and
@@ -47,3 +49,23 @@ V1 compares the active `sk_test_`/`sk_live_` mode against the stored connection
 mode. A mismatch returns `STRIPE_MODE_MISMATCH`, does not reuse or overwrite the
 stored `acct_` ID, blocks onboarding, and blocks staff and portal payment paths.
 Disconnecting the obsolete local association is a deliberate operator action.
+
+## Platform and tenant configuration boundary
+
+PrintersHero owns one environment-specific platform credential set:
+`STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, and `STRIPE_WEBHOOK_SECRET`.
+The publishable key must have the same `test`/`live` mode as the secret key.
+V1 returns the publishable key only after authenticated staff or portal invoice
+scope has resolved the tenant's enabled, ready connected account and selected
+hosted provider. It returns no secret or webhook values.
+
+Each tenant owns only its Stripe Connect account association, onboarding state,
+capabilities, enabled flag, and default processor selection. The server derives
+the tenant from the request scope and initializes Stripe.js with the platform
+publishable key plus that tenant's `acct_` ID. No tenant needs a Vercel setting,
+an API key, or a frontend rebuild.
+
+TEST and LIVE use matching platform key triples and matching connected accounts.
+V1 blocks a publishable/secret mode mismatch before creating a PaymentIntent.
+Configure the TEST/LIVE webhook separately for connected-account events at
+`/api/payments/stripe/webhook`; its signing secret is platform-level.

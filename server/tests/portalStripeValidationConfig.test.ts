@@ -9,7 +9,7 @@ describe("portal Stripe validation config", () => {
       NODE_ENV: "development",
       DATABASE_URL: "postgresql://user:secret@localhost:5432/titanos_dev",
       STRIPE_SECRET_KEY: "sk_test_example",
-      VITE_STRIPE_PUBLISHABLE_KEY: "pk_test_example",
+      STRIPE_PUBLISHABLE_KEY: "pk_test_example",
       PORTAL_TEST_EMAIL: "portal@example.test",
     });
 
@@ -49,7 +49,7 @@ describe("portal Stripe validation config", () => {
       ALLOW_DEV_STRIPE_VALIDATION: "1",
       STRIPE_SECRET_KEY: "sk_test_example",
       STRIPE_WEBHOOK_SECRET: "whsec_example",
-      VITE_STRIPE_PUBLISHABLE_KEY: "pk_test_example",
+      STRIPE_PUBLISHABLE_KEY: "pk_test_example",
       PORTAL_TEST_EMAIL: "portal@example.test",
       PORTAL_TEST_PASSWORD: "secret",
     });
