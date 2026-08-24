@@ -54,10 +54,11 @@ describe("DEV QA provisioning guard", () => {
     expect(plan.account).toEqual({ email: "qa.mutation@example.test", firstName: "DEV QA", lastName: "Mutation", role: "employee", isAdmin: false });
     expect(plan.membership).toEqual({ organizationId: "org_titan_001", role: "member" });
     expect(plan.permissionSet).toMatchObject({ name: "DEV QA Mutation", principalKind: "staff", capabilities: DEV_QA_MUTATION_CAPABILITIES });
-    expect(plan.permissionSet.capabilities).toEqual(["product.view", "product.edit", "pricing.preview", "pricing.configure"]);
+    expect(plan.permissionSet.capabilities).toEqual(["product.view", "product.edit", "pricing.configure"]);
     expect(plan.permissionSet.capabilities).toContain("product.edit"); // Draft mutation/adoption
     expect(plan.permissionSet.capabilities).toContain("pricing.configure"); // Formula New/revise/Add to Library
     expect(plan.permissionSet.capabilities).not.toContain("permissions.assignStaff");
+    expect(plan.permissionSet.capabilities).not.toContain("pricing.preview");
     expect(plan.permissionSet.capabilities).not.toContain("pricing.publish");
     expect(devQaMutationProvisioningPlan(getDevQaMutationProvisioningConfig(devEnv))).toEqual(plan);
   });

@@ -6,7 +6,6 @@ export const DEV_QA_MUTATION_PERMISSION_SET_DESCRIPTION = "Dedicated DEV-only Fo
 export const DEV_QA_MUTATION_CAPABILITIES = Object.freeze([
   "product.view",
   "product.edit",
-  "pricing.preview",
   "pricing.configure",
 ] as const satisfies readonly Capability[]);
 
