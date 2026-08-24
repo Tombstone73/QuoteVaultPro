@@ -7,6 +7,11 @@ export type DevQaProvisioningConfig = {
   organizationSlug: string;
 };
 
+export type DevQaMutationProvisioningConfig = DevQaProvisioningConfig & {
+  mutationEmail: string;
+  mutationPassword: string;
+};
+
 function required(env: Record<string, string | undefined>, name: string): string {
   const value = env[name]?.trim();
   if (!value) {
@@ -80,5 +85,24 @@ export function getDevQaProvisioningConfig(
     password: required(env, "PRINTERSHERO_DEV_QA_PASSWORD"),
     organizationId: required(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID"),
     organizationSlug: required(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG").toLowerCase(),
+  };
+}
+
+/**
+ * A distinct DEV-only mutation identity prevents browser validation from
+ * accidentally turning the read-only QA account into an authoring account.
+ */
+export function getDevQaMutationProvisioningConfig(
+  env: Record<string, string | undefined> = process.env,
+): DevQaMutationProvisioningConfig {
+  const base = getDevQaProvisioningConfig(env);
+  const mutationEmail = required(env, "PRINTERSHERO_DEV_QA_MUTATION_EMAIL").toLowerCase();
+  if (mutationEmail === base.email) {
+    throw new Error("DEV QA mutation identity must be distinct from DEV QA Browser.");
+  }
+  return {
+    ...base,
+    mutationEmail,
+    mutationPassword: required(env, "PRINTERSHERO_DEV_QA_MUTATION_PASSWORD"),
   };
 }
