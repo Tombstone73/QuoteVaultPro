@@ -66,7 +66,7 @@ const run = async (): Promise<void> => {
 
   const runner = new Runner();
   const service = new FormulaDomainApplicationService(runner);
-  const created = await service.create(context("formula-create"), { businessRequestId: "formula-create", name: "Area", visibility: "product_scoped", definition });
+  const created = await service.create(context("formula-create"), { businessRequestId: "formula-create", name: "Area", visibility: "product_scoped", scopeProductId: "product-a", definition });
   assert.equal(created.ok, true);
   const first = structuredClone(runner.revisions[0]!);
   const renamed = await service.updateMetadata(context("formula-metadata"), { businessRequestId: "formula-metadata", formulaId: "formula-1", expectedCurrentRevisionId: "revision-1", name: "Area pricing", description: "Catalog metadata only" });

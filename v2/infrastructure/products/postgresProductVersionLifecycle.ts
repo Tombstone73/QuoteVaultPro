@@ -2142,8 +2142,10 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         `SELECT r.id revision_id,r.formula_id,r.revision_number,r.expression,r.declared_inputs
          FROM formula_revisions r
          JOIN v2_formula_identities f ON f.id=r.formula_id AND f.organization_id=r.organization_id
-         WHERE r.organization_id=$1 AND r.id=$2 AND f.status='active' LIMIT 1`,
-        [input.organizationId, input.formula.formulaRevisionId],
+         WHERE r.organization_id=$1 AND r.id=$2 AND f.status='active'
+           AND (f.visibility='library' OR (f.visibility='product_scoped' AND f.scope_product_id=$3))
+         LIMIT 1`,
+        [input.organizationId, input.formula.formulaRevisionId, input.productId],
       );
       const revision = selected.rows[0];
       if (!revision) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Formula revision is unavailable.");

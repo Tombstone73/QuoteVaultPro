@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { FormulaDomainListEntry, FormulaDomainRevision, ProductDraftFormulaPricing, ProductDraftPricing } from "../api";
-import { PricingEngine } from "./pricing-engine";
+import { inputValuesForRevision, PricingEngine } from "./pricing-engine";
 
 const pricing: ProductDraftPricing = {
   productId: "product-1", draftVersionId: "draft-1", draftUpdatedAt: "2026-08-22T00:00:00.000Z", lifecycle: "draft",
@@ -65,5 +65,18 @@ const rollMarkup = renderToStaticMarkup(<PricingEngine pricing={{ ...pricing, ed
 assert.match(rollMarkup, /Rotation policy/);
 assert.match(rollMarkup, /Allow rotation/);
 assert.doesNotMatch(rollMarkup, /Computed sheet usage/);
+
+assert.deepEqual(
+  inputValuesForRevision(
+    [
+      { key: "rate", label: "Rate", type: "number", required: true, minimum: 0, authorable: true },
+      { key: "count", label: "Count", type: "integer", required: true, authorable: true },
+      { key: "new_required", label: "New required", type: "number", required: true, authorable: true },
+    ],
+    { rate: 4, count: 1.5 },
+  ),
+  { rate: 4 },
+  "revision adoption retains only values compatible with the new declared-input contract",
+);
 
 console.log("Product Builder legacy Formula compatibility UI tests passed.");

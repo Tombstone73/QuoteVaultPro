@@ -67,6 +67,8 @@ export type FormulaIdentity = Readonly<{
   name: string;
   description?: string;
   visibility: FormulaVisibility;
+  /** Present only while this unlisted Formula belongs to one Product. */
+  scopeProductId?: string;
   status: FormulaStatus;
   currentRevisionId: string;
   revision: FormulaRevision;
@@ -211,7 +213,7 @@ export const evaluateFormulaDefinition = (input: FormulaEvaluationInput): Formul
   }
 };
 
-export type CreateFormulaInput = Readonly<{ businessRequestId: string; name: string; description?: string; visibility: FormulaVisibility; definition: FormulaRevisionDefinition }>;
+export type CreateFormulaInput = Readonly<{ businessRequestId: string; name: string; description?: string; visibility: FormulaVisibility; /** Required for an unlisted Product-scoped Formula; stable Product identity, never ProductVersion. */ scopeProductId?: string; definition: FormulaRevisionDefinition }>;
 export type ReviseFormulaInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; definition: FormulaRevisionDefinition }>;
 export type UpdateFormulaMetadataInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; name: string; description?: string }>;
 export type SetFormulaVisibilityInput = Readonly<{ businessRequestId: string; formulaId: string; expectedCurrentRevisionId: string; visibility: FormulaVisibility }>;
@@ -245,7 +247,7 @@ export type HistoricalFormulaRevisionBinding = Readonly<{
 type Actor = Readonly<{ principalKind: PrincipalKind; principalSubject: string; staffActorUserId?: string }>;
 export interface FormulaDomainTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string }> & Actor): Promise<Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>>;
-  create(input: Readonly<{ organizationId: string; name: string; description?: string; visibility: FormulaVisibility; definition: FormulaRevisionDefinition; staffActorUserId?: string }>): Promise<FormulaIdentity>;
+  create(input: Readonly<{ organizationId: string; name: string; description?: string; visibility: FormulaVisibility; scopeProductId?: string; definition: FormulaRevisionDefinition; staffActorUserId?: string }>): Promise<FormulaIdentity>;
   revise(input: Readonly<{ organizationId: string; formulaId: string; expectedCurrentRevisionId: string; definition: FormulaRevisionDefinition; staffActorUserId?: string }>): Promise<FormulaIdentity>;
   updateMetadata(input: Readonly<{ organizationId: string; formulaId: string; expectedCurrentRevisionId: string; name: string; description?: string; staffActorUserId?: string }>): Promise<FormulaIdentity>;
   setVisibility(input: Readonly<{ organizationId: string; formulaId: string; expectedCurrentRevisionId: string; visibility: FormulaVisibility; staffActorUserId?: string }>): Promise<FormulaIdentity>;
@@ -273,10 +275,16 @@ const historicalLifecycleOk = (value: unknown): value is HistoricalFormulaLifecy
 /** Canonical Formula authoring. Every definition edit appends an immutable revision. */
 export class FormulaDomainApplicationService {
   constructor(private readonly runner: FormulaDomainTransactionRunner, private readonly authority = new AuthorityPolicy()) {}
-  async create(context: OperationContext, input: CreateFormulaInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context, input.businessRequestId, "pricing.formula.create.v1", input, (tx, a) => tx.create({ organizationId: context.organizationId, name: label(input.name, "Formula name"), ...(optionalText(input.description, "Formula description") ? { description: optionalText(input.description, "Formula description") } : {}), visibility: visibilityOk(input.visibility) ? input.visibility : (() => { throw new V2ApplicationError("VALIDATION_ERROR", "Formula visibility is invalid."); })(), definition: validateFormulaDefinition(input.definition), staffActorUserId: a.staffActorUserId }), "formula_created"); }
+  async create(context: OperationContext, input: CreateFormulaInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context, input.businessRequestId, "pricing.formula.create.v1", input, (tx, a) => {
+    const visibility = visibilityOk(input.visibility) ? input.visibility : (() => { throw new V2ApplicationError("VALIDATION_ERROR", "Formula visibility is invalid."); })();
+    const scopeProductId = typeof input.scopeProductId === "string" && input.scopeProductId.trim() ? input.scopeProductId.trim() : undefined;
+    if (visibility === "product_scoped" && !scopeProductId) throw new V2ApplicationError("VALIDATION_ERROR", "A Product-scoped Formula requires its owning Product.");
+    if (visibility === "library" && scopeProductId) throw new V2ApplicationError("VALIDATION_ERROR", "A reusable Formula cannot be Product-scoped.");
+    return tx.create({ organizationId: context.organizationId, name: label(input.name, "Formula name"), ...(optionalText(input.description, "Formula description") ? { description: optionalText(input.description, "Formula description") } : {}), visibility, ...(scopeProductId ? { scopeProductId } : {}), definition: validateFormulaDefinition(input.definition), staffActorUserId: a.staffActorUserId });
+  }, "formula_created"); }
   async revise(context: OperationContext, input: ReviseFormulaInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context, input.businessRequestId, "pricing.formula.revise.v1", input, (tx, a) => { if (!input.formulaId.trim() || !input.expectedCurrentRevisionId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A current Formula revision is required."); return tx.revise({ organizationId:context.organizationId,formulaId:input.formulaId,expectedCurrentRevisionId:input.expectedCurrentRevisionId,definition:validateFormulaDefinition(input.definition),staffActorUserId:a.staffActorUserId }); }, "formula_revised"); }
   async updateMetadata(context: OperationContext, input: UpdateFormulaMetadataInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context, input.businessRequestId, "pricing.formula.metadata.v1", input, (tx, a) => { if (!input.formulaId.trim() || !input.expectedCurrentRevisionId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A current Formula revision is required."); return tx.updateMetadata({ organizationId: context.organizationId, formulaId: input.formulaId, expectedCurrentRevisionId: input.expectedCurrentRevisionId, name: label(input.name, "Formula name"), ...(optionalText(input.description, "Formula description") ? { description: optionalText(input.description, "Formula description") } : {}), staffActorUserId: a.staffActorUserId }); }, "formula_metadata_changed"); }
-  async setVisibility(context: OperationContext, input: SetFormulaVisibilityInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context,input.businessRequestId,"pricing.formula.visibility.v1",input,(tx,a)=>{if(!input.formulaId.trim()||!input.expectedCurrentRevisionId.trim()||!visibilityOk(input.visibility))throw new V2ApplicationError("VALIDATION_ERROR","A current Formula and valid visibility are required.");return tx.setVisibility({...input,organizationId:context.organizationId,staffActorUserId:a.staffActorUserId});},"formula_visibility_changed"); }
+  async setVisibility(context: OperationContext, input: SetFormulaVisibilityInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context,input.businessRequestId,"pricing.formula.visibility.v1",input,(tx,a)=>{if(!input.formulaId.trim()||!input.expectedCurrentRevisionId.trim()||input.visibility!=="library")throw new V2ApplicationError("VALIDATION_ERROR","Only Add to Library is supported for Formula visibility changes.");return tx.setVisibility({...input,organizationId:context.organizationId,staffActorUserId:a.staffActorUserId});},"formula_visibility_changed"); }
   async setStatus(context: OperationContext, input: SetFormulaStatusInput): Promise<ApplicationResult<FormulaIdentity>> { return this.run(context,input.businessRequestId,"pricing.formula.status.v1",input,(tx,a)=>{if(!input.formulaId.trim()||!input.expectedCurrentRevisionId.trim()||!statusOk(input.status))throw new V2ApplicationError("VALIDATION_ERROR","A current Formula and valid status are required.");return tx.setStatus({...input,organizationId:context.organizationId,staffActorUserId:a.staffActorUserId});},"formula_status_changed"); }
   /**
    * Appends the first immutable FormulaRevision binding to a historical

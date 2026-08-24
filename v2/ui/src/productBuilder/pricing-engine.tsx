@@ -32,15 +32,26 @@ type FormulaRevisionDraft = Readonly<{
 const defaultInputValues = (inputs: readonly FormulaDomainDeclaredInput[]): Record<string, number | boolean> =>
   Object.fromEntries(inputs.flatMap((input) => input.defaultValue === undefined ? [] : [[input.key, input.defaultValue] as const]));
 
-const inputValuesForRevision = (
+const validValueForInput = (input: FormulaDomainDeclaredInput, value: number | boolean | undefined): value is number | boolean =>
+  input.type === "boolean"
+    ? typeof value === "boolean"
+    : typeof value === "number" && Number.isFinite(value) && (input.type !== "integer" || Number.isInteger(value))
+      && (input.minimum === undefined || value >= input.minimum)
+      && (input.maximum === undefined || value <= input.maximum);
+
+/** Retain ProductVersion-owned values only when the target revision still
+ * declares a compatible contract. Required additions intentionally remain
+ * missing for the normal Draft/publication validation to report. */
+export const inputValuesForRevision = (
   inputs: readonly FormulaDomainDeclaredInput[],
   previous: Record<string, number | boolean>,
 ): Record<string, number | boolean> => Object.fromEntries(inputs.flatMap((input) => {
-  const value = previous[input.key] ?? input.defaultValue;
+  const prior = previous[input.key];
+  const value = validValueForInput(input, prior) ? prior : input.defaultValue;
   return value === undefined ? [] : [[input.key, value] as const];
 }));
 
-export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRevisions = [], options = [], serviceFee = false, disabled, onManageFormulaLibrary, onPricingChange, onFormulaChange }: Readonly<{
+export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRevisions = [], options = [], serviceFee = false, disabled, onNewFormula, onEditFormula, onManageFormulaLibrary, returnedFormula, onAdoptReturnedFormula, onPricingChange, onFormulaChange }: Readonly<{
   pricing?: ProductDraftPricing;
   formula?: ProductDraftFormulaPricing;
   formulaLibrary?: readonly FormulaDomainListEntry[];
@@ -48,7 +59,13 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
   options?: readonly ProductDraftOption[];
   serviceFee?: boolean;
   disabled?: boolean;
+  onNewFormula?: () => void;
+  onEditFormula?: () => void;
   onManageFormulaLibrary?: () => void;
+  /** A Formula authoring screen can return an eligible revision for the
+   * Builder to present. Adoption remains a second, explicit user action. */
+  returnedFormula?: FormulaDomainListEntry;
+  onAdoptReturnedFormula?: () => void;
   onPricingChange: (next: ProductDraftPricing) => void;
   onFormulaChange: (next: FormulaRevisionDraft) => void;
 }>) {
@@ -97,6 +114,12 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
   const formulaDraft = (): FormulaRevisionDraft => ({ source: "formula_revision", ...(formula?.formulaId ? { formulaId: formula.formulaId } : {}), ...(formula?.formulaRevisionId ? { formulaRevisionId: formula.formulaRevisionId } : {}), expression: formula?.expression ?? "", inputValues: { ...(formula?.inputValues ?? {}) }, allowRotation: formula?.allowRotation ?? false, ...(formula?.rotationControl ? { rotationControl: formula.rotationControl } : {}) });
   const updateRotation = (change: Partial<Pick<ProductDraftFormulaPricing, "allowRotation" | "rotationControl">>) => onFormulaChange({ ...formulaDraft(), ...change });
   const updateFormulaInput = (input: FormulaDomainDeclaredInput, value: number | boolean) => onFormulaChange({ ...formulaDraft(), inputValues: { ...(formula?.inputValues ?? {}), [input.key]: value } });
+  const adoptRevision = (revision: FormulaDomainRevision) => onFormulaChange({
+    ...formulaDraft(),
+    formulaRevisionId: revision.formulaRevisionId,
+    expression: revision.expression,
+    inputValues: inputValuesForRevision(revision.declaredInputs, formula?.inputValues ?? {}),
+  });
   const updateBase = (field: keyof ProductDraftPricing["base"], value: number | null) => onPricingChange({ ...pricing, base: { ...pricing.base, [field]: value } });
   const replaceTierFamily = (next: readonly ProductDraftPricingTier[]) => {
     const nextSets = { ...pricing.tierSets, [tierSetKey]: next };
@@ -129,8 +152,8 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">Formula</div>
           <div className="flex flex-wrap gap-2">
-            <ReferenceButton size="compact" disabled={Boolean(disabled)} onClick={onManageFormulaLibrary}>New Formula</ReferenceButton>
-            <ReferenceButton size="compact" variant="outline" disabled={Boolean(disabled) || !formula?.formulaRevisionId} onClick={onManageFormulaLibrary}>Edit Formula</ReferenceButton>
+            <ReferenceButton size="compact" disabled={Boolean(disabled)} onClick={onNewFormula}>New Formula</ReferenceButton>
+            <ReferenceButton size="compact" variant="outline" disabled={Boolean(disabled) || !formula?.formulaRevisionId} onClick={onEditFormula}>Edit Formula</ReferenceButton>
             <ReferenceButton size="compact" variant="outline" onClick={onManageFormulaLibrary}>Manage Formula Library</ReferenceButton>
           </div>
         </div>
@@ -157,20 +180,16 @@ export function PricingEngine({ pricing, formula, formulaLibrary = [], formulaRe
             <select disabled={!formulaAuthoringEditable || !formula?.formulaId} value={formula?.formulaRevisionId ?? ""} onChange={(event) => {
               const next = formulaRevisions.find((revision) => revision.formulaRevisionId === event.target.value);
               if (!next) return;
-              onFormulaChange({
-                ...formulaDraft(),
-                formulaRevisionId: next.formulaRevisionId,
-                expression: next.expression,
-                inputValues: inputValuesForRevision(next.declaredInputs, formula?.inputValues ?? {}),
-              });
+              adoptRevision(next);
             }}>
               {!formula?.formulaId && <option value="">Select a Formula first</option>}
               {formulaRevisions.map((revision) => <option key={revision.formulaRevisionId} value={revision.formulaRevisionId}>Revision {revision.revisionNumber}</option>)}
               {!formulaRevisions.length && selectedFormula && <option value={selectedFormula.revision.formulaRevisionId}>Revision {selectedFormula.revision.revisionNumber}</option>}
             </select>
-            {selectedFormula && formula?.formulaRevisionId && formula?.formulaRevisionId !== selectedFormula.currentRevisionId ? <p className="mt-1 text-[0.6875rem] text-amber-700 dark:text-amber-300">Newer revision available. This Draft remains pinned until you select it.</p> : null}
+            {selectedFormula && formula?.formulaRevisionId && formula?.formulaRevisionId !== selectedFormula.currentRevisionId ? <div className="mt-1 flex flex-wrap items-center gap-2 text-[0.6875rem] text-amber-700 dark:text-amber-300"><span>Newer revision available. This Draft remains pinned until you select it.</span><ReferenceButton size="compact" variant="outline" disabled={!formulaAuthoringEditable} onClick={() => adoptRevision(selectedFormula.revision)}>Use revision {selectedFormula.revision.revisionNumber}</ReferenceButton></div> : null}
           </Cell>
         </div>
+        {returnedFormula && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50/50 p-2 text-[0.75rem] dark:border-amber-900 dark:bg-amber-950/20"><span>Revision {returnedFormula.revision.revisionNumber} of {returnedFormula.name} is ready to review for this Draft. It is not bound yet.</span><ReferenceButton size="compact" disabled={!formulaAuthoringEditable} onClick={onAdoptReturnedFormula}>Use this revision</ReferenceButton></div>}
         <SourceCard active={Boolean(formula?.formulaRevisionId) || formula?.source === "unsupported_legacy"} title={formula?.formulaName ?? selectedFormula?.name ?? "Formula revision"} badge={formula?.source === "unsupported_legacy" ? "Legacy-compatible" : formula?.formulaRevisionId ? `Revision ${selectedRevision?.revisionNumber ?? formula?.formulaRevisionNumber ?? ""}` : "Not selected"}>
           {formula?.source === "unsupported_legacy" ? <p className="text-[0.75rem] text-muted-foreground">Legacy compatibility Formula is read-only. Select a canonical Formula revision to stage an intentional Draft canonicalization.</p> : null}
           <Cell label="Formula Expression"><textarea readOnly value={formula?.source === "unsupported_legacy" ? formula.legacyExpression ?? formula.expression : formula?.expression ?? ""} placeholder="Select a Formula revision" className="min-h-20 w-full resize-y font-mono" /></Cell>

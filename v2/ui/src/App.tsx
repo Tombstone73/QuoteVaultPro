@@ -61,7 +61,9 @@ import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import {
   legacyProductEditorRedirect,
+  productBuilderPath,
   productPath,
+  readFormulaAuthoringContext,
   pushArtworkLocation,
   pushContactLocation,
   pushCustomerLocation,
@@ -76,6 +78,7 @@ import {
   pushQuoteLocation,
   pushWorkspaceLocation,
   readWorkspaceLocation,
+  type FormulaAuthoringContext,
 } from "./productRouting";
 
 const errorText = (error: unknown) => {
@@ -134,6 +137,7 @@ export const App = ({
   const [productId, setProductId] = useState("");
   const [productBuilderId, setProductBuilderId] = useState("");
   const [newProductBuilder, setNewProductBuilder] = useState(false);
+  const [formulaAuthoringContext, setFormulaAuthoringContext] = useState<FormulaAuthoringContext | null>(null);
   const [invoiceId, setInvoiceId] = useState("");
   const [fulfillmentOrderId, setFulfillmentOrderId] = useState("");
   const [productionStation, setProductionStation] = useState<
@@ -170,6 +174,7 @@ export const App = ({
       setProductId("");
       setProductBuilderId("");
       setNewProductBuilder(false);
+      setFormulaAuthoringContext(null);
       setInvoiceId("");
       setFulfillmentOrderId("");
       setProductionStation(undefined);
@@ -259,6 +264,7 @@ export const App = ({
       const location = readWorkspaceLocation();
       if (!location) return;
       setPage(location.page);
+      setFormulaAuthoringContext(location.page === "formulas" ? readFormulaAuthoringContext() : null);
       if (location.page === "products") setProductId(location.productId ?? "");
       else if (location.page === "productBuilder") {
         setProductBuilderId(location.productId ?? "");
@@ -378,6 +384,16 @@ export const App = ({
           organizationId={organizationId}
           sessionScope={sessionScope}
           canEdit={bootstrap.data?.capabilities.pricingConfigure === true}
+          authoringContext={formulaAuthoringContext ?? undefined}
+          onReturnToProductBuilder={(selection) => {
+            const context = formulaAuthoringContext;
+            if (!context) return;
+            window.history.pushState({}, "", productBuilderPath(context.productId, selection));
+            setProductBuilderId(context.productId);
+            setNewProductBuilder(false);
+            setFormulaAuthoringContext(null);
+            setPage("productBuilder");
+          }}
         />
       ) : page === "customers" ? (
         <CustomerWorkspace

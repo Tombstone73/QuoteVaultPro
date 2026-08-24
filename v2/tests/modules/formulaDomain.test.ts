@@ -60,7 +60,7 @@ describe("Formula domain immutable revisions", () => {
   test("creates revision 1 and appends revision 2 without changing a ProductVersion-bound revision 1", async () => {
     const runner = new FormulaRunner();
     const service = new FormulaDomainApplicationService(runner);
-    const created = await service.create(context("formula-create"), { businessRequestId: "formula-create", name: "Area", visibility: "product_scoped", definition });
+    const created = await service.create(context("formula-create"), { businessRequestId: "formula-create", name: "Area", visibility: "product_scoped", scopeProductId: "product-a", definition });
     expect(created).toMatchObject({ ok: true, value: { currentRevisionId: "revision-1", revision: { expression: "ceil(sqft) * p", revisionNumber: 1 } } });
     const boundRevision = structuredClone(runner.revisions[0]!);
     const revised = await service.revise(context("formula-revise"), { businessRequestId: "formula-revise", formulaId: "formula-1", expectedCurrentRevisionId: "revision-1", definition: { ...definition, expression: "ceil(sqft) * (p + 1)" } });
@@ -73,7 +73,7 @@ describe("Formula domain immutable revisions", () => {
   test("a visibility or status transition does not rewrite the immutable current revision", async () => {
     const runner = new FormulaRunner();
     const service = new FormulaDomainApplicationService(runner);
-    const created = await service.create(context("create-visibility"), { businessRequestId: "create-visibility", name: "Area", visibility: "product_scoped", definition });
+    const created = await service.create(context("create-visibility"), { businessRequestId: "create-visibility", name: "Area", visibility: "product_scoped", scopeProductId: "product-a", definition });
     if (!created.ok) throw new Error(created.error.publicMessage);
     const before = structuredClone(created.value.revision);
     const listed = await service.setVisibility(context("visibility"), { businessRequestId: "visibility", formulaId: created.value.formulaId, expectedCurrentRevisionId: created.value.currentRevisionId, visibility: "library" });

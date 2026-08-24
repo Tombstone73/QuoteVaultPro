@@ -30,7 +30,7 @@ const staff = (organizationId: string): StaffPrincipal => ({
   userId: "staff-a",
   authority: { membershipId: "membership-a", capabilities: ["product.view"] },
 });
-let listInput: Readonly<{ includeInactive?: boolean; query?: string }> | undefined;
+let listInput: Readonly<{ includeInactive?: boolean; query?: string; productId?: string }> | undefined;
 const app = () => {
   const dependencies: FormulaHttpDependencies = {
     principals: {
@@ -57,6 +57,8 @@ describe("V2 Formula-domain HTTP routes", () => {
       .expect(200)
       .expect(({ body }) => expect(body.data[0].revision.validationEvidence).toEqual({ parser: "validated" }));
     expect(listInput).toEqual({ includeInactive: true });
+    await request(app()).get("/v2/organizations/org-a/formulas?productId=product-a&q=area").expect(200);
+    expect(listInput).toEqual({ includeInactive: false, productId: "product-a", query: "area" });
     await request(app())
       .get("/v2/organizations/org-a/formulas/formula-a/revisions")
       .expect(200)

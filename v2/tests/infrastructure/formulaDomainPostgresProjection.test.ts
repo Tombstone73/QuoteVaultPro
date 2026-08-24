@@ -18,7 +18,7 @@ const definition = (expression: string) => ({
   validationEvidence: { fixture: "postgres-projection" },
 });
 
-type Formula = { id: string; organizationId: string; name: string; description: string | null; visibility: "library" | "product_scoped"; status: "active"; currentRevisionId: string; createdAt: Date; updatedAt: Date };
+type Formula = { id: string; organizationId: string; name: string; description: string | null; visibility: "library" | "product_scoped"; scopeProductId: string | null; status: "active"; currentRevisionId: string; createdAt: Date; updatedAt: Date };
 type Revision = { id: string; organizationId: string; formulaId: string; revisionNumber: number; expression: string; declaredInputs: unknown; validationEvidence: unknown; createdAt: Date; createdByUserId: string | null };
 
 /**
@@ -71,10 +71,14 @@ class FormulaDomainPoolDouble {
     }
     if (compact.startsWith("INSERT INTO v2_principal_attributions") || compact.startsWith("INSERT INTO v2_audit_events")) return { rows: [] };
     if (compact.startsWith("INSERT INTO v2_formula_identities")) {
-      const [id, tenant, name, _normalized, description, visibility] = values as [string, string, string, string, string | null, "library" | "product_scoped"];
+      const [id, tenant, name, _normalized, description, visibility, scopeProductId] = values as [string, string, string, string, string | null, "library" | "product_scoped", string | null];
       const now = new Date("2026-08-24T00:00:00.000Z");
-      this.formulas.push({ id, organizationId: tenant, name, description, visibility, status: "active", currentRevisionId: "", createdAt: now, updatedAt: now });
+      this.formulas.push({ id, organizationId: tenant, name, description, visibility, scopeProductId, status: "active", currentRevisionId: "", createdAt: now, updatedAt: now });
       return { rows: [] };
+    }
+    if (compact.startsWith("SELECT id FROM products WHERE organization_id=$1 AND id=$2 FOR KEY SHARE")) {
+      const [tenant, productId] = values as string[];
+      return { rows: tenant === organizationId && productId === "product-a" ? [{ id: productId }] as T[] : [] };
     }
     if (compact.startsWith("INSERT INTO formula_revisions")) {
       const hasExplicitRevisionNumber = typeof values[3] === "number";
@@ -105,9 +109,10 @@ class FormulaDomainPoolDouble {
       return { rows: [] };
     }
     if (compact.includes("FROM v2_formula_identities f") && compact.includes("JOIN formula_revisions r ON r.id=f.current_revision_id")) {
-      const [tenant, requestedFormulaId] = values as string[];
-      const formulas = this.formulas.filter((candidate) => candidate.organizationId === tenant && (!requestedFormulaId || candidate.id === requestedFormulaId));
-      return { rows: formulas.map((formula) => this.detailRow(compact, formula)) as T[] };
+      const [tenant, requested] = values as string[];
+      const detail = compact.includes("f.id=$2");
+      const formulae = this.formulas.filter((candidate) => candidate.organizationId === tenant && (detail ? candidate.id === requested : compact.includes("f.visibility='library'") ? candidate.visibility === "library" || (candidate.visibility === "product_scoped" && candidate.scopeProductId === requested) : true));
+      return { rows: formulae.map((formula) => this.detailRow(compact, formula)) as T[] };
     }
     if (compact.includes("FROM v2_formula_identities f") && compact.includes("FOR UPDATE")) {
       const [tenant, formulaId] = values as string[];
@@ -122,7 +127,7 @@ class FormulaDomainPoolDouble {
   }
 
   private headerRow(formula: Formula) {
-    return { id: formula.id, organization_id: formula.organizationId, name: formula.name, description: formula.description, visibility: formula.visibility, status: formula.status, current_revision_id: formula.currentRevisionId, created_at: formula.createdAt, updated_at: formula.updatedAt, usage_count: "0" };
+    return { id: formula.id, organization_id: formula.organizationId, name: formula.name, description: formula.description, visibility: formula.visibility, scope_product_id: formula.scopeProductId, status: formula.status, current_revision_id: formula.currentRevisionId, created_at: formula.createdAt, updated_at: formula.updatedAt, usage_count: "0" };
   }
   private revisionRow(revision: Revision) {
     return { id: revision.id, organization_id: revision.organizationId, formula_id: revision.formulaId, revision_number: revision.revisionNumber, expression: revision.expression, declared_inputs: revision.declaredInputs, validation_evidence: revision.validationEvidence, created_at: revision.createdAt, created_by_user_id: revision.createdByUserId };
@@ -167,11 +172,13 @@ describe("Postgres Formula-domain detail projection", () => {
   test("detail, list, and revisions preserve the mapper contract and tenant isolation", async () => {
     const pool = new FormulaDomainPoolDouble();
     const service = new FormulaDomainApplicationService(new PostgresFormulaDomainTransactionRunner(pool as any));
-    const created = await service.create(context("postgres-detail-create"), { businessRequestId: "postgres-detail-create", name: "Detail formula", visibility: "product_scoped", definition: definition("sqft * rate") });
+    const created = await service.create(context("postgres-detail-create"), { businessRequestId: "postgres-detail-create", name: "Detail formula", visibility: "product_scoped", scopeProductId: "product-a", definition: definition("sqft * rate") });
     if (!created.ok) throw new Error(created.error.publicMessage);
     const reads = new PostgresFormulaDomainReads(pool as any);
     await expect(reads.get(organizationId, created.value.formulaId)).resolves.toMatchObject({ formulaId: created.value.formulaId, revision: { formulaRevisionId: created.value.currentRevisionId, expression: "sqft * rate", declaredInputs: definition("x").declaredInputs } });
-    await expect(reads.list(organizationId)).resolves.toEqual([expect.objectContaining({ formulaId: created.value.formulaId, revision: expect.objectContaining({ expression: "sqft * rate" }) })]);
+    await expect(reads.list(organizationId)).resolves.toEqual([]);
+    await expect(reads.list(organizationId, { productId: "product-a" })).resolves.toEqual([expect.objectContaining({ formulaId: created.value.formulaId, scopeProductId: "product-a", revision: expect.objectContaining({ expression: "sqft * rate" }) })]);
+    await expect(reads.list(organizationId, { productId: "product-b" })).resolves.toEqual([]);
     await expect(reads.revisions(organizationId, created.value.formulaId)).resolves.toEqual([expect.objectContaining({ formulaRevisionId: created.value.currentRevisionId, revisionNumber: 1, expression: "sqft * rate" })]);
     await expect(reads.get("tenant-other", created.value.formulaId)).resolves.toBeNull();
   });

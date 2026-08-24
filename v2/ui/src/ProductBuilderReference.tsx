@@ -21,7 +21,7 @@ import { LovableProductBuilderRoot } from "./productBuilder/lovableRoot";
 import { OptionGroupsSection } from "./productBuilder/optionGroups";
 import { RecipeEditor } from "./productBuilder/recipe";
 import { ProductionUnits, RoutingSection } from "./productBuilder/production-routing";
-import { PricingEngine, OptionImpactsEditor } from "./productBuilder/pricing-engine";
+import { inputValuesForRevision, PricingEngine, OptionImpactsEditor } from "./productBuilder/pricing-engine";
 import { MatrixPricing } from "./productBuilder/matrix-pricing";
 import { PricingPreviewRail, resolvePreviewConfiguration } from "./productBuilder/pricing-preview";
 import { BasicsSection } from "./productBuilder/basics";
@@ -31,7 +31,7 @@ import { acceptsLivePreviewResponse, prepareLivePreview, presentLivePreview } fr
 import { ReviewSummary } from "./productBuilder/review";
 import type { ProductBuilderSection } from "./productBuilder/lovableRoot";
 import { Chip, Disclosure, Sub } from "./productBuilder/referencePrimitives";
-import { pushWorkspaceLocation, replaceProductBuilderLocation } from "./productRouting";
+import { productBuilderPath, pushFormulaAuthoringLocation, pushWorkspaceLocation, readProductBuilderLocation, replaceProductBuilderLocation } from "./productRouting";
 import type { ProductOptionRule } from "../../../shared/productOptionRules";
 import { adoptFirstSaveIdentity, firstSaveRequestHistoryKey, firstSaveRequestId, firstSaveRequestIdFromHistory } from "./productBuilder/firstSaveIdentity";
 
@@ -206,8 +206,11 @@ export const ProductBuilderReference = ({
   const pricingRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "pricing"), queryFn: () => productApi.draftPricing(organizationId, productId!), enabled: Boolean(productId) });
   const formulaRead = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "formula"), queryFn: () => productApi.draftFormula(organizationId, productId!), enabled: Boolean(productId), retry: false });
   const formulaLibrary = useQuery<readonly FormulaDomainListEntry[]>({
-    queryKey: ["v2", sessionScope, organizationId, "formulas", "picker"],
-    queryFn: () => formulaApi.list(organizationId, { includeInactive: true }),
+    queryKey: ["v2", sessionScope, organizationId, "formulas", "picker", productId ?? ""],
+    queryFn: () => formulaApi.list(organizationId, {
+      includeInactive: true,
+      ...(productId ? { productId } : {}),
+    }),
     enabled: Boolean(organizationId && sessionScope),
     retry: false,
   });
@@ -232,10 +235,15 @@ export const ProductBuilderReference = ({
   const [previewInputs, setPreviewInputs] = useState({ quantity: "1", width: "24", height: "18", selections: {} as Record<string, unknown> });
   const [confirmedPreview, setConfirmedPreview] = useState<ConfirmedPricingPreview | null>(null);
   const [debouncedPreviewFingerprint, setDebouncedPreviewFingerprint] = useState<string | null>(null);
+  const [returnedFormulaCandidate, setReturnedFormulaCandidate] = useState<FormulaDomainListEntry | null>(null);
   const sectionJumpRef = useRef<((section: ProductBuilderSection) => void) | null>(null);
   const initialised = useRef<string | null>(null);
   const authoritativeDraft = useRef<PublishDraftRevision | null>(null);
   const pendingCreateRequestId = useRef<string | null>(typeof window === "undefined" ? null : firstSaveRequestIdFromHistory(window.history.state));
+  const appliedFormulaReturn = useRef<string | null>(null);
+  const formulaReturn = typeof window === "undefined"
+    ? undefined
+    : readProductBuilderLocation()?.formulaReturn;
 
   const sourceReady = !productId || Boolean(
     generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data
@@ -338,6 +346,68 @@ export const ProductBuilderReference = ({
     setDraft((current) => update(clone(current)));
     setDirty((current) => new Set([...current, section]));
   }, []);
+  /** A Formula screen can only return a revision for presentation here. The
+   * eligible picker read is Product-scoped, and the later explicit adoption
+   * plus Draft save remain the authoritative binding path. */
+  useEffect(() => {
+    if (!formulaReturn || !productId || !formulaLibrary.data) return;
+    const returnKey = `${productId}:${formulaReturn.formulaId}:${formulaReturn.formulaRevisionId}`;
+    if (appliedFormulaReturn.current === returnKey) return;
+    appliedFormulaReturn.current = returnKey;
+    const candidate = formulaLibrary.data.find((entry) =>
+      entry.formulaId === formulaReturn.formulaId &&
+      entry.currentRevisionId === formulaReturn.formulaRevisionId &&
+      entry.status === "active",
+    );
+    // A forged or now-ineligible route token is never allowed to populate a
+    // Draft. The canonical save endpoint repeats the eligibility check.
+    if (!candidate) {
+      setSaveError("That Formula revision is no longer available for this Product Draft.");
+      window.history.replaceState(window.history.state, "", productBuilderPath(productId));
+      return;
+    }
+    setReturnedFormulaCandidate(candidate);
+    window.history.replaceState(window.history.state, "", productBuilderPath(productId));
+  }, [formulaLibrary.data, formulaReturn, productId]);
+  const adoptReturnedFormula = useCallback(() => {
+    if (!returnedFormulaCandidate) return;
+    patch("formula", (current) => ({
+      ...current,
+      formula: {
+        ...current.formula,
+        formulaId: returnedFormulaCandidate.formulaId,
+        formulaRevisionId: returnedFormulaCandidate.revision.formulaRevisionId,
+        expression: returnedFormulaCandidate.revision.expression,
+        // Keep only values whose declared keys survive the revision. Newly
+        // required values intentionally remain absent for normal Draft and
+        // publication validation to surface.
+        inputValues: inputValuesForRevision(
+          returnedFormulaCandidate.revision.declaredInputs,
+          current.formula.inputValues,
+        ),
+      },
+    }));
+    setReturnedFormulaCandidate(null);
+  }, [patch, returnedFormulaCandidate]);
+  const manageFormulaAuthoring = useCallback((intent: "new" | "revise") => {
+    const draftVersionId = authoritativeDraft.current?.draftVersionId ?? generalRead.data?.draftVersionId;
+    const formulaId = draft.formula.formulaId ?? formulaRead.data?.formulaId;
+    if (!productId || !draftVersionId) {
+      setSaveError("Save Changes to create this Product Draft before authoring a Formula.");
+      return;
+    }
+    if (intent === "revise" && !formulaId) {
+      setSaveError("Select a Formula revision before editing it.");
+      return;
+    }
+    pushFormulaAuthoringLocation({
+      productId,
+      draftVersionId,
+      intent,
+      ...(formulaId ? { formulaId } : {}),
+    });
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, [draft.formula.formulaId, formulaRead.data?.formulaId, generalRead.data?.draftVersionId, productId]);
   const runSave = async (): Promise<boolean> => {
     if (!canEdit || saving || requiresReconciliation) return false;
     if (!draft.general.displayName.trim()) { setSaveError("Product name is required before saving."); sectionJumpRef.current?.("basics"); return false; }
@@ -565,7 +635,7 @@ export const ProductBuilderReference = ({
   >{{
     basics: <BasicsSection general={draft.general} productTypeLabel={product?.productType?.displayName} disabled={!canEdit || saving} onChange={(general) => patch("general", (value) => ({ ...value, general }))} />,
     options: <><OptionGroupsSection options={draft.options} disabled={!canEdit || saving} onChange={(options) => patch("options", (value) => ({ ...value, options }))} /><OptionRulesSection options={draft.options} rules={draft.optionRules} disabled={!canEdit || saving} onChange={(optionRules) => patch("options", (value) => ({ ...value, optionRules }))} /><Disclosure label={`Recipe & production conditions (${canonicalConditions.length})`}><RuleCards conditions={canonicalConditions} onJumpToOwner={(owner) => sectionJumpRef.current?.(owner)} /></Disclosure></>,
-    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} formulaLibrary={formulaLibrary.data ?? []} formulaRevisions={formulaRevisions.data ?? []} options={draft.options} serviceFee={draft.general.workflowIntent === "service_fee"} disabled={!canEdit || saving} onManageFormulaLibrary={() => { pushWorkspaceLocation("formulas"); window.dispatchEvent(new PopStateEvent("popstate")); }} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, flatFeeCents: pricing.flatFeeCents, tierBasis: pricing.tierBasis, tiers: pricing.tiers, tierSets: pricing.tierSets } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{stagedMatrix && <MatrixPricing matrix={stagedMatrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
+    pricing: <div className="space-y-4">{stagedPricing && <PricingEngine pricing={stagedPricing} formula={stagedFormula} formulaLibrary={formulaLibrary.data ?? []} formulaRevisions={formulaRevisions.data ?? []} options={draft.options} serviceFee={draft.general.workflowIntent === "service_fee"} disabled={!canEdit || saving} onNewFormula={() => manageFormulaAuthoring("new")} onEditFormula={() => manageFormulaAuthoring("revise")} onManageFormulaLibrary={() => { pushWorkspaceLocation("formulas"); window.dispatchEvent(new PopStateEvent("popstate")); }} returnedFormula={returnedFormulaCandidate ?? undefined} onAdoptReturnedFormula={adoptReturnedFormula} onPricingChange={(pricing) => patch("pricing", (value) => ({ ...value, pricing: { ...pricing.base, flatFeeCents: pricing.flatFeeCents, tierBasis: pricing.tierBasis, tiers: pricing.tiers, tierSets: pricing.tierSets } }))} onFormulaChange={(formula) => patch("formula", (value) => ({ ...value, formula }))} />}<Sub title="Matrix pricing">{stagedMatrix && <MatrixPricing matrix={stagedMatrix} disabled={!canEdit || saving} onChange={(matrix) => patch("matrix", (value) => ({ ...value, matrix }))} />}</Sub><Sub title="Option pricing impacts" hint="Options that change price without being matrix dimensions. Edit amounts on the choice in Options."><OptionImpactsEditor options={draft.impacts} disabled={!canEdit || saving} onChange={(impacts) => patch("impacts", (value) => ({ ...value, impacts }))} /></Sub></div>,
     materials: <div className="space-y-4"><Sub title="Recipe"><RecipeEditor components={draft.recipe} materials={materials.data?.items ?? []} options={draft.options} primaryMaterialName={product?.primaryMaterialName} disabled={!canEdit || saving} onChange={(recipe) => patch("recipe", (value) => ({ ...value, recipe }))} /></Sub></div>,
     production: <ProductionUnits specification={draft.general.productionUnitSpecification} options={draft.options} selectionKeys={optionSelectionKeys} disabled={!canEdit || saving} onChange={(productionUnitSpecification) => patch("general", (value) => ({ ...value, general: { ...value.general, productionUnitSpecification } }))} />,
     routing: <RoutingSection routing={draft.routing} templates={routeTemplates} disabled={!canEdit || saving} onChange={(routing) => patch("routing", (value) => ({ ...value, routing }))} onManageRoutes={() => { pushWorkspaceLocation("routing"); window.dispatchEvent(new PopStateEvent("popstate")); }} />,

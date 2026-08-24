@@ -623,6 +623,7 @@ export const v2FormulaIdentities = pgTable("v2_formula_identities", {
   normalizedName: varchar("normalized_name", { length: 255 }).notNull(),
   description: text("description"),
   visibility: formulaVisibility("visibility").notNull().default("product_scoped"),
+  scopeProductId: varchar("scope_product_id"),
   status: formulaStatus("status").notNull().default("active"),
   currentRevisionId: varchar("current_revision_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

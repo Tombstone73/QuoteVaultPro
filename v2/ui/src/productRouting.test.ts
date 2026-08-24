@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { artworkPath, contactPath, customerPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.equal(readProductLocation("/products/product-a"), null);
@@ -16,6 +16,16 @@ assert.equal(readProductBuilderLocation("/product-builder"), null);
 assert.deepEqual(readProductBuilderLocation("/product-builder/product-a"), { productId: "product-a" });
 assert.equal(readProductBuilderLocation("/product-builder/%2Fwrong"), null);
 assert.equal(productBuilderPath("product a"), "/product-builder/product%20a?draft=1");
+assert.equal(formulaAuthoringPath({ productId: "product a", draftVersionId: "draft a", intent: "new" }), "/formulas?product=product+a&draft=draft+a&formulaIntent=new");
+assert.equal(formulaAuthoringPath({ productId: "product-a", draftVersionId: "draft-a", intent: "revise", formulaId: "formula-a" }), "/formulas?product=product-a&draft=draft-a&formulaIntent=revise&formula=formula-a");
+assert.deepEqual(readFormulaAuthoringContext("/formulas", "?product=product-a&draft=draft-a&formulaIntent=new"), { productId: "product-a", draftVersionId: "draft-a", intent: "new" });
+assert.deepEqual(readFormulaAuthoringContext("/formulas", "?product=product-a&draft=draft-a&formulaIntent=revise&formula=formula-a"), { productId: "product-a", draftVersionId: "draft-a", intent: "revise", formulaId: "formula-a" });
+assert.equal(readFormulaAuthoringContext("/formulas", "?product=product-a&draft=draft-a&formulaIntent=revise"), null);
+assert.equal(readFormulaAuthoringContext("/formulas", "?product=product-a&draft=draft-a&formulaIntent=redirect&return=https%3A%2F%2Fevil.example"), null, "Formula authoring context accepts no arbitrary return URL");
+assert.equal(readFormulaAuthoringContext("/formulas", "?product=https%3A%2F%2Fevil.example&draft=draft-a&formulaIntent=new"), null, "external values are not valid internal product identities");
+assert.equal(productBuilderPath("product-a", { formulaId: "formula-a", formulaRevisionId: "revision-2" }), "/product-builder/product-a?draft=1&formulaReturn=1&formula=formula-a&formulaRevision=revision-2");
+assert.deepEqual(readProductBuilderLocation("/product-builder/product-a", "?draft=1&formulaReturn=1&formula=formula-a&formulaRevision=revision-2"), { productId: "product-a", formulaReturn: { formulaId: "formula-a", formulaRevisionId: "revision-2" } });
+assert.deepEqual(readProductBuilderLocation("/product-builder/product-a", "?formulaReturn=1&formula=https%3A%2F%2Fevil.example&formulaRevision=revision-2"), { productId: "product-a" }, "malformed Formula return context is discarded rather than navigated");
 assert.deepEqual(readWorkspaceLocation("/product-builder/product-a"), { page: "productBuilder", productId: "product-a" });
 assert.equal(newProductBuilderPath(), "/products/new");
 assert.deepEqual(readProductBuilderLocation("/products/new"), { newProduct: true });

@@ -493,6 +493,8 @@ export type FormulaDomainListEntry = Readonly<{
   name: string;
   description?: string;
   visibility: "product_scoped" | "library";
+  /** Stable owner for an unlisted Formula. Omitted for reusable Formulae. */
+  scopeProductId?: string;
   status: "active" | "inactive" | "archived";
   currentRevisionId: string;
   revision: FormulaDomainRevision;
@@ -1923,11 +1925,12 @@ export const productApi = {
     ),
 };
 export const formulaApi = {
-  list: (organizationId: string, input: string | Readonly<{ query?: string; includeInactive?: boolean }> = "") => {
+  list: (organizationId: string, input: string | Readonly<{ query?: string; includeInactive?: boolean; productId?: string }> = "") => {
     const options = typeof input === "string" ? { query: input } : input;
     const params = new URLSearchParams();
     if (options.query) params.set("q", options.query);
     if (options.includeInactive) params.set("includeInactive", "true");
+    if (options.productId) params.set("productId", options.productId);
     const suffix = params.size ? `?${params.toString()}` : "";
     return request<readonly FormulaDomainListEntry[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas${suffix}`);
   },
@@ -1939,13 +1942,15 @@ export const formulaApi = {
     request<readonly Readonly<{ productId: string; productVersionId: string; formulaRevisionId: string; revisionNumber: number; productName: string; versionStatus: string }>[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/usage`),
   evaluate: (organizationId: string, input: FormulaDomainEvaluationInput) =>
     request<FormulaDomainEvaluationResult>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/test`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
-  create: (organizationId: string, businessRequestId: string, input: Readonly<{ name: string; description?: string; visibility: "product_scoped" | "library"; definition: FormulaDomainDefinition }>) =>
+  create: (organizationId: string, businessRequestId: string, input: Readonly<{ name: string; description?: string; visibility: "product_scoped" | "library"; scopeProductId?: string; definition: FormulaDomainDefinition }>) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
   revise: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; definition: FormulaDomainDefinition }>) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/revisions`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
   updateMetadata: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; name: string; description: string | null }>) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/metadata`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
-  setVisibility: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; visibility: "product_scoped" | "library" }>) =>
+  /** Product scope is established only at Formula creation. This promotes the
+   * same identity to the tenant library; it never creates a second Formula. */
+  setVisibility: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; visibility: "library" }>) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/visibility`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
   setStatus: (organizationId: string, formulaId: string, businessRequestId: string, input: Readonly<{ expectedCurrentRevisionId: string; status: "active" | "inactive" | "archived" }>) =>
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/status`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),

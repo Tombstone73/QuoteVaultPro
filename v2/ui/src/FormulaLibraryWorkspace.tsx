@@ -7,6 +7,7 @@ import {
   type FormulaDomainDefinition,
   type FormulaDomainListEntry,
 } from "./api";
+import type { FormulaAuthoringContext } from "./productRouting";
 
 type EditorState = Readonly<{
   name: string;
@@ -71,10 +72,19 @@ export const FormulaLibraryWorkspace = ({
   organizationId,
   sessionScope,
   canEdit,
+  authoringContext,
+  onReturnToProductBuilder,
 }: Readonly<{
   organizationId: string;
   sessionScope: string;
   canEdit: boolean;
+  /** Bounded navigation context from a Product Builder Draft. It never grants
+   * Formula or Product mutation authority. */
+  authoringContext?: FormulaAuthoringContext;
+  onReturnToProductBuilder?: (selection: Readonly<{
+    formulaId: string;
+    formulaRevisionId: string;
+  }>) => void;
 }>) => {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
@@ -87,9 +97,14 @@ export const FormulaLibraryWorkspace = ({
       ...formulaKey(organizationId),
       query,
       includeInactive,
+      authoringContext?.productId ?? "",
       sessionScope,
     ],
-    queryFn: () => formulaApi.list(organizationId, { query, includeInactive }),
+    queryFn: () => formulaApi.list(organizationId, {
+      query,
+      includeInactive,
+      ...(authoringContext?.productId ? { productId: authoringContext.productId } : {}),
+    }),
     enabled: Boolean(organizationId && sessionScope),
   });
   const selected = useMemo(
@@ -121,6 +136,25 @@ export const FormulaLibraryWorkspace = ({
   useEffect(() => {
     if (selected && mode === "view") setEditor(editorFrom(selected));
   }, [selected, mode]);
+  useEffect(() => {
+    if (!authoringContext) return;
+    setSelectedId(authoringContext.formulaId ?? "");
+    if (authoringContext.intent === "new") {
+      setEditor({ ...blankEditor(), visibility: "product_scoped" });
+      setMode("create");
+    }
+  }, [authoringContext]);
+  useEffect(() => {
+    if (
+      authoringContext?.intent === "revise" &&
+      selected &&
+      selected.formulaId === authoringContext.formulaId &&
+      mode === "view"
+    ) {
+      setEditor(editorFrom(selected));
+      setMode("revise");
+    }
+  }, [authoringContext, mode, selected]);
 
   const refresh = async () => {
     await queryClient.invalidateQueries({
@@ -128,15 +162,20 @@ export const FormulaLibraryWorkspace = ({
     });
   };
   const create = useMutation({
-    mutationFn: () =>
-      formulaApi.create(organizationId, newBusinessRequestId(), {
+    mutationFn: () => {
+      const productScoped = authoringContext?.intent === "new";
+      return formulaApi.create(organizationId, newBusinessRequestId(), {
         name: editor.name.trim(),
         ...(editor.description.trim()
           ? { description: editor.description.trim() }
           : {}),
-        visibility: editor.visibility,
+        visibility: productScoped ? "product_scoped" : editor.visibility,
+        ...(productScoped && authoringContext.productId
+          ? { scopeProductId: authoringContext.productId }
+          : {}),
         definition: definitionOf(editor),
-      }),
+      });
+    },
     onSuccess: async (formula) => {
       setSelectedId(formula.formulaId);
       setMode("view");
@@ -160,7 +199,7 @@ export const FormulaLibraryWorkspace = ({
     },
   });
   const visibility = useMutation({
-    mutationFn: (next: "product_scoped" | "library") =>
+    mutationFn: (next: "library") =>
       formulaApi.setVisibility(
         organizationId,
         selected!.formulaId,
@@ -213,13 +252,22 @@ export const FormulaLibraryWorkspace = ({
             Create immutable Formula revisions and see where each revision is
             used.
           </p>
+          {authoringContext && (
+            <p>
+              Authoring for this Product Draft. Formula selection remains an
+              explicit Draft action when you return.
+            </p>
+          )}
         </div>
         <button
           className="button"
           type="button"
           disabled={!canEdit || busy}
           onClick={() => {
-            setEditor(blankEditor());
+            setEditor({
+              ...blankEditor(),
+              visibility: authoringContext ? "product_scoped" : "library",
+            });
             setMode("create");
           }}
         >
@@ -318,16 +366,21 @@ export const FormulaLibraryWorkspace = ({
                     setMode("revise");
                   }}
                   onVisibility={() =>
-                    visibility.mutate(
-                      selected.visibility === "library"
-                        ? "product_scoped"
-                        : "library",
-                    )
+                    visibility.mutate("library")
                   }
                   onStatus={() =>
                     status.mutate(
                       selected.status === "active" ? "inactive" : "active",
                     )
+                  }
+                  onUseAndReturn={
+                    authoringContext && onReturnToProductBuilder
+                      ? () =>
+                          onReturnToProductBuilder({
+                            formulaId: selected.formulaId,
+                            formulaRevisionId: selected.currentRevisionId,
+                          })
+                      : undefined
                   }
                 />
               ) : (
@@ -339,6 +392,7 @@ export const FormulaLibraryWorkspace = ({
                       : `Edit ${selected?.name ?? "Formula"}`
                   }
                   revisionMode={mode === "revise"}
+                  visibilityLocked={authoringContext?.intent === "new"}
                   state={editor}
                   busy={busy}
                   submitLabel={
@@ -396,6 +450,7 @@ const FormulaDetail = ({
   onEdit,
   onVisibility,
   onStatus,
+  onUseAndReturn,
 }: Readonly<{
   formula: FormulaDomainListEntry;
   revisions: readonly FormulaDomainListEntry["revision"][];
@@ -413,6 +468,7 @@ const FormulaDetail = ({
   onEdit: () => void;
   onVisibility: () => void;
   onStatus: () => void;
+  onUseAndReturn?: () => void;
 }>) => (
   <>
     <header className="v2-formula-detail-header">
@@ -430,16 +486,16 @@ const FormulaDetail = ({
         >
           Edit Formula
         </button>
-        <button
-          className="button secondary"
-          type="button"
-          disabled={!canEdit || busy}
-          onClick={onVisibility}
-        >
-          {formula.visibility === "library"
-            ? "Make Product-scoped"
-            : "Add to Library"}
-        </button>
+        {formula.visibility === "product_scoped" && (
+          <button
+            className="button secondary"
+            type="button"
+            disabled={!canEdit || busy}
+            onClick={onVisibility}
+          >
+            Add to Library
+          </button>
+        )}
         <button
           className="button secondary"
           type="button"
@@ -448,6 +504,16 @@ const FormulaDetail = ({
         >
           {formula.status === "active" ? "Deactivate" : "Activate"}
         </button>
+        {onUseAndReturn && (
+          <button
+            className="button"
+            type="button"
+            disabled={formula.status !== "active" || busy}
+            onClick={onUseAndReturn}
+          >
+            Use this revision and return
+          </button>
+        )}
       </div>
     </header>
     <dl className="v2-formula-facts">
@@ -580,6 +646,7 @@ const FormulaEditor = ({
   organizationId,
   title,
   revisionMode,
+  visibilityLocked = false,
   state,
   busy,
   submitLabel,
@@ -593,6 +660,7 @@ const FormulaEditor = ({
   organizationId: string;
   title: string;
   revisionMode: boolean;
+  visibilityLocked?: boolean;
   state: EditorState;
   busy: boolean;
   submitLabel: string;
@@ -623,7 +691,7 @@ const FormulaEditor = ({
         Name
         <input
           value={state.name}
-          disabled={revisionMode}
+          disabled={revisionMode || visibilityLocked}
           onChange={(event) => onChange({ ...state, name: event.target.value })}
         />
       </label>

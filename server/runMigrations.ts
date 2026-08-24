@@ -188,6 +188,7 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // runtime pricing dependency. Verify the physical domain rather than
   // trusting the migration ledger alone.
   { type: "table_exists", table: "v2_formula_identities", label: "v2_formula_identities table" },
+  { type: "column_exists", table: "v2_formula_identities", column: "scope_product_id", label: "Formula identity Product scope column" },
   { type: "table_exists", table: "formula_revisions", label: "formula_revisions table" },
   { type: "table_exists", table: "v2_product_version_formula_revision_bindings", label: "v2_product_version_formula_revision_bindings table" },
   { type: "enum_value_exists", enumType: "v2_formula_visibility", value: "product_scoped", label: "Formula visibility supports product_scoped" },
@@ -196,12 +197,15 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "enum_value_exists", enumType: "v2_formula_status", value: "inactive", label: "Formula status supports inactive" },
   { type: "enum_value_exists", enumType: "v2_formula_status", value: "archived", label: "Formula status supports archived" },
   { type: "index_exists", index: "v2_formula_identities_catalog_idx", label: "v2_formula_identities catalog index" },
+  { type: "index_exists", index: "v2_formula_identities_scope_product_idx", label: "Formula Product scope index" },
   { type: "index_exists", index: "formula_revisions_formula_idx", label: "formula_revisions formula index" },
   { type: "index_exists", index: "v2_product_version_formula_revision_formula_idx", label: "ProductVersion Formula revision binding index" },
   { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_name_uidx", label: "Formula identity tenant/name uniqueness" },
   { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_pkey", label: "Formula identity primary key" },
   { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_id_org_uidx", label: "Formula identity tenant composite identity uniqueness" },
   { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_current_revision_tenant_fk", label: "Formula identity current revision tenant foreign key" },
+  { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_scope_product_tenant_fk", label: "Formula identity Product scope tenant foreign key" },
+  { type: "constraint_exists", table: "v2_formula_identities", constraint: "v2_formula_identities_visibility_scope_chk", label: "Formula visibility and Product scope consistency" },
   { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_number_chk", label: "Formula revision number check" },
   { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_pkey", label: "Formula revision primary key" },
   { type: "constraint_exists", table: "formula_revisions", constraint: "formula_revisions_expression_chk", label: "Formula revision expression check" },

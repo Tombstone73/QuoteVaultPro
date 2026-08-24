@@ -1,5 +1,23 @@
 export type ProductLocation = Readonly<Record<string, never>>;
-export type ProductBuilderLocation = Readonly<{ productId?: string; newProduct?: true }>;
+export type FormulaAuthoringIntent = "new" | "revise";
+/**
+ * This is navigation context only.  It is deliberately limited to stable IDs
+ * and an internal intent: the server still authorizes Formula ownership and
+ * the canonical Draft binding mutation still authorizes adoption.
+ */
+export type FormulaAuthoringContext = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  intent: FormulaAuthoringIntent;
+  formulaId?: string;
+}>;
+export type ProductBuilderLocation = Readonly<{
+  productId?: string;
+  newProduct?: true;
+  /** A Formula screen may request that the Builder present this revision for
+   * explicit adoption. It is not a binding instruction. */
+  formulaReturn?: Readonly<{ formulaId: string; formulaRevisionId: string }>;
+}>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
 export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
@@ -37,13 +55,67 @@ export const legacyProductEditorRedirect = (
   if (parts.length === 3 && parts[2] === "edit") return productBuilderPath(id);
   return null;
 };
-export const readProductBuilderLocation = (pathname = window.location.pathname): ProductBuilderLocation | null => {
+const searchParams = (search: string) => new URLSearchParams(search.startsWith("?") ? search : `?${search}`);
+const queryId = (params: URLSearchParams, name: string): string | undefined => {
+  const value = params.get(name);
+  return value ? productId(value) : undefined;
+};
+
+export const readFormulaAuthoringContext = (
+  pathname = typeof window === "undefined" ? "" : window.location.pathname,
+  search = typeof window === "undefined" ? "" : window.location.search,
+): FormulaAuthoringContext | null => {
+  if (pathname !== "/formulas") return null;
+  const params = searchParams(search);
+  const product = queryId(params, "product");
+  const draft = queryId(params, "draft");
+  const intent = params.get("formulaIntent");
+  const formula = queryId(params, "formula");
+  if (!product || !draft || (intent !== "new" && intent !== "revise")) return null;
+  if (intent === "revise" && !formula) return null;
+  return { productId: product, draftVersionId: draft, intent, ...(formula ? { formulaId: formula } : {}) };
+};
+
+export const formulaAuthoringPath = (context: FormulaAuthoringContext): string => {
+  const params = new URLSearchParams({
+    product: context.productId,
+    draft: context.draftVersionId,
+    formulaIntent: context.intent,
+  });
+  if (context.formulaId) params.set("formula", context.formulaId);
+  return `/formulas?${params.toString()}`;
+};
+export const pushFormulaAuthoringLocation = (context: FormulaAuthoringContext) =>
+  window.history.pushState({}, "", formulaAuthoringPath(context));
+
+export const readProductBuilderLocation = (
+  pathname = typeof window === "undefined" ? "" : window.location.pathname,
+  search = typeof window === "undefined" ? "" : window.location.search,
+): ProductBuilderLocation | null => {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "products" && parts[1] === "new") return { newProduct: true };
-  if (parts.length === 2 && parts[0] === "product-builder") return productId(parts[1]) ? { productId: productId(parts[1]) } : null;
+  if (parts.length === 2 && parts[0] === "product-builder") {
+    const id = productId(parts[1]);
+    if (!id) return null;
+    const params = searchParams(search);
+    const formulaId = queryId(params, "formula");
+    const formulaRevisionId = queryId(params, "formulaRevision");
+    const formulaReturn = params.get("formulaReturn") === "1" && formulaId && formulaRevisionId
+      ? { formulaId, formulaRevisionId }
+      : undefined;
+    return { productId: id, ...(formulaReturn ? { formulaReturn } : {}) };
+  }
   return null;
 };
-export const productBuilderPath = (id: string) => `/product-builder/${encodeURIComponent(id)}?draft=1`;
+export const productBuilderPath = (id: string, formulaReturn?: Readonly<{ formulaId: string; formulaRevisionId: string }>) => {
+  const params = new URLSearchParams({ draft: "1" });
+  if (formulaReturn) {
+    params.set("formulaReturn", "1");
+    params.set("formula", formulaReturn.formulaId);
+    params.set("formulaRevision", formulaReturn.formulaRevisionId);
+  }
+  return `/product-builder/${encodeURIComponent(id)}?${params.toString()}`;
+};
 export const pushProductBuilderLocation = (id: string) => window.history.pushState({}, "", productBuilderPath(id));
 /** Adopt a newly-created Product without leaving an obsolete /products/new
  * history entry behind. The Builder keeps its local Draft state until the
