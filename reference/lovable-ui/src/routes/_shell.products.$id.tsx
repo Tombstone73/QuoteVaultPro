@@ -27,7 +27,7 @@ function ProductDetail() {
         title={p.name}
         subtitle={`${p.category} · ${p.type}`}
         meta={<div className="mt-1.5 flex items-center gap-2"><Status value={p.active ? "Active" : "Inactive"} /><span className="num text-[12px] text-muted-foreground">{p.sku}</span></div>}
-        actions={<Button size="sm" variant="outline" className="h-8" asChild><Link to="/product-builder">Edit in Builder</Link></Button>}
+        actions={<Button size="sm" variant="outline" className="h-8" asChild><Link to="/product-builder" search={{ product: p.id }}>Edit Product</Link></Button>}
       />
       <div className="grid gap-4 lg:grid-cols-3">
         <Panel title="Pricing">

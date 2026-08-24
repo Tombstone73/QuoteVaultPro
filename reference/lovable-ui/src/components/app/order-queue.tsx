@@ -16,6 +16,7 @@ export function QueueToolbarToggles({ onExpandAll, onCollapseAll }: { onExpandAl
     </div>
   );
 }
+
 export function AggregateChip({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "ok" | "warn" | "late" | "info" }) {
   const tones: Record<string, string> = {
     neutral: "border-border text-muted-foreground",
@@ -127,3 +128,4 @@ export function LineRow({
     </div>
   );
 }
+

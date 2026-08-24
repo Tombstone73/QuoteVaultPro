@@ -16,8 +16,10 @@ import { Route as ShellArtworkRouteImport } from './routes/_shell.artwork'
 import { Route as ShellAssistantRouteImport } from './routes/_shell.assistant'
 import { Route as ShellBugsRouteImport } from './routes/_shell.bugs'
 import { Route as ShellCommunicationsRouteImport } from './routes/_shell.communications'
+import { Route as ShellContactsRouteImport } from './routes/_shell.contacts'
 import { Route as ShellCustomersRouteImport } from './routes/_shell.customers'
 import { Route as ShellDesignRouteImport } from './routes/_shell.design'
+import { Route as ShellFormulaLibraryRouteImport } from './routes/_shell.formula-library'
 import { Route as ShellFulfillmentRouteImport } from './routes/_shell.fulfillment'
 import { Route as ShellInboundRouteImport } from './routes/_shell.inbound'
 import { Route as ShellIntegrationsRouteImport } from './routes/_shell.integrations'
@@ -40,8 +42,12 @@ import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellShippingRouteImport } from './routes/_shell.shipping'
 import { Route as ShellUsersRouteImport } from './routes/_shell.users'
 import { Route as StorefrontSlugRouteImport } from './routes/storefront.$slug'
+import { Route as ShellContactsIndexRouteImport } from './routes/_shell.contacts.index'
+import { Route as ShellContactsIdRouteImport } from './routes/_shell.contacts.$id'
 import { Route as ShellCustomersIndexRouteImport } from './routes/_shell.customers.index'
 import { Route as ShellCustomersIdRouteImport } from './routes/_shell.customers.$id'
+import { Route as ShellFormulaLibraryIndexRouteImport } from './routes/_shell.formula-library.index'
+import { Route as ShellFormulaLibraryIdRouteImport } from './routes/_shell.formula-library.$id'
 import { Route as ShellInvoicesIndexRouteImport } from './routes/_shell.invoices.index'
 import { Route as ShellInvoicesIdRouteImport } from './routes/_shell.invoices.$id'
 import { Route as ShellProductsIdRouteImport } from './routes/_shell.products.$id'
@@ -81,6 +87,11 @@ const ShellCommunicationsRoute = ShellCommunicationsRouteImport.update({
   path: '/communications',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellContactsRoute = ShellContactsRouteImport.update({
+  id: '/contacts',
+  path: '/contacts',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellCustomersRoute = ShellCustomersRouteImport.update({
   id: '/customers',
   path: '/customers',
@@ -89,6 +100,11 @@ const ShellCustomersRoute = ShellCustomersRouteImport.update({
 const ShellDesignRoute = ShellDesignRouteImport.update({
   id: '/design',
   path: '/design',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellFormulaLibraryRoute = ShellFormulaLibraryRouteImport.update({
+  id: '/formula-library',
+  path: '/formula-library',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellFulfillmentRoute = ShellFulfillmentRouteImport.update({
@@ -201,6 +217,16 @@ const StorefrontSlugRoute = StorefrontSlugRouteImport.update({
   path: '/storefront/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ShellContactsIndexRoute = ShellContactsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ShellContactsRoute,
+} as any)
+const ShellContactsIdRoute = ShellContactsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ShellContactsRoute,
+} as any)
 const ShellCustomersIndexRoute = ShellCustomersIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -210,6 +236,17 @@ const ShellCustomersIdRoute = ShellCustomersIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => ShellCustomersRoute,
+} as any)
+const ShellFormulaLibraryIndexRoute =
+  ShellFormulaLibraryIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => ShellFormulaLibraryRoute,
+  } as any)
+const ShellFormulaLibraryIdRoute = ShellFormulaLibraryIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ShellFormulaLibraryRoute,
 } as any)
 const ShellInvoicesIndexRoute = ShellInvoicesIndexRouteImport.update({
   id: '/',
@@ -239,8 +276,10 @@ export interface FileRoutesByFullPath {
   '/assistant': typeof ShellAssistantRoute
   '/bugs': typeof ShellBugsRoute
   '/communications': typeof ShellCommunicationsRoute
+  '/contacts': typeof ShellContactsRouteWithChildren
   '/customers': typeof ShellCustomersRouteWithChildren
   '/design': typeof ShellDesignRoute
+  '/formula-library': typeof ShellFormulaLibraryRouteWithChildren
   '/fulfillment': typeof ShellFulfillmentRoute
   '/inbound': typeof ShellInboundRoute
   '/integrations': typeof ShellIntegrationsRoute
@@ -263,11 +302,15 @@ export interface FileRoutesByFullPath {
   '/shipping': typeof ShellShippingRoute
   '/users': typeof ShellUsersRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
+  '/contacts/$id': typeof ShellContactsIdRoute
   '/customers/$id': typeof ShellCustomersIdRoute
+  '/formula-library/$id': typeof ShellFormulaLibraryIdRoute
   '/invoices/$id': typeof ShellInvoicesIdRoute
   '/products/$id': typeof ShellProductsIdRoute
   '/sales/$id': typeof ShellSalesIdRoute
+  '/contacts/': typeof ShellContactsIndexRoute
   '/customers/': typeof ShellCustomersIndexRoute
+  '/formula-library/': typeof ShellFormulaLibraryIndexRoute
   '/invoices/': typeof ShellInvoicesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -299,11 +342,15 @@ export interface FileRoutesByTo {
   '/users': typeof ShellUsersRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
   '/': typeof ShellIndexRoute
+  '/contacts/$id': typeof ShellContactsIdRoute
   '/customers/$id': typeof ShellCustomersIdRoute
+  '/formula-library/$id': typeof ShellFormulaLibraryIdRoute
   '/invoices/$id': typeof ShellInvoicesIdRoute
   '/products/$id': typeof ShellProductsIdRoute
   '/sales/$id': typeof ShellSalesIdRoute
+  '/contacts': typeof ShellContactsIndexRoute
   '/customers': typeof ShellCustomersIndexRoute
+  '/formula-library': typeof ShellFormulaLibraryIndexRoute
   '/invoices': typeof ShellInvoicesIndexRoute
 }
 export interface FileRoutesById {
@@ -314,8 +361,10 @@ export interface FileRoutesById {
   '/_shell/assistant': typeof ShellAssistantRoute
   '/_shell/bugs': typeof ShellBugsRoute
   '/_shell/communications': typeof ShellCommunicationsRoute
+  '/_shell/contacts': typeof ShellContactsRouteWithChildren
   '/_shell/customers': typeof ShellCustomersRouteWithChildren
   '/_shell/design': typeof ShellDesignRoute
+  '/_shell/formula-library': typeof ShellFormulaLibraryRouteWithChildren
   '/_shell/fulfillment': typeof ShellFulfillmentRoute
   '/_shell/inbound': typeof ShellInboundRoute
   '/_shell/integrations': typeof ShellIntegrationsRoute
@@ -339,11 +388,15 @@ export interface FileRoutesById {
   '/_shell/users': typeof ShellUsersRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
   '/_shell/': typeof ShellIndexRoute
+  '/_shell/contacts/$id': typeof ShellContactsIdRoute
   '/_shell/customers/$id': typeof ShellCustomersIdRoute
+  '/_shell/formula-library/$id': typeof ShellFormulaLibraryIdRoute
   '/_shell/invoices/$id': typeof ShellInvoicesIdRoute
   '/_shell/products/$id': typeof ShellProductsIdRoute
   '/_shell/sales/$id': typeof ShellSalesIdRoute
+  '/_shell/contacts/': typeof ShellContactsIndexRoute
   '/_shell/customers/': typeof ShellCustomersIndexRoute
+  '/_shell/formula-library/': typeof ShellFormulaLibraryIndexRoute
   '/_shell/invoices/': typeof ShellInvoicesIndexRoute
 }
 export interface FileRouteTypes {
@@ -355,8 +408,10 @@ export interface FileRouteTypes {
     | '/assistant'
     | '/bugs'
     | '/communications'
+    | '/contacts'
     | '/customers'
     | '/design'
+    | '/formula-library'
     | '/fulfillment'
     | '/inbound'
     | '/integrations'
@@ -379,11 +434,15 @@ export interface FileRouteTypes {
     | '/shipping'
     | '/users'
     | '/storefront/$slug'
+    | '/contacts/$id'
     | '/customers/$id'
+    | '/formula-library/$id'
     | '/invoices/$id'
     | '/products/$id'
     | '/sales/$id'
+    | '/contacts/'
     | '/customers/'
+    | '/formula-library/'
     | '/invoices/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -415,11 +474,15 @@ export interface FileRouteTypes {
     | '/users'
     | '/storefront/$slug'
     | '/'
+    | '/contacts/$id'
     | '/customers/$id'
+    | '/formula-library/$id'
     | '/invoices/$id'
     | '/products/$id'
     | '/sales/$id'
+    | '/contacts'
     | '/customers'
+    | '/formula-library'
     | '/invoices'
   id:
     | '__root__'
@@ -429,8 +492,10 @@ export interface FileRouteTypes {
     | '/_shell/assistant'
     | '/_shell/bugs'
     | '/_shell/communications'
+    | '/_shell/contacts'
     | '/_shell/customers'
     | '/_shell/design'
+    | '/_shell/formula-library'
     | '/_shell/fulfillment'
     | '/_shell/inbound'
     | '/_shell/integrations'
@@ -454,11 +519,15 @@ export interface FileRouteTypes {
     | '/_shell/users'
     | '/storefront/$slug'
     | '/_shell/'
+    | '/_shell/contacts/$id'
     | '/_shell/customers/$id'
+    | '/_shell/formula-library/$id'
     | '/_shell/invoices/$id'
     | '/_shell/products/$id'
     | '/_shell/sales/$id'
+    | '/_shell/contacts/'
     | '/_shell/customers/'
+    | '/_shell/formula-library/'
     | '/_shell/invoices/'
   fileRoutesById: FileRoutesById
 }
@@ -518,6 +587,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellCommunicationsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/contacts': {
+      id: '/_shell/contacts'
+      path: '/contacts'
+      fullPath: '/contacts'
+      preLoaderRoute: typeof ShellContactsRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/customers': {
       id: '/_shell/customers'
       path: '/customers'
@@ -530,6 +606,13 @@ declare module '@tanstack/react-router' {
       path: '/design'
       fullPath: '/design'
       preLoaderRoute: typeof ShellDesignRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/formula-library': {
+      id: '/_shell/formula-library'
+      path: '/formula-library'
+      fullPath: '/formula-library'
+      preLoaderRoute: typeof ShellFormulaLibraryRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/fulfillment': {
@@ -686,6 +769,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StorefrontSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_shell/contacts/': {
+      id: '/_shell/contacts/'
+      path: '/'
+      fullPath: '/contacts/'
+      preLoaderRoute: typeof ShellContactsIndexRouteImport
+      parentRoute: typeof ShellContactsRoute
+    }
+    '/_shell/contacts/$id': {
+      id: '/_shell/contacts/$id'
+      path: '/$id'
+      fullPath: '/contacts/$id'
+      preLoaderRoute: typeof ShellContactsIdRouteImport
+      parentRoute: typeof ShellContactsRoute
+    }
     '/_shell/customers/': {
       id: '/_shell/customers/'
       path: '/'
@@ -699,6 +796,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/customers/$id'
       preLoaderRoute: typeof ShellCustomersIdRouteImport
       parentRoute: typeof ShellCustomersRoute
+    }
+    '/_shell/formula-library/': {
+      id: '/_shell/formula-library/'
+      path: '/'
+      fullPath: '/formula-library/'
+      preLoaderRoute: typeof ShellFormulaLibraryIndexRouteImport
+      parentRoute: typeof ShellFormulaLibraryRoute
+    }
+    '/_shell/formula-library/$id': {
+      id: '/_shell/formula-library/$id'
+      path: '/$id'
+      fullPath: '/formula-library/$id'
+      preLoaderRoute: typeof ShellFormulaLibraryIdRouteImport
+      parentRoute: typeof ShellFormulaLibraryRoute
     }
     '/_shell/invoices/': {
       id: '/_shell/invoices/'
@@ -731,6 +842,20 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ShellContactsRouteChildren {
+  ShellContactsIdRoute: typeof ShellContactsIdRoute
+  ShellContactsIndexRoute: typeof ShellContactsIndexRoute
+}
+
+const ShellContactsRouteChildren: ShellContactsRouteChildren = {
+  ShellContactsIdRoute: ShellContactsIdRoute,
+  ShellContactsIndexRoute: ShellContactsIndexRoute,
+}
+
+const ShellContactsRouteWithChildren = ShellContactsRoute._addFileChildren(
+  ShellContactsRouteChildren,
+)
+
 interface ShellCustomersRouteChildren {
   ShellCustomersIdRoute: typeof ShellCustomersIdRoute
   ShellCustomersIndexRoute: typeof ShellCustomersIndexRoute
@@ -744,6 +869,19 @@ const ShellCustomersRouteChildren: ShellCustomersRouteChildren = {
 const ShellCustomersRouteWithChildren = ShellCustomersRoute._addFileChildren(
   ShellCustomersRouteChildren,
 )
+
+interface ShellFormulaLibraryRouteChildren {
+  ShellFormulaLibraryIdRoute: typeof ShellFormulaLibraryIdRoute
+  ShellFormulaLibraryIndexRoute: typeof ShellFormulaLibraryIndexRoute
+}
+
+const ShellFormulaLibraryRouteChildren: ShellFormulaLibraryRouteChildren = {
+  ShellFormulaLibraryIdRoute: ShellFormulaLibraryIdRoute,
+  ShellFormulaLibraryIndexRoute: ShellFormulaLibraryIndexRoute,
+}
+
+const ShellFormulaLibraryRouteWithChildren =
+  ShellFormulaLibraryRoute._addFileChildren(ShellFormulaLibraryRouteChildren)
 
 interface ShellInvoicesRouteChildren {
   ShellInvoicesIdRoute: typeof ShellInvoicesIdRoute
@@ -777,8 +915,10 @@ interface ShellRouteChildren {
   ShellAssistantRoute: typeof ShellAssistantRoute
   ShellBugsRoute: typeof ShellBugsRoute
   ShellCommunicationsRoute: typeof ShellCommunicationsRoute
+  ShellContactsRoute: typeof ShellContactsRouteWithChildren
   ShellCustomersRoute: typeof ShellCustomersRouteWithChildren
   ShellDesignRoute: typeof ShellDesignRoute
+  ShellFormulaLibraryRoute: typeof ShellFormulaLibraryRouteWithChildren
   ShellFulfillmentRoute: typeof ShellFulfillmentRoute
   ShellInboundRoute: typeof ShellInboundRoute
   ShellIntegrationsRoute: typeof ShellIntegrationsRoute
@@ -810,8 +950,10 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellAssistantRoute: ShellAssistantRoute,
   ShellBugsRoute: ShellBugsRoute,
   ShellCommunicationsRoute: ShellCommunicationsRoute,
+  ShellContactsRoute: ShellContactsRouteWithChildren,
   ShellCustomersRoute: ShellCustomersRouteWithChildren,
   ShellDesignRoute: ShellDesignRoute,
+  ShellFormulaLibraryRoute: ShellFormulaLibraryRouteWithChildren,
   ShellFulfillmentRoute: ShellFulfillmentRoute,
   ShellInboundRoute: ShellInboundRoute,
   ShellIntegrationsRoute: ShellIntegrationsRoute,

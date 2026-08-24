@@ -53,6 +53,18 @@ export interface Product {
   recipe: { material: string; rule: string; waste: string }[];
 }
 
+export type ArtSide = "Single" | "Front" | "Back";
+
+/** Artwork attached to a line item. Sales displays it; the Artwork module owns versions/relationships. */
+export interface LineArt {
+  id: string;
+  name: string;
+  side: ArtSide;
+  kind: "line" | "production";
+  addedBy?: string | undefined;
+  addedAt?: string | undefined;
+}
+
 export interface LineItem {
   id: string;
   productId: string;
@@ -70,6 +82,8 @@ export interface LineItem {
   pickedUp?: number | undefined;
   /** Note attached to this specific line item (distinct from order/customer notes). */
   notes?: string | undefined;
+  /** Artwork attached to this line item. Sales may add Line Art; Production Art is read-only here. */
+  art?: LineArt[] | undefined;
 }
 
 export interface HistoryEntry {
@@ -291,9 +305,15 @@ export const salesDocs: SalesDoc[] = [
     notes: "Susan will pick up in two visits. First 40 signs by Friday morning.",
     customerNotes: "Pickup at the front counter, ask for Susan Johnson. Bring the banner rolled, not folded.",
     lines: [
-      L({ id: "l4", productId: "p2", qty: 75, calcUnit: 12.6, sellUnit: 12.6, size: '24" × 18"', description: "4mm Coroplast Sign — Store Hours", options: [{ label: "Sides", value: "Single" }], routeStep: "Production", station: "Océ Arizona", pickedUp: 40 }),
-      L({ id: "l5", productId: "p1", qty: 6, calcUnit: 84, sellUnit: 78, overrideReason: "Reprint credit applied", overrideBy: "Angela", size: "3ft × 8ft", description: "13oz Banner — Grand Reopening", options: [{ label: "Hem", value: "All sides" }, { label: "Grommets", value: "Every 24in" }], routeStep: "Finishing", station: "Finishing Bench", pickedUp: 0 }),
-      L({ id: "l6", productId: "p3", qty: 500, calcUnit: 0.92, description: "Contour Cut Stickers — Logo 3in", options: [{ label: "Laminate", value: "Gloss" }], routeStep: "Prepress", station: "Roland", pickedUp: 0, artworkStatus: "Proof Pending" }),
+      L({ id: "l4", productId: "p2", qty: 75, calcUnit: 12.6, sellUnit: 12.6, size: '24" × 18"', description: "4mm Coroplast Sign — Store Hours", options: [{ label: "Sides", value: "Single" }], routeStep: "Production", station: "Océ Arizona", pickedUp: 40, art: [
+        { id: "a1", name: "delta-store-hours.pdf", side: "Single", kind: "line", addedBy: "Dale", addedAt: "Aug 12" },
+        { id: "a2", name: "print-ready-store-hours.pdf", side: "Single", kind: "production", addedBy: "Prepress", addedAt: "Aug 14" },
+      ] }),
+      L({ id: "l5", productId: "p1", qty: 6, calcUnit: 84, sellUnit: 78, overrideReason: "Reprint credit applied", overrideBy: "Angela", size: "3ft × 8ft", description: "13oz Banner — Grand Reopening", options: [{ label: "Hem", value: "All sides" }, { label: "Grommets", value: "Every 24in" }], artworkStatus: "Needs Artwork", routeStep: "Finishing", station: "Finishing Bench", pickedUp: 0 }),
+      L({ id: "l6", productId: "p3", qty: 500, calcUnit: 0.92, description: "Contour Cut Stickers — Logo 3in", options: [{ label: "Laminate", value: "Gloss" }, { label: "Sides", value: "Double" }], routeStep: "Prepress", station: "Roland", pickedUp: 0, artworkStatus: "Proof Pending", art: [
+        { id: "a3", name: "logo-3in-front.ai", side: "Front", kind: "line", addedBy: "Angela", addedAt: "Aug 13" },
+        { id: "a4", name: "logo-3in-back.ai", side: "Back", kind: "line", addedBy: "Angela", addedAt: "Aug 13" },
+      ] }),
     ],
     history: [
       { at: "Aug 12, 10:42 AM", who: "Susan", what: "Changed Contact and Due Date", kind: "edit" },

@@ -22,11 +22,11 @@ function ProductsPage() {
       <PageHeader
         title="Products"
         subtitle={`${products.length} configurable products`}
-        actions={<Button size="sm" className="h-8 gap-1.5" asChild><Link to="/product-builder"><Plus className="size-4" />New Product</Link></Button>}
+        actions={<Button size="sm" className="h-8 gap-1.5" asChild><Link to="/product-builder" search={{}}><Plus className="size-4" />New Product</Link></Button>}
       />
       <Panel dense>
         <table className="w-full border-collapse">
-          <thead><tr><th className={th}>Product</th><th className={th}>Category</th><th className={th}>Pricing</th><th className={th}>Route</th><th className={th}>SKU</th><th className={th}>Basis</th><th className={th + " text-right"}>Materials</th><th className={th}>Status</th></tr></thead>
+          <thead><tr><th className={th}>Product</th><th className={th}>Category</th><th className={th}>Pricing</th><th className={th}>Route</th><th className={th}>SKU</th><th className={th}>Basis</th><th className={th + " text-right"}>Materials</th><th className={th}>Status</th><th className={th + " text-right"}>Edit</th></tr></thead>
           <tbody>
             {products.map((p) => (
               <tr key={p.id} className="row-h border-t border-border hover:bg-accent/60">
@@ -42,6 +42,9 @@ function ProductsPage() {
                 <td className={td + " num text-muted-foreground"}>{p.sku}</td><td className={td + " text-muted-foreground"}>{p.basis}</td>
                 <td className={td + " num text-right"}>{p.recipe.length}</td>
                 <td className={td}><Status value={p.active ? "Active" : "Inactive"} /></td>
+                <td className={td + " text-right"}>
+                  <Link to="/product-builder" search={{ product: p.id }} className="text-[12px] text-primary hover:underline">Edit</Link>
+                </td>
               </tr>
             ))}
           </tbody>

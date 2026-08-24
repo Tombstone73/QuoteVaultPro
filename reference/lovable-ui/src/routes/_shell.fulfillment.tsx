@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input";
 import { fulfillOrders, summarize, type FulfillLine } from "@/lib/mock/fulfillment";
 
 export const Route = createFileRoute("/_shell/fulfillment")({
+  validateSearch: (s: Record<string, unknown>): { order?: string } => ({
+    ...(typeof s["order"] === "string" ? { order: s["order"] as string } : {}),
+  }),
   head: () => ({
     meta: [
       { title: "Fulfillment — PrintersHero V2" },
@@ -20,10 +23,13 @@ export const Route = createFileRoute("/_shell/fulfillment")({
 });
 
 function FulfillmentPage() {
+  // Direct record navigation: /fulfillment?order=10671 opens straight on that order.
+  const { order: focusOrder } = Route.useSearch();
+  const focused = fulfillOrders.find((o) => o.order === focusOrder);
   const [orders, setOrders] = useState(fulfillOrders);
   const [q, setQ] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([fulfillOrders[0]!.order]));
-  const [activeLine, setActiveLine] = useState<string>(fulfillOrders[0]!.lines[0]!.id);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([(focused ?? fulfillOrders[0]!).order]));
+  const [activeLine, setActiveLine] = useState<string>((focused ?? fulfillOrders[0]!).lines[0]!.id);
 
   const list = useMemo(() => {
     const t = q.trim().toLowerCase();

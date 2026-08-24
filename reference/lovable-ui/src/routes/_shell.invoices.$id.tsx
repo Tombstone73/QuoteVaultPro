@@ -1,5 +1,5 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/lib/app-store";
 import { Field, Panel, Status, TxType, td, th } from "@/components/app/primitives";
@@ -21,6 +21,9 @@ import {
 const METHODS = ["Cash", "Check", "ACH", "Card / Electronic"];
 
 export const Route = createFileRoute("/_shell/invoices/$id")({
+  validateSearch: (s: Record<string, unknown>): { pay?: boolean } => (
+    s["pay"] === true || s["pay"] === "true" ? { pay: true } : {}
+  ),
   head: () => ({
     meta: [
       { title: "Invoice — PrintersHero V2" },
@@ -43,8 +46,10 @@ interface LedgerRow {
   balanceAfter: number;
   payment?: Payment | undefined;
 }
+
 function InvoiceDetail() {
   const { id } = Route.useParams();
+  const { pay } = Route.useSearch();
   const { getInvoice, docs, recordPayment, recordRefund, issueInvoice } = useApp();
   const inv = getInvoice(id);
   const [payOpen, setPayOpen] = useState(false);
@@ -83,6 +88,12 @@ function InvoiceDetail() {
 
   const openPay = () => { setAmount(balance.toFixed(2)); setPayRef(""); setPayOpen(true); };
   const openRefund = (p: Payment) => { setRefundOf(p); setRefundAmount(refundableOf(p).toFixed(2)); };
+
+  // "Make Payment" from the Order workspace links here — payment stays owned by Billing.
+  useEffect(() => {
+    if (pay) { setAmount(balance.toFixed(2)); setPayRef(""); setPayOpen(true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pay]);
 
   return (
     <div className="space-y-4 p-4">
@@ -283,3 +294,4 @@ function FinCell({ label, value, tone }: { label: string; value: string; tone?: 
     </div>
   );
 }
+

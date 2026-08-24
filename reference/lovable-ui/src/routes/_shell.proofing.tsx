@@ -24,6 +24,10 @@ const CURRENT_USER = "Dale";
 type RailKey = "feedback" | "versions" | "history" | "activity";
 
 export const Route = createFileRoute("/_shell/proofing")({
+  validateSearch: (s: Record<string, unknown>): { order?: string; job?: string } => ({
+    ...(typeof s["order"] === "string" ? { order: s["order"] as string } : {}),
+    ...(typeof s["job"] === "string" ? { job: s["job"] as string } : {}),
+  }),
   head: () => ({
     meta: [
       { title: "Proofing Workstation — PrintersHero V2" },
@@ -124,8 +128,11 @@ function VersionRow({
 function ProofingPage() {
   const groups = useMemo(() => groupProofsByOrder(proofJobs), []);
   const [q, setQ] = useState("");
-  const [openOrders, setOpenOrders] = useState<Record<string, boolean>>({ [groups[0]!.order]: true });
-  const [selectedId, setSelectedId] = useState(proofJobs[0]!.id);
+  // Direct record navigation: /proofing?order=…&job=… lands on the exact proof.
+  const { order: focusOrder, job: focusJob } = Route.useSearch();
+  const initial = proofJobs.find((j) => j.id === focusJob) ?? proofJobs.find((j) => j.order === focusOrder) ?? proofJobs[0]!;
+  const [openOrders, setOpenOrders] = useState<Record<string, boolean>>({ [initial.order]: true });
+  const [selectedId, setSelectedId] = useState(initial.id);
   const job: ProofJob = useMemo(() => proofJobs.find((j) => j.id === selectedId)!, [selectedId]);
 
   const [viewVersionId, setViewVersionId] = useState(job.currentVersionId);

@@ -15,6 +15,10 @@ import {
 import { fillerJobs, jobsFromDocs, nextActionLabel } from "@/lib/mock/production";
 
 export const Route = createFileRoute("/_shell/production")({
+  validateSearch: (s: Record<string, unknown>): { order?: string; station?: string } => ({
+    ...(typeof s["order"] === "string" ? { order: s["order"] as string } : {}),
+    ...(typeof s["station"] === "string" ? { station: s["station"] as string } : {}),
+  }),
   head: () => ({
     meta: [
       { title: "Production — PrintersHero V2" },
@@ -30,8 +34,10 @@ type View = "overview" | "board" | "calendar" | "stations";
 
 function ProductionPage() {
   const { docs, advanceLine } = useApp();
-  const [view, setView] = useState<View>("overview");
-  const [station, setStation] = useState<string | null>(null);
+  // Direct record navigation from the Order workspace: /production?order=…&station=…
+  const { order: focusOrder, station: focusStation } = Route.useSearch();
+  const [view, setView] = useState<View>(focusStation ? "stations" : focusOrder ? "board" : "overview");
+  const [station, setStation] = useState<string | null>(focusStation ?? null);
 
   const jobs = docs.filter((d) => d.documentType === "Order").flatMap((d) => d.lines.map((l) => ({ d, l })));
   const prodJobs = useMemo(() => [...jobsFromDocs(docs), ...fillerJobs()], [docs]);

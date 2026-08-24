@@ -2,9 +2,9 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   Activity, Bell, Bot, Box, Boxes, Bug, Building2, ChevronDown, CreditCard, FileText,
-  Gauge, Grid2x2, Image, Layers, LayoutDashboard, Link2, Package, Palette, PanelLeftClose, PenTool,
+  Gauge, Grid2x2, Image, LayoutDashboard, Link2, Package, Palette, PanelLeftClose, PenTool,
   PanelLeft, Printer, Receipt, Route as RouteIcon, Ruler, ScrollText, Settings, ShieldCheck,
-  ShoppingCart, Stamp, Truck, Users, Wallet, Warehouse,
+  ShoppingCart, Sigma, Stamp, Truck, Users, Wallet, Warehouse,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/lib/app-store";
@@ -19,19 +19,25 @@ const SECTIONS: Section[] = [
       { to: "/quotes", label: "Quotes", icon: FileText },
       { to: "/orders", label: "Orders", icon: ShoppingCart },
       { to: "/customers", label: "Customers", icon: Building2 },
+      { to: "/contacts", label: "Contacts", icon: Users },
       { to: "/inbound", label: "Inbound Orders", icon: Bell },
     ],
   },
   {
     id: "products", label: "Products", items: [
       { to: "/products", label: "Products", icon: Package },
-      { to: "/product-builder", label: "Product Builder", icon: Layers },
       { to: "/nesting", label: "Nesting", icon: Grid2x2 },
       { to: "/materials", label: "Materials", icon: Boxes },
       { to: "/inventory", label: "Inventory", icon: Warehouse },
       { to: "/procurement", label: "Procurement", icon: Box },
     ],
   },
+  {
+    id: "pricing", label: "Pricing", items: [
+      { to: "/formula-library", label: "Formula Library", icon: Sigma },
+    ],
+  },
+
   {
     id: "ops", label: "Operations", items: [
       { to: "/artwork", label: "Artwork", icon: Image },
