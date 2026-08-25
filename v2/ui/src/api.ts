@@ -2045,12 +2045,23 @@ export const artworkApi = {
       items: readonly (ArtworkOrderProjection &
         Readonly<{
           orderNumber: string;
+          customerId?: string;
           customerDisplayName: string;
           lineDescription: string;
         }>)[];
     }>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace${query ? `?q=${encodeURIComponent(query)}` : ""}`,
     ),
+  detail: (organizationId: string, artworkFileId: string) =>
+    request<Readonly<{
+      file: ArtworkOrderProjection["file"];
+      assignments: readonly (ArtworkOrderProjection["assignment"] & Readonly<{
+        orderNumber: string;
+        customerId?: string;
+        customerDisplayName: string;
+        lineDescription: string;
+      }>)[];
+    }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace/files/${encodeURIComponent(artworkFileId)}`),
   forOrder: (organizationId: string, orderId: string) =>
     request<readonly ArtworkOrderProjection[]>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`,

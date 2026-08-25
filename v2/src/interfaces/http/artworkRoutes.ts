@@ -5,7 +5,7 @@ import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { ArtworkFileId } from "../../modules/shared/commercialValues.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
-import type { ArtworkWorkspaceItem } from "../../../infrastructure/artwork/postgresArtworkWorkspaceReads.js";
+import type { ArtworkWorkspaceDetail, ArtworkWorkspaceItem } from "../../../infrastructure/artwork/postgresArtworkWorkspaceReads.js";
 import type { ArtworkUploadService } from "../../../infrastructure/artwork/artworkUploadService.js";
 import busboy from "busboy";
 
@@ -14,7 +14,7 @@ export interface ArtworkHttpService {
   assign(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
 }
 export interface VerifiedV2ArtworkPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
-export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
+export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]>; get(organizationId: string, artworkFileId: string): Promise<ArtworkWorkspaceDetail | null> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
 
 const maximumUploadBytes = 10 * 1024 * 1024;
 type MultipartArtworkCommand = Readonly<{ businessRequestId: string; orderId: string; orderLineId: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; filename: string; contentType: string; bytes: Buffer }>;
@@ -77,6 +77,17 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
         return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Artwork access is unavailable." } });
       const query = typeof request.query.q === "string" ? request.query.q : "";
       return response.status(200).json({ ok: true, data: { items: await dependencies.workspace.list(organizationId, query) } });
+    } catch { return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Authenticated access is required." } }); }
+  });
+  router.get("/workspace/files/:artworkFileId", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      if (!new AuthorityPolicy().decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed)
+        return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Artwork access is unavailable." } });
+      const detail = await dependencies.workspace.get(organizationId, request.params.artworkFileId);
+      if (!detail) return response.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Artwork is unavailable." } });
+      return response.status(200).json({ ok: true, data: detail });
     } catch { return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Authenticated access is required." } }); }
   });
   router.get("/orders/:orderId", async (request, response) => {

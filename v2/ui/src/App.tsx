@@ -64,6 +64,7 @@ import {
   productBuilderPath,
   productPath,
   readFormulaAuthoringContext,
+  pushArtworkFileLocation,
   pushArtworkLocation,
   pushContactLocation,
   pushCustomerLocation,
@@ -145,6 +146,7 @@ export const App = ({
   >();
   const [artworkOrderId, setArtworkOrderId] = useState("");
   const [artworkLineId, setArtworkLineId] = useState("");
+  const [artworkFileId, setArtworkFileId] = useState("");
   const [proofWorkId, setProofWorkId] = useState("");
   const [proofOrderId, setProofOrderId] = useState("");
   const [proofLineId, setProofLineId] = useState("");
@@ -282,6 +284,7 @@ export const App = ({
       else if (location.page === "production")
         setProductionStation(location.station);
       else if (location.page === "artwork") {
+        setArtworkFileId(location.artworkFileId ?? "");
         setArtworkOrderId(location.orderId ?? "");
         setArtworkLineId(location.lineId ?? "");
       } else if (location.page === "proofing") {
@@ -341,6 +344,11 @@ export const App = ({
     if (nextPage === "production") {
       pushProductionLocation();
       setProductionStation(undefined);
+    }
+    if (nextPage === "artwork") {
+      setArtworkFileId("");
+      setArtworkOrderId("");
+      setArtworkLineId("");
     }
     if (
       nextPage === "routing" ||
@@ -512,8 +520,31 @@ export const App = ({
           organizationId={organizationId}
           sessionScope={sessionScope}
           canView={bootstrap.data?.capabilities.artworkView === true}
+          artworkFileId={artworkFileId || undefined}
           orderId={artworkOrderId || undefined}
           lineId={artworkLineId || undefined}
+          openArtwork={(id) => {
+            pushArtworkFileLocation(id);
+            setArtworkFileId(id);
+            setArtworkOrderId("");
+            setArtworkLineId("");
+          }}
+          openCustomer={(id) => {
+            pushCustomerLocation(id);
+            setCustomerId(id);
+            setPage("customers");
+          }}
+          openOrder={(id) => {
+            pushOrderLocation(id);
+            setOrderId(id);
+            setPage("orders");
+          }}
+          backToCatalog={() => {
+            pushArtworkLocation();
+            setArtworkFileId("");
+            setArtworkOrderId("");
+            setArtworkLineId("");
+          }}
         />
       ) : page === "proofing" ? (
         <ProofingWorkspace
