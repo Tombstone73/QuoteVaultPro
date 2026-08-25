@@ -26,6 +26,14 @@ const optionalNumber = (value: string) => { const number = Number(value.trim());
  * an explicitly privileged administration projection, never a UI filter. */
 export const formulaLibraryListInput = (query: string, productId: string | undefined, canAdministerProductScoped: boolean) => ({ query, includeInactive: true, ...(productId ? { productId } : canAdministerProductScoped ? { includeProductScoped: true } : {}) });
 
+/** A Builder revise route is backed by the same Product-eligibility list as
+ * the picker.  Do not turn its first render into a definitive unavailable
+ * result while that canonical list is still in flight. */
+export const resolveEligibleFormula = (formulas: readonly FormulaDomainListEntry[] | undefined, formulaId: string) =>
+  formulas?.find((formula) => formula.formulaId === formulaId);
+export const formulaDetailResolution = (selected: FormulaDomainListEntry | undefined, selectedId: string, eligibilityFetching: boolean): "ready" | "loading" | "unavailable" =>
+  selected ? "ready" : selectedId && eligibilityFetching ? "loading" : "unavailable";
+
 /** Protect the last server-confirmed tester result from stale responses. */
 export const acceptsFormulaTesterResponse = (currentRequestId: number, responseRequestId: number) => currentRequestId === responseRequestId;
 
@@ -54,7 +62,8 @@ export const FormulaLibraryWorkspace = ({ organizationId, sessionScope, canEdit,
   });
   const formulaRows = administrationFormulas.data ?? formulas.data;
   const visible = useMemo(() => (formulaRows ?? []).filter((formula) => statusFilter === "all" || formula.status === statusFilter), [formulaRows, statusFilter]);
-  const selected = useMemo(() => formulaRows?.find((formula) => formula.formulaId === selectedId), [formulaRows, selectedId]);
+  const selected = useMemo(() => resolveEligibleFormula(formulaRows, selectedId), [formulaRows, selectedId]);
+  const detailResolution = formulaDetailResolution(selected, selectedId, formulas.isFetching);
   const revisions = useQuery({ queryKey: [...formulaKey(organizationId), selected?.formulaId ?? "", "revisions", sessionScope], queryFn: () => formulaApi.revisions(organizationId, selected!.formulaId), enabled: Boolean(organizationId && sessionScope && selected?.formulaId) });
   const usage = useQuery({ queryKey: [...formulaKey(organizationId), selected?.formulaId ?? "", "usage", sessionScope], queryFn: () => formulaApi.usage(organizationId, selected!.formulaId), enabled: Boolean(organizationId && sessionScope && selected?.formulaId) });
   const refresh = () => queryClient.invalidateQueries({ queryKey: formulaKey(organizationId) });
@@ -82,7 +91,8 @@ export const FormulaLibraryWorkspace = ({ organizationId, sessionScope, canEdit,
     <div className="v2-formula-port-filters"><div className="v2-formula-segmented" role="tablist"><button type="button" role="tab" aria-selected={tab === "mine"} className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>My formulas ({formulaRows?.length ?? 0})</button><button type="button" role="tab" aria-selected={tab === "shared"} className={tab === "shared" ? "active" : ""} onClick={() => setTab("shared")}>Shared formulas</button></div><label className="v2-formula-search"><Search /><span className="sr-only">Search formulas</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search formulas" /></label>{tab === "mine" && <label className="v2-formula-select">Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option></select><ChevronDown /></label>}</div>
     {tab === "shared" ? <SharedComingSoon /> : formulas.isLoading ? <Panel><Empty title="Loading formulas…" /></Panel> : formulas.error ? <div className="notice error">{errorText(formulas.error)}</div> : !visible.length ? <Panel><Empty title="No formulas match these filters" hint="Clear the search or filters, or create a new formula." /></Panel> : <FormulaTable formulas={visible} onOpen={open} onPromote={(formula) => promote.mutate(formula)} />}
   </section>;
-  if (screen === "detail" && !selected) return <section className="v2-formula-port"><Panel><Empty title="Formula not found" hint="It may no longer be available to this Product Draft." /><button className="v2-formula-secondary" type="button" onClick={() => setScreen("index")}><ArrowLeft />Back to Formula Library</button></Panel></section>;
+  if (screen === "detail" && detailResolution === "loading") return <section className="v2-formula-port"><Panel><Empty title="Loading Formula…" hint="Checking whether it is available to this Product Draft." /></Panel></section>;
+  if (screen === "detail" && detailResolution === "unavailable") return <section className="v2-formula-port"><Panel><Empty title="Formula not found" hint="It may no longer be available to this Product Draft." /><button className="v2-formula-secondary" type="button" onClick={() => setScreen("index")}><ArrowLeft />Back to Formula Library</button></Panel></section>;
   const isCreate = screen === "create", isRevise = screen === "revise", formula = selected;
   const revision = isCreate ? 1 : formula?.revision.revisionNumber ?? 1;
   const dirty = isCreate || JSON.stringify(editor) !== JSON.stringify(baseline);

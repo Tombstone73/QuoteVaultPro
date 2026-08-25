@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { acceptsFormulaTesterResponse, editorFromFormula, formulaLibraryListInput, formulaVisibilityDescription } from "./FormulaLibraryWorkspace";
+import { acceptsFormulaTesterResponse, editorFromFormula, formulaDetailResolution, formulaLibraryListInput, formulaVisibilityDescription, resolveEligibleFormula } from "./FormulaLibraryWorkspace";
 
 assert.equal(
   acceptsFormulaTesterResponse(2, 1),
@@ -35,6 +35,23 @@ assert.deepEqual(
   formulaLibraryListInput("area", "product-a", false),
   { query: "area", includeInactive: true, productId: "product-a" },
   "Product Builder eligibility remains Product-specific rather than privileged administration access",
+);
+
+assert.equal(
+  formulaDetailResolution(undefined, "formula-a", true),
+  "loading",
+  "a direct Builder revise route must not report a Formula unavailable while its Product-eligibility list is still loading",
+);
+assert.equal(
+  resolveEligibleFormula([scopedFormula], "formula-a"),
+  scopedFormula,
+  "a Product-scoped Formula returned by the owning Product eligibility list resolves into the direct Builder detail/editor",
+);
+assert.equal(formulaDetailResolution(scopedFormula, "formula-a", false), "ready");
+assert.equal(
+  formulaDetailResolution(resolveEligibleFormula([], "formula-a"), "formula-a", false),
+  "unavailable",
+  "an unrelated Product remains unavailable after its canonical eligibility list settles without the Formula",
 );
 
 console.log("Formula Tester stale-response guard tests passed.");
