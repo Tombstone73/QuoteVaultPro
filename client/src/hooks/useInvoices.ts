@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
 import type { InvoiceAccountingDisplay, QuickBooksLineItemDisplay } from '@shared/invoiceAccountingDisplay';
 import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
+import { apiRequest } from '@/lib/queryClient';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 
@@ -159,6 +160,32 @@ export function useVoidInvoicePayment() {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as any).error || (err as any).message || 'Failed to void payment');
       }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+    },
+  });
+}
+
+/** Initiates a Stripe refund. Webhook reconciliation remains the source of truth for payment effects. */
+export function useInitiateStripeInvoiceRefund() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      invoiceId: string;
+      paymentId: string;
+      amountCents: number;
+      idempotencyKey: string;
+    }) => {
+      const res = await apiRequest(
+        'POST',
+        `/api/invoices/${encodeURIComponent(payload.invoiceId)}/payments/${encodeURIComponent(payload.paymentId)}/stripe/refund`,
+        { amountCents: payload.amountCents },
+        { headers: { 'Idempotency-Key': payload.idempotencyKey } },
+      );
       return res.json();
     },
     onSuccess: (_, variables) => {

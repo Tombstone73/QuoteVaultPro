@@ -28,7 +28,7 @@ import {
 import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
@@ -45,6 +45,7 @@ import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
 import { getHostedCardUnavailableReason, resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
 import { isValidInvoiceRecipientEmail } from "@shared/invoiceEmailRecipients";
+import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -202,6 +203,7 @@ export default function InvoiceDetailPage() {
   const invoicePayments = useInvoicePayments(invoiceId);
   const recordManualPayment = useRecordManualInvoicePayment();
   const voidInvoicePayment = useVoidInvoicePayment();
+  const initiateStripeRefund = useInitiateStripeInvoiceRefund();
   const paymentSettings = usePaymentSettings();
   const createEpsHostedSessionMutation = useCreateEpsHostedSession();
   const recordEpsHostedResultMutation = useRecordEpsHostedResult();
@@ -216,6 +218,12 @@ export default function InvoiceDetailPage() {
   const [pdfOpen, setPdfOpen] = useState(false);
   const [selectedPaymentToVoid, setSelectedPaymentToVoid] = useState<any | null>(null);
   const [selectedEpsPayment, setSelectedEpsPayment] = useState<any | null>(null);
+  const [selectedStripePaymentToRefund, setSelectedStripePaymentToRefund] = useState<any | null>(null);
+  const [stripeRefundOpen, setStripeRefundOpen] = useState(false);
+  const [stripeRefundAmount, setStripeRefundAmount] = useState('');
+  const [stripeRefundError, setStripeRefundError] = useState<string | null>(null);
+  const [stripeRefundRequestId, setStripeRefundRequestId] = useState<string | null>(null);
+  const [pendingStripeRefunds, setPendingStripeRefunds] = useState<Record<string, { targetRefundedCents: number }>>({});
 
   const [recordPaymentErrors, setRecordPaymentErrors] = useState<{ amount?: string; method?: string; reference?: string; methodDescription?: string }>({});
   const [pdfLoadState, setPdfLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -524,6 +532,90 @@ export default function InvoiceDetailPage() {
     if (raw === 'void') return 'voided';
     return raw;
   };
+
+  const openStripeRefund = (payment: any) => {
+    const summary = getStripeRefundSummary(payment, paymentsList);
+    if (summary.remainingRefundableCents <= 0) return;
+    setSelectedStripePaymentToRefund(payment);
+    setStripeRefundAmount((summary.remainingRefundableCents / 100).toFixed(2));
+    setStripeRefundError(null);
+    setStripeRefundRequestId(crypto.randomUUID());
+    setStripeRefundOpen(true);
+  };
+
+  const handleStripeRefundOpenChange = (open: boolean) => {
+    if (initiateStripeRefund.isPending) return;
+    setStripeRefundOpen(open);
+    if (!open) {
+      setSelectedStripePaymentToRefund(null);
+      setStripeRefundAmount('');
+      setStripeRefundError(null);
+      setStripeRefundRequestId(null);
+    }
+  };
+
+  const submitStripeRefund = async () => {
+    if (!invoiceId || !selectedStripePaymentToRefund) return;
+    const summary = getStripeRefundSummary(selectedStripePaymentToRefund, paymentsList);
+    const amountCents = parseMoneyToCents(stripeRefundAmount);
+    if (amountCents <= 0) {
+      setStripeRefundError('Refund amount must be greater than $0.00.');
+      return;
+    }
+    if (amountCents > summary.remainingRefundableCents) {
+      setStripeRefundError(`Refund amount cannot exceed ${formatCurrencyFromCents(summary.remainingRefundableCents)}.`);
+      return;
+    }
+
+    try {
+      await initiateStripeRefund.mutateAsync({
+        invoiceId,
+        paymentId: String(selectedStripePaymentToRefund.id),
+        amountCents,
+        // Keep the same identity for an error/retry from this open dialog.
+        idempotencyKey: stripeRefundRequestId || crypto.randomUUID(),
+      });
+      setPendingStripeRefunds((previous) => ({
+        ...previous,
+        [String(selectedStripePaymentToRefund.id)]: {
+          targetRefundedCents: summary.alreadyRefundedCents + amountCents,
+        },
+      }));
+      toast({
+        title: 'Stripe refund submitted',
+        description: 'The refund is pending Stripe confirmation and reconciliation.',
+      });
+      handleStripeRefundOpenChange(false);
+      void invoicePayments.refetch();
+      void refetch();
+      window.setTimeout(() => {
+        void invoicePayments.refetch();
+        void refetch();
+      }, 1500);
+      window.setTimeout(() => {
+        void invoicePayments.refetch();
+        void refetch();
+      }, 4000);
+    } catch (error: any) {
+      setStripeRefundError(error?.message || 'Unable to submit Stripe refund.');
+    }
+  };
+
+  useEffect(() => {
+    if (Object.keys(pendingStripeRefunds).length === 0) return;
+    setPendingStripeRefunds((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [paymentId, pending] of Object.entries(current)) {
+        const originalPayment = paymentsList.find((payment: any) => String(payment.id) === paymentId);
+        if (originalPayment && getStripeRefundSummary(originalPayment, paymentsList).alreadyRefundedCents >= pending.targetRefundedCents) {
+          delete next[paymentId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [paymentsList, pendingStripeRefunds]);
 
   const pendingEpsHostedPayments = paymentsList.filter((payment: any) =>
     normalizeProvider(payment) === "eps" &&
@@ -1368,9 +1460,90 @@ export default function InvoiceDetailPage() {
         ) : isReady ? (
           (() => {
             const inv = invoice as NonNullable<typeof invoice>;
+            const stripeRefundSummary = selectedStripePaymentToRefund
+              ? getStripeRefundSummary(selectedStripePaymentToRefund, paymentsList)
+              : null;
 
             return (
               <>
+        <Dialog open={stripeRefundOpen} onOpenChange={handleStripeRefundOpenChange}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Refund Stripe payment</DialogTitle>
+            </DialogHeader>
+
+            {stripeRefundSummary ? (
+              <div className="grid gap-4">
+                <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">Processor</span>
+                    <Badge variant="secondary" className="gap-1">
+                      <CreditCard className="h-3.5 w-3.5" />
+                      Stripe
+                    </Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Original payment</div>
+                      <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.originalAmountCents)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Already refunded</div>
+                      <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.alreadyRefundedCents)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Remaining refundable</div>
+                      <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.remainingRefundableCents)}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="stripe-refund-amount">Refund amount</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="stripe-refund-amount"
+                      inputMode="decimal"
+                      value={stripeRefundAmount}
+                      onChange={(event) => {
+                        setStripeRefundAmount(event.target.value);
+                        if (stripeRefundError) setStripeRefundError(null);
+                      }}
+                      disabled={initiateStripeRefund.isPending}
+                      placeholder="0.00"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setStripeRefundAmount((stripeRefundSummary.remainingRefundableCents / 100).toFixed(2));
+                        setStripeRefundError(null);
+                      }}
+                      disabled={initiateStripeRefund.isPending}
+                    >
+                      Full Refund
+                    </Button>
+                  </div>
+                  {stripeRefundError ? <div className="text-xs text-destructive">{stripeRefundError}</div> : null}
+                </div>
+
+                <div className="text-xs text-muted-foreground">
+                  Stripe will process this refund. The invoice balance updates after Stripe’s webhook confirms it.
+                </div>
+              </div>
+            ) : null}
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => handleStripeRefundOpenChange(false)} disabled={initiateStripeRefund.isPending}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={submitStripeRefund} disabled={initiateStripeRefund.isPending || !stripeRefundSummary}>
+                {initiateStripeRefund.isPending ? 'Submitting refund…' : 'Confirm Refund'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={recordPaymentOpen} onOpenChange={setRecordPaymentOpen}>
           <DialogContent>
             <DialogHeader>
@@ -2797,6 +2970,13 @@ export default function InvoiceDetailPage() {
                                 const isSucceeded = status === 'succeeded';
                                 const isSettled = isSucceeded || status === 'captured';
                                 const canVoid = provider === 'manual' && isSucceeded && !isVoided;
+                                const stripeRefundSummary = provider === 'stripe'
+                                  ? getStripeRefundSummary(payment, paymentsList)
+                                  : null;
+                                const isStripeRefundPending = Boolean(pendingStripeRefunds[String(payment.id)]);
+                                const canRefundStripePayment = provider === 'stripe'
+                                  && isSettled
+                                  && (stripeRefundSummary?.remainingRefundableCents || 0) > 0;
                                 const canRecordThisEpsResult =
                                   canRecordEpsHostedResult &&
                                   provider === 'eps' &&
@@ -2879,6 +3059,7 @@ export default function InvoiceDetailPage() {
                                     <span className="capitalize text-sm">
                                       {status === 'succeeded' ? 'approved' : String(payment.status || 'succeeded').replaceAll('_', ' ')}
                                     </span>
+                                    {isStripeRefundPending ? <Badge variant="outline">Refund pending reconciliation</Badge> : null}
                                   </div>
                                 </TableCell>
                                 <TableCell className="text-sm text-muted-foreground">
@@ -2983,8 +3164,18 @@ export default function InvoiceDetailPage() {
                                       >
                                         Void
                                       </Button>
+                                    ) : isStripeRefundPending ? (
+                                      <span className="text-xs text-muted-foreground">Refund pending reconciliation</span>
+                                    ) : canRefundStripePayment ? (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => openStripeRefund(payment)}
+                                      >
+                                        Refund
+                                      </Button>
                                     ) : provider === 'stripe' ? (
-                                      <span className="text-xs text-muted-foreground">Stripe (no void)</span>
+                                      <span className="text-xs text-muted-foreground">Stripe (not refundable)</span>
                                     ) : isVoided ? (
                                       <span className="text-xs text-muted-foreground">Voided</span>
                                     ) : (

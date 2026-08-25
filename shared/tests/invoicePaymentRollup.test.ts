@@ -47,6 +47,58 @@ describe('computeInvoicePaymentRollup', () => {
     expect(r).toEqual({ amountPaidCents: 0, amountDueCents: 1000, paymentStatus: 'refunded' });
   });
 
+  test('a webhook-confirmed partial refund reopens only the refunded invoice balance', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 10_000,
+      payments: [
+        { id: 'stripe_payment_1', status: 'succeeded', amountCents: 10_000 },
+        // Refunds are immutable negative payment effects; the original
+        // successful collection remains in the ledger unchanged.
+        { id: 'stripe_refund_1', status: 'refunded', amountCents: 2_500 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 7_500, amountDueCents: 2_500, paymentStatus: 'partial' });
+  });
+
+  test('multiple webhook-confirmed partial refunds compose as negative payment effects', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 10_000,
+      payments: [
+        { id: 'stripe_payment_1', status: 'succeeded', amountCents: 10_000 },
+        { id: 'stripe_refund_1', status: 'refunded', amountCents: 3_000 },
+        { id: 'stripe_refund_2', status: 'refunded', amountCents: 2_000 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 5_000, amountDueCents: 5_000, paymentStatus: 'partial' });
+  });
+
+  test('does not apply a pending refund before webhook reconciliation succeeds', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 10_000,
+      payments: [
+        { id: 'stripe_payment_1', status: 'succeeded', amountCents: 10_000 },
+        { id: 'stripe_refund_pending', status: 'pending', amountCents: 2_500 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 10_000, amountDueCents: 0, paymentStatus: 'paid' });
+  });
+
+  test('does not double-apply a replayed refund effect with the same local id', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 10_000,
+      payments: [
+        { id: 'stripe_payment_1', status: 'succeeded', amountCents: 10_000 },
+        { id: 'stripe_refund_1', status: 'refunded', amountCents: 2_500 },
+        { id: 'stripe_refund_1', status: 'refunded', amountCents: 2_500 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 7_500, amountDueCents: 2_500, paymentStatus: 'partial' });
+  });
+
   test('ignores pending and voided payments', () => {
     const r = computeInvoicePaymentRollup({
       invoiceTotalCents: 1000,

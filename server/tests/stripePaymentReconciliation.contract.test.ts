@@ -35,6 +35,14 @@ describe("Stripe payment reconciliation contract", () => {
     expect(processor).toContain("originalPaymentId: payment.id");
   });
 
+  test("reconciles only successful refunds as capped immutable negative effects", () => {
+    expect(processor).toContain('const isRefundSucceeded = observation.refundStatus === "succeeded"');
+    expect(processor).toContain("const remainingCents = Math.max(0, Number(payment.amountCents || 0) - alreadyRefundedCents)");
+    expect(processor).toContain("const effectiveRefundCents = Math.min(refundAmountCents, remainingCents)");
+    expect(processor).toContain("amountCents: effectiveRefundCents");
+    expect(processor).not.toContain('status: "refunded",\n            amount: (amountCents / 100).toFixed(2)');
+  });
+
   test("staff confirmation, portal confirmation, and signed webhooks use the same processor", () => {
     const invoicesRoute = source("server/routes/mvpInvoicing.routes.ts");
     const portal = source("server/services/portal.service.ts");

@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { integrationConnections, invoices, payments, paymentWebhookEvents } from "../../shared/schema";
+import { integrationConnections, invoices, payments, paymentWebhookEvents, stripeRefundRequests } from "../../shared/schema";
 import { reconcileInvoicePaymentStateInTransaction } from "../invoicesService";
 
 /**
@@ -19,6 +19,7 @@ export type StripePaymentObservationInput = {
   amountCents?: number | null;
   currency?: string | null;
   refundId?: string | null;
+  refundRequestId?: string | null;
   refundAmountCents?: number | null;
   refundStatus?: string | null;
   occurredAt?: Date | string | null;
@@ -36,6 +37,7 @@ type SanitizedStripeObservation = {
   amountCents: number | null;
   currency: string | null;
   refundId: string | null;
+  refundRequestId: string | null;
   refundAmountCents: number | null;
   refundStatus: string | null;
   occurredAt: string;
@@ -88,6 +90,7 @@ function sanitizeObservation(input: StripePaymentObservationInput): SanitizedStr
     amountCents: nonNegativeCents(input.amountCents),
     currency: textOrNull(input.currency)?.toUpperCase().slice(0, 8) || null,
     refundId: textOrNull(input.refundId),
+    refundRequestId: textOrNull(input.refundRequestId),
     refundAmountCents: nonNegativeCents(input.refundAmountCents),
     refundStatus: textOrNull(input.refundStatus)?.toLowerCase() || null,
     occurredAt: isoOrNow(input.occurredAt),
@@ -106,6 +109,7 @@ function readStoredObservation(value: unknown): SanitizedStripeObservation {
     amountCents: payload.amountCents as number | null,
     currency: payload.currency as string | null,
     refundId: payload.refundId as string | null,
+    refundRequestId: payload.refundRequestId as string | null,
     refundAmountCents: payload.refundAmountCents as number | null,
     refundStatus: payload.refundStatus as string | null,
     occurredAt: payload.occurredAt as string | null,
@@ -192,7 +196,7 @@ export async function captureAndApply(input: StripePaymentObservationInput): Pro
   if (!existing || existing.type !== observation.type || existing.organizationId !== observation.organizationId ||
     existing.invoiceId !== observation.invoiceId || existing.paymentIntentId !== observation.paymentIntentId ||
     existing.stripeAccountId !== observation.stripeAccountId || existing.amountCents !== observation.amountCents ||
-    existing.currency !== observation.currency || existing.refundId !== observation.refundId ||
+    existing.currency !== observation.currency || existing.refundId !== observation.refundId || existing.refundRequestId !== observation.refundRequestId ||
     existing.refundAmountCents !== observation.refundAmountCents || existing.refundStatus !== observation.refundStatus) {
     throw Object.assign(new Error("Stripe event identity was reused with a conflicting payment observation."), { code: "STRIPE_EVENT_CONFLICT" });
   }
@@ -315,6 +319,26 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
         // original succeeded payment to refunded loses the original collection
         // and cannot represent a partial refund in the v1 payments schema.
         const isRefundSucceeded = observation.refundStatus === "succeeded";
+        const refundRequestId = textOrNull(observation.refundRequestId);
+        const refundId = textOrNull(observation.refundId);
+        // Prefer our metadata correlation, but also correlate by Stripe's
+        // refund id when a previously submitted request is revisited.
+        if (refundRequestId || refundId) {
+          const [refundRequest] = await tx.select().from(stripeRefundRequests).where(and(
+            eq(stripeRefundRequests.organizationId, organizationId),
+            refundRequestId ? eq(stripeRefundRequests.id, refundRequestId) : eq(stripeRefundRequests.stripeRefundId, refundId!),
+          )).limit(1);
+          if (refundRequestId && (!refundRequest || String(refundRequest.paymentId) !== String(payment.id) ||
+            String(refundRequest.stripePaymentIntentId) !== paymentIntentId || String(refundRequest.stripeAccountId) !== requiredStripeAccountId ||
+            Number(refundRequest.amountCents) !== Number(observation.refundAmountCents ?? observation.amountCents ?? 0))) {
+            throw Object.assign(new Error("Stripe refund does not match its durable initiation request."), { code: "STRIPE_REFUND_REQUEST_MISMATCH" });
+          }
+          if (refundRequest) await tx.update(stripeRefundRequests).set({
+            stripeRefundId: refundId || null,
+            status: isRefundSucceeded ? "succeeded" : ['failed', 'canceled'].includes(String(observation.refundStatus || '').toLowerCase()) ? "failed" : "submitted",
+            updatedAt: now,
+          } as any).where(and(eq(stripeRefundRequests.id, refundRequest.id), eq(stripeRefundRequests.organizationId, organizationId)));
+        }
         if (isRefundSucceeded) {
           const refundAmountCents = observation.refundAmountCents ?? observation.amountCents ?? 0;
           const refundTransactionId = observation.refundId || `stripe-refund-event:${normalizedEventId}`;

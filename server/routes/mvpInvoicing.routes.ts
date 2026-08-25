@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
 import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
@@ -33,6 +33,7 @@ import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type Invoice
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
+import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -1281,6 +1282,233 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
+  // Stripe refunds: tenant-scoped initiation only. A signed webhook remains
+  // authoritative for the immutable negative payment effect and invoice rollup.
+  // ------------------------------------------------------------
+  app.post('/api/invoices/:invoiceId/payments/:paymentId/stripe/refund', isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    let initiatedRequest: any = null;
+    let initiatedOrganizationId: string | null = null;
+    let initiatedUserId: string | null = null;
+    let initiatedUserName: string | null = null;
+    const refundInput = z.object({ amountCents: z.number().int().positive().max(99_999_999) }).safeParse(req.body);
+    const requestId = String(req.headers['idempotency-key'] || '').trim();
+    if (!refundInput.success) return res.status(400).json({ success: false, code: 'STRIPE_REFUND_AMOUNT_REQUIRED', error: 'A positive integer refund amount in cents is required.' });
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(requestId)) {
+      return res.status(400).json({ success: false, code: 'STRIPE_REFUND_IDEMPOTENCY_KEY_REQUIRED', error: 'A valid Idempotency-Key is required to initiate a refund.' });
+    }
+
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
+      if (!userId) return res.status(401).json({ success: false, error: 'Missing user' });
+      initiatedOrganizationId = organizationId;
+      initiatedUserId = userId;
+      initiatedUserName = userName;
+
+      const invoiceId = String(req.params.invoiceId || '').trim();
+      const paymentId = String(req.params.paymentId || '').trim();
+      const [payment] = await db.select().from(payments).where(and(
+        eq(payments.id, paymentId),
+        eq(payments.invoiceId, invoiceId),
+        eq(payments.organizationId, organizationId),
+      )).limit(1);
+      if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
+
+      const originalAccountId = String((payment as any).metadata?.stripeAccountId || '').trim();
+      const eligibility = getStripeRefundEligibility({ originalPayment: payment as any, refundEffects: [] });
+      if (!eligibility.ok) return res.status(409).json({ success: false, code: eligibility.code, error: eligibility.error });
+      if (!originalAccountId) {
+        return res.status(409).json({ success: false, code: 'STRIPE_REFUND_ORIGINAL_ACCOUNT_MISSING', error: 'The original Stripe connected-account context is missing.' });
+      }
+
+      const readiness = await resolveStripeReadiness(organizationId);
+      const stripeAccountId = String(readiness.stripeAccountId || '').trim();
+      if (!readiness.readyForPayments || !stripeAccountId) {
+        return res.status(409).json({ success: false, code: readiness.code || 'STRIPE_NOT_READY', error: readiness.lastError || 'Stripe is not ready for refunds for this organization.' });
+      }
+      if (stripeAccountId !== originalAccountId) {
+        return res.status(409).json({ success: false, code: 'STRIPE_REFUND_CONNECTED_ACCOUNT_MISMATCH', error: 'The connected Stripe account does not match the original payment.' });
+      }
+
+      const paymentIntentId = String((payment as any).stripePaymentIntentId || '').trim();
+      const stripe = getStripeClient();
+      const intent: any = await stripe.paymentIntents.retrieve(paymentIntentId, { stripeAccount: stripeAccountId } as any);
+      const intentAmountCents = Math.max(0, Math.round(Number(intent.amount_received ?? intent.amount ?? 0)));
+      if (String(intent.status || '').toLowerCase() !== 'succeeded' || intentAmountCents !== Number((payment as any).amountCents || 0) ||
+        String(intent.metadata?.organizationId || '') !== organizationId || String(intent.metadata?.invoiceId || '') !== invoiceId ||
+        String(intent.metadata?.stripeAccountId || '') !== stripeAccountId) {
+        return res.status(409).json({ success: false, code: 'STRIPE_REFUND_PAYMENT_CONTEXT_MISMATCH', error: 'The original Stripe payment could not be verified for this invoice and connected account.' });
+      }
+
+      const idempotencyKey = stripeRefundIdempotencyKey({ originalPaymentId: paymentId, requestId });
+      const reservation = await db.transaction(async (tx) => {
+        // Serialize each original charge's refundable balance while retaining a
+        // short transaction: never hold a database lock during a Stripe call.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`stripe-refund:${organizationId}:${paymentId}`}))`);
+        const [existing] = await tx.select().from(stripeRefundRequests).where(and(
+          eq(stripeRefundRequests.organizationId, organizationId),
+          eq(stripeRefundRequests.idempotencyKey, idempotencyKey),
+        )).limit(1);
+        if (existing) {
+          if (String(existing.paymentId) !== paymentId || Number(existing.amountCents) !== refundInput.data.amountCents) {
+            throw Object.assign(new Error('Idempotency key was already used for a different refund request.'), { code: 'STRIPE_REFUND_IDEMPOTENCY_CONFLICT' });
+          }
+          if (String(existing.status || '').toLowerCase() === 'failed') {
+            throw Object.assign(new Error('This refund request was rejected. Submit a new request with a new Idempotency-Key after correcting the issue.'), { code: 'STRIPE_REFUND_REQUEST_FAILED' });
+          }
+          return { request: existing as any, reused: true };
+        }
+
+        const refundEffects = await tx.select({ status: payments.status, amountCents: payments.amountCents, metadata: payments.metadata })
+          .from(payments)
+          .where(and(eq(payments.organizationId, organizationId), eq(payments.invoiceId, invoiceId), eq(payments.provider, 'stripe'), eq(payments.status, 'refunded')));
+        const pendingReservations = await tx.select({ amountCents: stripeRefundRequests.amountCents }).from(stripeRefundRequests).where(and(
+          eq(stripeRefundRequests.organizationId, organizationId),
+          eq(stripeRefundRequests.paymentId, paymentId),
+          inArray(stripeRefundRequests.status, ['reserved', 'submitted']),
+        ));
+        const refreshedEligibility = getStripeRefundEligibility({
+          originalPayment: payment as any,
+          refundEffects: refundEffects as any,
+          pendingReservationCents: pendingReservations.reduce((total, row) => total + Math.max(0, Number(row.amountCents || 0)), 0),
+        });
+        if (!refreshedEligibility.ok) throw Object.assign(new Error(refreshedEligibility.error), { code: refreshedEligibility.code });
+        const amountValidation = validateStripeRefundAmount(refundInput.data.amountCents, refreshedEligibility.remainingCents);
+        if (!amountValidation.ok) throw Object.assign(new Error(amountValidation.error), { code: amountValidation.code });
+
+        const [created] = await tx.insert(stripeRefundRequests).values({
+          organizationId,
+          invoiceId,
+          paymentId,
+          stripePaymentIntentId: paymentIntentId,
+          stripeAccountId,
+          amountCents: amountValidation.amountCents,
+          currency: String((payment as any).currency || 'USD').toUpperCase(),
+          idempotencyKey,
+          status: 'reserved',
+          createdByUserId: userId,
+          metadata: { requestId, originalPaymentId: paymentId },
+        } as any).returning();
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName,
+          actionType: 'stripe_refund_initiated',
+          entityType: 'invoice_payment',
+          entityId: paymentId,
+          entityName: invoiceId,
+          description: 'Stripe refund initiation reserved; webhook reconciliation is pending.',
+          newValues: { invoiceId, paymentId, stripePaymentIntentId: paymentIntentId, amountCents: amountValidation.amountCents, requestId, status: 'reserved' } as any,
+          createdAt: new Date(),
+        } as any);
+        return { request: created as any, reused: false };
+      });
+      initiatedRequest = reservation.request;
+
+      // Stripe's idempotency layer is intentionally invoked even for a retry
+      // after a process interruption. It is the money-moving authority; the
+      // local reservation only controls concurrency and auditability.
+      const refund: any = await stripe.refunds.create({
+        payment_intent: paymentIntentId,
+        amount: Number(reservation.request.amountCents),
+        metadata: {
+          organizationId,
+          invoiceId,
+          paymentId,
+          stripeAccountId,
+          refundRequestId: String(reservation.request.id),
+        },
+      }, { stripeAccount: stripeAccountId, idempotencyKey } as any);
+
+      const processorStatus = String(refund.status || '').toLowerCase();
+      const terminalFailure = ['failed', 'canceled'].includes(processorStatus);
+      await db.transaction(async (tx) => {
+        // Never overwrite a webhook-confirmed terminal state. A successful
+        // synchronous Stripe response is still merely submitted locally until
+        // the signed event is reconciled.
+        await tx.update(stripeRefundRequests).set({
+          stripeRefundId: String(refund.id || '') || null,
+          status: terminalFailure ? 'failed' : 'submitted',
+          updatedAt: new Date(),
+        } as any).where(and(
+          eq(stripeRefundRequests.id, reservation.request.id),
+          eq(stripeRefundRequests.organizationId, organizationId),
+          eq(stripeRefundRequests.status, 'reserved'),
+        ));
+        if (!reservation.reused) {
+          await tx.insert(auditLogs).values({
+            organizationId,
+            userId,
+            userName,
+            actionType: terminalFailure ? 'stripe_refund_rejected' : 'stripe_refund_submitted',
+            entityType: 'invoice_payment',
+            entityId: paymentId,
+            entityName: invoiceId,
+            description: terminalFailure ? 'Stripe refund request was rejected before reconciliation.' : 'Stripe refund request submitted; signed webhook reconciliation is pending.',
+            newValues: { invoiceId, paymentId, stripePaymentIntentId: paymentIntentId, amountCents: Number(reservation.request.amountCents), requestId, status: terminalFailure ? 'failed' : 'submitted' } as any,
+            createdAt: new Date(),
+          } as any);
+        }
+      });
+
+      if (terminalFailure) {
+        return res.status(409).json({
+          success: false,
+          code: 'STRIPE_REFUND_REQUEST_FAILED',
+          error: 'Stripe rejected the refund request. No local payment state was changed.',
+        });
+      }
+
+      return res.status(reservation.reused ? 200 : 202).json({
+        success: true,
+        data: {
+          requestId: String(reservation.request.id),
+          paymentId,
+          amountCents: Number(reservation.request.amountCents),
+          processor: 'stripe',
+          status: 'pending_reconciliation',
+          reused: reservation.reused,
+        },
+      });
+    } catch (error: any) {
+      const code = String(error?.code || '');
+      const known = new Set([
+        'STRIPE_REFUND_IDEMPOTENCY_CONFLICT', 'STRIPE_REFUND_AMOUNT_EXCEEDS_REMAINING', 'STRIPE_REFUND_AMOUNT_REQUIRED',
+        'STRIPE_REFUND_PROVIDER_INVALID', 'STRIPE_REFUND_PAYMENT_NOT_SETTLED', 'STRIPE_REFUND_PAYMENT_INTENT_MISSING', 'STRIPE_REFUND_AMOUNT_INVALID', 'STRIPE_REFUND_REQUEST_FAILED',
+      ]);
+      if (known.has(code)) return res.status(409).json({ success: false, code, error: error.message });
+      // A known Stripe validation/permission failure definitively created no
+      // refund, so release the reservation. Network/timeout failures are left
+      // reserved: retrying the same Idempotency-Key is the only safe outcome.
+      const terminalStripeError = ['StripeInvalidRequestError', 'StripePermissionError'].includes(String(error?.type || error?.name || ''));
+      if (terminalStripeError && initiatedRequest && initiatedOrganizationId) {
+        try {
+          await db.transaction(async (tx) => {
+            await tx.update(stripeRefundRequests).set({ status: 'failed', updatedAt: new Date() } as any).where(and(
+              eq(stripeRefundRequests.id, initiatedRequest.id),
+              eq(stripeRefundRequests.organizationId, initiatedOrganizationId!),
+              inArray(stripeRefundRequests.status, ['reserved', 'submitted']),
+            ));
+            await tx.insert(auditLogs).values({
+              organizationId: initiatedOrganizationId!, userId: initiatedUserId, userName: initiatedUserName,
+              actionType: 'stripe_refund_rejected', entityType: 'invoice_payment', entityId: String(initiatedRequest.paymentId), entityName: String(initiatedRequest.invoiceId),
+              description: 'Stripe rejected the refund request before reconciliation.',
+              newValues: { paymentId: initiatedRequest.paymentId, stripePaymentIntentId: initiatedRequest.stripePaymentIntentId, amountCents: initiatedRequest.amountCents, requestId: initiatedRequest.metadata?.requestId, status: 'failed' } as any,
+              createdAt: new Date(),
+            } as any);
+          });
+        } catch (auditError: any) {
+          console.error('[StripeRefund] terminal failure audit update failed', { message: String(auditError?.message || auditError) });
+        }
+      }
+      console.error('[StripeRefund] initiation failed', { organizationId: getRequestOrganizationId(req), invoiceId: req.params.invoiceId, paymentId: req.params.paymentId, code, message: String(error?.message || error) });
+      return res.status(502).json({ success: false, code: 'STRIPE_REFUND_INITIATION_FAILED', error: 'Unable to initiate the Stripe refund. No local payment state was changed.' });
+    }
+  });
+
+  // ------------------------------------------------------------
   // Stripe webhook (no auth) - idempotent + fail-soft
   // Uses req.rawBody (captured by express.json verify in server/index.ts)
   // ------------------------------------------------------------
@@ -1588,6 +1816,7 @@ export async function registerMvpInvoicingRoutes(
           amountCents: Math.max(0, Math.round(Number(refund.amount ?? refund.amount_refunded ?? 0))),
           currency: String(refund.currency || "USD"),
           refundId: refund.id ? String(refund.id) : null,
+          refundRequestId: refund?.metadata?.refundRequestId ? String(refund.metadata.refundRequestId) : null,
           refundAmountCents: Math.max(0, Math.round(Number(refund.amount ?? refund.amount_refunded ?? 0))),
           refundStatus: String(refund.status || "succeeded"),
           occurredAt: receivedAt,

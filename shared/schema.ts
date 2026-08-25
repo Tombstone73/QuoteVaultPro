@@ -5385,6 +5385,35 @@ export const insertPaymentWebhookEventSchema = createInsertSchema(paymentWebhook
 export type InsertPaymentWebhookEvent = z.infer<typeof insertPaymentWebhookEventSchema>;
 export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 
+// Stripe refund initiation ledger. These rows reserve a requested amount and
+// provide durable idempotency, but are deliberately not payments: only signed
+// webhook reconciliation creates the immutable negative payment effect.
+export const stripeRefundRequests = pgTable("stripe_refund_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  paymentId: varchar("payment_id").notNull().references(() => payments.id, { onDelete: "cascade" }),
+  stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
+  stripeAccountId: text("stripe_account_id").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  currency: varchar("currency", { length: 8 }).notNull().default("USD"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  stripeRefundId: text("stripe_refund_id"),
+  status: varchar("status", { length: 20 }).notNull().default("reserved"), // reserved | submitted | succeeded | failed
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  metadata: jsonb("metadata").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("stripe_refund_requests_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
+  uniqueIndex("stripe_refund_requests_org_stripe_refund_uidx").on(table.organizationId, table.stripeRefundId).where(sql`${table.stripeRefundId} IS NOT NULL`),
+  index("stripe_refund_requests_payment_idx").on(table.organizationId, table.paymentId),
+  index("stripe_refund_requests_invoice_idx").on(table.organizationId, table.invoiceId),
+  index("stripe_refund_requests_status_idx").on(table.status),
+]);
+
+export type StripeRefundRequest = typeof stripeRefundRequests.$inferSelect;
+
 // -------------------- Shipping & Fulfillment --------------------
 
 export const shipmentStatusSchema = z.enum(['DRAFT', 'SHIPPED', 'VOIDED']);
