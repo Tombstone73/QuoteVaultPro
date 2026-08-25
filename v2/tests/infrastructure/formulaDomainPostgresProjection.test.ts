@@ -114,10 +114,10 @@ class FormulaDomainPoolDouble {
       const formulae = this.formulas.filter((candidate) => candidate.organizationId === tenant && (detail ? candidate.id === requested : compact.includes("f.visibility='library'") ? candidate.visibility === "library" || (candidate.visibility === "product_scoped" && candidate.scopeProductId === requested) : true));
       return { rows: formulae.map((formula) => this.detailRow(compact, formula)) as T[] };
     }
-    if (compact.includes("FROM v2_formula_identities f") && compact.includes("FOR UPDATE")) {
+    if (compact === "SELECT id,current_revision_id,status FROM v2_formula_identities WHERE organization_id=$1 AND id=$2 FOR UPDATE") {
       const [tenant, formulaId] = values as string[];
       const formula = this.formulas.find((candidate) => candidate.organizationId === tenant && candidate.id === formulaId);
-      return { rows: formula ? [this.headerRow(formula)] as T[] : [] };
+      return { rows: formula ? [{ id: formula.id, current_revision_id: formula.currentRevisionId, status: formula.status }] as T[] : [] };
     }
     if (compact.includes("FROM formula_revisions r") && compact.includes("ORDER BY r.revision_number DESC")) {
       const [tenant, formulaId] = values as string[];
@@ -155,10 +155,10 @@ describe("Postgres Formula-domain detail projection", () => {
     const pool = new FormulaDomainPoolDouble();
     const service = new FormulaDomainApplicationService(new PostgresFormulaDomainTransactionRunner(pool as any));
 
-    const created = await service.create(context("postgres-create"), { businessRequestId: "postgres-create", name: "Area formula", visibility: "library", definition: definition("ceil(sqft) * rate") });
+    const created = await service.create(context("postgres-create"), { businessRequestId: "postgres-create", name: "Area formula", visibility: "product_scoped", scopeProductId: "product-a", definition: definition("ceil(sqft) * rate") });
     expect(created.ok).toBe(true);
     if (!created.ok) throw new Error(created.error.publicMessage);
-    expect(created).toMatchObject({ ok: true, value: { name: "Area formula", currentRevisionId: expect.any(String), revision: { revisionNumber: 1, expression: "ceil(sqft) * rate", declaredInputs: definition("x").declaredInputs } } });
+    expect(created).toMatchObject({ ok: true, value: { name: "Area formula", visibility: "product_scoped", scopeProductId: "product-a", currentRevisionId: expect.any(String), revision: { revisionNumber: 1, expression: "ceil(sqft) * rate", declaredInputs: definition("x").declaredInputs } } });
     const revisionOne = structuredClone(created.value.revision);
 
     const revised = await service.revise(context("postgres-revise"), { businessRequestId: "postgres-revise", formulaId: created.value.formulaId, expectedCurrentRevisionId: created.value.currentRevisionId, definition: definition("ceil(sqft) * (rate + 1)") });
@@ -166,6 +166,12 @@ describe("Postgres Formula-domain detail projection", () => {
     expect(pool.revisions).toHaveLength(2);
     expect(pool.revisions[0]?.expression).toBe(revisionOne.expression);
     expect(pool.revisions[0]?.declaredInputs).toEqual(revisionOne.declaredInputs);
+    const identityLock = pool.queries.find((query) => query === "SELECT id,current_revision_id,status FROM v2_formula_identities WHERE organization_id=$1 AND id=$2 FOR UPDATE");
+    expect(identityLock).toBeDefined();
+    expect(identityLock).not.toContain("JOIN");
+    expect(identityLock).not.toContain("formula_revisions");
+    const richRead = pool.queries.find((query) => query.includes("JOIN formula_revisions r ON r.id=f.current_revision_id") && !query.includes("FOR UPDATE"));
+    expect(richRead).toBeDefined();
     expect(pool.queries.find((query) => query.startsWith("SELECT COALESCE(max(revision_number)"))).not.toContain("FOR UPDATE");
   });
 
