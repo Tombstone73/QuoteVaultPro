@@ -29,4 +29,13 @@ assert.doesNotMatch(detail, /customer-a/);
 assert.doesNotMatch(detail, /contact-a/);
 assert.doesNotMatch(detail, /Available Credit|Log Activity|Add Contact|Account note/);
 
+const unlinkedPrimaryClient = new QueryClient();
+unlinkedPrimaryClient.setQueryData(["v2", "scope-a", "org-a", "customers", "customer-b"], {
+  customerId: "customer-b", displayName: "No Primary", presentation: { customerDisplayName: "No Primary", companyName: "No Primary" },
+  contacts: [{ contactId: "contact-b", displayName: "Unmarked Contact", primary: false }],
+});
+const unlinkedPrimary = renderToStaticMarkup(<QueryClientProvider client={unlinkedPrimaryClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-b" canView openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+assert.match(unlinkedPrimary, /<dt>Primary Contact<\/dt><dd>—<\/dd>/);
+assert.doesNotMatch(unlinkedPrimary, /<em>Primary<\/em>/);
+
 console.log("Customer workspace visual contract tests passed.");

@@ -64,7 +64,9 @@ const CustomerDetail = ({ state, openContact, backToCatalog }: Readonly<{
   if (state.isError || !state.data) return <section className="v2-customers"><button className="v2-customers-back" type="button" onClick={backToCatalog}>← Customers</button><p className="v2-proof-empty">Customer not found.</p></section>;
   const customer = state.data;
   const identity = customer.presentation;
-  const primary = customer.contacts.find((contact) => contact.primary) ?? customer.contacts[0];
+  // Primary ownership belongs to the Customer/contact relationship.  Do not
+  // infer it from list position when a legacy Customer has no primary link.
+  const primary = customer.contacts.find((contact) => contact.primary);
   const primaryName = primary?.displayName ?? identity.contactDisplayName;
   const email = identity.email ?? primary?.email;
   const phone = identity.phone ?? primary?.phone;
