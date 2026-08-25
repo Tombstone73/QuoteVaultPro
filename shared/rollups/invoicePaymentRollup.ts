@@ -16,6 +16,30 @@ export type InvoicePaymentRollup = {
 
 export type InvoicePaymentStatusLabel = 'Draft' | 'Voided' | 'Unpaid' | 'Partially Paid' | 'Paid';
 
+/**
+ * Combine immutable invoice lifecycle protections with the current payment
+ * rollup. A previous `paid` value is not financial history: a refund can
+ * reopen that same invoice.
+ */
+export function getInvoiceFinancialLifecycleStatus(params: {
+  invoiceStatus: string | null | undefined;
+  rollup: Pick<InvoicePaymentRollup, 'amountPaidCents' | 'amountDueCents'>;
+}): 'draft' | 'void' | 'paid' | 'partially_paid' | 'finalized' | 'billed' | 'sent' {
+  const currentStatus = String(params.invoiceStatus || '').trim().toLowerCase();
+  if (currentStatus === 'draft') return 'draft';
+  if (currentStatus === 'void' || currentStatus === 'voided') return 'void';
+
+  const paid = toSafeCents(params.rollup?.amountPaidCents);
+  const due = toSafeCents(params.rollup?.amountDueCents);
+  if (due <= 0) return 'paid';
+  if (paid > 0) return 'partially_paid';
+
+  // Preserve an existing customer/lifecycle stage; otherwise reopen into the
+  // V1 billable non-paid state without touching payment/refund history.
+  if (currentStatus === 'sent' || currentStatus === 'finalized' || currentStatus === 'billed') return currentStatus;
+  return 'billed';
+}
+
 export function getInvoicePaymentStatusLabel(params: {
   invoiceStatus: string | null | undefined;
   rollup: InvoicePaymentRollup;
@@ -91,8 +115,10 @@ export function computeInvoicePaymentRollup(params: {
   let paymentStatus: InvoicePaymentStatus = 'unpaid';
   if (paid <= 0) {
     paymentStatus = hadSucceeded && hadRefund ? 'refunded' : 'unpaid';
-  } else if (paid >= invoiceTotalCents) {
-    paymentStatus = hadRefund ? 'refunded' : 'paid';
+  } else if (due <= 0) {
+    // A historical refund does not make a subsequently repaid invoice
+    // financially refunded. The current net balance is authoritative.
+    paymentStatus = 'paid';
   } else {
     paymentStatus = 'partial';
   }

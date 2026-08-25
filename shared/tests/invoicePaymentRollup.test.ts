@@ -1,4 +1,4 @@
-import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from '../rollups/invoicePaymentRollup';
+import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus, getInvoicePaymentStatusLabel } from '../rollups/invoicePaymentRollup';
 
 describe('computeInvoicePaymentRollup', () => {
   test('unpaid', () => {
@@ -99,6 +99,49 @@ describe('computeInvoicePaymentRollup', () => {
     expect(r).toEqual({ amountPaidCents: 7_500, amountDueCents: 2_500, paymentStatus: 'partial' });
   });
 
+  test('a full refund followed by a new successful collection closes the reopened balance', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 750,
+      payments: [
+        { id: 'payment_original', status: 'succeeded', amountCents: 750 },
+        { id: 'refund_full', status: 'refunded', amountCents: 750 },
+        // This is a distinct later collection, not a mutation of the
+        // original payment or refund effect.
+        { id: 'payment_recollection', status: 'succeeded', amountCents: 750 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 750, amountDueCents: 0, paymentStatus: 'paid' });
+  });
+
+  test('a partial refund followed by collection of only the reopened amount closes the balance', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 1_000,
+      payments: [
+        { id: 'payment_original', status: 'succeeded', amountCents: 1_000 },
+        { id: 'refund_partial', status: 'refunded', amountCents: 250 },
+        { id: 'payment_recollection', status: 'succeeded', amountCents: 250 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 1_000, amountDueCents: 0, paymentStatus: 'paid' });
+  });
+
+  test('multiple refund and repayment cycles retain only the current financial balance', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 1_000,
+      payments: [
+        { id: 'payment_1', status: 'succeeded', amountCents: 1_000 },
+        { id: 'refund_1', status: 'refunded', amountCents: 1_000 },
+        { id: 'payment_2', status: 'succeeded', amountCents: 1_000 },
+        { id: 'refund_2', status: 'refunded', amountCents: 400 },
+        { id: 'payment_3', status: 'succeeded', amountCents: 400 },
+      ],
+    });
+
+    expect(r).toEqual({ amountPaidCents: 1_000, amountDueCents: 0, paymentStatus: 'paid' });
+  });
+
   test('ignores pending and voided payments', () => {
     const r = computeInvoicePaymentRollup({
       invoiceTotalCents: 1000,
@@ -195,5 +238,33 @@ describe('computeInvoicePaymentRollup', () => {
     const rollup = computeInvoicePaymentRollup({ invoiceTotalCents: 1000, payments: [] });
     expect(getInvoicePaymentStatusLabel({ invoiceStatus: 'draft', rollup })).toBe('Draft');
     expect(getInvoicePaymentStatusLabel({ invoiceStatus: 'void', rollup })).toBe('Voided');
+  });
+
+  test('a full refund reopens a formerly paid invoice into the billable lifecycle state', () => {
+    const fullRefund = computeInvoicePaymentRollup({
+      invoiceTotalCents: 750,
+      payments: [
+        { id: 'payment-original', status: 'succeeded', amountCents: 750 },
+        { id: 'refund-full', status: 'refunded', amountCents: 750 },
+      ],
+    });
+
+    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'paid', rollup: fullRefund })).toBe('billed');
+    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'sent', rollup: fullRefund })).toBe('sent');
+  });
+
+  test('partial refunds, drafts, and voids retain the correct financial/lifecycle state', () => {
+    const partialRefund = computeInvoicePaymentRollup({
+      invoiceTotalCents: 1_000,
+      payments: [
+        { id: 'payment-original', status: 'succeeded', amountCents: 1_000 },
+        { id: 'refund-partial', status: 'refunded', amountCents: 250 },
+      ],
+    });
+    const unpaid = computeInvoicePaymentRollup({ invoiceTotalCents: 1_000, payments: [] });
+
+    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'paid', rollup: partialRefund })).toBe('partially_paid');
+    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'draft', rollup: unpaid })).toBe('draft');
+    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'void', rollup: unpaid })).toBe('void');
   });
 });

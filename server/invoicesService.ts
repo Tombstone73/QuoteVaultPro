@@ -2,7 +2,7 @@ import { db } from './db';
 import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
 import { asc, desc, eq, and, ilike, inArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
-import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
+import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
 import {
   allocateDocumentNumber,
@@ -457,10 +457,10 @@ function computeInvoiceFinancialState(
     const amountPaidCents = normalizedDisplay.displayPaidCents;
     const amountDueCents = normalizedDisplay.displayRemainingCents;
 
-    let status = String(invoice.status || 'billed').trim().toLowerCase();
-    if (amountDueCents <= 0) status = 'paid';
-    else if (amountPaidCents > 0) status = 'partially_paid';
-    else status = 'billed';
+    const status = getInvoiceFinancialLifecycleStatus({
+      invoiceStatus: invoice.status,
+      rollup: { amountPaidCents, amountDueCents },
+    });
 
     return { amountPaidCents, amountDueCents, status };
   }
@@ -474,10 +474,10 @@ function computeInvoiceFinancialState(
     })),
   });
 
-  let status = String(invoice.status || '').trim().toLowerCase();
-  if (rollup.amountDueCents <= 0) status = 'paid';
-  else if (rollup.amountPaidCents > 0) status = 'partially_paid';
-  else if (status === 'billed' || status === 'finalized' || status === 'sent') status = status;
+  const status = getInvoiceFinancialLifecycleStatus({
+    invoiceStatus: invoice.status,
+    rollup,
+  });
 
   return {
     amountPaidCents: rollup.amountPaidCents,

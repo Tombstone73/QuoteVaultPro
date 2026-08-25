@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { integrationConnections, invoices, payments, paymentWebhookEvents, stripeRefundRequests } from "../../shared/schema";
+import { integrationConnections, invoices, payments, paymentWebhookEvents, stripePaymentAttempts, stripeRefundRequests } from "../../shared/schema";
 import { reconcileInvoicePaymentStateInTransaction } from "../invoicesService";
 
 /**
@@ -15,6 +15,7 @@ export type StripePaymentObservationInput = {
   organizationId?: string | null;
   invoiceId?: string | null;
   paymentIntentId?: string | null;
+  paymentAttemptId?: string | null;
   stripeAccountId?: string | null;
   amountCents?: number | null;
   currency?: string | null;
@@ -33,6 +34,7 @@ type SanitizedStripeObservation = {
   organizationId: string | null;
   invoiceId: string | null;
   paymentIntentId: string | null;
+  paymentAttemptId: string | null;
   stripeAccountId: string | null;
   amountCents: number | null;
   currency: string | null;
@@ -86,6 +88,7 @@ function sanitizeObservation(input: StripePaymentObservationInput): SanitizedStr
     organizationId: textOrNull(input.organizationId),
     invoiceId: textOrNull(input.invoiceId),
     paymentIntentId: textOrNull(input.paymentIntentId),
+    paymentAttemptId: textOrNull(input.paymentAttemptId),
     stripeAccountId: textOrNull(input.stripeAccountId),
     amountCents: nonNegativeCents(input.amountCents),
     currency: textOrNull(input.currency)?.toUpperCase().slice(0, 8) || null,
@@ -105,6 +108,7 @@ function readStoredObservation(value: unknown): SanitizedStripeObservation {
     organizationId: payload.organizationId as string | null,
     invoiceId: payload.invoiceId as string | null,
     paymentIntentId: payload.paymentIntentId as string | null,
+    paymentAttemptId: payload.paymentAttemptId as string | null,
     stripeAccountId: payload.stripeAccountId as string | null,
     amountCents: payload.amountCents as number | null,
     currency: payload.currency as string | null,
@@ -195,6 +199,7 @@ export async function captureAndApply(input: StripePaymentObservationInput): Pro
   const existing = stored ? (rawPayload?.schemaVersion === 1 ? readStoredObservation(stored.payload) : observation) : null;
   if (!existing || existing.type !== observation.type || existing.organizationId !== observation.organizationId ||
     existing.invoiceId !== observation.invoiceId || existing.paymentIntentId !== observation.paymentIntentId ||
+    existing.paymentAttemptId !== observation.paymentAttemptId ||
     existing.stripeAccountId !== observation.stripeAccountId || existing.amountCents !== observation.amountCents ||
     existing.currency !== observation.currency || existing.refundId !== observation.refundId || existing.refundRequestId !== observation.refundRequestId ||
     existing.refundAmountCents !== observation.refundAmountCents || existing.refundStatus !== observation.refundStatus) {
@@ -239,6 +244,16 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
 
       let payment = await findPaymentByIntent(tx, organizationId, paymentIntentId);
       if (!payment && effect !== "succeeded") {
+        if (effect === "failed" || effect === "canceled") {
+          await tx.update(stripePaymentAttempts).set({
+            status: effect,
+            updatedAt: new Date(),
+          } as any).where(and(
+            eq(stripePaymentAttempts.organizationId, organizationId),
+            eq(stripePaymentAttempts.stripePaymentIntentId, paymentIntentId),
+            inArray(stripePaymentAttempts.status, ["reserved", "pending"]),
+          ));
+        }
         await markProcessed(tx, normalizedEventId, now);
         return { eventId: normalizedEventId, processed: true, alreadyProcessed: false, effect: "missing_payment", paymentId: null, invoiceId: observation.invoiceId };
       }
@@ -376,6 +391,37 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
               } as any);
             }
           }
+        }
+      }
+
+      // The attempt ledger is non-financial, but it must follow signed Stripe
+      // terminal observations. A refund leaves the original succeeded attempt
+      // terminal, allowing a reopened invoice to reserve a brand-new attempt.
+      if (effect === "succeeded" || effect === "failed" || effect === "canceled") {
+        await tx.update(stripePaymentAttempts).set({
+          status: effect,
+          ...(payment?.id ? { paymentId: payment.id } : {}),
+          updatedAt: now,
+        } as any).where(and(
+          eq(stripePaymentAttempts.organizationId, organizationId),
+          eq(stripePaymentAttempts.stripePaymentIntentId, paymentIntentId),
+          inArray(stripePaymentAttempts.status, ["reserved", "pending"]),
+        ));
+        // The API can crash after Stripe accepts the idempotent request but
+        // before it persists the PaymentIntent id. The signed webhook carries
+        // the attempt id in PI metadata, repairing that narrow recovery gap.
+        if (observation.paymentAttemptId) {
+          await tx.update(stripePaymentAttempts).set({
+            stripePaymentIntentId: paymentIntentId,
+            status: effect,
+            ...(payment?.id ? { paymentId: payment.id } : {}),
+            updatedAt: now,
+          } as any).where(and(
+            eq(stripePaymentAttempts.id, observation.paymentAttemptId),
+            eq(stripePaymentAttempts.organizationId, organizationId),
+            eq(stripePaymentAttempts.invoiceId, invoiceId),
+            inArray(stripePaymentAttempts.status, ["reserved", "pending"]),
+          ));
         }
       }
 

@@ -5385,6 +5385,42 @@ export const insertPaymentWebhookEventSchema = createInsertSchema(paymentWebhook
 export type InsertPaymentWebhookEvent = z.infer<typeof insertPaymentWebhookEventSchema>;
 export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 
+// A collection attempt is intentionally distinct from the resulting payment.
+// It is reserved before calling Stripe so retries use the same idempotency key;
+// webhook reconciliation remains authoritative for the payment's financial
+// effect and advances the attempt to a terminal state.
+export const stripePaymentAttempts = pgTable("stripe_payment_attempts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  channel: varchar("channel", { length: 20 }).notNull(), // staff | portal
+  amountCents: integer("amount_cents").notNull(),
+  currency: varchar("currency", { length: 8 }).notNull().default("USD"),
+  stripeAccountId: text("stripe_account_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  paymentId: varchar("payment_id").references(() => payments.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 20 }).notNull().default("reserved"), // reserved | pending | succeeded | failed | canceled
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  metadata: jsonb("metadata").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("stripe_payment_attempts_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
+  uniqueIndex("stripe_payment_attempts_org_intent_uidx")
+    .on(table.organizationId, table.stripePaymentIntentId)
+    .where(sql`${table.stripePaymentIntentId} IS NOT NULL`),
+  // One active collection attempt per invoice closes the concurrent-request
+  // window without coupling an attempt identity to its amount or history.
+  uniqueIndex("stripe_payment_attempts_one_active_invoice_uidx")
+    .on(table.organizationId, table.invoiceId)
+    .where(sql`${table.status} IN ('reserved', 'pending')`),
+  index("stripe_payment_attempts_invoice_idx").on(table.organizationId, table.invoiceId),
+  index("stripe_payment_attempts_status_idx").on(table.status),
+]);
+
+export type StripePaymentAttempt = typeof stripePaymentAttempts.$inferSelect;
+
 // Stripe refund initiation ledger. These rows reserve a requested amount and
 // provide durable idempotency, but are deliberately not payments: only signed
 // webhook reconciliation creates the immutable negative payment effect.

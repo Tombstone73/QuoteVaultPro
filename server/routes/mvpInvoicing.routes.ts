@@ -35,6 +35,7 @@ import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
 import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
+import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -638,6 +639,11 @@ export async function registerMvpInvoicingRoutes(
             ...(piStatus === 'failed' ? { failedAt: new Date() } : { canceledAt: new Date() }),
             updatedAt: new Date(),
           } as any).where(and(eq(payments.id, differentAmountPending.id), eq(payments.organizationId, organizationId)));
+          await markStripePaymentAttemptTerminalForPayment({
+            organizationId,
+            paymentId: String(differentAmountPending.id),
+            status: piStatus === 'failed' ? 'failed' : 'canceled',
+          });
         } catch (error: any) {
           console.error('[StripeCreateIntent] failed to verify different-amount pending intent', { organizationId, invoiceId: inv.id, message: String(error?.message || error) });
           return res.status(502).json({ success: false, error: 'Unable to verify the previous Stripe payment attempt; it was left unchanged.' });
@@ -717,8 +723,15 @@ export async function registerMvpInvoicingRoutes(
             const now = new Date();
             await db
               .update(payments)
-              .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
+              .set(piStatus === 'failed'
+                ? { status: 'failed', failedAt: now, canceledAt: null, updatedAt: now } as any
+                : { status: 'canceled', canceledAt: now, failedAt: null, updatedAt: now } as any)
               .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+            await markStripePaymentAttemptTerminalForPayment({
+              organizationId,
+              paymentId: String((existingPending as any).id),
+              status: piStatus === 'failed' ? 'failed' : 'canceled',
+            });
           } catch (err: any) {
             console.error('[StripeCreateIntent] failed to retrieve existing intent', {
               organizationId,
@@ -739,19 +752,23 @@ export async function registerMvpInvoicingRoutes(
         }
       }
 
-      // The generation is stable for concurrent requests to the same logical
-      // attempt, while a Stripe-confirmed terminal attempt advances it for a
-      // legitimate retry. Amount-only keys replay canceled attempts forever.
-      const terminalAttempts = await db
-        .select({ id: payments.id })
-        .from(payments)
-        .where(and(
-          eq(payments.organizationId, organizationId),
-          eq(payments.invoiceId, inv.id),
-          eq(payments.provider, 'stripe'),
-          inArray(payments.status, ['failed', 'canceled']),
-        ));
-      const idempotencyKey = `${organizationId}:${inv.id}:${amountDueCents}:staff:v2:${terminalAttempts.length + 1}`;
+      // Reserve a durable collection attempt before contacting Stripe. Its
+      // identity survives a network retry, but a Stripe-confirmed success is
+      // terminal, so a later refund can reserve a distinct re-payment attempt.
+      const reservation = await reserveStripePaymentAttempt({
+        organizationId,
+        invoiceId: inv.id,
+        channel: 'staff',
+        amountCents: amountDueCents,
+        currency,
+        stripeAccountId,
+        createdByUserId: userId,
+        metadata: { invoiceNumber: String(inv.invoiceNumber) },
+      });
+      const attempt = reservation.attempt;
+      if (Number(attempt.amountCents) !== amountDueCents || String(attempt.stripeAccountId) !== stripeAccountId) {
+        return res.status(409).json({ success: false, code: 'STRIPE_PENDING_AMOUNT_MISMATCH', error: 'A previous Stripe payment is still awaiting completion.' });
+      }
 
       const stripe = getStripeClient();
       const pi = await stripe.paymentIntents.create(
@@ -764,12 +781,13 @@ export async function registerMvpInvoicingRoutes(
             organizationId,
             invoiceId: inv.id,
             stripeAccountId,
+            stripePaymentAttemptId: attempt.id,
             importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv) ? 'true' : 'false',
             qbInvoiceId: inv.qbInvoiceId || null,
           },
         },
         {
-          idempotencyKey,
+          idempotencyKey: attempt.idempotencyKey,
           stripeAccount: stripeAccountId,
         } as any
       );
@@ -778,6 +796,23 @@ export async function registerMvpInvoicingRoutes(
 
       const paymentIntentId = pi.id;
       const clientSecret = pi.client_secret;
+
+      await recordStripePaymentAttemptIntent({
+        organizationId,
+        attemptId: attempt.id,
+        stripePaymentIntentId: paymentIntentId,
+      });
+
+      if (String((pi as any).status || '').toLowerCase() === 'succeeded') {
+        await captureAndApplyStripeObservation({
+          eventId: `stripe-browser-create:${paymentIntentId}:payment_intent.succeeded`,
+          type: 'payment_intent.succeeded', organizationId, invoiceId: inv.id,
+          paymentIntentId, paymentAttemptId: attempt.id, stripeAccountId,
+          amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? amountDueCents))),
+          currency: String((pi as any).currency || currency), occurredAt: new Date(),
+        });
+        return res.status(409).json({ success: false, error: 'Invoice is already paid' });
+      }
 
       // If another request already inserted the payment row (Stripe idempotency can cause this), reuse it.
       const [existingByIntent] = await db
@@ -817,6 +852,7 @@ export async function registerMvpInvoicingRoutes(
             invoiceId: inv.id,
             organizationId,
             stripeAccountId,
+            stripePaymentAttemptId: attempt.id,
             importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
             qbInvoiceId: inv.qbInvoiceId || null,
           },
@@ -833,6 +869,15 @@ export async function registerMvpInvoicingRoutes(
         .returning();
 
       const payment: any | undefined = insertedRows[0] as any;
+
+      if (payment) {
+        await recordStripePaymentAttemptIntent({
+          organizationId,
+          attemptId: attempt.id,
+          stripePaymentIntentId: paymentIntentId,
+          paymentId: String(payment.id),
+        });
+      }
 
       if (!payment) {
         const [existingAfterConflict] = await db
@@ -878,7 +923,7 @@ export async function registerMvpInvoicingRoutes(
           entityId: inv.id,
           entityName: String(inv.invoiceNumber),
           description: 'Stripe PaymentIntent created',
-          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, amountCents: amountDueCents } as any,
+          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, stripePaymentAttemptId: attempt.id, amountCents: amountDueCents } as any,
           createdAt: now,
         } as any);
       } catch {}
@@ -1622,6 +1667,7 @@ export async function registerMvpInvoicingRoutes(
           organizationId,
           invoiceId,
           paymentIntentId: intentId,
+          paymentAttemptId: pi?.metadata?.stripePaymentAttemptId ? String(pi.metadata.stripePaymentAttemptId) : null,
           stripeAccountId,
           amountCents,
           currency,
@@ -1741,6 +1787,7 @@ export async function registerMvpInvoicingRoutes(
           organizationId,
           invoiceId: pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null,
           paymentIntentId: intentId,
+          paymentAttemptId: pi?.metadata?.stripePaymentAttemptId ? String(pi.metadata.stripePaymentAttemptId) : null,
           stripeAccountId,
           amountCents: Math.max(0, Math.round(Number(pi.amount_received ?? pi.amount ?? 0))),
           currency: String(pi.currency || "USD"),
@@ -1783,6 +1830,7 @@ export async function registerMvpInvoicingRoutes(
           organizationId,
           invoiceId: pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null,
           paymentIntentId: intentId,
+          paymentAttemptId: pi?.metadata?.stripePaymentAttemptId ? String(pi.metadata.stripePaymentAttemptId) : null,
           stripeAccountId,
           amountCents: Math.max(0, Math.round(Number(pi.amount_received ?? pi.amount ?? 0))),
           currency: String(pi.currency || "USD"),
@@ -2000,6 +2048,42 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("Error fetching invoice:", error);
       res.status(500).json({ error: error.message || "Failed to fetch invoice" });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Rebuild the persisted payment rollup for one tenant-scoped invoice.
+  // This is intentionally a reconciliation operation: it does not create,
+  // update, or delete any payment/refund history.
+  // ------------------------------------------------------------
+  app.post("/api/invoices/:id/refresh-status", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const invoiceId = String(req.params.id || "").trim();
+      if (!invoiceId) return res.status(400).json({ success: false, error: "Missing invoice id" });
+
+      const rel = await getInvoiceWithRelations(invoiceId);
+      if (!rel || String((rel.invoice as any).organizationId) !== organizationId) {
+        return res.status(404).json({ success: false, error: "Invoice not found" });
+      }
+
+      const refreshed = await refreshInvoiceStatus(invoiceId);
+      if (!refreshed) return res.status(404).json({ success: false, error: "Invoice not found" });
+
+      const refreshedRel = await getInvoiceWithRelations(invoiceId);
+      if (!refreshedRel || String((refreshedRel.invoice as any).organizationId) !== organizationId) {
+        return res.status(404).json({ success: false, error: "Invoice not found" });
+      }
+
+      return res.json({
+        success: true,
+        data: withNormalizedInvoiceDisplay(refreshedRel.invoice as any, refreshedRel.payments as any),
+      });
+    } catch (error: any) {
+      console.error("Error refreshing invoice status:", error);
+      return res.status(500).json({ success: false, error: error.message || "Failed to refresh invoice status" });
     }
   });
 
