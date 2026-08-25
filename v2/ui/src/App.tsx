@@ -557,6 +557,23 @@ export const App = ({
           proofWorkId={proofWorkId || undefined}
           orderId={proofOrderId || undefined}
           lineId={proofLineId || undefined}
+          openOrder={(id) => {
+            pushOrderLocation(id);
+            setOrderId(id);
+            setPage("orders");
+          }}
+          openCustomer={(id) => {
+            pushCustomerLocation(id);
+            setCustomerId(id);
+            setPage("customers");
+          }}
+          openArtwork={(id) => {
+            pushArtworkFileLocation(id);
+            setArtworkFileId(id);
+            setArtworkOrderId("");
+            setArtworkLineId("");
+            setPage("artwork");
+          }}
         />
       ) : page === "prepress" ? (
         <PrepressWorkspace

@@ -9,8 +9,10 @@ const context = { order: { number: { display: "ORD-1007", core: "1007" }, order:
 const render = (projection?: ProofWorkProjection) => renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ProofWorkflowActions organizationId="org-a" context={context} projection={projection} canPrepare canIssue canRespond onRefresh={async () => undefined} /></QueryClientProvider>);
 assert.match(render(), /Start Proofing/); assert.doesNotMatch(render(), /OrderLine ID|Artwork Assignment ID/);
 const draft = { work: { proofWorkId: "work-a", orderId: "order-a", orderLineId: "line-a", createdAt: "2026-08-20T00:00:00.000Z" }, versions: [{ version: { proofVersionId: "version-a", proofWorkId: "work-a", sequence: 1, artwork: [], createdAt: "2026-08-20T00:00:00.000Z" } }] } as unknown as ProofWorkProjection;
-assert.match(render(draft), /Issue Proof/);
-const issued = { ...draft, versions: [{ version: { ...draft.versions[0]!.version, issuedAt: "2026-08-20T00:01:00.000Z" } }] };
+assert.match(render(draft), /has no immutable Artwork evidence/); assert.doesNotMatch(render(draft), /Issue Proof/);
+const evidencedDraft = { ...draft, versions: [{ version: { ...draft.versions[0]!.version, artwork: [{ position: 0, artworkAssignmentId: "art-a", artworkFileId: "file-a" }] } }] } as unknown as ProofWorkProjection;
+assert.match(render(evidencedDraft), /Issue Proof/);
+const issued = { ...evidencedDraft, versions: [{ version: { ...evidencedDraft.versions[0]!.version, issuedAt: "2026-08-20T00:01:00.000Z" } }] };
 assert.match(render(issued), /Approve Proof/); assert.match(render(issued), /Request Revision/);
 assert.match(render({ ...issued, versions: [{ ...issued.versions[0]!, response: { outcome: "approved" } }] } as unknown as ProofWorkProjection), /Proofing complete/);
 const requests: { url: string; body: Record<string, unknown> }[] = []; const originalFetch = globalThis.fetch;
