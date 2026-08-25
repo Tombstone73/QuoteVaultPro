@@ -8,12 +8,12 @@ const client = new QueryClient();
 client.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", "file-a"], {
   file: { id: "file-a", originalFilename: "front-original.pdf", displayFilename: "front.pdf", contentType: "application/pdf", byteSize: 1200, source: "prepress_derived", pageCount: 2, detectedWidthMicrons: 100000, detectedHeightMicrons: 200000, derivedFromArtworkFileId: "file-source", createdAt: "2026-08-17T00:00:00.000Z" },
   assignments: [
-    { id: "assignment-a", artworkFileId: "file-a", orderId: "order-a", orderLineId: "line-a", purpose: "production", side: "front", sourcePageIndex: 0, layerKey: "ink", layerOrder: 1, createdAt: "2026-08-17T00:00:00.000Z", orderNumber: "SO-100", customerId: "customer-a", customerDisplayName: "Acme", lineDescription: "Signs" },
-    { id: "assignment-b", artworkFileId: "file-a", orderId: "order-b", orderLineId: "line-b", purpose: "proof", side: "back", createdAt: "2026-08-17T00:00:00.000Z", orderNumber: "SO-101", customerDisplayName: "Beta", lineDescription: "Banners" },
+    { assignment: { id: "assignment-a", artworkFileId: "file-a", orderId: "order-a", orderLineId: "line-a", purpose: "production", side: "front", sourcePageIndex: 0, layerKey: "ink", layerOrder: 1, createdAt: "2026-08-17T00:00:00.000Z" }, orderNumber: "SO-100", customerId: "customer-a", customerDisplayName: "Acme", lineDescription: "Signs" },
+    { assignment: { id: "assignment-b", artworkFileId: "file-a", orderId: "order-b", orderLineId: "line-b", purpose: "proof", side: "back", createdAt: "2026-08-17T00:00:00.000Z" }, orderNumber: "SO-101", customerDisplayName: "Beta", lineDescription: "Banners" },
   ],
 });
 const markup = renderToStaticMarkup(<QueryClientProvider client={client}><ArtworkWorkspace organizationId="org-a" sessionScope="scope-a" canView artworkFileId="file-a" openArtwork={() => {}} openCustomer={() => {}} openOrder={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
-for (const text of ["front.pdf", "No preview available", "File metadata", "front-original.pdf", "prepress derived", "2 pages", "100.0 × 200.0 mm", "Assignments", "SO-100", "SO-101", "Proofing, Prepress, and Production own their workflow records."]) assert.match(markup, new RegExp(text));
+for (const text of ["front.pdf", "No preview available", "File metadata", "front-original.pdf", "prepress derived", "2 pages", "100.0 × 200.0 mm", "production · front · page 1 · ink 2", "proof · back", "Assignments", "SO-100", "SO-101", "Proofing, Prepress, and Production own their workflow records."]) assert.match(markup, new RegExp(text));
 assert.doesNotMatch(markup, /Send Proof|Production Ready|Approved|Delete Artwork/);
 assert.doesNotMatch(markup, /file-a|assignment-a|customer-a/);
 
@@ -21,8 +21,8 @@ const legacyMetadataClient = new QueryClient();
 legacyMetadataClient.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", "file-b"], {
   file: { id: "file-b", displayFilename: "live-like.pdf", contentType: "application/pdf", byteSize: 331, createdAt: "2026-08-17T00:00:00.000Z" },
   assignments: [
-    { id: "assignment-production", artworkFileId: "file-b", orderId: "order-a", orderLineId: "line-a", purpose: "production", side: "front", createdAt: "2026-08-17T00:00:00.000Z", orderNumber: "ORD-1007", customerDisplayName: "3 Alarm Graphics", lineDescription: "Sign Vinyl" },
-    { id: "assignment-customer", artworkFileId: "file-b", orderId: "order-a", orderLineId: "line-a", purpose: "customer_supplied", side: "front", createdAt: "2026-08-17T00:00:00.000Z", orderNumber: "ORD-1007", customerDisplayName: "3 Alarm Graphics", lineDescription: "Sign Vinyl" },
+    { assignment: { id: "assignment-production", artworkFileId: "file-b", orderId: "order-a", orderLineId: "line-a", purpose: "production", side: "front", createdAt: "2026-08-17T00:00:00.000Z" }, orderNumber: "ORD-1007", customerDisplayName: "3 Alarm Graphics", lineDescription: "Sign Vinyl" },
+    { assignment: { id: "assignment-customer", artworkFileId: "file-b", orderId: "order-a", orderLineId: "line-a", purpose: "customer_supplied", side: "front", createdAt: "2026-08-17T00:00:00.000Z" }, orderNumber: "ORD-1007", customerDisplayName: "3 Alarm Graphics", lineDescription: "Sign Vinyl" },
   ],
 });
 const legacyMetadata = renderToStaticMarkup(<QueryClientProvider client={legacyMetadataClient}><ArtworkWorkspace organizationId="org-a" sessionScope="scope-a" canView artworkFileId="file-b" openArtwork={() => {}} openCustomer={() => {}} openOrder={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { artworkApi, orderApi } from "./api";
+import { artworkApi, orderApi, type ArtworkWorkspaceDetailAssignment } from "./api";
 import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
 
 const unavailable = "—";
@@ -12,9 +12,9 @@ const dimensions = (file: Readonly<{ pageCount?: number; detectedWidthMicrons?: 
 const source = (value: unknown) => typeof value === "string" && value.trim() ? value.replaceAll("_", " ") : "Not recorded";
 const FileGlyph = ({ filename }: Readonly<{ filename: unknown }>) => <span className="v2-artwork-glyph" aria-label="No preview available">{text(filename, "FILE").split(".").pop()?.slice(0, 3).toUpperCase() || "FILE"}</span>;
 
-const AssignmentContext = ({ item, openCustomer, openOrder }: Readonly<{ item: Readonly<{ id: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; orderId: string; orderNumber: string; customerId?: string; customerDisplayName: string; lineDescription: string }>; openCustomer: (id: string) => void; openOrder: (id: string) => void }>) => <section className="v2-artwork-assignment-card">
-  <header><strong>{usage(item)}</strong><small>Canonical assignment</small></header>
-  <dl><div><dt>Order</dt><dd><button type="button" onClick={() => openOrder(item.orderId)}>#{item.orderNumber}</button></dd></div><div><dt>Customer</dt><dd>{item.customerId ? <button type="button" onClick={() => openCustomer(item.customerId!)}>{item.customerDisplayName}</button> : item.customerDisplayName}</dd></div><div><dt>Line item</dt><dd>{item.lineDescription || unavailable}</dd></div></dl>
+const AssignmentContext = ({ item, openCustomer, openOrder }: Readonly<{ item: ArtworkWorkspaceDetailAssignment; openCustomer: (id: string) => void; openOrder: (id: string) => void }>) => <section className="v2-artwork-assignment-card">
+  <header><strong>{usage(item.assignment)}</strong><small>Canonical assignment</small></header>
+  <dl><div><dt>Order</dt><dd><button type="button" onClick={() => openOrder(item.assignment.orderId)}>#{item.orderNumber}</button></dd></div><div><dt>Customer</dt><dd>{item.customerId ? <button type="button" onClick={() => openCustomer(item.customerId!)}>{item.customerDisplayName}</button> : item.customerDisplayName}</dd></div><div><dt>Line item</dt><dd>{item.lineDescription || unavailable}</dd></div></dl>
 </section>;
 
 const ArtworkDetail = ({ organizationId, sessionScope, fileId, canView, backToCatalog, openArtwork, openCustomer, openOrder }: Readonly<{ organizationId: string; sessionScope: string; fileId: string; canView: boolean; backToCatalog: () => void; openArtwork: (id: string) => void; openCustomer: (id: string) => void; openOrder: (id: string) => void }>) => {
@@ -29,7 +29,7 @@ const ArtworkDetail = ({ organizationId, sessionScope, fileId, canView, backToCa
       <section><h2>File metadata</h2><dl><div><dt>Original filename</dt><dd>{text(artwork.file.originalFilename)}</dd></div><div><dt>Source</dt><dd>{source(artwork.file.source)}</dd></div><div><dt>Pages / dimensions</dt><dd>{dimensions(artwork.file)}</dd></div><div><dt>Preview</dt><dd>Private preview/download access is not available in the current Artwork contract.</dd></div></dl></section>
       <section><h2>Lineage</h2>{artwork.file.derivedFromArtworkFileId ? <p>This file is derived from <button type="button" className="v2-artwork-link" onClick={() => openArtwork(artwork.file.derivedFromArtworkFileId!)}>related Artwork</button>.</p> : <p>Original canonical Artwork file.</p>}<small>Lineage is shown only when persisted by Artwork.</small></section>
     </div>
-    <section className="v2-artwork-assignments"><header><div><h2>Assignments</h2><p>One Artwork file can be used by multiple Order lines.</p></div><span>{artwork.assignments.length}</span></header>{artwork.assignments.length ? <div>{artwork.assignments.map((assignment) => <AssignmentContext key={assignment.id} item={assignment} openCustomer={openCustomer} openOrder={openOrder} />)}</div> : <p className="v2-artwork-empty">No canonical assignments are available for this Artwork file.</p>}</section>
+    <section className="v2-artwork-assignments"><header><div><h2>Assignments</h2><p>One Artwork file can be used by multiple Order lines.</p></div><span>{artwork.assignments.length}</span></header>{artwork.assignments.length ? <div>{artwork.assignments.map((assignment) => <AssignmentContext key={assignment.assignment.id} item={assignment} openCustomer={openCustomer} openOrder={openOrder} />)}</div> : <p className="v2-artwork-empty">No canonical assignments are available for this Artwork file.</p>}</section>
     <section className="v2-artwork-note"><h2>Workflow context</h2><p>Proofing, Prepress, and Production own their workflow records. This Artwork detail does not duplicate their state or actions.</p></section>
   </section>;
 };

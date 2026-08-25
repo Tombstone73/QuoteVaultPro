@@ -934,6 +934,17 @@ export type ArtworkOrderProjection = Readonly<{
     createdAt: string;
   }>;
 }>;
+export type ArtworkWorkspaceDetailAssignment = Readonly<{
+  assignment: ArtworkOrderProjection["assignment"];
+  orderNumber: string;
+  customerId?: string;
+  customerDisplayName: string;
+  lineDescription: string;
+}>;
+export type ArtworkWorkspaceDetail = Readonly<{
+  file: ArtworkOrderProjection["file"];
+  assignments: readonly ArtworkWorkspaceDetailAssignment[];
+}>;
 export type ProofResponse = Readonly<{
   proofResponseId: string;
   proofVersionId: string;
@@ -2053,15 +2064,7 @@ export const artworkApi = {
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace${query ? `?q=${encodeURIComponent(query)}` : ""}`,
     ),
   detail: (organizationId: string, artworkFileId: string) =>
-    request<Readonly<{
-      file: ArtworkOrderProjection["file"];
-      assignments: readonly (ArtworkOrderProjection["assignment"] & Readonly<{
-        orderNumber: string;
-        customerId?: string;
-        customerDisplayName: string;
-        lineDescription: string;
-      }>)[];
-    }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace/files/${encodeURIComponent(artworkFileId)}`),
+    request<ArtworkWorkspaceDetail>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/workspace/files/${encodeURIComponent(artworkFileId)}`),
   forOrder: (organizationId: string, orderId: string) =>
     request<readonly ArtworkOrderProjection[]>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/orders/${encodeURIComponent(orderId)}`,
