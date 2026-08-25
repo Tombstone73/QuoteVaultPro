@@ -11,6 +11,7 @@ describe("Contacts workspace PostgreSQL projection", () => {
     expect(calls).toHaveLength(2);
     for (const call of calls) { expect(call.text).toContain("l.organization_id = $1"); expect(call.text).toContain("customer_contact_links"); expect(call.values).toEqual(["org-a", "%Ada%"]); }
     expect(calls[0]!.text).toContain("LIMIT 500");
+    expect(calls[0]!.text).toContain("l.is_primary AS is_primary");
   });
   test("reads a Contact only through its active tenant-scoped Customer relationship", async () => {
     const calls: { text: string; values?: readonly unknown[] }[] = [];

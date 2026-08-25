@@ -409,6 +409,11 @@ export const App = ({
             pushCustomerLocation();
             setCustomerId("");
           }}
+          openContact={(id) => {
+            pushContactLocation(id);
+            setContactId(id);
+            setPage("contacts");
+          }}
         />
       ) : page === "contacts" ? (
         <ContactsWorkspace

@@ -1555,6 +1555,7 @@ export type CustomerWorkspaceRead = Readonly<{
     displayName: string;
     email?: string;
     phone?: string;
+    primary: boolean;
   }>[];
 }>;
 export type CustomerCatalogItem = Readonly<{
@@ -1568,6 +1569,7 @@ export type CustomerCatalogItem = Readonly<{
     displayName: string;
     email?: string;
     phone?: string;
+    primary: boolean;
   }>;
 }>;
 export const customerApi = {

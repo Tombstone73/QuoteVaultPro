@@ -14,6 +14,7 @@ export type CustomerWorkspaceContact = Readonly<{
   displayName: string;
   email?: string;
   phone?: string;
+  primary: boolean;
 }>;
 export type CustomerCatalogItem = Readonly<{
   customerId: CustomerId;
@@ -35,6 +36,7 @@ type CustomerCatalogRow = Readonly<{
   contact_last_name: string | null;
   contact_email: string | null;
   contact_phone: string | null;
+  contact_is_primary: boolean | null;
 }>;
 type CustomerContactRow = Readonly<{
   id: string;
@@ -42,6 +44,7 @@ type CustomerContactRow = Readonly<{
   last_name: string;
   email: string | null;
   phone: string | null;
+  is_primary: boolean | null;
 }>;
 
 const contact = (row: CustomerContactRow): CustomerWorkspaceContact => ({
@@ -49,6 +52,7 @@ const contact = (row: CustomerContactRow): CustomerWorkspaceContact => ({
   displayName: `${row.first_name} ${row.last_name}`.trim(),
   ...(row.email ? { email: row.email } : {}),
   ...(row.phone ? { phone: row.phone } : {}),
+  primary: row.is_primary === true,
 });
 const catalogContact = (row: CustomerCatalogRow): CustomerWorkspaceContact | undefined =>
   row.contact_id && row.contact_first_name !== null && row.contact_last_name !== null
@@ -57,6 +61,7 @@ const catalogContact = (row: CustomerCatalogRow): CustomerWorkspaceContact | und
         displayName: `${row.contact_first_name} ${row.contact_last_name}`.trim(),
         ...(row.contact_email ? { email: row.contact_email } : {}),
         ...(row.contact_phone ? { phone: row.contact_phone } : {}),
+        primary: row.contact_is_primary === true,
       }
     : undefined;
 
@@ -70,14 +75,14 @@ export class PostgresCustomerWorkspaceReader {
     const result = await this.pool.query<CustomerCatalogRow>(
       `SELECT c.id AS customer_id, c.display_name, c.company_name, c.email, c.phone,
         primary_contact.id AS contact_id, primary_contact.first_name AS contact_first_name, primary_contact.last_name AS contact_last_name,
-        primary_contact.email AS contact_email, primary_contact.phone AS contact_phone
+        primary_contact.email AS contact_email, primary_contact.phone AS contact_phone, primary_contact.is_primary AS contact_is_primary
       FROM customers c
       LEFT JOIN LATERAL (
-        SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone
+        SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone, l.is_primary
         FROM customer_contact_links l
         JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
         WHERE l.organization_id = c.organization_id AND l.customer_id = c.id AND l.status = 'active'
-        ORDER BY lower(ct.last_name), lower(ct.first_name), ct.id
+        ORDER BY l.is_primary DESC, lower(ct.last_name), lower(ct.first_name), ct.id
         LIMIT 1
       ) primary_contact ON TRUE
       WHERE c.organization_id = $1 AND c.is_active IS NOT FALSE
@@ -117,14 +122,14 @@ export class PostgresCustomerWorkspaceReader {
 
   private async contacts(organizationId: OrganizationId, customerId: CustomerId): Promise<readonly CustomerWorkspaceContact[]> {
     const result = await this.pool.query<CustomerContactRow>(
-      `SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone
+      `SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone, l.is_primary
       FROM customer_contact_links l
       JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
       JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
       WHERE l.organization_id = $1 AND l.customer_id = $2 AND l.status = 'active'
         AND c.is_active IS NOT FALSE AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted')
         AND c.merged_into_customer_id IS NULL
-      ORDER BY lower(ct.last_name), lower(ct.first_name), ct.id`,
+      ORDER BY l.is_primary DESC, lower(ct.last_name), lower(ct.first_name), ct.id`,
       [organizationId, customerId],
     );
     return result.rows.map(contact);
