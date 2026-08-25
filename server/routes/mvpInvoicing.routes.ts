@@ -34,6 +34,7 @@ import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as re
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
 import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
+import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -369,9 +370,10 @@ export async function registerMvpInvoicingRoutes(
       throw error;
     }
 
-    const invoiceStatusForOnlinePayment = String((inv as any).status || "").trim().toLowerCase();
-    const canInvoiceBePaidOnline = rollup.amountDueCents > 0
-      && ["finalized", "billed", "sent", "partially_paid", "overdue"].includes(invoiceStatusForOnlinePayment);
+    const canInvoiceBePaidOnline = getInvoiceFinancialPaymentEligibility({
+      invoiceStatus: (inv as any).status,
+      remainingCents: rollup.amountDueCents,
+    }).payable;
     const portalUrl = await prepareSingleContactPortalAccessForInvoice({
       organizationId: input.organizationId,
       customerId: inv.customerId,
@@ -590,13 +592,12 @@ export async function registerMvpInvoicingRoutes(
         });
       }
 
-      const status = String(inv.status || '').toLowerCase();
-      if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
-
       const normalizedInvoice = withNormalizedInvoiceDisplay(inv, paymentRows as any) as any;
       const amountDueCents = Number(normalizedInvoice.displayRemainingCents || 0);
-
-      if (amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
+      const paymentEligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: inv.status, remainingCents: amountDueCents });
+      if (!paymentEligibility.payable) {
+        return res.status(400).json({ success: false, error: paymentEligibility.blockedReason || "Invoice cannot accept payment" });
+      }
 
       const currency = String(inv.currency || 'USD');
 

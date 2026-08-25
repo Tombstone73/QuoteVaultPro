@@ -12,7 +12,8 @@ import {
 import { db } from "../../db";
 import { assistantManualPaymentMethodValues, type AssistantManualPaymentMethod } from "../../invoicesService";
 import { isCanceledOrder } from "@shared/operationalState";
-import { isPayableInvoiceStatus } from "@shared/paymentOrchestration";
+import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
+import { computeInvoicePaymentRollup } from "@shared/rollups/invoicePaymentRollup";
 import { canonicalPaymentOperations } from "../billing/canonicalPaymentOperations";
 
 export const paymentOperationCommandNames = [
@@ -124,7 +125,8 @@ export class PaymentOperationsService {
       ? (await db.select().from(customerContacts).where(and(eq(customerContacts.id, order.contactId), eq(customerContacts.organizationId, organizationId), eq(customerContacts.customerId, customer.id))).limit(1))[0] ?? null
       : null;
     if (order.contactId && !contact) throw new PaymentOperationError("CONTACT_NOT_FOUND", "The invoice contact is unavailable.");
-    return { invoice, order, customer, contact };
+    const invoicePayments = await db.select().from(payments).where(and(eq(payments.invoiceId, invoice.id), eq(payments.organizationId, organizationId)));
+    return { invoice, order, customer, contact, payments: invoicePayments };
   }
 
   private async resolvePaymentContext(organizationId: string, paymentId: string) {
@@ -141,12 +143,16 @@ export class PaymentOperationsService {
     if (intake.command === "payments.record_manual_payment") {
       if (!intake.invoiceId || !intake.method || intake.amount === undefined) throw new PaymentOperationError("PAYMENT_INPUT_REQUIRED", "Invoice, amount, and method are required.");
       const context = await this.resolveInvoiceContext(organizationId, intake.invoiceId);
-      const status = String(context.invoice.status || "").toLowerCase();
-      if (!isPayableInvoiceStatus(status)) throw new PaymentOperationError("INVOICE_NOT_PAYABLE", "This invoice cannot receive a manual payment in its current status.");
       if (isCanceledOrder(context.order)) throw new PaymentOperationError("ORDER_CANCELLED", "Cancelled orders cannot receive payments.");
       if (String((context.invoice as any).importSource || "").toLowerCase() === "quickbooks") throw new PaymentOperationError("IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "Imported QuickBooks invoices must be reconciled from QuickBooks.");
-      const due = Number(context.invoice.balanceDue ?? 0);
-      if (!Number.isFinite(due) || due <= 0 || intake.amount > due + 0.00001) throw new PaymentOperationError("OVERPAYMENT_NOT_ALLOWED", "The requested payment exceeds the server-calculated amount due.");
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Math.max(0, Math.round(Number((context.invoice as any).totalCents || 0))),
+        payments: context.payments.map((payment) => ({ id: payment.id, status: payment.status, amountCents: Number(payment.amountCents || 0) })),
+      });
+      const paymentEligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: context.invoice.status, remainingCents: rollup.amountDueCents });
+      if (!paymentEligibility.payable) throw new PaymentOperationError("INVOICE_NOT_PAYABLE", paymentEligibility.blockedReason || "This invoice cannot receive a manual payment.");
+      const due = rollup.amountDueCents / 100;
+      if (intake.amount > due + 0.00001) throw new PaymentOperationError("OVERPAYMENT_NOT_ALLOWED", "The requested payment exceeds the server-calculated amount due.");
       parseDate(intake.paidAt);
       source = { context, amount: intake.amount, method: intake.method, paidAt: intake.paidAt ?? null, note: intake.note ?? null };
       sourceLinks.push(sourceLinkForInvoice(context.invoice.id), sourceLinkForCustomer(context.customer.id), sourceLinkForOrder(context.order.id));

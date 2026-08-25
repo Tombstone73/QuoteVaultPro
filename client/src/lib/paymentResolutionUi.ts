@@ -1,4 +1,4 @@
-import type { PaymentProviderSummary, PaymentResolutionStatus } from "@shared/paymentOrchestration";
+import { getInvoiceFinancialPaymentEligibility, type PaymentProviderSummary, type PaymentResolutionStatus } from "@shared/paymentOrchestration";
 
 export type InvoiceAutoPaymentAction = "wait" | "stripe" | "eps" | "blocked";
 
@@ -111,18 +111,9 @@ export function resolveInvoiceAutoPaymentAction(input: {
 } {
   if (!input.invoiceReady || input.dependenciesLoading) return { action: "wait" };
 
-  const status = String(input.invoiceStatus || "").trim().toLowerCase();
   const remainingCents = Math.max(0, Math.round(Number(input.remainingCents || 0)));
-
-  if (status === "draft") {
-    return { action: "blocked", message: "Draft invoices must be finalized before payment can be collected." };
-  }
-  if (status === "void") {
-    return { action: "blocked", message: "Void invoices cannot accept payment." };
-  }
-  if (status === "paid" || remainingCents <= 0) {
-    return { action: "blocked", message: "This invoice is already paid." };
-  }
+  const financialEligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: input.invoiceStatus, remainingCents });
+  if (!financialEligibility.payable) return { action: "blocked", message: financialEligibility.blockedReason || "This invoice cannot accept payment." };
   if (input.canPayInvoice) return { action: "stripe" };
   if (input.epsHostedEnabled) return { action: "eps" };
   return { action: "blocked", message: "No configured card processor is currently available for this invoice." };

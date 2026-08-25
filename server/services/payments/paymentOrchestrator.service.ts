@@ -4,7 +4,7 @@ import { invoices, orders, payments } from "../../../shared/schema";
 import { normalizeInvoiceAccountingDisplay } from "../../../shared/invoiceAccountingDisplay";
 import { resolveHostedPaymentProvider, type ConfiguredPaymentProvider, type HostedPaymentProvider } from "../../../shared/paymentProviderResolution";
 import {
-  isPayableInvoiceStatus,
+  getInvoiceFinancialPaymentEligibility,
   type AvailablePaymentMethod,
   type PaymentInvoiceCandidate,
   type PaymentProviderSummary,
@@ -70,13 +70,8 @@ export function getInvoicePaymentEligibility(input: {
   const remainingBalanceCents = Math.max(0, asCents(normalized.displayRemainingCents ?? (totalCents - amountPaidCents)));
   const importedBlock = getImportedQuickBooksBlockReason(input.invoice, remainingBalanceCents);
   if (importedBlock) return { payable: false, blockedReason: importedBlock, amountPaidCents, remainingBalanceCents };
-  if (status === "draft") return { payable: false, blockedReason: "Draft invoices must be finalized before payment can be collected.", amountPaidCents, remainingBalanceCents };
-  if (status === "void") return { payable: false, blockedReason: "Void invoices cannot accept payment.", amountPaidCents, remainingBalanceCents };
-  if (status === "paid" || remainingBalanceCents <= 0) return { payable: false, blockedReason: "Invoice is already paid.", amountPaidCents, remainingBalanceCents };
-  if (!isPayableInvoiceStatus(status)) {
-    return { payable: false, blockedReason: `Invoice status ${status || "unknown"} is not payment-eligible.`, amountPaidCents, remainingBalanceCents };
-  }
-  return { payable: true, blockedReason: null, amountPaidCents, remainingBalanceCents };
+  const financialEligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: status, remainingCents: remainingBalanceCents });
+  return { ...financialEligibility, amountPaidCents, remainingBalanceCents };
 }
 
 function toInvoiceCandidate(invoice: Record<string, any>, paymentRows: Array<Record<string, any>>): PaymentInvoiceCandidate {

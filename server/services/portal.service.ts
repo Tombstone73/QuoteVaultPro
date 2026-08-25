@@ -35,6 +35,7 @@ import {
   getInvoicePaymentStatusLabel,
 } from "@shared/rollups/invoicePaymentRollup";
 import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared/portalFileVisibility";
+import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { getStripeClient } from "../lib/stripe";
 import { captureAndApply as captureAndApplyStripeObservation } from "./stripePaymentReconciliationService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
@@ -678,7 +679,6 @@ type PortalProofRow = {
 };
 
 const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
-const PORTAL_PAYABLE_INVOICE_STATUSES = ["billed", "sent", "open", "partially_paid", "overdue"];
 
 class PortalAccessError extends Error {
   statusCode: number;
@@ -912,10 +912,6 @@ function normalizeInvoiceStatus(raw: unknown): string {
   if (status === "billed") return "sent";
   if (status === "voided") return "void";
   return status || "draft";
-}
-
-export function isPortalInvoiceStatusPayable(raw: unknown): boolean {
-  return PORTAL_PAYABLE_INVOICE_STATUSES.includes(String(raw || "").trim().toLowerCase());
 }
 
 function normalizeStatus(value: unknown): string {
@@ -1690,19 +1686,18 @@ function isImportedQuickBooksInvoice(invoice: InvoicePaymentPortalRow): boolean 
 }
 
 function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRows: PaymentPortalRow[]): number {
-  const status = String(invoice.status || "").trim().toLowerCase();
-  if (!isPortalInvoiceStatusPayable(status)) {
-    throw new PortalAccessError(409, "Invoice is not payable");
-  }
-
   if (isImportedQuickBooksInvoice(invoice) || Boolean(invoice.isHistorical)) {
     throw new PortalAccessError(409, "Invoice is not payable in the portal");
   }
 
   const rollup = invoiceRollup(invoice, paymentRows);
   const amountDueCents = Math.max(0, Math.round(Number(rollup.amountDueCents || 0)));
-  if (amountDueCents <= 0) {
-    throw new PortalAccessError(409, "Invoice is already paid");
+  const paymentEligibility = getInvoiceFinancialPaymentEligibility({
+    invoiceStatus: invoice.status,
+    remainingCents: amountDueCents,
+  });
+  if (!paymentEligibility.payable) {
+    throw new PortalAccessError(409, paymentEligibility.blockedReason || "Invoice is not payable");
   }
 
   return amountDueCents;
@@ -3100,7 +3095,10 @@ export async function getPortalDashboard(req: Request): Promise<PortalDashboardD
 
   const unpaidInvoices = invoices.filter((invoice) => Number(invoice.amountDue || 0) > 0);
   const payableInvoices = unpaidInvoices
-    .filter((invoice) => isPortalInvoiceStatusPayable(invoice.status))
+    .filter((invoice) => getInvoiceFinancialPaymentEligibility({
+      invoiceStatus: invoice.status,
+      remainingCents: Math.round(Number(invoice.amountDue || 0) * 100),
+    }).payable)
     .sort((a, b) => timestampMs(a.dueDate || a.issueDate) - timestampMs(b.dueDate || b.issueDate))
     .slice(0, 4);
 

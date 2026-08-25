@@ -103,7 +103,7 @@ describe("payment resolution UI helpers", () => {
     }).action).toBe("wait");
   });
 
-  test("blocks draft, void, and paid invoices", () => {
+  test("blocks draft, void, and zero-balance invoices", () => {
     expect(resolveInvoiceAutoPaymentAction({
       invoiceReady: true,
       dependenciesLoading: false,
@@ -132,7 +132,19 @@ describe("payment resolution UI helpers", () => {
       canPayInvoice: false,
       epsHostedEnabled: false,
       canRecordPayment: false,
-    }).message).toBe("This invoice is already paid.");
+    }).message).toBe("Invoice is already paid.");
+  });
+
+  test("allows staff card payment when a refund reopens a historically paid invoice", () => {
+    expect(resolveInvoiceAutoPaymentAction({
+      invoiceReady: true,
+      dependenciesLoading: false,
+      invoiceStatus: "paid",
+      remainingCents: 750,
+      canPayInvoice: true,
+      epsHostedEnabled: false,
+      canRecordPayment: true,
+    })).toMatchObject({ action: "stripe" });
   });
 
   test("chooses hosted provider and never falls back to manual record payment", () => {

@@ -13,7 +13,7 @@ import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePri
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
-import { isPayableInvoiceStatus } from '../shared/paymentOrchestration';
+import { getInvoiceFinancialPaymentEligibility } from '../shared/paymentOrchestration';
 import {
   resolveBillingCustomerForOrder,
   writeContactAccountingPromotionAudit,
@@ -961,10 +961,12 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
     const rel = await getInvoiceWithRelations(invoiceId);
     if (!rel) throw new Error('Invoice not found');
     const { invoice } = rel;
-    const existingStatus = String(invoice.status || '').toLowerCase();
-    if (existingStatus === 'void') throw new Error('Cannot record payment on a void invoice');
-
     const currentFinancialState = computeInvoiceFinancialState(invoice as any, rel.payments as any);
+    const paymentEligibility = getInvoiceFinancialPaymentEligibility({
+      invoiceStatus: invoice.status,
+      remainingCents: currentFinancialState.amountDueCents,
+    });
+    if (!paymentEligibility.payable) throw new Error(paymentEligibility.blockedReason || 'Invoice cannot accept payment');
     if (toCents(data.amount) > currentFinancialState.amountDueCents) throw new Error('Overpayment not allowed');
 
     const paymentInsert: InsertPayment = {
@@ -1078,10 +1080,6 @@ export async function recordManualPaymentCanonical(input: {
       eq(invoices.organizationId, input.organizationId),
     )).limit(1);
     if (!invoice) throw Object.assign(new Error("Invoice not found."), { code: "INVOICE_NOT_FOUND" });
-    const invoiceStatus = String(invoice.status || "").toLowerCase();
-    if (!isPayableInvoiceStatus(invoiceStatus)) {
-      throw Object.assign(new Error("This invoice cannot receive a manual payment in its current status."), { code: "INVOICE_NOT_PAYABLE" });
-    }
     if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
       throw Object.assign(new Error("Imported QuickBooks invoices must be reconciled from QuickBooks."), { code: "IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED" });
     }
@@ -1093,6 +1091,13 @@ export async function recordManualPaymentCanonical(input: {
 
     const paymentRows = await tx.select().from(payments).where(and(eq(payments.invoiceId, invoice.id), eq(payments.organizationId, input.organizationId)));
     const financialState = computeInvoiceFinancialState(invoice as any, paymentRows as any);
+    const paymentEligibility = getInvoiceFinancialPaymentEligibility({
+      invoiceStatus: invoice.status,
+      remainingCents: financialState.amountDueCents,
+    });
+    if (!paymentEligibility.payable) {
+      throw Object.assign(new Error(paymentEligibility.blockedReason || "This invoice cannot receive a manual payment."), { code: "INVOICE_NOT_PAYABLE" });
+    }
     const amountCents = toCents(input.amount);
     if (financialState.amountDueCents <= 0 || amountCents > financialState.amountDueCents) {
       throw Object.assign(new Error("Overpayment not allowed."), { code: "OVERPAYMENT_NOT_ALLOWED" });

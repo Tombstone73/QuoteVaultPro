@@ -43,11 +43,14 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("navigate(getInvoiceListTakePaymentPath(invoice.id))");
   });
 
-  it("does not show Take Payment for paid, void, draft, or zero-balance invoices", () => {
-    expect(canTakePaymentFromInvoiceList(invoice({ status: "paid" }))).toBe(false);
+  it("reopens Take Payment after a refund even when historical status remains paid", () => {
+    expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 100, balanceDue: "100.00" }))).toBe(true);
+  });
+
+  it("does not show Take Payment for void, draft, or zero-balance invoices", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "void" }))).toBe(false);
     expect(canTakePaymentFromInvoiceList(invoice({ status: "draft" }))).toBe(false);
-    expect(canTakePaymentFromInvoiceList(invoice({ displayRemaining: 0, balanceDue: "0.00" }))).toBe(false);
+    expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 0, balanceDue: "0.00" }))).toBe(false);
   });
 
   it("no longer renders the legacy Record Payment dialog", () => {

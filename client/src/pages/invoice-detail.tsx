@@ -45,6 +45,7 @@ import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
 import { getHostedCardUnavailableReason, resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
 import { isValidInvoiceRecipientEmail } from "@shared/invoiceEmailRecipients";
+import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
 
 type StripeIntegrationStatusEnvelope = {
@@ -326,6 +327,7 @@ export default function InvoiceDetailPage() {
     importedQuickBooksPaymentsEnabled &&
     (importedQbPendingSyncCents > 0 || importedQbFailedSyncCents > 0 || importedQbSyncedUnreconciledCents > 0 || importedQbReconciledCents > 0);
   const paymentActionsLocked = isImportedFromQuickBooks && !importedQuickBooksPaymentsEnabled;
+  const financialPaymentEligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus, remainingCents });
   const canSendInvoiceEmail = isAdminOrOwner && !isImportedFromQuickBooks;
   const canMarkInvoiceSent = isAdminOrOwner && !isImportedFromQuickBooks;
   const canFinalizeInvoice = invoiceStatus === 'draft' && !isImportedFromQuickBooks;
@@ -340,7 +342,7 @@ export default function InvoiceDetailPage() {
     ? `invoice-${String((invoice as any).invoiceNumber)}.pdf`
     : 'invoice.pdf';
 
-  const canRecordPayment = !!invoice && isStaffUser && !['draft', 'void', 'paid'].includes(invoiceStatus) && remainingCents > 0 && !paymentActionsLocked;
+  const canRecordPayment = !!invoice && isStaffUser && financialPaymentEligibility.payable && !paymentActionsLocked;
   const epsHostedAvailable =
     canRecordPayment &&
     paymentSettings.data?.epsEnabled === true &&
@@ -1052,9 +1054,7 @@ export default function InvoiceDetailPage() {
   const stripeHostedAvailable =
     !!invoice &&
     isStaffUser &&
-    invoiceStatus !== 'void' &&
-    invoiceStatus !== 'draft' &&
-    remainingCents > 0 &&
+    financialPaymentEligibility.payable &&
     !paymentActionsLocked &&
     stripeConnected &&
     stripeChargesEnabled;
@@ -1068,7 +1068,7 @@ export default function InvoiceDetailPage() {
   });
   const canPayInvoice = hostedPaymentResolution.provider === "stripe";
   const epsHostedEnabled = hostedPaymentResolution.provider === "eps";
-  const showPaymentActions = !!invoice && isStaffUser && !['draft', 'paid', 'void'].includes(invoiceStatus) && remainingCents > 0 && !paymentActionsLocked;
+  const showPaymentActions = !!invoice && isStaffUser && financialPaymentEligibility.payable && !paymentActionsLocked;
   const cardPaymentDecision = resolveInvoiceAutoPaymentAction({
     invoiceReady: Boolean(invoice),
     dependenciesLoading: paymentSettings.isLoading || invoicePayments.isLoading || isStripeIntegrationStatusLoading,
@@ -1120,12 +1120,8 @@ export default function InvoiceDetailPage() {
       setSearchParams(next, { replace: true });
       toast({
         title: 'Payment unavailable',
-        description: invoiceStatus === 'draft'
-          ? 'Finalize this invoice before taking payment.'
-          : invoiceStatus === 'paid' || remainingCents <= 0
-            ? 'This invoice is already paid.'
-            : 'Payment cannot be taken for this invoice.',
-        variant: invoiceStatus === 'paid' || remainingCents <= 0 ? 'default' : 'destructive',
+        description: financialPaymentEligibility.blockedReason || 'Payment cannot be taken for this invoice.',
+        variant: remainingCents <= 0 ? 'default' : 'destructive',
       });
       return;
     }
@@ -1139,6 +1135,7 @@ export default function InvoiceDetailPage() {
     invoice?.id,
     invoiceStatus,
     remainingCents,
+    financialPaymentEligibility.blockedReason,
     showPaymentActions,
     paymentSettings.isLoading,
     invoicePayments.isLoading,

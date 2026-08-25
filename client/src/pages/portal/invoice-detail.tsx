@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { useToast } from "@/hooks/use-toast";
 import {
   portalInvoiceKeys,
@@ -32,10 +33,6 @@ function formatDate(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Not set";
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
-}
-
-function canPay(status: string, amountDue: number) {
-  return ["sent", "open", "partially_paid", "overdue"].includes(status) && Number(amountDue || 0) > 0;
 }
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
@@ -84,7 +81,10 @@ export default function PortalInvoiceDetailPage() {
   const payments = paymentsQuery.data ?? [];
   const files = filesQuery.data ?? [];
 
-  const payable = useMemo(() => (invoice ? canPay(invoice.status, invoice.amountDue) : false), [invoice]);
+  const paymentEligibility = useMemo(() => invoice
+    ? getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents: Math.round(Number(invoice.amountDue || 0) * 100) })
+    : { payable: false, blockedReason: "Invoice is not payable." }, [invoice]);
+  const payable = paymentEligibility.payable;
 
   const refreshInvoiceState = async () => {
     await Promise.all([
@@ -221,13 +221,7 @@ export default function PortalInvoiceDetailPage() {
       {!payable ? (
         <Card>
           <CardContent className="py-4 text-sm text-muted-foreground">
-            {invoice.status === "paid"
-              ? "This invoice is paid."
-              : invoice.status === "void"
-                ? "This invoice is no longer payable."
-                : invoice.status === "draft"
-                  ? "This invoice is not ready for payment."
-                  : "Online payment is not available for this invoice."}
+            {paymentEligibility.blockedReason || "Online payment is not available for this invoice."}
           </CardContent>
         </Card>
       ) : null}

@@ -49,8 +49,9 @@ describe("canonical CRM, Invoice, and Payment operation wiring", () => {
     expect(operation).toContain("idempotencyKey: string");
     expect(financialCore).toContain("recordManualPaymentCanonical");
     expect(financialCore).toContain("pg_advisory_xact_lock");
-    expect(financialCore).toContain("isPayableInvoiceStatus");
+    expect(financialCore).toContain("getInvoiceFinancialPaymentEligibility");
     expect(financialCore).toContain("IDEMPOTENCY_KEY_CONFLICT");
+    expect(financialCore).toContain("amountCents > financialState.amountDueCents");
     expect(financialCore).toContain("OVERPAYMENT_NOT_ALLOWED");
   });
 

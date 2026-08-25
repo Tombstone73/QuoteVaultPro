@@ -135,9 +135,33 @@ describe("invoice payment eligibility", () => {
     expect(result.remainingBalanceCents).toBe(10_000);
   });
 
-  test("draft, void, and paid invoices are blocked", () => {
+  test("draft, void, and zero-balance invoices are blocked", () => {
     expect(getInvoicePaymentEligibility({ invoice: { status: "draft", totalCents: 10_000 }, payments: [] }).payable).toBe(false);
     expect(getInvoicePaymentEligibility({ invoice: { status: "void", totalCents: 10_000 }, payments: [] }).payable).toBe(false);
     expect(getInvoicePaymentEligibility({ invoice: { status: "paid", totalCents: 10_000 }, payments: [{ status: "succeeded", amountCents: 10_000 }] }).payable).toBe(false);
+  });
+
+  test("a full Stripe refund reopens an invoice whose historical status is paid", () => {
+    const result = getInvoicePaymentEligibility({
+      invoice: { id: "invoice_1", status: "paid", totalCents: 750 },
+      payments: [
+        { id: "payment_1", status: "succeeded", amountCents: 750 },
+        { id: "refund_1", status: "refunded", amountCents: 750 },
+      ],
+    });
+
+    expect(result).toMatchObject({ payable: true, amountPaidCents: 0, remainingBalanceCents: 750 });
+  });
+
+  test("a partial Stripe refund reopens only the refunded balance", () => {
+    const result = getInvoicePaymentEligibility({
+      invoice: { id: "invoice_1", status: "paid", totalCents: 1_000 },
+      payments: [
+        { id: "payment_1", status: "succeeded", amountCents: 1_000 },
+        { id: "refund_1", status: "refunded", amountCents: 250 },
+      ],
+    });
+
+    expect(result).toMatchObject({ payable: true, amountPaidCents: 750, remainingBalanceCents: 250 });
   });
 });

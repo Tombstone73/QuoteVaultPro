@@ -22,8 +22,8 @@ export const paymentRecommendedActions = [
 
 export type PaymentRecommendedAction = (typeof paymentRecommendedActions)[number];
 
-export const payableInvoiceStatuses = ["finalized", "billed", "sent", "partially_paid", "overdue"] as const;
-export const blockedInvoiceStatuses = ["draft", "paid", "void"] as const;
+export const payableInvoiceStatuses = ["finalized", "billed", "sent", "open", "partially_paid", "overdue", "paid"] as const;
+export const blockedInvoiceStatuses = ["draft", "void", "voided"] as const;
 
 export type PayableInvoiceStatus = (typeof payableInvoiceStatuses)[number];
 export type BlockedInvoiceStatus = (typeof blockedInvoiceStatuses)[number];
@@ -74,4 +74,29 @@ export function isPayableInvoiceStatus(status: string | null | undefined): boole
 
 export function isBlockedInvoiceStatus(status: string | null | undefined): boolean {
   return (blockedInvoiceStatuses as readonly string[]).includes(String(status || "").trim().toLowerCase());
+}
+
+/**
+ * Payment collection is governed by current financial facts, not the
+ * historical invoice payment label. A refund can legitimately reopen an
+ * invoice whose persisted lifecycle status was previously paid.
+ */
+export function getInvoiceFinancialPaymentEligibility(input: {
+  invoiceStatus: string | null | undefined;
+  remainingCents: number | null | undefined;
+}): { payable: boolean; blockedReason: string | null } {
+  const status = String(input.invoiceStatus || "").trim().toLowerCase();
+  const parsedRemainingCents = Math.round(Number(input.remainingCents || 0));
+  const remainingCents = Number.isFinite(parsedRemainingCents) ? Math.max(0, parsedRemainingCents) : 0;
+
+  if (status === "draft") {
+    return { payable: false, blockedReason: "Draft invoices must be finalized before payment can be collected." };
+  }
+  if (status === "void" || status === "voided") {
+    return { payable: false, blockedReason: "Void invoices cannot accept payment." };
+  }
+  if (remainingCents <= 0) {
+    return { payable: false, blockedReason: "Invoice is already paid." };
+  }
+  return { payable: true, blockedReason: null };
 }
