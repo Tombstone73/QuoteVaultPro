@@ -864,6 +864,84 @@ export class OrdersRepository {
         let orderByClause = desc(orders.createdAt);
         if (opts.sortBy) {
             const dir = opts.sortDir === 'asc' ? 'asc' : 'desc';
+            // This mirrors deriveOrderProofSummary's status priority in SQL so
+            // paging happens after, not before, the canonical order-level sort.
+            const proofSortRank = sql<number>`(
+                select coalesce(min(
+                    case
+                        when not proof_sort_lines.requires_proof_approval then null
+                        when proof_sort_lines.approved_proof_version_id is not null then 4
+                        when (
+                            select proof_sort_approvals.decision
+                            from ${lineItemProofApprovals} as proof_sort_approvals
+                            where proof_sort_approvals.organization_id = ${organizationId}
+                              and proof_sort_approvals.line_item_id = proof_sort_lines.id
+                            order by proof_sort_approvals.responded_at desc, proof_sort_approvals.created_at desc
+                            limit 1
+                        ) = 'approved' then 4
+                        when (
+                            select proof_sort_versions.status
+                            from ${lineItemProofVersions} as proof_sort_versions
+                            where proof_sort_versions.organization_id = ${organizationId}
+                              and proof_sort_versions.line_item_id = proof_sort_lines.id
+                            order by proof_sort_versions.version_number desc, proof_sort_versions.created_at desc
+                            limit 1
+                        ) = 'approved' then 4
+                        when (
+                            select proof_sort_actionable.status
+                            from ${lineItemProofVersions} as proof_sort_actionable
+                            where proof_sort_actionable.organization_id = ${organizationId}
+                              and proof_sort_actionable.line_item_id = proof_sort_lines.id
+                              and proof_sort_actionable.status in ('draft', 'awaiting_response')
+                            order by proof_sort_actionable.version_number desc, proof_sort_actionable.created_at desc
+                            limit 1
+                        ) = 'draft' then 2
+                        when (
+                            select proof_sort_versions.status
+                            from ${lineItemProofVersions} as proof_sort_versions
+                            where proof_sort_versions.organization_id = ${organizationId}
+                              and proof_sort_versions.line_item_id = proof_sort_lines.id
+                            order by proof_sort_versions.version_number desc, proof_sort_versions.created_at desc
+                            limit 1
+                        ) = 'draft' then 2
+                        when (
+                            select proof_sort_approvals.decision
+                            from ${lineItemProofApprovals} as proof_sort_approvals
+                            where proof_sort_approvals.organization_id = ${organizationId}
+                              and proof_sort_approvals.line_item_id = proof_sort_lines.id
+                            order by proof_sort_approvals.responded_at desc, proof_sort_approvals.created_at desc
+                            limit 1
+                        ) in ('rejected', 'revision_requested') then 0
+                        when (
+                            select proof_sort_versions.status
+                            from ${lineItemProofVersions} as proof_sort_versions
+                            where proof_sort_versions.organization_id = ${organizationId}
+                              and proof_sort_versions.line_item_id = proof_sort_lines.id
+                            order by proof_sort_versions.version_number desc, proof_sort_versions.created_at desc
+                            limit 1
+                        ) in ('rejected', 'revision_requested') then 0
+                        when (
+                            select proof_sort_actionable.status
+                            from ${lineItemProofVersions} as proof_sort_actionable
+                            where proof_sort_actionable.organization_id = ${organizationId}
+                              and proof_sort_actionable.line_item_id = proof_sort_lines.id
+                              and proof_sort_actionable.status in ('draft', 'awaiting_response')
+                            order by proof_sort_actionable.version_number desc, proof_sort_actionable.created_at desc
+                            limit 1
+                        ) = 'awaiting_response' then 3
+                        when exists (
+                            select 1
+                            from ${lineItemProofVersions} as proof_sort_sent
+                            where proof_sort_sent.organization_id = ${organizationId}
+                              and proof_sort_sent.line_item_id = proof_sort_lines.id
+                              and (proof_sort_sent.sent_at is not null or proof_sort_sent.status <> 'draft')
+                        ) then 3
+                        else 1
+                    end
+                ), 5)
+                from ${orderLineItems} as proof_sort_lines
+                where proof_sort_lines.order_id = ${orders.id}
+            )`;
             switch (opts.sortBy) {
                 case 'orderNumber':
                     orderByClause = dir === 'asc'
@@ -886,6 +964,11 @@ export class OrdersRepository {
                     break;
                 case 'priority':
                     orderByClause = dir === 'asc' ? sql`${orders.priority} ASC` : sql`${orders.priority} DESC`;
+                    break;
+                case 'proof':
+                    orderByClause = dir === 'asc'
+                        ? sql`${proofSortRank} ASC, ${orders.createdAt} DESC`
+                        : sql`${proofSortRank} DESC, ${orders.createdAt} DESC`;
                     break;
                 case 'label':
                     orderByClause = dir === 'asc' ? sql`${orders.label} ASC NULLS LAST` : sql`${orders.label} DESC NULLS LAST`;

@@ -38,8 +38,15 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
+import {
+  DEFAULT_ORDERS_LIST_PREFERENCES,
+  persistOrdersListPreferences,
+  readPersistedOrdersListPreferences,
+  resolveOrdersListViewPreferences,
+  type OrdersListSortKey,
+} from "@/lib/ordersListPreferences";
 
-type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "invoiceStatus" | "paymentStatus";
+type SortKey = OrdersListSortKey;
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
 type ProofFilterValue = "all" | "needs_action";
 
@@ -197,7 +204,8 @@ export default function Orders() {
   const [productionFilter, setProductionFilter] = useState<ProductionFilterValue>("all");
   const [proofFilter, setProofFilter] = useState<ProofFilterValue>("all");
   
-  // Pagination + performance controls (persisted per org+user, matching Quotes)
+  // Pagination + performance controls. Page size is persisted independently
+  // from sorting; the current page intentionally remains session-only.
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [includeThumbnails, setIncludeThumbnails] = useState(false);
@@ -231,6 +239,42 @@ export default function Orders() {
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [stickySorting, setStickySorting] = useState(false);
+  const [preferencesLoadedScope, setPreferencesLoadedScope] = useState<string | null>(null);
+  const ordersPreferenceScope = user?.id
+    ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}`
+    : null;
+
+  // Restore only this user's active-organization preference. Filters and page
+  // number deliberately stay out of this lightweight persistence contract.
+  useEffect(() => {
+    if (!user?.id || !ordersPreferenceScope) {
+      setPreferencesLoadedScope(null);
+      return;
+    }
+
+    const preferences = resolveOrdersListViewPreferences(
+      readPersistedOrdersListPreferences(user.id, user.lastActiveOrgId ?? null),
+    );
+    setStickySorting(preferences.stickySorting);
+    setPageSize(preferences.pageSize);
+    setSortKey(preferences.sortKey);
+    setSortDirection(preferences.sortDirection);
+    setPreferencesLoadedScope(ordersPreferenceScope);
+  }, [ordersPreferenceScope, user?.id, user?.lastActiveOrgId]);
+
+  useEffect(() => {
+    if (!user?.id || !ordersPreferenceScope || preferencesLoadedScope !== ordersPreferenceScope) return;
+
+    persistOrdersListPreferences(user.id, user.lastActiveOrgId ?? null, {
+      version: 1,
+      stickySorting,
+      // Turning sticky sorting off deliberately clears the remembered sort.
+      sortKey: stickySorting ? sortKey : DEFAULT_ORDERS_LIST_PREFERENCES.sortKey,
+      sortDirection: stickySorting ? sortDirection : DEFAULT_ORDERS_LIST_PREFERENCES.sortDirection,
+      pageSize,
+    });
+  }, [ordersPreferenceScope, pageSize, preferencesLoadedScope, sortDirection, sortKey, stickySorting, user?.id, user?.lastActiveOrgId]);
 
   // Auto-show Payment Status column for closed/canceled views
   useEffect(() => {
@@ -351,6 +395,14 @@ export default function Orders() {
     } else {
       setSortKey(key);
       setSortDirection(key === "customer" || key === "orderNumber" || key === "status" || key === "priority" || key === "label" || key === "listLabel" ? "asc" : "desc");
+    }
+  };
+
+  const handleStickySortingChange = (checked: boolean) => {
+    setStickySorting(checked);
+    if (!checked) {
+      setSortKey(DEFAULT_ORDERS_LIST_PREFERENCES.sortKey);
+      setSortDirection(DEFAULT_ORDERS_LIST_PREFERENCES.sortDirection);
     }
   };
 
@@ -1114,6 +1166,23 @@ export default function Orders() {
             </span>
           </button>
           <div className="flex items-center gap-3 whitespace-nowrap">
+            <div
+              className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2"
+              title="Remember this sort when returning to Orders."
+            >
+              <Switch
+                id="orders-sticky-sorting"
+                checked={stickySorting}
+                onCheckedChange={(checked) => handleStickySortingChange(checked === true)}
+                aria-label="Toggle sticky sorting"
+              />
+              <Label htmlFor="orders-sticky-sorting" className="cursor-pointer text-sm text-foreground">
+                Sticky sorting
+              </Label>
+              <Badge variant={stickySorting ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
+                {stickySorting ? "On" : "Off"}
+              </Badge>
+            </div>
             <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
               <Switch
                 id="orders-include-thumbnails"
