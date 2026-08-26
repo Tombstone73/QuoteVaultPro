@@ -59,7 +59,7 @@ import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { buildInboundQuoteCreatedAuditLogValues } from "../services/inboundOrders/inboundQuoteProvenance";
 import {
-  allocateDocumentNumber,
+  allocateJobNumber,
   isDocumentNumberUniqueViolation,
   toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
@@ -2732,8 +2732,10 @@ export class InboundOrdersRepository {
         return null;
       }
 
-      const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
-      const quoteNumber = numberCore;
+      const jobNumber = await allocateJobNumber(organizationId, tx);
+      const quoteNumber = jobNumber;
+      const displayNumber = String(jobNumber);
+      const numberCore = jobNumber;
       const now = new Date();
       const subtotalCents = input.lineItems.reduce(
         (sum, lineItem) => sum + Math.max(0, Math.round(lineItem.pricing.lineTotalCents)),
@@ -2750,6 +2752,7 @@ export class InboundOrdersRepository {
           organizationId,
           userId: input.actorUserId,
           quoteNumber,
+          jobNumber,
           displayNumber,
           numberCore,
           status: "draft",

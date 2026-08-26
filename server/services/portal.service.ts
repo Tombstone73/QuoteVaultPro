@@ -2302,7 +2302,7 @@ function mapPortalCanonicalArtworkFile(artwork: PortalCanonicalArtworkRow): Port
 }
 
 function mapInvoicePdfFile(invoice: InvoicePaymentPortalRow): PortalFileDto {
-  const invoiceNumber = invoice.invoiceNumber ? String(invoice.invoiceNumber) : invoice.id;
+  const invoiceNumber = String(invoice.displayNumber || invoice.invoiceNumber || invoice.id);
   return {
     id: "pdf",
     displayName: `invoice-${invoiceNumber}.pdf`,

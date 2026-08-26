@@ -39,7 +39,7 @@ import {
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
 import {
-    allocateDocumentNumber,
+    allocateJobNumber,
     isDocumentNumberUniqueViolation,
     toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
@@ -639,13 +639,16 @@ export class QuotesRepository {
 
         // Create quote in a transaction to handle quote numbering
         const newQuote = await this.dbInstance.transaction(async (tx) => {
-            const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
-            const quoteNumber = numberCore;
+            const jobNumber = await allocateJobNumber(organizationId, tx);
+            const quoteNumber = jobNumber;
+            const displayNumber = String(jobNumber);
+            const numberCore = jobNumber;
 
             // Create the parent quote with tax fields
             const quoteData = {
                 userId: data.userId,
                 quoteNumber,
+                jobNumber,
                 displayNumber,
                 numberCore,
                 organizationId,

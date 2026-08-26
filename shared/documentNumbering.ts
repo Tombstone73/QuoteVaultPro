@@ -1,6 +1,7 @@
 export type DocumentNumberType = "quote" | "order" | "invoice" | "purchase_order";
 
 export type ProductionDocumentNumberDisplayMode = "full" | "number_only";
+export type LegacyJobNumberDocumentType = "quote" | "order" | "invoice";
 
 export const DEFAULT_DOCUMENT_NUMBER_PREFIXES: Record<DocumentNumberType, string> = {
   quote: "QT-",
@@ -18,6 +19,15 @@ export const DOCUMENT_NUMBER_PREFIX_VARIABLES: Record<DocumentNumberType, string
 
 const PREFIX_PATTERN = /^[A-Za-z0-9_-]*$/;
 export const DOCUMENT_NUMBER_PREFIX_MAX_LENGTH = 16;
+export const POSTGRES_INTEGER_MAX = 2_147_483_647;
+
+function requirePostgresInteger(value: unknown, label: string): number {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > POSTGRES_INTEGER_MAX) {
+    throw new Error(`${label} must be a positive PostgreSQL integer.`);
+  }
+  return parsed;
+}
 
 export function sanitizeDocumentNumberPrefix(value: unknown): string {
   const prefix = String(value ?? "").trim();
@@ -32,6 +42,64 @@ export function sanitizeDocumentNumberPrefix(value: unknown): string {
 
 export function formatDocumentNumber(prefix: string | null | undefined, numberCore: number): string {
   return `${prefix ?? ""}${numberCore}`;
+}
+
+export function formatSharedJobNumber(jobNumber: number): string {
+  return String(requirePostgresInteger(jobNumber, "Job Number"));
+}
+
+export function formatSharedInvoiceNumber(jobNumber: number, invoiceSequence: number): string {
+  const job = formatSharedJobNumber(jobNumber);
+  const sequence = requirePostgresInteger(invoiceSequence, "Invoice sequence");
+  return sequence === 1 ? job : `${job}-${sequence}`;
+}
+
+/** Conservative parser used for migration rehearsal/reporting only. */
+export function parseLegacyJobNumberBase(type: LegacyJobNumberDocumentType, value: unknown): number | null {
+  const source = String(value ?? "").trim();
+  const pattern = type === "quote"
+    ? /^(?:QT[-_ ]?)?(\d+)$/i
+    : type === "order"
+      ? /^(?:(?:ORD|ORDER)[-_ ]?)?(\d+)$/i
+      : /^(?:INV[-_ ]?)?(\d+)(?:-\d+)?$/i;
+  const match = pattern.exec(source);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= POSTGRES_INTEGER_MAX ? parsed : null;
+}
+
+export function selectInitialSharedJobNumber(input: {
+  quoteBases: unknown[];
+  orderBases: unknown[];
+  invoiceBases: unknown[];
+  existingNextCounters?: unknown[];
+  defaultStart?: number;
+}): { highestQuoteBase: number | null; highestOrderBase: number | null; highestInvoiceBase: number | null; nextJobNumber: number } {
+  const highest = (values: unknown[]) => {
+    const valid = values.map((value) => Number(value)).filter((value) => Number.isSafeInteger(value) && value > 0);
+    return valid.length ? Math.max(...valid) : null;
+  };
+  const highestQuoteBase = highest(input.quoteBases);
+  const highestOrderBase = highest(input.orderBases);
+  const highestInvoiceBase = highest(input.invoiceBases);
+  const highestExistingCounter = highest(input.existingNextCounters ?? []);
+  const defaultStart = Math.max(1, Math.floor(Number(input.defaultStart ?? 1000)) || 1000);
+  const nextJobNumber = Math.max(
+    defaultStart,
+    (highestQuoteBase ?? 0) + 1,
+    (highestOrderBase ?? 0) + 1,
+    (highestInvoiceBase ?? 0) + 1,
+    highestExistingCounter ?? 0,
+  );
+  if (!Number.isSafeInteger(nextJobNumber) || nextJobNumber > POSTGRES_INTEGER_MAX) {
+    throw new Error("Shared Job Number sequence is exhausted.");
+  }
+  return {
+    highestQuoteBase,
+    highestOrderBase,
+    highestInvoiceBase,
+    nextJobNumber,
+  };
 }
 
 export function normalizeDocumentNumberSearch(value: unknown): string {

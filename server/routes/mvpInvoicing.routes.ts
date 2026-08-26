@@ -755,6 +755,7 @@ export async function registerMvpInvoicingRoutes(
       // Reserve a durable collection attempt before contacting Stripe. Its
       // identity survives a network retry, but a Stripe-confirmed success is
       // terminal, so a later refund can reserve a distinct re-payment attempt.
+      const invoiceDisplayNumber = String(inv.displayNumber || inv.invoiceNumber || inv.id);
       const reservation = await reserveStripePaymentAttempt({
         organizationId,
         invoiceId: inv.id,
@@ -763,7 +764,7 @@ export async function registerMvpInvoicingRoutes(
         currency,
         stripeAccountId,
         createdByUserId: userId,
-        metadata: { invoiceNumber: String(inv.invoiceNumber) },
+        metadata: { invoiceNumber: invoiceDisplayNumber },
       });
       const attempt = reservation.attempt;
       if (Number(attempt.amountCents) !== amountDueCents || String(attempt.stripeAccountId) !== stripeAccountId) {
@@ -775,7 +776,7 @@ export async function registerMvpInvoicingRoutes(
         {
           amount: amountDueCents,
           currency: currency.toLowerCase(),
-          description: `Invoice #${inv.invoiceNumber}`,
+          description: `Invoice #${invoiceDisplayNumber}`,
           automatic_payment_methods: { enabled: true },
           metadata: {
             organizationId,

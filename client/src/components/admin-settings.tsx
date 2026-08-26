@@ -1862,7 +1862,7 @@ export default function AdminSettings() {
   });
 
   const filteredVariables = globalVariables
-    ?.filter((variable) => !['next_quote_number', 'next_order_number', 'next_invoice_number'].includes(variable.name))
+    ?.filter((variable) => !['next_quote_number', 'next_order_number', 'next_invoice_number', 'next_job_number'].includes(variable.name))
     ?.filter((variable) =>
       variable.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       variable.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -4615,7 +4615,7 @@ export default function AdminSettings() {
                       {globalVariables && globalVariables.length > 0 ? (
                         <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
                           {globalVariables
-                            .filter(v => v.name !== 'next_quote_number')
+                            .filter(v => v.name !== 'next_quote_number' && v.name !== 'next_job_number')
                             .map(variable => (
                               <li key={variable.id}>
                                 <code className="bg-muted px-1 rounded">{variable.name}</code> = {Number(variable.value).toFixed(4)}

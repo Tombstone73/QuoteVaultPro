@@ -225,7 +225,7 @@ async function sendReminderForInvoice(opts: {
     return { sent: false, messageId: null, failureReason: `PDF generation failed: ${pdfErr?.message}` };
   }
 
-  const invoiceNumber = fullInv.invoiceNumber ? String(fullInv.invoiceNumber) : fullInv.id;
+  const invoiceNumber = String((fullInv as any).displayNumber || fullInv.invoiceNumber || fullInv.id);
   const filename = `invoice-${invoiceNumber}.pdf`;
   const pdfBase64 = Buffer.from(pdfBytes).toString('base64');
   const companyName = orgCompany?.companyName || 'TitanOS';

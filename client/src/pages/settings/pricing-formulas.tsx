@@ -139,7 +139,7 @@ type GlobalVariable = {
   category?: string | null;
 };
 
-const DOCUMENT_NUMBER_VARIABLES = new Set(["next_quote_number", "next_order_number", "next_invoice_number"]);
+const DOCUMENT_NUMBER_VARIABLES = new Set(["next_quote_number", "next_order_number", "next_invoice_number", "next_job_number"]);
 
 function GlobalPricingVariablesSettings() {
   const { toast } = useToast();

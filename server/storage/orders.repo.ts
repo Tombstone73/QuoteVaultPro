@@ -65,7 +65,7 @@ import {
     resolvePersistedLineItemPricing,
 } from "../lib/lineItemPricingPersistence";
 import {
-    allocateDocumentNumber,
+    allocateJobNumber,
     isDocumentNumberUniqueViolation,
     toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
@@ -712,10 +712,10 @@ export class OrdersRepository {
         return thumbAccess.url ?? null;
     }
 
-    private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<{ orderNumber: string; displayNumber: string; numberCore: number }> {
+    private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<{ jobNumber: number; orderNumber: string; displayNumber: string; numberCore: number }> {
         const executor = tx || this.dbInstance;
-        const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "order", executor);
-        return { orderNumber: numberCore.toString(), displayNumber, numberCore };
+        const jobNumber = await allocateJobNumber(organizationId, executor);
+        return { jobNumber, orderNumber: jobNumber.toString(), displayNumber: String(jobNumber), numberCore: jobNumber };
     }
 
     async getMaxOrderNumber(organizationId: string): Promise<number | null> {
@@ -1372,6 +1372,8 @@ export class OrdersRepository {
         contactId?: string | null;
         quoteId?: string | null;
         sourceQuoteNumber?: number | null;
+        /** Present only for a new-style Quote conversion; never caller-derived. */
+        jobNumber?: number | null;
         label?: string | null;
         poNumber?: string | null;
         status?: string;
@@ -1457,10 +1459,14 @@ export class OrdersRepository {
         };
 
         const created = await this.dbInstance.transaction(async (tx) => {
-            const orderNumberParts = await this.generateNextOrderNumber(organizationId, tx);
+            const inheritedJobNumber = Number(data.jobNumber);
+            const orderNumberParts = Number.isSafeInteger(inheritedJobNumber) && inheritedJobNumber > 0
+                ? { jobNumber: inheritedJobNumber, orderNumber: String(inheritedJobNumber), displayNumber: String(inheritedJobNumber), numberCore: inheritedJobNumber }
+                : await this.generateNextOrderNumber(organizationId, tx);
             const orderInsert: typeof orders.$inferInsert = {
                 organizationId,
                 orderNumber: orderNumberParts.orderNumber,
+                jobNumber: orderNumberParts.jobNumber,
                 displayNumber: orderNumberParts.displayNumber,
                 numberCore: orderNumberParts.numberCore,
                 quoteId: data.quoteId || null,
@@ -1862,6 +1868,9 @@ export class OrdersRepository {
     }
 
     async updateOrder(organizationId: string, id: string, orderData: Partial<InsertOrder>): Promise<Order> {
+        if (orderData.jobNumber !== undefined || orderData.orderNumber !== undefined || orderData.displayNumber !== undefined || orderData.numberCore !== undefined) {
+            throw new Error("Commercial Job Number and document number fields are immutable after Order creation.");
+        }
         if (orderData.customerId !== undefined || orderData.contactId !== undefined) {
             const [existing] = await this.dbInstance.select({ customerId: orders.customerId, contactId: orders.contactId })
                 .from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId))).limit(1);
@@ -2200,6 +2209,9 @@ export class OrdersRepository {
             contactId: quote.contactId,
             quoteId: quote.id,
             sourceQuoteNumber: quote.quoteNumber, // Immutable snapshot — survives quote deletion
+            // Legacy Quotes retain their historical QT identity. A legacy
+            // conversion receives a fresh Job Number at Order creation.
+            jobNumber: quote.jobNumber ?? null,
             label: quote.label || null, // Copy jobLabel from quote
             poNumber: options?.poNumber ? String(options.poNumber) : null,
             status: 'new',

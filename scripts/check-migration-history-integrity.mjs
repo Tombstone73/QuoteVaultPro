@@ -28,6 +28,13 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+// Git normalizes tracked text files to LF in the repository, while Windows
+// worktrees commonly materialize them as CRLF. The integrity anchor protects
+// the canonical SQL content, not a developer's checkout conversion.
+function migrationSourceSha256(source) {
+  return sha256(source.toString("utf8").replace(/\r\n/g, "\n"));
+}
+
 function fail(message) {
   throw new Error(message);
 }
@@ -60,7 +67,7 @@ function loadJournal() {
 function canonical(entries) {
   return entries.map((entry) => {
     const source = readFileSync(path.join(migrationsDir, `${entry.tag}.sql`));
-    return `${entry.idx}\t${entry.when}\t${entry.tag}\t${sha256(source)}`;
+    return `${entry.idx}\t${entry.when}\t${entry.tag}\t${migrationSourceSha256(source)}`;
   }).join("\n") + "\n";
 }
 

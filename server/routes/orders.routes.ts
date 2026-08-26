@@ -2181,7 +2181,7 @@ export async function registerOrderRoutes(
             }
 
             // Validate the order data (excluding line items for now)
-            const { lineItems, idempotencyKey: _bodyIdempotencyKey, creditOverride, creditOverrideReason, ...orderFields } = req.body;
+            const { lineItems, idempotencyKey: _bodyIdempotencyKey, creditOverride, creditOverrideReason, jobNumber: _callerJobNumber, ...orderFields } = req.body;
 
             if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
                 return res.status(400).json({ success: false, message: "At least one line item is required", code: "ORDER_LINE_ITEMS_REQUIRED" });

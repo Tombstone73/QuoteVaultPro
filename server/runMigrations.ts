@@ -177,6 +177,7 @@ type ReleaseCheck =
   | { type: "column_nullable"; table: string; column: string; label: string }
   | { type: "table_exists"; table: string; label: string }
   | { type: "index_exists"; index: string; label: string }
+  | { type: "index_absent"; index: string; label: string }
   | { type: "enum_value_exists"; enumType: string; value: string; label: string }
   | { type: "exact_foreign_key"; table: string; column: string; referencesTable: string; referencesColumn: string; onDelete: "SET NULL"; label: string }
   | { type: "row_exists"; table: string; where: string; label: string };
@@ -242,6 +243,17 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "row_exists", table: "__drizzle_migrations_v2", where: "id >= 34", label: "migration 0034_fulfillment_station recorded in ledger (id >= 34)" },
   // migration 0185 — explicit processor enablement state
   { type: "column_exists", table: "organization_payment_settings", column: "stripe_enabled", label: "organization_payment_settings.stripe_enabled" },
+  // migration 0188 — shared commercial Job Number persistence. Legacy rows
+  // remain nullable while all new document paths depend on these indexes.
+  { type: "column_nullable", table: "quotes", column: "job_number", label: "quotes.job_number is nullable" },
+  { type: "column_nullable", table: "orders", column: "job_number", label: "orders.job_number is nullable" },
+  { type: "column_nullable", table: "invoices", column: "job_number", label: "invoices.job_number is nullable" },
+  { type: "column_nullable", table: "invoices", column: "invoice_sequence", label: "invoices.invoice_sequence is nullable" },
+  { type: "index_exists", index: "quotes_org_job_number_unique", label: "quotes_org_job_number_unique index" },
+  { type: "index_exists", index: "orders_org_job_number_unique", label: "orders_org_job_number_unique index" },
+  { type: "index_exists", index: "invoices_job_number_idx", label: "invoices_job_number_idx index" },
+  { type: "index_exists", index: "invoices_org_job_sequence_unique", label: "invoices_org_job_sequence_unique index" },
+  { type: "index_absent", index: "invoices_org_number_core_unique", label: "invoices_org_number_core_unique index removed" },
   { type: "row_exists", table: "stations", where: "key = 'fulfillment' OR NOT EXISTS (SELECT 1 FROM organizations)", label: "stations.key='fulfillment' exists (migration 0034 data)" },
 
   // migrations 0109-0114 — customer/contact migration, portal onboarding,
@@ -304,6 +316,15 @@ async function runReleaseChecks(client: any): Promise<void> {
       } else if (check.type === "index_exists") {
         const res = await client.query(
           `SELECT EXISTS (
+             SELECT 1 FROM pg_indexes
+             WHERE schemaname = 'public' AND indexname = $1
+           ) AS ok`,
+          [check.index],
+        );
+        exists = res.rows[0].ok;
+      } else if (check.type === "index_absent") {
+        const res = await client.query(
+          `SELECT NOT EXISTS (
              SELECT 1 FROM pg_indexes
              WHERE schemaname = 'public' AND indexname = $1
            ) AS ok`,

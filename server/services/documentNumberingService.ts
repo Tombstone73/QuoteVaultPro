@@ -3,6 +3,7 @@ import { globalVariables, type GlobalVariable } from "@shared/schema";
 import {
   DEFAULT_DOCUMENT_NUMBER_PREFIXES,
   DOCUMENT_NUMBER_PREFIX_VARIABLES,
+  POSTGRES_INTEGER_MAX,
   type DocumentNumberType,
   formatDocumentNumber,
   sanitizeDocumentNumberPrefix,
@@ -11,6 +12,8 @@ import { db } from "../db";
 
 type DbExecutor = typeof db | any;
 const DEFAULT_SEQUENCE_START = 1000;
+const JOB_NUMBER_SEQUENCE_VARIABLE = "next_job_number";
+const JOB_NUMBER_SEQUENCE_DESCRIPTION = "Next shared commercial job number sequence (auto-initialized)";
 
 const DOCUMENT_NUMBER_SEQUENCE_VARIABLES: Record<DocumentNumberType, string> = {
   quote: "next_quote_number",
@@ -128,6 +131,43 @@ export async function allocateDocumentNumber(
   }
 
   return buildDocumentNumberParts(organizationId, documentType, numberCore, executor);
+}
+
+/**
+ * Atomically allocates the human-facing number shared by a prospective
+ * Quote, its converted Order, and its invoice(s). It intentionally does not
+ * use document prefixes: document type is supplied by presentation context.
+ */
+export async function allocateJobNumber(
+  organizationId: string,
+  executor: DbExecutor = db,
+): Promise<number> {
+  const initialValue = String(DEFAULT_SEQUENCE_START + 1);
+  const result = await executor.execute(sql`
+    INSERT INTO global_variables (
+      id, organization_id, name, value, description, category, is_active, created_at, updated_at
+    ) VALUES (
+      gen_random_uuid(), ${organizationId}, ${JOB_NUMBER_SEQUENCE_VARIABLE}, ${initialValue},
+      ${JOB_NUMBER_SEQUENCE_DESCRIPTION}, 'numbering', true, NOW(), NOW()
+    )
+    ON CONFLICT (organization_id, name) DO UPDATE
+    SET value = (
+      global_variables.value::numeric + 1
+    )::text,
+    updated_at = NOW()
+    WHERE global_variables.value ~ '^[0-9]{1,10}$'
+      AND global_variables.value::numeric BETWEEN 1 AND ${POSTGRES_INTEGER_MAX}
+    RETURNING (value::numeric - 1) AS job_number
+  `);
+  const rows = Array.isArray(result) ? result : ((result as any)?.rows ?? []);
+  if (!rows[0]) {
+    throw new Error("Shared Job Number sequence is invalid or exhausted.");
+  }
+  const jobNumber = Math.floor(Number(rows[0]?.job_number ?? rows[0]?.jobNumber));
+  if (!Number.isSafeInteger(jobNumber) || jobNumber < 1 || jobNumber > POSTGRES_INTEGER_MAX) {
+    throw new Error("Failed to allocate shared job number");
+  }
+  return jobNumber;
 }
 
 export async function buildDocumentNumberParts(

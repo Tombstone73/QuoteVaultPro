@@ -56,6 +56,12 @@ describe("V2 migration history integrity guard", () => {
     expect(run(fixture.root)).not.toThrow();
   });
 
+  test("uses Git-canonical line endings rather than checkout-specific CRLF bytes", () => {
+    const fixture = createFixture();
+    fs.writeFileSync(path.join(fixture.migrations, "0001_first.sql"), "select 2;\r\n");
+    expect(run(fixture.root)).not.toThrow();
+  });
+
   test("fails closed when a later journal entry is backfilled below the protected frontier", () => {
     const fixture = createFixture();
     fixture.entries.push({ idx: 2, when: 1, tag: "0002_backfilled", breakpoints: true });

@@ -33,6 +33,7 @@ const DOCUMENT_NUMBER_SEQUENCE_NAMES = new Set([
   "next_order_number",
   "next_invoice_number",
   "next_purchase_order_number",
+  "next_job_number",
 ]);
 
 type JsonErrorResponse = {
@@ -229,6 +230,9 @@ export function registerCatalogSettingsRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const rawName = typeof req.body?.name === "string" ? req.body.name : "";
+      if (rawName === "next_job_number") {
+        return res.status(403).json({ success: false, code: "SHARED_JOB_NUMBER_SEQUENCE_MANAGED", message: "The shared Job Number sequence is created and advanced only by the system allocator." });
+      }
       const normalizedValue = normalizeGlobalVariableValueForRequest(rawName, req.body?.value);
       const variableData = insertGlobalVariableSchema.parse({
         ...req.body,
@@ -265,6 +269,13 @@ export function registerCatalogSettingsRoutes(
       const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
       if (!currentVariable) {
         return res.status(404).json({ success: false, code: "GLOBAL_VARIABLE_NOT_FOUND", message: "Global variable not found." });
+      }
+      if (currentVariable.name === "next_job_number" && req.body && Object.prototype.hasOwnProperty.call(req.body, "value")) {
+        return res.status(403).json({
+          success: false,
+          code: "SHARED_JOB_NUMBER_SEQUENCE_MANAGED",
+          message: "The shared Job Number sequence is allocated atomically and cannot be edited manually.",
+        });
       }
 
       const normalizedValue = req.body && Object.prototype.hasOwnProperty.call(req.body, "value")
@@ -347,6 +358,10 @@ export function registerCatalogSettingsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
+      if (currentVariable?.name === "next_job_number") {
+        return res.status(403).json({ success: false, code: "SHARED_JOB_NUMBER_SEQUENCE_MANAGED", message: "The shared Job Number sequence cannot be deleted." });
+      }
       await storage.deleteGlobalVariable(organizationId, req.params.id);
       res.json({ message: "Global variable deleted successfully" });
     } catch (error) {

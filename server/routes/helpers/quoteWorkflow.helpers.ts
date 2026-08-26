@@ -29,7 +29,7 @@ import {
   type QuoteWorkflowState,
 } from "@shared/quoteWorkflow";
 import {
-  allocateDocumentNumber,
+  allocateJobNumber,
   isDocumentNumberUniqueViolation,
   toDocumentNumberConflictError,
 } from "../../services/documentNumberingService";
@@ -148,14 +148,17 @@ export const cloneQuoteToDraft = async (args: {
     }
   }
 
-  const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
-  const nextQuoteNumber = numberCore;
+  const jobNumber = await allocateJobNumber(organizationId, tx);
+  const nextQuoteNumber = jobNumber;
+  const displayNumber = String(jobNumber);
+  const numberCore = jobNumber;
 
   const [newQuote] = await tx
     .insert(quotes)
     .values({
       organizationId,
       quoteNumber: nextQuoteNumber,
+      jobNumber,
       displayNumber,
       numberCore,
       label: operation === 'duplicate' ? null : sourceQuote.label,

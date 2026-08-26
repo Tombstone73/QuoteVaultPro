@@ -1727,6 +1727,9 @@ export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   quoteNumber: integer("quote_number"),
+  // Canonical prospective commercial identity. Legacy documents remain null
+  // rather than being silently renumbered.
+  jobNumber: integer("job_number"),
   displayNumber: varchar("display_number", { length: 64 }),
   numberCore: integer("number_core"),
   label: text("label"), // Free-text label for categorization/notes
@@ -1791,6 +1794,7 @@ export const quotes = pgTable("quotes", {
   index("quotes_contact_id_idx").on(table.contactId),
   index("quotes_created_at_idx").on(table.createdAt),
   index("quotes_quote_number_idx").on(table.quoteNumber),
+  uniqueIndex("quotes_org_job_number_unique").on(table.organizationId, table.jobNumber).where(sql`${table.jobNumber} IS NOT NULL`),
   index("quotes_display_number_idx").on(table.displayNumber),
   index("quotes_number_core_idx").on(table.numberCore),
   index("quotes_portal_visibility_idx").on(table.organizationId, table.customerId, table.visibleInCustomerPortal),
@@ -3699,6 +3703,9 @@ export const orders = pgTable("orders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderNumber: varchar("order_number", { length: 50 }).notNull(),
+  // Shared with the source Quote when one exists; otherwise allocated when
+  // this direct Order is created.
+  jobNumber: integer("job_number"),
   displayNumber: varchar("display_number", { length: 64 }),
   numberCore: integer("number_core"),
   poNumber: varchar("po_number", { length: 64 }), // Customer PO number
@@ -3816,6 +3823,7 @@ export const orders = pgTable("orders", {
 }, (table) => [
   index("orders_organization_id_idx").on(table.organizationId),
   index("orders_order_number_idx").on(table.orderNumber),
+  uniqueIndex("orders_org_job_number_unique").on(table.organizationId, table.jobNumber).where(sql`${table.jobNumber} IS NOT NULL`),
   index("orders_display_number_idx").on(table.displayNumber),
   index("orders_number_core_idx").on(table.numberCore),
   uniqueIndex("orders_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
@@ -4879,6 +4887,10 @@ export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceNumber: integer("invoice_number").notNull(), // Sequential numeric per org
+  // Canonical Job identity and the human-facing invoice ordinal for the rare
+  // case of multiple independent invoices for a single Order.
+  jobNumber: integer("job_number"),
+  invoiceSequence: integer("invoice_sequence"),
   displayNumber: varchar("display_number", { length: 64 }),
   numberCore: integer("number_core"),
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
@@ -4939,10 +4951,11 @@ export const invoices = pgTable("invoices", {
 }, (table) => [
   index("invoices_organization_id_idx").on(table.organizationId),
   index("invoices_invoice_number_idx").on(table.invoiceNumber),
+  index("invoices_job_number_idx").on(table.organizationId, table.jobNumber),
   index("invoices_display_number_idx").on(table.displayNumber),
   index("invoices_number_core_idx").on(table.numberCore),
   uniqueIndex("invoices_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
-  uniqueIndex("invoices_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
+  uniqueIndex("invoices_org_job_sequence_unique").on(table.organizationId, table.jobNumber, table.invoiceSequence).where(sql`${table.jobNumber} IS NOT NULL AND ${table.invoiceSequence} IS NOT NULL`),
   uniqueIndex("invoices_automation_milestone_uidx")
     .on(table.organizationId, table.orderId, table.billingMilestone)
     .where(sql`${table.invoiceCreationSource} = 'automation' AND ${table.orderId} IS NOT NULL AND ${table.billingMilestone} IS NOT NULL`),

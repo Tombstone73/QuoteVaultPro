@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import {
   allocateDocumentNumber,
+  allocateJobNumber,
   isDocumentNumberUniqueViolation,
 } from "../services/documentNumberingService";
 
@@ -44,6 +45,37 @@ describe("documentNumberingService", () => {
 
     expect(allocated).toEqual({ numberCore: 20000, displayNumber: "PO-20000" });
     expect(executor.execute).toHaveBeenCalledTimes(1);
+  });
+
+  test("allocates a shared Job Number without a document-type prefix", async () => {
+    const executor = makeExecutor("unused", 0);
+    executor.execute.mockResolvedValue({ rows: [{ job_number: 20342 }] });
+
+    await expect(allocateJobNumber("org_1", executor)).resolves.toBe(20342);
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(String(executor.execute.mock.calls[0]?.[0]?.queryChunks ?? executor.execute.mock.calls[0]?.[0])).toContain("next_job_number");
+  });
+
+  test("keeps concurrent tenant allocations distinct when PostgreSQL returns distinct atomic increments", async () => {
+    const executor = makeExecutor("unused", 0);
+    executor.execute
+      .mockResolvedValueOnce({ rows: [{ job_number: 20342 }] })
+      .mockResolvedValueOnce({ rows: [{ job_number: 20343 }] });
+
+    const allocated = await Promise.all([
+      allocateJobNumber("org_1", executor),
+      allocateJobNumber("org_1", executor),
+    ]);
+
+    expect(new Set(allocated)).toEqual(new Set([20342, 20343]));
+  });
+
+  test("fails closed when the shared counter is malformed or exhausted instead of recycling a lower number", async () => {
+    const executor = makeExecutor("unused", 0);
+    executor.execute.mockResolvedValue({ rows: [] });
+
+    await expect(allocateJobNumber("org_1", executor)).rejects.toThrow("invalid or exhausted");
+    expect(String(executor.execute.mock.calls[0]?.[0]?.queryChunks ?? executor.execute.mock.calls[0]?.[0])).toContain("2147483647");
   });
 
   test("identifies document-number unique violations as safe conflicts", () => {

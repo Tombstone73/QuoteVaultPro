@@ -4,6 +4,7 @@ import { asc, desc, eq, and, ilike, inArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
+import { formatSharedInvoiceNumber } from '../shared/documentNumbering';
 import {
   allocateDocumentNumber,
   isDocumentNumberUniqueViolation,
@@ -593,8 +594,25 @@ export async function createInvoiceFromOrderInTransaction(
     });
     const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
 
-    const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "invoice", tx);
-    const invoiceNumber = numberCore;
+    // New-style Orders carry a frozen Job Number. The first Invoice has no
+    // suffix; later independent invoices use the next ordinal. The per-order
+    // advisory lock above serializes this calculation and creation.
+    const orderJobNumber = Number((order as any).jobNumber);
+    const hasSharedJobNumber = Number.isSafeInteger(orderJobNumber) && orderJobNumber > 0;
+    const existingJobInvoices = hasSharedJobNumber
+      ? await tx.select({ invoiceSequence: invoices.invoiceSequence })
+        .from(invoices)
+        .where(and(eq(invoices.organizationId, organizationId), eq(invoices.jobNumber, orderJobNumber)))
+      : [];
+    const invoiceSequence = hasSharedJobNumber
+      ? Math.max(0, ...existingJobInvoices.map((row: any) => Number(row.invoiceSequence) || 0)) + 1
+      : null;
+    const legacyParts = hasSharedJobNumber ? null : await allocateDocumentNumber(organizationId, "invoice", tx);
+    const invoiceNumber = hasSharedJobNumber ? orderJobNumber : legacyParts!.numberCore;
+    const numberCore = hasSharedJobNumber ? orderJobNumber : legacyParts!.numberCore;
+    const displayNumber = hasSharedJobNumber
+      ? formatSharedInvoiceNumber(orderJobNumber, invoiceSequence!)
+      : legacyParts!.displayNumber;
     const issueDate = new Date();
     const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
 
@@ -604,6 +622,8 @@ export async function createInvoiceFromOrderInTransaction(
     const invoiceInsert: InsertInvoice = {
       organizationId,
       invoiceNumber,
+      jobNumber: hasSharedJobNumber ? orderJobNumber : null,
+      invoiceSequence,
       displayNumber,
       numberCore,
       orderId: order.id,

@@ -11,9 +11,6 @@ import { DEFAULT_DOCUMENT_NUMBER_PREFIXES, sanitizeDocumentNumberPrefix } from "
 import { normalizeSystemSetupSequenceValue } from "@/lib/systemSetupSettings";
 
 const SEQUENCES = [
-  { varName: "next_quote_number", label: "Quote Number", description: "Next quote number sequence (auto-initialized)" },
-  { varName: "next_order_number", label: "Order Number", description: "Next order number sequence (auto-initialized)" },
-  { varName: "next_invoice_number", label: "Invoice Number", description: "Next invoice number sequence (auto-initialized)" },
   { varName: "next_purchase_order_number", label: "Purchase Order Number", description: "Next purchase order number sequence (auto-initialized)" },
 ] as const;
 
