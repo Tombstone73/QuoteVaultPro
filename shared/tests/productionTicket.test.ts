@@ -201,6 +201,7 @@ describe("buildTicketData — template formatting", () => {
 const baseTraveler: OrderTravelerSource = {
   orderId: "order-xyz",
   orderNumber: "SO-1042",
+  poNumber: "PO-7788",
   customerName: "Acme Signs Inc.",
   contactName: "Jane Doe",
   dueDate: "2026-05-22T00:00:00.000Z",
@@ -218,6 +219,7 @@ describe("buildOrderTravelerData", () => {
     const byKey = Object.fromEntries(traveler.headerRows.map((r) => [r.key, r]));
     expect(byKey.orderNumber.value).toBe("SO-1042");
     expect(byKey.orderNumber.format.fontSize).toBe("xlarge");
+    expect(byKey.poNumber.value).toBe("PO-7788");
     expect(byKey.customerName.value).toBe("Acme Signs Inc.");
     expect(byKey.dueDate.value).toBe("May 22, 2026");
   });
@@ -228,6 +230,12 @@ describe("buildOrderTravelerData", () => {
     expect(keys).not.toContain("quantity");
     expect(keys).not.toContain("material");
     expect(keys).not.toContain("description");
+  });
+
+  it("places the PO directly below the order number", () => {
+    const keys = buildOrderTravelerData(baseTraveler).headerRows.map((row) => row.key);
+    expect(keys.indexOf("orderNumber")).toBeLessThan(keys.indexOf("poNumber"));
+    expect(keys.indexOf("poNumber")).toBeLessThan(keys.indexOf("customerName"));
   });
 
   it("lists every line item with resolved values", () => {

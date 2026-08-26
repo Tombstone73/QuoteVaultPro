@@ -1977,6 +1977,7 @@ export async function registerOrderRoutes(
                 .select({
                     id: orders.id,
                     orderNumber: orders.orderNumber,
+                    poNumber: orders.poNumber,
                     dueDate: orders.dueDate,
                     priority: orders.priority,
                     notesInternal: orders.notesInternal,
@@ -2063,6 +2064,7 @@ export async function registerOrderRoutes(
                 data: {
                     orderId: order.id,
                     orderNumber: order.orderNumber,
+                    poNumber: order.poNumber ?? null,
                     customerName: String(order.customerName || "—"),
                     contactName,
                     dueDate: order.dueDate ?? null,

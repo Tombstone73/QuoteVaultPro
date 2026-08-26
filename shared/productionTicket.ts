@@ -391,6 +391,8 @@ export interface TravelerLineItemSource {
 export interface OrderTravelerSource {
   orderId: string;
   orderNumber: string;
+  /** Customer-provided PO or job-request reference. */
+  poNumber?: string | null;
   customerName: string;
   contactName?: string | null;
   dueDate?: string | null;
@@ -424,6 +426,7 @@ export interface OrderTravelerData {
 export const TRAVELER_HEADER_FIELDS: TicketFieldKey[] = [
   "rush",
   "orderNumber",
+  "poNumber",
   "customerName",
   "contactName",
   "dueDate",
@@ -446,6 +449,8 @@ export function buildOrderTravelerData(
         return isRush ? "RUSH" : "";
       case "orderNumber":
         return String(src.orderNumber || "").trim();
+      case "poNumber":
+        return String(src.poNumber || "").trim();
       case "customerName":
         return String(src.customerName || "").trim();
       case "contactName":
