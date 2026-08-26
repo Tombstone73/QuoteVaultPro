@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, prepressPath, prepressUnitPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readPrepressLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, prepressPath, prepressUnitPath, productBuilderPath, productPath, productionPath, productionWorkPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readPrepressLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.equal(readProductLocation("/products/product-a"), null);
@@ -84,6 +84,10 @@ assert.deepEqual(readProductionLocation("/production/flatbed"), { station: "flat
 assert.deepEqual(readWorkspaceLocation("/production"), { page: "production" });
 assert.deepEqual(readWorkspaceLocation("/production/roll"), { page: "production", station: "roll" });
 assert.equal(productionPath("flatbed"), "/production/flatbed");
+assert.deepEqual(readProductionLocation("/production/works/work-a"), { productionWorkId: "work-a" });
+assert.deepEqual(readWorkspaceLocation("/production/works/work-a"), { page: "production", productionWorkId: "work-a" });
+assert.equal(readProductionLocation("/production/works/%2Fwrong"), null);
+assert.equal(productionWorkPath("work a"), "/production/works/work%20a");
 assert.deepEqual(readWorkspaceLocation("/payments"), { page: "payments" });
 assert.equal(workspacePath("payments"), "/payments");
 assert.deepEqual(readWorkspaceLocation("/routing"), { page: "routing" });

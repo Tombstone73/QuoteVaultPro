@@ -428,7 +428,11 @@ export const ProductionWorkspace = ({
   canWork,
   canComplete,
   station: routedStation,
+  productionWorkId: routedProductionWorkId,
   onStationChange,
+  onSelectWork,
+  openOrder,
+  openArtwork,
 }: {
   organizationId: string;
   sessionScope: string;
@@ -436,7 +440,11 @@ export const ProductionWorkspace = ({
   canWork: boolean;
   canComplete: boolean;
   station?: Station;
+  productionWorkId?: string;
   onStationChange: (station?: Station) => void;
+  onSelectWork: (productionWorkId?: string) => void;
+  openOrder: (orderId: string) => void;
+  openArtwork: (artworkFileId: string) => void;
 }) => {
   const [station, setStation] = useState<Station>("flatbed");
   const [view, setView] = useState<ProductionView>("overview");
@@ -454,6 +462,12 @@ export const ProductionWorkspace = ({
     queryFn: () => productionApi.queue(organizationId, "roll"),
     enabled: canRead,
   });
+  const routedWork = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "production", "work", routedProductionWorkId],
+    queryFn: () => productionApi.get(organizationId, routedProductionWorkId!),
+    enabled: canRead && Boolean(routedProductionWorkId),
+    retry: false,
+  });
   const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId),enabled:canRead,retry:false});
   const queue = station === "flatbed" ? flatbedQueue : rollQueue;
   const stationQueues = useMemo(
@@ -464,18 +478,26 @@ export const ProductionWorkspace = ({
     if (!routedStation) return;
     setStation(routedStation);
     setView("stations");
-    setSelectedWorkId("");
-  }, [routedStation]);
+    if (!routedProductionWorkId) setSelectedWorkId("");
+  }, [routedStation, routedProductionWorkId]);
+
+  useEffect(() => {
+    if (!routedProductionWorkId) return;
+    setSelectedWorkId(routedProductionWorkId);
+    setView("stations");
+  }, [routedProductionWorkId]);
 
   useEffect(() => {
     if (!selectedWorkId && queue.data?.[0])
       setSelectedWorkId(queue.data[0].work.productionWorkId);
   }, [queue.data, selectedWorkId]);
 
-  const work = queue.data?.find(
-    (item) => item.work.productionWorkId === selectedWorkId,
-  );
+  const work = routedProductionWorkId
+    ? routedWork.data
+    : queue.data?.find((item) => item.work.productionWorkId === selectedWorkId);
   const activeAttempt = work?.attempts.find((attempt) => !attempt.completedAt);
+  const mostRecentAttempt = work?.attempts[work.attempts.length - 1];
+  const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? station;
   const remainingGoodQuantity = work
     ? Math.max(0, work.work.orderedQuantity - work.completedGoodQuantity)
     : 0;
@@ -493,6 +515,9 @@ export const ProductionWorkspace = ({
       queryClient.invalidateQueries({
         queryKey: keys.queue(sessionScope, organizationId, "roll"),
       }),
+      ...(routedProductionWorkId
+        ? [queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "production", "work", routedProductionWorkId] })]
+        : []),
     ]);
   const start = useMutation({
     mutationFn: (kind: "initial" | "reprint" | "correction") =>
@@ -540,6 +565,13 @@ export const ProductionWorkspace = ({
     void (nextStation === "flatbed"
       ? flatbedQueue.refetch()
       : rollQueue.refetch());
+  };
+
+  const selectWork = (item: ProductionWorkProjection, stationKey?: Station) => {
+    if (stationKey) setStation(stationKey);
+    setSelectedWorkId(item.work.productionWorkId);
+    setView("stations");
+    onSelectWork(item.work.productionWorkId);
   };
 
   if (!organizationId) {
@@ -633,14 +665,12 @@ export const ProductionWorkspace = ({
                     key={item.work.productionWorkId}
                     type="button"
                     onClick={() => {
-                      setStation(stationKey);
-                      setSelectedWorkId(item.work.productionWorkId);
-                      setView("stations");
+                      selectWork(item, stationKey);
                     }}
                   >
                     <b>{requirementLabel(item)}</b>
                     <small>
-                      Line {item.work.orderLineId} ·{" "}
+                      Order line {item.work.orderLineId} ·{" "}
                       {item.completedGoodQuantity} / {item.work.orderedQuantity}{" "}
                       good
                     </small>
@@ -716,7 +746,12 @@ export const ProductionWorkspace = ({
                   <tbody>
                     {allWork.map((item) => (
                       <tr key={item.work.productionWorkId}>
-                        <td className="num">{item.work.orderLineId}</td>
+                        <td>
+                          <button type="button" onClick={() => openOrder(item.work.orderId)}>
+                            Order {item.work.orderId}
+                          </button>
+                          <small>Line {item.work.orderLineId}</small>
+                        </td>
                         <td>{requirementLabel(item)}</td>
                         <td className="num">{item.work.orderedQuantity}</td>
                         <td>{item.attempts[0]?.stationKey ?? "Next up"}</td>
@@ -724,11 +759,7 @@ export const ProductionWorkspace = ({
                           <button
                             type="button"
                             onClick={() => {
-                              setStation(
-                                item.attempts[0]?.stationKey ?? "flatbed",
-                              );
-                              setSelectedWorkId(item.work.productionWorkId);
-                              setView("stations");
+                              selectWork(item, item.attempts[0]?.stationKey ?? "flatbed");
                             }}
                           >
                             {workState(item)}
@@ -782,7 +813,14 @@ export const ProductionWorkspace = ({
             role="tablist"
             aria-label="Production stations"
           >
-            <button type="button" onClick={() => setView("overview")}>
+            <button
+              type="button"
+              onClick={() => {
+                setView("overview");
+                setSelectedWorkId("");
+                onSelectWork(undefined);
+              }}
+            >
               ← All stations
             </button>
             {(["flatbed", "roll"] as const).map((stationKey) => (
@@ -832,12 +870,6 @@ export const ProductionWorkspace = ({
                     </dl>
                   </section>
                   <section className="v2-production-actions">
-                    <button
-                      className="v2-production-rail-button future"
-                      disabled
-                    >
-                      Print ticket
-                    </button>
                     {!activeAttempt ? (
                       <>
                         <button
@@ -904,24 +936,6 @@ export const ProductionWorkspace = ({
                         </button>
                       </>
                     )}
-                    <button
-                      className="v2-production-rail-button future"
-                      disabled
-                    >
-                      Pause
-                    </button>
-                    <button
-                      className="v2-production-rail-button future"
-                      disabled
-                    >
-                      Return to Prepress
-                    </button>
-                    <button
-                      className="v2-production-rail-button future"
-                      disabled
-                    >
-                      Add Production Note
-                    </button>
                   </section>
                 </>
               ) : (
@@ -934,10 +948,15 @@ export const ProductionWorkspace = ({
                 <>
                   <header className="v2-production-detail-header">
                     <div>
-                      <span>Order line {work.work.orderLineId}</span>
+                      <span>
+                        <button type="button" onClick={() => openOrder(work.work.orderId)}>
+                          Order {work.work.orderId}
+                        </button>
+                        {" · "}line {work.work.orderLineId}
+                      </span>
                       <h2>{requirementLabel(work)}</h2>
                       <p>
-                        Exact required unit · {station} · Production uses the
+                        Exact required unit · {workStation} · Production uses the
                         frozen Artwork evidence below.
                       </p>
                     </div>
@@ -978,13 +997,12 @@ export const ProductionWorkspace = ({
                         <small>Production art</small>
                         <b>{requirementLabel(work)}</b>
                         <span>Preview unavailable</span>
-                        <em>{work.work.artworkFileId}</em>
+                        <button type="button" onClick={() => openArtwork(work.work.artworkFileId)}>
+                          Open Artwork
+                        </button>
                       </div>
                     </div>
-                    <footer>
-                      Artwork assignment {work.work.artworkAssignmentId} ·
-                      Artwork file {work.work.artworkFileId}
-                    </footer>
+                    <footer>Exact frozen Production artwork evidence is retained by the canonical work record.</footer>
                   </section>
                   <ProductionMaterials
                     organizationId={organizationId}
@@ -1027,7 +1045,9 @@ export const ProductionWorkspace = ({
                 </>
               ) : (
                 <div className="v2-proof-empty">
-                  No real Production work is available at this station.
+                  {routedProductionWorkId
+                    ? "The selected Production work is unavailable in this organization."
+                    : "No real Production work is available at this station."}
                 </div>
               )}
             </main>
@@ -1053,7 +1073,7 @@ export const ProductionWorkspace = ({
                         : ""
                     }
                     onClick={() =>
-                      setSelectedWorkId(item.work.productionWorkId)
+                      selectWork(item, station)
                     }
                   >
                     <b>{requirementLabel(item)}</b>

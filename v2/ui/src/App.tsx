@@ -76,6 +76,7 @@ import {
   pushProductBuilderLocation,
   pushProductLocation,
   pushProductionLocation,
+  pushProductionWorkLocation,
   pushProofingLocation,
   pushQuoteLocation,
   pushWorkspaceLocation,
@@ -145,6 +146,7 @@ export const App = ({
   const [productionStation, setProductionStation] = useState<
     "flatbed" | "roll" | undefined
   >();
+  const [productionWorkId, setProductionWorkId] = useState("");
   const [artworkOrderId, setArtworkOrderId] = useState("");
   const [artworkLineId, setArtworkLineId] = useState("");
   const [artworkFileId, setArtworkFileId] = useState("");
@@ -183,6 +185,7 @@ export const App = ({
       setInvoiceId("");
       setFulfillmentOrderId("");
       setProductionStation(undefined);
+      setProductionWorkId("");
       setArtworkOrderId("");
       setArtworkLineId("");
       setProofWorkId("");
@@ -243,6 +246,7 @@ export const App = ({
       setInvoiceId("");
       setFulfillmentOrderId("");
       setProductionStation(undefined);
+      setProductionWorkId("");
       setArtworkOrderId("");
       setArtworkLineId("");
       setProofWorkId("");
@@ -289,7 +293,10 @@ export const App = ({
       else if (location.page === "fulfillment")
         setFulfillmentOrderId(location.orderId ?? "");
       else if (location.page === "production")
-        setProductionStation(location.station);
+        {
+          setProductionStation(location.station);
+          setProductionWorkId(location.productionWorkId ?? "");
+        }
       else if (location.page === "artwork") {
         setArtworkFileId(location.artworkFileId ?? "");
         setArtworkOrderId(location.orderId ?? "");
@@ -354,6 +361,7 @@ export const App = ({
     if (nextPage === "production") {
       pushProductionLocation();
       setProductionStation(undefined);
+      setProductionWorkId("");
     }
     if (nextPage === "artwork") {
       setArtworkFileId("");
@@ -626,9 +634,28 @@ export const App = ({
           canWork={bootstrap.data?.capabilities.productionWork === true}
           canComplete={bootstrap.data?.capabilities.productionComplete === true}
           station={productionStation}
+          productionWorkId={productionWorkId || undefined}
           onStationChange={(station) => {
             pushProductionLocation(station);
             setProductionStation(station);
+            setProductionWorkId("");
+          }}
+          onSelectWork={(id) => {
+            if (id) pushProductionWorkLocation(id);
+            else pushProductionLocation();
+            setProductionWorkId(id ?? "");
+          }}
+          openOrder={(id) => {
+            pushOrderLocation(id);
+            setOrderId(id);
+            setPage("orders");
+          }}
+          openArtwork={(id) => {
+            pushArtworkFileLocation(id);
+            setArtworkFileId(id);
+            setArtworkOrderId("");
+            setArtworkLineId("");
+            setPage("artwork");
           }}
         />
       ) : page === "fulfillment" ? (
