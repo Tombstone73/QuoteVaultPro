@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { capabilityIds } from "../../src/authorization/capabilities.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
-import type { FulfillmentAvailability, FulfillmentHandoff } from "../../src/modules/fulfillment/contracts.js";
+import { fulfillmentPhysicalIntegrityAnomaly, type FulfillmentAvailability, type FulfillmentHandoff } from "../../src/modules/fulfillment/contracts.js";
 
 const handoff:FulfillmentHandoff={handoffId:brandedId<"FulfillmentHandoffId">("handoff"),organizationId:brandedId<"OrganizationId">("org"),orderId:brandedId<"OrderId">("order"),method:"pickup",completedAt:"2026-08-16T00:00:00.000Z",completedPrincipalKind:"staff",completedPrincipalSubject:"staff"};
 const availability:FulfillmentAvailability={orderId:brandedId<"OrderId">("order"),orderLineId:brandedId<"OrderLineId">("line"),orderedQuantity:100,completedPickupQuantity:20,completedShipmentQuantity:20,completedFulfillmentQuantity:40,completedProductionQuantity:60,availableFulfillmentQuantity:20,remainingProductionQuantity:40,remainingFulfillmentQuantity:60};
@@ -10,7 +10,12 @@ assert.equal(availability.completedPickupQuantity+availability.completedShipment
 assert.equal(availability.completedProductionQuantity-availability.completedFulfillmentQuantity,availability.availableFulfillmentQuantity,"only produced physical output not already handed off is available");
 assert.equal(availability.completedProductionQuantity+availability.remainingProductionQuantity,availability.orderedQuantity,"production projection remains bounded by commercial demand");
 assert.equal(availability.availableFulfillmentQuantity<=availability.remainingFulfillmentQuantity,true,"a physical handoff can never exceed unfulfilled commercial quantity");
+assert.deepEqual(fulfillmentPhysicalIntegrityAnomaly(0,1),{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION",completedProductionQuantity:0,completedFulfillmentQuantity:1,excessFulfillmentQuantity:1},"historical physical inconsistency is a structured derived condition");
+assert.equal(fulfillmentPhysicalIntegrityAnomaly(0,0),undefined,"empty Production and Fulfillment history is reconciled");
+assert.equal(fulfillmentPhysicalIntegrityAnomaly(40,0),undefined,"recorded Production without Fulfillment is reconciled");
+assert.equal(fulfillmentPhysicalIntegrityAnomaly(40,20),undefined,"partial Fulfillment below recorded Production is reconciled");
+assert.equal(fulfillmentPhysicalIntegrityAnomaly(40,40),undefined,"reconciled history does not gain an anomaly");
 assert.equal("routeState" in handoff,false,"Routing state is not duplicated in a customer handoff");
 assert.equal("invoiceId" in handoff,false,"Billing state is not owned by Fulfillment");
 assert.deepEqual(["fulfillment.view","fulfillment.pickup","fulfillment.ship"].every(x=>capabilityIds.includes(x as typeof capabilityIds[number])),true,"Fulfillment capabilities are reviewed vocabulary");
-console.log("[m3.1] Fulfillment contract tests passed (8 assertions).");
+console.log("[m6] Fulfillment contract tests passed (13 assertions).");

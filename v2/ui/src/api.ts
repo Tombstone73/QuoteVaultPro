@@ -679,6 +679,12 @@ export type CreatedProductWithInitialDraft = Readonly<{
   draftUpdatedAt: string;
 }>;
 export type FulfillmentMethod = "pickup" | "shipment";
+export type FulfillmentPhysicalIntegrityAnomaly = Readonly<{
+  code: "FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION";
+  completedProductionQuantity: number;
+  completedFulfillmentQuantity: number;
+  excessFulfillmentQuantity: number;
+}>;
 export type FulfillmentAvailability = Readonly<{
   orderId: string;
   orderLineId: string;
@@ -690,6 +696,7 @@ export type FulfillmentAvailability = Readonly<{
   availableFulfillmentQuantity: number;
   remainingProductionQuantity: number;
   remainingFulfillmentQuantity: number;
+  physicalIntegrityAnomaly?: FulfillmentPhysicalIntegrityAnomaly;
 }>;
 export type FulfillmentWorkspaceOrder = Readonly<{
   orderId: string;

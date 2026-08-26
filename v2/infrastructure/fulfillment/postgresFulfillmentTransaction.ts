@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import type { FulfillmentTransaction, FulfillmentTransactionRunner } from "../../src/modules/fulfillment/fulfillmentApplication.js";
-import type { FulfillmentAvailability, FulfillmentHandoff, FulfillmentHandoffLine } from "../../src/modules/fulfillment/contracts.js";
+import { fulfillmentPhysicalIntegrityAnomaly, type FulfillmentAvailability, type FulfillmentHandoff, type FulfillmentHandoffLine } from "../../src/modules/fulfillment/contracts.js";
 import { brandedId, type FulfillmentHandoffId, type OrganizationId, type OrderId } from "../../src/modules/shared/commercialValues.js";
 
 type HandoffRow={id:string;organization_id:string;order_document_id:string;handoff_method:"pickup"|"shipment";completed_at:Date;customer_id:string|null;contact_id:string|null;completed_principal_kind:FulfillmentHandoff["completedPrincipalKind"];completed_principal_subject:string;completed_staff_actor_user_id:string|null};
@@ -13,7 +13,8 @@ const availability=(r:AvailabilityRow):FulfillmentAvailability=>{
  const pickup=Number(r.pickup_quantity),shipment=Number(r.shipment_quantity),completedFulfillment=pickup+shipment;
  const completedProduction=Math.min(r.ordered_quantity,Math.max(0,Number(r.completed_production_quantity)));
  const physicalAvailable=Math.max(0,completedProduction-completedFulfillment);
- return {orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),orderedQuantity:r.ordered_quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,availableFulfillmentQuantity:physicalAvailable,remainingProductionQuantity:Math.max(0,r.ordered_quantity-completedProduction),remainingFulfillmentQuantity:Math.max(0,r.ordered_quantity-completedFulfillment)};
+ const anomaly=fulfillmentPhysicalIntegrityAnomaly(completedProduction,completedFulfillment);
+ return {orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),orderedQuantity:r.ordered_quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,availableFulfillmentQuantity:physicalAvailable,remainingProductionQuantity:Math.max(0,r.ordered_quantity-completedProduction),remainingFulfillmentQuantity:Math.max(0,r.ordered_quantity-completedFulfillment),...(anomaly?{physicalIntegrityAnomaly:anomaly}:{})};
 };
 /**
  * Production remains the source of physical output. A sellable unit is available only

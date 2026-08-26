@@ -3,6 +3,15 @@ import type { ContactId, CustomerId, FulfillmentHandoffId, FulfillmentHandoffLin
 
 export type FulfillmentMethod = "pickup" | "shipment";
 
+/** Derived only: immutable handoff history exceeds the Production evidence now recorded for the same line. */
+export type FulfillmentPhysicalIntegrityAnomaly = Readonly<{
+  code: "FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION";
+  completedProductionQuantity: number;
+  completedFulfillmentQuantity: number;
+  excessFulfillmentQuantity: number;
+}>;
+export const fulfillmentPhysicalIntegrityAnomaly=(completedProductionQuantity:number,completedFulfillmentQuantity:number):FulfillmentPhysicalIntegrityAnomaly|undefined=>completedFulfillmentQuantity>completedProductionQuantity?{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION",completedProductionQuantity,completedFulfillmentQuantity,excessFulfillmentQuantity:completedFulfillmentQuantity-completedProductionQuantity}:undefined;
+
 /** Immutable completed customer-handoff fact. Carrier mechanics deliberately are not modeled here. */
 export type FulfillmentHandoff = Readonly<{
   handoffId: FulfillmentHandoffId; organizationId: OrganizationId; orderId: OrderId; method: FulfillmentMethod;
@@ -26,6 +35,8 @@ export type FulfillmentAvailability = Readonly<{
   remainingProductionQuantity: number;
   /** Commercial quantity not yet handed off. This can exceed the currently available physical quantity. */
   remainingFulfillmentQuantity: number;
+  /** Present only for historical facts that cannot be reconciled with recorded Production output. */
+  physicalIntegrityAnomaly?: FulfillmentPhysicalIntegrityAnomaly;
 }>;
 
 export type CompleteFulfillmentInput = Readonly<{

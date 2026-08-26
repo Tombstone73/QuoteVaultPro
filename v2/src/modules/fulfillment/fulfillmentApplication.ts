@@ -49,6 +49,7 @@ export class FulfillmentApplicationService {
     const byLine=new Map(locked.availability.map(x=>[x.orderLineId,x]));
     for(const allocation of input.allocations){
      const available=byLine.get(allocation.orderLineId);
+     if(available?.physicalIntegrityAnomaly)throw new V2ApplicationError("CONFLICT","Fulfillment history exceeds recorded Production output for this OrderLine. Additional handoffs are blocked until the integrity anomaly is resolved.");
      if(!available||allocation.quantity>available.availableFulfillmentQuantity)throw new V2ApplicationError("CONFLICT","Fulfillment quantity exceeds the canonically produced quantity available for handoff.");
     }
     const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...actor(c)});

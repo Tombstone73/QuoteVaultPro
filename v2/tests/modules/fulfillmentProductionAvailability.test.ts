@@ -26,4 +26,13 @@ assert.equal(beyondPartial.ok,false,"a partial handoff cannot exceed the complet
 const alreadyConsumed=new FulfillmentApplicationService(runner(available(40,40)));
 const duplicateUnits=await alreadyConsumed.recordPickup(context("already-consumed"),{businessRequestId:"already-consumed",orderId:order,allocations:[{orderLineId:line,quantity:1}]});
 assert.equal(duplicateUnits.ok,false,"previous immutable handoffs subtract from the physical availability ceiling");
-console.log("[m6] Fulfillment Production availability guard tests passed (3 assertions).");
+
+const historicalAnomaly:FulfillmentAvailability={...available(0,1),availableFulfillmentQuantity:0,physicalIntegrityAnomaly:{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION",completedProductionQuantity:0,completedFulfillmentQuantity:1,excessFulfillmentQuantity:1}};
+const anomalous=new FulfillmentApplicationService(runner(historicalAnomaly));
+const anomalyRead=await anomalous.getAvailability(context("historical-anomaly-read"),order);
+assert.equal(anomalyRead.ok&&anomalyRead.value[0]?.physicalIntegrityAnomaly?.excessFulfillmentQuantity,1,"historical anomaly remains safely readable with its exact derived excess");
+const anomalyPickup=await anomalous.recordPickup(context("historical-anomaly-pickup"),{businessRequestId:"historical-anomaly-pickup",orderId:order,allocations:[{orderLineId:line,quantity:1}]});
+const anomalyShipment=await anomalous.recordShipment(context("historical-anomaly-shipment"),{businessRequestId:"historical-anomaly-shipment",orderId:order,allocations:[{orderLineId:line,quantity:1}]});
+assert.equal(anomalyPickup.ok,false,"historical fulfilled-over-produced state remains readable but blocks a new pickup before any handoff write");
+assert.equal(anomalyShipment.ok,false,"historical fulfilled-over-produced state remains readable but blocks a new shipment before any handoff write");
+console.log("[m6] Fulfillment Production availability guard tests passed (6 assertions).");
