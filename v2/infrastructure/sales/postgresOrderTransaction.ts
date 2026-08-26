@@ -4,6 +4,7 @@ import { PostgresProductsCompatibilityReader } from "../compatibility/postgresPr
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import { PostgresBillingDraftInvoiceTransaction } from "../billing/postgresBillingDraftInvoiceTransaction.js";
 import { PostgresRoutingRepository } from "../routing/postgresRoutingRepository.js";
+import { readRoutePrerequisite } from "../routing/postgresRoutePrerequisites.js";
 import { PostgresOrderMaterialRequirements } from "./postgresOrderMaterialRequirements.js";
 import { PostgresSalesDocumentNumberAllocator } from "./postgresCommercialPrimitives.js";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter.js";
@@ -146,7 +147,12 @@ export class PostgresOrderTransaction implements OrderTransaction {
       ...(Number(row.selling_adjustment_cents) !== 0 && row.selling_adjustment_reason ? { sellingAdjustment: { cents: Number(row.selling_adjustment_cents), reason: row.selling_adjustment_reason } } : {}),
       ...(conversion.rows[0] ? { sourceQuoteId: brandedId<"QuoteId">(conversion.rows[0].quote_document_id), sourceQuoteCheckpointId: brandedId<"QuoteCheckpointId">(conversion.rows[0].source_checkpoint_id) } : {}),
     };
-    const routes = (await Promise.all(lines.map((line) => this.routing.readRouteForWork(organizationId, brandedId<"OrderLineId">(line.lineId))))).filter((route) => route !== null);
+    const routes = (await Promise.all(lines.map(async (line) => {
+      const route = await this.routing.readRouteForWork(organizationId, brandedId<"OrderLineId">(line.lineId));
+      if (!route) return null;
+      const current = route.steps.find((step) => step.routeInstanceStepId === route.currentStepId);
+      return current ? { ...route, currentPrerequisite: await readRoutePrerequisite(this.client, organizationId, brandedId<"OrderLineId">(line.lineId), current.kind) } : route;
+    }))).filter((route): route is NonNullable<typeof route> => route !== null);
     if (draftInvoice && draftInvoice.lifecycle !== "draft") throw new Error("Draft Invoice read returned a non-Draft lifecycle.");
     return {
       order,

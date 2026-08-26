@@ -765,6 +765,10 @@ export const App = ({
                 setProductionWorkId(id);
                 setPage("production");
               }}
+              openRouting={() => {
+                pushWorkspaceLocation("routing");
+                setPage("routing");
+              }}
               openQuote={(id) => {
                 pushQuoteLocation(id);
                 setQuoteId(id);
@@ -1371,6 +1375,7 @@ const OrdersPage = ({
   openArtwork,
   openProofing,
   openProduction,
+  openRouting,
   openQuote,
 }: Readonly<{
   organizationId: string;
@@ -1385,6 +1390,7 @@ const OrdersPage = ({
   openArtwork: (orderId: string, lineId: string) => void;
   openProofing: (orderId: string, lineId: string) => void;
   openProduction: (productionWorkId: string) => void;
+  openRouting: () => void;
   openQuote: (quoteId: string) => void;
 }>) => {
   const [legacyOrderId, setLegacyOrderId] = useState("");
@@ -1408,6 +1414,7 @@ const OrdersPage = ({
         openArtwork={openArtwork}
         openProofing={openProofing}
         openProduction={openProduction}
+        openRouting={bootstrap?.capabilities.routeView === true ? openRouting : undefined}
         openQuote={openQuote}
       />
     );

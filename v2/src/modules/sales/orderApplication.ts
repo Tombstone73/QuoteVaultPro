@@ -22,6 +22,7 @@ import type {
   ResolveActivePricingInput,
 } from "../products/contracts.js";
 import type { InstantiateRouteResult, RouteInstance, RoutingPort } from "../routing/contracts.js";
+import type { RoutePrerequisite } from "../routing/routingLifecycle.js";
 import {
   brandedId,
   canonicalJson,
@@ -118,7 +119,7 @@ export type OrderReadModel = Readonly<{
     lineCount: number;
     total: Money;
   }>;
-  routes: readonly RouteInstance[];
+  routes: readonly (RouteInstance & Readonly<{ currentPrerequisite?: RoutePrerequisite }>)[];
 }>;
 
 export type OrderOperationResult = Readonly<{

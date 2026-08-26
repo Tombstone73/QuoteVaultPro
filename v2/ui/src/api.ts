@@ -802,6 +802,7 @@ export type OrderRead = Readonly<{
     work: { orderLineId: string };
     state: string;
     currentStepId?: string;
+    currentPrerequisite?: Readonly<{ satisfied: boolean; reason?: string }>;
     steps: readonly Readonly<{
       routeInstanceStepId: string;
       position: number;
