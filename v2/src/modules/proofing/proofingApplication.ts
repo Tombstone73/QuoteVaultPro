@@ -20,6 +20,7 @@ export interface ProofingTransaction {
   createOrGetWork(input: Readonly<{ id: ProofWorkId; organizationId: OrganizationId; orderId: OrderId; orderLineId: OrderLineId } & Actor>): Promise<ProofWork>;
   readWork(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofWorkProjection | null>;
   listWorkQueue(organizationId: OrganizationId, limit: number): Promise<readonly ProofWorkQueueItem[]>;
+  listOrderWorks(organizationId: OrganizationId, orderId: OrderId): Promise<readonly ProofWorkProjection[]>;
   latestVersion(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofVersionProjection | null>;
   findVersion(organizationId: OrganizationId, proofVersionId: ProofVersionId): Promise<ProofVersionProjection | null>;
   createVersion(input: Readonly<{ id: ProofVersionId; organizationId: OrganizationId; proofWorkId: ProofWorkId; sequence: number; artworkAssignmentIds: readonly ArtworkAssignmentId[] } & Actor>): Promise<ProofVersion>;
@@ -39,6 +40,9 @@ export class ProofingApplicationService {
   }
   async listWorkQueue(context: OperationContext, limit = 50): Promise<ApplicationResult<readonly ProofWorkQueueItem[]>> {
     try { requireOperationPrincipalScope(context); this.require(context, "proof.view"); if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new V2ApplicationError("VALIDATION_ERROR", "Proof queue limit must be between 1 and 100."); return success(await this.runner.transaction((tx) => tx.listWorkQueue(brandedId<"OrganizationId">(context.organizationId), limit))); } catch (error) { return failure(this.error(error)); }
+  }
+  async listOrderWorks(context: OperationContext, orderId: OrderId): Promise<ApplicationResult<readonly ProofWorkProjection[]>> {
+    try { requireOperationPrincipalScope(context); this.require(context, "proof.view"); return success(await this.runner.transaction((tx) => tx.listOrderWorks(brandedId<"OrganizationId">(context.organizationId), orderId))); } catch (error) { return failure(this.error(error)); }
   }
   async start(context: OperationContext, input: StartProofWorkInput): Promise<ApplicationResult<ProofingMutationResult>> {
     return this.mutate(context, "proof.start.v1", input, "proof.prepare", "proof_work_started", "Proof work started for OrderLine.", async (tx) => ({ work: await tx.createOrGetWork({ id: brandedId<"ProofWorkId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), orderId: input.orderId, orderLineId: input.orderLineId, ...actor(context) }) }));

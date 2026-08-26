@@ -76,4 +76,10 @@ export class PostgresArtworkWorkspaceReads {
     if (!first) return null;
     return { file: file(first), assignments: result.rows.flatMap((row) => { const assignment = context(row); return assignment ? [assignment] : []; }) };
   }
+  /** Internal delivery lookup: object identity never crosses the HTTP boundary. */
+  async objectForDelivery(organizationId: string, artworkFileId: string): Promise<Readonly<{ objectKey: string; contentType: string; byteSize: number }> | null> {
+    const result = await this.pool.query<{ object_key: string; content_type: string; byte_size: string }>("SELECT object_key,content_type,byte_size FROM v2_artwork_files WHERE organization_id=$1 AND id=$2 AND storage_provider='supabase'", [organizationId, artworkFileId]);
+    const row = result.rows[0];
+    return row ? { objectKey: row.object_key, contentType: row.content_type, byteSize: Number(row.byte_size) } : null;
+  }
 }

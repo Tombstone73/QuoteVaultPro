@@ -14,7 +14,7 @@ export interface ArtworkHttpService {
   assign(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
 }
 export interface VerifiedV2ArtworkPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
-export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]>; get(organizationId: string, artworkFileId: string): Promise<ArtworkWorkspaceDetail | null> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
+export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]>; get(organizationId: string, artworkFileId: string): Promise<ArtworkWorkspaceDetail | null> }>; delivery?: Readonly<{ file(organizationId: string, artworkFileId: string): Promise<Readonly<{ contentType: string; bytes: Buffer }> | null> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
 
 const maximumUploadBytes = 10 * 1024 * 1024;
 type MultipartArtworkCommand = Readonly<{ businessRequestId: string; orderId: string; orderLineId: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; filename: string; contentType: string; bytes: Buffer }>;
@@ -89,6 +89,18 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
       if (!detail) return response.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Artwork is unavailable." } });
       return response.status(200).json({ ok: true, data: detail });
     } catch { return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Authenticated access is required." } }); }
+  });
+  router.get("/files/:artworkFileId/content", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      if (!new AuthorityPolicy().decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "Artwork access is unavailable.");
+      const file = await dependencies.delivery?.file(organizationId, request.params.artworkFileId);
+      if (!file) throw new V2ApplicationError("NOT_FOUND", "Artwork is unavailable.");
+      response.setHeader("Cache-Control", "private, no-store");
+      response.type(file.contentType).status(200).send(file.bytes);
+    } catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("NOT_FOUND", "Artwork is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }
   });
   router.get("/orders/:orderId", async (request, response) => {
     try { send(response, await dependencies.service.listForOrder(await context(request, dependencies), request.params.orderId)); }

@@ -1,10 +1,10 @@
 import { GripVertical } from "lucide-react";
 import React, { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 
-export type SalesDocumentTab = "Items" | "Artwork" | "Notes" | "Billing" | "Fulfillment" | "History";
+export type SalesDocumentTab = "Items" | "Artwork" | "Notes" | "Billing" | "Fulfillment" | "Proofing" | "Production" | "History";
 
 const quoteTabs: readonly SalesDocumentTab[] = ["Items", "Artwork", "Notes", "History"];
-const orderTabs: readonly SalesDocumentTab[] = ["Items", "Artwork", "Notes", "Billing", "Fulfillment", "History"];
+const orderTabs: readonly SalesDocumentTab[] = ["Items", "Artwork", "Notes", "Billing", "Fulfillment", "Proofing", "Production", "History"];
 const DEFAULT_SPLIT = 45;
 const MIN_SPLIT = 30;
 const MAX_SPLIT = 65;

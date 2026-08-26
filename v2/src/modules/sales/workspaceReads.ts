@@ -71,6 +71,8 @@ export type LegacyCommercialDetail = Readonly<{
   readOnly: true;
   activeRecordClassification?: "CLOSED_HISTORY" | "ACTIVE_BUT_CAN_REMAIN_LEGACY" | "ACTIVE_REQUIRES_CUTOVER_STRATEGY" | "AMBIGUOUS";
 }>;
+/** Canonical Sales/audit evidence only; this is not a fabricated cross-domain timeline. */
+export type SalesOrderHistoryEvent = Readonly<{ eventType: string; occurredAt: string; summary: string }>;
 
 /** Sales consumes these bounded read models; it never reads Billing or Routing tables directly. */
 export interface SalesWorkspaceReadPort {
@@ -89,4 +91,5 @@ export interface SalesWorkspaceReadPort {
   ): Promise<SalesWorkspacePage<OrderListItem>>;
   readLegacyQuote(organizationId: OrganizationId, recordId: string): Promise<LegacyCommercialDetail | null>;
   readLegacyOrder(organizationId: OrganizationId, recordId: string): Promise<LegacyCommercialDetail | null>;
+  listOrderHistory(organizationId: OrganizationId, orderId: OrderId): Promise<readonly SalesOrderHistoryEvent[]>;
 }

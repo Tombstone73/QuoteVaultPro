@@ -15,8 +15,10 @@ export type AuthenticatedArtworkRuntime = Readonly<{ dependencies: ArtworkHttpDe
 
 export const composeAuthenticatedArtworkRuntime = (input: AuthenticatedArtworkRuntimeDependencies): AuthenticatedArtworkRuntime => {
   const service = input.service ?? new ArtworkApplicationService(new PostgresArtworkTransactionRunner(input.pool));
+  const workspace = new PostgresArtworkWorkspaceReads(input.pool);
+  const storage = new SupabaseArtworkBinaryStorage();
   return {
-    dependencies: { service, upload: input.upload ?? new ArtworkUploadService(service, new SupabaseArtworkBinaryStorage()), workspace: new PostgresArtworkWorkspaceReads(input.pool), principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
+    dependencies: { service, upload: input.upload ?? new ArtworkUploadService(service, storage), workspace, delivery: { file: async (organizationId, artworkFileId) => { const object = await workspace.objectForDelivery(organizationId, artworkFileId); return object ? { contentType: object.contentType, bytes: await storage.read(object.objectKey) } : null; } }, principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

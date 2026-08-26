@@ -26,6 +26,8 @@ export type DraftInvoiceSynchronizationInput = Readonly<{
     sellingLineAmount: Money;
     salesPricingEvidenceFingerprint: string;
   }>[];
+  /** Explicit Sales adjustment; never an invisible rewrite of source lines. */
+  salesAdjustment?: Readonly<{ cents: number; reason: string }>;
   /** Sales may identify the commercial tax context; Billing owns calculator/version evidence. */
   taxInput: Readonly<{ taxContextReference?: string }>;
   sourceSalesStateToken: string;
@@ -49,7 +51,7 @@ export type IssuedInvoiceCheckpoint = Readonly<{
   occurredAt: string;
   principal: BillingAttributionSnapshot;
   customerPresentation: CustomerPresentationIdentity;
-  commercial: Readonly<{ currency: CurrencyCode; purchaseOrderNumber?: string; termsCode?: string; subtotal: Money; taxTotal: Money; total: Money }>;
+  commercial: Readonly<{ currency: CurrencyCode; purchaseOrderNumber?: string; termsCode?: string; subtotal: Money; salesAdjustment?: Readonly<{ amount: Money; reason: string }>; taxTotal: Money; total: Money }>;
   taxEvidence: Readonly<{ calculationId: string; calculatorVersion: string; contextReference?: string; components: readonly Readonly<{ jurisdiction: string; rateBasisPoints: PercentageBasisPoints; taxableBase: Money; amount: Money }>[] }>;
   lines: readonly InvoiceIssuedLineSnapshot[];
 }>;
@@ -84,6 +86,7 @@ export type DraftInvoiceReadModel = Readonly<{
   synchronizationVersion: string;
   lines: readonly DraftInvoiceReadLine[];
   subtotal: Money;
+  salesAdjustment?: Readonly<{ amount: Money; reason: string }>;
   taxTotal: Money;
   total: Money;
   purchaseOrderNumber?: string;
@@ -110,6 +113,8 @@ export type InvoiceListItem = Readonly<{
 export interface BillingReadPort {
   readInvoice(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<DraftInvoiceReadModel | null>;
   readDraftForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null>;
+  /** The latest canonical Invoice for an Order, including immutable issued state. */
+  readInvoiceForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null>;
   listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]>;
 }
 

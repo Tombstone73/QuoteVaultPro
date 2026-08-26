@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { brandedId, type OrganizationId } from "../../src/modules/shared/commercialValues.js";
-import type { LegacyCommercialDetail, OrderListItem, QuoteListItem, SalesWorkspacePage, SalesWorkspacePageRequest, SalesWorkspaceReadPort } from "../../src/modules/sales/workspaceReads.js";
+import type { LegacyCommercialDetail, OrderListItem, QuoteListItem, SalesOrderHistoryEvent, SalesWorkspacePage, SalesWorkspacePageRequest, SalesWorkspaceReadPort } from "../../src/modules/sales/workspaceReads.js";
 
 type Source = "v2" | "legacy";
 type Cursor = Readonly<{ updatedAt: string; source: Source; id: string }>;
@@ -22,6 +22,10 @@ export const classifyLegacyOrder = (row: Readonly<{ status: string; state: strin
 export class PostgresSalesWorkspaceReads implements SalesWorkspaceReadPort {
   constructor(private readonly pool: Pool) {}
   private async read<T>(work: (client: PoolClient) => Promise<T>): Promise<T> { const client = await this.pool.connect(); try { await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"); const value = await work(client); await client.query("COMMIT"); return value; } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
+  async listOrderHistory(organizationId: OrganizationId, orderId: any): Promise<readonly SalesOrderHistoryEvent[]> { return this.read(async (client) => {
+    const rows = await client.query<{ event_type: string; occurred_at: Date; changes: unknown }>("SELECT event_type,occurred_at,changes FROM v2_audit_events WHERE organization_id=$1 AND resource_type='order' AND resource_id=$2 ORDER BY occurred_at DESC,id DESC LIMIT 100", [organizationId, orderId]);
+    return rows.rows.map((row) => { const first = Array.isArray(row.changes) ? row.changes[0] as { summary?: unknown } | undefined : undefined; return { eventType: row.event_type, occurredAt: row.occurred_at.toISOString(), summary: typeof first?.summary === "string" ? first.summary : row.event_type.replaceAll("_", " ") }; });
+  }); }
   private page<T extends Common>(rows: readonly T[], request: SalesWorkspacePageRequest): SalesWorkspacePage<T> { const limit = limitFor(request.limit), cursor = decode(request.cursor), visible = rows.filter((row) => after(row, cursor)).sort(cmp).slice(0, limit + 1), items = visible.slice(0, limit), last = items.at(-1); return { items, ...(visible.length > limit && last ? { nextCursor: encode({ updatedAt: last.updated_at.toISOString(), source: last.source, id: last.id }) } : {}) }; }
   async listQuotes(organizationId: OrganizationId, request: SalesWorkspacePageRequest): Promise<SalesWorkspacePage<QuoteListItem>> { return this.read(async (client) => {
     const limit = limitFor(request.limit) + 1, search = request.search?.trim() || null, lifecycle = request.lifecycle ?? null;

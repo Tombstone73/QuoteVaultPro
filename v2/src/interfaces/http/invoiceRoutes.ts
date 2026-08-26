@@ -30,6 +30,15 @@ export const createInvoiceRouter = (dependencies: InvoiceHttpDependencies): Rout
       return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated access is required."));
     }
   });
+  router.get("/orders/:orderId", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const result = await dependencies.service.readInvoiceForOrder({ principal, organizationId, operationId: `http:GET:${request.path}` }, brandedId<"OrderId">(request.params.orderId));
+      if (!result.ok) return fail(response, result.error);
+      return response.status(200).json({ ok: true, data: result.value });
+    } catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated access is required.")); }
+  });
   router.get("/:invoiceId", async (request, response) => {
     try {
       const organizationId = (request.params as Record<string, string>).organizationId!;

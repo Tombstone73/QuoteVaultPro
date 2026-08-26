@@ -2,7 +2,7 @@ import type { OperationContext } from "../../application/operation.js";
 import { requireOperationPrincipalScope } from "../../application/operation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
-import type { InvoiceId } from "../shared/commercialValues.js";
+import type { InvoiceId, OrderId } from "../shared/commercialValues.js";
 import { brandedId, type InvoiceCheckpointId, type OrganizationId } from "../shared/commercialValues.js";
 import { canonicalJson, type BusinessRequestId } from "../shared/commercialValues.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,7 +12,7 @@ import type { BillingReadPort, DraftInvoiceReadModel, InvoiceListRequest, Invoic
 export interface BillingReadRunner { read<T>(action: (port: BillingReadPort) => Promise<T>): Promise<T>; }
 type Actor=Readonly<{principalKind:OperationContext["principal"]["kind"];principalSubject:string;staffActorUserId?:string}>;
 type Reservation=Readonly<{kind:"new"|"resumed"|"replay";request:Readonly<{id:string;resultJson:unknown|null}>}>;
-export type LockedInvoice=Readonly<{invoice:Readonly<{id:string;organization_id:string;sales_order_document_id:string;invoice_state:"draft"|"issued"|"void";customer_id:string|null;contact_id:string|null;purchase_order_number:string|null;currency:string;terms_code:string|null;source_sales_state_token:string;synchronization_version:string;subtotal_cents:string;tax_total_cents:string;total_cents:string;tax_context_reference:string|null;tax_calculator_version:string;tax_evidence:unknown;issued_at:Date|null;voided_at:Date|null;created_at:Date;updated_at:Date}>;order:Readonly<{id:string;customer_id:string|null;contact_id:string|null;currency:string;terms_json:unknown;revision:string;commercial_state:"open"|"cancelled"}>;lines:readonly Readonly<{source_sales_line_id:string;product_id:string;description:string;quantity:number;selling_unit_cents:string;selling_line_cents:string;sales_pricing_evidence_fingerprint:string}>[]}>;
+export type LockedInvoice=Readonly<{invoice:Readonly<{id:string;organization_id:string;sales_order_document_id:string;invoice_state:"draft"|"issued"|"void";customer_id:string|null;contact_id:string|null;purchase_order_number:string|null;currency:string;terms_code:string|null;source_sales_state_token:string;synchronization_version:string;subtotal_cents:string;tax_total_cents:string;total_cents:string;sales_adjustment_cents:string;sales_adjustment_reason:string|null;tax_context_reference:string|null;tax_calculator_version:string;tax_evidence:unknown;issued_at:Date|null;voided_at:Date|null;created_at:Date;updated_at:Date}>;order:Readonly<{id:string;customer_id:string|null;contact_id:string|null;currency:string;terms_json:unknown;revision:string;commercial_state:"open"|"cancelled"}>;lines:readonly Readonly<{source_sales_line_id:string;product_id:string;description:string;quantity:number;selling_unit_cents:string;selling_line_cents:string;sales_pricing_evidence_fingerprint:string}>[]}>;
 export interface BillingIssueTransaction {
   reserve(input:Readonly<{organizationId:string;operation:string;businessRequestId:string;payloadFingerprint:string}&Actor>):Promise<Reservation>;
   lockInvoice(organizationId:OrganizationId,invoiceId:InvoiceId):Promise<LockedInvoice|null>;
@@ -44,6 +44,16 @@ export class BillingApplicationService {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Invoice could not be read."));
     }
   }
+  async readInvoiceForOrder(context: OperationContext, orderId: OrderId): Promise<ApplicationResult<DraftInvoiceReadModel | null>> {
+    try {
+      requireOperationPrincipalScope(context);
+      const invoice = await this.runner.read((port) => port.readInvoiceForOrder(brandedId<"OrganizationId">(context.organizationId), orderId));
+      if (!invoice) return success(null);
+      if (!this.authority.decide(context.principal, { capability: "invoice.view", resource: { organizationId: context.organizationId, customerId: invoice.customerId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "The principal cannot view this Invoice.");
+      return success(invoice);
+    } catch (error) { return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Invoice could not be read.")); }
+  }
   async listInvoices(context: OperationContext, request: InvoiceListRequest): Promise<ApplicationResult<readonly InvoiceListItem[]>> {
     try {
       requireOperationPrincipalScope(context);
@@ -72,7 +82,7 @@ export class BillingApplicationService {
         if(locked.order.commercial_state!=="open")throw new V2ApplicationError("CONFLICT","A cancelled Order cannot be issued.");
         if(locked.invoice.source_sales_state_token!==locked.order.revision)throw new V2ApplicationError("CONFLICT","The Draft Invoice is not synchronized with the locked Sales Order.");
         if(locked.invoice.currency!==locked.order.currency||!locked.lines.length)throw new V2ApplicationError("CONFLICT","The Draft Invoice financial snapshot is incomplete.");
-        const subtotal=locked.lines.reduce((total,line)=>total+cents(line.selling_line_cents),0),tax=cents(locked.invoice.tax_total_cents),total=cents(locked.invoice.total_cents);
+        const subtotal=locked.lines.reduce((total,line)=>total+cents(line.selling_line_cents),0)+cents(locked.invoice.sales_adjustment_cents),tax=cents(locked.invoice.tax_total_cents),total=cents(locked.invoice.total_cents);
         if(!Number.isSafeInteger(subtotal)||subtotal!==cents(locked.invoice.subtotal_cents)||total!==subtotal+tax)throw new V2ApplicationError("CONFLICT","The Draft Invoice financial snapshot is inconsistent.");
         const issued=await tx.issue({organizationId:brandedId<"OrganizationId">(context.organizationId),invoiceId:input.invoiceId,...actor(context)});
         if(!issued)throw new V2ApplicationError("CONFLICT","Invoice issuance lost its Draft state.");

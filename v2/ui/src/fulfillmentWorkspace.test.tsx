@@ -15,5 +15,6 @@ assert.match(markup,/Additional handoffs are blocked until this historical integ
 assert.match(markup,/Handoff history/);
 assert.match(markup,/Open Order/);
 assert.match(markup,/Open Customer/);
-assert.doesNotMatch(markup,/Fulfillment method|Record partial|Hand off available|Fulfillment quantity/);
+assert.match(markup,/Fulfillment method not set/);
+assert.doesNotMatch(markup,/Record partial|Hand off available|Fulfillment quantity/);
 console.log("Fulfillment integrity-anomaly presentation tests passed.");

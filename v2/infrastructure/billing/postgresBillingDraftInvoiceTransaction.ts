@@ -32,7 +32,7 @@ type InvoiceRow = Readonly<{
 
 const zeroTaxCalculatorVersion = "v2-billing-zero-tax-compatibility-v1";
 
-const sumCents = (lines: DraftInvoiceSynchronizationInput["salesLines"]): number => {
+const sumCents = (lines: DraftInvoiceSynchronizationInput["salesLines"], adjustment = 0): number => {
   let total = 0;
   for (const line of lines) {
     total += line.sellingLineAmount.cents;
@@ -43,7 +43,8 @@ const sumCents = (lines: DraftInvoiceSynchronizationInput["salesLines"]): number
       );
     }
   }
-  return total;
+  if (!Number.isSafeInteger(adjustment) || !Number.isSafeInteger(total + adjustment) || total + adjustment < 0) throw new V2ApplicationError("VALIDATION_ERROR", "Draft Invoice adjustment is outside the safe money range.");
+  return total + adjustment;
 };
 
 const assertLineCurrencies = (input: DraftInvoiceSynchronizationInput): void => {
@@ -109,9 +110,9 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         id,organization_id,sales_order_document_id,invoice_state,customer_id,contact_id,
         purchase_order_number,currency,terms_code,source_sales_state_token,
         subtotal_cents,tax_total_cents,total_cents,tax_context_reference,
-        tax_calculator_version,tax_evidence
+        tax_calculator_version,tax_evidence,sales_adjustment_cents,sales_adjustment_reason
       ) VALUES(
-        $1,$2,$3,'draft',$4,$5,$6,$7,$8,$9,$10,0,$10,$11,$12,$13::jsonb
+        $1,$2,$3,'draft',$4,$5,$6,$7,$8,$9,$10,0,$10,$11,$12,$13::jsonb,$14,$15
       )
       ON CONFLICT (organization_id,sales_order_document_id) WHERE invoice_state='draft'
       DO NOTHING
@@ -129,7 +130,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         totals.subtotalCents,
         input.taxInput.taxContextReference ?? null,
         totals.taxCalculatorVersion,
-        JSON.stringify(totals.taxEvidence),
+        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null,
       ],
     );
     const row = inserted.rows[0];
@@ -160,6 +161,9 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
   async readDraftForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null> {
     return this.readModel("i.sales_order_document_id=$2 AND i.invoice_state='draft'", organizationId, orderId);
   }
+  async readInvoiceForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null> {
+    return this.readModel("i.sales_order_document_id=$2 ORDER BY CASE i.invoice_state WHEN 'draft' THEN 0 WHEN 'issued' THEN 1 ELSE 2 END,i.updated_at DESC LIMIT 1", organizationId, orderId);
+  }
 
   async listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]> {
     const limit = Number.isInteger(request.limit) ? Math.max(1, Math.min(request.limit!, 50)) : 25;
@@ -189,9 +193,9 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
   private async readModel(predicate: string, organizationId: OrganizationId, identity: string): Promise<DraftInvoiceReadModel | null> {
     const result = await this.client.query<{
       id: string; sales_order_document_id: string; display_number: string; invoice_state: InvoiceState; currency: string; customer_id: string | null;
-      synchronization_version: string; subtotal_cents: string; tax_total_cents: string; total_cents: string;
+      synchronization_version: string; subtotal_cents: string; tax_total_cents: string; total_cents: string; sales_adjustment_cents: string; sales_adjustment_reason: string | null;
       purchase_order_number: string | null; terms_code: string | null; issued_at: Date | null; created_at: Date; updated_at: Date; customer_display_name: string | null;
-    }>(`SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_state,i.currency,i.customer_id,i.synchronization_version,i.subtotal_cents,i.tax_total_cents,i.total_cents,i.purchase_order_number,i.terms_code,i.issued_at,i.created_at,i.updated_at,COALESCE(c.display_name,c.company_name) AS customer_display_name FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND ${predicate}`, [organizationId, identity]);
+    }>(`SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_state,i.currency,i.customer_id,i.synchronization_version,i.subtotal_cents,i.tax_total_cents,i.total_cents,i.sales_adjustment_cents,i.sales_adjustment_reason,i.purchase_order_number,i.terms_code,i.issued_at,i.created_at,i.updated_at,COALESCE(c.display_name,c.company_name) AS customer_display_name FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND ${predicate}`, [organizationId, identity]);
     const invoice = result.rows[0];
     if (!invoice) return null;
     const currency = currencyCode(invoice.currency);
@@ -209,7 +213,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       ...(issuedCheckpoint ? { customerPresentation: issuedCheckpoint.customerPresentation, issuedCheckpoint } : currentPresentation ? { customerPresentation: currentPresentation } : {}),
       currency, synchronizationVersion: invoice.synchronization_version,
       lines: lines.rows.map((line) => ({ sourceOrderLineId: brandedId<"OrderLineId">(line.source_sales_line_id), productId: brandedId<"ProductId">(line.product_id), description: line.description, quantity: line.quantity, sellingUnitAmount: money(currency, Number(line.selling_unit_cents)), lineAmount: money(currency, Number(line.selling_line_cents)) })),
-      subtotal: money(currency, Number(invoice.subtotal_cents)), taxTotal: money(currency, Number(invoice.tax_total_cents)), total: money(currency, Number(invoice.total_cents)),
+      subtotal: money(currency, Number(invoice.subtotal_cents)), ...(Number(invoice.sales_adjustment_cents) !== 0 && invoice.sales_adjustment_reason ? { salesAdjustment: { amount: money(currency, Number(invoice.sales_adjustment_cents)), reason: invoice.sales_adjustment_reason } } : {}), taxTotal: money(currency, Number(invoice.tax_total_cents)), total: money(currency, Number(invoice.total_cents)),
       ...(invoice.purchase_order_number ? { purchaseOrderNumber: invoice.purchase_order_number } : {}), ...(invoice.terms_code ? { termsCode: invoice.terms_code } : {}), ...(invoice.issued_at ? { issuedAt: invoice.issued_at.toISOString() } : {}),
       createdAt: invoice.created_at.toISOString(), updatedAt: invoice.updated_at.toISOString(),
     };
@@ -265,7 +269,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         customer_id=$4,contact_id=$5,purchase_order_number=$6,currency=$7,
         terms_code=$8,source_sales_state_token=$9,synchronization_version=synchronization_version+1,
         subtotal_cents=$10,tax_total_cents=0,total_cents=$10,
-        tax_context_reference=$11,tax_calculator_version=$12,tax_evidence=$13::jsonb,
+        tax_context_reference=$11,tax_calculator_version=$12,tax_evidence=$13::jsonb,sales_adjustment_cents=$14,sales_adjustment_reason=$15,
         updated_at=now()
        WHERE organization_id=$1 AND id=$2 AND sales_order_document_id=$3
          AND invoice_state='draft'
@@ -283,7 +287,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         totals.subtotalCents,
         input.taxInput.taxContextReference ?? null,
         totals.taxCalculatorVersion,
-        JSON.stringify(totals.taxEvidence),
+        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null,
       ],
     );
     if (!updated.rows[0]) {
@@ -323,7 +327,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
   }> {
     const tax = taxEnvelope(input);
     return {
-      subtotalCents: sumCents(input.salesLines),
+      subtotalCents: sumCents(input.salesLines, input.salesAdjustment?.cents ?? 0),
       taxCalculatorVersion: tax.calculatorVersion,
       taxEvidence: tax.evidence,
     };

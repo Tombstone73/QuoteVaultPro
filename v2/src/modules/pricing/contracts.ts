@@ -18,6 +18,14 @@ export type ResolvedProductConfiguration = Readonly<{
   quantity: number;
   dimensions?: DimensionInput;
   selections: Readonly<Record<string, JsonValue>>;
+  /**
+   * Sales-owned consumers persist this Product/PBV2-derived rendering with the
+   * line. It is intentionally labels/entered values only, never option ids.
+   */
+  presentation?: Readonly<{
+    dimensions?: string;
+    selections: readonly Readonly<{ label: string; value: string }> [];
+  }>;
   derivedFacts: Readonly<Record<string, JsonValue>>;
   productFacts: Readonly<Record<string, JsonValue>>;
   /** Frozen configured Product/PBV2 output requirements; absent only for pre-M2.2.1 history. */

@@ -62,6 +62,13 @@ export const assertSalesLineSnapshot = (line: SalesLineSnapshot): SalesLineSnaps
 };
 
 export type CommercialTerms = Readonly<{ termsCode?: string; taxContextReference?: string; salesRepresentativeId?: string; commercialNotes?: string }>;
+/** Sales-owned requested logistics snapshot. It never points at mutable CRM addresses. */
+export type RequestedFulfillment = Readonly<{
+  method: "pickup" | "shipping" | "local_delivery";
+  destination?: Readonly<{ recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }>;
+  instructions?: string;
+}>;
+export type SalesOrderAdjustment = Readonly<{ cents: number; reason: string }>;
 export type SalesDocumentCurrentState = Readonly<{
   organizationId: OrganizationId;
   customerContact: CustomerContactReference;
@@ -85,6 +92,8 @@ export type OrderCurrentState = Readonly<SalesDocumentCurrentState & {
   sourceQuoteCheckpointId?: QuoteCheckpointId;
   commercialState: "open" | "cancelled";
   billingInvoiceReference?: InvoiceId;
+  requestedFulfillment?: RequestedFulfillment;
+  sellingAdjustment?: SalesOrderAdjustment;
 }>;
 
 type QuoteCheckpointBase = Readonly<{
@@ -125,8 +134,8 @@ export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId
 
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{
-  group: "customer" | "commercial_terms" | "line" | "price" | "notes";
-  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "selling_price_changed" | "discount_changed" | "notes_changed";
+  group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment";
+  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed";
   resourceId?: SalesLineId | CustomerId | ContactId;
   summary: string;
 }>;

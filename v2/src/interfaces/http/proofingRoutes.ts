@@ -4,10 +4,11 @@ import type { OperationContext } from "../../application/operation.js";
 import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { ProofingMutationResult } from "../../modules/proofing/proofingApplication.js";
-import type { ProofWorkId } from "../../modules/shared/commercialValues.js";
+import { brandedId, type OrderId, type ProofWorkId } from "../../modules/shared/commercialValues.js";
 
 export interface ProofingHttpService {
   listWorkQueue(context: OperationContext, limit?: number): Promise<ApplicationResult<unknown>>;
+  listOrderWorks(context: OperationContext, orderId: OrderId): Promise<ApplicationResult<unknown>>;
   getWork(context: OperationContext, proofWorkId: ProofWorkId): Promise<ApplicationResult<unknown>>;
   start(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
   createVersion(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
@@ -24,6 +25,7 @@ const run=async(response:Response,operation:()=>Promise<ApplicationResult<unknow
 
 /** Authenticated bounded Proofing transport; it never owns Artwork, Sales, or Routing state. */
 export const createProofingRouter=(dependencies:ProofingHttpDependencies):Router=>{const router=expressRouter({mergeParams:true});
+  router.get("/orders/:orderId/works",(request,response)=>void run(response,async()=>dependencies.service.listOrderWorks(await context(request,dependencies),brandedId<"OrderId">(request.params.orderId))));
   router.get("/works",(request,response)=>void run(response,async()=>dependencies.service.listWorkQueue(await context(request,dependencies),Number(request.query.limit??50))));
   router.get("/works/:proofWorkId",(request,response)=>void run(response,async()=>dependencies.service.getWork(await context(request,dependencies),request.params.proofWorkId as ProofWorkId)));
   router.post("/works",(request,response)=>void run(response,async()=>dependencies.service.start(await context(request,dependencies,true),body(request.body))));

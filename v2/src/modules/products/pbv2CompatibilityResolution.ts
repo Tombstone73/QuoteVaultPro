@@ -56,6 +56,26 @@ const tier = (input: PricingV2Tier, fallbackId: string): PricingTierRule => ({
   ...(input.minimumChargeCents == null ? {} : { minimumChargeCents: Math.round(input.minimumChargeCents) }),
 });
 const keyFor = (node: any): string => typeof node?.input?.selectionKey === "string" ? node.input.selectionKey : typeof node?.key === "string" ? node.key : node.id;
+/** A small, frozen presentation snapshot for commercial documents. */
+const presentationFor = (
+  tree: OptionTreeV2,
+  visibleNodeIds: readonly string[],
+  selections: Readonly<Record<string, JsonValue>>,
+  dimensions: ResolveActivePricingInput["dimensions"] | undefined,
+) => {
+  const selected = visibleNodeIds.flatMap((id) => {
+    const node = tree.nodes[id];
+    if (!node || node.kind !== "question") return [];
+    const value = selections[keyFor(node)];
+    if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return [];
+    const values = Array.isArray(value) ? value : [value];
+    const labels = values.map((selectedValue) => node.choices?.find((choice) => choice.value === selectedValue)?.label
+      ?? (typeof selectedValue === "boolean" ? (selectedValue ? "Yes" : "No") : String(selectedValue)));
+    return node.label.trim() && labels.length ? [{ label: node.label.trim(), value: labels.join(", ") }] : [];
+  });
+  const size = dimensions ? `${dimensions.width} × ${dimensions.height} ${dimensions.unit}` : undefined;
+  return { ...(size ? { dimensions: size } : {}), selections: selected };
+};
 const supportedFormula = (expression: string): boolean => {
   if (!/^[\s\w.,()+\-*/]+$/u.test(expression)) return false;
   return !/\b(?!ceil\s*\(|sheet_consumption_sqft\s*\(|roll_nesting_billable_sqft\s*\()[A-Za-z_]\w*\s*\(/u.test(expression);
@@ -506,6 +526,7 @@ export const resolveActivePbv2PricingInput = (
       quantity: input.quantity,
       ...(dimensions ? { dimensions } : {}),
       selections: visibility.effectiveSelections as Record<string, JsonValue>,
+      presentation: presentationFor(tree, visibility.visibleNodeIds, visibility.effectiveSelections as Record<string, JsonValue>, dimensions),
       derivedFacts: {
         ...(quantityOnly ? { measurementMode: "quantity_only" } : {}),
         productAllowsRotation: rotation.productAllowsRotation,

@@ -6,6 +6,7 @@ export interface ArtworkBinaryStorage {
   put(input: Readonly<{ organizationId: string; objectKey: string; contentType: string; bytes: Buffer }>): Promise<StoredArtworkObject>;
   remove(objectKey: string): Promise<void>;
   exists(objectKey: string): Promise<boolean>;
+  read(objectKey: string): Promise<Buffer>;
 }
 
 /** Server-only V2 Artwork object storage. Object keys are constructed by Artwork, never supplied by a browser. */
@@ -46,5 +47,10 @@ export class SupabaseArtworkBinaryStorage implements ArtworkBinaryStorage {
     if (!filename) return false;
     const { data, error } = await this.getClient().storage.from(this.bucket).list(parts.join("/"), { search: filename, limit: 1 });
     return !error && data.some((entry) => entry.name === filename);
+  }
+  async read(objectKey: string): Promise<Buffer> {
+    const { data, error } = await this.getClient().storage.from(this.bucket).download(objectKey);
+    if (error || !data) throw new Error("Artwork object storage is unavailable.");
+    return Buffer.from(await data.arrayBuffer());
   }
 }

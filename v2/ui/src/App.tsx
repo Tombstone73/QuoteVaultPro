@@ -760,6 +760,11 @@ export const App = ({
                 setProofLineId(lineId);
                 setPage("proofing");
               }}
+              openProduction={(id) => {
+                pushProductionWorkLocation(id);
+                setProductionWorkId(id);
+                setPage("production");
+              }}
               openQuote={(id) => {
                 pushQuoteLocation(id);
                 setQuoteId(id);
@@ -1365,6 +1370,7 @@ const OrdersPage = ({
   openInvoice,
   openArtwork,
   openProofing,
+  openProduction,
   openQuote,
 }: Readonly<{
   organizationId: string;
@@ -1378,6 +1384,7 @@ const OrdersPage = ({
   openInvoice: (invoiceId: string) => void;
   openArtwork: (orderId: string, lineId: string) => void;
   openProofing: (orderId: string, lineId: string) => void;
+  openProduction: (productionWorkId: string) => void;
   openQuote: (quoteId: string) => void;
 }>) => {
   const [legacyOrderId, setLegacyOrderId] = useState("");
@@ -1392,6 +1399,7 @@ const OrdersPage = ({
         canViewInvoice={bootstrap?.capabilities.invoiceView === true}
         canViewArtwork={bootstrap?.capabilities.artworkView === true}
         canViewProofing={bootstrap?.capabilities.proofView === true}
+        canViewProduction={bootstrap?.capabilities.productionView === true}
         csrfReady={Boolean(bootstrap)}
         onBack={() => setOrderId("")}
         openCustomer={openCustomer}
@@ -1399,6 +1407,7 @@ const OrdersPage = ({
         openInvoice={openInvoice}
         openArtwork={openArtwork}
         openProofing={openProofing}
+        openProduction={openProduction}
         openQuote={openQuote}
       />
     );

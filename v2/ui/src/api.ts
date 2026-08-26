@@ -702,6 +702,7 @@ export type FulfillmentWorkspaceOrder = Readonly<{
   orderId: string;
   number: string;
   commercialState: "open" | "cancelled";
+  requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }; instructions?: string };
   customerName: string;
   customerId?: string;
   contactId?: string;
@@ -777,6 +778,8 @@ export type OrderRead = Readonly<{
     terms: { commercialNotes?: string };
     currency: string;
     commercialState: "open" | "cancelled";
+    requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }; instructions?: string };
+    sellingAdjustment?: { cents: number; reason: string };
     sourceQuoteId?: string;
     billingInvoiceReference?: string;
     lines: readonly OrderLine[];
@@ -853,6 +856,7 @@ export type InvoiceRead = Readonly<{
     lineAmount: { cents: number; currency: string };
   }>[];
   subtotal: { cents: number; currency: string };
+  salesAdjustment?: { amount: { cents: number; currency: string }; reason: string };
   taxTotal: { cents: number; currency: string };
   total: { cents: number; currency: string };
 }>;
@@ -1480,6 +1484,7 @@ export const orderApi = {
         orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}`),
       ),
     ),
+  history: (organizationId: string, orderId: string) => request<readonly { eventType: string; occurredAt: string; summary: string }[]>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/history`)),
   legacy: (organizationId: string, recordId: string) =>
     request<LegacyCommercialDetail>(
       orderEndpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`),
@@ -1521,6 +1526,7 @@ export type LegacyCommercialDetail = Readonly<{
     | "AMBIGUOUS";
 }>;
 export const invoiceApi = {
+  forOrder: (organizationId: string, orderId: string) => request<InvoiceRead | null>(`/v2/organizations/${encodeURIComponent(organizationId)}/invoices/orders/${encodeURIComponent(orderId)}`),
   list: (
     organizationId: string,
     query?: Readonly<{ q?: string; lifecycle?: InvoiceRead["lifecycle"] }>,
@@ -2155,6 +2161,7 @@ const proofMutation = <T>(
     body: JSON.stringify({ ...input, businessRequestId }),
   });
 export const proofingApi = {
+  orderWorks: (org: string, orderId: string) => request<readonly ProofWorkProjection[]>(proofEndpoint(org, `/orders/${encodeURIComponent(orderId)}/works`)),
   list: (org: string) =>
     request<readonly ProofQueueItem[]>(proofEndpoint(org, "/works?limit=50")),
   get: (org: string, proofWorkId: string) =>
@@ -2268,6 +2275,7 @@ const productionMutation = <T>(
     body: JSON.stringify({ ...input, businessRequestId }),
   });
 export const productionApi = {
+  orderWorks: (org: string, orderId: string) => request<readonly ProductionWorkProjection[]>(productionEndpoint(org, `/orders/${encodeURIComponent(orderId)}/works`)),
   queue: (org: string, station: "flatbed" | "roll") =>
     request<readonly ProductionWorkProjection[]>(
       productionEndpoint(org, `/stations/${station}/queue?limit=50`),
