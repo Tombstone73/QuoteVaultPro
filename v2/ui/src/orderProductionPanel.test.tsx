@@ -20,10 +20,9 @@ const populated = renderToStaticMarkup(<OrderProduction works={[
   work("production-aaaa", "line-11111111", 2, 3, "flatbed"),
   work("production-bbbb", "line-22222222", 1, 1, "roll"),
 ]} loading={false} onOpen={() => undefined} />);
-assert.match(populated, /Work producti/);
-assert.match(populated, /line line-111/);
 assert.match(populated, /2\/3 complete.*Flatbed/s);
 assert.match(populated, /1\/1 complete.*Roll/s);
+assert.doesNotMatch(populated, /production-aaaa|line-11111111/);
 assert.doesNotMatch(populated, /Start Production|Record output|Consume material/);
 
 const workspace = await readFile(new URL("./OrderWorkspace.tsx", import.meta.url), "utf8");

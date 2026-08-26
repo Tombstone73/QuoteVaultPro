@@ -1055,7 +1055,7 @@ const OrderLineEditor = ({
       <header>
         <div>
           <small>LINE {line.position}</small>
-          <h2>{line.description || line.productId}</h2>
+          <h2>{line.description || "Order line"}</h2>
         </div>
         {routing ? (
           <span className="v2-sales-route-note">
@@ -1559,9 +1559,7 @@ export const OrderProduction = ({
             type="button"
             onClick={() => onOpen(work)}
           >
-            Work {work.work.productionWorkId.slice(0, 8)} · line{" "}
-            {work.work.orderLineId.slice(0, 8)} · {work.completedGoodQuantity}/
-            {work.work.orderedQuantity} complete
+            {work.completedGoodQuantity}/{work.work.orderedQuantity} complete
             {work.attempts.at(-1)
               ? ` · ${stateLabel(work.attempts.at(-1)!.stationKey)}`
               : ""}
@@ -1594,9 +1592,7 @@ export const OrderBillingSummary = ({
         type="button"
         onClick={() => onOpen(invoice.invoiceId)}
       >
-        <strong>
-          Invoice {invoice.sourceOrderNumber ?? invoice.invoiceId.slice(0, 8)}
-        </strong>
+        <strong>Invoice {invoice.sourceOrderNumber ?? "record"}</strong>
         <span>
           {stateLabel(invoice.lifecycle)} · {money(invoice.total)}
         </span>
