@@ -20,6 +20,7 @@ import {
   type OrderId,
 } from "../../src/modules/shared/commercialValues.js";
 import type { TransactionalClient } from "../persistence/types.js";
+import type { SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
 
 type InvoiceState = "draft" | "issued" | "void";
 
@@ -104,15 +105,15 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     if (existing.length > 0) return this.applyExisting(input, existing);
 
     const invoiceId = brandedId<"InvoiceId">(randomUUID());
-    const totals = this.totals(input);
+    const totals = await this.totals(input);
     const inserted = await this.client.query<{ id: string; synchronization_version: string }>(
       `INSERT INTO v2_billing_invoices(
         id,organization_id,sales_order_document_id,invoice_state,customer_id,contact_id,
         purchase_order_number,currency,terms_code,source_sales_state_token,
         subtotal_cents,tax_total_cents,total_cents,tax_context_reference,
-        tax_calculator_version,tax_evidence,sales_adjustment_cents,sales_adjustment_reason
+        tax_calculator_version,tax_evidence,sales_adjustment_cents,sales_adjustment_reason,sales_commercial_charge,sales_tax_composition
       ) VALUES(
-        $1,$2,$3,'draft',$4,$5,$6,$7,$8,$9,$10,0,$10,$11,$12,$13::jsonb,$14,$15
+        $1,$2,$3,'draft',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18::jsonb,$19::jsonb
       )
       ON CONFLICT (organization_id,sales_order_document_id) WHERE invoice_state='draft'
       DO NOTHING
@@ -127,10 +128,10 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         input.currency,
         input.termsCode ?? null,
         input.sourceSalesStateToken,
-        totals.subtotalCents,
+        totals.subtotalCents, totals.taxCents, totals.totalCents,
         input.taxInput.taxContextReference ?? null,
         totals.taxCalculatorVersion,
-        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null,
+        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null, JSON.stringify(totals.charge ?? null), JSON.stringify(totals.composition ?? null),
       ],
     );
     const row = inserted.rows[0];
@@ -263,13 +264,13 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         synchronizationVersion: draft.synchronization_version,
       };
     }
-    const totals = this.totals(input);
+    const totals = await this.totals(input);
     const updated = await this.client.query<{ synchronization_version: string }>(
       `UPDATE v2_billing_invoices SET
         customer_id=$4,contact_id=$5,purchase_order_number=$6,currency=$7,
         terms_code=$8,source_sales_state_token=$9,synchronization_version=synchronization_version+1,
-        subtotal_cents=$10,tax_total_cents=0,total_cents=$10,
-        tax_context_reference=$11,tax_calculator_version=$12,tax_evidence=$13::jsonb,sales_adjustment_cents=$14,sales_adjustment_reason=$15,
+        subtotal_cents=$10,tax_total_cents=$11,total_cents=$12,
+        tax_context_reference=$13,tax_calculator_version=$14,tax_evidence=$15::jsonb,sales_adjustment_cents=$16,sales_adjustment_reason=$17,sales_commercial_charge=$18::jsonb,sales_tax_composition=$19::jsonb,
         updated_at=now()
        WHERE organization_id=$1 AND id=$2 AND sales_order_document_id=$3
          AND invoice_state='draft'
@@ -284,10 +285,10 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         input.currency,
         input.termsCode ?? null,
         input.sourceSalesStateToken,
-        totals.subtotalCents,
+        totals.subtotalCents, totals.taxCents, totals.totalCents,
         input.taxInput.taxContextReference ?? null,
         totals.taxCalculatorVersion,
-        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null,
+        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null, JSON.stringify(totals.charge ?? null), JSON.stringify(totals.composition ?? null),
       ],
     );
     if (!updated.rows[0]) {
@@ -320,16 +321,40 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     return result.rows;
   }
 
-  private totals(input: DraftInvoiceSynchronizationInput): Readonly<{
+  private async totals(input: DraftInvoiceSynchronizationInput): Promise<Readonly<{
     subtotalCents: number;
+    taxCents: number;
+    totalCents: number;
     taxCalculatorVersion: string;
-    taxEvidence: Readonly<Record<string, string>>;
-  }> {
+    taxEvidence: Readonly<Record<string, unknown>>;
+    composition?: SalesTaxComposition;
+    charge?: unknown;
+  }>> {
+    const orderCommercial = await this.client.query<{ tax_composition: SalesTaxComposition | null; commercial_charge: unknown }>(
+      "SELECT tax_composition,commercial_charge FROM v2_sales_order_details WHERE organization_id=$1 AND document_id=$2",
+      [input.organizationId, input.orderId],
+    );
+    const composition = orderCommercial.rows[0]?.tax_composition ?? undefined;
+    const charge = orderCommercial.rows[0]?.commercial_charge;
+    if (composition?.status === "resolved") return {
+      subtotalCents: composition.finalTotalCents - composition.taxCents,
+      taxCents: composition.taxCents,
+      totalCents: composition.finalTotalCents,
+      taxCalculatorVersion: composition.calculatorVersion,
+      taxEvidence: composition,
+      composition,
+      charge,
+    };
     const tax = taxEnvelope(input);
+    const subtotalCents = sumCents(input.salesLines, input.salesAdjustment?.cents ?? 0);
     return {
-      subtotalCents: sumCents(input.salesLines, input.salesAdjustment?.cents ?? 0),
+      subtotalCents,
+      taxCents: 0,
+      totalCents: subtotalCents,
       taxCalculatorVersion: tax.calculatorVersion,
       taxEvidence: tax.evidence,
+      ...(composition ? { composition } : {}),
+      ...(charge ? { charge } : {}),
     };
   }
 

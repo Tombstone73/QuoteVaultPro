@@ -89,6 +89,7 @@ const quoteForUi = (value: QuoteReadModel) => {
     sellingUnitAmount: line.sellingPriceDecision.resultingUnitAmount,
     sellingLineAmount: line.sellingLineAmount,
     sellingPriceDecision: line.sellingPriceDecision,
+    taxability: line.taxability,
   }));
   const currency = value.quote.currency;
   return {
@@ -103,6 +104,10 @@ const quoteForUi = (value: QuoteReadModel) => {
       deliveryState: value.quote.deliveryState,
       acceptanceState: value.quote.acceptanceState,
       convertedOrderId: value.quote.convertedOrderId,
+      requestedFulfillment: value.quote.requestedFulfillment,
+      sellingAdjustment: value.quote.sellingAdjustment,
+      commercialCharge: value.quote.commercialCharge,
+      taxComposition: value.quote.taxComposition,
       lines,
     },
     number: value.number,
@@ -118,6 +123,7 @@ const quoteForUi = (value: QuoteReadModel) => {
         currency,
         cents: lines.reduce((total, line) => total + line.sellingLineAmount.cents, 0),
       },
+      ...(value.quote.taxComposition ? { tax: value.quote.taxComposition } : {}),
     },
   };
 };

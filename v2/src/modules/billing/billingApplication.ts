@@ -29,6 +29,7 @@ export interface BillingIssueTransactionRunner { transaction<T>(action:(transact
 const actor=(context:OperationContext):Actor=>({principalKind:context.principal.kind,principalSubject:principalSubject(context.principal),...(staffActorId(context.principal)?{staffActorUserId:staffActorId(context.principal)}:{})});
 const fingerprint=(value:unknown)=>`sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 const cents=(value:string)=>{const parsed=Number(value);if(!Number.isSafeInteger(parsed))throw new V2ApplicationError("VALIDATION_ERROR","Invoice money is outside the safe cent range.");return parsed;};
+const unresolvedTax=(value:unknown)=>Boolean(value&&typeof value==="object"&&(value as {status?:unknown}).status==="unresolved");
 
 export class BillingApplicationService {
   constructor(private readonly runner: BillingReadRunner, private readonly authority = new AuthorityPolicy(), private readonly issueRunner?: BillingIssueTransactionRunner) {}
@@ -82,8 +83,9 @@ export class BillingApplicationService {
         if(locked.order.commercial_state!=="open")throw new V2ApplicationError("CONFLICT","A cancelled Order cannot be issued.");
         if(locked.invoice.source_sales_state_token!==locked.order.revision)throw new V2ApplicationError("CONFLICT","The Draft Invoice is not synchronized with the locked Sales Order.");
         if(locked.invoice.currency!==locked.order.currency||!locked.lines.length)throw new V2ApplicationError("CONFLICT","The Draft Invoice financial snapshot is incomplete.");
-        const subtotal=locked.lines.reduce((total,line)=>total+cents(line.selling_line_cents),0)+cents(locked.invoice.sales_adjustment_cents),tax=cents(locked.invoice.tax_total_cents),total=cents(locked.invoice.total_cents);
-        if(!Number.isSafeInteger(subtotal)||subtotal!==cents(locked.invoice.subtotal_cents)||total!==subtotal+tax)throw new V2ApplicationError("CONFLICT","The Draft Invoice financial snapshot is inconsistent.");
+        if(unresolvedTax(locked.invoice.tax_evidence))throw new V2ApplicationError("VALIDATION_ERROR","Tax jurisdiction not configured. An authoritative Draft Invoice cannot be issued.");
+        const lineAndAdjustment=locked.lines.reduce((total,line)=>total+cents(line.selling_line_cents),0)+cents(locked.invoice.sales_adjustment_cents),subtotal=cents(locked.invoice.subtotal_cents),tax=cents(locked.invoice.tax_total_cents),total=cents(locked.invoice.total_cents);
+        if(!Number.isSafeInteger(lineAndAdjustment)||lineAndAdjustment>subtotal||total!==subtotal+tax)throw new V2ApplicationError("CONFLICT","The Draft Invoice financial snapshot is inconsistent.");
         const issued=await tx.issue({organizationId:brandedId<"OrganizationId">(context.organizationId),invoiceId:input.invoiceId,...actor(context)});
         if(!issued)throw new V2ApplicationError("CONFLICT","Invoice issuance lost its Draft state.");
         const presentation=await tx.customerPresentation({organizationId:brandedId<"OrganizationId">(context.organizationId),...(issued.customer_id?{customerId:issued.customer_id}:{}),...(issued.contact_id?{contactId:issued.contact_id}:{})});

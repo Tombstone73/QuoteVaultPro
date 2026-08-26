@@ -46,6 +46,7 @@ import {
   type SalesLineSnapshot,
   type SellingPriceDecision,
 } from "./contracts.js";
+import type { CommercialCharge } from "./taxComposition.js";
 import {
   toQuoteCheckpointPersistenceEnvelope,
   toSalesDocumentTermsPersistence,
@@ -82,6 +83,9 @@ export type CreateQuoteInput = Readonly<{
   requestedDueDate?: string;
   terms?: CommercialTerms;
   expiresAt?: string;
+  requestedFulfillment?: import("./contracts.js").RequestedFulfillment;
+  sellingAdjustment?: import("./contracts.js").SalesOrderAdjustment;
+  commercialCharge?: CommercialCharge;
   lines: readonly QuoteLineInput[];
 }>;
 export type UpdateQuoteInput = Readonly<{
@@ -93,6 +97,9 @@ export type UpdateQuoteInput = Readonly<{
     purchaseOrderNumber?: string | null;
     requestedDueDate?: string | null;
     terms?: CommercialTerms;
+    requestedFulfillment?: import("./contracts.js").RequestedFulfillment | null;
+    sellingAdjustment?: import("./contracts.js").SalesOrderAdjustment | null;
+    commercialCharge?: CommercialCharge | null;
   }>;
   lineChanges?: readonly (
     | { kind: "add"; line: QuoteLineInput }
@@ -189,6 +196,9 @@ export interface QuoteTransaction {
       requestedDueDate?: string;
       terms: CommercialTerms;
       expiresAt?: string;
+      requestedFulfillment?: import("./contracts.js").RequestedFulfillment;
+      sellingAdjustment?: import("./contracts.js").SalesOrderAdjustment;
+      commercialCharge?: CommercialCharge;
       lines: readonly SalesLineSnapshot[];
     }>,
   ): Promise<void>;
@@ -207,6 +217,9 @@ export interface QuoteTransaction {
       requestedDueDate?: string;
       terms: CommercialTerms;
       lines: readonly SalesLineSnapshot[];
+      requestedFulfillment?: import("./contracts.js").RequestedFulfillment;
+      sellingAdjustment?: import("./contracts.js").SalesOrderAdjustment;
+      commercialCharge?: CommercialCharge;
     }>,
   ): Promise<boolean>;
   transition(
@@ -300,6 +313,10 @@ export const createQuoteLifecycleCheckpoint = (
       ...(quote.requestedDueDate
         ? { requestedDueDate: quote.requestedDueDate }
         : {}),
+      ...(quote.requestedFulfillment ? { requestedFulfillment: quote.requestedFulfillment } : {}),
+      ...(quote.sellingAdjustment ? { sellingAdjustment: quote.sellingAdjustment } : {}),
+      ...(quote.commercialCharge ? { commercialCharge: quote.commercialCharge } : {}),
+      ...(quote.taxComposition ? { taxComposition: quote.taxComposition } : {}),
     },
     kind: kind === "send" ? ("quote_sent" as const) : ("quote_accepted" as const),
     sourceDocument: { quoteId: quote.quoteId },
@@ -345,6 +362,27 @@ const validateReference = async (
       "NOT_FOUND",
       "Customer or contact is unavailable in this organization.",
     );
+};
+const validateFulfillment = (value: import("./contracts.js").RequestedFulfillment | undefined): import("./contracts.js").RequestedFulfillment | undefined => {
+  if (!value) return undefined;
+  if ((value.method === "shipping" || value.method === "local_delivery") && !value.destination)
+    throw new V2ApplicationError("VALIDATION_ERROR", "Shipping or local delivery requires a Quote destination snapshot.");
+  if (value.method === "pickup" && value.destination)
+    throw new V2ApplicationError("VALIDATION_ERROR", "Pickup does not use a destination.");
+  if (!value.destination) return { method: value.method, ...(value.instructions?.trim() ? { instructions: value.instructions.trim() } : {}) };
+  if (!value.destination.addressLine1?.trim() || !value.destination.city?.trim() || !value.destination.country?.trim() || !value.destination.region?.trim())
+    throw new V2ApplicationError("VALIDATION_ERROR", "Quote destination requires street, city, region, and country for tax sourcing.");
+  return { method: value.method, destination: { ...value.destination, addressLine1: value.destination.addressLine1.trim(), city: value.destination.city.trim(), country: value.destination.country.trim(), region: value.destination.region.trim() }, ...(value.instructions?.trim() ? { instructions: value.instructions.trim() } : {}) };
+};
+const validateAdjustment = (value: import("./contracts.js").SalesOrderAdjustment | undefined): import("./contracts.js").SalesOrderAdjustment | undefined => {
+  if (!value) return undefined;
+  if (!Number.isSafeInteger(value.cents) || value.cents === 0 || !value.reason.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A Quote adjustment needs a non-zero whole-cent amount and reason.");
+  return { cents: value.cents, reason: value.reason.trim() };
+};
+const validateCommercialCharge = (value: CommercialCharge | undefined): CommercialCharge | undefined => {
+  if (!value) return undefined;
+  if (!Number.isSafeInteger(value.cents) || value.cents < 0) throw new V2ApplicationError("VALIDATION_ERROR", "A commercial charge must be a non-negative whole-cent amount.");
+  return { ...value, ...(value.description?.trim() ? { description: value.description.trim() } : {}) };
 };
 const calculatedDecision = (
   pricing: SalesLineSnapshot["pricingResult"],
@@ -500,6 +538,9 @@ export class QuoteApplicationService {
           requestedDueDate: input.requestedDueDate,
           terms: input.terms ?? {},
           expiresAt: input.expiresAt,
+          requestedFulfillment: validateFulfillment(input.requestedFulfillment),
+          sellingAdjustment: validateAdjustment(input.sellingAdjustment),
+          commercialCharge: validateCommercialCharge(input.commercialCharge),
           lines,
         });
         const read = await tx.read(
@@ -603,6 +644,9 @@ export class QuoteApplicationService {
           patch.requestedDueDate === null
             ? undefined
             : (patch.requestedDueDate ?? current.quote.requestedDueDate);
+        const requestedFulfillment = patch.requestedFulfillment === null ? undefined : validateFulfillment(patch.requestedFulfillment ?? current.quote.requestedFulfillment);
+        const sellingAdjustment = patch.sellingAdjustment === null ? undefined : validateAdjustment(patch.sellingAdjustment ?? current.quote.sellingAdjustment);
+        const commercialCharge = patch.commercialCharge === null ? undefined : validateCommercialCharge(patch.commercialCharge ?? current.quote.commercialCharge);
         const headerUnchanged =
           reference.customerId === current.quote.customerContact.customerId &&
           reference.contactId === current.quote.customerContact.contactId &&
@@ -614,11 +658,14 @@ export class QuoteApplicationService {
           terms.salesRepresentativeId ===
             current.quote.terms.salesRepresentativeId &&
           terms.commercialNotes === current.quote.terms.commercialNotes;
+        const commercialUnchanged = canonicalJson(requestedFulfillment ?? null) === canonicalJson(current.quote.requestedFulfillment ?? null)
+          && canonicalJson(sellingAdjustment ?? null) === canonicalJson(current.quote.sellingAdjustment ?? null)
+          && canonicalJson(commercialCharge ?? null) === canonicalJson(current.quote.commercialCharge ?? null);
         // When a command does not change lines, preserve their persisted snapshots
         // exactly rather than treating explanatory pricing evidence as comparison DTOs.
         // Line-changing commands are necessarily meaningful commercial edits.
         const unchanged =
-          headerUnchanged && (input.lineChanges?.length ?? 0) === 0;
+          headerUnchanged && commercialUnchanged && (input.lineChanges?.length ?? 0) === 0;
         if (unchanged) return { quote: current };
         const applied = await tx.update({
           organizationId: brandedId<"OrganizationId">(context.organizationId),
@@ -629,6 +676,9 @@ export class QuoteApplicationService {
           requestedDueDate,
           terms,
           lines,
+          requestedFulfillment,
+          sellingAdjustment,
+          commercialCharge,
         });
         if (!applied)
           throw new V2ApplicationError(
@@ -906,6 +956,11 @@ export class QuoteApplicationService {
         ...(input.dimensions ? { dimensions: input.dimensions } : {}),
       });
       if (!resolved.ok) throw resolved.error;
+      const taxability = await tx.products.resolveCurrentTaxability(
+        brandedId<"OrganizationId">(context.organizationId),
+        resolved.value.sellableProduct.productId,
+      );
+      if (!taxability) throw new V2ApplicationError("NOT_FOUND", "The Product taxability policy is unavailable.");
       const pricing = await tx.pricing.calculate({
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         sellableProduct: resolved.value.sellableProduct,
@@ -947,6 +1002,7 @@ export class QuoteApplicationService {
         sellingPriceDecision: decision,
         calculatedLineAmount: pricing.calculatedLineAmount,
         sellingLineAmount: decision.resultingLineAmount,
+        taxability: { taxable: taxability.taxable, source: "product" },
       };
       assertSalesLineSnapshot(line);
       lines.push(line);

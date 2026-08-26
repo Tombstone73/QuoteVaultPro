@@ -48,6 +48,8 @@ export class QuoteConversionApplicationService {
         requireCapability(this.authority, context, "quote.edit", current.quote.customerContact.customerId);
         requireCapability(this.authority, context, "quote.convert", current.quote.customerContact.customerId);
         if (current.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before acceptance.");
+        if (current.quote.taxComposition?.status === "unresolved")
+          throw new V2ApplicationError("VALIDATION_ERROR", "Tax jurisdiction not configured. Configure the receipt jurisdiction before accepting this Quote.");
         if (current.quote.convertedOrderId) {
           const result = await this.existingAcceptance(quote, order, context, current);
           await quote.succeedConversion(
@@ -105,6 +107,7 @@ export class QuoteConversionApplicationService {
         if (current.revision !== input.expectedStateToken) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before conversion.");
         if (current.quote.convertedOrderId) throw new V2ApplicationError("CONFLICT", "Quote has already been converted.");
         if (current.quote.deliveryState !== "sent" || current.quote.acceptanceState !== "accepted") throw new V2ApplicationError("CONFLICT", "Only a sent and accepted Quote can be converted.");
+        if (current.quote.taxComposition?.status === "unresolved") throw new V2ApplicationError("VALIDATION_ERROR", "Tax jurisdiction not configured. This Quote cannot be converted.");
         const source = await quote.readCheckpoint(brandedId<"OrganizationId">(context.organizationId), input.quoteId, input.sourceCheckpointId);
         if (!source || source.kind !== "quote_accepted" || source.sourceDocument.quoteId !== input.quoteId) throw new V2ApplicationError("CONFLICT", "The accepted Quote checkpoint is required for conversion.");
         const result = await this.convertAccepted({ quote, order }, context, reservation.request.id, current, source, "sales.quote.convert.v1");
@@ -128,7 +131,7 @@ export class QuoteConversionApplicationService {
 
   private async convertAccepted(transaction: QuoteConversionTransaction, context: OperationContext, operationRequestId: string, current: QuoteReadModel, source: Extract<QuoteCheckpoint, { kind: "quote_accepted" }>, operation: string): Promise<QuoteConversionOperationResult> {
     if (source.sourceDocument.quoteId !== current.quote.quoteId) throw new V2ApplicationError("WRONG_TENANT", "Quote checkpoint is unavailable.");
-    const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, lines: cloneLines(source.commercial.lines) };
+    const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, requestedFulfillment: source.commercial.requestedFulfillment, sellingAdjustment: source.commercial.sellingAdjustment, commercialCharge: source.commercial.commercialCharge, taxComposition: source.commercial.taxComposition, lines: cloneLines(source.commercial.lines) };
     const created = await this.orders.createFromCommercialSnapshot(transaction.order, context, operationRequestId, frozen, operation);
     const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
     const converted: QuoteCheckpoint = Object.freeze({ ...source, checkpointId, kind: "quote_converted", occurredAt: new Date().toISOString(), principal: attribution(context), sourceCheckpointId: source.checkpointId, sourceDocument: { quoteId: current.quote.quoteId, orderId: created.order.order.orderId }, evidenceFingerprint: fingerprint({ sourceCheckpointId: source.checkpointId, orderId: created.order.order.orderId, commercial: source.commercial }) });

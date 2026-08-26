@@ -79,6 +79,7 @@ export type SalesLinePersistenceEnvelope = Readonly<{
   resolvedConfiguration: ResolvedProductConfiguration;
   pricingResult: PricingResult;
   sellingPriceDecision: SellingPriceDecision;
+  taxability: Readonly<{ taxable: boolean; source: "product" | "legacy_compatibility" }>;
   /** Canonical text lets an eventual repository hash/fingerprint payloads without JSON key-order drift. */
   canonicalResolvedConfiguration: string;
   canonicalPricingResult: string;
@@ -102,6 +103,7 @@ export const toSalesLinePersistenceEnvelope = (line: SalesLineSnapshot): SalesLi
     resolvedConfiguration: line.resolvedConfiguration,
     pricingResult: line.pricingResult,
     sellingPriceDecision: decision,
+    taxability: line.taxability ?? { taxable: true, source: "legacy_compatibility" as const },
     canonicalResolvedConfiguration: canonicalJson(line.resolvedConfiguration),
     canonicalPricingResult: canonicalJson(line.pricingResult),
     canonicalSellingPriceDecision: canonicalJson(decision),

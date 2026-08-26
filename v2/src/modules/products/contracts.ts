@@ -30,6 +30,8 @@ export interface ProductsReadPort {
   resolveCurrentRoutingProduct(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ productTypeId: ProductTypeId }> | null>;
   /** Route selection is bound to the exact PBV2/Product Version priced on a commercial line. */
   resolveVersionRoutingPolicy(organizationId: OrganizationId, productId: ProductId, productVersionId: string): Promise<ProductRoutingPolicy>;
+  /** Current Product policy is read only once, then Sales freezes it on its line. */
+  resolveCurrentTaxability(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ taxable: boolean }> | null>;
 }
 
 /** Explicit input for the normal active-configuration pricing path; callers cannot select a tree id. */

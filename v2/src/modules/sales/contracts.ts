@@ -6,6 +6,7 @@ import type {
   SalesLineId,
 } from "../shared/commercialValues.js";
 import type { PrincipalKind } from "../../authorization/principals.js";
+import type { CommercialCharge, SalesTaxComposition } from "./taxComposition.js";
 
 type SellingPriceBase = Readonly<{
   pricingResultId: PricingResultId;
@@ -48,6 +49,8 @@ export type SalesLineSnapshot = Readonly<SalesLineInput & {
   lineId: SalesLineId;
   calculatedLineAmount: Money;
   sellingLineAmount: Money;
+  /** Frozen at commercial-line creation from the current Product. */
+  taxability?: Readonly<{ taxable: boolean; source: "product" | "legacy_compatibility" }>;
 }>;
 export type SalesLineResult = SalesLineSnapshot;
 
@@ -85,6 +88,10 @@ export type QuoteCurrentState = Readonly<SalesDocumentCurrentState & {
   deliveryState: "not_sent" | "sent";
   acceptanceState: "not_accepted" | "accepted";
   convertedOrderId?: OrderId;
+  requestedFulfillment?: RequestedFulfillment;
+  sellingAdjustment?: SalesOrderAdjustment;
+  commercialCharge?: CommercialCharge;
+  taxComposition?: SalesTaxComposition;
 }>;
 export type OrderCurrentState = Readonly<SalesDocumentCurrentState & {
   orderId: OrderId;
@@ -94,6 +101,8 @@ export type OrderCurrentState = Readonly<SalesDocumentCurrentState & {
   billingInvoiceReference?: InvoiceId;
   requestedFulfillment?: RequestedFulfillment;
   sellingAdjustment?: SalesOrderAdjustment;
+  commercialCharge?: CommercialCharge;
+  taxComposition?: SalesTaxComposition;
 }>;
 
 type QuoteCheckpointBase = Readonly<{
@@ -104,7 +113,7 @@ type QuoteCheckpointBase = Readonly<{
   occurredAt: string;
   principal: AttributionSnapshot;
   customerPresentation: CustomerPresentationIdentity;
-  commercial: Readonly<{ purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
+  commercial: Readonly<{ purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
   sourceCheckpointId?: QuoteCheckpointId;
 }>;
 export type QuoteCheckpoint =

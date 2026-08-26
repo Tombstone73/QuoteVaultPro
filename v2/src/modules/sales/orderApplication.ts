@@ -47,6 +47,8 @@ import {
   type SalesLineSnapshot,
   type SellingPriceDecision,
 } from "./contracts.js";
+import type { CommercialCharge } from "./taxComposition.js";
+import type { SalesTaxComposition } from "./taxComposition.js";
 import type { SalesDocumentNumber } from "./persistenceContracts.js";
 
 /**
@@ -78,6 +80,7 @@ export type CreateOrderInput = Readonly<{
   requestedDueDate?: string;
   requestedFulfillment?: RequestedFulfillment;
   sellingAdjustment?: SalesOrderAdjustment;
+  commercialCharge?: CommercialCharge;
   terms?: CommercialTerms;
   lines: readonly OrderLineInput[];
 }>;
@@ -94,6 +97,7 @@ export type UpdateOrderInput = Readonly<{
     terms?: CommercialTerms;
     requestedFulfillment?: RequestedFulfillment | null;
     sellingAdjustment?: SalesOrderAdjustment | null;
+    commercialCharge?: CommercialCharge | null;
   }>;
   lineChanges?: readonly (
     | Readonly<{ kind: "add"; line: OrderLineInput }>
@@ -141,6 +145,9 @@ export type FrozenOrderCommercialSource = Readonly<{
   terms: CommercialTerms;
   requestedFulfillment?: RequestedFulfillment;
   sellingAdjustment?: SalesOrderAdjustment;
+  commercialCharge?: CommercialCharge;
+  /** Conversion supplies the accepted immutable composition; direct entry composes fresh evidence. */
+  taxComposition?: SalesTaxComposition;
   lines: readonly SalesLineSnapshot[];
 }>;
 
@@ -221,6 +228,8 @@ export interface OrderTransaction {
     lines: readonly SalesLineSnapshot[];
     requestedFulfillment?: RequestedFulfillment;
     sellingAdjustment?: SalesOrderAdjustment;
+    commercialCharge?: CommercialCharge;
+    taxComposition?: SalesTaxComposition;
   }>): Promise<void>;
   read(
     organizationId: OrganizationId,
@@ -238,6 +247,7 @@ export interface OrderTransaction {
     lines: readonly SalesLineSnapshot[];
     requestedFulfillment?: RequestedFulfillment;
     sellingAdjustment?: SalesOrderAdjustment;
+    commercialCharge?: CommercialCharge;
   }>): Promise<boolean>;
   removeLinesNotIn(organizationId: OrganizationId, orderId: OrderId, retainedLineIds: readonly SalesLineId[]): Promise<void>;
   hasRoute(organizationId: OrganizationId, orderId: OrderId, lineId: SalesLineId): Promise<boolean>;
@@ -323,6 +333,12 @@ const validateAdjustment = (value: SalesOrderAdjustment | undefined): SalesOrder
   if (!Number.isSafeInteger(value.cents) || value.cents === 0 || !value.reason.trim())
     throw new V2ApplicationError("VALIDATION_ERROR", "An Order adjustment needs a non-zero whole-cent amount and reason.");
   return { cents: value.cents, reason: value.reason.trim() };
+};
+const validateCommercialCharge = (value: CommercialCharge | undefined): CommercialCharge | undefined => {
+  if (!value) return undefined;
+  if (!Number.isSafeInteger(value.cents) || value.cents < 0)
+    throw new V2ApplicationError("VALIDATION_ERROR", "A commercial charge must be a non-negative whole-cent amount.");
+  return { ...value, ...(value.description?.trim() ? { description: value.description.trim() } : {}) };
 };
 
 const calculatedDecision = (
@@ -411,6 +427,7 @@ export class OrderApplicationService {
         terms: input.terms ?? {},
         requestedFulfillment: validateFulfillment(input.requestedFulfillment),
         sellingAdjustment: validateAdjustment(input.sellingAdjustment),
+        commercialCharge: validateCommercialCharge(input.commercialCharge),
         lines,
       }, "sales.order.create.v1");
       const lineCorrelations = input.lines.flatMap((line, index) => {
@@ -457,14 +474,14 @@ export class OrderApplicationService {
     const number = await tx.allocateNumber(context.organizationId);
     await tx.create({ orderId, organizationId: brandedId<"OrganizationId">(context.organizationId), number,
       customerContact: source.customerContact, purchaseOrderNumber: source.purchaseOrderNumber,
-      requestedDueDate: source.requestedDueDate, terms: source.terms, lines, requestedFulfillment: source.requestedFulfillment, sellingAdjustment: source.sellingAdjustment });
+      requestedDueDate: source.requestedDueDate, terms: source.terms, lines, requestedFulfillment: source.requestedFulfillment, sellingAdjustment: source.sellingAdjustment, commercialCharge: source.commercialCharge, taxComposition: source.taxComposition });
     // The source checkpoint has immutable Product Version/configuration facts.
     // Freeze expected material requirements in this same conversion transaction
     // before Billing or Routing can observe a partially-created Order.
     await tx.materialRequirements.freeze(context.organizationId, orderId, lines);
     const draft = await tx.billing.createDraftInvoice(this.draftInput(
       context.organizationId, orderId, operationRequestId, source.customerContact,
-      source.purchaseOrderNumber, source.terms, lines, source.sellingAdjustment, "1",
+      source.purchaseOrderNumber, source.terms, lines, source.sellingAdjustment, source.commercialCharge, "1",
     ));
     if (draft.status !== "created") {
       if (draft.status === "not_editable") asDraftFailure(draft);
@@ -521,6 +538,7 @@ export class OrderApplicationService {
       const terms = patch.terms ?? current.order.terms;
       const requestedFulfillment = patch.requestedFulfillment === null ? undefined : validateFulfillment(patch.requestedFulfillment ?? current.order.requestedFulfillment);
       const sellingAdjustment = patch.sellingAdjustment === null ? undefined : validateAdjustment(patch.sellingAdjustment ?? current.order.sellingAdjustment);
+      const commercialCharge = patch.commercialCharge === null ? undefined : validateCommercialCharge(patch.commercialCharge ?? current.order.commercialCharge);
       const lines = await this.applyLineChanges(tx, context, current, input.lineChanges ?? []);
       const unchanged = customerContact.customerId === current.order.customerContact.customerId
         && customerContact.contactId === current.order.customerContact.contactId
@@ -532,6 +550,7 @@ export class OrderApplicationService {
         && terms.commercialNotes === current.order.terms.commercialNotes
         && canonicalJson(requestedFulfillment ?? {}) === canonicalJson(current.order.requestedFulfillment ?? {})
         && canonicalJson(sellingAdjustment ?? {}) === canonicalJson(current.order.sellingAdjustment ?? {})
+        && canonicalJson(commercialCharge ?? {}) === canonicalJson(current.order.commercialCharge ?? {})
         && canonicalJson(lines) === canonicalJson(current.order.lines);
       if (unchanged) {
         const invoiceId = current.order.billingInvoiceReference;
@@ -550,6 +569,7 @@ export class OrderApplicationService {
         lines,
         requestedFulfillment,
         sellingAdjustment,
+        commercialCharge,
       });
       if (!applied) throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before editing.");
       const draft = await tx.billing.synchronizeDraftInvoice(this.draftInput(
@@ -561,6 +581,7 @@ export class OrderApplicationService {
         terms,
         lines,
         sellingAdjustment,
+        commercialCharge,
         String(Number(current.revision) + 1),
       ));
       // Until an explicit Billing correction operation exists, an issued or
@@ -605,6 +626,11 @@ export class OrderApplicationService {
         ...(input.dimensions ? { dimensions: input.dimensions } : {}),
       });
       if (!resolved.ok) throw resolved.error;
+      const taxability = await tx.products.resolveCurrentTaxability(
+        brandedId<"OrganizationId">(context.organizationId),
+        resolved.value.sellableProduct.productId,
+      );
+      if (!taxability) throw new V2ApplicationError("NOT_FOUND", "The Product taxability policy is unavailable.");
       const pricing = await tx.pricing.calculate({
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         sellableProduct: resolved.value.sellableProduct,
@@ -636,6 +662,7 @@ export class OrderApplicationService {
         sellingPriceDecision: decision,
         calculatedLineAmount: pricing.calculatedLineAmount,
         sellingLineAmount: decision.resultingLineAmount,
+        taxability: { taxable: taxability.taxable, source: "product" },
       };
       assertSalesLineSnapshot(line);
       lines.push(line);
@@ -773,6 +800,7 @@ export class OrderApplicationService {
     terms: CommercialTerms,
     lines: readonly SalesLineSnapshot[],
     sellingAdjustment: SalesOrderAdjustment | undefined,
+    commercialCharge: CommercialCharge | undefined,
     sourceSalesStateToken: string,
   ): DraftInvoiceSynchronizationInput {
     const currency = lines[0]?.pricingResult.currency;
@@ -795,6 +823,7 @@ export class OrderApplicationService {
         salesPricingEvidenceFingerprint: line.pricingResult.evidenceFingerprint,
       })),
       ...(sellingAdjustment ? { salesAdjustment: sellingAdjustment } : {}),
+      ...(commercialCharge ? { salesCommercialCharge: commercialCharge } : {}),
       taxInput: {
         ...(terms.taxContextReference ? { taxContextReference: terms.taxContextReference } : {}),
       },

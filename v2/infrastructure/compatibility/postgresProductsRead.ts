@@ -55,6 +55,14 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
     return row?.product_type_id ? { productTypeId: brandedId<"ProductTypeId">(row.product_type_id) } : null;
   }
 
+  async resolveCurrentTaxability(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ taxable: boolean }> | null> {
+    const result = await this.client.query<{ is_taxable: boolean }>(
+      "SELECT is_taxable FROM products WHERE organization_id=$1 AND id=$2 AND is_active=TRUE",
+      [organizationId, productId],
+    );
+    return result.rows[0] ? { taxable: result.rows[0].is_taxable } : null;
+  }
+
   async resolveVersionRoutingPolicy(organizationId: OrganizationId, productId: ProductId, productVersionId: string) {
     return new PostgresProductVersionRoutingReader(this.client).read(organizationId, productId, productVersionId);
   }

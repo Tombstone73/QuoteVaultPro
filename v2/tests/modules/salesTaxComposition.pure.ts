@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { allocateProportionally, composeSalesTax, resolveTaxJurisdiction, SALES_TAX_CALCULATOR_VERSION, type TenantTaxJurisdiction } from "../../src/modules/sales/taxComposition.js";
+
+const home: TenantTaxJurisdiction = { jurisdictionId: "home", name: "Indiana home", receiptLocation: { country: "US", region: "IN" }, rateBasisPoints: 700, active: true, homeBusiness: true };
+const ohio: TenantTaxJurisdiction = { jurisdictionId: "oh", name: "Ohio", receiptLocation: { country: "US", region: "OH" }, rateBasisPoints: 750, active: true, homeBusiness: false };
+const pickup = resolveTaxJurisdiction({ fulfillment: { method: "pickup" }, jurisdictions: [home, ohio] });
+assert.equal(pickup.status, "resolved");
+assert.equal(pickup.status === "resolved" && pickup.jurisdiction.jurisdictionId, "home");
+const shipping = resolveTaxJurisdiction({ fulfillment: { method: "shipping", destination: { country: "US", region: "OH" } }, jurisdictions: [home, ohio] });
+assert.equal(shipping.status, "resolved");
+assert.equal(shipping.status === "resolved" && shipping.jurisdiction.jurisdictionId, "oh");
+const unresolved = resolveTaxJurisdiction({ fulfillment: { method: "local_delivery", destination: { country: "US", region: "MI" } }, jurisdictions: [home, ohio] });
+assert.deepEqual(unresolved, { status: "unresolved", reason: "tax_jurisdiction_not_configured", receiptLocation: { country: "US", region: "MI" } });
+assert.deepEqual(allocateProportionally(101, 1, 1), { taxableCents: 51, nonTaxableCents: 50 });
+const composition = composeSalesTax({ lines: [{ lineId: "taxable", amountCents: 1000, taxable: true }, { lineId: "exempt", amountCents: 1000, taxable: false }], adjustmentCents: -101, charges: [{ kind: "shipping", cents: 101 }], exemption: { exempt: false }, resolution: shipping });
+assert.equal(composition.status, "resolved");
+if (composition.status === "resolved") { assert.equal(composition.calculatorVersion, SALES_TAX_CALCULATOR_VERSION); assert.equal(composition.taxableChargeCents + composition.nonTaxableChargeCents, 101); assert.equal(composition.taxableBaseCents, 1000); assert.equal(composition.taxCents, 75); assert.equal(composition.finalTotalCents, 2075); }
+const exempt = composeSalesTax({ lines: [{ lineId: "x", amountCents: 1000, taxable: true }], charges: [{ kind: "delivery", cents: 100 }], exemption: { exempt: true, reason: "certificate" }, resolution: pickup });
+assert.equal(exempt.status, "resolved"); assert.equal(exempt.status === "resolved" && exempt.taxCents, 0);
+const postage = composeSalesTax({ lines: [{ lineId: "x", amountCents: 1000, taxable: true }], charges: [{ kind: "postage", cents: 100 }], exemption: { exempt: false }, resolution: pickup });
+assert.equal(postage.status === "resolved" && postage.taxableChargeCents, 0);
+console.log("Sales tax composition pure tests passed.");

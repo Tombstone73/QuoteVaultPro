@@ -19,6 +19,7 @@ import {
   toSalesLinePersistenceEnvelope,
 } from "../../src/modules/sales/persistenceContracts.js";
 import { removeProductionRequirementsForAbsentLines, synchronizeProductionRequirements } from "./postgresProductionRequirements.js";
+import { composePostgresSalesTax } from "./postgresSalesTaxComposition.js";
 import {
   brandedId,
   currencyCode,
@@ -31,8 +32,11 @@ import {
 import type {
   QuoteCheckpoint,
   QuoteCurrentState,
+  RequestedFulfillment,
+  SalesOrderAdjustment,
   SalesLineSnapshot,
 } from "../../src/modules/sales/contracts.js";
+import type { CommercialCharge } from "../../src/modules/sales/taxComposition.js";
 
 type HeaderRow = {
   id: string;
@@ -52,6 +56,13 @@ type HeaderRow = {
   expires_at: Date | null;
   delivery_state: "not_sent" | "sent";
   acceptance_state: "not_accepted" | "accepted";
+  requested_fulfillment_method: "pickup" | "shipping" | "local_delivery" | null;
+  requested_destination: unknown;
+  fulfillment_instructions: string | null;
+  selling_adjustment_cents: string;
+  selling_adjustment_reason: string | null;
+  commercial_charge: unknown;
+  tax_composition: unknown;
 };
 type LineRow = {
   id: string;
@@ -64,6 +75,7 @@ type LineRow = {
   resolved_configuration: unknown;
   pricing_result: unknown;
   selling_price_decision: unknown;
+  taxability_snapshot: unknown;
 };
 type CheckpointRow = {
   id: string;
@@ -220,10 +232,11 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     );
     await this.hooks?.afterDocument?.();
     await this.client.query(
-      "INSERT INTO v2_sales_quote_details(document_id,organization_id,expires_at) VALUES($1,$2,$3)",
-      [input.quoteId, input.organizationId, input.expiresAt ?? null],
+      "INSERT INTO v2_sales_quote_details(document_id,organization_id,expires_at,requested_fulfillment_method,requested_destination,fulfillment_instructions,selling_adjustment_cents,selling_adjustment_reason,commercial_charge) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb)",
+      [input.quoteId, input.organizationId, input.expiresAt ?? null, input.requestedFulfillment?.method ?? null, input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null, input.requestedFulfillment?.instructions ?? null, input.sellingAdjustment?.cents ?? 0, input.sellingAdjustment?.reason ?? null, input.commercialCharge ? JSON.stringify(input.commercialCharge) : null],
     );
     await this.writeLines(input.organizationId, input.quoteId, input.lines, []);
+    await this.writeTaxComposition(input.organizationId, input.quoteId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     await this.hooks?.afterLines?.();
   }
   async read(
@@ -232,13 +245,13 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     forUpdate = false,
   ): Promise<QuoteReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state,q.requested_fulfillment_method,q.requested_destination,q.fulfillment_instructions,q.selling_adjustment_cents,q.selling_adjustment_reason,q.commercial_charge,q.tax_composition FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
       [organizationId, quoteId],
     );
     const row = header.rows[0];
     if (!row) return null;
     const lines = await this.client.query<LineRow>(
-      "SELECT id,product_id,product_type_id,description,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position",
+      "SELECT id,product_id,product_type_id,description,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position",
       [organizationId, quoteId],
     );
     const checkpoints = await this.client.query<CheckpointRow>(
@@ -270,6 +283,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         >(line.resolved_configuration),
         pricingResult: pricing,
         sellingPriceDecision: decision,
+        taxability: asObject<SalesLineSnapshot["taxability"]>(line.taxability_snapshot),
         calculatedLineAmount: money(
           currencyCode(row.currency),
           Number(line.calculated_line_cents),
@@ -318,6 +332,10 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         : {}),
       deliveryState: row.delivery_state,
       acceptanceState: row.acceptance_state,
+      ...(row.requested_fulfillment_method ? { requestedFulfillment: { method: row.requested_fulfillment_method, ...(row.requested_destination ? { destination: asObject<NonNullable<QuoteCurrentState["requestedFulfillment"]>["destination"]>(row.requested_destination) } : {}), ...(row.fulfillment_instructions ? { instructions: row.fulfillment_instructions } : {}) } as RequestedFulfillment } : {}),
+      ...(Number(row.selling_adjustment_cents) !== 0 && row.selling_adjustment_reason ? { sellingAdjustment: { cents: Number(row.selling_adjustment_cents), reason: row.selling_adjustment_reason } } : {}),
+      ...(row.commercial_charge ? { commercialCharge: asObject<QuoteCurrentState["commercialCharge"]>(row.commercial_charge) } : {}),
+      ...(row.tax_composition ? { taxComposition: asObject<QuoteCurrentState["taxComposition"]>(row.tax_composition) } : {}),
       ...(conversion.rows[0]
         ? { convertedOrderId: brandedId<"OrderId">(conversion.rows[0].order_document_id) }
         : {}),
@@ -370,6 +388,8 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       input.lines,
       old,
     );
+    await this.client.query("UPDATE v2_sales_quote_details SET requested_fulfillment_method=$3,requested_destination=$4::jsonb,fulfillment_instructions=$5,selling_adjustment_cents=$6,selling_adjustment_reason=$7,commercial_charge=$8::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId,input.quoteId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
+    await this.writeTaxComposition(input.organizationId, input.quoteId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     return true;
   }
   async transition(
@@ -454,6 +474,18 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     );
     await this.hooks?.afterConversionLineage?.();
   }
+  private async writeTaxComposition(
+    organizationId: OrganizationId,
+    quoteId: QuoteId,
+    customerId: string | undefined,
+    fulfillment: RequestedFulfillment | undefined,
+    lines: readonly SalesLineSnapshot[],
+    adjustment: SalesOrderAdjustment | undefined,
+    charge: CommercialCharge | undefined,
+  ): Promise<void> {
+    const composition = await composePostgresSalesTax({ client: this.client, organizationId, ...(customerId ? { customerId } : {}), fulfillment, lines, adjustment, charge });
+    await this.client.query("UPDATE v2_sales_quote_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [organizationId, quoteId, JSON.stringify(composition)]);
+  }
   private async writeLines(
     organizationId: OrganizationId,
     quoteId: QuoteId,
@@ -477,7 +509,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     for (const [position, line] of lines.entries()) {
       const e = toSalesLinePersistenceEnvelope(line);
       await this.client.query(
-        `INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id`,
+        `INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,taxability_snapshot=EXCLUDED.taxability_snapshot,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id`,
         [
           e.lineId,
           organizationId,
@@ -497,6 +529,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
           e.canonicalResolvedConfiguration,
           e.canonicalPricingResult,
           e.canonicalSellingPriceDecision,
+          JSON.stringify(e.taxability),
         ],
       );
       await synchronizeProductionRequirements(this.client, organizationId, quoteId, line);

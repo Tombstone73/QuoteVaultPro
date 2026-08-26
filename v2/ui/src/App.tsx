@@ -59,6 +59,7 @@ import { RoutingWorkspace } from "./RoutingWorkspace";
 import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
+import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
 import {
   legacyProductEditorRedirect,
   productBuilderPath,
@@ -1463,43 +1464,7 @@ type WorkspaceProps = Readonly<{
   openCustomer?: (customerId: string) => void;
 }>;
 
-const lineConfiguration = (line: SalesLine): string => {
-  const resolved = line.resolvedConfiguration;
-  const dimensions = resolved.dimensions;
-  const selections = resolved.selections;
-  const parts: string[] = [];
-  if (
-    dimensions &&
-    typeof dimensions === "object" &&
-    !Array.isArray(dimensions)
-  ) {
-    const value = dimensions as Record<string, unknown>;
-    const size = [value.width, value.height]
-      .filter((item) => typeof item === "string" || typeof item === "number")
-      .join(" × ");
-    if (size)
-      parts.push(
-        `${size}${typeof value.unit === "string" ? ` ${value.unit}` : ""}`,
-      );
-  }
-  if (
-    selections &&
-    typeof selections === "object" &&
-    !Array.isArray(selections)
-  ) {
-    Object.entries(selections as Record<string, unknown>).forEach(
-      ([key, value]) => {
-        if (
-          typeof value === "string" ||
-          typeof value === "number" ||
-          typeof value === "boolean"
-        )
-          parts.push(`${key}: ${String(value)}`);
-      },
-    );
-  }
-  return parts.join(" · ") || "No additional configuration";
-};
+const lineConfiguration = (line: SalesLine): string => orderConfigurationPresentation(line.resolvedConfiguration);
 
 const QuoteDocumentMetadata = ({
   customerId,
@@ -1655,6 +1620,18 @@ const QuoteWorkspace = ({
   const [purchaseOrderNumber, setPurchaseOrderNumber] = useState("");
   const [requestedDueDate, setRequestedDueDate] = useState("");
   const [commercialNotes, setCommercialNotes] = useState("");
+  const [fulfillmentMethod, setFulfillmentMethod] = useState<"pickup" | "shipping" | "local_delivery">("pickup");
+  const [destinationAddress, setDestinationAddress] = useState("");
+  const [destinationCity, setDestinationCity] = useState("");
+  const [destinationRegion, setDestinationRegion] = useState("");
+  const [destinationCountry, setDestinationCountry] = useState("US");
+  const [destinationPostalCode, setDestinationPostalCode] = useState("");
+  const [fulfillmentInstructions, setFulfillmentInstructions] = useState("");
+  const [adjustmentCents, setAdjustmentCents] = useState("");
+  const [adjustmentReason, setAdjustmentReason] = useState("");
+  const [chargeKind, setChargeKind] = useState<"shipping" | "delivery" | "handling" | "packing" | "crating" | "postage">("shipping");
+  const [chargeCents, setChargeCents] = useState("");
+  const [chargeDescription, setChargeDescription] = useState("");
   const [headerCustomerId, setHeaderCustomerId] = useState("");
   const [headerContactId, setHeaderContactId] = useState("");
   const [editingLineId, setEditingLineId] = useState("");
@@ -1711,6 +1688,18 @@ const QuoteWorkspace = ({
     setPurchaseOrderNumber(quote?.quote.purchaseOrderNumber ?? "");
     setRequestedDueDate(dateInputValue(quote?.quote.requestedDueDate));
     setCommercialNotes(quote?.quote.terms.commercialNotes ?? "");
+    setFulfillmentMethod(quote?.quote.requestedFulfillment?.method ?? "pickup");
+    setDestinationAddress(quote?.quote.requestedFulfillment?.destination?.addressLine1 ?? "");
+    setDestinationCity(quote?.quote.requestedFulfillment?.destination?.city ?? "");
+    setDestinationRegion(quote?.quote.requestedFulfillment?.destination?.region ?? "");
+    setDestinationCountry(quote?.quote.requestedFulfillment?.destination?.country ?? "US");
+    setDestinationPostalCode(quote?.quote.requestedFulfillment?.destination?.postalCode ?? "");
+    setFulfillmentInstructions(quote?.quote.requestedFulfillment?.instructions ?? "");
+    setAdjustmentCents(quote?.quote.sellingAdjustment ? String(quote.quote.sellingAdjustment.cents) : "");
+    setAdjustmentReason(quote?.quote.sellingAdjustment?.reason ?? "");
+    setChargeKind(quote?.quote.commercialCharge?.kind ?? "shipping");
+    setChargeCents(quote?.quote.commercialCharge ? String(quote.quote.commercialCharge.cents) : "");
+    setChargeDescription(quote?.quote.commercialCharge?.description ?? "");
     setHeaderCustomerId(quote?.quote.customerContact.customerId ?? "");
     setHeaderContactId(quote?.quote.customerContact.contactId ?? "");
     setEditingLineId("");
@@ -1754,6 +1743,7 @@ const QuoteWorkspace = ({
         requestedDueDate,
         commercialNotes,
         line,
+        fulfillmentMethod, destinationAddress, destinationCity, destinationRegion, destinationCountry, destinationPostalCode, fulfillmentInstructions, adjustmentCents, adjustmentReason, chargeKind, chargeCents, chargeDescription,
       };
       return quoteApi.create(organizationId, requestId("create", payload), {
         customerContact: {
@@ -1768,6 +1758,9 @@ const QuoteWorkspace = ({
         ...(commercialNotes.trim()
           ? { terms: { commercialNotes: commercialNotes.trim() } }
           : {}),
+        requestedFulfillment: fulfillmentMethod === "pickup" ? { method: "pickup", ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) } : { method: fulfillmentMethod, destination: { addressLine1: destinationAddress, city: destinationCity, region: destinationRegion, country: destinationCountry, ...(destinationPostalCode ? { postalCode: destinationPostalCode } : {}) }, ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) },
+        ...(adjustmentCents.trim() ? { sellingAdjustment: { cents: Number(adjustmentCents), reason: adjustmentReason } } : {}),
+        ...(chargeCents.trim() ? { commercialCharge: { kind: chargeKind, cents: Number(chargeCents), ...(chargeDescription.trim() ? { description: chargeDescription } : {}) } } : {}),
         lines: [line],
       });
     },
@@ -1791,6 +1784,7 @@ const QuoteWorkspace = ({
         commercialNotes,
         headerCustomerId,
         headerContactId,
+        fulfillmentMethod, destinationAddress, destinationCity, destinationRegion, destinationCountry, destinationPostalCode, fulfillmentInstructions, adjustmentCents, adjustmentReason, chargeKind, chargeCents, chargeDescription,
       };
       return quoteApi.patch(
         organizationId,
@@ -1807,6 +1801,9 @@ const QuoteWorkspace = ({
             purchaseOrderNumber: purchaseOrderNumber.trim() || null,
             requestedDueDate: requestedDueDate || null,
             terms: { commercialNotes },
+            requestedFulfillment: fulfillmentMethod === "pickup" ? { method: "pickup", ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) } : { method: fulfillmentMethod, destination: { addressLine1: destinationAddress, city: destinationCity, region: destinationRegion, country: destinationCountry, ...(destinationPostalCode ? { postalCode: destinationPostalCode } : {}) }, ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) },
+            sellingAdjustment: adjustmentCents.trim() ? { cents: Number(adjustmentCents), reason: adjustmentReason } : null,
+            commercialCharge: chargeCents.trim() ? { kind: chargeKind, cents: Number(chargeCents), ...(chargeDescription.trim() ? { description: chargeDescription } : {}) } : null,
           },
         },
       );
@@ -1973,7 +1970,7 @@ const QuoteWorkspace = ({
                 <button
                   className="button"
                   type="button"
-                  disabled={accept.isPending || !csrfReady}
+                  disabled={accept.isPending || !csrfReady || quote.quote.taxComposition?.status === "unresolved"}
                   onClick={() => setAcceptDialogOpen(true)}
                 >
                   Accept Quote & Create Order
@@ -2179,6 +2176,29 @@ const QuoteWorkspace = ({
                 ),
                 Notes: (
                   <section className="v2-sales-notes">
+                    <h2>Commercial &amp; fulfillment</h2>
+                    <label className="field">Requested fulfillment
+                      <select value={fulfillmentMethod} disabled={!canEdit || locked} onChange={(event) => setFulfillmentMethod(event.target.value as typeof fulfillmentMethod)}>
+                        <option value="pickup">Pickup</option><option value="shipping">Shipping</option><option value="local_delivery">Local delivery</option>
+                      </select>
+                    </label>
+                    {fulfillmentMethod !== "pickup" && <div className="v2-sales-inline-grid">
+                      <label className="field">Street<input value={destinationAddress} disabled={!canEdit || locked} onChange={(event) => setDestinationAddress(event.target.value)} /></label>
+                      <label className="field">City<input value={destinationCity} disabled={!canEdit || locked} onChange={(event) => setDestinationCity(event.target.value)} /></label>
+                      <label className="field">Region<input value={destinationRegion} disabled={!canEdit || locked} onChange={(event) => setDestinationRegion(event.target.value)} /></label>
+                      <label className="field">Country<input value={destinationCountry} disabled={!canEdit || locked} onChange={(event) => setDestinationCountry(event.target.value)} /></label>
+                      <label className="field">Postal code<input value={destinationPostalCode} disabled={!canEdit || locked} onChange={(event) => setDestinationPostalCode(event.target.value)} /></label>
+                    </div>}
+                    <label className="field">Instructions<textarea value={fulfillmentInstructions} disabled={!canEdit || locked} onChange={(event) => setFulfillmentInstructions(event.target.value)} /></label>
+                    <div className="v2-sales-inline-grid">
+                      <label className="field">Adjustment (¢)<input inputMode="numeric" value={adjustmentCents} disabled={!canEdit || locked} onChange={(event) => setAdjustmentCents(event.target.value)} /></label>
+                      <label className="field">Adjustment reason<input value={adjustmentReason} disabled={!canEdit || locked} onChange={(event) => setAdjustmentReason(event.target.value)} /></label>
+                      <label className="field">Commercial charge
+                        <select value={chargeKind} disabled={!canEdit || locked} onChange={(event) => setChargeKind(event.target.value as typeof chargeKind)}><option value="shipping">Shipping</option><option value="delivery">Delivery</option><option value="handling">Handling</option><option value="packing">Packing</option><option value="crating">Crating</option><option value="postage">USPS postage</option></select>
+                      </label>
+                      <label className="field">Charge (¢)<input inputMode="numeric" value={chargeCents} disabled={!canEdit || locked} onChange={(event) => setChargeCents(event.target.value)} /></label>
+                    </div>
+                    {quote.quote.taxComposition?.status === "unresolved" ? <p className="v2-sales-permission-note">Tax jurisdiction not configured. This Quote cannot be accepted or converted until a configured receipt jurisdiction matches.</p> : quote.quote.taxComposition ? <p><b>Tax</b> {money({ currency: quote.quote.currency, cents: quote.quote.taxComposition.taxCents ?? 0 })} · {quote.quote.taxComposition.jurisdiction?.name ?? "configured jurisdiction"} · final {money({ currency: quote.quote.currency, cents: quote.quote.taxComposition.finalTotalCents })}</p> : <p>Tax composition will be shown after the Quote is saved.</p>}
                     <label className="field">
                       Commercial notes
                       <textarea

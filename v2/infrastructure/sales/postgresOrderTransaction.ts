@@ -11,8 +11,10 @@ import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapt
 import { summarizeOrderTotals, type OrderOperationResult, type OrderReadModel, type OrderReservation, type OrderTransaction, type OrderTransactionRunner } from "../../src/modules/sales/orderApplication.js";
 import { toSalesDocumentTermsPersistence, toSalesLinePersistenceEnvelope } from "../../src/modules/sales/persistenceContracts.js";
 import { removeProductionRequirementsForAbsentLines, synchronizeProductionRequirements } from "./postgresProductionRequirements.js";
+import { composePostgresSalesTax } from "./postgresSalesTaxComposition.js";
 import { brandedId, currencyCode, money, type OrderId, type OrganizationId, type SalesLineId } from "../../src/modules/shared/commercialValues.js";
-import type { OrderCurrentState, SalesLineSnapshot } from "../../src/modules/sales/contracts.js";
+import type { OrderCurrentState, RequestedFulfillment, SalesLineSnapshot, SalesOrderAdjustment } from "../../src/modules/sales/contracts.js";
+import type { CommercialCharge } from "../../src/modules/sales/taxComposition.js";
 import type { BillingPort, BillingReadPort } from "../../src/modules/billing/contracts.js";
 import type { RoutingPort } from "../../src/modules/routing/contracts.js";
 
@@ -24,11 +26,12 @@ type HeaderRow = Readonly<{
   commercial_notes: string | null; revision: string; commercial_state: "open" | "cancelled";
   requested_fulfillment_method: "pickup" | "shipping" | "local_delivery" | null; requested_destination: unknown; fulfillment_instructions: string | null;
   selling_adjustment_cents: string; selling_adjustment_reason: string | null;
+  commercial_charge: unknown; tax_composition: unknown;
 }>;
 type LineRow = Readonly<{
   id: string; product_id: string; product_type_id: string | null; description: string; quantity: number;
   calculated_line_cents: string; selling_line_cents: string; resolved_configuration: unknown;
-  pricing_result: unknown; selling_price_decision: unknown;
+  pricing_result: unknown; selling_price_decision: unknown; taxability_snapshot: unknown;
 }>;
 const asObject = <T>(value: unknown): T => value as T;
 
@@ -108,17 +111,19 @@ export class PostgresOrderTransaction implements OrderTransaction {
       "INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,currency,terms_json,tax_context_reference,sales_representative_id,commercial_notes) VALUES($1,$2,'order',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)",
       [input.orderId,input.organizationId,input.number.core.toString(),input.number.display,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,input.lines[0]?.pricingResult.currency ?? "USD",JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null],
     );
-    await this.client.query("INSERT INTO v2_sales_order_details(document_id,organization_id,requested_fulfillment_method,requested_destination,fulfillment_instructions,selling_adjustment_cents,selling_adjustment_reason) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7)", [input.orderId,input.organizationId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null]);
+    await this.client.query("INSERT INTO v2_sales_order_details(document_id,organization_id,requested_fulfillment_method,requested_destination,fulfillment_instructions,selling_adjustment_cents,selling_adjustment_reason,commercial_charge) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)", [input.orderId,input.organizationId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
     await this.writeLines(input.organizationId, input.orderId, input.lines);
+    if (input.taxComposition) await this.client.query("UPDATE v2_sales_order_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId, input.orderId, JSON.stringify(input.taxComposition)]);
+    else await this.writeTaxComposition(input.organizationId, input.orderId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     await this.hooks?.afterSales?.();
   }
   async read(organizationId: OrganizationId, orderId: OrderId, forUpdate = false): Promise<OrderReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,o.commercial_state,o.requested_fulfillment_method,o.requested_destination,o.fulfillment_instructions,o.selling_adjustment_cents,o.selling_adjustment_reason FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.document_id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order'${forUpdate ? " FOR UPDATE OF d,o" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,o.commercial_state,o.requested_fulfillment_method,o.requested_destination,o.fulfillment_instructions,o.selling_adjustment_cents,o.selling_adjustment_reason,o.commercial_charge,o.tax_composition FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.document_id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order'${forUpdate ? " FOR UPDATE OF d,o" : ""}`,
       [organizationId, orderId],
     );
     const row = header.rows[0]; if (!row) return null;
-    const lineRows = await this.client.query<LineRow>("SELECT id,product_id,product_type_id,description,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId,orderId]);
+    const lineRows = await this.client.query<LineRow>("SELECT id,product_id,product_type_id,description,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId,orderId]);
     const terms = asObject<{termsCode?: string}>(row.terms_json);
     const lines: SalesLineSnapshot[] = lineRows.rows.map((line) => ({
       lineId: brandedId<"SalesLineId">(line.id), productId: brandedId<"ProductId">(line.product_id),
@@ -127,6 +132,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
       resolvedConfiguration: asObject<SalesLineSnapshot["resolvedConfiguration"]>(line.resolved_configuration),
       pricingResult: asObject<SalesLineSnapshot["pricingResult"]>(line.pricing_result),
       sellingPriceDecision: asObject<SalesLineSnapshot["sellingPriceDecision"]>(line.selling_price_decision),
+      taxability: asObject<SalesLineSnapshot["taxability"]>(line.taxability_snapshot),
       calculatedLineAmount: money(currencyCode(row.currency), Number(line.calculated_line_cents)),
       sellingLineAmount: money(currencyCode(row.currency), Number(line.selling_line_cents)),
     }));
@@ -145,6 +151,8 @@ export class PostgresOrderTransaction implements OrderTransaction {
       lines, commercialState: row.commercial_state, ...(draftInvoice ? {billingInvoiceReference: draftInvoice.invoiceId} : {}),
       ...(row.requested_fulfillment_method ? { requestedFulfillment: { method: row.requested_fulfillment_method, ...(row.requested_destination ? { destination: asObject<any>(row.requested_destination) } : {}), ...(row.fulfillment_instructions ? { instructions: row.fulfillment_instructions } : {}) } } : {}),
       ...(Number(row.selling_adjustment_cents) !== 0 && row.selling_adjustment_reason ? { sellingAdjustment: { cents: Number(row.selling_adjustment_cents), reason: row.selling_adjustment_reason } } : {}),
+      ...(row.commercial_charge ? { commercialCharge: asObject<OrderCurrentState["commercialCharge"]>(row.commercial_charge) } : {}),
+      ...(row.tax_composition ? { taxComposition: asObject<OrderCurrentState["taxComposition"]>(row.tax_composition) } : {}),
       ...(conversion.rows[0] ? { sourceQuoteId: brandedId<"QuoteId">(conversion.rows[0].quote_document_id), sourceQuoteCheckpointId: brandedId<"QuoteCheckpointId">(conversion.rows[0].source_checkpoint_id) } : {}),
     };
     const routes = (await Promise.all(lines.map(async (line) => {
@@ -170,12 +178,13 @@ export class PostgresOrderTransaction implements OrderTransaction {
       [input.organizationId,input.orderId,input.expectedRevision,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null],
     );
     if (result.rowCount !== 1) return false;
-    await this.client.query("UPDATE v2_sales_order_details SET requested_fulfillment_method=$3,requested_destination=$4::jsonb,fulfillment_instructions=$5,selling_adjustment_cents=$6,selling_adjustment_reason=$7,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId,input.orderId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null]);
+    await this.client.query("UPDATE v2_sales_order_details SET requested_fulfillment_method=$3,requested_destination=$4::jsonb,fulfillment_instructions=$5,selling_adjustment_cents=$6,selling_adjustment_reason=$7,commercial_charge=$8::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId,input.orderId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
     // Vacate the document's position namespace before stable-ID upserts. Rows
     // intentionally removed remain temporarily high until Billing drops its
     // source projection, then removeLinesNotIn deletes them in this transaction.
     await this.client.query("UPDATE v2_sales_document_lines SET position=position+100000,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId, input.orderId]);
     await this.writeLines(input.organizationId, input.orderId, input.lines);
+    await this.writeTaxComposition(input.organizationId, input.orderId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     return true;
   }
   async removeLinesNotIn(organizationId: OrganizationId, orderId: OrderId, retainedLineIds: readonly SalesLineId[]): Promise<void> {
@@ -188,6 +197,10 @@ export class PostgresOrderTransaction implements OrderTransaction {
   async hasRoute(organizationId: OrganizationId, orderId: OrderId, lineId: SalesLineId): Promise<boolean> {
     const route = await this.routing.readRouteForWork(organizationId, brandedId<"OrderLineId">(lineId));
     return route?.work.orderId === orderId;
+  }
+  private async writeTaxComposition(organizationId: OrganizationId, orderId: OrderId, customerId: string | undefined, fulfillment: RequestedFulfillment | undefined, lines: readonly SalesLineSnapshot[], adjustment: SalesOrderAdjustment | undefined, charge: CommercialCharge | undefined): Promise<void> {
+    const composition = await composePostgresSalesTax({ client: this.client, organizationId, ...(customerId ? { customerId } : {}), fulfillment, lines, adjustment, charge });
+    await this.client.query("UPDATE v2_sales_order_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [organizationId, orderId, JSON.stringify(composition)]);
   }
   private async writeLines(organizationId: OrganizationId, orderId: OrderId, lines: readonly SalesLineSnapshot[], replace = false): Promise<void> {
     if (replace) {
@@ -203,8 +216,8 @@ export class PostgresOrderTransaction implements OrderTransaction {
     for (const [position,line] of lines.entries()) {
       const e = toSalesLinePersistenceEnvelope(line);
       await this.client.query(
-        "INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id",
-        [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision],
+        "INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,taxability_snapshot=EXCLUDED.taxability_snapshot,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id",
+        [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision,JSON.stringify(e.taxability)],
       );
       await synchronizeProductionRequirements(this.client, organizationId, orderId, line);
     }

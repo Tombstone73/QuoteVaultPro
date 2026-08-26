@@ -25,6 +25,7 @@ export type SalesLine = Readonly<{
   sellingUnitAmount: { cents: number; currency: string };
   sellingLineAmount: { cents: number; currency: string };
   sellingPriceDecision: QuoteSellingPriceDecision;
+  taxability?: { taxable: boolean; source: string };
 }>;
 export type QuoteLine = SalesLine;
 export type OrderLine = SalesLine;
@@ -43,6 +44,10 @@ export type QuoteRead = Readonly<{
     deliveryState: "not_sent" | "sent";
     acceptanceState: "not_accepted" | "accepted";
     convertedOrderId?: string;
+    requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { addressLine1: string; city: string; region?: string; country?: string; postalCode?: string; recipient?: string; company?: string; phone?: string }; instructions?: string };
+    sellingAdjustment?: { cents: number; reason: string };
+    commercialCharge?: { kind: "shipping" | "delivery" | "handling" | "packing" | "crating" | "postage"; cents: number; description?: string };
+    taxComposition?: { status: "resolved" | "unresolved"; taxCents?: number; finalTotalCents: number; taxableBaseCents?: number; taxableLineCents?: number; nonTaxableLineCents?: number; jurisdiction?: { name: string; rateBasisPoints: number }; reason?: string };
     lines: QuoteLine[];
   };
   number: { display: string; core: string };
@@ -56,6 +61,7 @@ export type QuoteRead = Readonly<{
     currency: string;
     calculatedLineAmount: { cents: number; currency: string };
     sellingLineAmount: { cents: number; currency: string };
+    tax?: QuoteRead["quote"]["taxComposition"];
   };
 }>;
 export type QuoteResult = Readonly<{ quote: QuoteRead; checkpointId?: string }>;
