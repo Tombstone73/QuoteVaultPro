@@ -337,7 +337,7 @@ export class ShipmentRepo {
     carrier?: string | null;
     serviceLevel?: string | null;
     trackingNumber?: string | null;
-    shipDate?: string | null;
+    shipDate?: Date | null;
     boxCount?: number | null;
     weightLbs?: number | null;
     dimLengthIn?: number | null;

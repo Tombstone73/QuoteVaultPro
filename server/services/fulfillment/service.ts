@@ -317,8 +317,17 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, 'Only DRAFT shipments are editable', 'INVALID_STATE');
     }
 
-    let parsedShipDate: string | null | undefined;
-    try { parsedShipDate = payload.shipDate === undefined ? undefined : parseShipmentDate(payload.shipDate); }
+    let parsedShipDate: Date | null | undefined;
+    try {
+      const dateOnly = payload.shipDate === undefined ? undefined : parseShipmentDate(payload.shipDate);
+      // `shipments.shipDate` uses Drizzle's `date({ mode: 'date' })` mapping,
+      // which serializes a JavaScript Date. Passing the validated date-only
+      // string through causes Drizzle to call `.toISOString()` on a string at
+      // update time. Construct midnight UTC only after validating the calendar
+      // date so this remains a date-only operational value, not a local-time
+      // timestamp conversion.
+      parsedShipDate = dateOnly == null ? dateOnly : new Date(`${dateOnly}T00:00:00.000Z`);
+    }
     catch (error: any) { throw new FulfillmentHttpError(400, error.message, 'SHIP_DATE_INVALID'); }
 
     const updated = await this.shipmentRepo.patchDraftShipment(orgId, shipmentId, {
@@ -349,18 +358,12 @@ export class FulfillmentService {
       })));
     }
 
-    const packingMode = await this.getPackingMode(orgId);
     if (payload.shipmentItems) {
       await this.assertExplicitAllocationsEligible(orgId, payload.shipmentItems);
       const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, payload.shipmentItems);
       if (!replacement.ok) {
         throw new FulfillmentHttpError(409, replacement.message, replacement.code);
       }
-      if (await this.getVerificationPolicy(orgId) === 'packing_completes_fulfillment') {
-        await this.syncSimplePackedQuantities(orgId, shipmentId, payload.actorUserId, existing.items.map((item: any) => item.orderLineItemId));
-      }
-    } else if (packingMode === 'simple_verified_packing') {
-      await this.syncSimpleShipmentAllocations(orgId, shipmentId, payload.actorUserId);
     }
 
     await this.shipmentRepo.insertEvent(
