@@ -110,6 +110,22 @@ describe("roll media nesting layout", () => {
     }
   });
 
+  test("uses an allowed rotated orientation before declaring the roll width impossible", () => {
+    const layout = calculateRollMediaLayout({
+      ...baseRoll,
+      finishedWidthIn: 51,
+      finishedHeightIn: 24,
+      quantity: 1,
+      allowRotation: true,
+    });
+
+    expect(layout.orientation).toBe("rotated");
+  });
+
+  test("keeps an oversized roll item priceable without inventing a roll length", () => {
+    expect(rollNestingBillableSqft(60, 24, 1, 50, 0, 0, 12, 12)).toBe(10);
+  });
+
   test("formula helper uses the same calculator for billable square footage", () => {
     expect(rollNestingBillableSqft(4, 4, 100, 50, 0.25, 0.25, 12, 12)).toBe(16);
     expect(formulaHelperScope().roll_nesting_billable_sqft(4, 4, 100, 50, 0.25, 0.25, 12, 12)).toBe(16);

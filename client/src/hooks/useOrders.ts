@@ -4,6 +4,7 @@ import { useToast } from "@/hooks/use-toast";
 import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@shared/orderProofStatus";
 import type { CancelOrderRequest } from "@shared/orderCancellation";
 import type { OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
+import type { MediaFitSnapshot } from "@shared/mediaFit";
 
 // ============================================================
 // QUERY KEY FACTORIES (Single Source of Truth)
@@ -279,6 +280,11 @@ export type PrepressQueueItem = {
     isDefault?: boolean;
   }>;
   printSides?: "Single-sided" | "Double-sided" | "Unknown";
+  /**
+   * Frozen at the time the line item was priced. Production must not infer
+   * media fit from the current catalog because the catalog can change later.
+   */
+  mediaFit?: MediaFitSnapshot | null;
   productionLayout?: {
     sheetUsageMethod: "layout_yield" | string;
     sheetWidthIn: number;

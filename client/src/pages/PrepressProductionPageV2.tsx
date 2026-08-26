@@ -58,6 +58,7 @@ import {
 } from "@shared/fileUploadNaming";
 import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { getMediaFitWarning } from "@shared/mediaFit";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 import { canSelectPrepressCombinedRunItem, getPrepressCombinedRunItemBlocker, validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
 import { buildPrepressSheetPlanDisplay, formatPrepressSheetPlanUnavailableReason } from "@/lib/prepressSheetPlan";
@@ -1675,6 +1676,7 @@ export default function PrepressProductionPageV2() {
     return true;
   };
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
+  const selectedMediaFitWarning = getMediaFitWarning(selectedItem?.mediaFit);
   const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
     const station = selectedItem?.selectedProductionDestination || selectedItem?.suggestedProductionDestination;
     return station === "roll" || station === "flatbed" ? station : "all";
@@ -4312,6 +4314,16 @@ export default function PrepressProductionPageV2() {
                 </p>
               </div>
             </div>
+
+            {selectedMediaFitWarning && (
+              <div
+                className="mt-3 rounded-lg border border-amber-600/50 bg-amber-950/20 p-4 text-sm text-amber-100"
+                data-testid="prepress-media-fit-warning"
+              >
+                <div className="font-semibold">{selectedMediaFitWarning.title}</div>
+                <div className="mt-1">{selectedMediaFitWarning.description}</div>
+              </div>
+            )}
 
             {selectedItem?.printSides === "Double-sided" && (
               <div

@@ -49,6 +49,7 @@ import {
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
 import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { assessMediaFit, type MediaFitSnapshot } from '../../../shared/mediaFit';
 import {
   calculateRollMediaLayout,
   rollNestingBillableSqft,
@@ -160,6 +161,7 @@ export type PBV2RuntimePricingSnapshot = {
   finalTotal?: number;
   sheetYield?: NonNullable<PricingPreviewEvaluationResult["debug"]>["sheetYield"];
   rollLayout?: RollMediaLayoutResult | null;
+  mediaFit?: MediaFitSnapshot;
   calculatedPrice: number;
   capturedAt: string;
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
@@ -3349,7 +3351,54 @@ function calculateBasePriceDetails(
     );
 
     if (flatGoodsResult.error) {
-      throw new Error(flatGoodsResult.error);
+      const mediaFit = assessMediaFit({
+        finishedWidthIn,
+        finishedHeightIn,
+        mediaType: flatGoodsProfileConfig.materialType,
+        sheetWidthIn: flatGoodsProfileConfig.sheetWidth,
+        sheetHeightIn: flatGoodsProfileConfig.sheetHeight,
+        printableWidthIn: flatGoodsProfileConfig.materialType === "roll" ? flatGoodsProfileConfig.sheetWidth : null,
+        allowRotation: flatGoodsAllowRotation,
+      });
+      if (mediaFit.status !== "paneling_required") {
+        throw new Error(flatGoodsResult.error);
+      }
+
+      // The old flat-goods calculator has no panel layout mode and returned an
+      // error before a line could be saved. Do not invent panels, quantity, or
+      // a panel surcharge: retain the configured PBV2 base pricing and capture
+      // the paneling requirement in the frozen runtime snapshot.
+      const panelingFallbackCents = Math.round(
+        minimumChargeCents > 0 ? Math.max(lineBaseCents, minimumChargeCents) : lineBaseCents,
+      );
+      return {
+        totalCents: panelingFallbackCents,
+        perSqftCents,
+        perPieceCents,
+        minimumChargeCents,
+        pricingProfileKey: activePricingProfileKey,
+        orderedWidthIn,
+        orderedHeightIn,
+        trimAllowanceX,
+        trimAllowanceY,
+        finishedWidthIn,
+        finishedHeightIn,
+        sqftPerItem,
+        totalSqft,
+        linearFeet,
+        preMinimumCents: Math.round(lineBaseCents),
+        minimumApplied: minimumChargeCents > 0 && minimumChargeCents > lineBaseCents,
+        basePriceSource,
+        rateUsedSource,
+        tierResolution,
+        sheetYieldMetrics,
+        nestingDetails: {
+          oversizedForMedia: true,
+          mediaFit,
+          sheetWidth: flatGoodsProfileConfig.sheetWidth,
+          sheetHeight: flatGoodsProfileConfig.sheetHeight,
+        },
+      };
     }
 
     return {
@@ -4407,6 +4456,12 @@ function buildRuntimePricingSnapshot(input: {
     orderedHeightIn,
     quantity: input.quantity,
   });
+  const mediaFit = resolveSnapshotMediaFit({
+    product: input.product,
+    formulaVariables: formulaDebug.variables,
+    finishedWidthIn,
+    finishedHeightIn,
+  });
   const hasMatrixBasePrice = typeof input.pricingMatrixResolution.variables.base_price === "number";
 
   return cloneJsonValue({
@@ -4455,11 +4510,41 @@ function buildRuntimePricingSnapshot(input: {
       : input.calculatedPriceCents / 100,
     sheetYield: formulaDebug.sheetYield,
     rollLayout,
+    mediaFit,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
     ...(input.resolvedWeightSource
       ? { resolvedWeightDebug: buildResolvedWeightSnapshotDebug(input.resolvedWeightSource) }
       : {}),
+  });
+}
+
+function resolveSnapshotMediaFit(input: {
+  product: any;
+  formulaVariables: Record<string, number | string | boolean | null>;
+  finishedWidthIn: number;
+  finishedHeightIn: number;
+}): MediaFitSnapshot {
+  const pricingConfig = input.product?.pricingProfileConfig && typeof input.product.pricingProfileConfig === "object"
+    ? input.product.pricingProfileConfig as Record<string, unknown>
+    : {};
+  const variables = input.formulaVariables ?? {};
+  const printableWidth = variables.printable_width ?? variables.printableWidth;
+  // A printable-width formula is the authoritative roll-media contract even
+  // for older products whose legacy materialType defaulted to "sheet".
+  const mediaType = Number(printableWidth) > 0
+    ? "roll"
+    : pricingConfig.materialType ?? input.product?.materialType ?? "sheet";
+
+  return assessMediaFit({
+    finishedWidthIn: input.finishedWidthIn,
+    finishedHeightIn: input.finishedHeightIn,
+    mediaType,
+    sheetWidthIn: pricingConfig.sheetWidth ?? input.product?.sheetWidth ?? variables.sheet_width,
+    sheetHeightIn: pricingConfig.sheetHeight ?? input.product?.sheetHeight ?? variables.sheet_length,
+    printableWidthIn: printableWidth,
+    allowRotation: variables.allow_rotation ?? pricingConfig.allowRotation,
+    productionAllowanceXIn: variables.piece_allowance_x ?? variables.production_allowance_x,
   });
 }
 

@@ -1573,6 +1573,12 @@ export function registerPrepressQueueRoutes(
               sheetWidthIn: sheetConfiguration.sheetWidthIn,
               sheetHeightIn: sheetConfiguration.sheetHeightIn,
             });
+        // This is the pricing-time snapshot, not a recalculation from the
+        // current catalog. It keeps the production warning stable after a
+        // product's media configuration changes.
+        const mediaFit = item.pbv2SnapshotJson && typeof item.pbv2SnapshotJson === "object"
+          ? (item.pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.mediaFit ?? null
+          : null;
         const artworkSideIntent = resolveArtworkSideIntent(item);
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
@@ -1683,6 +1689,7 @@ export function registerPrepressQueueRoutes(
           finishingBullets,
           optionsRows,
           printSides,
+          mediaFit,
           productionLayout,
           productionLayoutUnavailableReason,
           artworkProductionBreakdown: {

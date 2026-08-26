@@ -87,6 +87,7 @@ import {
   shouldHydratePbv2Defaults,
 } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
+import { getMediaFitWarning } from "@shared/mediaFit";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
@@ -2971,6 +2972,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const activeWorkWarning = !readOnly && isExpanded
                     ? getOrderLineItemActiveWorkWarning({ fulfillmentOnly, workflowState, hasActiveOwner })
                     : null;
+                  const mediaFitSnapshot = isExpanded && expandedItem?.id === item.id
+                    ? (pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.mediaFit
+                    : (item as any)?.pbv2SnapshotJson?.pbv2PricingSnapshot?.mediaFit;
+                  const mediaFitWarning = getMediaFitWarning(mediaFitSnapshot);
                   const operationalDisplay = resolveOrderLineItemOperationalDisplay(operationalItem);
                   const ownerLabel = operationalDisplay.ownerLabel;
                   const activeProductionActions = getOrderLineItemProductionActions(operationalItem);
@@ -3544,6 +3549,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
                                         <div className="font-medium">{activeWorkWarning.title}</div>
                                         <div className="mt-1">{activeWorkWarning.description}</div>
+                                      </div>
+                                    )}
+
+                                    {mediaFitWarning && (
+                                      <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
+                                        <div className="font-medium">{mediaFitWarning.title}</div>
+                                        <div className="mt-1">{mediaFitWarning.description}</div>
                                       </div>
                                     )}
 

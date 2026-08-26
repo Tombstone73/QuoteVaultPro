@@ -192,8 +192,17 @@ function calculateOrientation(input: RollMediaLayoutInput, orientation: RollMedi
 }
 
 export function calculateRollMediaLayout(input: RollMediaLayoutInput): RollMediaLayoutResult {
-  const normal = calculateOrientation(input, "normal");
-  if (!(parseRollLayoutBoolean(input.allowRotation) ?? false)) return normal;
+  let normal: RollMediaLayoutResult | null = null;
+  let normalError: unknown = null;
+  try {
+    normal = calculateOrientation(input, "normal");
+  } catch (error) {
+    normalError = error;
+  }
+  if (!(parseRollLayoutBoolean(input.allowRotation) ?? false)) {
+    if (normal) return normal;
+    throw normalError;
+  }
 
   let rotated: RollMediaLayoutResult | null = null;
   try {
@@ -202,6 +211,8 @@ export function calculateRollMediaLayout(input: RollMediaLayoutInput): RollMedia
     rotated = null;
   }
 
+  if (!normal && rotated) return rotated;
+  if (!normal && !rotated) throw normalError;
   if (!rotated) return normal;
   if (rotated.actualConsumedLengthIn < normal.actualConsumedLengthIn) return rotated;
   if (rotated.actualConsumedLengthIn > normal.actualConsumedLengthIn) return normal;
@@ -220,16 +231,26 @@ export function rollNestingBillableSqft(
   billingLengthIncrementIn: number,
   allowRotation?: boolean | string | number | null,
 ): number {
-  return calculateRollMediaLayout({
-    finishedWidthIn,
-    finishedHeightIn,
-    quantity,
-    printableWidthIn,
-    productionAllowanceXIn,
-    productionAllowanceYIn,
-    registrationWasteIn: 0,
-    billingWidthIncrementIn,
-    billingLengthIncrementIn,
-    allowRotation,
-  }).billableSqft;
+  try {
+    return calculateRollMediaLayout({
+      finishedWidthIn,
+      finishedHeightIn,
+      quantity,
+      printableWidthIn,
+      productionAllowanceXIn,
+      productionAllowanceYIn,
+      registrationWasteIn: 0,
+      billingWidthIncrementIn,
+      billingLengthIncrementIn,
+      allowRotation,
+    }).billableSqft;
+  } catch (error) {
+    if (!(error instanceof RollMediaLayoutError) || error.code !== "PRODUCTION_WIDTH_EXCEEDS_PRINTABLE_WIDTH") {
+      throw error;
+    }
+    // A panel layout is not calculated here. Keep the existing area-rate
+    // formula usable for the valid finished size and let the order snapshot
+    // carry the explicit operational panel/seam warning.
+    return (finishedWidthIn * finishedHeightIn * Math.ceil(quantity)) / 144;
+  }
 }

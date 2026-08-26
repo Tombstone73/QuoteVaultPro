@@ -70,6 +70,10 @@ describe("sheet_consumption_sqft 4x8 drop billing", () => {
     expect(result).not.toBeCloseTo(32.064, 6);
   });
 
+  test("uses finished area as the pricing basis when a valid item requires paneling", () => {
+    expect(sheetConsumptionSqft(238, 24, 1, 48, 96, 24, 12, 3, true)).toBeCloseTo((238 * 24) / 144, 6);
+  });
+
   test("formula helper scope honors configured rotation when the optional argument is omitted", () => {
     const helper = formulaHelperScope(true).sheet_consumption_sqft;
 

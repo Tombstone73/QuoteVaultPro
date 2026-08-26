@@ -3,7 +3,7 @@
  *
  * Verifies: normal vs rotated orientation selection, reusable-drop logic
  * (partial-row occupied-width fix), billable-length rounding, minimum-sqft
- * floor, and error throwing when a piece physically cannot fit the sheet.
+ * floor, and paneling fallback when a finished piece cannot fit one sheet.
  *
  * Because the formula contains `q`, inferFormulaApplication classifies it as
  * totalPrice. The formula result (sqft) maps directly to result.totalPrice.
@@ -343,30 +343,26 @@ describe("sheet_consumption_sqft", () => {
     expect(result.totalPrice).toBeCloseTo(10, 1);
   });
 
-  // ── physical fit constraint → error, not silent underpricing ──────────────
+  // ── physical fit constraint → paneling warning / finished-area fallback ──
 
-  test("oversized piece fitting neither orientation throws PBV2_FORMULA_ERROR", () => {
+  test("oversized piece fitting neither orientation remains priceable", () => {
     // 50×50 piece on a 48×48 sheet: pieceW=50>48 in both orientations
-    const err = runFormulaExpectError(
+    const result = runFormula(
       "sheet_consumption_sqft(w, h, q, 48, 48, 0, 1, 5)",
       50, 50, 1,
     );
-    expect(err).not.toBeNull();
-    expect(err.code).toBe("PBV2_FORMULA_ERROR");
-    expect(err.message.toLowerCase()).toContain("sheet_consumption_sqft");
+    expect(result.totalPrice).toBe(17.36);
   });
 
-  test("piece taller than sheet_length in both orientations throws PBV2_FORMULA_ERROR", () => {
+  test("piece taller than sheet_length in both orientations remains priceable", () => {
     // piece 24×100, sheet_width=48, sheet_length=96
     // normal (24w×100h): h=100>96 → Infinity
     // rotated (100w×24h): w=100>48 → Infinity
-    const err = runFormulaExpectError(
+    const result = runFormula(
       "sheet_consumption_sqft(w, h, q, 48, 96, 0, 1, 3)",
       24, 100, 1,
     );
-    expect(err).not.toBeNull();
-    expect(err.code).toBe("PBV2_FORMULA_ERROR");
-    expect(err.message.toLowerCase()).toContain("sheet_consumption_sqft");
+    expect(result.totalPrice).toBe(16.67);
   });
 
   // ── multi-row and integration ──────────────────────────────────────────────
@@ -1261,8 +1257,8 @@ describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
     }));
   });
 
-  test("canonical product allowRotation=false rejects rotated-only ACM", () => {
-    expect(() => evaluatePricingPreviewFromTree({
+  test("canonical product allowRotation=false marks rotated-only ACM for paneling", () => {
+    const result = evaluatePricingPreviewFromTree({
       treeJson: makeRowTierBasisTree("computed_sheet_usage"),
       widthIn: 72,
       heightIn: 48,
@@ -1271,7 +1267,9 @@ describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
       pricingProfileConfig: { allowRotation: false },
       pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
       debug: true,
-    })).toThrow("without rotation");
+    });
+    expect(result.totalPrice).toBeGreaterThan(0);
+    expect(result.debug?.sheetYield?.available).toBe(false);
   });
 
   test("30×30 q1 → 12  (drop 18\" too narrow, 30\" row rounds to 36\")", () => {

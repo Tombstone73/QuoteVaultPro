@@ -1,4 +1,5 @@
 import { rollNestingBillableSqft } from "./rollMediaLayout";
+import { assessMediaFit } from "../mediaFit";
 
 /**
  * Pure formula helper functions shared between the server evaluator (PricingService)
@@ -355,18 +356,36 @@ export function sheetConsumptionSqft(
   allowRotation: boolean | string | number | null | undefined = false,
   allowRotationSource?: string | null,
 ): number {
-  return calculateSheetYield(
-    w,
-    h,
-    q,
-    sheetWidth,
-    sheetLength,
-    usableDropMin,
-    billableLengthIncrement,
-    minimumBillableSqft,
-    allowRotation,
-    allowRotationSource,
-  ).billedSheetSqft;
+  try {
+    return calculateSheetYield(
+      w,
+      h,
+      q,
+      sheetWidth,
+      sheetLength,
+      usableDropMin,
+      billableLengthIncrement,
+      minimumBillableSqft,
+      allowRotation,
+      allowRotationSource,
+    ).billedSheetSqft;
+  } catch (error) {
+    const mediaFit = assessMediaFit({
+      finishedWidthIn: w,
+      finishedHeightIn: h,
+      mediaType: "sheet",
+      sheetWidthIn: sheetWidth,
+      sheetHeightIn: sheetLength,
+      allowRotation,
+    });
+    if (mediaFit.status !== "paneling_required") throw error;
+
+    // Panel planning and panel pricing are intentionally not part of this
+    // helper. Preserve a usable configured area-rate calculation so the valid
+    // line can be saved, while the persisted media-fit result tells production
+    // that one-piece sheet yield is unavailable.
+    return (w * h * Math.ceil(q)) / 144;
+  }
 }
 
 /**
