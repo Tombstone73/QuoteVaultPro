@@ -8,6 +8,7 @@ const state = (coverage:ProductionRequirementCoverage,item:PrepressQueueItem) =>
 const statusClass = (value:string) => value==="Prepress Complete" ? "ok" : value==="In Prepress" ? "active" : value==="Ready for Prepress" ? "ready" : value.startsWith("Needs") ? "warn" : "neutral";
 const fileLabel = (item:ArtworkOrderProjection) => `${item.file.displayFilename} · ${item.assignment.purpose.replaceAll("_"," ")}${item.assignment.side?` · ${item.assignment.side}`:""}`;
 const prerequisite = (item:PrepressQueueItem) => item.routingStepKind==="proofing" ? "Routing is still at Proofing; Prepress cannot start." : item.routingStepKind==="prepress" ? "Routing has made Prepress current. Proofing remains owned by Proofing." : `Routing is currently at ${item.routingStepKind??"an unavailable step"}.`;
+export const filterPrepressQueue=(items:readonly PrepressQueueItem[],query:string)=>{const needle=query.trim().toLocaleLowerCase();return needle?items.filter((entry)=>`${entry.orderNumber} ${entry.customerDisplayName} ${entry.lineDescription}`.toLocaleLowerCase().includes(needle)):items;};
 
 /** Approved three-rail Prepress hierarchy, backed only by canonical owner projections. */
 export const PrepressWorkspace=({organizationId,sessionScope,canView,canArtworkAssign,canWork,canComplete,lineId,prepressUnitId,onSelectLine,openOrder,openCustomer,openArtwork}:{organizationId:string;sessionScope:string;canView:boolean;canArtworkAssign:boolean;canWork:boolean;canComplete:boolean;lineId?:string;prepressUnitId?:string;onSelectLine?:(lineId:string)=>void;openOrder?:(orderId:string)=>void;openCustomer?:(customerId:string)=>void;openArtwork?:(artworkFileId:string)=>void})=>{
@@ -15,6 +16,7 @@ export const PrepressWorkspace=({organizationId,sessionScope,canView,canArtworkA
   const queue=useQuery({queryKey:keys.queue(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId),enabled:Boolean(organizationId&&sessionScope&&canView)});
   const unit=useQuery({queryKey:keys.unit(sessionScope,organizationId,prepressUnitId??""),queryFn:()=>prepressApi.get(organizationId,prepressUnitId!),enabled:Boolean(organizationId&&sessionScope&&canView&&prepressUnitId)});
   const [selectedLineId,setSelectedLineId]=useState(lineId??""); const [selectedRequirement,setSelectedRequirement]=useState(""); const [query,setQuery]=useState("");
+  const filtered=useMemo(()=>filterPrepressQueue(queue.data??[],query),[query,queue.data]);
   useEffect(()=>{if(lineId)setSelectedLineId(lineId);},[lineId]);
   useEffect(()=>{if(unit.data)setSelectedLineId(unit.data.orderLineId);},[unit.data]);
   const activeLineId=selectedLineId||lineId||unit.data?.orderLineId||queue.data?.[0]?.orderLineId||"";
@@ -29,7 +31,6 @@ export const PrepressWorkspace=({organizationId,sessionScope,canView,canArtworkA
   const complete=useMutation({mutationFn:(id:string)=>prepressApi.complete(organizationId,id,newBusinessRequestId()),onSuccess:refresh});
   if(!organizationId)return <section className="v2-prepress"><div className="v2-proof-empty">Enter an authenticated organization in Sales before opening Prepress.</div></section>;
   if(!canView)return <section className="v2-prepress"><div className="v2-proof-empty">You do not have permission to view Prepress.</div></section>;
-  const filtered=useMemo(()=>{const needle=query.trim().toLocaleLowerCase();return needle?(queue.data??[]).filter((entry)=>`${entry.orderNumber} ${entry.customerDisplayName} ${entry.lineDescription}`.toLocaleLowerCase().includes(needle)):queue.data??[];},[query,queue.data]);
   const groups=new Map<string,PrepressQueueItem[]>();for(const entry of filtered)groups.set(entry.orderId,[...(groups.get(entry.orderId)??[]),entry]);
   const lineArtwork=(artwork.data??[]).filter((entry)=>entry.assignment.orderLineId===item?.orderLineId); const productionArtwork=lineArtwork.filter((entry)=>entry.assignment.purpose==="production"); const suppliedArtwork=lineArtwork.filter((entry)=>entry.assignment.purpose!=="production");
   const selectedUnit=requirement?.prepressUnits[0]; const candidates=requirement?.artworkAssignmentIds??[];
