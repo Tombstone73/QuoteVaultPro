@@ -60,6 +60,7 @@ import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
+import { quoteLineProductPresentation } from "./quoteLinePresentation";
 import {
   legacyProductEditorRedirect,
   productBuilderPath,
@@ -2038,8 +2039,7 @@ const QuoteWorkspace = ({
                                     "P"}
                                 </i>
                                 <span>
-                                  <b>{line.description || line.productId}</b>
-                                  <small>{line.productId}</small>
+                                  <b>{quoteLineProductPresentation(line)}</b>
                                   {line.sellingPriceDecision.kind !==
                                     "calculated" && <em>Manual price</em>}
                                 </span>
@@ -2074,7 +2074,7 @@ const QuoteWorkspace = ({
                     <div>
                       <small>LINE {selectedLine.position}</small>
                       <h2>
-                        {selectedLine.description || selectedLine.productId}
+                        {quoteLineProductPresentation(selectedLine)}
                       </h2>
                     </div>
                     <button

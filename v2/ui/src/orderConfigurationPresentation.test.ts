@@ -42,6 +42,23 @@ const ord1010Shape = orderConfigurationPresentation({
 assert.match(ord1010Shape, /Legacy options: Yes, Double Sided, No, None/);
 assert.doesNotMatch(ord1010Shape, internal);
 
+// QT-1014-shaped legacy evidence can contain lineage fields in its old
+// selection payload. These are typed internal fields, unlike entered values.
+const quoteLegacyIdentifiers = orderConfigurationPresentation({
+  selections: {
+    productId: "df00792e-ab23-4516-baa3-9f174f69c495",
+    productVersionId: "0a00792e-ab23-4516-baa3-9f174f69c495",
+    optionId: "1a00792e-ab23-4516-baa3-9f174f69c495",
+    choiceId: "2a00792e-ab23-4516-baa3-9f174f69c495",
+    opt_legacy: "choice_legacy",
+    "Customer color": "PANTONE 286 C",
+  },
+});
+assert.match(quoteLegacyIdentifiers, /Customer color: PANTONE 286 C/);
+assert.match(quoteLegacyIdentifiers, /Configuration detail unavailable/);
+assert.doesNotMatch(quoteLegacyIdentifiers, /product(?:Version)?Id|optionId|choiceId/iu);
+assert.doesNotMatch(quoteLegacyIdentifiers, internal);
+
 const multiple = orderConfigurationPresentation({
   selections: {
     Finish: "matte",

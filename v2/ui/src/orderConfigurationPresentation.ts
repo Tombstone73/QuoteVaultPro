@@ -10,6 +10,9 @@ const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const internalConfigurationIdentifier = /^(?:opt|choice)_[A-Za-z0-9_-]+$/u;
 const importedConfigurationKey = /(?:^|_)import(?:_|$)/iu;
+/** Known Sales/Pricing lineage fields are never customer-facing selections. */
+const internalConfigurationField =
+  /^(?:product(?:_?version)?|option|choice|pricing_?configuration)(?:_?id|_?version|_?content_?hash)?$/iu;
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -102,7 +105,9 @@ export const orderConfigurationPresentation = (
   if (isRecord(resolved.selections)) {
     for (const [key, rawValue] of Object.entries(resolved.selections)) {
       const value = safeValue(rawValue);
-      if (isInternalIdentifier(key)) {
+      if (internalConfigurationField.test(key)) {
+        unavailableLegacyValue = true;
+      } else if (isInternalIdentifier(key)) {
         if (value) legacyValues.push(value);
         else unavailableLegacyValue = true;
       } else if (value) {
