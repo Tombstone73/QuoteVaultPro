@@ -4,6 +4,7 @@ import { customers, orderLineItems, orders, organizations, products } from "@sha
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "../../quoteOrderPricing";
 import { db } from "../../db";
 import { synchronizeDraftInvoiceFromOrderInTransaction } from "../../invoicesService";
+import { getBillableBundleRoots } from "../lineItemBundles";
 
 type TaxableOrderLine = {
   id?: string;
@@ -14,10 +15,6 @@ type TaxableOrderLine = {
   taxCategoryId?: string | null;
 };
 
-function isBillable(line: TaxableOrderLine) {
-  return line.lineItemRole !== "child" && !line.parentLineItemId;
-}
-
 async function calculateTaxForLines(executor: any, input: {
   organizationId: string;
   customerId?: string | null;
@@ -27,7 +24,7 @@ async function calculateTaxForLines(executor: any, input: {
     .where(eq(organizations.id, input.organizationId)).limit(1);
   if (!organization) throw new Error("Organization not found for order tax calculation.");
 
-  const billableLines = input.lines.filter(isBillable);
+  const billableLines = getBillableBundleRoots(input.lines);
   const productIds = Array.from(new Set(billableLines.map((line) => String(line.productId)).filter(Boolean)));
   const productRows = productIds.length
     ? await executor.select().from(products).where(and(

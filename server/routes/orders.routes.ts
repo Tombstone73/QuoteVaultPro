@@ -7335,9 +7335,6 @@ export async function registerOrderRoutes(
                 const [parent] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, String(lineItemData.parentLineItemId))).limit(1);
                 if (parent?.lineItemRole === "parent") {
                     await recalculateOrderBundleParent(parent.id);
-                } else if (parent) {
-                    const totalPrice = (Number(parent.totalPrice) || 0) + (Number((created as any).totalPrice) || 0);
-                    await db.update(orderLineItems).set({ totalPrice: totalPrice.toFixed(2), updatedAt: new Date() }).where(eq(orderLineItems.id, parent.id));
                 }
             }
 
@@ -7503,14 +7500,6 @@ export async function registerOrderRoutes(
             const child = lines.find((line) => line.id === childId)!;
             const priorParentId = child.parentLineItemId ? String(child.parentLineItemId) : null;
             if (priorParentId === parentLineItemId) return res.json({ success: true, data: enrichLineItemWithEffectivePricing(child as any) });
-            const childAmount = Number(child.totalPrice) || 0;
-            for (const parent of [priorParentId, parentLineItemId]
-                .filter((id): id is string => Boolean(id)).map((id) => lines.find((line) => line.id === id))
-                .filter((line): line is typeof lines[number] => Boolean(line && line.lineItemRole !== "parent"))) {
-                const delta = parent.id === priorParentId ? -childAmount : childAmount;
-                const totalPrice = Math.max(0, (Number(parent.totalPrice) || 0) + delta);
-                await db.update(orderLineItems).set({ totalPrice: totalPrice.toFixed(2), updatedAt: new Date() }).where(eq(orderLineItems.id, parent.id));
-            }
             const [updated] = await db.update(orderLineItems).set({
                 parentLineItemId,
                 lineItemRole: parentLineItemId ? "child" : "standalone",

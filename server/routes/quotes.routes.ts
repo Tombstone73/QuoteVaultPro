@@ -2285,12 +2285,6 @@ export function registerQuoteRoutes(
         const [parent] = await db.select().from(quoteLineItems).where(eq(quoteLineItems.id, requestedParentLineItemId)).limit(1);
         if (parent?.lineItemRole === "parent") {
           await recalculateQuoteBundleParent(requestedParentLineItemId);
-        } else if (parent) {
-          const linePrice = (Number(parent.linePrice) || 0) + (Number((createdLineItem as any).linePrice) || 0);
-          await db.update(quoteLineItems).set({
-            linePrice: linePrice.toFixed(2), formulaLinePrice: linePrice.toFixed(2),
-            priceBreakdown: { ...(parent.priceBreakdown as any), total: linePrice, formula: "linked_children" },
-          }).where(eq(quoteLineItems.id, parent.id));
         }
       }
       if (proofApproval.manualOverride) {
@@ -2604,21 +2598,6 @@ export function registerQuoteRoutes(
       const child = lines.find((line) => line.id === childId)!;
       const priorParentId = child.parentLineItemId ? String(child.parentLineItemId) : null;
       if (priorParentId === parentLineItemId) return res.json({ success: true, data: child });
-
-      const affectedStandaloneParents = [priorParentId, parentLineItemId]
-        .filter((id): id is string => Boolean(id))
-        .map((id) => lines.find((line) => line.id === id))
-        .filter((line): line is typeof lines[number] => Boolean(line && line.lineItemRole !== "parent"));
-      const childAmount = Number(child.linePrice) || 0;
-      for (const parent of affectedStandaloneParents) {
-        const delta = parent.id === priorParentId ? -childAmount : childAmount;
-        const linePrice = Math.max(0, (Number(parent.linePrice) || 0) + delta);
-        await db.update(quoteLineItems).set({
-          linePrice: linePrice.toFixed(2),
-          formulaLinePrice: linePrice.toFixed(2),
-          priceBreakdown: { ...(parent.priceBreakdown as any), total: linePrice, formula: "linked_children" },
-        }).where(eq(quoteLineItems.id, parent.id));
-      }
       const [updated] = await db.update(quoteLineItems).set({
         parentLineItemId,
         lineItemRole: parentLineItemId ? "child" : "standalone",

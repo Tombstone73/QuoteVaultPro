@@ -25,12 +25,29 @@ export function calculateBundleChildTotalCents(children: BundleLineItem[]): numb
     .reduce((total, line) => total + getLineItemCents(line), 0);
 }
 
-/** Roots are the only billable rows. Children retain their internal data, but
- * are never included again in financial rollups. */
+/**
+ * A `parent` line is a synthetic bundle wrapper whose stored amount represents
+ * its children. A normal line linked to another normal line is only an
+ * operational relationship: both lines keep their own commercial amounts.
+ *
+ * This distinction prevents a linked existing child from disappearing from
+ * billing after its parent's standalone price is intentionally left unchanged.
+ */
 type BundleMembership = Pick<BundleLineItem, "id" | "parentLineItemId" | "lineItemRole" | "childDisplayMode">;
 
 export function getBillableBundleRoots<T extends BundleMembership>(lineItems: T[]): T[] {
-  return lineItems.filter((line) => line.lineItemRole !== "child" && !line.parentLineItemId);
+  const byId = new Map<string, T>(lineItems
+    .filter((line): line is T & { id: string } => typeof line.id === "string")
+    .map((line) => [line.id, line]));
+
+  return lineItems.filter((line) => {
+    if (!line.parentLineItemId) return true;
+    const parent = byId.get(String(line.parentLineItemId));
+    // Only a dedicated wrapper owns a child's commercial total. If the
+    // relationship points to a normal line (or an orphaned legacy row), keep
+    // the child independently billable rather than silently losing its value.
+    return parent?.lineItemRole !== "parent";
+  });
 }
 
 export function getCustomerVisibleBundleLines<T extends BundleMembership>(lineItems: T[]): T[] {
