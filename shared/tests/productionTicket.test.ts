@@ -202,6 +202,7 @@ const baseTraveler: OrderTravelerSource = {
   orderId: "order-xyz",
   orderNumber: "SO-1042",
   poNumber: "PO-7788",
+  jobLabel: "Front Lobby Signs",
   customerName: "Acme Signs Inc.",
   contactName: "Jane Doe",
   dueDate: "2026-05-22T00:00:00.000Z",
@@ -220,6 +221,9 @@ describe("buildOrderTravelerData", () => {
     expect(byKey.orderNumber.value).toBe("SO-1042");
     expect(byKey.orderNumber.format.fontSize).toBe("xlarge");
     expect(byKey.poNumber.value).toBe("PO-7788");
+    expect(byKey.poNumber.format.fontSize).toBe("large");
+    expect(byKey.jobLabel.value).toBe("Front Lobby Signs");
+    expect(byKey.jobLabel.format.fontSize).toBe("large");
     expect(byKey.customerName.value).toBe("Acme Signs Inc.");
     expect(byKey.dueDate.value).toBe("May 22, 2026");
   });
@@ -235,7 +239,58 @@ describe("buildOrderTravelerData", () => {
   it("places the PO directly below the order number", () => {
     const keys = buildOrderTravelerData(baseTraveler).headerRows.map((row) => row.key);
     expect(keys.indexOf("orderNumber")).toBeLessThan(keys.indexOf("poNumber"));
+    expect(keys.indexOf("poNumber")).toBeLessThan(keys.indexOf("jobLabel"));
     expect(keys.indexOf("poNumber")).toBeLessThan(keys.indexOf("customerName"));
+  });
+
+  it.each([
+    ["both identifiers", "PO-7788", "Front Lobby Signs", "PO-7788", "Front Lobby Signs"],
+    ["PO only", "Email PO", null, "Email PO", "—"],
+    ["job only", null, "Front Lobby Signs", "—", "Front Lobby Signs"],
+    ["neither identifier", null, null, "—", "—"],
+  ])("keeps structural PO and Job rows when %s", (_case, poNumber, jobLabel, expectedPo, expectedJob) => {
+    const byKey = Object.fromEntries(buildOrderTravelerData({
+      ...baseTraveler,
+      poNumber,
+      jobLabel,
+    }).headerRows.map((row) => [row.key, row]));
+
+    expect(byKey.poNumber.value).toBe(expectedPo);
+    expect(byKey.jobLabel.value).toBe(expectedJob);
+  });
+
+  it("retains long job identifiers and prints one header for multiple lines", () => {
+    const longPo = "PO-" + "X".repeat(120);
+    const longJob = "Customer lobby signage package " + "with extended production instructions ".repeat(8);
+    const traveler = buildOrderTravelerData({
+      ...baseTraveler,
+      poNumber: longPo,
+      jobLabel: longJob,
+      lineItems: [
+        ...baseTraveler.lineItems,
+        { description: "Linked child panel", quantity: 1, size: "12 × 18", material: "Coroplast", productionNotes: null },
+      ],
+    });
+
+    expect(traveler.headerRows.filter((row) => row.key === "poNumber")).toHaveLength(1);
+    expect(traveler.headerRows.filter((row) => row.key === "jobLabel")).toHaveLength(1);
+    expect(traveler.headerRows.find((row) => row.key === "poNumber")?.value).toBe(longPo);
+    expect(traveler.headerRows.find((row) => row.key === "jobLabel")?.value).toBe(longJob.trim());
+    expect(traveler.lineItemCount).toBe(3);
+  });
+
+  it("retains every required identifier when an older template hides optional fields", () => {
+    const traveler = buildOrderTravelerData(baseTraveler, {
+      ...DEFAULT_TICKET_TEMPLATE,
+      fields: {
+        ...DEFAULT_TICKET_TEMPLATE.fields,
+        poNumber: { ...DEFAULT_TICKET_TEMPLATE.fields.poNumber, show: false },
+        jobLabel: { ...DEFAULT_TICKET_TEMPLATE.fields.jobLabel, show: false },
+      },
+    });
+    const keys = traveler.headerRows.map((row) => row.key);
+
+    expect(keys).toEqual(expect.arrayContaining(["orderNumber", "customerName", "poNumber", "jobLabel", "dueDate"]));
   });
 
   it("lists every line item with resolved values", () => {

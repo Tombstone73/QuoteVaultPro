@@ -33,6 +33,12 @@ describe("ticketRowStyle", () => {
     expect(style.textAlign).toBe("right");
   });
 
+  it("allows long physical-document values to wrap safely", () => {
+    const style = ticketRowStyle(DEFAULT_TICKET_TEMPLATE.fields.jobLabel);
+    expect(style.overflowWrap).toBe("anywhere");
+    expect(style.wordBreak).toBe("break-word");
+  });
+
   it("orders font sizes small < normal < large < xlarge", () => {
     const { small, normal, large, xlarge } = TICKET_FONT_SIZE_PX;
     expect(small).toBeLessThan(normal);

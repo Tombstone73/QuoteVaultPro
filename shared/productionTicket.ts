@@ -23,6 +23,7 @@ export type TicketFieldKey =
   | "orderNumber"
   | "rush"
   | "poNumber"
+  | "jobLabel"
   | "customerName"
   | "contactName"
   | "fulfillment"
@@ -63,6 +64,7 @@ export const TICKET_FIELD_ORDER: TicketFieldKey[] = [
   "rush",
   "orderNumber",
   "poNumber",
+  "jobLabel",
   "customerName",
   "contactName",
   "fulfillment",
@@ -83,6 +85,7 @@ export const TICKET_FIELD_ORDER: TicketFieldKey[] = [
 export const TICKET_FIELD_LABELS: Record<TicketFieldKey, string> = {
   orderNumber: "Order #",
   rush: "Rush",
+  jobLabel: "Job",
   poNumber: "PO #",
   customerName: "Customer",
   contactName: "Contact",
@@ -118,7 +121,7 @@ function fmt(
 /**
  * Default ticket template. Emphasis defaults per spec:
  *  - Order #: extra large, bold (kept at the very top, below Rush)
- *  - PO #: directly under Order #
+ *  - PO # and Job: directly under Order # for immediate job identification
  *  - Customer: extra large, bold (equal visual priority to Order #)
  *  - Fulfillment + Station/Route: near the top for shop routing
  *  - Assigned To: hidden by default (Station/Route replaces it)
@@ -130,21 +133,22 @@ export const DEFAULT_TICKET_TEMPLATE: TicketTemplate = {
   fields: {
     rush: fmt({ order: 0, fontSize: "xlarge", fontWeight: "bold", align: "center", dividerAfter: true }),
     orderNumber: fmt({ order: 1, fontSize: "xlarge", fontWeight: "bold" }),
-    poNumber: fmt({ order: 2, fontWeight: "bold" }),
-    customerName: fmt({ order: 3, fontSize: "xlarge", fontWeight: "bold" }),
-    contactName: fmt({ order: 4, fontWeight: "bold" }),
-    fulfillment: fmt({ order: 5, fontWeight: "bold" }),
-    stationRoute: fmt({ order: 6, fontWeight: "bold" }),
-    assignedTo: fmt({ order: 7, show: false }),
-    dueDate: fmt({ order: 8, fontWeight: "bold", dividerAfter: true }),
-    description: fmt({ order: 9, fontSize: "large", fontWeight: "bold" }),
-    quantity: fmt({ order: 10, fontSize: "large", fontWeight: "bold" }),
-    size: fmt({ order: 11, fontSize: "large", fontWeight: "bold" }),
-    material: fmt({ order: 12, fontSize: "large", fontWeight: "bold" }),
-    productionNotes: fmt({ order: 13, fontWeight: "bold", dividerBefore: true }),
-    internalNotes: fmt({ order: 14, fontWeight: "bold" }),
-    ticketNote: fmt({ order: 15, fontWeight: "bold", dividerBefore: true }),
-    jobId: fmt({ order: 16, align: "center", dividerBefore: true }),
+    poNumber: fmt({ order: 2, fontSize: "large", fontWeight: "bold" }),
+    jobLabel: fmt({ order: 3, fontSize: "large", fontWeight: "bold" }),
+    customerName: fmt({ order: 4, fontSize: "xlarge", fontWeight: "bold" }),
+    contactName: fmt({ order: 5, fontWeight: "bold" }),
+    fulfillment: fmt({ order: 6, fontWeight: "bold" }),
+    stationRoute: fmt({ order: 7, fontWeight: "bold" }),
+    assignedTo: fmt({ order: 8, show: false }),
+    dueDate: fmt({ order: 9, fontWeight: "bold", dividerAfter: true }),
+    description: fmt({ order: 10, fontSize: "large", fontWeight: "bold" }),
+    quantity: fmt({ order: 11, fontSize: "large", fontWeight: "bold" }),
+    size: fmt({ order: 12, fontSize: "large", fontWeight: "bold" }),
+    material: fmt({ order: 13, fontSize: "large", fontWeight: "bold" }),
+    productionNotes: fmt({ order: 14, fontWeight: "bold", dividerBefore: true }),
+    internalNotes: fmt({ order: 15, fontWeight: "bold" }),
+    ticketNote: fmt({ order: 16, fontWeight: "bold", dividerBefore: true }),
+    jobId: fmt({ order: 17, align: "center", dividerBefore: true }),
   },
 };
 
@@ -154,6 +158,7 @@ export interface TicketSourceData {
   orderId: string;
   orderNumber: string;
   poNumber?: string | null;
+  jobLabel?: string | null;
   customerName: string;
   contactName?: string | null;
   /** Fulfillment method — e.g. "Pickup", "Delivery", "Shipping". */
@@ -201,6 +206,7 @@ export interface TicketData {
 /** Optional fields are dropped from the ticket when they have no value. */
 const OPTIONAL_FIELDS: ReadonlySet<TicketFieldKey> = new Set<TicketFieldKey>([
   "poNumber",
+  "jobLabel",
   "contactName",
   "fulfillment",
   "stationRoute",
@@ -262,6 +268,8 @@ function rawValueFor(key: TicketFieldKey, src: TicketSourceData, isRush: boolean
       return isRush ? "RUSH" : "";
     case "poNumber":
       return String(src.poNumber || "").trim();
+    case "jobLabel":
+      return String(src.jobLabel || "").trim();
     case "customerName":
       return String(src.customerName || "").trim();
     case "contactName":
@@ -315,6 +323,7 @@ function assembleRows(
   template: TicketTemplate,
   getValue: (key: TicketFieldKey) => string,
   isRush: boolean,
+  requiredEmptyFields: ReadonlySet<TicketFieldKey> = new Set(),
 ): TicketRow[] {
   const rows: TicketRow[] = [];
   for (const key of keys) {
@@ -327,7 +336,7 @@ function assembleRows(
     if (key === "rush" && !isRush) continue;
 
     const value = getValue(key);
-    if (!value && OPTIONAL_FIELDS.has(key)) continue;
+    if (!value && OPTIONAL_FIELDS.has(key) && !requiredEmptyFields.has(key)) continue;
     if (key === "rush" && !value) continue;
 
     const labelOverride = (format.labelOverride || "").trim();
@@ -393,6 +402,8 @@ export interface OrderTravelerSource {
   orderNumber: string;
   /** Customer-provided PO or job-request reference. */
   poNumber?: string | null;
+  /** Order-level job label, maintained separately from line-item descriptions. */
+  jobLabel?: string | null;
   customerName: string;
   contactName?: string | null;
   dueDate?: string | null;
@@ -427,10 +438,19 @@ export const TRAVELER_HEADER_FIELDS: TicketFieldKey[] = [
   "rush",
   "orderNumber",
   "poNumber",
+  "jobLabel",
   "customerName",
   "contactName",
   "dueDate",
   "internalNotes",
+];
+
+const TRAVELER_IDENTIFICATION_FIELDS: readonly TicketFieldKey[] = [
+  "orderNumber",
+  "poNumber",
+  "jobLabel",
+  "customerName",
+  "dueDate",
 ];
 
 /**
@@ -443,6 +463,19 @@ export function buildOrderTravelerData(
 ): OrderTravelerData {
   const isRush = isRushPriority(src.priority);
 
+  // Existing station templates can still control typography and ordering, but
+  // these five rows are required on an order traveler for floor identification.
+  const travelerTemplate: TicketTemplate = {
+    ...template,
+    fields: {
+      ...template.fields,
+      ...Object.fromEntries(TRAVELER_IDENTIFICATION_FIELDS.map((key) => [
+        key,
+        { ...(template.fields[key] ?? DEFAULT_TICKET_TEMPLATE.fields[key]), show: true },
+      ])),
+    },
+  };
+
   const headerValue = (key: TicketFieldKey): string => {
     switch (key) {
       case "rush":
@@ -451,6 +484,8 @@ export function buildOrderTravelerData(
         return String(src.orderNumber || "").trim();
       case "poNumber":
         return String(src.poNumber || "").trim();
+      case "jobLabel":
+        return String(src.jobLabel || "").trim();
       case "customerName":
         return String(src.customerName || "").trim();
       case "contactName":
@@ -464,7 +499,15 @@ export function buildOrderTravelerData(
     }
   };
 
-  const headerRows = assembleRows(TRAVELER_HEADER_FIELDS, template, headerValue, isRush);
+  // A traveler is a physical floor document: retain PO and Job rows even when
+  // blank so operators can immediately see that the reference was not supplied.
+  const headerRows = assembleRows(
+    TRAVELER_HEADER_FIELDS,
+    travelerTemplate,
+    headerValue,
+    isRush,
+    new Set(["poNumber", "jobLabel"]),
+  );
 
   const lineItems: TravelerLineItem[] = (src.lineItems || []).map((li, idx) => ({
     index: idx + 1,

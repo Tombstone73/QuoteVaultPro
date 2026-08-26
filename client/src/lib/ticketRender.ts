@@ -80,6 +80,8 @@ export function ticketRowStyle(format: TicketFieldFormat): CSSProperties {
     fontWeight: format.fontWeight === "bold" ? 800 : 700,
     textAlign: format.align,
     lineHeight: 1.12,
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
     color: "#000",
   };
 }
