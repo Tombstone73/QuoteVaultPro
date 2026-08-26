@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, prepressPath, prepressUnitPath, productBuilderPath, productPath, productionPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readPrepressLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.equal(readProductLocation("/products/product-a"), null);
@@ -58,6 +58,13 @@ assert.deepEqual(readProofingLocation("/proofing/orders/order-a/lines/line-a"), 
 assert.deepEqual(readWorkspaceLocation("/proofing/orders/order-a/lines/line-a"), { page: "proofing", orderId: "order-a", lineId: "line-a" });
 assert.equal(proofingPath(undefined, "order a", "line a"), "/proofing/orders/order%20a/lines/line%20a");
 assert.deepEqual(readWorkspaceLocation("/prepress"), { page: "prepress" });
+assert.deepEqual(readPrepressLocation("/prepress/lines/line-a"), { lineId: "line-a" });
+assert.deepEqual(readWorkspaceLocation("/prepress/lines/line-a"), { page: "prepress", lineId: "line-a" });
+assert.equal(readPrepressLocation("/prepress/lines/%2Fwrong"), null);
+assert.equal(prepressPath("line a"), "/prepress/lines/line%20a");
+assert.deepEqual(readPrepressLocation("/prepress/units/unit-a"), { prepressUnitId: "unit-a" });
+assert.deepEqual(readWorkspaceLocation("/prepress/units/unit-a"), { page: "prepress", prepressUnitId: "unit-a" });
+assert.equal(prepressUnitPath("unit a"), "/prepress/units/unit%20a");
 assert.equal(workspacePath("artwork"), "/artwork");
 assert.deepEqual(readQuoteLocation("/quotes/quote-a"), { quoteId: "quote-a" });
 assert.deepEqual(readOrderLocation("/orders/order-a"), { orderId: "order-a" });

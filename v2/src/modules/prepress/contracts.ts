@@ -57,6 +57,9 @@ export type OrderLinePrepressCoverage =
 export type PrepressQueueItem = Readonly<{
   orderId: OrderId;
   orderNumber: string;
+  /** Sales-owned projection. It is optional for legacy Orders without a
+   * canonical Customer record, rather than inventing a Customer identity. */
+  customerId?: string;
   customerDisplayName: string;
   orderLineId: OrderLineId;
   lineDescription: string;

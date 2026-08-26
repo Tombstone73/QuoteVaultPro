@@ -72,6 +72,7 @@ import {
   pushInvoiceLocation,
   pushNewProductBuilderLocation,
   pushOrderLocation,
+  pushPrepressLocation,
   pushProductBuilderLocation,
   pushProductLocation,
   pushProductionLocation,
@@ -150,6 +151,8 @@ export const App = ({
   const [proofWorkId, setProofWorkId] = useState("");
   const [proofOrderId, setProofOrderId] = useState("");
   const [proofLineId, setProofLineId] = useState("");
+  const [prepressLineId, setPrepressLineId] = useState("");
+  const [prepressUnitId, setPrepressUnitId] = useState("");
   const [notice, setNotice] = useState("");
   const queryClient = useQueryClient();
   const quote = useQuery({
@@ -185,6 +188,8 @@ export const App = ({
       setProofWorkId("");
       setProofOrderId("");
       setProofLineId("");
+      setPrepressLineId("");
+      setPrepressUnitId("");
       setNotice("");
     }
     sessionScopeRef.current = nextScope;
@@ -243,6 +248,8 @@ export const App = ({
       setProofWorkId("");
       setProofOrderId("");
       setProofLineId("");
+      setPrepressLineId("");
+      setPrepressUnitId("");
       setNotice("");
     };
     window.addEventListener(
@@ -291,6 +298,9 @@ export const App = ({
         setProofWorkId(location.proofWorkId ?? "");
         setProofOrderId(location.orderId ?? "");
         setProofLineId(location.lineId ?? "");
+      } else if (location.page === "prepress") {
+        setPrepressLineId(location.lineId ?? "");
+        setPrepressUnitId(location.prepressUnitId ?? "");
       }
     };
     applyBrowserLocation();
@@ -583,6 +593,30 @@ export const App = ({
           canArtworkAssign={bootstrap.data?.capabilities.artworkAssign === true}
           canWork={bootstrap.data?.capabilities.prepressWork === true}
           canComplete={bootstrap.data?.capabilities.prepressComplete === true}
+          lineId={prepressLineId || undefined}
+          prepressUnitId={prepressUnitId || undefined}
+          onSelectLine={(lineId) => {
+            pushPrepressLocation(lineId);
+            setPrepressLineId(lineId);
+            setPrepressUnitId("");
+          }}
+          openOrder={(id) => {
+            pushOrderLocation(id);
+            setOrderId(id);
+            setPage("orders");
+          }}
+          openCustomer={(id) => {
+            pushCustomerLocation(id);
+            setCustomerId(id);
+            setPage("customers");
+          }}
+          openArtwork={(id) => {
+            pushArtworkFileLocation(id);
+            setArtworkFileId(id);
+            setArtworkOrderId("");
+            setArtworkLineId("");
+            setPage("artwork");
+          }}
         />
       ) : page === "production" ? (
         <ProductionWorkspace

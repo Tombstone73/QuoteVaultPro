@@ -7,6 +7,7 @@ import type { PrepressMutationResult } from "../../modules/prepress/prepressAppl
 import type { OrderLineId, PrepressUnitId } from "../../modules/shared/commercialValues.js";
 
 export interface PrepressHttpService {
+  getUnit(context: OperationContext, prepressUnitId: PrepressUnitId): Promise<ApplicationResult<unknown>>;
   listQueue(context: OperationContext, limit?: number): Promise<ApplicationResult<unknown>>;
   getOrderLineCoverage(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   listOrderLineUnits(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
@@ -25,6 +26,7 @@ const run=async(response:Response,operation:()=>Promise<ApplicationResult<unknow
 /** Authenticated transport for bounded queue reads and unit-scoped Prepress work. */
 export const createPrepressRouter=(deps:PrepressHttpDependencies):Router=>{const router=expressRouter({mergeParams:true});
   router.get("/queue",(request,response)=>void run(response,async()=>deps.service.listQueue(await context(request,deps),Number(request.query.limit??50))));
+  router.get("/units/:prepressUnitId",(request,response)=>void run(response,async()=>deps.service.getUnit(await context(request,deps),request.params.prepressUnitId as PrepressUnitId)));
   router.get("/lines/:orderLineId/coverage",(request,response)=>void run(response,async()=>deps.service.getOrderLineCoverage(await context(request,deps),request.params.orderLineId as OrderLineId)));
   router.get("/lines/:orderLineId/units",(request,response)=>void run(response,async()=>deps.service.listOrderLineUnits(await context(request,deps),request.params.orderLineId as OrderLineId)));
   router.post("/units",(request,response)=>void run(response,async()=>deps.service.open(await context(request,deps,true),body(request.body))));

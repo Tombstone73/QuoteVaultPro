@@ -21,7 +21,7 @@ export type ProductBuilderLocation = Readonly<{
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
 export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "prepress" | "formulas" }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll" }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -187,6 +187,21 @@ export const readProofingLocation = (pathname = window.location.pathname): Reado
   }
   return null;
 };
+/** A Prepress line URL is selection context only. The tenant-scoped queue
+ * remains authoritative for whether it can be read or worked. */
+export const readPrepressLocation = (pathname = window.location.pathname): Readonly<{ lineId?: string; prepressUnitId?: string }> | null => {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 1 && parts[0] === "prepress") return {};
+  if (parts.length === 3 && parts[0] === "prepress" && parts[1] === "lines") {
+    const lineId = productId(parts[2]);
+    return lineId ? { lineId } : null;
+  }
+  if (parts.length === 3 && parts[0] === "prepress" && parts[1] === "units") {
+    const prepressUnitId = productId(parts[2]);
+    return prepressUnitId ? { prepressUnitId } : null;
+  }
+  return null;
+};
 /** Extend the Product slice's one small history adapter; unrelated shell destinations stay state-driven. */
 export const readWorkspaceLocation = (pathname = window.location.pathname): WorkspaceLocation | null => {
   if (pathname === "/" || pathname === "") return { page: "home" };
@@ -212,8 +227,10 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   if (artwork) return { page: "artwork", ...artwork };
   const proofing = readProofingLocation(pathname);
   if (proofing) return { page: "proofing", ...proofing };
+  const prepress = readPrepressLocation(pathname);
+  if (prepress) return { page: "prepress", ...prepress };
   const page = pathname.replace(/^\/+|\/+$/gu, "");
-  return page === "appearance" || page === "routing" || page === "payments" || page === "prepress" || page === "formulas" ? { page } : null;
+  return page === "appearance" || page === "routing" || page === "payments" || page === "formulas" ? { page } : null;
 };
 export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
 export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));
@@ -235,5 +252,8 @@ export const pushArtworkLocation = (orderId?: string, lineId?: string) => window
 export const pushArtworkFileLocation = (artworkFileId: string) => window.history.pushState({}, "", artworkFilePath(artworkFileId));
 export const proofingPath = (proofWorkId?: string, orderId?: string, lineId?: string) => proofWorkId ? `/proofing/works/${encodeURIComponent(proofWorkId)}` : orderId && lineId ? `/proofing/orders/${encodeURIComponent(orderId)}/lines/${encodeURIComponent(lineId)}` : "/proofing";
 export const pushProofingLocation = (proofWorkId?: string, orderId?: string, lineId?: string) => window.history.pushState({}, "", proofingPath(proofWorkId, orderId, lineId));
+export const prepressPath = (lineId?: string) => lineId ? `/prepress/lines/${encodeURIComponent(lineId)}` : "/prepress";
+export const pushPrepressLocation = (lineId?: string) => window.history.pushState({}, "", prepressPath(lineId));
+export const prepressUnitPath = (prepressUnitId: string) => `/prepress/units/${encodeURIComponent(prepressUnitId)}`;
 export const workspacePath = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas") => `/${page}`;
 export const pushWorkspaceLocation = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas") => window.history.pushState({}, "", workspacePath(page));

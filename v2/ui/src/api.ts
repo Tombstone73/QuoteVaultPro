@@ -1032,6 +1032,7 @@ export type OrderLinePrepressCoverage = Readonly<{
 export type PrepressQueueItem = Readonly<{
   orderId: string;
   orderNumber: string;
+  customerId?: string;
   customerDisplayName: string;
   orderLineId: string;
   lineDescription: string;
@@ -2210,6 +2211,10 @@ export const prepressApi = {
   list: (org: string) =>
     request<readonly PrepressQueueItem[]>(
       prepressEndpoint(org, "/queue?limit=50"),
+    ),
+  get: (org: string, prepressUnitId: string) =>
+    request<PrepressUnit>(
+      prepressEndpoint(org, `/units/${encodeURIComponent(prepressUnitId)}`),
     ),
   coverage: (org: string, lineId: string) =>
     request<OrderLinePrepressCoverage>(
