@@ -6,6 +6,7 @@ import { clearContactForCustomerChange, draftFromQuoteLine, emptyQuoteLineDraft,
 import { salesKeys, useQuoteFormContacts, useQuoteFormCustomers, useQuoteFormProducts } from "./quoteFormQueries";
 import { LifecycleBadge, SalesTotals } from "./SalesDocumentParts";
 import { SalesDocumentEmpty, SalesDocumentFrame, SalesDocumentSplit } from "./SalesDocumentWorkspace";
+import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
 
 const message = (error: unknown): string => {
   const value = error as ApiError;
@@ -15,29 +16,7 @@ const message = (error: unknown): string => {
   return value?.message ?? "The Order service is unavailable.";
 };
 
-const lineConfiguration = (line: SalesLine) => {
-  const resolved = line.resolvedConfiguration;
-  const presentation = resolved.presentation as { dimensions?: string; selections?: readonly { label: string; value: string }[] } | undefined;
-  if (presentation) {
-    const values = [presentation.dimensions, ...(presentation.selections ?? []).map((selection) => `${selection.label}: ${selection.value}`)].filter(Boolean);
-    if (values.length) return values.join(" · ");
-  }
-  // Historical lines created before the frozen label snapshot remain readable,
-  // but we deliberately never query today's Product to reinterpret them.
-  const dimensions = resolved.dimensions;
-  const selections = resolved.selections;
-  const parts: string[] = [];
-  if (dimensions && typeof dimensions === "object" && !Array.isArray(dimensions)) {
-    const value = dimensions as Record<string, unknown>;
-    const size = [value.width, value.height].filter((item) => typeof item === "string" || typeof item === "number").join(" × ");
-    if (size) parts.push(`${size}${typeof value.unit === "string" ? ` ${value.unit}` : ""}`);
-  }
-  if (selections && typeof selections === "object" && !Array.isArray(selections)) Object.values(selections as Record<string, unknown>).forEach((value) => {
-    if (typeof value === "string" && !/^[0-9a-f]{8}-[0-9a-f-]{27}$/iu.test(value)) parts.push(value.replaceAll("_", " "));
-    if (typeof value === "number" || typeof value === "boolean") parts.push(String(value));
-  });
-  return parts.join(" · ") || "No additional configuration";
-};
+const lineConfiguration = (line: SalesLine) => orderConfigurationPresentation(line.resolvedConfiguration);
 
 export const OrderWorkspace = (props: Readonly<{
   organizationId: string; sessionScope: string; orderId: string; canEdit: boolean; canOverridePrice: boolean; canViewInvoice: boolean; canViewArtwork: boolean; canViewProofing: boolean; canViewProduction: boolean; csrfReady: boolean;
