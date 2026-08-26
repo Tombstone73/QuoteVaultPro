@@ -1066,6 +1066,11 @@ export type ProductionWorkProjection = Readonly<{
   attempts: readonly ProductionAttempt[];
   completedGoodQuantity: number;
   unitQuantitySatisfied: boolean;
+  operatorContext?: Readonly<{
+    orderNumber?: string;
+    product?: Readonly<{ productId: string; displayName: string }>;
+    customer?: Readonly<{ customerId: string; displayName: string }>;
+  }>;
 }>;
 export type ProductionMaterialProjection = Readonly<{
   usage: Readonly<{

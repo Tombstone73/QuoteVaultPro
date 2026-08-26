@@ -46,6 +46,15 @@ const statusClass = (work: ProductionWorkProjection) =>
       ? "active"
       : "ready";
 
+export const orderLabel = (work: ProductionWorkProjection) =>
+  work.operatorContext?.orderNumber ?? `Order ${work.work.orderId}`;
+
+export const productLabel = (work: ProductionWorkProjection) =>
+  work.operatorContext?.product?.displayName ?? "Product unavailable";
+
+export const customerLabel = (work: ProductionWorkProjection) =>
+  work.operatorContext?.customer?.displayName ?? "Customer unavailable";
+
 const materialKeys = {
   detail: (scope: string, organizationId: string, workId: string) =>
     ["v2", scope, organizationId, "production", workId, "materials"] as const,
@@ -432,6 +441,7 @@ export const ProductionWorkspace = ({
   onStationChange,
   onSelectWork,
   openOrder,
+  openCustomer,
   openArtwork,
 }: {
   organizationId: string;
@@ -444,6 +454,7 @@ export const ProductionWorkspace = ({
   onStationChange: (station?: Station) => void;
   onSelectWork: (productionWorkId?: string) => void;
   openOrder: (orderId: string) => void;
+  openCustomer: (customerId: string) => void;
   openArtwork: (artworkFileId: string) => void;
 }) => {
   const [station, setStation] = useState<Station>("flatbed");
@@ -668,9 +679,9 @@ export const ProductionWorkspace = ({
                       selectWork(item, stationKey);
                     }}
                   >
-                    <b>{requirementLabel(item)}</b>
+                    <b>{productLabel(item)}</b>
                     <small>
-                      Order line {item.work.orderLineId} ·{" "}
+                      {orderLabel(item)} · {customerLabel(item)} · {requirementLabel(item)} ·{" "}
                       {item.completedGoodQuantity} / {item.work.orderedQuantity}{" "}
                       good
                     </small>
@@ -736,7 +747,7 @@ export const ProductionWorkspace = ({
                 <table>
                   <thead>
                     <tr>
-                      <th>Order line</th>
+                      <th>Order / Product</th>
                       <th>Required unit</th>
                       <th>Qty</th>
                       <th>Station</th>
@@ -748,9 +759,9 @@ export const ProductionWorkspace = ({
                       <tr key={item.work.productionWorkId}>
                         <td>
                           <button type="button" onClick={() => openOrder(item.work.orderId)}>
-                            Order {item.work.orderId}
+                            {orderLabel(item)}
                           </button>
-                          <small>Line {item.work.orderLineId}</small>
+                          <small>{productLabel(item)} · {customerLabel(item)} · Line {item.work.orderLineId}</small>
                         </td>
                         <td>{requirementLabel(item)}</td>
                         <td className="num">{item.work.orderedQuantity}</td>
@@ -845,8 +856,12 @@ export const ProductionWorkspace = ({
                 <>
                   <section>
                     <small>Selected production unit</small>
-                    <h2>{requirementLabel(work)}</h2>
+                    <h2>{productLabel(work)}</h2>
                     <dl>
+                      <div>
+                        <dt>Customer</dt>
+                        <dd>{customerLabel(work)}</dd>
+                      </div>
                       <div>
                         <dt>Target</dt>
                         <dd>{work.work.orderedQuantity}</dd>
@@ -950,13 +965,23 @@ export const ProductionWorkspace = ({
                     <div>
                       <span>
                         <button type="button" onClick={() => openOrder(work.work.orderId)}>
-                          Order {work.work.orderId}
+                          {orderLabel(work)}
                         </button>
                         {" · "}line {work.work.orderLineId}
                       </span>
-                      <h2>{requirementLabel(work)}</h2>
+                      <h2>{productLabel(work)}</h2>
+                      {work.operatorContext?.customer ? (
+                        <button
+                          type="button"
+                          onClick={() => openCustomer(work.operatorContext!.customer!.customerId)}
+                        >
+                          {customerLabel(work)}
+                        </button>
+                      ) : (
+                        <small>{customerLabel(work)}</small>
+                      )}
                       <p>
-                        Exact required unit · {workStation} · Production uses the
+                        {requirementLabel(work)} · {workStation} · Production uses the
                         frozen Artwork evidence below.
                       </p>
                     </div>
@@ -1076,8 +1101,8 @@ export const ProductionWorkspace = ({
                       selectWork(item, station)
                     }
                   >
-                    <b>{requirementLabel(item)}</b>
-                    <small>Line {item.work.orderLineId}</small>
+                    <b>{productLabel(item)}</b>
+                    <small>{orderLabel(item)} · {customerLabel(item)} · Line {item.work.orderLineId}</small>
                     <small>
                       Target {item.work.orderedQuantity} · Good{" "}
                       {item.completedGoodQuantity}

@@ -1,6 +1,6 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
-import type { ArtworkAssignmentId, ArtworkFileId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductionAttemptId, ProductionWorkId } from "../shared/commercialValues.js";
+import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionWorkId } from "../shared/commercialValues.js";
 import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
 
 /** Stable execution destinations. Equipment identity is deliberately deferred. */
@@ -23,8 +23,21 @@ export type ProductionAttempt = Readonly<{
   completedAt?: string; completedPrincipalKind?: PrincipalKind; completedPrincipalSubject?: string; completedStaffActorUserId?: string;
 }>;
 
+/**
+ * Read-only commercial context for an operator. Product text is the frozen
+ * Order-line description, not a lookup of the Product's current editable
+ * definition. Customer text is a tenant-scoped presentation projection from
+ * the owning Order and may be unavailable for legacy rows.
+ */
+export type ProductionOperatorContext = Readonly<{
+  orderNumber?: string;
+  product?: Readonly<{ productId: ProductId; displayName: string }>;
+  customer?: Readonly<{ customerId: CustomerId; displayName: string }>;
+}>;
+
 export type ProductionWorkProjection = Readonly<{
   work: ProductionWork; attempts: readonly ProductionAttempt[]; completedGoodQuantity: number; unitQuantitySatisfied: boolean;
+  operatorContext?: ProductionOperatorContext;
 }>;
 /**
  * Bounded station projection. Attempted work derives its station from the

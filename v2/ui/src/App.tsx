@@ -650,6 +650,11 @@ export const App = ({
             setOrderId(id);
             setPage("orders");
           }}
+          openCustomer={(id) => {
+            pushCustomerLocation(id);
+            setCustomerId(id);
+            setPage("customers");
+          }}
           openArtwork={(id) => {
             pushArtworkFileLocation(id);
             setArtworkFileId(id);

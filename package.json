@@ -63,7 +63,7 @@
     "v2:m2:production:browser": "playwright test --config v2/playwright.m235.config.ts",
     "v2:m2:production-requirements:contracts": "tsx v2/tests/modules/productionRequirementsContracts.test.ts",
     "v2:m2:production-requirements": "tsx v2/scripts/runM221ProductionRequirementsRehearsal.ts",
-    "v2:m2:production:contracts": "tsx v2/tests/modules/productionContracts.test.ts",
+    "v2:m2:production:contracts": "tsx v2/tests/modules/productionContracts.test.ts && tsx v2/tests/infrastructure/productionOperatorContext.test.ts",
     "v2:m2:production": "tsx v2/scripts/runM23ProductionRehearsal.ts",
     "v2:m3:fulfillment": "tsx v2/scripts/runM3FulfillmentRehearsal.ts",
     "v2:m3:billing": "tsx v2/scripts/runM3BillingInvoiceRehearsal.ts",

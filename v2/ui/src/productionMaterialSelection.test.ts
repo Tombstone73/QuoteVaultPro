@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import type { ProductionWorkProjection } from "./api";
 import {
   materialConsumptionRequest,
   materialRequirementChoices,
+  customerLabel,
+  orderLabel,
+  productLabel,
 } from "./ProductionWorkspace";
 
 const requirements = [
@@ -79,5 +83,23 @@ assert.deepEqual(requirementB, {
   unit: "square_foot",
   kind: "consumed",
 });
+
+const productionWork = {
+  work: {
+    productionWorkId: "work-a", orderId: "order-a", orderLineId: "line-a",
+    requirement: { key: "front" }, artworkAssignmentId: "assignment-a", artworkFileId: "file-a", orderedQuantity: 1,
+  },
+  attempts: [], completedGoodQuantity: 0, unitQuantitySatisfied: false,
+  operatorContext: {
+    orderNumber: "ORD-2042",
+    product: { productId: "product-a", displayName: "Frozen order-line product" },
+    customer: { customerId: "customer-a", displayName: "Customer A" },
+  },
+} as unknown as ProductionWorkProjection;
+assert.equal(orderLabel(productionWork), "ORD-2042");
+assert.equal(productLabel(productionWork), "Frozen order-line product");
+assert.equal(customerLabel(productionWork), "Customer A");
+assert.equal(productLabel({ ...productionWork, operatorContext: undefined }), "Product unavailable");
+assert.equal(customerLabel({ ...productionWork, operatorContext: undefined }), "Customer unavailable");
 
 console.log("Production material requirement selection tests passed.");
