@@ -25,6 +25,10 @@ DROP INDEX IF EXISTS invoices_org_number_core_unique;
 -- document-specific counters are also honored so previously consumed gaps are
 -- never recycled. Prefix parsing accepts only known legacy forms; malformed
 -- values are excluded and explicitly reported in the migration log.
+--
+-- Pre-application repair: PostgreSQL does not accept the former scoped
+-- case-insensitive modifier syntax. Normalize only the known prefixes with
+-- upper(...) and keep the bounded, anchored capture expressions unchanged.
 DO $$
 DECLARE
   org_row record;
@@ -57,21 +61,21 @@ BEGIN
     SELECT max(value) INTO quote_max FROM (
       SELECT number_core AS value FROM quotes WHERE organization_id = org_row.id AND number_core > 0
       UNION ALL SELECT quote_number FROM quotes WHERE organization_id = org_row.id AND quote_number > 0
-      UNION ALL SELECT CASE WHEN substring(display_number FROM '^(?i:QT[-_ ]?)([0-9]{1,10})$')::numeric BETWEEN 1 AND 2147483647 THEN substring(display_number FROM '^(?i:QT[-_ ]?)([0-9]{1,10})$')::integer END FROM quotes WHERE organization_id = org_row.id AND display_number ~ '^(?i:QT[-_ ]?)[0-9]{1,10}$'
+      UNION ALL SELECT CASE WHEN substring(upper(display_number) FROM '^QT[-_ ]?([0-9]{1,10})$')::numeric BETWEEN 1 AND 2147483647 THEN substring(upper(display_number) FROM '^QT[-_ ]?([0-9]{1,10})$')::integer END FROM quotes WHERE organization_id = org_row.id AND upper(display_number) ~ '^QT[-_ ]?[0-9]{1,10}$'
       UNION ALL SELECT CASE WHEN display_number::numeric BETWEEN 1 AND 2147483647 THEN display_number::integer END FROM quotes WHERE organization_id = org_row.id AND display_number ~ '^[0-9]{1,10}$'
     ) values_found;
 
     SELECT max(value) INTO order_max FROM (
       SELECT number_core AS value FROM orders WHERE organization_id = org_row.id AND number_core > 0
       UNION ALL SELECT CASE WHEN order_number::numeric BETWEEN 1 AND 2147483647 THEN order_number::integer END FROM orders WHERE organization_id = org_row.id AND order_number ~ '^[0-9]{1,10}$'
-      UNION ALL SELECT CASE WHEN substring(display_number FROM '^(?i:(?:ORD|ORDER)[-_ ]?)([0-9]{1,10})$')::numeric BETWEEN 1 AND 2147483647 THEN substring(display_number FROM '^(?i:(?:ORD|ORDER)[-_ ]?)([0-9]{1,10})$')::integer END FROM orders WHERE organization_id = org_row.id AND display_number ~ '^(?i:(?:ORD|ORDER)[-_ ]?)[0-9]{1,10}$'
+      UNION ALL SELECT CASE WHEN substring(upper(display_number) FROM '^ORD(?:ER)?[-_ ]?([0-9]{1,10})$')::numeric BETWEEN 1 AND 2147483647 THEN substring(upper(display_number) FROM '^ORD(?:ER)?[-_ ]?([0-9]{1,10})$')::integer END FROM orders WHERE organization_id = org_row.id AND upper(display_number) ~ '^ORD(?:ER)?[-_ ]?[0-9]{1,10}$'
       UNION ALL SELECT CASE WHEN display_number::numeric BETWEEN 1 AND 2147483647 THEN display_number::integer END FROM orders WHERE organization_id = org_row.id AND display_number ~ '^[0-9]{1,10}$'
     ) values_found;
 
     SELECT max(value) INTO invoice_max FROM (
       SELECT number_core AS value FROM invoices WHERE organization_id = org_row.id AND number_core > 0
       UNION ALL SELECT invoice_number FROM invoices WHERE organization_id = org_row.id AND invoice_number > 0
-      UNION ALL SELECT CASE WHEN substring(display_number FROM '^(?i:INV[-_ ]?)([0-9]{1,10})(?:-[0-9]+)?$')::numeric BETWEEN 1 AND 2147483647 THEN substring(display_number FROM '^(?i:INV[-_ ]?)([0-9]{1,10})(?:-[0-9]+)?$')::integer END FROM invoices WHERE organization_id = org_row.id AND display_number ~ '^(?i:INV[-_ ]?)[0-9]{1,10}(?:-[0-9]+)?$'
+      UNION ALL SELECT CASE WHEN substring(upper(display_number) FROM '^INV[-_ ]?([0-9]{1,10})(?:-[0-9]+)?$')::numeric BETWEEN 1 AND 2147483647 THEN substring(upper(display_number) FROM '^INV[-_ ]?([0-9]{1,10})(?:-[0-9]+)?$')::integer END FROM invoices WHERE organization_id = org_row.id AND upper(display_number) ~ '^INV[-_ ]?[0-9]{1,10}(?:-[0-9]+)?$'
       UNION ALL SELECT CASE WHEN substring(display_number FROM '^([0-9]{1,10})(?:-[0-9]+)?$')::numeric BETWEEN 1 AND 2147483647 THEN substring(display_number FROM '^([0-9]{1,10})(?:-[0-9]+)?$')::integer END FROM invoices WHERE organization_id = org_row.id AND display_number ~ '^[0-9]{1,10}(?:-[0-9]+)?$'
     ) values_found;
 
@@ -108,15 +112,15 @@ BEGIN
     SELECT count(*) INTO quote_malformed FROM quotes
     WHERE organization_id = org_row.id AND quote_number IS NULL AND number_core IS NULL
       AND coalesce(btrim(display_number), '') <> ''
-      AND display_number !~ '^(?i:QT[-_ ]?)[0-9]+$' AND display_number !~ '^[0-9]+$';
+      AND upper(display_number) !~ '^QT[-_ ]?[0-9]+$' AND display_number !~ '^[0-9]+$';
     SELECT count(*) INTO order_malformed FROM orders
     WHERE organization_id = org_row.id AND number_core IS NULL AND order_number !~ '^[0-9]+$'
       AND coalesce(btrim(display_number), '') <> ''
-      AND display_number !~ '^(?i:(?:ORD|ORDER)[-_ ]?)[0-9]+$' AND display_number !~ '^[0-9]+$';
+      AND upper(display_number) !~ '^ORD(?:ER)?[-_ ]?[0-9]+$' AND display_number !~ '^[0-9]+$';
     SELECT count(*) INTO invoice_malformed FROM invoices
     WHERE organization_id = org_row.id AND invoice_number IS NULL AND number_core IS NULL
       AND coalesce(btrim(display_number), '') <> ''
-      AND display_number !~ '^(?i:INV[-_ ]?)[0-9]+(?:-[0-9]+)?$' AND display_number !~ '^[0-9]+(?:-[0-9]+)?$';
+      AND upper(display_number) !~ '^INV[-_ ]?[0-9]+(?:-[0-9]+)?$' AND display_number !~ '^[0-9]+(?:-[0-9]+)?$';
 
     RAISE NOTICE 'shared Job Number init org=% quote_max=% order_max=% invoice_max=% next_job=%', org_row.id, quote_max, order_max, invoice_max, next_job;
     IF quote_malformed + order_malformed + invoice_malformed > 0 THEN

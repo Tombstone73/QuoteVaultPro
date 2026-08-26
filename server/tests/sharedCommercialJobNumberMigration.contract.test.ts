@@ -13,6 +13,10 @@ test("0188 initializes shared Job Numbers with bounded legacy parsing and preser
   expect(migration).toContain("2147483647");
   expect(migration).toContain("shared Job Number counter exceeds PostgreSQL integer range");
   expect(migration).toContain("DROP INDEX IF EXISTS invoices_org_number_core_unique");
+  expect(migration).not.toContain("(?i:");
+  expect(migration).toContain("substring(upper(display_number) FROM '^QT[-_ ]?([0-9]{1,10})$')");
+  expect(migration).toContain("substring(upper(display_number) FROM '^ORD(?:ER)?[-_ ]?([0-9]{1,10})$')");
+  expect(migration).toContain("substring(upper(display_number) FROM '^INV[-_ ]?([0-9]{1,10})(?:-[0-9]+)?$')");
 });
 
 test("release checks verify the Job Number columns and indexes required after migration 0188", () => {
