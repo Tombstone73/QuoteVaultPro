@@ -1,0 +1,23 @@
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { OrderLineArtworkCompact, OrderLineArtworkDetail, artworkForOrderLine, protectedArtworkContentPath } from "./OrderLineArtwork";
+import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
+import type { ArtworkOrderProjection } from "./api";
+
+const entry = (id: string, lineId: string, filename: string, side?: "front" | "back"): ArtworkOrderProjection => ({ file: { id: `file-${id}`, originalFilename: filename, displayFilename: filename, contentType: "application/pdf", byteSize: 1024, source: "customer_upload", createdAt: "2026-08-26" }, assignment: { id: `assignment-${id}`, artworkFileId: `file-${id}`, orderId: "order-a", orderLineId: lineId, purpose: "customer_supplied", ...(side ? { side } : {}), createdAt: "2026-08-26" } });
+const artwork = [entry("front", "line-a", "front.pdf", "front"), entry("back", "line-a", "back.pdf", "back"), entry("other", "line-b", "other.pdf")];
+assert.deepEqual(artworkForOrderLine(artwork, "line-a").map((value) => value.file.displayFilename), ["front.pdf", "back.pdf"]);
+assert.equal(protectedArtworkContentPath("org/a", artwork[0]!), "/v2/organizations/org%2Fa/artwork/files/file-front/content#page=1");
+const compact = renderToStaticMarkup(<OrderLineArtworkCompact organizationId="org-a" orderLineId="line-a" artwork={artwork} loading={false} canView onOpen={() => undefined} />);
+assert.match(compact, /front\.pdf|Artwork · \+1/);
+assert.match(compact, /\/v2\/organizations\/org-a\/artwork\/files\/file-front\/content/);
+assert.doesNotMatch(compact, /other\.pdf|assignment-front|object_key|storageProvider/);
+const detail = renderToStaticMarkup(<OrderLineArtworkDetail organizationId="org-a" orderLineId="line-a" artwork={artwork} loading={false} canView onOpen={() => undefined} />);
+assert.match(detail, /front\.pdf.*customer supplied · front/s);
+assert.match(detail, /back\.pdf.*customer supplied · back/s);
+assert.doesNotMatch(detail, /other\.pdf|assignment-front/);
+assert.match(renderToStaticMarkup(<OrderLineArtworkCompact organizationId="org-a" orderLineId="line-none" artwork={artwork} loading={false} canView onOpen={() => undefined} />), /No art/);
+assert.match(renderToStaticMarkup(<OrderLineArtworkDetail organizationId="org-a" orderLineId="line-none" artwork={artwork} loading={false} canView onOpen={() => undefined} />), /No art assigned/);
+assert.doesNotMatch(orderConfigurationPresentation({ selections: { opt_old: "choice_old", print_sides__import_x: "yes" } }), /opt_|choice_|_import/);
+console.log("Saved Order line Artwork presentation tests passed.");
