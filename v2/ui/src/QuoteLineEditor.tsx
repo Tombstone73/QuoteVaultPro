@@ -29,12 +29,19 @@ type EditorProps = Readonly<{
   initializeFromPersistedLine?: boolean;
   /** Existing routed Order lines retain their Product identity. */
   productEditable?: boolean;
+  /** A saved Order can show its frozen Product identity without a second editor. */
+  showProductField?: boolean;
+  /** Saved Order configuration is rendered from its frozen snapshot by the caller. */
+  showConfigurationFields?: boolean;
   products: readonly Selection[];
   canOverridePrice: boolean;
   csrfReady: boolean;
   busy: boolean;
   submitLabel: string;
-  onSubmit: (input: QuoteLineMutationInput, artwork: readonly DraftLineArtwork[]) => void;
+  onSubmit: (
+    input: QuoteLineMutationInput,
+    artwork: readonly DraftLineArtwork[],
+  ) => void;
   /** Only the shared pre-persistence Sales composer holds local Artwork files. */
   enableArtworkIntake?: boolean;
   onCancel?: () => void;
@@ -90,7 +97,8 @@ export const ProductConfigurationFields = ({
             onChange={(event) =>
               onDimensions({
                 ...draft.dimensions,
-                unit: event.target.value as QuoteLineDraft["dimensions"]["unit"],
+                unit: event.target
+                  .value as QuoteLineDraft["dimensions"]["unit"],
               })
             }
           >
@@ -107,8 +115,8 @@ export const ProductConfigurationFields = ({
       if (!configurationInputSupported(field.inputType))
         return (
           <div className="notice error" key={field.selectionKey} role="alert">
-            {field.label} cannot be edited safely because its projected field type
-            ({field.inputType}) is unsupported.
+            {field.label} cannot be edited safely because its projected field
+            type ({field.inputType}) is unsupported.
           </div>
         );
       const value = draft.selections[field.selectionKey];
@@ -222,15 +230,19 @@ export const SellingPriceFields = ({
     return overridden ? (
       <div className="notice" data-readonly-override="true">
         Existing selling-price decision: {selling.mode.replaceAll("_", " ")}
-        {selling.reason ? ` — ${selling.reason}` : ""}. It is visible but read-only
-        for this permission set.
+        {selling.reason ? ` — ${selling.reason}` : ""}. It is visible but
+        read-only for this permission set.
       </div>
     ) : null;
-  if (selling.mode === "discount_preserved" || selling.mode === "locked_preserved")
+  if (
+    selling.mode === "discount_preserved" ||
+    selling.mode === "locked_preserved"
+  )
     return (
       <div className="notice" data-readonly-override="true">
-        Existing selling-price decision: {selling.mode.replace("_preserved", "")}. This
-        established decision is preserved but is not an editable mode in this UI proof.
+        Existing selling-price decision:{" "}
+        {selling.mode.replace("_preserved", "")}. This established decision is
+        preserved but is not an editable mode in this UI proof.
       </div>
     );
   return (
@@ -291,6 +303,8 @@ export const QuoteLineEditor = ({
   initialDraft,
   initializeFromPersistedLine = false,
   productEditable = true,
+  showProductField = true,
+  showConfigurationFields = true,
   products,
   canOverridePrice,
   csrfReady,
@@ -310,7 +324,8 @@ export const QuoteLineEditor = ({
   const [localError, setLocalError] = useState("");
   const [resolving, setResolving] = useState(false);
   const [artwork, setArtwork] = useState<readonly DraftLineArtwork[]>([]);
-  const [pricingPreview, setPricingPreview] = useState<SalesLinePricingPreview>();
+  const [pricingPreview, setPricingPreview] =
+    useState<SalesLinePricingPreview>();
   const [pricingPreviewError, setPricingPreviewError] = useState("");
   const pricingPreviewSequence = useRef(0);
   const appliedDefaults = useRef("");
@@ -322,12 +337,9 @@ export const QuoteLineEditor = ({
     draft.productId,
   );
   const replaceDraft = (
-    value:
-      | QuoteLineDraft
-      | ((current: QuoteLineDraft) => QuoteLineDraft),
+    value: QuoteLineDraft | ((current: QuoteLineDraft) => QuoteLineDraft),
   ) => {
-    const next =
-      typeof value === "function" ? value(draftRef.current) : value;
+    const next = typeof value === "function" ? value(draftRef.current) : value;
     // The ref advances before React schedules its render so a second rapid event
     // composes against the first unsaved selection instead of a stale closure.
     draftRef.current = next;
@@ -406,25 +418,46 @@ export const QuoteLineEditor = ({
     if (!csrfReady || !configuration || !draft.productId) return;
     const quantity = Number(draft.quantity);
     if (!Number.isSafeInteger(quantity) || quantity <= 0) return;
-    if (configuration.requiresDimensions && (!draft.dimensions.width || !draft.dimensions.height)) return;
+    if (
+      configuration.requiresDimensions &&
+      (!draft.dimensions.width || !draft.dimensions.height)
+    )
+      return;
     const sequence = ++pricingPreviewSequence.current;
     const handle = globalThis.setTimeout(() => {
-      void quoteApi.previewLinePricing(organizationId, draft.productId, {
-        quantity,
-        selections: { ...draft.selections },
-        ...(configuration.requiresDimensions ? { dimensions: { ...draft.dimensions } } : {}),
-      }).then((preview) => {
-        if (pricingPreviewSequence.current !== sequence) return;
-        setPricingPreview(preview);
-        setPricingPreviewError("");
-      }).catch((error: unknown) => {
-        if (pricingPreviewSequence.current !== sequence) return;
-        setPricingPreview(undefined);
-        setPricingPreviewError(error instanceof Error ? error.message : "Pricing preview is unavailable.");
-      });
+      void quoteApi
+        .previewLinePricing(organizationId, draft.productId, {
+          quantity,
+          selections: { ...draft.selections },
+          ...(configuration.requiresDimensions
+            ? { dimensions: { ...draft.dimensions } }
+            : {}),
+        })
+        .then((preview) => {
+          if (pricingPreviewSequence.current !== sequence) return;
+          setPricingPreview(preview);
+          setPricingPreviewError("");
+        })
+        .catch((error: unknown) => {
+          if (pricingPreviewSequence.current !== sequence) return;
+          setPricingPreview(undefined);
+          setPricingPreviewError(
+            error instanceof Error
+              ? error.message
+              : "Pricing preview is unavailable.",
+          );
+        });
     }, 200);
     return () => globalThis.clearTimeout(handle);
-  }, [configuration, csrfReady, draft.dimensions, draft.productId, draft.quantity, draft.selections, organizationId]);
+  }, [
+    configuration,
+    csrfReady,
+    draft.dimensions,
+    draft.productId,
+    draft.quantity,
+    draft.selections,
+    organizationId,
+  ]);
 
   const resolveSelection = (selectionKey: string, value: unknown) => {
     // An explicit operator selection supersedes the asynchronous persisted-line
@@ -501,15 +534,17 @@ export const QuoteLineEditor = ({
   return (
     <div className="line-editor">
       <div className="v2-legacy-grid">
-        <SelectionField
-          label="Product"
-          value={draft.productId}
-          options={productOptions}
-          identity="productId"
-          emptyLabel="Select Product"
-          disabled={!productEditable}
-          onChange={productChanged}
-        />
+        {showProductField && (
+          <SelectionField
+            label="Product"
+            value={draft.productId}
+            options={productOptions}
+            identity="productId"
+            emptyLabel="Select Product"
+            disabled={!productEditable}
+            onChange={productChanged}
+          />
+        )}
         <label className="field">
           Quantity
           <input
@@ -525,7 +560,7 @@ export const QuoteLineEditor = ({
             }
           />
         </label>
-        {configuration && (
+        {configuration && showConfigurationFields && (
           <ProductConfigurationFields
             configuration={configuration}
             draft={draft}
@@ -562,9 +597,9 @@ export const QuoteLineEditor = ({
       {definition.isFetching && <div className="skeleton" />}
       {definition.isError && origin === "persisted" && (
         <div className="notice" role="alert">
-          The current Product definition is unavailable. This Quote line’s persisted
-          configuration remains visible and unchanged, but it cannot be repriced
-          until an operator explicitly selects an available Product.
+          The current Product definition is unavailable. This Quote line’s
+          persisted configuration remains visible and unchanged, but it cannot
+          be repriced until an operator explicitly selects an available Product.
           <dl className="configuration-facts">
             {Object.entries(draft.selections).map(([key, value]) => (
               <Fragment key={key}>
@@ -577,7 +612,8 @@ export const QuoteLineEditor = ({
       )}
       {definition.isError && origin === "fresh" && (
         <div className="notice error" role="alert">
-          The selected Product configuration is unavailable in this organization.
+          The selected Product configuration is unavailable in this
+          organization.
         </div>
       )}
       {compatibilityWarning && (
@@ -614,19 +650,64 @@ export const QuoteLineEditor = ({
         </div>
       )}
       {localError && <div className="notice error">{localError}</div>}
-      {pricingPreview && <div className="v2-sales-entry-price-preview" aria-live="polite">
-        <p>Authoritative price preview: {(pricingPreview.calculatedLineAmount.cents / 100).toLocaleString(undefined, { style: "currency", currency: pricingPreview.currency })}</p>
-        {pricingPreview.explanation.dimensions && <small>{pricingPreview.explanation.dimensions.widthIn} × {pricingPreview.explanation.dimensions.heightIn} in · {pricingPreview.explanation.dimensions.totalAreaSqft} sq ft total</small>}
-        {pricingPreview.explanation.computedSheetUsage && <small>Computed sheet usage: {pricingPreview.explanation.computedSheetUsage.sheetCount} sheet{pricingPreview.explanation.computedSheetUsage.sheetCount === 1 ? "" : "s"}{pricingPreview.explanation.computedSheetUsage.billedSquareFeet == null ? "" : ` · ${pricingPreview.explanation.computedSheetUsage.billedSquareFeet} billable sq ft`}</small>}
-        {pricingPreview.explanation.tier && <small>{pricingPreview.explanation.tier.basis === "computed_sheet" ? "Computed-sheet" : pricingPreview.explanation.tier.basis} tier · {pricingPreview.explanation.tier.value} · ${(pricingPreview.explanation.tier.rateCents / 100).toFixed(2)}/sq ft</small>}
-        {pricingPreview.explanation.matrix && <small>Pricing matrix row: {pricingPreview.explanation.matrix.rowId}</small>}
-        {pricingPreview.explanation.minimumChargeApplied && <small>Minimum charge applied</small>}
-      </div>}
-      {pricingPreviewError && <p className="notice error" role="alert">Pricing preview is unavailable: {pricingPreviewError}</p>}
+      {pricingPreview && (
+        <div className="v2-sales-entry-price-preview" aria-live="polite">
+          <p>
+            Authoritative price preview:{" "}
+            {(pricingPreview.calculatedLineAmount.cents / 100).toLocaleString(
+              undefined,
+              { style: "currency", currency: pricingPreview.currency },
+            )}
+          </p>
+          {pricingPreview.explanation.dimensions && (
+            <small>
+              {pricingPreview.explanation.dimensions.widthIn} ×{" "}
+              {pricingPreview.explanation.dimensions.heightIn} in ·{" "}
+              {pricingPreview.explanation.dimensions.totalAreaSqft} sq ft total
+            </small>
+          )}
+          {pricingPreview.explanation.computedSheetUsage && (
+            <small>
+              Computed sheet usage:{" "}
+              {pricingPreview.explanation.computedSheetUsage.sheetCount} sheet
+              {pricingPreview.explanation.computedSheetUsage.sheetCount === 1
+                ? ""
+                : "s"}
+              {pricingPreview.explanation.computedSheetUsage.billedSquareFeet ==
+              null
+                ? ""
+                : ` · ${pricingPreview.explanation.computedSheetUsage.billedSquareFeet} billable sq ft`}
+            </small>
+          )}
+          {pricingPreview.explanation.tier && (
+            <small>
+              {pricingPreview.explanation.tier.basis === "computed_sheet"
+                ? "Computed-sheet"
+                : pricingPreview.explanation.tier.basis}{" "}
+              tier · {pricingPreview.explanation.tier.value} · $
+              {(pricingPreview.explanation.tier.rateCents / 100).toFixed(2)}/sq
+              ft
+            </small>
+          )}
+          {pricingPreview.explanation.matrix && (
+            <small>
+              Pricing matrix row: {pricingPreview.explanation.matrix.rowId}
+            </small>
+          )}
+          {pricingPreview.explanation.minimumChargeApplied && (
+            <small>Minimum charge applied</small>
+          )}
+        </div>
+      )}
+      {pricingPreviewError && (
+        <p className="notice error" role="alert">
+          Pricing preview is unavailable: {pricingPreviewError}
+        </p>
+      )}
       {unavailableSellingDecision && (
         <p className="muted">
-          This line cannot be repriced without authority to preserve or replace its
-          existing selling-price decision.
+          This line cannot be repriced without authority to preserve or replace
+          its existing selling-price decision.
         </p>
       )}
       <div className="actions">
