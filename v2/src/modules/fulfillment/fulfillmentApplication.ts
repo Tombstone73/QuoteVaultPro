@@ -18,18 +18,49 @@ export interface FulfillmentTransaction {
  createHandoff(input:Readonly<{id:FulfillmentHandoffId;organizationId:OrganizationId;orderId:OrderId;method:FulfillmentMethod;customerId?:string;contactId?:string}&Actor>):Promise<FulfillmentHandoff>;
  createAllocations(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId;orderId:OrderId;allocations:readonly Readonly<{id:FulfillmentHandoffLineId;orderLineId:string;quantity:number}>[]}>):Promise<readonly FulfillmentHandoffLine[]>;
  readAvailability(organizationId:OrganizationId,orderId:OrderId):Promise<ScopedAvailability|null>;
- }
+}
 export interface FulfillmentTransactionRunner { transaction<T>(action:(tx:FulfillmentTransaction)=>Promise<T>):Promise<T>; }
 const actor=(c:OperationContext):Actor=>({principalKind:c.principal.kind,principalSubject:principalSubject(c.principal),...(staffActorId(c.principal)?{staffActorUserId:staffActorId(c.principal)}:{})});
 const fingerprint=(x:unknown)=>`sha256:${createHash("sha256").update(canonicalJson(x)).digest("hex")}`;
 
-/** Fulfillment writes only immutable customer handoffs; ordered quantity stays owned by Sales. */
+/** Fulfillment writes immutable customer handoffs; Sales owns demand and Production owns physical output. */
 export class FulfillmentApplicationService {
  constructor(private readonly runner:FulfillmentTransactionRunner,private readonly authority=new AuthorityPolicy()){}
- async getAvailability(c:OperationContext,orderId:OrderId):Promise<ApplicationResult<readonly FulfillmentAvailability[]>>{try{requireOperationPrincipalScope(c);return success(await this.runner.transaction(async tx=>{const projection=await tx.readAvailability(brandedId<"OrganizationId">(c.organizationId),orderId);if(!projection)throw new V2ApplicationError("NOT_FOUND","Order was not found.");this.require(c,"fulfillment.view",projection.customerId);return projection.availability;}));}catch(e){return failure(this.error(e));}}
+ async getAvailability(c:OperationContext,orderId:OrderId):Promise<ApplicationResult<readonly FulfillmentAvailability[]>>{
+  try { requireOperationPrincipalScope(c); return success(await this.runner.transaction(async tx=>{
+   const projection=await tx.readAvailability(brandedId<"OrganizationId">(c.organizationId),orderId);
+   if(!projection)throw new V2ApplicationError("NOT_FOUND","Order was not found."); this.require(c,"fulfillment.view",projection.customerId); return projection.availability;
+  })); } catch(e) { return failure(this.error(e)); }
+ }
  async recordPickup(c:OperationContext,input:CompleteFulfillmentInput):Promise<ApplicationResult<FulfillmentTerminalResult>>{return this.complete(c,input,"pickup","fulfillment.pickup.complete.v1","fulfillment.pickup");}
  async recordShipment(c:OperationContext,input:CompleteFulfillmentInput):Promise<ApplicationResult<FulfillmentTerminalResult>>{return this.complete(c,input,"shipment","fulfillment.shipment.complete.v1","fulfillment.ship");}
- private async complete(c:OperationContext,input:CompleteFulfillmentInput,method:FulfillmentMethod,operation:string,cap:"fulfillment.pickup"|"fulfillment.ship"):Promise<ApplicationResult<FulfillmentTerminalResult>>{try{requireOperationPrincipalScope(c);this.validate(c,input);return success(await this.runner.transaction(async tx=>{const org=brandedId<"OrganizationId">(c.organizationId);const initial=await tx.readAvailability(org,input.orderId);if(!initial)throw new V2ApplicationError("NOT_FOUND","Order was not found.");this.require(c,cap,initial.customerId);const r=await tx.reserve({organizationId:c.organizationId,operation,businessRequestId:input.businessRequestId,payloadFingerprint:fingerprint(input),...actor(c)});if(r.kind==="replay")return r.request.resultJson as FulfillmentTerminalResult;const locked=await tx.lockAvailability(org,input.orderId,input.allocations.map(x=>x.orderLineId));if(!locked||locked.availability.length!==input.allocations.length)throw new V2ApplicationError("CONFLICT","The Order is cancelled or one or more requested OrderLines are not fulfillable.");this.require(c,cap,locked.customerId);if((input.customerId&&input.customerId!==locked.customerId)||(input.contactId&&input.contactId!==locked.contactId))throw new V2ApplicationError("VALIDATION_ERROR","Fulfillment customer/contact context must match the canonical Sales Order context.");const byLine=new Map(locked.availability.map(x=>[x.orderLineId,x]));for(const allocation of input.allocations){const available=byLine.get(allocation.orderLineId);if(!available||allocation.quantity>available.remainingFulfillmentQuantity)throw new V2ApplicationError("CONFLICT","Fulfillment quantity exceeds the remaining ordered quantity.");}const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...actor(c)});const allocations=await tx.createAllocations({organizationId:org,handoffId:handoff.handoffId,orderId:input.orderId,allocations:input.allocations.map(x=>({id:brandedId<"FulfillmentHandoffLineId">(randomUUID()),...x}))});const after=await tx.readAvailability(org,input.orderId);if(!after)throw new V2ApplicationError("NOT_FOUND","Order was not found.");const result={handoff,allocations,availability:after.availability};await tx.attribute({organizationId:c.organizationId,requestId:r.request.id,operation,resourceId:handoff.handoffId,...actor(c)});await tx.audit({organizationId:c.organizationId,requestId:r.request.id,operation,method,resourceId:handoff.handoffId,allocations,...actor(c)});await tx.succeed(c.organizationId,r.request.id,result);return result;}));}catch(e){return failure(this.error(e));}}
+ private async complete(c:OperationContext,input:CompleteFulfillmentInput,method:FulfillmentMethod,operation:string,cap:"fulfillment.pickup"|"fulfillment.ship"):Promise<ApplicationResult<FulfillmentTerminalResult>>{
+  try {
+   requireOperationPrincipalScope(c); this.validate(c,input);
+   return success(await this.runner.transaction(async tx=>{
+    const org=brandedId<"OrganizationId">(c.organizationId), initial=await tx.readAvailability(org,input.orderId);
+    if(!initial)throw new V2ApplicationError("NOT_FOUND","Order was not found."); this.require(c,cap,initial.customerId);
+    const r=await tx.reserve({organizationId:c.organizationId,operation,businessRequestId:input.businessRequestId,payloadFingerprint:fingerprint(input),...actor(c)});
+    if(r.kind==="replay")return r.request.resultJson as FulfillmentTerminalResult;
+    const locked=await tx.lockAvailability(org,input.orderId,input.allocations.map(x=>x.orderLineId));
+    if(!locked||locked.availability.length!==input.allocations.length)throw new V2ApplicationError("CONFLICT","The Order is cancelled or one or more requested OrderLines are not fulfillable.");
+    this.require(c,cap,locked.customerId);
+    if((input.customerId&&input.customerId!==locked.customerId)||(input.contactId&&input.contactId!==locked.contactId))throw new V2ApplicationError("VALIDATION_ERROR","Fulfillment customer/contact context must match the canonical Sales Order context.");
+    const byLine=new Map(locked.availability.map(x=>[x.orderLineId,x]));
+    for(const allocation of input.allocations){
+     const available=byLine.get(allocation.orderLineId);
+     if(!available||allocation.quantity>available.availableFulfillmentQuantity)throw new V2ApplicationError("CONFLICT","Fulfillment quantity exceeds the canonically produced quantity available for handoff.");
+    }
+    const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...actor(c)});
+    const allocations=await tx.createAllocations({organizationId:org,handoffId:handoff.handoffId,orderId:input.orderId,allocations:input.allocations.map(x=>({id:brandedId<"FulfillmentHandoffLineId">(randomUUID()),...x}))});
+    const after=await tx.readAvailability(org,input.orderId); if(!after)throw new V2ApplicationError("NOT_FOUND","Order was not found.");
+    const result={handoff,allocations,availability:after.availability};
+    await tx.attribute({organizationId:c.organizationId,requestId:r.request.id,operation,resourceId:handoff.handoffId,...actor(c)});
+    await tx.audit({organizationId:c.organizationId,requestId:r.request.id,operation,method,resourceId:handoff.handoffId,allocations,...actor(c)});
+    await tx.succeed(c.organizationId,r.request.id,result); return result;
+   }));
+  } catch(e) { return failure(this.error(e)); }
+ }
  private validate(c:OperationContext,input:CompleteFulfillmentInput){if(!c.businessRequest||c.businessRequest.id!==input.businessRequestId)throw new V2ApplicationError("VALIDATION_ERROR","A matching business request identity is required.");if(!input.allocations.length)throw new V2ApplicationError("VALIDATION_ERROR","At least one OrderLine allocation is required.");const ids=new Set<string>();for(const a of input.allocations){if(!a.orderLineId||!Number.isSafeInteger(a.quantity)||a.quantity<=0)throw new V2ApplicationError("VALIDATION_ERROR","Fulfillment quantities must be positive safe integers.");if(ids.has(a.orderLineId))throw new V2ApplicationError("VALIDATION_ERROR","An OrderLine may appear only once in a handoff.");ids.add(a.orderLineId);}}
  private require(c:OperationContext,cap:"fulfillment.view"|"fulfillment.pickup"|"fulfillment.ship",customerId?:string){if(!this.authority.decide(c.principal,{capability:cap,resource:{organizationId:c.organizationId,customerId}}).allowed)throw new V2ApplicationError("FORBIDDEN","The principal does not have authority for this Fulfillment operation.");}
  private error(e:unknown){return e instanceof V2ApplicationError?e:new V2ApplicationError("VALIDATION_ERROR",e instanceof Error?e.message:"Fulfillment operation could not be completed.");}

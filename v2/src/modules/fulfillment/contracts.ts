@@ -17,7 +17,15 @@ export type FulfillmentHandoffLine = Readonly<{
 
 export type FulfillmentAvailability = Readonly<{
   orderId: OrderId; orderLineId: OrderLineId; orderedQuantity: number; completedPickupQuantity: number;
-  completedShipmentQuantity: number; completedFulfillmentQuantity: number; remainingFulfillmentQuantity: number;
+  completedShipmentQuantity: number; completedFulfillmentQuantity: number;
+  /** Production-owned output, capped to the commercial line quantity for this read-only projection. */
+  completedProductionQuantity: number;
+  /** Physical output not yet consumed by an immutable pickup or shipment handoff. */
+  availableFulfillmentQuantity: number;
+  /** Commercial quantity still not produced. */
+  remainingProductionQuantity: number;
+  /** Commercial quantity not yet handed off. This can exceed the currently available physical quantity. */
+  remainingFulfillmentQuantity: number;
 }>;
 
 export type CompleteFulfillmentInput = Readonly<{

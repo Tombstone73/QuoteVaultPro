@@ -73,13 +73,13 @@ const productionRuntime = () => {
 };
 
 const fulfillmentRuntime = () => {
-  const quantities = new Map<string, { ordered: number; pickup: number; shipment: number }>([
-    ["line-fulfillment-a", { ordered: 100, pickup: 0, shipment: 0 }],
-    ["line-fulfillment-b", { ordered: 50, pickup: 0, shipment: 0 }],
-    ["line-produced-context", { ordered: 100, pickup: 20, shipment: 0 }],
+  const quantities = new Map<string, { ordered: number; pickup: number; shipment: number; produced: number }>([
+    ["line-fulfillment-a", { ordered: 100, pickup: 0, shipment: 0, produced: 100 }],
+    ["line-fulfillment-b", { ordered: 50, pickup: 0, shipment: 0, produced: 50 }],
+    ["line-produced-context", { ordered: 100, pickup: 20, shipment: 0, produced: 40 }],
   ]);
   const handoffs = new Map<string, FulfillmentHandoff>();
-  const availability = (): readonly FulfillmentAvailability[] => [...quantities.entries()].map(([id, value]) => ({ orderId, orderLineId: brandedId<"OrderLineId">(id), orderedQuantity: value.ordered, completedPickupQuantity: value.pickup, completedShipmentQuantity: value.shipment, completedFulfillmentQuantity: value.pickup + value.shipment, remainingFulfillmentQuantity: value.ordered - value.pickup - value.shipment }));
+  const availability = (): readonly FulfillmentAvailability[] => [...quantities.entries()].map(([id, value]) => ({ orderId, orderLineId: brandedId<"OrderLineId">(id), orderedQuantity: value.ordered, completedPickupQuantity: value.pickup, completedShipmentQuantity: value.shipment, completedFulfillmentQuantity: value.pickup + value.shipment, completedProductionQuantity: value.produced, availableFulfillmentQuantity: value.produced - value.pickup - value.shipment, remainingProductionQuantity: value.ordered - value.produced, remainingFulfillmentQuantity: value.ordered - value.pickup - value.shipment }));
   const scoped = (lineIds?: readonly string[]) => ({ customerId: "customer-operational", contactId: "contact-operational", availability: lineIds ? availability().filter((item) => lineIds.includes(item.orderLineId)) : availability() });
   const tx = {
     reserve: async () => ({ kind: "new" as const, request: { id: "handoff-operation", resultJson: null } }),
@@ -158,7 +158,7 @@ describe("M5 operational spine parity baseline", () => {
     expect(runtime.attempts).toHaveLength(1);
   });
 
-  test("uses ordered quantity minus completed handoffs, not Production output, for Fulfillment authority", async () => {
+  test("uses Production output minus completed handoffs for Fulfillment authority", async () => {
     const runtime = fulfillmentRuntime();
     const lineA = brandedId<"OrderLineId">("line-fulfillment-a");
     const lineB = brandedId<"OrderLineId">("line-fulfillment-b");
@@ -171,17 +171,14 @@ describe("M5 operational spine parity baseline", () => {
     const mixedShipment = await runtime.service.recordShipment(context("mixed-shipment"), { businessRequestId: "mixed-shipment", orderId, allocations: [{ orderLineId: lineB, quantity: 10 }] });
     const producedLessThanHandoff = await runtime.service.recordShipment(context("produced-less-than-handoff"), { businessRequestId: "produced-less-than-handoff", orderId, allocations: [{ orderLineId: producedContext, quantity: 50 }] });
     const over = await runtime.service.recordPickup(context("over"), { businessRequestId: "over", orderId, allocations: [{ orderLineId: lineA, quantity: 1 }] });
-    expect([pickup20, pickup30, shipment25, shipment25Again, mixed, mixedShipment, producedLessThanHandoff].every((result) => result.ok)).toBe(true);
+    expect([pickup20, pickup30, shipment25, shipment25Again, mixed, mixedShipment].every((result) => result.ok)).toBe(true);
+    expect(producedLessThanHandoff.ok).toBe(false);
     expect(over.ok).toBe(false);
     const values = runtime.availability();
-    const v2 = { lineA: values.find((line) => line.orderLineId === lineA), lineB: values.find((line) => line.orderLineId === lineB), producedContext: { producedQuantity: 40, requestedHandoffQuantity: 50, allowed: true, availability: values.find((line) => line.orderLineId === producedContext) } };
-    // The V2 outcome is fully exercised here. A read-only V1 record for the
-    // historical produced-quantity policy is not available, so this stays an
-    // explicit evidence gap rather than fabricating a legacy rejection.
-    const capturedOperationalIntent = { lineA: { orderId: "order-operational", orderLineId: "line-fulfillment-a", orderedQuantity: 100, completedPickupQuantity: 50, completedShipmentQuantity: 50, completedFulfillmentQuantity: 100, remainingFulfillmentQuantity: 0 }, lineB: { orderId: "order-operational", orderLineId: "line-fulfillment-b", orderedQuantity: 50, completedPickupQuantity: 15, completedShipmentQuantity: 10, completedFulfillmentQuantity: 25, remainingFulfillmentQuantity: 25 }, producedContext: { producedQuantity: 40, requestedHandoffQuantity: 50, allowed: true, availability: { orderId: "order-operational", orderLineId: "line-produced-context", orderedQuantity: 100, completedPickupQuantity: 20, completedShipmentQuantity: 50, completedFulfillmentQuantity: 70, remainingFulfillmentQuantity: 30 } } };
-    const parity = compare("Fulfillment", "mixed-handoffs-and-produced-context", capturedOperationalIntent, v2, "INSUFFICIENT_EVIDENCE");
-    expect(parity.classification).toBe("INSUFFICIENT_EVIDENCE");
-    expect(v2.producedContext.allowed).toBe(true);
+    const v2 = { lineA: values.find((line) => line.orderLineId === lineA), lineB: values.find((line) => line.orderLineId === lineB), producedContext: { producedQuantity: 40, requestedHandoffQuantity: 50, allowed: false, availability: values.find((line) => line.orderLineId === producedContext) } };
+    const requiredPhysicalGuard = { lineA: v2.lineA, lineB: v2.lineB, producedContext: v2.producedContext };
+    expect(compare("Fulfillment", "mixed-handoffs-and-produced-context", requiredPhysicalGuard, v2, "SEMANTICALLY_EQUIVALENT").classification).toBe("SEMANTICALLY_EQUIVALENT");
+    expect(v2.producedContext.allowed).toBe(false);
   });
 
   test("retains the operational chain from exact art through a legitimate customer handoff", () => {

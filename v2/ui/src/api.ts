@@ -686,6 +686,9 @@ export type FulfillmentAvailability = Readonly<{
   completedPickupQuantity: number;
   completedShipmentQuantity: number;
   completedFulfillmentQuantity: number;
+  completedProductionQuantity: number;
+  availableFulfillmentQuantity: number;
+  remainingProductionQuantity: number;
   remainingFulfillmentQuantity: number;
 }>;
 export type FulfillmentWorkspaceOrder = Readonly<{

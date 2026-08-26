@@ -6,14 +6,51 @@ import { brandedId, type FulfillmentHandoffId, type OrganizationId, type OrderId
 
 type HandoffRow={id:string;organization_id:string;order_document_id:string;handoff_method:"pickup"|"shipment";completed_at:Date;customer_id:string|null;contact_id:string|null;completed_principal_kind:FulfillmentHandoff["completedPrincipalKind"];completed_principal_subject:string;completed_staff_actor_user_id:string|null};
 type LineRow={id:string;organization_id:string;handoff_id:string;order_document_id:string;order_line_id:string;quantity:number};
-type AvailabilityRow={order_document_id:string;order_line_id:string;ordered_quantity:number;pickup_quantity:string;shipment_quantity:string};
+type AvailabilityRow={order_document_id:string;order_line_id:string;ordered_quantity:number;pickup_quantity:string;shipment_quantity:string;completed_production_quantity:string};
 const handoff=(r:HandoffRow):FulfillmentHandoff=>({handoffId:brandedId<"FulfillmentHandoffId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),orderId:brandedId<"OrderId">(r.order_document_id),method:r.handoff_method,completedAt:r.completed_at.toISOString(),...(r.customer_id?{customerId:brandedId<"CustomerId">(r.customer_id)}:{}),...(r.contact_id?{contactId:brandedId<"ContactId">(r.contact_id)}:{}),completedPrincipalKind:r.completed_principal_kind,completedPrincipalSubject:r.completed_principal_subject,...(r.completed_staff_actor_user_id?{completedStaffActorUserId:r.completed_staff_actor_user_id}:{})});
 const allocation=(r:LineRow):FulfillmentHandoffLine=>({handoffLineId:brandedId<"FulfillmentHandoffLineId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),handoffId:brandedId<"FulfillmentHandoffId">(r.handoff_id),orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),quantity:r.quantity});
-const availability=(r:AvailabilityRow):FulfillmentAvailability=>{const pickup=Number(r.pickup_quantity),shipment=Number(r.shipment_quantity),total=pickup+shipment;return {orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),orderedQuantity:r.ordered_quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:total,remainingFulfillmentQuantity:r.ordered_quantity-total};};
-const availabilitySql=`SELECT l.document_id order_document_id,l.id order_line_id,l.quantity ordered_quantity,COALESCE(SUM(fhl.quantity) FILTER (WHERE fh.handoff_method='pickup'),0)::text pickup_quantity,COALESCE(SUM(fhl.quantity) FILTER (WHERE fh.handoff_method='shipment'),0)::text shipment_quantity FROM v2_sales_document_lines l LEFT JOIN v2_fulfillment_handoff_lines fhl ON fhl.organization_id=l.organization_id AND fhl.order_document_id=l.document_id AND fhl.order_line_id=l.id LEFT JOIN v2_fulfillment_handoffs fh ON fh.organization_id=fhl.organization_id AND fh.id=fhl.handoff_id WHERE l.organization_id=$1 AND l.document_id=$2 GROUP BY l.document_id,l.id,l.quantity ORDER BY l.id`;
+const availability=(r:AvailabilityRow):FulfillmentAvailability=>{
+ const pickup=Number(r.pickup_quantity),shipment=Number(r.shipment_quantity),completedFulfillment=pickup+shipment;
+ const completedProduction=Math.min(r.ordered_quantity,Math.max(0,Number(r.completed_production_quantity)));
+ const physicalAvailable=Math.max(0,completedProduction-completedFulfillment);
+ return {orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),orderedQuantity:r.ordered_quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,availableFulfillmentQuantity:physicalAvailable,remainingProductionQuantity:Math.max(0,r.ordered_quantity-completedProduction),remainingFulfillmentQuantity:Math.max(0,r.ordered_quantity-completedFulfillment)};
+};
+/**
+ * Production remains the source of physical output. A sellable unit is available only
+ * when every frozen required production unit has completed that many good copies.
+ * No requirement or no completed work therefore safely yields zero available output.
+ */
+const availabilitySql=`WITH production_output AS (
+  SELECT l.id order_line_id,
+    COALESCE(MIN(COALESCE(unit_output.completed_good_quantity,0)),0)::text completed_production_quantity
+  FROM v2_sales_document_lines l
+  LEFT JOIN v2_sales_line_production_requirements r ON r.organization_id=l.organization_id AND r.order_line_id=l.id
+  LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(a.good_quantity) FILTER (WHERE a.completed_at IS NOT NULL),0) completed_good_quantity
+    FROM v2_production_works w
+    LEFT JOIN v2_production_attempts a ON a.organization_id=w.organization_id AND a.production_work_id=w.id
+    WHERE w.organization_id=l.organization_id AND w.order_line_id=l.id AND w.requirement_key=r.requirement_key
+  ) unit_output ON r.requirement_key IS NOT NULL
+  WHERE l.organization_id=$1 AND l.document_id=$2
+  GROUP BY l.id
+), fulfillment_output AS (
+  SELECT l.id order_line_id,
+    COALESCE(SUM(fhl.quantity) FILTER (WHERE fh.handoff_method='pickup'),0)::text pickup_quantity,
+    COALESCE(SUM(fhl.quantity) FILTER (WHERE fh.handoff_method='shipment'),0)::text shipment_quantity
+  FROM v2_sales_document_lines l
+  LEFT JOIN v2_fulfillment_handoff_lines fhl ON fhl.organization_id=l.organization_id AND fhl.order_document_id=l.document_id AND fhl.order_line_id=l.id
+  LEFT JOIN v2_fulfillment_handoffs fh ON fh.organization_id=fhl.organization_id AND fh.id=fhl.handoff_id
+  WHERE l.organization_id=$1 AND l.document_id=$2
+  GROUP BY l.id
+) SELECT l.document_id order_document_id,l.id order_line_id,l.quantity ordered_quantity,
+  f.pickup_quantity,f.shipment_quantity,p.completed_production_quantity
+  FROM v2_sales_document_lines l
+  JOIN production_output p ON p.order_line_id=l.id
+  JOIN fulfillment_output f ON f.order_line_id=l.id
+  WHERE l.organization_id=$1 AND l.document_id=$2 ORDER BY l.id`;
 export type FulfillmentPersistenceTestHooks=Readonly<{afterHandoff?:()=>Promise<void>;afterAllocation?:()=>Promise<void>;afterAudit?:()=>Promise<void>}>;
 
-/** PostgreSQL adapter: Sales is consulted only through a scoped, locked commercial read. */
+/** PostgreSQL adapter: Sales locks serialize handoffs; Production is read-only physical evidence. */
 export class PostgresFulfillmentTransaction implements FulfillmentTransaction {
  private readonly requests=new PostgresOperationRequestRepository();
  constructor(private readonly client:PoolClient,private readonly hooks?:FulfillmentPersistenceTestHooks){}
