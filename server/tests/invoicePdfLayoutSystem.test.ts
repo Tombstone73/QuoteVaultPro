@@ -1,5 +1,15 @@
 import { DEFAULT_INVOICE_PDF_THEME } from '../lib/invoicePdfTheme';
-import { generateInvoicePdfBytes } from '../lib/invoicePdf';
+import { generateInvoicePdfBytes, getInvoicePdfWatermarkState } from '../lib/invoicePdf';
+import { inflateSync } from 'node:zlib';
+
+function readPdfContentStream(bytes: Uint8Array): string {
+  const source = Buffer.from(bytes);
+  const match = /stream\r?\n([\s\S]*?)\r?\nendstream/.exec(source.toString('latin1'));
+  if (!match) throw new Error('Expected an invoice PDF content stream');
+  return inflateSync(Buffer.from(match[1], 'latin1'))
+    .toString('latin1')
+    .replace(/<([0-9A-F]+)>\s*Tj/g, (_token, hex) => Buffer.from(hex, 'hex').toString('latin1'));
+}
 
 describe('Invoice PDF v1 layout system', () => {
   test('badge color + watermark + footer are theme-driven and deterministic', async () => {
@@ -62,6 +72,7 @@ describe('Invoice PDF v1 layout system', () => {
         companyName: 'Titan Printing',
       },
       paymentSummary: {
+        totalCents: 1000,
         amountPaidCents: 1000,
         amountDueCents: 0,
         statusLabel: 'Paid',
@@ -84,7 +95,7 @@ describe('Invoice PDF v1 layout system', () => {
 
     expect(Buffer.from(bytesA)).toEqual(Buffer.from(bytesB));
 
-    const pdfText = Buffer.from(bytesA).toString('latin1');
+    const pdfText = readPdfContentStream(bytesA);
 
     // Footer override rendered
     expect(pdfText).toContain('FOOTER_OVERRIDE_999');
@@ -110,12 +121,21 @@ describe('Invoice PDF v1 layout system', () => {
     } as const;
 
     const draftBytes = await generateInvoicePdfBytes(draftParams as any, theme as any);
-    const draftText = Buffer.from(draftBytes).toString('latin1');
+    const draftText = readPdfContentStream(draftBytes);
 
     // Watermark logic (auto -> DRAFT)
     expect(draftText).toMatch(/DRAFT/);
 
     // Footer still renders on draft
     expect(draftText).toContain('FOOTER_OVERRIDE_999');
+  });
+
+  test('uses the canonical payment summary for watermark state', () => {
+    // A raw invoice workflow status is deliberately not an input here; all PDF
+    // presentation state comes from the canonical payment summary.
+    expect(getInvoicePdfWatermarkState('Paid')).toBe('paid');
+    expect(getInvoicePdfWatermarkState('Draft')).toBe('draft');
+    expect(getInvoicePdfWatermarkState('Unpaid')).toBeNull();
+    expect(getInvoicePdfWatermarkState('Partially Paid')).toBeNull();
   });
 });

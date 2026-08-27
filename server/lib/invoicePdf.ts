@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
+import { resolveInvoicePdfFinancialSummary } from '../../shared/invoiceAccountingDisplay';
 
 import {
   type RemittanceAddress,
@@ -78,6 +79,7 @@ type InvoicePdfParams = {
   customer: CustomerLike;
   companySettings: CompanySettingsLike;
   paymentSummary: {
+    totalCents: number;
     amountPaidCents: number;
     amountDueCents: number;
     statusLabel?: string | null;
@@ -97,6 +99,13 @@ type InvoicePdfParams = {
     watermarkText?: string | null;
   };
 };
+
+export function getInvoicePdfWatermarkState(statusLabel: unknown): 'draft' | 'paid' | null {
+  const normalized = String(statusLabel || '').trim().toLowerCase();
+  if (normalized === 'draft') return 'draft';
+  if (normalized === 'paid') return 'paid';
+  return null;
+}
 
 const toRgb = (c: Rgb) => rgb(c[0], c[1], c[2]);
 
@@ -269,11 +278,7 @@ export async function generateInvoicePdfBytes(
           invoice: arg1 as InvoiceLike,
           customer: null,
           companySettings: null,
-          paymentSummary: {
-            amountPaidCents: 0,
-            amountDueCents: toSafeCents((arg1 as any)?.totalCents ?? 0),
-            statusLabel: String((arg1 as any)?.status || '').trim() || null,
-          },
+          paymentSummary: resolveInvoicePdfFinancialSummary(arg1 as InvoiceLike),
           lineItems: [],
         };
 
@@ -355,8 +360,6 @@ export async function generateInvoicePdfBytes(
     return String(theme.footer.text || '').trim();
   };
 
-  const normalizeStatusLabel = (raw: unknown): string => String(raw || '').trim().toLowerCase();
-
   const resolveWatermarkText = (): string => {
     const override = (params.overrides?.watermarkText || '').trim();
     if (override) return override;
@@ -366,11 +369,10 @@ export async function generateInvoicePdfBytes(
     if (theme.watermark.mode === 'paid') return theme.watermark.textPaid;
     if (theme.watermark.mode === 'draft') return theme.watermark.textDraft;
 
-    const statusLabel = normalizeStatusLabel(params.paymentSummary?.statusLabel);
-    const invoiceStatus = normalizeStatusLabel(invoice.status);
+    const watermarkState = getInvoicePdfWatermarkState(params.paymentSummary?.statusLabel);
 
-    if (invoiceStatus === 'draft' || statusLabel === 'draft') return theme.watermark.textDraft;
-    if (invoiceStatus === 'paid' || statusLabel === 'paid') return theme.watermark.textPaid;
+    if (watermarkState === 'draft') return theme.watermark.textDraft;
+    if (watermarkState === 'paid') return theme.watermark.textPaid;
     return '';
   };
 
@@ -877,7 +879,7 @@ export async function generateInvoicePdfBytes(
   const subtotalCents = toSafeCents(invoice.subtotalCents);
   const taxCents = toSafeCents(invoice.taxCents);
   const shippingCents = toSafeCents(invoice.shippingCents);
-  const totalCents = toSafeCents(invoice.totalCents);
+  const totalCents = toSafeCents(params.paymentSummary.totalCents);
 
   const paidCents = toSafeCents(params.paymentSummary.amountPaidCents);
   const dueCents = toSafeCents(params.paymentSummary.amountDueCents);

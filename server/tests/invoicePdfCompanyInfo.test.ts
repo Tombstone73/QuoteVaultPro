@@ -24,6 +24,7 @@ const baseInvoiceParams = {
     billingCountry: "US",
   },
   paymentSummary: {
+    totalCents: 2500,
     amountPaidCents: 0,
     amountDueCents: 2500,
     statusLabel: "Unpaid",

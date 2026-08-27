@@ -35,6 +35,7 @@ import {
   computeInvoicePaymentRollup,
   getInvoicePaymentStatusLabel,
 } from "@shared/rollups/invoicePaymentRollup";
+import { resolveInvoicePdfFinancialSummary } from "@shared/invoiceAccountingDisplay";
 import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared/portalFileVisibility";
 import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { getStripeClient } from "../lib/stripe";
@@ -2196,17 +2197,12 @@ export async function getPortalInvoicePdf(req: Request, invoiceId: string): Prom
     .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
 
   const paymentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
-  const rollup = invoiceRollup(invoice, paymentRows);
-  const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: invoice.status, rollup });
+  const paymentSummary = resolveInvoicePdfFinancialSummary(invoice as any, paymentRows as any);
   const pdfBytes = await generateInvoicePdfBytes({
     invoice: invoice as any,
     customer: (customer as any) || null,
     companySettings: (orgCompany as any) || null,
-    paymentSummary: {
-      amountPaidCents: rollup.amountPaidCents,
-      amountDueCents: rollup.amountDueCents,
-      statusLabel,
-    },
+    paymentSummary,
     lineItems: lineItems as any,
     job,
   });

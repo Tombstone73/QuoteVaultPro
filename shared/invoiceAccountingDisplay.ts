@@ -57,6 +57,14 @@ export type InvoiceAccountingDisplay = {
   importedQuickBooksPaymentSummary: ImportedQuickBooksPaymentSummary;
 };
 
+/** Customer-facing invoice totals derived from the UI's accounting projection. */
+export type InvoicePdfFinancialSummary = {
+  totalCents: number;
+  amountPaidCents: number;
+  amountDueCents: number;
+  statusLabel: string;
+};
+
 export type QuickBooksLineItemDisplay = {
   lineNum: number | null;
   description: string;
@@ -311,6 +319,20 @@ export function computeInvoiceAccountingDisplay(
     ...invoice,
     payments: payments ?? invoice.payments,
   });
+}
+
+export function resolveInvoicePdfFinancialSummary(
+  invoice: InvoiceAccountingDisplayInput,
+  payments?: InvoiceAccountingPaymentInput[],
+): InvoicePdfFinancialSummary {
+  const display = computeInvoiceAccountingDisplay(invoice, payments);
+  return {
+    totalCents: display.displayTotalCents,
+    amountPaidCents: display.displayPaidCents,
+    amountDueCents: display.displayRemainingCents,
+    // Keep accounting provenance (for example, "Paid Historical") internal.
+    statusLabel: display.paymentStatusLabel,
+  };
 }
 
 function readNestedNumber(source: Record<string, any> | null | undefined, keys: string[]): number | null {

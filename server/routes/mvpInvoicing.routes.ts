@@ -15,7 +15,7 @@ import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
-import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot } from "../../shared/invoiceAccountingDisplay";
+import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot, resolveInvoicePdfFinancialSummary } from "../../shared/invoiceAccountingDisplay";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "../../shared/paymentProviderResolution";
 import { emailService } from "../emailService";
 import { storage } from "../storage";
@@ -336,25 +336,13 @@ export async function registerMvpInvoicingRoutes(
       .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, input.organizationId)))
       .orderBy(desc(payments.createdAt));
 
-    const rollup = computeInvoicePaymentRollup({
-      invoiceTotalCents: Number((inv as any).totalCents || 0),
-      payments: paymentRows.map((p: any) => ({
-        id: p.id,
-        status: String(p.status || "succeeded"),
-        amountCents: Number(p.amountCents || 0),
-      })),
-    });
-    const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: (inv as any).status, rollup });
+    const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
 
     const pdfBytes = await generateInvoicePdfBytes({
       invoice: inv as any,
       customer: (cust as any) || null,
       companySettings: (orgCompany as any) || null,
-      paymentSummary: {
-        amountPaidCents: rollup.amountPaidCents,
-        amountDueCents: rollup.amountDueCents,
-        statusLabel,
-      },
+      paymentSummary,
       lineItems: lineItems as any,
       job,
     });
@@ -1189,26 +1177,13 @@ export async function registerMvpInvoicingRoutes(
         .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .orderBy(desc(payments.createdAt));
 
-      const rollup = computeInvoicePaymentRollup({
-        invoiceTotalCents: Number((inv as any).totalCents || 0),
-        payments: paymentRows.map((p: any) => ({
-          id: p.id,
-          status: String(p.status || 'succeeded'),
-          amountCents: Number(p.amountCents || 0),
-        })),
-      });
-
-      const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: (inv as any).status, rollup });
+      const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
 
       const pdfBytes = await generateInvoicePdfBytes({
         invoice: inv as any,
         customer: (cust as any) || null,
         companySettings: (orgCompany as any) || null,
-        paymentSummary: {
-          amountPaidCents: rollup.amountPaidCents,
-          amountDueCents: rollup.amountDueCents,
-          statusLabel,
-        },
+        paymentSummary,
         lineItems: lineItems as any,
         job,
       });

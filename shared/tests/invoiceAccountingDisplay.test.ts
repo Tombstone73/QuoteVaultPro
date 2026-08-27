@@ -2,6 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import {
   normalizeInvoiceAccountingDisplay,
   normalizeQuickBooksLineItemsSnapshot,
+  resolveInvoicePdfFinancialSummary,
 } from '../invoiceAccountingDisplay';
 
 describe('normalizeInvoiceAccountingDisplay', () => {
@@ -158,6 +159,20 @@ describe('normalizeInvoiceAccountingDisplay', () => {
     expect(normalized.displayRemaining).toBe(60);
     expect(normalized.importedQuickBooksPaymentSummary.reconciledCents).toBe(4000);
     expect(normalized.importedQuickBooksPaymentSummary.unreconciledCents).toBe(0);
+  });
+});
+
+describe('resolveInvoicePdfFinancialSummary', () => {
+  test.each([
+    ['native unpaid', { totalCents: 10000, status: 'billed', payments: [] }, { totalCents: 10000, amountPaidCents: 0, amountDueCents: 10000, statusLabel: 'Unpaid' }],
+    ['native partial', { totalCents: 10000, status: 'billed', payments: [{ status: 'succeeded', amountCents: 6000 }] }, { totalCents: 10000, amountPaidCents: 6000, amountDueCents: 4000, statusLabel: 'Partially Paid' }],
+    ['native paid', { totalCents: 10000, status: 'paid', payments: [{ status: 'captured', amountCents: 10000 }] }, { totalCents: 10000, amountPaidCents: 10000, amountDueCents: 0, statusLabel: 'Paid' }],
+    ['imported QuickBooks unpaid', { totalCents: 10000, status: 'billed', importSource: 'quickbooks', qbImportBalanceDue: '100.00' }, { totalCents: 10000, amountPaidCents: 0, amountDueCents: 10000, statusLabel: 'Unpaid' }],
+    ['imported QuickBooks partial', { totalCents: 10000, status: 'billed', importSource: 'quickbooks', qbImportBalanceDue: '40.00' }, { totalCents: 10000, amountPaidCents: 6000, amountDueCents: 4000, statusLabel: 'Partially Paid' }],
+    ['historical QuickBooks paid without local payments', { totalCents: 6000, status: 'paid', importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '0.00', payments: [] }, { totalCents: 6000, amountPaidCents: 6000, amountDueCents: 0, statusLabel: 'Paid' }],
+    ['native refund', { totalCents: 750, status: 'paid', payments: [{ status: 'succeeded', amountCents: 750 }, { status: 'refunded', amountCents: 200 }] }, { totalCents: 750, amountPaidCents: 550, amountDueCents: 200, statusLabel: 'Partially Paid' }],
+  ])('%s keeps every PDF field on the canonical financial projection', (_name, invoice, expected) => {
+    expect(resolveInvoicePdfFinancialSummary(invoice)).toEqual(expected);
   });
 });
 

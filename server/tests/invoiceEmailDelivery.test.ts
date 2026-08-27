@@ -23,7 +23,7 @@ async function generateValidInvoicePdf() {
     },
     customer: { companyName: "Test Customer", email: "customer@example.com" },
     companySettings: { companyName: "Test Print Shop" },
-    paymentSummary: { amountPaidCents: 0, amountDueCents: 2500, statusLabel: "Open" },
+    paymentSummary: { totalCents: 2500, amountPaidCents: 0, amountDueCents: 2500, statusLabel: "Open" },
     lineItems: [{ description: "Shipping", quantity: 1, lineTotalCents: 2500 }],
   } as any);
 }
