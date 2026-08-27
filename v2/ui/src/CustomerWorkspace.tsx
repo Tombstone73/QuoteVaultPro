@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { customerApi, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
+import { contactApi, customerApi, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
 
 const keys = {
   list: (scope: string, organizationId: string, search: string) => ["v2", scope, organizationId, "customers", search] as const,
@@ -52,7 +52,7 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
 
   if (!organizationId) return <section className="v2-customers"><div className="v2-proof-empty">Customers are unavailable.</div></section>;
   if (!canView) return <section className="v2-customers"><div className="v2-proof-empty">You do not have permission to view Customers.</div></section>;
-  if (customerId) return <CustomerDetail state={detail} openContact={openContact} backToCatalog={backToCatalog} />;
+  if (customerId) return <CustomerDetail state={detail} organizationId={organizationId} sessionScope={sessionScope} canCreate={canCreate} openContact={openContact} backToCatalog={backToCatalog} />;
 
   return <section className="v2-customers" aria-label="Customers">
     <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.items.length} customer accounts` : "Customer accounts"}</p></div>{canCreate && <button type="button" onClick={() => setCreating((value) => !value)}>{creating ? "Cancel" : "New Customer"}</button>}</header>
@@ -77,8 +77,11 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
   </section>;
 };
 
-const CustomerDetail = ({ state, openContact, backToCatalog }: Readonly<{
+const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, openContact, backToCatalog }: Readonly<{
   state: ReturnType<typeof useQuery<CustomerWorkspaceRead>>;
+  organizationId: string;
+  sessionScope: string;
+  canCreate: boolean;
   openContact: (contactId: string) => void;
   backToCatalog: () => void;
 }>) => {
@@ -100,8 +103,41 @@ const CustomerDetail = ({ state, openContact, backToCatalog }: Readonly<{
     <div className="v2-customer-metric-band"><DetailMetric label="Contacts" value={String(customer.contacts.length)} /><DetailMetric label="Primary Contact" value={primaryName ?? unavailable} /><DetailMetric label="Email" value={email ?? unavailable} /><DetailMetric label="Phone" value={phone ?? unavailable} /></div>
     <div className="v2-customer-overview-grid">
       <SummaryCard title="Account Details"><dl className="v2-customer-detail-facts"><div><dt>Company</dt><dd>{identity.companyName ?? customer.displayName}</dd></div><div><dt>Primary Contact</dt><dd>{primaryName ?? unavailable}</dd></div><div><dt>Billing Address</dt><dd>{address(identity.billingAddress)}</dd></div><div><dt>Shipping Address</dt><dd>{address(identity.shippingAddress)}</dd></div></dl></SummaryCard>
-      <SummaryCard title="Contacts" count={String(customer.contacts.length)}>{customer.contacts.length ? <ul className="v2-customer-contact-list">{customer.contacts.map((contact) => <li key={contact.contactId}><div><button type="button" onClick={() => openContact(contact.contactId)}>{contact.displayName}</button>{contact.primary && <em>Primary</em>}</div><small>{contact.email ?? unavailable}{contact.phone ? ` · ${contact.phone}` : ""}</small></li>)}</ul> : <p className="v2-customer-empty">No Contacts are linked to this Customer.</p>}</SummaryCard>
+      <SummaryCard title="Contacts" count={String(customer.contacts.length)}><ContactCreateForm organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} canCreate={canCreate} />{customer.contacts.length ? <ul className="v2-customer-contact-list">{customer.contacts.map((contact) => <li key={contact.contactId}><div><button type="button" onClick={() => openContact(contact.contactId)}>{contact.displayName}</button>{contact.primary && <em>Primary</em>}</div><small>{contact.email ?? unavailable}{contact.phone ? ` · ${contact.phone}` : ""}</small></li>)}</ul> : <p className="v2-customer-empty">No Contacts are linked to this Customer.</p>}</SummaryCard>
       <SummaryCard title="Commercial Context"><p className="v2-customer-empty">Customer commercial history remains owned by Sales and Billing. A customer-keyed read projection is not available yet.</p></SummaryCard>
     </div>
   </section>;
+};
+
+const ContactCreateForm = ({ organizationId, sessionScope, customerId, canCreate }: Readonly<{
+  organizationId: string;
+  sessionScope: string;
+  customerId: string;
+  canCreate: boolean;
+}>) => {
+  const [creating, setCreating] = useState(false);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [title, setTitle] = useState("");
+  const queryClient = useQueryClient();
+  const create = useMutation({
+    mutationFn: () => contactApi.create(organizationId, { customerId, firstName, lastName, ...(email.trim() ? { email } : {}), ...(phone.trim() ? { phone } : {}), ...(title.trim() ? { title } : {}) }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers", customerId] });
+      await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers"] });
+      setCreating(false); setFirstName(""); setLastName(""); setEmail(""); setPhone(""); setTitle("");
+    },
+  });
+  if (!canCreate) return null;
+  return <>{creating ? <form className="v2-customer-create" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
+    <label>First name <input value={firstName} required maxLength={100} onChange={(event) => setFirstName(event.target.value)} /></label>
+    <label>Last name <input value={lastName} required maxLength={100} onChange={(event) => setLastName(event.target.value)} /></label>
+    <label>Email <input type="email" value={email} maxLength={255} onChange={(event) => setEmail(event.target.value)} /></label>
+    <label>Phone <input value={phone} maxLength={50} onChange={(event) => setPhone(event.target.value)} /></label>
+    <label>Title <input value={title} maxLength={100} onChange={(event) => setTitle(event.target.value)} /></label>
+    <button type="submit" disabled={create.isPending}>{create.isPending ? "Creating…" : "Create Contact"}</button><button type="button" onClick={() => setCreating(false)}>Cancel</button>
+    {create.isError && <p role="alert">Contact creation is unavailable.</p>}
+  </form> : <button type="button" onClick={() => setCreating(true)}>Add Contact</button>}</>;
 };

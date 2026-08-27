@@ -19,6 +19,7 @@ import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js"
 import { PostgresQuoteDeliveryService } from "./postgresQuoteDelivery.js";
 import { PostgresCustomerWorkspaceReader } from "../compatibility/postgresCustomerWorkspaceRead.js";
 import { CanonicalCustomerCreationService } from "../customers/canonicalCustomerCreation.js";
+import { CanonicalContactCreationService } from "../customers/canonicalContactCreation.js";
 import type { CustomerHttpDependencies } from "../../src/interfaces/http/customerRoutes.js";
 import { PostgresContactWorkspaceReader } from "../compatibility/postgresContactWorkspaceRead.js";
 import type { ContactHttpDependencies } from "../../src/interfaces/http/contactRoutes.js";
@@ -74,7 +75,10 @@ export const composeAuthenticatedQuoteRuntime = (
       const customers = new PostgresCustomerWorkspaceReader(input.pool);
       return { customers, creation: new CanonicalCustomerCreationService(customers), principals };
     })(),
-    contactDependencies: { contacts: new PostgresContactWorkspaceReader(input.pool), principals },
+    contactDependencies: (() => {
+      const contacts = new PostgresContactWorkspaceReader(input.pool);
+      return { contacts, creation: new CanonicalContactCreationService(contacts), principals };
+    })(),
     productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), draftGeneral: new PostgresProductDraftGeneralReader(input.pool), draftOptions: new PostgresProductDraftOptionsReader(input.pool), draftPricing: new PostgresProductDraftPricingReader(input.pool), draftMatrix: new PostgresProductDraftPricingMatrixReader(input.pool), draftFormula: new PostgresProductDraftFormulaReader(input.pool), draftOptionPricing: new PostgresProductDraftOptionPricingReader(input.pool), draftPreview: new PostgresProductDraftPricingPreview(input.pool), draftRecipe: new PostgresProductWorkspaceRecipeReader(input.pool), draftRouting: new PostgresProductDraftRoutingReader(input.pool), materials: new PostgresProductMaterialSearch(input.pool), recipes: new ProductRecipeApplicationService(new PostgresProductRecipeTransactionRunner(input.pool)), routing: new ProductRoutingApplicationService(new PostgresProductRoutingTransactionRunner(input.pool)), lifecycle: new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(input.pool)), publication: new ProductPublicationApplicationService(new PostgresProductPublicationTransactionRunner(input.pool), canonicalProductPublishOperations), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };

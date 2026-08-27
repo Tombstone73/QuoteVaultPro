@@ -1702,6 +1702,15 @@ export const contactApi = {
     request<ContactWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/contacts/${encodeURIComponent(contactId)}`,
     ),
+  create: (organizationId: string, input: Readonly<{ customerId: string; firstName: string; lastName: string; email?: string; phone?: string; title?: string }>) =>
+    request<ContactWorkspaceRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/contacts`,
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        body: JSON.stringify(input),
+      },
+    ),
 };
 export const productApi = {
   /** Shared Formula Library is read-only from Product Builder. */

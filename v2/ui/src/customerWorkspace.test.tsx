@@ -28,7 +28,8 @@ const detail = renderToStaticMarkup(<QueryClientProvider client={detailClient}><
 for (const text of ["Account Details", "Contacts", "Commercial Context", "Billing Address", "Ada Lovelace", "Primary", "customer-keyed read projection is not available yet"]) assert.match(detail, new RegExp(text));
 assert.doesNotMatch(detail, /customer-a/);
 assert.doesNotMatch(detail, /contact-a/);
-assert.doesNotMatch(detail, /Available Credit|Log Activity|Add Contact|Account note/);
+assert.match(detail, /Add Contact/);
+assert.doesNotMatch(detail, /Available Credit|Log Activity|Account note/);
 
 const unlinkedPrimaryClient = new QueryClient();
 unlinkedPrimaryClient.setQueryData(["v2", "scope-a", "org-a", "customers", "customer-b"], {
