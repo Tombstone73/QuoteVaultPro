@@ -378,6 +378,13 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       ],
     );
     if (header.rowCount !== 1) return false;
+    // Vacate the Quote's position namespace before stable-ID upserts. A
+    // duplicate inserted in the middle (or a reorder) would otherwise collide
+    // with a retained line's still-current unique position.
+    await this.client.query(
+      "UPDATE v2_sales_document_lines SET position=position+100000,updated_at=now() WHERE organization_id=$1 AND document_id=$2",
+      [input.organizationId, input.quoteId],
+    );
     const old = (
       await this.client.query<{ id: string }>(
         "SELECT id FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2",

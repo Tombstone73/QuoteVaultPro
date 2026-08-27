@@ -85,6 +85,7 @@
     "v2:quote-due-filter:pure": "tsx v2/tests/interfaces/quoteDueDateListRoutes.pure.ts",
     "v2:customer-create:pure": "tsx v2/tests/interfaces/customerCreateRoutes.pure.ts",
     "v2:sales-operator:pure": "tsx v2/tests/modules/salesOperatorParityContracts.pure.ts",
+    "v2:quote-line-duplicate:pure": "tsx v2/tests/infrastructure/quoteLineDuplicatePersistence.pure.ts",
     "v2:owner-documents:pure": "tsx v2/tests/modules/ownerDocumentRenderer.test.ts && tsx v2/tests/infrastructure/productionDocumentService.test.ts && tsx v2/tests/infrastructure/fulfillmentSnapshotPersistence.test.ts && tsx v2/tests/persistence/fulfillmentMigration.contract.test.ts && tsx v2/tests/interfaces/ownerDocumentRoutes.pure.ts",
     "v2:ui:test:money": "tsx v2/ui/src/productBuilder/money-input.test.ts",
     "db:push": "drizzle-kit push",
