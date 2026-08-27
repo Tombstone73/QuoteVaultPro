@@ -1752,11 +1752,14 @@ async function reconcileSucceededStripePayment(params: {
     .limit(1);
   if (!payment?.stripePaymentIntentId) throw new PortalAccessError(409, "Portal payment is missing its Stripe PaymentIntent identity");
   await captureAndApplyStripeObservation({
-    eventId: `stripe-portal-confirm:${payment.stripePaymentIntentId}:payment_intent.succeeded`,
+    eventId: `stripe-portal-confirm:v2:${payment.stripePaymentIntentId}:payment_intent.succeeded`,
     type: "payment_intent.succeeded",
     organizationId: params.organizationId,
     invoiceId: params.invoiceId,
     paymentIntentId: payment.stripePaymentIntentId,
+    paymentAttemptId: typeof (payment.metadata as any)?.stripePaymentAttemptId === "string"
+      ? String((payment.metadata as any).stripePaymentAttemptId)
+      : null,
     stripeAccountId: (payment.metadata as any)?.stripeAccountId || null,
     amountCents: params.amountCents,
     currency: payment.currency,

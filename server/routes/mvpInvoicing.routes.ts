@@ -36,6 +36,7 @@ import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.serv
 import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
 import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../services/stripeRefundRecovery.service";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
+import type { StripePaymentConfirmSuccessResponse } from "../../shared/stripePaymentConfirm";
 import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
 
 // Minimal helper (matches server/routes.ts behavior)
@@ -1017,17 +1018,23 @@ export async function registerMvpInvoicingRoutes(
       }
 
       const currentStatus = String((payment as any).status || '').toLowerCase();
+      const paymentAttemptId = typeof (payment as any).metadata?.stripePaymentAttemptId === 'string'
+        ? (payment as any).metadata.stripePaymentAttemptId
+        : null;
 
       if (["succeeded", "payment_failed", "requires_payment_method", "canceled"].includes(piStatus)) {
         const type = piStatus === "succeeded"
           ? "payment_intent.succeeded"
           : piStatus === "canceled" ? "payment_intent.canceled" : "payment_intent.payment_failed";
         await captureAndApplyStripeObservation({
-          eventId: `stripe-browser-confirm:${paymentIntentId}:${type}`,
+          // Version the synthetic browser observation so legacy observations
+          // missing attempt identity cannot block the current fast path.
+          eventId: `stripe-browser-confirm:v2:${paymentIntentId}:${type}`,
           type,
           organizationId,
           invoiceId: inv.id,
           paymentIntentId,
+          paymentAttemptId,
           stripeAccountId,
           amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? (payment as any).amountCents ?? 0))),
           currency: String((pi as any).currency || (payment as any).currency || "USD"),
@@ -1052,7 +1059,7 @@ export async function registerMvpInvoicingRoutes(
         })),
       });
 
-      return res.json({
+      const response: StripePaymentConfirmSuccessResponse = {
         success: true,
         data: {
           paymentStatus: piStatus,
@@ -1060,7 +1067,8 @@ export async function registerMvpInvoicingRoutes(
           invoice: updatedInvoice?.invoice,
           rollup,
         },
-      });
+      };
+      return res.json(response);
     } catch (error: any) {
       console.error('[StripeConfirm] failed', {
         invoiceId: String(req?.params?.id || ''),

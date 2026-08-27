@@ -1457,11 +1457,29 @@ export default function InvoiceDetailPage() {
           onOpenChange={setStripePayOpen}
           invoiceId={invoiceId ?? ''}
           apiBasePath="/api/invoices"
-          onSettled={() => {
-            refetch();
-            invoicePayments.refetch();
-            setTimeout(() => refetch(), 1500);
-            setTimeout(() => refetch(), 3500);
+          onSettled={async ({ serverConfirmed }) => {
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+              queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] }),
+              ...(orderId ? [queryClient.invalidateQueries({ queryKey: ['orders', orderId] })] : []),
+            ]);
+            await Promise.all([refetch(), invoicePayments.refetch()]);
+            if (!serverConfirmed) {
+              window.setTimeout(() => {
+                void queryClient.invalidateQueries({ queryKey: ['invoices'] });
+                void queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] });
+                if (orderId) void queryClient.invalidateQueries({ queryKey: ['orders', orderId] });
+                void refetch();
+                void invoicePayments.refetch();
+              }, 1500);
+              window.setTimeout(() => {
+                void queryClient.invalidateQueries({ queryKey: ['invoices'] });
+                void queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] });
+                if (orderId) void queryClient.invalidateQueries({ queryKey: ['orders', orderId] });
+                void refetch();
+                void invoicePayments.refetch();
+              }, 3500);
+            }
           }}
         />
 

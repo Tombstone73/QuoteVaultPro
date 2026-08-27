@@ -155,10 +155,12 @@ export default function PortalInvoiceDetailPage() {
         onOpenChange={setPayOpen}
         invoiceId={invoice.id}
         apiBasePath="/api/portal/invoices"
-        onSettled={() => {
-          void refreshInvoiceState();
-          window.setTimeout(() => void refreshInvoiceState(), 1500);
-          window.setTimeout(() => void refreshInvoiceState(), 5000);
+        onSettled={async ({ serverConfirmed }) => {
+          await refreshInvoiceState();
+          if (!serverConfirmed) {
+            window.setTimeout(() => void refreshInvoiceState(), 1500);
+            window.setTimeout(() => void refreshInvoiceState(), 5000);
+          }
         }}
       />
 
