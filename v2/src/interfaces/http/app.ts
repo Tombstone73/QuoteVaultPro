@@ -129,6 +129,7 @@ export const createV2HttpApp = (
               capabilities: {
                 quoteView,
                 customerView: policy.decide(principal, { capability: "customer.view", resource: { organizationId } }).allowed,
+                customerEdit: policy.decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed,
                 productView,
                 productEdit: policy.decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed,
                 pricingConfigure: policy.decide(principal, { capability: "pricing.configure", resource: { organizationId } }).allowed,

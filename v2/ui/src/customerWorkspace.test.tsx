@@ -8,11 +8,12 @@ const listClient = new QueryClient();
 listClient.setQueryData(["v2", "scope-a", "org-a", "customers", ""], {
   items: [{ customerId: "customer-a", displayName: "Acme", companyName: "Acme Printing", email: "billing@acme.test", phone: "555-0100", primaryContact: { contactId: "contact-a", displayName: "Ada Lovelace", email: "ada@acme.test", phone: "555-0111", primary: true } }],
 });
-const list = renderToStaticMarkup(<QueryClientProvider client={listClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="" canView openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+const list = renderToStaticMarkup(<QueryClientProvider client={listClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 assert.match(list, /Customers/);
 assert.match(list, /Acme/);
 assert.match(list, /Ada Lovelace/);
 assert.match(list, /1 customer accounts/);
+assert.match(list, /New Customer/);
 assert.doesNotMatch(list, /customer-a/);
 assert.doesNotMatch(list, /contact-a/);
 
@@ -23,7 +24,7 @@ detailClient.setQueryData(["v2", "scope-a", "org-a", "customers", "customer-a"],
     billingAddress: { lines: ["1 Main Street"], city: "Boston", region: "MA", postalCode: "02110" },
   }, contacts: [{ contactId: "contact-a", displayName: "Ada Lovelace", email: "ada@acme.test", phone: "555-0111", primary: true }],
 });
-const detail = renderToStaticMarkup(<QueryClientProvider client={detailClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-a" canView openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+const detail = renderToStaticMarkup(<QueryClientProvider client={detailClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-a" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 for (const text of ["Account Details", "Contacts", "Commercial Context", "Billing Address", "Ada Lovelace", "Primary", "customer-keyed read projection is not available yet"]) assert.match(detail, new RegExp(text));
 assert.doesNotMatch(detail, /customer-a/);
 assert.doesNotMatch(detail, /contact-a/);
@@ -34,7 +35,7 @@ unlinkedPrimaryClient.setQueryData(["v2", "scope-a", "org-a", "customers", "cust
   customerId: "customer-b", displayName: "No Primary", presentation: { customerDisplayName: "No Primary", companyName: "No Primary" },
   contacts: [{ contactId: "contact-b", displayName: "Unmarked Contact", primary: false }],
 });
-const unlinkedPrimary = renderToStaticMarkup(<QueryClientProvider client={unlinkedPrimaryClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-b" canView openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+const unlinkedPrimary = renderToStaticMarkup(<QueryClientProvider client={unlinkedPrimaryClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-b" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 assert.match(unlinkedPrimary, /<dt>Primary Contact<\/dt><dd>—<\/dd>/);
 assert.doesNotMatch(unlinkedPrimary, /<em>Primary<\/em>/);
 

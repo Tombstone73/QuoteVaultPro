@@ -21,6 +21,7 @@ const readAndPreview: readonly Capability[] = [
 
 const managerCommercial: readonly Capability[] = [
   ...readAndPreview,
+  "customer.edit",
   "quote.create", "quote.edit", "quote.send", "quote.convert",
   "order.create", "order.edit",
   "invoice.editDraft",

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { customerApi, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
 
@@ -23,25 +23,47 @@ const SummaryCard = ({ title, count, children }: Readonly<{ title: string; count
 
 const DetailMetric = ({ label, value }: Readonly<{ label: string; value: string }>) => <div className="v2-customer-metric"><small>{label}</small><strong>{value}</strong></div>;
 
-export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, canView, openCustomer, openContact, backToCatalog }: Readonly<{
+export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, canView, canCreate, openCustomer, openContact, backToCatalog }: Readonly<{
   organizationId: string;
   sessionScope: string;
   customerId: string;
   canView: boolean;
+  canCreate: boolean;
   openCustomer: (customerId: string) => void;
   openContact: (contactId: string) => void;
   backToCatalog: () => void;
 }>) => {
   const [search, setSearch] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [companyName, setCompanyName] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const queryClient = useQueryClient();
   const list = useQuery({ queryKey: keys.list(sessionScope, organizationId, search), queryFn: () => customerApi.list(organizationId, search), enabled: Boolean(organizationId && sessionScope && canView && !customerId) });
   const detail = useQuery({ queryKey: keys.detail(sessionScope, organizationId, customerId), queryFn: () => customerApi.get(organizationId, customerId), enabled: Boolean(organizationId && sessionScope && customerId && canView) });
+  const create = useMutation({
+    mutationFn: () => customerApi.create(organizationId, { companyName, ...(displayName.trim() ? { displayName } : {}), ...(email.trim() ? { email } : {}), ...(phone.trim() ? { phone } : {}) }),
+    onSuccess: async (customer) => {
+      await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers"] });
+      setCreating(false); setCompanyName(""); setDisplayName(""); setEmail(""); setPhone(""); openCustomer(customer.customerId);
+    },
+  });
 
   if (!organizationId) return <section className="v2-customers"><div className="v2-proof-empty">Customers are unavailable.</div></section>;
   if (!canView) return <section className="v2-customers"><div className="v2-proof-empty">You do not have permission to view Customers.</div></section>;
   if (customerId) return <CustomerDetail state={detail} openContact={openContact} backToCatalog={backToCatalog} />;
 
   return <section className="v2-customers" aria-label="Customers">
-    <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.items.length} customer accounts` : "Customer accounts"}</p></div></header>
+    <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.items.length} customer accounts` : "Customer accounts"}</p></div>{canCreate && <button type="button" onClick={() => setCreating((value) => !value)}>{creating ? "Cancel" : "New Customer"}</button>}</header>
+    {creating && <form className="v2-customer-create" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
+      <label>Company name <input value={companyName} required maxLength={255} onChange={(event) => setCompanyName(event.target.value)} /></label>
+      <label>Display name <input value={displayName} maxLength={255} onChange={(event) => setDisplayName(event.target.value)} /></label>
+      <label>Email <input type="email" value={email} maxLength={255} onChange={(event) => setEmail(event.target.value)} /></label>
+      <label>Phone <input value={phone} maxLength={50} onChange={(event) => setPhone(event.target.value)} /></label>
+      <button type="submit" disabled={create.isPending}>{create.isPending ? "Creating…" : "Create Customer"}</button>
+      {create.isError && <p role="alert">Customer creation is unavailable.</p>}
+    </form>}
     <div className="v2-customers-tools"><label className="v2-customers-search"><span aria-hidden>⌕</span><input aria-label="Search Customers" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Company, contact, email, phone…" /></label></div>
     <div className="v2-customers-table-wrap"><table className="v2-customers-table"><thead><tr><th>Company</th><th>Primary Contact</th><th>Email</th><th>Phone</th></tr></thead><tbody>
       {list.isLoading && <tr><td colSpan={4}>Loading Customers…</td></tr>}

@@ -84,6 +84,7 @@ export type UiBootstrap = Readonly<{
   capabilities: Readonly<{
     quoteView?: boolean;
     customerView?: boolean;
+    customerEdit?: boolean;
     productView?: boolean;
     productEdit?: boolean;
     /** Formula-domain authoring is deliberately separate from Product editing. */
@@ -1663,6 +1664,15 @@ export const customerApi = {
   get: (organizationId: string, customerId: string) =>
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,
+    ),
+  create: (organizationId: string, input: Readonly<{ companyName: string; displayName?: string; email?: string; phone?: string }>) =>
+    request<CustomerWorkspaceRead>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/customers`,
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        body: JSON.stringify(input),
+      },
     ),
 };
 export type ContactCatalogItem = Readonly<{

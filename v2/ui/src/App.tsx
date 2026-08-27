@@ -450,6 +450,7 @@ export const App = ({
           sessionScope={sessionScope}
           customerId={customerId}
           canView={bootstrap.data?.capabilities.customerView === true}
+          canCreate={bootstrap.data?.capabilities.customerEdit === true}
           openCustomer={(id) => {
             pushCustomerLocation(id);
             setCustomerId(id);
