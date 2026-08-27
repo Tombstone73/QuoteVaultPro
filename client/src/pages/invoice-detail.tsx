@@ -1486,73 +1486,75 @@ export default function InvoiceDetailPage() {
             return (
               <>
         <Dialog open={stripeRefundOpen} onOpenChange={handleStripeRefundOpenChange}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
+          <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-md">
+            <DialogHeader className="shrink-0">
               <DialogTitle>Refund Stripe payment</DialogTitle>
             </DialogHeader>
 
             {stripeRefundSummary ? (
-              <div className="grid gap-4">
-                <div className="rounded-md border bg-muted/30 p-3 text-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">Processor</span>
-                    <Badge variant="secondary" className="gap-1">
-                      <CreditCard className="h-3.5 w-3.5" />
-                      Stripe
-                    </Badge>
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div className="grid gap-4 py-1">
+                  <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">Processor</span>
+                      <Badge variant="secondary" className="gap-1">
+                        <CreditCard className="h-3.5 w-3.5" />
+                        Stripe
+                      </Badge>
+                    </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <div>
+                        <div className="text-xs text-muted-foreground">Original payment</div>
+                        <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.originalAmountCents)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">Already refunded</div>
+                        <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.alreadyRefundedCents)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">Remaining refundable</div>
+                        <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.remainingRefundableCents)}</div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                    <div>
-                      <div className="text-xs text-muted-foreground">Original payment</div>
-                      <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.originalAmountCents)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Already refunded</div>
-                      <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.alreadyRefundedCents)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Remaining refundable</div>
-                      <div className="font-medium">{formatCurrencyFromCents(stripeRefundSummary.remainingRefundableCents)}</div>
-                    </div>
-                  </div>
-                </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="stripe-refund-amount">Refund amount</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="stripe-refund-amount"
-                      inputMode="decimal"
-                      value={stripeRefundAmount}
-                      onChange={(event) => {
-                        setStripeRefundAmount(event.target.value);
-                        if (stripeRefundError) setStripeRefundError(null);
-                      }}
-                      disabled={initiateStripeRefund.isPending}
-                      placeholder="0.00"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        setStripeRefundAmount((stripeRefundSummary.remainingRefundableCents / 100).toFixed(2));
-                        setStripeRefundError(null);
-                      }}
-                      disabled={initiateStripeRefund.isPending}
-                    >
-                      Full Refund
-                    </Button>
+                  <div className="grid gap-2">
+                    <Label htmlFor="stripe-refund-amount">Refund amount</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="stripe-refund-amount"
+                        inputMode="decimal"
+                        value={stripeRefundAmount}
+                        onChange={(event) => {
+                          setStripeRefundAmount(event.target.value);
+                          if (stripeRefundError) setStripeRefundError(null);
+                        }}
+                        disabled={initiateStripeRefund.isPending}
+                        placeholder="0.00"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setStripeRefundAmount((stripeRefundSummary.remainingRefundableCents / 100).toFixed(2));
+                          setStripeRefundError(null);
+                        }}
+                        disabled={initiateStripeRefund.isPending}
+                      >
+                        Full Refund
+                      </Button>
+                    </div>
+                    {stripeRefundError ? <div className="text-xs text-destructive">{stripeRefundError}</div> : null}
                   </div>
-                  {stripeRefundError ? <div className="text-xs text-destructive">{stripeRefundError}</div> : null}
-                </div>
 
-                <div className="text-xs text-muted-foreground">
-                  Stripe will process this refund. The invoice balance updates after Stripe’s webhook confirms it.
+                  <div className="text-xs text-muted-foreground">
+                    Stripe will process this refund. The invoice balance updates after Stripe’s webhook confirms it.
+                  </div>
                 </div>
               </div>
             ) : null}
 
-            <DialogFooter>
+            <DialogFooter className="shrink-0 border-t pt-4">
               <Button type="button" variant="outline" onClick={() => handleStripeRefundOpenChange(false)} disabled={initiateStripeRefund.isPending}>
                 Cancel
               </Button>
