@@ -596,7 +596,7 @@ export default function SettingsIntegrations() {
       if (code === 'STRIPE_NOT_CONFIGURED') {
         toast({
           title: 'Stripe',
-          description: "Stripe isn’t configured on the server yet. Add STRIPE_SECRET_KEY (sk_test_...) and restart the server.",
+          description: "Stripe isn’t configured on the server yet. Add a valid Stripe server API key and restart the server.",
           variant: 'destructive',
         });
         return;

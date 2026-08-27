@@ -79,7 +79,7 @@ export function registerStripeRoutes(
         return res.status(400).json({
           success: false,
           code: 'STRIPE_NOT_CONFIGURED',
-          message: 'Stripe is not configured. Set STRIPE_SECRET_KEY (sk_...) in server env and restart the server.',
+          message: 'Stripe is not configured. Set a valid STRIPE_SECRET_KEY in server env and restart the server.',
         });
       }
 
@@ -93,7 +93,7 @@ export function registerStripeRoutes(
 
       const mode = stripeCfg.mode;
       if (mode === 'unknown') {
-        return res.status(409).json({ success: false, code: 'STRIPE_MODE_UNKNOWN', message: 'Stripe server mode is unknown. Use an sk_test_ or sk_live_ key.' });
+        return res.status(409).json({ success: false, code: 'STRIPE_MODE_UNKNOWN', message: 'Stripe server mode is unknown. Use a valid test or live Stripe server API key.' });
       }
       let stripeAccountId = existing?.externalAccountId ? String(existing.externalAccountId) : null;
 

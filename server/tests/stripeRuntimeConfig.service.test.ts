@@ -5,6 +5,10 @@ import {
   getStripePlatformBrowserConfig,
   resolveStripeRuntimeConfigState,
 } from "../services/stripeRuntimeConfig.service";
+import {
+  assertStripeServerConfig,
+  getStripeModeFromSecretKey,
+} from "../lib/stripe";
 
 const platformEnv = {
   STRIPE_SECRET_KEY: "sk_test_platform_secret",
@@ -21,6 +25,21 @@ function readyState(stripeAccountId: string) {
 }
 
 describe("Stripe runtime browser configuration", () => {
+  test.each([
+    ["sk_test_standard_secret", "test"],
+    ["sk_live_standard_secret", "live"],
+    ["rk_test_restricted_secret", "test"],
+    ["rk_live_restricted_secret", "live"],
+  ] as const)("classifies supported Stripe server credentials as %s mode", (secretKey, mode) => {
+    expect(getStripeModeFromSecretKey(secretKey)).toBe(mode);
+    expect(assertStripeServerConfig({ env: { STRIPE_SECRET_KEY: secretKey } })).toMatchObject({ ok: true, mode });
+  });
+
+  test.each(["rk_live_", "rk_unknown_secret", "rk_live_has whitespace", "not-a-stripe-key"])("fails closed for malformed server credential %s", (secretKey) => {
+    expect(getStripeModeFromSecretKey(secretKey)).toBe("unknown");
+    expect(assertStripeServerConfig({ env: { STRIPE_SECRET_KEY: secretKey } })).toMatchObject({ ok: false, mode: "unknown", reason: "invalid_secret_key" });
+  });
+
   test("two tenant accounts use the same platform key but retain distinct Connect context", () => {
     const tenantA = resolveStripeRuntimeConfigState(readyState("acct_tenant_a"));
     const tenantB = resolveStripeRuntimeConfigState(readyState("acct_tenant_b"));
@@ -39,6 +58,38 @@ describe("Stripe runtime browser configuration", () => {
       .toMatchObject({ ok: false, code: "STRIPE_PLATFORM_MODE_MISMATCH" });
     expect(getStripePlatformBrowserConfig({ STRIPE_SECRET_KEY: "sk_test_platform_secret", STRIPE_PUBLISHABLE_KEY: "pk_test_platform_public" }))
       .toMatchObject({ ok: false, code: "STRIPE_WEBHOOK_SECRET_MISSING" });
+  });
+
+  test("accepts restricted server keys only when the publishable key has the same mode and a webhook secret is present", () => {
+    expect(getStripePlatformBrowserConfig({
+      STRIPE_SECRET_KEY: "rk_live_restricted_secret",
+      STRIPE_PUBLISHABLE_KEY: "pk_live_platform_public",
+      STRIPE_WEBHOOK_SECRET: "whsec_live_secret",
+    })).toMatchObject({ ok: true, data: { mode: "live", publishableKey: "pk_live_platform_public" } });
+    expect(getStripePlatformBrowserConfig({
+      STRIPE_SECRET_KEY: "rk_test_restricted_secret",
+      STRIPE_PUBLISHABLE_KEY: "pk_test_platform_public",
+      STRIPE_WEBHOOK_SECRET: "whsec_test_secret",
+    })).toMatchObject({ ok: true, data: { mode: "test", publishableKey: "pk_test_platform_public" } });
+    expect(getStripePlatformBrowserConfig({
+      STRIPE_SECRET_KEY: "rk_live_restricted_secret",
+      STRIPE_PUBLISHABLE_KEY: "pk_test_platform_public",
+      STRIPE_WEBHOOK_SECRET: "whsec_live_secret",
+    })).toMatchObject({ ok: false, code: "STRIPE_PLATFORM_MODE_MISMATCH" });
+    expect(getStripePlatformBrowserConfig({
+      STRIPE_SECRET_KEY: "rk_test_restricted_secret",
+      STRIPE_PUBLISHABLE_KEY: "pk_live_platform_public",
+      STRIPE_WEBHOOK_SECRET: "whsec_test_secret",
+    })).toMatchObject({ ok: false, code: "STRIPE_PLATFORM_MODE_MISMATCH" });
+    expect(getStripePlatformBrowserConfig({
+      STRIPE_SECRET_KEY: "rk_live_restricted_secret",
+      STRIPE_PUBLISHABLE_KEY: "pk_live_platform_public",
+    })).toMatchObject({ ok: false, code: "STRIPE_WEBHOOK_SECRET_MISSING" });
+    expect(getStripePlatformBrowserConfig({
+      STRIPE_SECRET_KEY: "rk_live_restricted_secret",
+      STRIPE_PUBLISHABLE_KEY: "pk_live_platform_public",
+      STRIPE_WEBHOOK_SECRET: "not-a-webhook-secret",
+    })).toMatchObject({ ok: false, code: "STRIPE_WEBHOOK_SECRET_INVALID" });
   });
 
   test("enforces enabled, ready, and fail-closed provider selection", () => {

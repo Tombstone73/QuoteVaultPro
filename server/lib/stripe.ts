@@ -14,11 +14,12 @@ export type StripeServerConfigStatus = {
 
 type StripeEnv = Record<string, string | undefined>;
 
+/** Server API credentials may be standard secret keys or least-privilege restricted keys. */
+const STRIPE_SERVER_KEY_PATTERN = /^(?:sk|rk)_(test|live)_[^\s]+$/;
+
 export function getStripeModeFromSecretKey(secretKey: string): StripeMode {
-  if (secretKey.startsWith('sk_live_')) return 'live';
-  if (secretKey.startsWith('sk_test_')) return 'test';
-  if (secretKey.startsWith('sk_')) return 'unknown';
-  return 'unknown';
+  const match = String(secretKey || '').trim().match(STRIPE_SERVER_KEY_PATTERN);
+  return match?.[1] === 'test' || match?.[1] === 'live' ? match[1] : 'unknown';
 }
 
 function getWebhookSecretStatus(env: StripeEnv = process.env): StripeServerConfigStatus['webhookSecretStatus'] {
@@ -33,11 +34,11 @@ export function assertStripeServerConfig(options?: { logOnce?: boolean; env?: St
   const secretKey = String(env.STRIPE_SECRET_KEY || '').trim();
   const webhookSecretStatus = getWebhookSecretStatus(env);
 
-  const ok = !!secretKey && secretKey.startsWith('sk_');
-  const mode = ok ? getStripeModeFromSecretKey(secretKey) : 'unknown';
+  const mode = getStripeModeFromSecretKey(secretKey);
+  const ok = mode !== 'unknown';
   const reason: StripeServerConfigStatus['reason'] | undefined = !secretKey
     ? 'missing_secret_key'
-    : !secretKey.startsWith('sk_')
+    : !ok
       ? 'invalid_secret_key'
       : undefined;
 
