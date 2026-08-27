@@ -48,7 +48,7 @@ export type AuthenticatedQuoteRuntime = Readonly<{
   customerDependencies: CustomerHttpDependencies;
   contactDependencies: ContactHttpDependencies;
   productDependencies: ProductHttpDependencies;
-  taxSettingsDependencies: TaxSettingsHttpDependencies;
+  taxSettingsDependencies: Omit<TaxSettingsHttpDependencies, "logger">;
   trustedHostMiddleware: RequestHandler;
 }>;
 

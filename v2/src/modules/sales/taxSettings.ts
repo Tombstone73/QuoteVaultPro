@@ -13,6 +13,21 @@ export type SalesTaxJurisdiction = Readonly<{
 }>;
 
 export type HomeBusinessTaxSettings = Readonly<{ homeBusiness?: SalesTaxJurisdiction }>;
+
+/** Secret-free operational stages for the Home / Business tax settings command. */
+export type SalesTaxSettingsSaveTrace = (
+  stage:
+    | "repository_transaction_started"
+    | "durable_request_started"
+    | "durable_request_replayed"
+    | "jurisdiction_upserted"
+    | "audit_written"
+    | "durable_request_completed"
+    | "transaction_committed"
+    | "repository_failed"
+    | "transaction_rolled_back",
+  context?: Readonly<{ resourceId?: string; errorCode?: string }>,
+) => void;
 export type SaveHomeBusinessTaxSettings = Readonly<{
   name: string;
   countryCode: string;

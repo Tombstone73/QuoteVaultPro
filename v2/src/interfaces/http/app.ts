@@ -37,7 +37,7 @@ export type AuthenticatedQuoteRouteRuntime = Readonly<{
   customerDependencies: CustomerHttpDependencies;
   contactDependencies: ContactHttpDependencies;
   productDependencies: ProductHttpDependencies;
-  taxSettingsDependencies: TaxSettingsHttpDependencies;
+  taxSettingsDependencies: Omit<TaxSettingsHttpDependencies, "logger">;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -221,8 +221,13 @@ export const createV2HttpApp = (
       "/v2/organizations/:organizationId/settings/sales-tax",
       quote.trustedHostMiddleware,
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
-      requireV2CsrfToken,
-      createTaxSettingsRouter(quote.taxSettingsDependencies),
+      (request, response, next) => {
+        if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return next();
+        let passed=false;
+        response.once("finish",()=>{if(!passed&&response.statusCode===403)logger.log("warn","v2.sales_tax_settings.save.csrf_rejected",{organizationId:request.params.organizationId,errorCode:"FORBIDDEN",httpStatus:403});});
+        requireV2CsrfToken(request,response,()=>{passed=true;logger.log("info","v2.sales_tax_settings.save.csrf_passed",{organizationId:request.params.organizationId});next();});
+      },
+      createTaxSettingsRouter({ ...quote.taxSettingsDependencies, logger }),
     );
   if (order)
     app.use(

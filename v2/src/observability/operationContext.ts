@@ -12,6 +12,7 @@ export type V2LogContext = Readonly<{
   resourceId?: string;
   reconciliationId?: string;
   errorCode?: string;
+  httpStatus?: number;
 }>;
 
 export const principalLogContext = (principal: Principal): V2LogContext => ({
