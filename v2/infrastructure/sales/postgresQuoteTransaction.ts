@@ -390,7 +390,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       input.lines,
       old,
     );
-    await this.client.query("UPDATE v2_sales_quote_details SET requested_fulfillment_method=$3,requested_destination=$4::jsonb,fulfillment_instructions=$5,selling_adjustment_cents=$6,selling_adjustment_reason=$7,commercial_charge=$8::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId,input.quoteId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
+    await this.client.query("UPDATE v2_sales_quote_details SET expires_at=$3,requested_fulfillment_method=$4,requested_destination=$5::jsonb,fulfillment_instructions=$6,selling_adjustment_cents=$7,selling_adjustment_reason=$8,commercial_charge=$9::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId,input.quoteId,input.expiresAt ?? null,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
     await this.writeTaxComposition(input.organizationId, input.quoteId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     return true;
   }

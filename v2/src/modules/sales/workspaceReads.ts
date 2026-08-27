@@ -9,6 +9,11 @@ export type SalesWorkspacePageRequest = Readonly<{
   cursor?: string;
   search?: string;
   lifecycle?: string;
+  /** Inclusive ISO date bounds for the Sales-owned requested due date. */
+  dueFrom?: string;
+  dueTo?: string;
+  /** This is applied by the tenant-scoped read projection before paging. */
+  sort?: "updated_desc" | "updated_asc";
 }>;
 
 export type SalesWorkspacePage<T> = Readonly<{

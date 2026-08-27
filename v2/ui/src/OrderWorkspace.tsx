@@ -71,6 +71,7 @@ export const OrderWorkspace = (
     sessionScope: string;
     orderId: string;
     canEdit: boolean;
+    canCreate: boolean;
     canCancel: boolean;
     canOverridePrice: boolean;
     canViewInvoice: boolean;
@@ -79,6 +80,7 @@ export const OrderWorkspace = (
     canViewProduction: boolean;
     csrfReady: boolean;
     onBack: () => void;
+    openOrder?: (orderId: string) => void;
     openCustomer?: (customerId: string) => void;
     openFulfillment?: (orderId: string) => void;
     openInvoice?: (invoiceId: string) => void;
@@ -113,6 +115,7 @@ export const OrderWorkspace = (
   const [contactId, setContactId] = useState("");
   const [po, setPo] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [termsCode, setTermsCode] = useState("");
   const [notes, setNotes] = useState("");
   const [fulfillmentMethod, setFulfillmentMethod] = useState<
     "" | "pickup" | "shipping" | "local_delivery"
@@ -270,6 +273,7 @@ export const OrderWorkspace = (
     setContactId(current.order.customerContact.contactId ?? "");
     setPo(current.order.purchaseOrderNumber ?? "");
     setDueDate(current.order.requestedDueDate ?? "");
+    setTermsCode(current.order.terms.termsCode ?? "");
     setNotes(current.order.terms.commercialNotes ?? "");
     setEditingLineId("");
     setFulfillmentMethod(current.order.requestedFulfillment?.method ?? "");
@@ -370,7 +374,10 @@ export const OrderWorkspace = (
           },
           purchaseOrderNumber: po.trim() || null,
           requestedDueDate: dueDate || null,
-          terms: { commercialNotes: notes },
+          terms: {
+            ...(termsCode.trim() ? { termsCode: termsCode.trim() } : {}),
+            commercialNotes: notes,
+          },
           requestedFulfillment,
           sellingAdjustment,
         },
@@ -397,6 +404,19 @@ export const OrderWorkspace = (
   const cancelOrder = useMutation({
     mutationFn: (reason: string) => orderApi.cancel(props.organizationId, props.orderId, requestId("cancel", { revision: current!.revision, reason }), current!.revision, reason),
     onSuccess: (result) => { apply(result); complete("cancel"); setNotice("Order cancelled. Billing and downstream history were preserved."); },
+    onError: (error) => setNotice(message(error)),
+  });
+  const duplicateOrder = useMutation({
+    mutationFn: () =>
+      orderApi.duplicate(
+        props.organizationId,
+        props.orderId,
+        requestId("duplicate", { orderId: props.orderId }),
+      ),
+    onSuccess: (result) => {
+      setNotice(`New Order #${result.order.number.display} created.`);
+      props.openOrder?.(result.order.order.orderId);
+    },
     onError: (error) => setNotice(message(error)),
   });
   if (order.isLoading) return <div className="skeleton" />;
@@ -486,10 +506,10 @@ export const OrderWorkspace = (
           <small>Sales Rep</small>
           <span>—</span>
         </div>
-        <div className="v2-sales-inline-fact">
+        <label className="v2-sales-inline-fact">
           <small>Terms</small>
-          <span>—</span>
-        </div>
+          <input aria-label="Terms" value={termsCode} disabled={!editable} onChange={(event) => setTermsCode(event.target.value)} placeholder="Terms code" />
+        </label>
         <div className="v2-sales-inline-fact">
           <small>Fulfillment method</small>
           <button
@@ -668,6 +688,23 @@ export const OrderWorkspace = (
                 },
               ])
             }
+            onDuplicate={() =>
+              change([{ kind: "duplicate", sourceLineId: selectedLine.lineId }])
+            }
+            onMoveUp={() => {
+              const ids = current.order.lines.map((line) => line.lineId);
+              const index = ids.indexOf(selectedLine.lineId);
+              [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
+              change([{ kind: "reorder", lineIds: ids }]);
+            }}
+            onMoveDown={() => {
+              const ids = current.order.lines.map((line) => line.lineId);
+              const index = ids.indexOf(selectedLine.lineId);
+              [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
+              change([{ kind: "reorder", lineIds: ids }]);
+            }}
+            canMoveUp={selectedLine.position > 1}
+            canMoveDown={selectedLine.position < current.order.lines.length}
             onRemove={() =>
               change([{ kind: "remove", lineId: selectedLine.lineId }])
             }
@@ -736,6 +773,14 @@ export const OrderWorkspace = (
               Open Customer
             </button>
             <button className="button secondary" type="button" onClick={() => window.open(`/v2/organizations/${encodeURIComponent(props.organizationId)}/orders/${encodeURIComponent(current.order.orderId)}/document.pdf`, "_blank", "noopener,noreferrer")}>Preview PDF</button>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={!props.canCreate || duplicateOrder.isPending || !props.csrfReady}
+              onClick={() => duplicateOrder.mutate()}
+            >
+              {duplicateOrder.isPending ? "Duplicating…" : "Duplicate Order"}
+            </button>
             <button
               className="button secondary"
               type="button"
@@ -1039,6 +1084,11 @@ const OrderLineEditor = ({
   busy,
   onSave,
   onSaveDescription,
+  onDuplicate,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
   onRemove,
   onClose,
 }: Readonly<{
@@ -1057,6 +1107,11 @@ const OrderLineEditor = ({
   busy: boolean;
   onSave: (line: QuoteLineMutationInput) => void;
   onSaveDescription: (description: string) => void;
+  onDuplicate: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onRemove: () => void;
   onClose: () => void;
 }>) => {
@@ -1086,6 +1141,13 @@ const OrderLineEditor = ({
             Remove
           </button>
         ) : null}
+        {editable && (
+          <div className="v2-sales-line-actions">
+            <button className="button secondary" type="button" disabled={busy || !csrfReady} onClick={onDuplicate}>Duplicate line</button>
+            <button className="button secondary" type="button" disabled={busy || !csrfReady || !canMoveUp} onClick={onMoveUp}>Move up</button>
+            <button className="button secondary" type="button" disabled={busy || !csrfReady || !canMoveDown} onClick={onMoveDown}>Move down</button>
+          </div>
+        )}
       </header>
       <section
         className="v2-order-line-editor-section"

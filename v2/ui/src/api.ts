@@ -39,8 +39,9 @@ export type QuoteRead = Readonly<{
     };
     purchaseOrderNumber?: string;
     requestedDueDate?: string;
-    terms: { commercialNotes?: string };
+    terms: { termsCode?: string; commercialNotes?: string };
     currency: string;
+    expiresAt?: string;
     deliveryState: "not_sent" | "sent";
     acceptanceState: "not_accepted" | "accepted";
     lifecycleState?: "open" | "declined" | "voided";
@@ -785,7 +786,7 @@ export type OrderRead = Readonly<{
     };
     purchaseOrderNumber?: string;
     requestedDueDate?: string;
-    terms: { commercialNotes?: string };
+    terms: { termsCode?: string; commercialNotes?: string };
     currency: string;
     commercialState: "open" | "cancelled";
     requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }; instructions?: string };
@@ -1193,6 +1194,9 @@ const withSearch = (
   query: Readonly<{
     q?: string;
     lifecycle?: string;
+    dueFrom?: string;
+    dueTo?: string;
+    sort?: "updated_desc" | "updated_asc";
     cursor?: string;
     limit?: number;
   }> = {},
@@ -1200,6 +1204,9 @@ const withSearch = (
   const value = new URLSearchParams();
   if (query.q) value.set("q", query.q);
   if (query.lifecycle) value.set("lifecycle", query.lifecycle);
+  if (query.dueFrom) value.set("dueFrom", query.dueFrom);
+  if (query.dueTo) value.set("dueTo", query.dueTo);
+  if (query.sort) value.set("sort", query.sort);
   if (query.cursor) value.set("cursor", query.cursor);
   if (query.limit) value.set("limit", String(query.limit));
   const text = value.toString();
@@ -1322,6 +1329,9 @@ export const quoteApi = {
     query?: Readonly<{
       q?: string;
       lifecycle?: string;
+      dueFrom?: string;
+      dueTo?: string;
+      sort?: "updated_desc" | "updated_asc";
       cursor?: string;
       limit?: number;
     }>,
@@ -1359,6 +1369,19 @@ export const quoteApi = {
           businessRequestId,
           expectedRevision: input.expectedRevision,
         }),
+      },
+    ),
+  duplicate: (
+    organizationId: string,
+    quoteId: string,
+    businessRequestId: string,
+  ) =>
+    request<QuoteResult>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/duplicate`),
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        body: JSON.stringify({ businessRequestId }),
       },
     ),
   action: (
@@ -1515,6 +1538,17 @@ export const orderApi = {
           "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
         },
         body: JSON.stringify({ ...input, businessRequestId }),
+      },
+    );
+    return { ...raw, order: orderForUi(raw.order) };
+  },
+  duplicate: async (organizationId: string, orderId: string, businessRequestId: string): Promise<OrderResult> => {
+    const raw = await request<{ order: RawOrderRead; draftInvoiceId: string }>(
+      orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/duplicate`),
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        body: JSON.stringify({ businessRequestId }),
       },
     );
     return { ...raw, order: orderForUi(raw.order) };

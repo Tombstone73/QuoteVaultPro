@@ -133,10 +133,14 @@ export type SalesDocumentPatch = Readonly<{
   lines?: readonly SalesLineInput[];
 }>;
 export type EditQuoteCommand = Readonly<{ organizationId: OrganizationId; quoteId: QuoteId; businessRequestId: BusinessRequestId; expectedStateToken: string; patch: SalesDocumentPatch }>;
+/** Creates a fresh Draft from an existing Quote's frozen commercial facts. */
+export type DuplicateQuoteCommand = Readonly<{ organizationId: OrganizationId; quoteId: QuoteId; businessRequestId: BusinessRequestId }>;
 export type SendQuoteCommand = Readonly<{ organizationId: OrganizationId; quoteId: QuoteId; businessRequestId: BusinessRequestId; expectedStateToken: string }>;
 export type AcceptQuoteCommand = Readonly<{ organizationId: OrganizationId; quoteId: QuoteId; checkpointId: QuoteCheckpointId; businessRequestId: BusinessRequestId; expectedStateToken: string }>;
 export type ConvertQuoteCommand = Readonly<{ organizationId: OrganizationId; quoteId: QuoteId; sourceCheckpointId: QuoteCheckpointId; businessRequestId: BusinessRequestId; expectedStateToken: string }>;
 export type CreateOrderCommand = Readonly<{ organizationId: OrganizationId; businessRequestId: BusinessRequestId; current: Omit<SalesDocumentCurrentState, "organizationId" | "lines"> & Readonly<{ lines: readonly SalesLineInput[] }> }>;
+/** Creates a fresh open Order from an existing Order's frozen commercial facts. */
+export type DuplicateOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId }>;
 export type EditOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; expectedStateToken: string; patch: SalesDocumentPatch }>;
 /** Cancellation is an optimistic, auditable Sales lifecycle action.  It never
  * deletes the Order or any downstream operational/financial history. */

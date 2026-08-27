@@ -33,6 +33,10 @@ export interface OrderHttpService {
     context: OperationContext,
     input: Readonly<Record<string, unknown>>,
   ): Promise<ApplicationResult<unknown>>;
+  duplicate?(
+    context: OperationContext,
+    input: import("../../modules/sales/contracts.js").DuplicateOrderCommand,
+  ): Promise<ApplicationResult<unknown>>;
 }
 export interface OrderCustomerDocumentPort {
   orderPdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, orderId: OrderId): Promise<Uint8Array>;
@@ -97,6 +101,15 @@ const businessRequestId = (value: unknown): string => {
       "businessRequestId is required.",
     );
   return id;
+};
+const dueDateQuery = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+    throw new V2ApplicationError("VALIDATION_ERROR", "Due-date filters must use YYYY-MM-DD.");
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
+    throw new V2ApplicationError("VALIDATION_ERROR", "Due-date filters must use a real calendar date.");
+  return value;
 };
 
 const context = async (
@@ -181,11 +194,16 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       if (!new AuthorityPolicy().decide(operation.principal, { capability: "order.view", resource: { organizationId: operation.organizationId } }).allowed)
         throw new V2ApplicationError("FORBIDDEN", "Order access is unavailable.");
       const limit = Number(request.query.limit ?? 25);
+      const dueFrom = dueDateQuery(request.query.dueFrom);
+      const dueTo = dueDateQuery(request.query.dueTo);
       const data = await dependencies.workspace.listOrdersForWorkspace(brandedId<"OrganizationId">(operation.organizationId), {
         ...(Number.isFinite(limit) ? { limit } : {}),
         ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
         ...(typeof request.query.q === "string" ? { search: request.query.q } : {}),
         ...(typeof request.query.lifecycle === "string" ? { lifecycle: request.query.lifecycle } : {}),
+        ...(dueFrom ? { dueFrom } : {}),
+        ...(dueTo ? { dueTo } : {}),
+        ...(request.query.sort === "updated_asc" || request.query.sort === "updated_desc" ? { sort: request.query.sort } : {}),
       });
       response.status(200).json({ ok: true, data });
     } catch (cause) { error(response, cause); }
@@ -200,6 +218,19 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       const value = await dependencies.workspace.readLegacyOrder(brandedId<"OrganizationId">(operation.organizationId), request.params.recordId);
       if (!value) throw new V2ApplicationError("NOT_FOUND", "Legacy Order was not found.");
       response.status(200).json({ ok: true, data: value });
+    } catch (cause) { error(response, cause); }
+  });
+
+  router.post("/:orderId/duplicate", async (request, response) => {
+    try {
+      if (!dependencies.service.duplicate)
+        throw new V2ApplicationError("INTERNAL_ERROR", "Order duplication runtime is unavailable.");
+      const operation = await context(request, dependencies, true);
+      send(response, await dependencies.service.duplicate(operation, {
+        organizationId: brandedId<"OrganizationId">(operation.organizationId),
+        orderId: brandedId<"OrderId">(request.params.orderId),
+        businessRequestId: businessRequestId(request.body) as import("../../modules/shared/commercialValues.js").BusinessRequestId,
+      }));
     } catch (cause) { error(response, cause); }
   });
 

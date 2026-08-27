@@ -30,6 +30,9 @@ assert.match(markup, /Status/);
 assert.match(markup, /Total/);
 for (const filter of ["All", "Draft", "Sent", "Accepted", "Converted"]) assert.match(markup, new RegExp(`>${filter}<`));
 assert.match(markup, /New Quote/);
+assert.match(markup, /Due from/);
+assert.match(markup, /Updated: newest/);
+assert.match(markup, /Actions/);
 assert.doesNotMatch(markup, /Organization ID|Authenticated route scope|Sales organization/);
 
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");

@@ -9,10 +9,10 @@ export const quoteKeys = {
 };
 
 export const salesKeys = {
-  quotes: (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
-    ["v2", sessionScope, organizationId, "sales", "quotes", query.q ?? "", query.lifecycle ?? "", query.cursor ?? ""] as const,
-  orders: (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
-    ["v2", sessionScope, organizationId, "sales", "orders", query.q ?? "", query.lifecycle ?? "", query.cursor ?? ""] as const,
+  quotes: (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; dueFrom?: string; dueTo?: string; sort?: "updated_desc" | "updated_asc"; cursor?: string }> = {}) =>
+    ["v2", sessionScope, organizationId, "sales", "quotes", query.q ?? "", query.lifecycle ?? "", query.dueFrom ?? "", query.dueTo ?? "", query.sort ?? "updated_desc", query.cursor ?? ""] as const,
+  orders: (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; dueFrom?: string; dueTo?: string; sort?: "updated_desc" | "updated_asc"; cursor?: string }> = {}) =>
+    ["v2", sessionScope, organizationId, "sales", "orders", query.q ?? "", query.lifecycle ?? "", query.dueFrom ?? "", query.dueTo ?? "", query.sort ?? "updated_desc", query.cursor ?? ""] as const,
   order: (sessionScope: string, organizationId: string, orderId: string) =>
     ["v2", sessionScope, organizationId, "order", orderId] as const,
 };
@@ -86,9 +86,9 @@ export const useQuoteFormContacts = (
 ) => useQuery(quoteFormQueryOptions.contacts(sessionScope, organizationId, customerId));
 export const useQuoteFormProducts = (sessionScope: string, organizationId: string) =>
   useQuery(quoteFormQueryOptions.products(sessionScope, organizationId));
-export const useSalesQuotes = (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
+export const useSalesQuotes = (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; dueFrom?: string; dueTo?: string; sort?: "updated_desc" | "updated_asc"; cursor?: string }> = {}) =>
   useQuery({ queryKey: salesKeys.quotes(sessionScope, organizationId, query), queryFn: () => quoteApi.list(organizationId, query), enabled: Boolean(sessionScope && organizationId) });
-export const useSalesOrders = (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; cursor?: string }> = {}) =>
+export const useSalesOrders = (sessionScope: string, organizationId: string, query: Readonly<{ q?: string; lifecycle?: string; dueFrom?: string; dueTo?: string; sort?: "updated_desc" | "updated_asc"; cursor?: string }> = {}) =>
   useQuery({ queryKey: salesKeys.orders(sessionScope, organizationId, query), queryFn: () => orderApi.list(organizationId, query), enabled: Boolean(sessionScope && organizationId) });
 export const useQuoteFormConfiguration = (
   sessionScope: string,

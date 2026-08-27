@@ -84,6 +84,15 @@ const requestId = (body: unknown): string => {
     );
   return value;
 };
+const dueDateQuery = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+    throw new V2ApplicationError("VALIDATION_ERROR", "Due-date filters must use YYYY-MM-DD.");
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
+    throw new V2ApplicationError("VALIDATION_ERROR", "Due-date filters must use a real calendar date.");
+  return value;
+};
 /** Browser projection: commercial facts only; no repository or PBV2 editor state. */
 const quoteForUi = (value: QuoteReadModel) => {
   const lines = value.quote.lines.map((line, index) => ({
@@ -249,11 +258,16 @@ export const createQuoteRouter = (
       if (!new AuthorityPolicy().decide(operation.principal, { capability: "quote.view", resource: { organizationId: operation.organizationId } }).allowed)
         throw new V2ApplicationError("FORBIDDEN", "Quote access is unavailable.");
       const limit = Number(request.query.limit ?? 25);
+      const dueFrom = dueDateQuery(request.query.dueFrom);
+      const dueTo = dueDateQuery(request.query.dueTo);
       const data = await dependencies.workspace.listQuotes(brandedId<"OrganizationId">(operation.organizationId), {
         ...(Number.isFinite(limit) ? { limit } : {}),
         ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
         ...(typeof request.query.q === "string" ? { search: request.query.q } : {}),
         ...(typeof request.query.lifecycle === "string" ? { lifecycle: request.query.lifecycle } : {}),
+        ...(dueFrom ? { dueFrom } : {}),
+        ...(dueTo ? { dueTo } : {}),
+        ...(request.query.sort === "updated_asc" || request.query.sort === "updated_desc" ? { sort: request.query.sort } : {}),
       });
       response.status(200).json({ ok: true, data });
     } catch (cause) { error(response, cause); }
@@ -267,6 +281,16 @@ export const createQuoteRouter = (
       const value = await dependencies.workspace.readLegacyQuote(brandedId<"OrganizationId">(operation.organizationId), request.params.recordId);
       if (!value) throw new V2ApplicationError("NOT_FOUND", "Legacy Quote was not found.");
       response.status(200).json({ ok: true, data: value });
+    } catch (cause) { error(response, cause); }
+  });
+  router.post("/:quoteId/duplicate", async (request, response) => {
+    try {
+      const operation = await context(request, dependencies, true);
+      await send(response, await dependencies.service.duplicate(operation, {
+        organizationId: brandedId<"OrganizationId">(operation.organizationId),
+        quoteId: brandedId<"QuoteId">(request.params.quoteId),
+        businessRequestId: requestId(request.body) as import("../../modules/shared/commercialValues.js").BusinessRequestId,
+      }));
     } catch (cause) { error(response, cause); }
   });
   router.get("/:quoteId", async (request, response) => {

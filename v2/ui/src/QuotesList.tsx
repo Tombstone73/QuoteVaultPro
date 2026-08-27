@@ -10,6 +10,16 @@ const date = (value?: string) =>
   value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
 const statusTone = (value: string) =>
   value === "accepted" ? "ok" : value === "sent" ? "info" : value === "converted" ? "accent" : "neutral";
+type UpdatedSort = "updated_desc" | "updated_asc";
+const preferenceKey = (sessionScope: string, organizationId: string) =>
+  `ph.v2.sales.quotes.updated-sort.${sessionScope}.${organizationId}`;
+const readSortPreference = (sessionScope: string, organizationId: string): UpdatedSort => {
+  try {
+    return window.localStorage.getItem(preferenceKey(sessionScope, organizationId)) === "updated_asc"
+      ? "updated_asc"
+      : "updated_desc";
+  } catch { return "updated_desc"; }
+};
 
 const Status = ({ value }: Readonly<{ value: string }>) => (
   <span data-tone={statusTone(value)} className="status-badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-[11px] font-medium leading-none whitespace-nowrap">
@@ -34,10 +44,16 @@ export const QuotesList = ({
 }>) => {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<(typeof filters)[number]>("All");
+  const [dueFrom, setDueFrom] = useState("");
+  const [dueTo, setDueTo] = useState("");
+  const [sort, setSort] = useState<UpdatedSort>(() => readSortPreference(sessionScope, organizationId));
   const [cursor, setCursor] = useState("");
   const list = useSalesQuotes(sessionScope, organizationId, {
     q: search,
     ...(lifecycleFor(filter) ? { lifecycle: lifecycleFor(filter) } : {}),
+    ...(dueFrom ? { dueFrom } : {}),
+    ...(dueTo ? { dueTo } : {}),
+    sort,
     ...(cursor ? { cursor } : {}),
   });
   const rows = list.data?.items ?? [];
@@ -45,6 +61,11 @@ export const QuotesList = ({
   const select = (row: QuoteListItem) => {
     if (row.source === "legacy") onOpenLegacy(row.recordId);
     else onOpenV2(row.quoteId);
+  };
+  const selectSort = (next: UpdatedSort) => {
+    setSort(next);
+    setCursor("");
+    try { window.localStorage.setItem(preferenceKey(sessionScope, organizationId), next); } catch { /* persistence is a convenience only */ }
   };
 
   return (
@@ -69,12 +90,15 @@ export const QuotesList = ({
         <div className="v2-quotes-chips" aria-label="Quote lifecycle filters">
           {filters.map((value) => <button key={value} type="button" className={filter === value ? "is-selected" : ""} onClick={() => { setFilter(value); setCursor(""); }}>{value}</button>)}
         </div>
+        <label className="v2-quotes-date-filter">Due from <input type="date" value={dueFrom} onChange={(event) => { setDueFrom(event.target.value); setCursor(""); }} /></label>
+        <label className="v2-quotes-date-filter">Due to <input type="date" value={dueTo} onChange={(event) => { setDueTo(event.target.value); setCursor(""); }} /></label>
+        <label className="v2-quotes-sort">Sort <select value={sort} onChange={(event) => selectSort(event.target.value === "updated_asc" ? "updated_asc" : "updated_desc")}><option value="updated_desc">Updated: newest</option><option value="updated_asc">Updated: oldest</option></select></label>
       </div>
 
       <div className="panel overflow-hidden v2-quotes-table-wrap">
         <table className="w-full border-collapse">
           <thead><tr>
-            <th>Quote #</th><th>Customer</th><th>PO</th><th>Rep</th><th className="is-number">Lines</th><th>Due</th><th>Status</th><th className="is-number">Total</th>
+            <th>Quote #</th><th>Customer</th><th>PO</th><th>Rep</th><th className="is-number">Lines</th><th>Due</th><th>Status</th><th className="is-number">Total</th><th>Actions</th>
           </tr></thead>
           <tbody>
             {rows.map((row) => <tr key={`${row.source}:${row.recordId}`} className="row-h" onClick={() => select(row)}>
@@ -86,9 +110,10 @@ export const QuotesList = ({
               <td className="num">{date(row.requestedDueDate)}</td>
               <td><Status value={row.lifecycle} /></td>
               <td className="num is-number v2-quotes-total">{money({ cents: row.sellingTotalCents, currency: row.currency })}</td>
+              <td onClick={(event) => event.stopPropagation()}><details className="v2-sales-row-actions"><summary>Actions</summary><button type="button" onClick={() => select(row)}>Open</button></details></td>
             </tr>)}
-            {!list.isLoading && rows.length === 0 && <tr><td colSpan={8} className="v2-quotes-empty">Nothing matches that filter.</td></tr>}
-            {list.isLoading && <tr><td colSpan={8} className="v2-quotes-empty">Loading Quotes…</td></tr>}
+            {!list.isLoading && rows.length === 0 && <tr><td colSpan={9} className="v2-quotes-empty">Nothing matches that filter.</td></tr>}
+            {list.isLoading && <tr><td colSpan={9} className="v2-quotes-empty">Loading Quotes…</td></tr>}
           </tbody>
         </table>
       </div>

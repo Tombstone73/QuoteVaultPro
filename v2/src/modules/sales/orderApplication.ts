@@ -41,6 +41,7 @@ import {
   type AttributionSnapshot,
   type CancelOrderCommand,
   type CommercialTerms,
+  type DuplicateOrderCommand,
   type MeaningfulAuditChange,
   type OrderCurrentState,
   type RequestedFulfillment,
@@ -106,6 +107,8 @@ export type UpdateOrderInput = Readonly<{
     /** A Sales-owned presentation edit. It must not re-resolve or reprice a frozen line. */
     | Readonly<{ kind: "update_description"; lineId: SalesLineId; description: string }>
     | Readonly<{ kind: "remove"; lineId: SalesLineId }>
+    | Readonly<{ kind: "duplicate"; sourceLineId: SalesLineId }>
+    | Readonly<{ kind: "reorder"; lineIds: readonly SalesLineId[] }>
   )[];
 }>;
 
@@ -450,6 +453,37 @@ export class OrderApplicationService {
     });
   }
 
+  /** A repeat Order keeps commercial decisions but starts a wholly new job. */
+  async duplicate(
+    context: OperationContext,
+    input: DuplicateOrderCommand,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.duplicate.v1", input, "order.create", async (tx, request) => {
+      const source = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
+      if (!source) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+      requireAllowed(this.authority, context, "order.view", source.order.customerContact.customerId);
+      requireAllowed(this.authority, context, "order.create", source.order.customerContact.customerId);
+      if (source.order.lines.some((line) => line.sellingPriceDecision.kind !== "calculated"))
+        requireAllowed(this.authority, context, "order.overridePrice", source.order.customerContact.customerId);
+      const lines = source.order.lines.map((line) => Object.freeze({ ...line, lineId: brandedId<"SalesLineId">(randomUUID()) }));
+      const created = await this.createFromCommercialSnapshot(tx, context, request.id, {
+        customerContact: source.order.customerContact,
+        // New Orders deliberately require an intentional PO and due-date.
+        terms: source.order.terms,
+        requestedFulfillment: source.order.requestedFulfillment,
+        sellingAdjustment: source.order.sellingAdjustment,
+        commercialCharge: source.order.commercialCharge,
+        lines,
+      }, "sales.order.duplicate.v1");
+      await this.history(tx, context, request.id, "sales.order.duplicate.v1", {
+        eventType: "order_updated",
+        resourceId: created.order.order.orderId,
+        changes: [{ group: "line", kind: "line_added", summary: `New Order ${created.order.number.display} duplicated from ${source.number.display}.` }],
+      });
+      return created;
+    });
+  }
+
   /**
    * Canonical Order creation choreography shared by direct entry and Quote
    * conversion.  It intentionally performs no M0 reservation/attribution:
@@ -582,6 +616,9 @@ export class OrderApplicationService {
         commercialCharge,
       });
       if (!applied) throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before editing.");
+      const added = lines.filter((line) => !current.order.lines.some((prior) => prior.lineId === line.lineId));
+      if (added.length)
+        await tx.materialRequirements.freeze(context.organizationId, input.orderId, added);
       const draft = await tx.billing.synchronizeDraftInvoice(this.draftInput(
         context.organizationId,
         input.orderId,
@@ -604,7 +641,6 @@ export class OrderApplicationService {
         throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice is missing.");
       }
       await tx.removeLinesNotIn(brandedId<"OrganizationId">(context.organizationId), input.orderId, lines.map((line) => line.lineId));
-      const added = lines.filter((line) => !current.order.lines.some((prior) => prior.lineId === line.lineId));
       const routeInstances = await this.instantiateRoutes(tx, context, input.orderId, added);
       const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
       if (!order) throw new Error("Updated Order could not be read.");
@@ -725,6 +761,20 @@ export class OrderApplicationService {
   ): Promise<SalesLineSnapshot[]> {
     const lines = [...current.order.lines];
     for (const change of changes) {
+      if (change.kind === "reorder") {
+        if (change.lineIds.length !== lines.length || new Set(change.lineIds).size !== lines.length || change.lineIds.some((id) => !lines.some((line) => line.lineId === id)))
+          throw new V2ApplicationError("VALIDATION_ERROR", "Order line order must include every line exactly once.");
+        lines.splice(0, lines.length, ...change.lineIds.map((id) => lines.find((line) => line.lineId === id)!));
+        continue;
+      }
+      if (change.kind === "duplicate") {
+        const index = lines.findIndex((line) => line.lineId === change.sourceLineId);
+        if (index < 0) throw new V2ApplicationError("NOT_FOUND", "Order line was not found in this Order.");
+        const source = lines[index]!;
+        if (source.sellingPriceDecision.kind !== "calculated") requireAllowed(this.authority, context, "order.overridePrice");
+        lines.splice(index + 1, 0, Object.freeze({ ...source, lineId: brandedId<"SalesLineId">(randomUUID()) }));
+        continue;
+      }
       if (change.kind === "add") {
         lines.push((await this.buildLines(tx, context, [change.line]))[0]!);
         continue;
@@ -903,8 +953,8 @@ export class OrderApplicationService {
 
   private async mutate(
     context: OperationContext,
-    operation: "sales.order.create.v1" | "sales.order.edit.v1" | "sales.order.cancel.v1",
-    command: CreateOrderInput | UpdateOrderInput | CancelOrderCommand,
+    operation: "sales.order.create.v1" | "sales.order.duplicate.v1" | "sales.order.edit.v1" | "sales.order.cancel.v1",
+    command: CreateOrderInput | DuplicateOrderCommand | UpdateOrderInput | CancelOrderCommand,
     capability: "order.create" | "order.edit" | "order.cancel",
     work: (tx: OrderTransaction, request: OrderOperationRequest) => Promise<OrderOperationResult>,
   ): Promise<ApplicationResult<OrderOperationResult>> {

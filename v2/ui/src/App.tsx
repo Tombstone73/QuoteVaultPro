@@ -1462,6 +1462,7 @@ const OrdersPage = ({
         sessionScope={sessionScope}
         orderId={orderId}
         canEdit={bootstrap?.capabilities.orderEdit === true}
+        canCreate={bootstrap?.capabilities.orderCreate === true}
         canCancel={bootstrap?.capabilities.orderCancel === true}
         canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true}
         canViewInvoice={bootstrap?.capabilities.invoiceView === true}
@@ -1470,6 +1471,7 @@ const OrdersPage = ({
         canViewProduction={bootstrap?.capabilities.productionView === true}
         csrfReady={Boolean(bootstrap)}
         onBack={() => setOrderId("")}
+        openOrder={(id) => setOrderId(id)}
         openCustomer={openCustomer}
         openFulfillment={openFulfillment}
         openInvoice={openInvoice}
@@ -1517,6 +1519,7 @@ type WorkspaceProps = Readonly<{
   ) => void;
   reconcileAuthority: () => Promise<void>;
   canOverridePrice: boolean;
+  canCreate?: boolean;
   canEdit?: boolean;
   canSend?: boolean;
   canConvert?: boolean;
@@ -1534,12 +1537,16 @@ const QuoteDocumentMetadata = ({
   contacts,
   purchaseOrderNumber,
   requestedDueDate,
+  expiresAt,
+  termsCode,
   canEdit = true,
   readOnly = false,
   onCustomerChange,
   onContactChange,
   onPurchaseOrderChange,
   onDueDateChange,
+  onExpiresAtChange,
+  onTermsCodeChange,
 }: Readonly<{
   customerId: string;
   contactId: string;
@@ -1547,12 +1554,16 @@ const QuoteDocumentMetadata = ({
   contacts: readonly Selection[];
   purchaseOrderNumber: string;
   requestedDueDate: string;
+  expiresAt: string;
+  termsCode: string;
   canEdit?: boolean;
   readOnly?: boolean;
   onCustomerChange?: (value: string) => void;
   onContactChange?: (value: string) => void;
   onPurchaseOrderChange?: (value: string) => void;
   onDueDateChange?: (value: string) => void;
+  onExpiresAtChange?: (value: string) => void;
+  onTermsCodeChange?: (value: string) => void;
 }>) => {
   const customerName =
     customers.find((customer) => customer.customerId === customerId)
@@ -1620,6 +1631,10 @@ const QuoteDocumentMetadata = ({
         )}
       </label>
       <label className="v2-sales-inline-fact">
+        <small>Quote expiry</small>
+        {readOnly ? <span>{expiresAt || "No expiry"}</span> : <input aria-label="Quote expiry" type="date" value={expiresAt} disabled={!canEdit} onChange={(event) => onExpiresAtChange?.(event.target.value)} />}
+      </label>
+      <label className="v2-sales-inline-fact">
         <small>Requested Due</small>
         {readOnly ? (
           <span>{requestedDueDate || "Unavailable"}</span>
@@ -1640,7 +1655,7 @@ const QuoteDocumentMetadata = ({
       </div>
       <div className="v2-sales-inline-fact">
         <small>Terms</small>
-        <span>Unavailable</span>
+        {readOnly ? <span>{termsCode || "Not set"}</span> : <input aria-label="Terms" value={termsCode} disabled={!canEdit} onChange={(event) => onTermsCodeChange?.(event.target.value)} />}
       </div>
       <div className="v2-sales-inline-fact">
         <small>Fulfillment</small>
@@ -1668,6 +1683,7 @@ const QuoteWorkspace = ({
   applyQuoteResult,
   reconcileAuthority,
   canOverridePrice,
+  canCreate = false,
   canEdit = true,
   canSend = true,
   canConvert = false,
@@ -1680,6 +1696,8 @@ const QuoteWorkspace = ({
   const [contactId, setContactId] = useState("");
   const [purchaseOrderNumber, setPurchaseOrderNumber] = useState("");
   const [requestedDueDate, setRequestedDueDate] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [termsCode, setTermsCode] = useState("");
   const [commercialNotes, setCommercialNotes] = useState("");
   const [fulfillmentMethod, setFulfillmentMethod] = useState<"pickup" | "shipping" | "local_delivery">("pickup");
   const [destinationAddress, setDestinationAddress] = useState("");
@@ -1744,6 +1762,8 @@ const QuoteWorkspace = ({
   useEffect(() => {
     setPurchaseOrderNumber(quote?.quote.purchaseOrderNumber ?? "");
     setRequestedDueDate(dateInputValue(quote?.quote.requestedDueDate));
+    setExpiresAt(dateInputValue(quote?.quote.expiresAt));
+    setTermsCode(quote?.quote.terms.termsCode ?? "");
     setCommercialNotes(quote?.quote.terms.commercialNotes ?? "");
     setFulfillmentMethod(quote?.quote.requestedFulfillment?.method ?? "pickup");
     setDestinationAddress(quote?.quote.requestedFulfillment?.destination?.addressLine1 ?? "");
@@ -1795,9 +1815,10 @@ const QuoteWorkspace = ({
           ? { purchaseOrderNumber: purchaseOrderNumber.trim() }
           : {}),
         ...(requestedDueDate ? { requestedDueDate } : {}),
-        ...(commercialNotes.trim()
-          ? { terms: { commercialNotes: commercialNotes.trim() } }
+        ...(commercialNotes.trim() || termsCode.trim()
+          ? { terms: { ...(termsCode.trim() ? { termsCode: termsCode.trim() } : {}), commercialNotes: commercialNotes.trim() } }
           : {}),
+        ...(expiresAt ? { expiresAt } : {}),
         requestedFulfillment: fulfillmentMethod === "pickup" ? { method: "pickup", ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) } : { method: fulfillmentMethod, destination: { addressLine1: destinationAddress, city: destinationCity, region: destinationRegion, country: destinationCountry, ...(destinationPostalCode ? { postalCode: destinationPostalCode } : {}) }, ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) },
         ...(adjustmentCents.trim() ? { sellingAdjustment: { cents: Number(adjustmentCents), reason: adjustmentReason } } : {}),
         ...(chargeCents.trim() ? { commercialCharge: { kind: chargeKind, cents: Number(chargeCents), ...(chargeDescription.trim() ? { description: chargeDescription } : {}) } } : {}),
@@ -1821,6 +1842,8 @@ const QuoteWorkspace = ({
         revision: quote!.revision,
         purchaseOrderNumber,
         requestedDueDate,
+        expiresAt,
+        termsCode,
         commercialNotes,
         headerCustomerId,
         headerContactId,
@@ -1840,7 +1863,8 @@ const QuoteWorkspace = ({
             },
             purchaseOrderNumber: purchaseOrderNumber.trim() || null,
             requestedDueDate: requestedDueDate || null,
-            terms: { commercialNotes },
+            terms: { ...(termsCode.trim() ? { termsCode: termsCode.trim() } : {}), commercialNotes },
+            expiresAt: expiresAt || null,
             requestedFulfillment: fulfillmentMethod === "pickup" ? { method: "pickup", ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) } : { method: fulfillmentMethod, destination: { addressLine1: destinationAddress, city: destinationCity, region: destinationRegion, country: destinationCountry, ...(destinationPostalCode ? { postalCode: destinationPostalCode } : {}) }, ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) },
             sellingAdjustment: adjustmentCents.trim() ? { cents: Number(adjustmentCents), reason: adjustmentReason } : null,
             commercialCharge: chargeCents.trim() ? { kind: chargeKind, cents: Number(chargeCents), ...(chargeDescription.trim() ? { description: chargeDescription } : {}) } : null,
@@ -1877,6 +1901,22 @@ const QuoteWorkspace = ({
       setEditingLineId("");
       setAddEditorVersion((value) => value + 1);
       setNotice("Quote line saved.");
+    },
+    onError: handleMutationError,
+  });
+
+  const duplicate = useMutation({
+    mutationFn: () =>
+      quoteApi.duplicate(
+        organizationId,
+        quote!.quote.quoteId,
+        requestId("duplicate", { organizationId, quoteId: quote!.quote.quoteId }),
+      ),
+    onSuccess: (result) => {
+      completeRequest("duplicate");
+      applyQuoteResult(result, organizationId, sessionScope);
+      setNotice(`New Draft Quote #${result.quote.number.display} created.`);
+      load(result.quote.quote.quoteId);
     },
     onError: handleMutationError,
   });
@@ -1940,7 +1980,8 @@ const QuoteWorkspace = ({
     action.error ||
     terminal.error ||
     accept.error ||
-    lineChange.error;
+    lineChange.error ||
+    duplicate.error;
   const quoteDetail = quote
     ? (() => {
         const selectedLine = quote.quote.lines.find(
@@ -1955,6 +1996,8 @@ const QuoteWorkspace = ({
             contacts={contacts.data ?? []}
             purchaseOrderNumber={purchaseOrderNumber}
             requestedDueDate={requestedDueDate}
+            expiresAt={expiresAt}
+            termsCode={termsCode}
             canEdit={canEdit}
             readOnly={locked}
             onCustomerChange={(value) => {
@@ -1965,6 +2008,8 @@ const QuoteWorkspace = ({
             onContactChange={setHeaderContactId}
             onPurchaseOrderChange={setPurchaseOrderNumber}
             onDueDateChange={setRequestedDueDate}
+            onExpiresAtChange={setExpiresAt}
+            onTermsCodeChange={setTermsCode}
           />
         );
         const headerActions = locked ? (
@@ -1994,6 +2039,14 @@ const QuoteWorkspace = ({
               onClick={() => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/${encodeURIComponent(quote.quote.quoteId)}/document.pdf`, "_blank", "noopener,noreferrer")}
             >
               Preview PDF
+            </button>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={!canCreate || duplicate.isPending || !csrfReady}
+              onClick={() => duplicate.mutate()}
+            >
+              {duplicate.isPending ? "Duplicating…" : "Duplicate Quote"}
             </button>
             <button
               className="button secondary"
@@ -2135,6 +2188,44 @@ const QuoteWorkspace = ({
                         {quoteLineProductPresentation(selectedLine)}
                       </h2>
                     </div>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      disabled={!canEdit || lineChange.isPending || !csrfReady}
+                      onClick={() =>
+                        lineChange.mutate([
+                          { kind: "duplicate", sourceLineId: selectedLine.lineId },
+                        ])
+                      }
+                    >
+                      Duplicate line
+                    </button>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      disabled={!canEdit || lineChange.isPending || !csrfReady || selectedLine.position === 1}
+                      onClick={() => {
+                        const ids = quote.quote.lines.map((line) => line.lineId);
+                        const index = ids.indexOf(selectedLine.lineId);
+                        [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
+                        lineChange.mutate([{ kind: "reorder", lineIds: ids }]);
+                      }}
+                    >
+                      Move up
+                    </button>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      disabled={!canEdit || lineChange.isPending || !csrfReady || selectedLine.position === quote.quote.lines.length}
+                      onClick={() => {
+                        const ids = quote.quote.lines.map((line) => line.lineId);
+                        const index = ids.indexOf(selectedLine.lineId);
+                        [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
+                        lineChange.mutate([{ kind: "reorder", lineIds: ids }]);
+                      }}
+                    >
+                      Move down
+                    </button>
                     <button
                       className="v2-sales-remove-line"
                       type="button"
@@ -2323,6 +2414,8 @@ const QuoteWorkspace = ({
               contacts={contacts.data ?? []}
               purchaseOrderNumber={purchaseOrderNumber}
               requestedDueDate={requestedDueDate}
+              expiresAt={expiresAt}
+              termsCode={termsCode}
               onCustomerChange={(value) => {
                 const next = clearContactForCustomerChange(value);
                 setCustomerId(next.customerId);
@@ -2331,6 +2424,8 @@ const QuoteWorkspace = ({
               onContactChange={setContactId}
               onPurchaseOrderChange={setPurchaseOrderNumber}
               onDueDateChange={setRequestedDueDate}
+              onExpiresAtChange={setExpiresAt}
+              onTermsCodeChange={setTermsCode}
             />
           }
           panels={{

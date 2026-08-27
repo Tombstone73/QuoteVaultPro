@@ -40,6 +40,7 @@ import {
   assertSalesLineSnapshot,
   type AttributionSnapshot,
   type CommercialTerms,
+  type DuplicateQuoteCommand,
   type MeaningfulAuditChange,
   type QuoteCheckpoint,
   type QuoteCurrentState,
@@ -96,6 +97,7 @@ export type UpdateQuoteInput = Readonly<{
     customerContact?: CustomerContactReference;
     purchaseOrderNumber?: string | null;
     requestedDueDate?: string | null;
+    expiresAt?: string | null;
     terms?: CommercialTerms;
     requestedFulfillment?: import("./contracts.js").RequestedFulfillment | null;
     sellingAdjustment?: import("./contracts.js").SalesOrderAdjustment | null;
@@ -105,6 +107,8 @@ export type UpdateQuoteInput = Readonly<{
     | { kind: "add"; line: QuoteLineInput }
     | { kind: "update"; lineId: SalesLineId; line: QuoteLineInput }
     | { kind: "remove"; lineId: SalesLineId }
+    | { kind: "duplicate"; sourceLineId: SalesLineId }
+    | { kind: "reorder"; lineIds: readonly SalesLineId[] }
   )[];
 }>;
 export type QuoteLifecycleInput = Readonly<{
@@ -223,6 +227,7 @@ export interface QuoteTransaction {
       customerContact: CustomerContactReference;
       purchaseOrderNumber?: string;
       requestedDueDate?: string;
+      expiresAt?: string;
       terms: CommercialTerms;
       lines: readonly SalesLineSnapshot[];
       requestedFulfillment?: import("./contracts.js").RequestedFulfillment;
@@ -599,6 +604,44 @@ export class QuoteApplicationService {
       return failure(this.error(error));
     }
   }
+  /** Creates a fresh Draft from frozen commercial facts, never lifecycle evidence. */
+  async duplicate(
+    context: OperationContext,
+    input: DuplicateQuoteCommand,
+  ): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.mutate(context, "sales.quote.duplicate.v1", input, "quote.create", async (tx, request) => {
+      const source = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
+      if (!source) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+      requireAllowed(this.authority, context, "quote.view", source.quote.customerContact.customerId);
+      requireAllowed(this.authority, context, "quote.create", source.quote.customerContact.customerId);
+      if (source.quote.lines.some((line) => line.sellingPriceDecision.kind !== "calculated"))
+        requireAllowed(this.authority, context, "quote.overridePrice", source.quote.customerContact.customerId);
+      const quoteId = brandedId<"QuoteId">(randomUUID());
+      const lines = source.quote.lines.map((line) => Object.freeze({ ...line, lineId: brandedId<"SalesLineId">(randomUUID()) }));
+      await tx.create({
+        quoteId,
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        number: await tx.allocateNumber(context.organizationId),
+        customerContact: source.quote.customerContact,
+        purchaseOrderNumber: source.quote.purchaseOrderNumber,
+        requestedDueDate: source.quote.requestedDueDate,
+        terms: source.quote.terms,
+        expiresAt: source.quote.expiresAt,
+        requestedFulfillment: source.quote.requestedFulfillment,
+        sellingAdjustment: source.quote.sellingAdjustment,
+        commercialCharge: source.quote.commercialCharge,
+        lines,
+      });
+      const quote = await tx.read(brandedId<"OrganizationId">(context.organizationId), quoteId);
+      if (!quote) throw new Error("Duplicated Quote could not be read.");
+      await this.history(tx, context, request.id, "sales.quote.duplicate.v1", {
+        eventType: "quote_duplicated",
+        resourceId: quoteId,
+        changes: [{ group: "line", kind: "line_added", summary: `Draft Quote duplicated from ${source.number.display}.` }],
+      });
+      return { quote };
+    });
+  }
   async update(
     context: OperationContext,
     input: UpdateQuoteInput,
@@ -656,6 +699,7 @@ export class QuoteApplicationService {
           patch.requestedDueDate === null
             ? undefined
             : (patch.requestedDueDate ?? current.quote.requestedDueDate);
+        const expiresAt = patch.expiresAt === null ? undefined : (patch.expiresAt ?? current.quote.expiresAt);
         const requestedFulfillment = patch.requestedFulfillment === null ? undefined : validateFulfillment(patch.requestedFulfillment ?? current.quote.requestedFulfillment);
         const sellingAdjustment = patch.sellingAdjustment === null ? undefined : validateAdjustment(patch.sellingAdjustment ?? current.quote.sellingAdjustment);
         const commercialCharge = patch.commercialCharge === null ? undefined : validateCommercialCharge(patch.commercialCharge ?? current.quote.commercialCharge);
@@ -664,6 +708,7 @@ export class QuoteApplicationService {
           reference.contactId === current.quote.customerContact.contactId &&
           purchaseOrderNumber === current.quote.purchaseOrderNumber &&
           requestedDueDate === current.quote.requestedDueDate &&
+          expiresAt === current.quote.expiresAt &&
           terms.termsCode === current.quote.terms.termsCode &&
           terms.taxContextReference ===
             current.quote.terms.taxContextReference &&
@@ -686,6 +731,7 @@ export class QuoteApplicationService {
           customerContact: reference,
           purchaseOrderNumber,
           requestedDueDate,
+          expiresAt,
           terms,
           lines,
           requestedFulfillment,
@@ -727,6 +773,8 @@ export class QuoteApplicationService {
             kind: "requested_due_date_changed",
             summary: "Requested due date changed.",
           });
+        if (expiresAt !== current.quote.expiresAt)
+          changes.push({ group: "commercial_terms", kind: "terms_changed", summary: "Quote expiry updated." });
         if (terms.commercialNotes !== current.quote.terms.commercialNotes)
           changes.push({
             group: "notes",
@@ -1058,6 +1106,20 @@ export class QuoteApplicationService {
   ): Promise<SalesLineSnapshot[]> {
     const next = [...current];
     for (const change of changes) {
+      if (change.kind === "reorder") {
+        if (change.lineIds.length !== next.length || new Set(change.lineIds).size !== next.length || change.lineIds.some((id) => !next.some((line) => line.lineId === id)))
+          throw new V2ApplicationError("VALIDATION_ERROR", "Quote line order must include every line exactly once.");
+        next.splice(0, next.length, ...change.lineIds.map((id) => next.find((line) => line.lineId === id)!));
+        continue;
+      }
+      if (change.kind === "duplicate") {
+        const index = next.findIndex((line) => line.lineId === change.sourceLineId);
+        if (index < 0) throw new V2ApplicationError("NOT_FOUND", "Quote line was not found.");
+        const source = next[index]!;
+        if (source.sellingPriceDecision.kind !== "calculated") requireAllowed(this.authority, context, "quote.overridePrice");
+        next.splice(index + 1, 0, Object.freeze({ ...source, lineId: brandedId<"SalesLineId">(randomUUID()) }));
+        continue;
+      }
       if (change.kind === "remove") {
         const index = next.findIndex((line) => line.lineId === change.lineId);
         if (index < 0)
