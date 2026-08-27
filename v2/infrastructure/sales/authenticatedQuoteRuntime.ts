@@ -15,6 +15,8 @@ import { PostgresOrderTransactionRunner } from "./postgresOrderTransaction.js";
 import { PostgresQuoteConversionTransactionRunner } from "./postgresQuoteConversionTransaction.js";
 import { PostgresQuoteFormReads } from "./postgresQuoteFormReads.js";
 import { PostgresSalesWorkspaceReads } from "./postgresSalesWorkspaceReads.js";
+import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
+import { PostgresQuoteDeliveryService } from "./postgresQuoteDelivery.js";
 import { PostgresCustomerWorkspaceReader } from "../compatibility/postgresCustomerWorkspaceRead.js";
 import type { CustomerHttpDependencies } from "../../src/interfaces/http/customerRoutes.js";
 import { PostgresContactWorkspaceReader } from "../compatibility/postgresContactWorkspaceRead.js";
@@ -53,11 +55,10 @@ export const composeAuthenticatedQuoteRuntime = (
     new PostgresPermissionAuthorityReader(input.pool),
   );
   const principals = new IssuedV2PrincipalProvider(input.trustedHostIdentity, principalIssuer);
+  const service = new QuoteApplicationService(new PostgresQuoteTransactionRunner(input.pool));
   return {
     dependencies: {
-      service: new QuoteApplicationService(
-        new PostgresQuoteTransactionRunner(input.pool),
-      ),
+      service,
       conversion: new QuoteConversionApplicationService(
         new PostgresQuoteConversionTransactionRunner(input.pool),
         new OrderApplicationService(new PostgresOrderTransactionRunner(input.pool)),
@@ -65,6 +66,8 @@ export const composeAuthenticatedQuoteRuntime = (
       principals,
       formReads: new PostgresQuoteFormReads(input.pool),
       workspace: new PostgresSalesWorkspaceReads(input.pool),
+      documents: new PostgresCustomerDocumentService(input.pool),
+      delivery: new PostgresQuoteDeliveryService(input.pool, service),
     },
     customerDependencies: { customers: new PostgresCustomerWorkspaceReader(input.pool), principals },
     contactDependencies: { contacts: new PostgresContactWorkspaceReader(input.pool), principals },

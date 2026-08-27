@@ -78,14 +78,14 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
     audit: async (input: { event: { eventType: string } }) => { audits.push(input.event.eventType); },
     allocateNumber: async () => ({ kind: "quote" as const, core: 501n, display: "Q-501" }),
     create: async (input: { quoteId: QuoteCurrentState["quoteId"]; number: QuoteReadModel["number"]; customerContact: typeof customerContact; purchaseOrderNumber?: string; terms: { taxContextReference?: string }; lines: readonly SalesLineSnapshot[] }) => {
-      quoteRead = { quote: { quoteId: input.quoteId, organizationId, customerContact: input.customerContact, purchaseOrderNumber: input.purchaseOrderNumber, currency: usd, terms: input.terms, lines: input.lines, deliveryState: "not_sent", acceptanceState: "not_accepted" }, number: input.number, revision: "1", checkpoints: [] };
+      quoteRead = { quote: { quoteId: input.quoteId, organizationId, customerContact: input.customerContact, purchaseOrderNumber: input.purchaseOrderNumber, currency: usd, terms: input.terms, lines: input.lines, deliveryState: "not_sent", acceptanceState: "not_accepted", lifecycleState: "open" }, number: input.number, revision: "1", checkpoints: [] };
     },
     read: async () => quoteRead ?? null,
     update: async () => false,
-    transition: async (input: { kind: "send" | "accept"; checkpoint: QuoteCheckpoint }) => {
+    transition: async (input: { kind: "send" | "accept" | "decline" | "void"; checkpoint: QuoteCheckpoint }) => {
       if (!quoteRead) return false;
       checkpoints.set(input.checkpoint.checkpointId, input.checkpoint);
-      quoteRead = { ...quoteRead, quote: { ...quoteRead.quote, deliveryState: input.kind === "send" ? "sent" : quoteRead.quote.deliveryState, acceptanceState: input.kind === "accept" ? "accepted" : quoteRead.quote.acceptanceState }, revision: String(Number(quoteRead.revision) + 1), checkpoints: [...quoteRead.checkpoints, { checkpointId: input.checkpoint.checkpointId, kind: input.checkpoint.kind, occurredAt: input.checkpoint.occurredAt }] };
+      quoteRead = { ...quoteRead, quote: { ...quoteRead.quote, deliveryState: input.kind === "send" ? "sent" : quoteRead.quote.deliveryState, acceptanceState: input.kind === "accept" ? "accepted" : quoteRead.quote.acceptanceState, lifecycleState: input.kind === "decline" ? "declined" : input.kind === "void" ? "voided" : quoteRead.quote.lifecycleState }, revision: String(Number(quoteRead.revision) + 1), checkpoints: [...quoteRead.checkpoints, { checkpointId: input.checkpoint.checkpointId, kind: input.checkpoint.kind, occurredAt: input.checkpoint.occurredAt }] };
       return true;
     },
   };
@@ -180,7 +180,7 @@ describe("M5 commercial spine parity baseline", () => {
     ] });
     expect(created.ok).toBe(true);
     if (!created.ok) throw created.error;
-    const sent = await runtime.quote.send(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision });
+    const sent = await runtime.quote.recordDelivered(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-1", providerMessageId: "fixture-message-1" });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
     const accepted = await runtime.conversion.accept(context("quote-accept"), { businessRequestId: "quote-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
@@ -226,9 +226,9 @@ describe("M5 commercial spine parity baseline", () => {
     });
     expect(created.ok).toBe(true);
     if (!created.ok) throw created.error;
-    const sent = await runtime.quote.send(context("unconfigured-send"), {
+    const sent = await runtime.quote.recordDelivered(context("unconfigured-send"), {
       businessRequestId: "unconfigured-send", quoteId: created.value.quote.quote.quoteId,
-      expectedRevision: created.value.quote.revision,
+      expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-2", providerMessageId: "fixture-message-2",
     });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;

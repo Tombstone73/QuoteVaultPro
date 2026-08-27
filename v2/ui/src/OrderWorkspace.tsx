@@ -71,6 +71,7 @@ export const OrderWorkspace = (
     sessionScope: string;
     orderId: string;
     canEdit: boolean;
+    canCancel: boolean;
     canOverridePrice: boolean;
     canViewInvoice: boolean;
     canViewArtwork: boolean;
@@ -392,6 +393,11 @@ export const OrderWorkspace = (
         void order.refetch();
       }
     },
+  });
+  const cancelOrder = useMutation({
+    mutationFn: (reason: string) => orderApi.cancel(props.organizationId, props.orderId, requestId("cancel", { revision: current!.revision, reason }), current!.revision, reason),
+    onSuccess: (result) => { apply(result); complete("cancel"); setNotice("Order cancelled. Billing and downstream history were preserved."); },
+    onError: (error) => setNotice(message(error)),
   });
   if (order.isLoading) return <div className="skeleton" />;
   if (order.error || !current)
@@ -729,6 +735,7 @@ export const OrderWorkspace = (
             >
               Open Customer
             </button>
+            <button className="button secondary" type="button" onClick={() => window.open(`/v2/organizations/${encodeURIComponent(props.organizationId)}/orders/${encodeURIComponent(current.order.orderId)}/document.pdf`, "_blank", "noopener,noreferrer")}>Preview PDF</button>
             <button
               className="button secondary"
               type="button"
@@ -768,6 +775,13 @@ export const OrderWorkspace = (
             >
               {saveHeader.isPending ? "Saving…" : "Save"}
             </button>
+            {props.canCancel && current.order.commercialState === "open" && (
+              <button className="button secondary" type="button" disabled={cancelOrder.isPending || !props.csrfReady} onClick={() => {
+                const reason = window.prompt("Cancellation reason (required):");
+                if (reason?.trim()) cancelOrder.mutate(reason.trim());
+                else if (reason !== null) setNotice("A cancellation reason is required.");
+              }}>{cancelOrder.isPending ? "Cancelling…" : "Cancel Order"}</button>
+            )}
           </>
         }
         metadata={headerMetadata}

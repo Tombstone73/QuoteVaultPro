@@ -11,6 +11,7 @@ import type {
   OrderHttpService,
 } from "../../src/interfaces/http/orderRoutes.js";
 import { PostgresSalesWorkspaceReads } from "./postgresSalesWorkspaceReads.js";
+import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
 
 export type AuthenticatedOrderRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -41,6 +42,7 @@ export const composeAuthenticatedOrderRuntime = (
       service: input.service,
       principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, issuer),
       workspace: new PostgresSalesWorkspaceReads(input.pool),
+      documents: new PostgresCustomerDocumentService(input.pool),
     },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };

@@ -341,10 +341,12 @@ async function main() {
       !stale.ok && stale.error.code === "STALE_STATE",
       "Stale update overwrote Quote.",
     );
-    const sent = await service.send(ctx(staff, f.org, "m17-send"), {
+    const sent = await service.recordDelivered(ctx(staff, f.org, "m17-send"), {
       businessRequestId: "m17-send",
       quoteId,
       expectedRevision: "2",
+      deliveryAttemptId: "fixture-m17-delivery",
+      providerMessageId: "fixture-m17-message",
     });
     assert(sent.ok && sent.value.checkpointId, "Send checkpoint failed.");
     const checkpoint = sent.ok ? sent.value.checkpointId! : "";

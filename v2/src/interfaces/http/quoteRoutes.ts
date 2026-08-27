@@ -17,6 +17,14 @@ import type { ConvertQuoteCommand } from "../../modules/sales/contracts.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
 
+export interface QuoteCustomerDocumentPort {
+  quotePdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId): Promise<Uint8Array>;
+  quote(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId): Promise<Readonly<{ kind: "quote" | "order"; number: string }>>;
+}
+export interface QuoteDeliveryPort {
+  send(context: OperationContext, input: QuoteLifecycleInput): Promise<import("../../errors/applicationError.js").ApplicationResult<QuoteOperationResult>>;
+}
+
 /** Authentication is injected by the real V2 host; routes never trust headers or body principal claims. */
 export interface VerifiedV2PrincipalProvider {
   principal(request: Request, organizationId: string): Promise<Principal>;
@@ -33,6 +41,8 @@ export type QuoteHttpDependencies = Readonly<{
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
   workspace?: SalesWorkspaceReadPort;
+  documents?: QuoteCustomerDocumentPort;
+  delivery?: QuoteDeliveryPort;
 }>;
 
 const status = (code: string): number =>
@@ -103,6 +113,7 @@ const quoteForUi = (value: QuoteReadModel) => {
       expiresAt: value.quote.expiresAt,
       deliveryState: value.quote.deliveryState,
       acceptanceState: value.quote.acceptanceState,
+      lifecycleState: value.quote.lifecycleState,
       convertedOrderId: value.quote.convertedOrderId,
       requestedFulfillment: value.quote.requestedFulfillment,
       sellingAdjustment: value.quote.sellingAdjustment,
@@ -279,6 +290,20 @@ export const createQuoteRouter = (
       error(response, cause);
     }
   });
+  router.get("/:quoteId/document.pdf", async (request, response) => {
+    try {
+      if (!dependencies.documents) throw new V2ApplicationError("INTERNAL_ERROR", "Quote document runtime is unavailable.");
+      const operation = await context(request, dependencies);
+      const quoteId = brandedId<"QuoteId">(request.params.quoteId);
+      const read = await dependencies.service.read(operation, quoteId);
+      if (!read.ok) return error(response, read.error);
+      const document = await dependencies.documents.quote(brandedId<"OrganizationId">(operation.organizationId), quoteId);
+      const bytes = await dependencies.documents.quotePdf(brandedId<"OrganizationId">(operation.organizationId), quoteId);
+      response.status(200).setHeader("content-type", "application/pdf");
+      response.setHeader("content-disposition", `inline; filename=\"Quote_${document.number.replace(/[^a-z0-9._-]+/gi, "-")}.pdf\"`);
+      response.send(Buffer.from(bytes));
+    } catch (cause) { error(response, cause); }
+  });
   router.patch("/:quoteId", async (request, response) => {
     try {
       const body = {
@@ -298,12 +323,21 @@ export const createQuoteRouter = (
   });
   router.post("/:quoteId/send", async (request, response) => {
     try {
+      if (!dependencies.delivery) throw new V2ApplicationError("INTERNAL_ERROR", "Quote delivery runtime is unavailable.");
       const body: QuoteLifecycleInput = {
         businessRequestId: requestId(request.body),
         quoteId: brandedId<"QuoteId">(request.params.quoteId),
         expectedRevision: String((request.body as { expectedRevision?: unknown }).expectedRevision ?? ""),
       };
-      await send(response, await dependencies.service.send(await context(request, dependencies, true), body));
+      await send(response, await dependencies.delivery.send(await context(request, dependencies, true), body));
+    } catch (cause) { error(response, cause); }
+  });
+  for (const terminal of ["decline", "void"] as const) router.post(`/:quoteId/${terminal}`, async (request, response) => {
+    try {
+      const raw = request.body as { expectedRevision?: unknown; reason?: unknown };
+      if (typeof raw.reason !== "string" || !raw.reason.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A reason is required.");
+      const body = { businessRequestId: requestId(request.body), quoteId: brandedId<"QuoteId">(request.params.quoteId), expectedRevision: String(raw.expectedRevision ?? ""), reason: raw.reason.trim() };
+      await send(response, terminal === "decline" ? await dependencies.service.decline(await context(request, dependencies, true), body) : await dependencies.service.void(await context(request, dependencies, true), body));
     } catch (cause) { error(response, cause); }
   });
   router.post("/:quoteId/accept", async (request, response) => {

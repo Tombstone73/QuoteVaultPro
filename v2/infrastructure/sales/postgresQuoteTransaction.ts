@@ -56,6 +56,7 @@ type HeaderRow = {
   expires_at: Date | null;
   delivery_state: "not_sent" | "sent";
   acceptance_state: "not_accepted" | "accepted";
+  lifecycle_state: "open" | "declined" | "voided";
   requested_fulfillment_method: "pickup" | "shipping" | "local_delivery" | null;
   requested_destination: unknown;
   fulfillment_instructions: string | null;
@@ -245,7 +246,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     forUpdate = false,
   ): Promise<QuoteReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state,q.requested_fulfillment_method,q.requested_destination,q.fulfillment_instructions,q.selling_adjustment_cents,q.selling_adjustment_reason,q.commercial_charge,q.tax_composition FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state,q.lifecycle_state,q.requested_fulfillment_method,q.requested_destination,q.fulfillment_instructions,q.selling_adjustment_cents,q.selling_adjustment_reason,q.commercial_charge,q.tax_composition FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
       [organizationId, quoteId],
     );
     const row = header.rows[0];
@@ -332,6 +333,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         : {}),
       deliveryState: row.delivery_state,
       acceptanceState: row.acceptance_state,
+      lifecycleState: row.lifecycle_state,
       ...(row.requested_fulfillment_method ? { requestedFulfillment: { method: row.requested_fulfillment_method, ...(row.requested_destination ? { destination: asObject<NonNullable<QuoteCurrentState["requestedFulfillment"]>["destination"]>(row.requested_destination) } : {}), ...(row.fulfillment_instructions ? { instructions: row.fulfillment_instructions } : {}) } as RequestedFulfillment } : {}),
       ...(Number(row.selling_adjustment_cents) !== 0 && row.selling_adjustment_reason ? { sellingAdjustment: { cents: Number(row.selling_adjustment_cents), reason: row.selling_adjustment_reason } } : {}),
       ...(row.commercial_charge ? { commercialCharge: asObject<QuoteCurrentState["commercialCharge"]>(row.commercial_charge) } : {}),
@@ -399,8 +401,12 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     // operation cannot commit a revision increment.
     const state = await this.client.query(
       input.kind === "send"
-        ? "UPDATE v2_sales_quote_details SET delivery_state='sent',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND delivery_state='not_sent'"
-        : "UPDATE v2_sales_quote_details SET acceptance_state='accepted',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND delivery_state='sent' AND acceptance_state='not_accepted'",
+        ? "UPDATE v2_sales_quote_details SET delivery_state='sent',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='not_sent'"
+        : input.kind === "accept"
+          ? "UPDATE v2_sales_quote_details SET acceptance_state='accepted',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='sent' AND acceptance_state='not_accepted'"
+          : input.kind === "decline"
+            ? "UPDATE v2_sales_quote_details SET lifecycle_state='declined',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='sent'"
+            : "UPDATE v2_sales_quote_details SET lifecycle_state='voided',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open'",
       [input.organizationId, input.quoteId],
     );
     if (state.rowCount !== 1) return false;

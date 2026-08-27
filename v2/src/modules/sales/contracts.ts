@@ -87,6 +87,7 @@ export type QuoteCurrentState = Readonly<SalesDocumentCurrentState & {
   expiresAt?: string;
   deliveryState: "not_sent" | "sent";
   acceptanceState: "not_accepted" | "accepted";
+  lifecycleState: "open" | "declined" | "voided";
   convertedOrderId?: OrderId;
   requestedFulfillment?: RequestedFulfillment;
   sellingAdjustment?: SalesOrderAdjustment;
@@ -119,7 +120,9 @@ type QuoteCheckpointBase = Readonly<{
 export type QuoteCheckpoint =
   | Readonly<QuoteCheckpointBase & { kind: "quote_sent"; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
   | Readonly<QuoteCheckpointBase & { kind: "quote_accepted"; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
-  | Readonly<QuoteCheckpointBase & { kind: "quote_converted"; sourceDocument: Readonly<{ quoteId: QuoteId; orderId: OrderId }> }>;
+  | Readonly<QuoteCheckpointBase & { kind: "quote_converted"; sourceDocument: Readonly<{ quoteId: QuoteId; orderId: OrderId }> }>
+  | Readonly<QuoteCheckpointBase & { kind: "quote_declined"; reason: string; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
+  | Readonly<QuoteCheckpointBase & { kind: "quote_voided"; reason: string; sourceDocument: Readonly<{ quoteId: QuoteId }> }>;
 
 export type CreateQuoteCommand = Readonly<{ organizationId: OrganizationId; businessRequestId: BusinessRequestId; current: Omit<SalesDocumentCurrentState, "organizationId" | "lines"> & Readonly<{ lines: readonly SalesLineInput[] }> }>;
 export type SalesDocumentPatch = Readonly<{
@@ -135,7 +138,9 @@ export type AcceptQuoteCommand = Readonly<{ organizationId: OrganizationId; quot
 export type ConvertQuoteCommand = Readonly<{ organizationId: OrganizationId; quoteId: QuoteId; sourceCheckpointId: QuoteCheckpointId; businessRequestId: BusinessRequestId; expectedStateToken: string }>;
 export type CreateOrderCommand = Readonly<{ organizationId: OrganizationId; businessRequestId: BusinessRequestId; current: Omit<SalesDocumentCurrentState, "organizationId" | "lines"> & Readonly<{ lines: readonly SalesLineInput[] }> }>;
 export type EditOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; expectedStateToken: string; patch: SalesDocumentPatch }>;
-export type CancelOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; reason: string }>;
+/** Cancellation is an optimistic, auditable Sales lifecycle action.  It never
+ * deletes the Order or any downstream operational/financial history. */
+export type CancelOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; expectedStateToken: string; reason: string }>;
 
 export type QuoteCommandResult = Readonly<{ quoteId: QuoteId; checkpointId?: QuoteCheckpointId }>;
 export type OrderCommandResult = Readonly<{ orderId: OrderId; draftInvoiceId?: InvoiceId }>;
@@ -143,8 +148,8 @@ export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId
 
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{
-  group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment";
-  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed";
+  group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment" | "lifecycle";
+  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled";
   resourceId?: SalesLineId | CustomerId | ContactId;
   summary: string;
 }>;

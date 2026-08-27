@@ -106,6 +106,7 @@ export class QuoteConversionApplicationService {
         requireCapability(this.authority, context, "quote.convert", current.quote.customerContact.customerId);
         if (current.revision !== input.expectedStateToken) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before conversion.");
         if (current.quote.convertedOrderId) throw new V2ApplicationError("CONFLICT", "Quote has already been converted.");
+        if (current.quote.lifecycleState !== "open") throw new V2ApplicationError("CONFLICT", "A declined or voided Quote cannot be converted.");
         if (current.quote.deliveryState !== "sent" || current.quote.acceptanceState !== "accepted") throw new V2ApplicationError("CONFLICT", "Only a sent and accepted Quote can be converted.");
         if (current.quote.taxComposition?.status === "unresolved") throw new V2ApplicationError("VALIDATION_ERROR", "Tax jurisdiction not configured. This Quote cannot be converted.");
         const source = await quote.readCheckpoint(brandedId<"OrganizationId">(context.organizationId), input.quoteId, input.sourceCheckpointId);

@@ -112,6 +112,14 @@ export type QuoteLifecycleInput = Readonly<{
   quoteId: QuoteId;
   expectedRevision: string;
 }>;
+/** Only the delivery adapter may commit a sent lifecycle transition.  The
+ * quote domain still owns the immutable checkpoint; this evidence prevents an
+ * HTTP caller from representing a Quote as sent without a provider result. */
+export type QuoteDeliveredInput = QuoteLifecycleInput & Readonly<{
+  deliveryAttemptId: string;
+  providerMessageId: string;
+}>;
+export type QuoteTerminalInput = QuoteLifecycleInput & Readonly<{ reason: string }>;
 export type QuoteReadModel = Readonly<{
   quote: QuoteCurrentState;
   number: SalesDocumentNumber;
@@ -227,7 +235,7 @@ export interface QuoteTransaction {
       organizationId: OrganizationId;
       quoteId: QuoteId;
       expectedRevision: number;
-      kind: "send" | "accept";
+      kind: "send" | "accept" | "decline" | "void";
       checkpoint: QuoteCheckpoint;
       operationRequestId: string;
     }>,
@@ -290,10 +298,11 @@ const toAttribution = (context: OperationContext): AttributionSnapshot =>
  */
 export const createQuoteLifecycleCheckpoint = (
   quote: QuoteCurrentState,
-  kind: "send" | "accept",
+  kind: "send" | "accept" | "decline" | "void",
   checkpointId: QuoteCheckpointId,
   presentation: CustomerPresentationIdentity,
   context: OperationContext,
+  reason?: string,
 ): QuoteCheckpoint => {
   const raw = {
     schemaVersion: 1 as const,
@@ -318,7 +327,8 @@ export const createQuoteLifecycleCheckpoint = (
       ...(quote.commercialCharge ? { commercialCharge: quote.commercialCharge } : {}),
       ...(quote.taxComposition ? { taxComposition: quote.taxComposition } : {}),
     },
-    kind: kind === "send" ? ("quote_sent" as const) : ("quote_accepted" as const),
+    kind: kind === "send" ? ("quote_sent" as const) : kind === "accept" ? ("quote_accepted" as const) : kind === "decline" ? ("quote_declined" as const) : ("quote_voided" as const),
+    ...((kind === "decline" || kind === "void") ? { reason: reason ?? "" } : {}),
     sourceDocument: { quoteId: quote.quoteId },
   };
   return freezeCheckpoint({
@@ -608,6 +618,8 @@ export class QuoteApplicationService {
           throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
         if (current.quote.convertedOrderId)
           throw new V2ApplicationError("CONFLICT", "A converted Quote cannot be edited.");
+        if (current.quote.lifecycleState !== "open")
+          throw new V2ApplicationError("CONFLICT", "A declined or voided Quote cannot be edited.");
         if (current.quote.acceptanceState === "accepted")
           throw new V2ApplicationError("CONFLICT", "An accepted Quote is an immutable commercial source.");
         requireAllowed(
@@ -759,10 +771,12 @@ export class QuoteApplicationService {
       },
     );
   }
-  async send(
+  async recordDelivered(
     context: OperationContext,
-    input: QuoteLifecycleInput,
+    input: QuoteDeliveredInput,
   ): Promise<ApplicationResult<QuoteOperationResult>> {
+    if (!input.deliveryAttemptId.trim() || !input.providerMessageId.trim())
+      return failure(new V2ApplicationError("VALIDATION_ERROR", "Provider delivery evidence is required before recording a sent Quote."));
     return this.lifecycle(
       context,
       input,
@@ -770,6 +784,31 @@ export class QuoteApplicationService {
       "quote.send",
       "sales.quote.send.v1",
     );
+  }
+  async decline(context: OperationContext, input: QuoteTerminalInput): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.terminal(context, input, "decline");
+  }
+  async void(context: OperationContext, input: QuoteTerminalInput): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.terminal(context, input, "void");
+  }
+  private async terminal(context: OperationContext, input: QuoteTerminalInput, kind: "decline" | "void"): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.mutate(context, `sales.quote.${kind}.v1`, input, "quote.edit", async (tx, request) => {
+      const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+      requireAllowed(this.authority, context, "quote.edit", current.quote.customerContact.customerId);
+      const reason = input.reason.trim();
+      if (!reason) throw new V2ApplicationError("VALIDATION_ERROR", "A reason is required.");
+      if (current.quote.convertedOrderId || current.quote.lifecycleState !== "open") throw new V2ApplicationError("CONFLICT", "This Quote cannot receive a terminal outcome.");
+      if (current.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before transition.");
+      if (kind === "decline" && current.quote.deliveryState !== "sent") throw new V2ApplicationError("CONFLICT", "Only a delivered Quote can be recorded as declined.");
+      const checkpoint = createQuoteLifecycleCheckpoint(current.quote, kind, brandedId<"QuoteCheckpointId">(randomUUID()), await tx.customers.getPresentationIdentity(current.quote.customerContact), context, reason);
+      const applied = await tx.transition({ organizationId: brandedId<"OrganizationId">(context.organizationId), quoteId: input.quoteId, expectedRevision: Number(current.revision), kind, checkpoint, operationRequestId: request.id });
+      if (!applied) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before transition.");
+      const read = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId);
+      if (!read) throw new Error("Transitioned Quote could not be read.");
+      await this.history(tx, context, request.id, `sales.quote.${kind}.v1`, { eventType: kind === "decline" ? "quote_declined" : "quote_voided", resourceId: input.quoteId, changes: [] });
+      return { quote: read, checkpointId: checkpoint.checkpointId };
+    });
   }
   private async lifecycle(
     context: OperationContext,
@@ -793,6 +832,8 @@ export class QuoteApplicationService {
           throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
         if (current.quote.convertedOrderId)
           throw new V2ApplicationError("CONFLICT", "A converted Quote cannot transition.");
+        if (current.quote.lifecycleState !== "open")
+          throw new V2ApplicationError("CONFLICT", "A declined or voided Quote cannot transition.");
         requireAllowed(
           this.authority,
           context,

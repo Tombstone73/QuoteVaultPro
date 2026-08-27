@@ -1403,6 +1403,7 @@ const OrdersPage = ({
         sessionScope={sessionScope}
         orderId={orderId}
         canEdit={bootstrap?.capabilities.orderEdit === true}
+        canCancel={bootstrap?.capabilities.orderCancel === true}
         canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true}
         canViewInvoice={bootstrap?.capabilities.invoiceView === true}
         canViewArtwork={bootstrap?.capabilities.artworkView === true}
@@ -1639,10 +1640,6 @@ const QuoteWorkspace = ({
   const [addEditorVersion, setAddEditorVersion] = useState(0);
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
   const [acceptDialogOpen, setAcceptDialogOpen] = useState(false);
-  const [recipientEmail, setRecipientEmail] = useState("");
-  const [recipientName, setRecipientName] = useState("");
-  const [sendSubject, setSendSubject] = useState("");
-  const [sendMessage, setSendMessage] = useState("");
   const customers = useQuoteFormCustomers(sessionScope, organizationId);
   const contacts = useQuoteFormContacts(
     sessionScope,
@@ -1705,23 +1702,6 @@ const QuoteWorkspace = ({
     setHeaderContactId(quote?.quote.customerContact.contactId ?? "");
     setEditingLineId("");
   }, [quote?.quote.quoteId]);
-
-  useEffect(() => {
-    if (!sendDialogOpen || !quote) return;
-    const name = recipientContact.data?.displayName ?? "";
-    setRecipientName(name);
-    setRecipientEmail(recipientContact.data?.email ?? "");
-    setSendSubject(`Quote ${quote.number.display}`);
-    setSendMessage(
-      `Hello${name ? ` ${name}` : ""},\n\nPlease review quote ${quote.number.display}.\n\nThank you for your business.`,
-    );
-  }, [
-    sendDialogOpen,
-    quote?.quote.quoteId,
-    quote?.number.display,
-    recipientContact.data?.displayName,
-    recipientContact.data?.email,
-  ]);
 
   const handleMutationError = (mutationError: unknown) => {
     const code = (mutationError as ApiError)?.code;
@@ -1859,9 +1839,7 @@ const QuoteWorkspace = ({
       completeRequest("action:send");
       applyQuoteResult(result, organizationId, sessionScope);
       setSendDialogOpen(false);
-      setNotice(
-        "Quote marked sent internally. No customer email or PDF was delivered.",
-      );
+      setNotice("Quote PDF delivered to the selected contact and recorded as immutable Sales evidence.");
     },
     onError: handleMutationError,
   });
@@ -1890,12 +1868,18 @@ const QuoteWorkspace = ({
     },
     onError: handleMutationError,
   });
+  const terminal = useMutation({
+    mutationFn: (input: Readonly<{ action: "decline" | "void"; reason: string }>) => quoteApi.action(organizationId, quote!.quote.quoteId, input.action, requestId(`action:${input.action}`, { organizationId, quoteId: quote!.quote.quoteId, revision: quote!.revision, reason: input.reason }), quote!.revision, input.reason),
+    onSuccess: (result) => { applyQuoteResult(result, organizationId, sessionScope); setNotice("Quote lifecycle outcome recorded as immutable Sales evidence."); },
+    onError: handleMutationError,
+  });
 
   const mutationError =
     error ||
     create.error ||
     save.error ||
     action.error ||
+    terminal.error ||
     accept.error ||
     lineChange.error;
   const quoteDetail = quote
@@ -1948,6 +1932,13 @@ const QuoteWorkspace = ({
             <button
               className="button secondary"
               type="button"
+              onClick={() => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/quotes/${encodeURIComponent(quote.quote.quoteId)}/document.pdf`, "_blank", "noopener,noreferrer")}
+            >
+              Preview PDF
+            </button>
+            <button
+              className="button secondary"
+              type="button"
               disabled={!canEdit || save.isPending || !csrfReady}
               onClick={() => save.mutate()}
             >
@@ -1962,6 +1953,14 @@ const QuoteWorkspace = ({
               >
                 Send Quote
               </button>
+            )}
+            {(quote.quote.lifecycleState ?? "open") === "open" && !quote.quote.convertedOrderId && (
+              <button className="button secondary" type="button" disabled={terminal.isPending || !csrfReady} onClick={() => {
+                const action = quote.quote.deliveryState === "sent" ? "decline" : "void";
+                const reason = window.prompt(action === "decline" ? "Customer decline reason (required):" : "Void reason (required):");
+                if (reason?.trim()) terminal.mutate({ action, reason: reason.trim() });
+                else if (reason !== null) setNotice("A reason is required.");
+              }}>{quote.quote.deliveryState === "sent" ? "Record decline" : "Void Quote"}</button>
             )}
             {quote.quote.deliveryState === "sent" &&
               quote.quote.acceptanceState === "not_accepted" &&
@@ -2341,53 +2340,11 @@ const QuoteWorkspace = ({
                 Close
               </button>
             </header>
-            <p className="v2-quote-send-notice">
-              This V2 operation records the Quote as sent internally. Customer
-              email delivery and Quote PDF delivery are not configured, so no
-              external message will be sent. The delivery fields below are a
-              review aid and are not retained.
-            </p>
-            <label>
-              Recipient email
-              <input
-                aria-label="Recipient email"
-                type="email"
-                value={recipientEmail}
-                onChange={(event) => setRecipientEmail(event.target.value)}
-                placeholder="No contact email available"
-              />
-            </label>
-            <label>
-              Recipient name
-              <input
-                aria-label="Recipient name"
-                value={recipientName}
-                onChange={(event) => setRecipientName(event.target.value)}
-                placeholder="Recipient name"
-              />
-            </label>
-            <label>
-              Subject
-              <input
-                aria-label="Subject"
-                value={sendSubject}
-                onChange={(event) => setSendSubject(event.target.value)}
-              />
-            </label>
-            <label>
-              Message
-              <textarea
-                aria-label="Message"
-                value={sendMessage}
-                onChange={(event) => setSendMessage(event.target.value)}
-              />
-            </label>
+            <p className="v2-quote-send-notice">This sends the authoritative Quote PDF through the configured tenant Gmail connection. The recipient is the selected Quote contact; recipient, document fingerprint, provider message identity, and immutable Quote checkpoint are recorded server-side.</p>
+            <p className="v2-quote-send-notice"><strong>Recipient:</strong> {recipientContact.data?.email || "A valid selected contact email is required."}</p>
             <label className="v2-quote-send-pdf">
-              <input aria-label="Attach Quote PDF" type="checkbox" disabled />
-              Attach Quote PDF{" "}
-              <small>
-                Unavailable — no canonical V2 Quote PDF delivery is implemented.
-              </small>
+              <input aria-label="Attach Quote PDF" type="checkbox" checked readOnly />
+              Attach authoritative Quote PDF
             </label>
             <footer>
               <button
@@ -2403,10 +2360,10 @@ const QuoteWorkspace = ({
                 type="button"
                 onClick={() => action.mutate()}
                 disabled={
-                  !csrfReady || action.isPending || recipientContact.isLoading
+                  !csrfReady || action.isPending || recipientContact.isLoading || !recipientContact.data?.email
                 }
               >
-                {action.isPending ? "Marking sent…" : "Mark Quote Sent"}
+                {action.isPending ? "Sending…" : "Send Quote PDF"}
               </button>
             </footer>
           </div>

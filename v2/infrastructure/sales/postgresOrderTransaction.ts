@@ -198,6 +198,31 @@ export class PostgresOrderTransaction implements OrderTransaction {
     const route = await this.routing.readRouteForWork(organizationId, brandedId<"OrderLineId">(lineId));
     return route?.work.orderId === orderId;
   }
+  async cancellationBlockers(organizationId: OrganizationId, orderId: OrderId): Promise<readonly string[]> {
+    const checks: readonly [string, string][] = [
+      ["Proofing evidence exists", "SELECT EXISTS(SELECT 1 FROM v2_proof_works WHERE organization_id=$1 AND order_document_id=$2) AS exists"],
+      ["Prepress work exists", "SELECT EXISTS(SELECT 1 FROM v2_prepress_units WHERE organization_id=$1 AND order_document_id=$2) AS exists"],
+      ["Production work exists", "SELECT EXISTS(SELECT 1 FROM v2_production_works WHERE organization_id=$1 AND order_document_id=$2) AS exists"],
+      ["Fulfillment handoff exists", "SELECT EXISTS(SELECT 1 FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2) AS exists"],
+      ["an Invoice has been issued", "SELECT EXISTS(SELECT 1 FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2 AND invoice_state='issued') AS exists"],
+      ["a Payment has been recorded", "SELECT EXISTS(SELECT 1 FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND i.sales_order_document_id=$2) AS exists"],
+    ];
+    const results = await Promise.all(checks.map(async ([label, sql]) => ({ label, result: await this.client.query<{ exists: boolean }>(sql, [organizationId, orderId]) })));
+    return results.filter(({ result }) => result.rows[0]?.exists).map(({ label }) => label);
+  }
+  async cancel(input: Parameters<OrderTransaction["cancel"]>[0]): Promise<boolean> {
+    const state = await this.client.query(
+      "UPDATE v2_sales_order_details SET commercial_state='cancelled',cancelled_at=now(),cancellation_reason=$4,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state='open'",
+      [input.organizationId, input.orderId, input.expectedRevision, input.reason],
+    );
+    if (state.rowCount !== 1) return false;
+    const header = await this.client.query(
+      "UPDATE v2_sales_documents SET revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 AND document_kind='order'",
+      [input.organizationId, input.orderId, input.expectedRevision],
+    );
+    if (header.rowCount !== 1) throw new Error("Order cancellation state changed without the expected document revision.");
+    return true;
+  }
   private async writeTaxComposition(organizationId: OrganizationId, orderId: OrderId, customerId: string | undefined, fulfillment: RequestedFulfillment | undefined, lines: readonly SalesLineSnapshot[], adjustment: SalesOrderAdjustment | undefined, charge: CommercialCharge | undefined): Promise<void> {
     const composition = await composePostgresSalesTax({ client: this.client, organizationId, ...(customerId ? { customerId } : {}), fulfillment, lines, adjustment, charge });
     await this.client.query("UPDATE v2_sales_order_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [organizationId, orderId, JSON.stringify(composition)]);

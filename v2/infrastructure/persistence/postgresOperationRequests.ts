@@ -106,6 +106,16 @@ export class PostgresOperationRequestRepository {
     );
   }
 
+  /** A provider outcome may be ambiguous after bytes leave the platform. Such
+   * operations must never be automatically replayed. */
+  async markPermanentFailure(client: TransactionalClient, organizationId: string, requestId: string): Promise<void> {
+    await client.query(
+      `UPDATE v2_operation_requests SET status = 'permanent_failure', completed_at = now(), updated_at = now()
+       WHERE organization_id = $1 AND id = $2 AND status = 'in_progress'`,
+      [organizationId, requestId],
+    );
+  }
+
   async recordAttribution(client: TransactionalClient, input: AttributionInput): Promise<void> {
     await client.query(
       `INSERT INTO v2_principal_attributions (

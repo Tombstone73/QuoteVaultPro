@@ -39,6 +39,7 @@ import {
 import {
   assertSalesLineSnapshot,
   type AttributionSnapshot,
+  type CancelOrderCommand,
   type CommercialTerms,
   type MeaningfulAuditChange,
   type OrderCurrentState,
@@ -163,7 +164,7 @@ export type OrderReservation = Readonly<{
 }>;
 
 export type OrderAuditEvent = Readonly<{
-  eventType: "order_created" | "order_updated";
+  eventType: "order_created" | "order_updated" | "order_cancelled";
   resourceId: OrderId;
   changes: readonly MeaningfulAuditChange[];
 }>;
@@ -251,6 +252,15 @@ export interface OrderTransaction {
   }>): Promise<boolean>;
   removeLinesNotIn(organizationId: OrganizationId, orderId: OrderId, retainedLineIds: readonly SalesLineId[]): Promise<void>;
   hasRoute(organizationId: OrganizationId, orderId: OrderId, lineId: SalesLineId): Promise<boolean>;
+  /** Downstream owners remain independent. Sales consumes only these facts to
+   * decide whether cancellation would create an impossible state. */
+  cancellationBlockers(organizationId: OrganizationId, orderId: OrderId): Promise<readonly string[]>;
+  cancel(input: Readonly<{
+    organizationId: OrganizationId;
+    orderId: OrderId;
+    expectedRevision: number;
+    reason: string;
+  }>): Promise<boolean>;
 }
 
 export interface OrderTransactionRunner {
@@ -292,7 +302,7 @@ const attribution = (context: OperationContext): AttributionSnapshot =>
 const requireAllowed = (
   policy: AuthorityPolicy,
   context: OperationContext,
-  capability: "order.view" | "order.create" | "order.edit" | "order.overridePrice",
+  capability: "order.view" | "order.create" | "order.edit" | "order.cancel" | "order.overridePrice",
   customerId?: string,
 ): void => {
   const decision = policy.decide(context.principal, {
@@ -606,6 +616,43 @@ export class OrderApplicationService {
     });
   }
 
+  /**
+   * Sales owns the commercial cancellation fact only.  It deliberately does
+   * not void an Invoice, delete a route, or amend Production/Fulfillment
+   * history.  Those owners expose their own correction workflows.
+   */
+  async cancel(
+    context: OperationContext,
+    input: CancelOrderCommand,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.cancel.v1", input, "order.cancel", async (tx, request) => {
+      const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+      requireAllowed(this.authority, context, "order.cancel", current.order.customerContact.customerId);
+      const reason = input.reason.trim();
+      if (!reason) throw new V2ApplicationError("VALIDATION_ERROR", "A cancellation reason is required.");
+      if (current.order.commercialState !== "open")
+        throw new V2ApplicationError("CONFLICT", "This Order is already cancelled.");
+      if (current.revision !== input.expectedStateToken)
+        throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before cancelling.");
+      const blockers = await tx.cancellationBlockers(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (blockers.length)
+        throw new V2ApplicationError("CONFLICT", `Order cannot be cancelled while ${blockers.join(", ")}.`);
+      if (!await tx.cancel({ organizationId: brandedId<"OrganizationId">(context.organizationId), orderId: input.orderId, expectedRevision: Number(current.revision), reason }))
+        throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before cancelling.");
+      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (!order) throw new Error("Cancelled Order could not be read.");
+      await this.history(tx, context, request.id, "sales.order.cancel.v1", {
+        eventType: "order_cancelled", resourceId: input.orderId,
+        changes: [{ group: "lifecycle", kind: "order_cancelled", summary: "Order cancelled; downstream records were preserved." }],
+      });
+      const invoiceId = order.order.billingInvoiceReference;
+      if (!invoiceId)
+        throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice projection is missing; reconcile Billing before cancellation.");
+      return { order, draftInvoiceId: invoiceId, routeInstances: [] };
+    });
+  }
+
   private async buildLines(
     tx: OrderTransaction,
     context: OperationContext,
@@ -856,9 +903,9 @@ export class OrderApplicationService {
 
   private async mutate(
     context: OperationContext,
-    operation: "sales.order.create.v1" | "sales.order.edit.v1",
-    command: CreateOrderInput | UpdateOrderInput,
-    capability: "order.create" | "order.edit",
+    operation: "sales.order.create.v1" | "sales.order.edit.v1" | "sales.order.cancel.v1",
+    command: CreateOrderInput | UpdateOrderInput | CancelOrderCommand,
+    capability: "order.create" | "order.edit" | "order.cancel",
     work: (tx: OrderTransaction, request: OrderOperationRequest) => Promise<OrderOperationResult>,
   ): Promise<ApplicationResult<OrderOperationResult>> {
     try {

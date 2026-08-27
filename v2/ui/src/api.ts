@@ -43,6 +43,7 @@ export type QuoteRead = Readonly<{
     currency: string;
     deliveryState: "not_sent" | "sent";
     acceptanceState: "not_accepted" | "accepted";
+    lifecycleState?: "open" | "declined" | "voided";
     convertedOrderId?: string;
     requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { addressLine1: string; city: string; region?: string; country?: string; postalCode?: string; recipient?: string; company?: string; phone?: string }; instructions?: string };
     sellingAdjustment?: { cents: number; reason: string };
@@ -94,6 +95,7 @@ export type UiBootstrap = Readonly<{
     orderView?: boolean;
     orderCreate?: boolean;
     orderEdit?: boolean;
+    orderCancel?: boolean;
     orderOverridePrice?: boolean;
     invoiceView?: boolean;
     invoiceIssue?: boolean;
@@ -1360,9 +1362,10 @@ export const quoteApi = {
   action: (
     organizationId: string,
     quoteId: string,
-    action: "send",
+    action: "send" | "decline" | "void",
     businessRequestId: string,
     expectedRevision: string,
+    reason?: string,
   ) =>
     request<QuoteResult>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}/${action}`),
@@ -1371,7 +1374,7 @@ export const quoteApi = {
         headers: {
           "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
         },
-        body: JSON.stringify({ businessRequestId, expectedRevision }),
+        body: JSON.stringify({ businessRequestId, expectedRevision, ...(reason ? { reason } : {}) }),
       },
     ),
   accept: (
@@ -1512,6 +1515,10 @@ export const orderApi = {
         body: JSON.stringify({ ...input, businessRequestId }),
       },
     );
+    return { ...raw, order: orderForUi(raw.order) };
+  },
+  cancel: async (organizationId: string, orderId: string, businessRequestId: string, expectedStateToken: string, reason: string): Promise<OrderResult> => {
+    const raw = await request<{ order: RawOrderRead; draftInvoiceId: string }>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/cancel`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, expectedStateToken, reason }) });
     return { ...raw, order: orderForUi(raw.order) };
   },
 };

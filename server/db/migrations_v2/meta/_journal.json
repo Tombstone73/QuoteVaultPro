@@ -1569,6 +1569,20 @@
       "when": 1788048000075,
       "tag": "0228_v2_sales_tax_and_quote_commercial_continuity",
       "breakpoints": true
+    },
+    {
+      "idx": 230,
+      "version": "7",
+      "when": 1788048000076,
+      "tag": "0229_v2_sales_customer_delivery_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 231,
+      "version": "7",
+      "when": 1788048000077,
+      "tag": "0230_v2_quote_terminal_lifecycle",
+      "breakpoints": true
     }
   ]
 }

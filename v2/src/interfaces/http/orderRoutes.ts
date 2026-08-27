@@ -29,6 +29,14 @@ export interface OrderHttpService {
     context: OperationContext,
     input: Readonly<Record<string, unknown>>,
   ): Promise<ApplicationResult<unknown>>;
+  cancel?(
+    context: OperationContext,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<ApplicationResult<unknown>>;
+}
+export interface OrderCustomerDocumentPort {
+  orderPdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, orderId: OrderId): Promise<Uint8Array>;
+  order(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, orderId: OrderId): Promise<Readonly<{ kind: "quote" | "order"; number: string }>>;
 }
 
 /** Authentication is injected by the trusted V2 host, never by a browser claim. */
@@ -40,6 +48,7 @@ export type OrderHttpDependencies = Readonly<{
   service: OrderHttpService;
   principals: VerifiedV2OrderPrincipalProvider;
   workspace?: SalesWorkspaceReadPort;
+  documents?: OrderCustomerDocumentPort;
 }>;
 
 const status = (code: string): number =>
@@ -218,6 +227,21 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
     }
   });
 
+  router.get("/:orderId/document.pdf", async (request, response) => {
+    try {
+      if (!dependencies.documents) throw new V2ApplicationError("INTERNAL_ERROR", "Order document runtime is unavailable.");
+      const operation = await context(request, dependencies);
+      const orderId = brandedId<"OrderId">(request.params.orderId);
+      const read = await dependencies.service.read(operation, orderId);
+      if (!read.ok) return error(response, read.error);
+      const document = await dependencies.documents.order(brandedId<"OrganizationId">(operation.organizationId), orderId);
+      const bytes = await dependencies.documents.orderPdf(brandedId<"OrganizationId">(operation.organizationId), orderId);
+      response.status(200).setHeader("content-type", "application/pdf");
+      response.setHeader("content-disposition", `inline; filename=\"Order_${document.number.replace(/[^a-z0-9._-]+/gi, "-")}.pdf\"`);
+      response.send(Buffer.from(bytes));
+    } catch (cause) { error(response, cause); }
+  });
+
   router.patch("/:orderId", async (request, response) => {
     try {
       send(
@@ -230,6 +254,17 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
     } catch (cause) {
       error(response, cause);
     }
+  });
+
+  router.post("/:orderId/cancel", async (request, response) => {
+    try {
+      if (!dependencies.service.cancel)
+        throw new V2ApplicationError("INTERNAL_ERROR", "Order cancellation runtime is unavailable.");
+      send(response, await dependencies.service.cancel(
+        await context(request, dependencies, true),
+        commandForOrder(request),
+      ));
+    } catch (cause) { error(response, cause); }
   });
 
   return router;
