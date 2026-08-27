@@ -5,7 +5,7 @@ import type { OrganizationId, ProductionWorkId } from "../../src/modules/shared/
 import { ownerDocumentFilename, renderOwnerPdf, type OwnerPdfDocument } from "../documents/ownerPdfRenderer.js";
 import { readTenantBranding } from "../documents/postgresTenantBranding.js";
 
-type Row = Readonly<{ number: string; customer: string | null; po: string | null; due: Date | null; description: string; configuration: unknown; ordered_quantity: number; completed_quantity: string; requirement_key: string; side: "front" | "back" | null; source_page_index: number | null; layer_key: string | null; layer_order: number | null; station: string | null; materials: string | null }>;
+type Row = Readonly<{ number: string; customer: string | null; po: string | null; due: string | null; description: string; configuration: unknown; ordered_quantity: number; completed_quantity: string; requirement_key: string; side: "front" | "back" | null; source_page_index: number | null; layer_key: string | null; layer_order: number | null; station: string | null; materials: string | null }>;
 const text = (value: string | null | undefined) => value?.trim() || undefined;
 const title = (value: string) => value ? `${value[0]!.toUpperCase()}${value.slice(1)}` : value;
 const requirement = (row: Row) => [row.side ? title(row.side) : undefined, row.source_page_index === null ? undefined : `Page ${row.source_page_index + 1}`, row.layer_key ? `${row.layer_key}${row.layer_order === null ? "" : ` ${row.layer_order + 1}`}` : undefined].filter(Boolean).join(" · ") || row.requirement_key;
@@ -14,7 +14,7 @@ const requirement = (row: Row) => [row.side ? title(row.side) : undefined, row.s
 export class PostgresProductionDocumentService {
   constructor(private readonly pool: Pool) {}
   async traveler(organizationId: OrganizationId, productionWorkId: ProductionWorkId): Promise<OwnerPdfDocument> {
-    const [branding, result] = await Promise.all([readTenantBranding(this.pool, organizationId), this.pool.query<Row>(`SELECT d.display_number number,COALESCE(NULLIF(btrim(c.display_name),''),NULLIF(btrim(c.company_name),'')) customer,o.purchase_order_number po,d.requested_due_date due,l.description,l.resolved_configuration configuration,w.ordered_quantity,
+    const [branding, result] = await Promise.all([readTenantBranding(this.pool, organizationId), this.pool.query<Row>(`SELECT d.display_number number,COALESCE(NULLIF(btrim(c.display_name),''),NULLIF(btrim(c.company_name),'')) customer,d.purchase_order_number po,d.requested_due_date::text due,l.description,l.resolved_configuration configuration,w.ordered_quantity,
       COALESCE((SELECT sum(a.good_quantity) FROM v2_production_attempts a WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id AND a.completed_at IS NOT NULL),0)::text completed_quantity,
       w.requirement_key,w.side,w.source_page_index,w.layer_key,w.layer_order,
       (SELECT a.station_key FROM v2_production_attempts a WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id ORDER BY a.sequence DESC LIMIT 1) station,
@@ -29,7 +29,7 @@ export class PostgresProductionDocumentService {
     return {
       kind: "traveler", title: `Production traveler · ${row.number}`, number: row.number, issuedAt: new Date().toISOString().slice(0, 10), organization: branding,
       sections: [
-        { heading: "Job", entries: [{ label: "Order", value: row.number }, ...(text(row.customer) ? [{ label: "Customer", value: text(row.customer)! }] : []), ...(text(row.po) ? [{ label: "Customer PO", value: text(row.po)! }] : []), ...(row.due ? [{ label: "Requested due", value: row.due.toISOString().slice(0, 10) }] : [])] },
+        { heading: "Job", entries: [{ label: "Order", value: row.number }, ...(text(row.customer) ? [{ label: "Customer", value: text(row.customer)! }] : []), ...(text(row.po) ? [{ label: "Customer PO", value: text(row.po)! }] : []), ...(text(row.due) ? [{ label: "Requested due", value: text(row.due)! }] : [])] },
         { heading: "Production work", entries: [{ label: "Line", value: row.description }, { label: "Required unit", value: requirement(row) }, { label: "Quantity ordered", value: String(row.ordered_quantity) }, { label: "Completed good quantity", value: row.completed_quantity }, { label: "Station", value: row.station ? title(row.station) : "Not started" }] },
         { heading: "Specifications", entries: [{ label: "Configuration", value: salesConfigurationPresentation((row.configuration && typeof row.configuration === "object" && !Array.isArray(row.configuration) ? row.configuration : {}) as Record<string, unknown>) || "No additional configuration" }, ...(text(row.materials) ? [{ label: "Material", value: text(row.materials)! }] : []), { label: "Artwork", value: `Artwork attached${row.side ? ` · ${title(row.side)}` : ""}` }] },
       ],
