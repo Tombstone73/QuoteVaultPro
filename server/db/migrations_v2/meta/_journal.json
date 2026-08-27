@@ -1583,6 +1583,20 @@
       "when": 1788048000077,
       "tag": "0230_v2_quote_terminal_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1788048000078,
+      "tag": "0231_v2_fulfillment_handoff_document_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "7",
+      "when": 1788048000079,
+      "tag": "0232_v2_fulfillment_handoff_snapshot_tenant_key",
+      "breakpoints": true
     }
   ]
 }

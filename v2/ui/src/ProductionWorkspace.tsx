@@ -885,6 +885,7 @@ export const ProductionWorkspace = ({
                     </dl>
                   </section>
                   <section className="v2-production-actions">
+                    <button className="v2-production-rail-button neutral" type="button" onClick={() => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/production/works/${encodeURIComponent(work.work.productionWorkId)}/traveler.pdf`, "_blank", "noopener,noreferrer")}>Preview traveler</button>
                     {!activeAttempt ? (
                       <>
                         <button

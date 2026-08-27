@@ -724,6 +724,8 @@ export type FulfillmentWorkspaceOrder = Readonly<{
       completedPrincipalSubject: string;
     }>;
     allocations: readonly Readonly<{ orderLineId: string; quantity: number }>[];
+    /** Only immutable handoffs created after document snapshots were introduced can be previewed. */
+    documentAvailable?: boolean;
   }>[];
 }>;
 export type FulfillmentTerminalResult = Readonly<{

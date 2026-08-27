@@ -14,6 +14,7 @@ const fail = (response: import("express").Response, error: V2ApplicationError) =
 export type InvoiceHttpDependencies = Readonly<{
   service: BillingApplicationService;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
+  documents?: Readonly<{ pdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, invoiceId: import("../../modules/shared/commercialValues.js").InvoiceId): Promise<Uint8Array>; filename(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, invoiceId: import("../../modules/shared/commercialValues.js").InvoiceId): Promise<string> }>;
 }>;
 export const createInvoiceRouter = (dependencies: InvoiceHttpDependencies): Router => {
   const router = expressRouter({ mergeParams: true });
@@ -51,6 +52,21 @@ export const createInvoiceRouter = (dependencies: InvoiceHttpDependencies): Rout
       const error = new V2ApplicationError("FORBIDDEN", "Authenticated access is required.");
       return response.status(403).json({ ok: false, error: { code: error.code, message: error.publicMessage } });
     }
+  });
+  router.get("/:invoiceId/document.pdf", async (request, response) => {
+    try {
+      if (!dependencies.documents) throw new V2ApplicationError("INTERNAL_ERROR", "Invoice document runtime is unavailable.");
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const invoiceId = brandedId<"InvoiceId">(request.params.invoiceId);
+      const result = await dependencies.service.readInvoice({ principal, organizationId, operationId: `http:GET:${request.path}` }, invoiceId);
+      if (!result.ok) return fail(response, result.error);
+      const [bytes, filename] = await Promise.all([dependencies.documents.pdf(brandedId<"OrganizationId">(organizationId), invoiceId), dependencies.documents.filename(brandedId<"OrganizationId">(organizationId), invoiceId)]);
+      response.status(200).setHeader("content-type", "application/pdf");
+      response.setHeader("content-disposition", `inline; filename=\"${filename}\"`);
+      response.setHeader("cache-control", "private, no-store");
+      return response.send(Buffer.from(bytes));
+    } catch (cause) { return fail(response, cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Invoice document is unavailable.")); }
   });
   router.post("/:invoiceId/issue", async (request, response) => {
     try {

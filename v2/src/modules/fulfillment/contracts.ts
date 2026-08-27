@@ -54,7 +54,7 @@ export type FulfillmentOrderWorkspace = Readonly<{
   requestedDueDate?: string; lines: readonly Readonly<{ orderLineId: OrderLineId; description: string } & FulfillmentAvailability>[];
   /** Sales-owned plan, projected read-only. It is not an actual handoff method. */
   requestedFulfillment?: Readonly<{ method: "pickup" | "shipping" | "local_delivery"; destination?: Readonly<{ recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }>; instructions?: string }>;
-  handoffs: readonly Readonly<{ handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[] }> [];
+  handoffs: readonly Readonly<{ handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; /** Present only when the immutable handoff snapshot exists. */ documentAvailable?: boolean }> [];
 }>;
 
 export type FulfillmentWorkspacePage = Readonly<{ items: readonly FulfillmentOrderWorkspace[]; nextCursor?: string }>;

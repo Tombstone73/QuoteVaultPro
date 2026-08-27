@@ -17,6 +17,7 @@ export interface FulfillmentTransaction {
  lockAvailability(organizationId:OrganizationId,orderId:OrderId,lineIds:readonly string[]):Promise<ScopedAvailability|null>;
  createHandoff(input:Readonly<{id:FulfillmentHandoffId;organizationId:OrganizationId;orderId:OrderId;method:FulfillmentMethod;customerId?:string;contactId?:string}&Actor>):Promise<FulfillmentHandoff>;
  createAllocations(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId;orderId:OrderId;allocations:readonly Readonly<{id:FulfillmentHandoffLineId;orderLineId:string;quantity:number}>[]}>):Promise<readonly FulfillmentHandoffLine[]>;
+ writeDocumentSnapshot(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId}>):Promise<void>;
  readAvailability(organizationId:OrganizationId,orderId:OrderId):Promise<ScopedAvailability|null>;
 }
 export interface FulfillmentTransactionRunner { transaction<T>(action:(tx:FulfillmentTransaction)=>Promise<T>):Promise<T>; }
@@ -54,6 +55,7 @@ export class FulfillmentApplicationService {
     }
     const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...actor(c)});
     const allocations=await tx.createAllocations({organizationId:org,handoffId:handoff.handoffId,orderId:input.orderId,allocations:input.allocations.map(x=>({id:brandedId<"FulfillmentHandoffLineId">(randomUUID()),...x}))});
+    await tx.writeDocumentSnapshot({organizationId:org,handoffId:handoff.handoffId});
     const after=await tx.readAvailability(org,input.orderId); if(!after)throw new V2ApplicationError("NOT_FOUND","Order was not found.");
     const result={handoff,allocations,availability:after.availability};
     await tx.attribute({organizationId:c.organizationId,requestId:r.request.id,operation,resourceId:handoff.handoffId,...actor(c)});

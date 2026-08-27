@@ -11,6 +11,7 @@ import { PostgresBillingReadRunner } from "./postgresBillingRead.js";
 import { PostgresBillingInvoiceTransactionRunner } from "./postgresBillingInvoiceTransaction.js";
 import { PostgresBillingPaymentsTransactionRunner } from "./postgresBillingPaymentsTransaction.js";
 import { PostgresFinancialReadRunner } from "./postgresFinancialRead.js";
+import { PostgresInvoiceDocumentService } from "./postgresInvoiceDocuments.js";
 
 export type AuthenticatedBillingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler }>;
 export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRuntimeDependencies): Readonly<{ dependencies: InvoiceHttpDependencies & import("../../src/interfaces/http/financeRoutes.js").FinanceHttpDependencies; trustedHostMiddleware: RequestHandler }> => ({
@@ -18,6 +19,7 @@ export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRu
     service: new BillingApplicationService(new PostgresBillingReadRunner(input.pool), undefined, new PostgresBillingInvoiceTransactionRunner(input.pool)),
     payments: new BillingPaymentsApplicationService(new PostgresBillingPaymentsTransactionRunner(input.pool)),
     financialRead: new FinancialReadApplicationService(new PostgresFinancialReadRunner(input.pool)),
+    documents: new PostgresInvoiceDocumentService(input.pool),
     principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))),
   },
   trustedHostMiddleware: input.trustedHostMiddleware,
