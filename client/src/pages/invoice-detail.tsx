@@ -28,7 +28,7 @@ import {
 import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
@@ -257,11 +257,18 @@ export default function InvoiceDetailPage() {
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isStaffUser = !!user && user.role !== 'customer';
+  const stripeRefundRequests = useStripeInvoiceRefundRequests(invoiceId, Boolean(isAdminOrOwner));
+  const recoverStripeRefund = useRecoverStripeInvoiceRefund();
 
   const invoice = data?.invoice;
   const lineItems = data?.lineItems ?? [];
   const payments = data?.payments ?? [];
   const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
+  const pendingRefundRequestByPaymentId = useMemo(() => new Map(
+    (stripeRefundRequests.data || [])
+      .filter((request) => ['reserved', 'submitted'].includes(String(request.status || '').toLowerCase()))
+      .map((request) => [String(request.paymentId), request]),
+  ), [stripeRefundRequests.data]);
   const importedQuickBooksLineItems = data?.importedQuickBooksLineItems ?? [];
   const importedQuickBooksLineItemsUnavailableMessage = data?.importedQuickBooksLineItemsUnavailableMessage ?? null;
 
@@ -600,6 +607,21 @@ export default function InvoiceDetailPage() {
       }, 4000);
     } catch (error: any) {
       setStripeRefundError(error?.message || 'Unable to submit Stripe refund.');
+    }
+  };
+
+  const reconcileExistingStripeRefund = async (paymentId: string, refundRequestId: string) => {
+    if (!invoiceId) return;
+    try {
+      const response = await recoverStripeRefund.mutateAsync({ invoiceId, paymentId, refundRequestId });
+      const alreadyReconciled = Boolean(response?.data?.alreadyReconciled);
+      toast({
+        title: alreadyReconciled ? 'Refund already reconciled' : 'Refund reconciled',
+        description: alreadyReconciled ? undefined : 'Verified Stripe refund truth was applied through canonical reconciliation.',
+      });
+      await Promise.all([refetch(), invoicePayments.refetch(), stripeRefundRequests.refetch()]);
+    } catch (error: any) {
+      toast({ title: 'Unable to verify refund', description: error?.message || 'Refund reconciliation failed.', variant: 'destructive' });
     }
   };
 
@@ -2970,7 +2992,8 @@ export default function InvoiceDetailPage() {
                                 const stripeRefundSummary = provider === 'stripe'
                                   ? getStripeRefundSummary(payment, paymentsList)
                                   : null;
-                                const isStripeRefundPending = Boolean(pendingStripeRefunds[String(payment.id)]);
+                                const durablePendingRefundRequest = pendingRefundRequestByPaymentId.get(String(payment.id));
+                                const isStripeRefundPending = Boolean(pendingStripeRefunds[String(payment.id)] || durablePendingRefundRequest);
                                 const canRefundStripePayment = provider === 'stripe'
                                   && isSettled
                                   && (stripeRefundSummary?.remainingRefundableCents || 0) > 0;
@@ -3162,7 +3185,18 @@ export default function InvoiceDetailPage() {
                                         Void
                                       </Button>
                                     ) : isStripeRefundPending ? (
-                                      <span className="text-xs text-muted-foreground">Refund pending reconciliation</span>
+                                      durablePendingRefundRequest && isAdminOrOwner ? (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => reconcileExistingStripeRefund(String(payment.id), String(durablePendingRefundRequest.id))}
+                                          disabled={recoverStripeRefund.isPending}
+                                        >
+                                          {recoverStripeRefund.isPending ? 'Reconciling…' : 'Reconcile Refund'}
+                                        </Button>
+                                      ) : (
+                                        <span className="text-xs text-muted-foreground">Refund pending reconciliation</span>
+                                      )
                                     ) : canRefundStripePayment ? (
                                       <Button
                                         variant="outline"

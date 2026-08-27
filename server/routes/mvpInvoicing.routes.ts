@@ -34,6 +34,7 @@ import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as re
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
 import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
+import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../services/stripeRefundRecovery.service";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
 import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
 
@@ -2792,6 +2793,57 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       const conflict = error?.code === "STRIPE_EVENT_CONFLICT" || error?.code === "STRIPE_EVENT_INVOICE_MISMATCH";
       return res.status(conflict ? 409 : 500).json({ success: false, error: error?.message || "Failed to reconcile Stripe payment", code: error?.code });
+    }
+  });
+
+  // Owner/admin-only visibility for durable refund reservations. These records
+  // are non-financial; they enable a staff operator to recover a missed webhook
+  // without supplying any processor or financial authority from the browser.
+  app.get('/api/invoices/:invoiceId/stripe/refund-requests', isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const invoiceId = String(req.params.invoiceId || "").trim();
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+      if (!invoiceId) return res.status(400).json({ success: false, error: "Missing invoice id" });
+      const rows = await db.select({
+        id: stripeRefundRequests.id,
+        paymentId: stripeRefundRequests.paymentId,
+        status: stripeRefundRequests.status,
+        amountCents: stripeRefundRequests.amountCents,
+        createdAt: stripeRefundRequests.createdAt,
+        updatedAt: stripeRefundRequests.updatedAt,
+      }).from(stripeRefundRequests).where(and(
+        eq(stripeRefundRequests.organizationId, organizationId),
+        eq(stripeRefundRequests.invoiceId, invoiceId),
+      )).orderBy(desc(stripeRefundRequests.createdAt));
+      return res.json({ success: true, data: rows });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error?.message || "Failed to load Stripe refund requests" });
+    }
+  });
+
+  // Processor-truth fallback for a missed webhook. The service reads exactly
+  // one server-trusted Stripe refund and delegates all financial mutations to
+  // stripePaymentReconciliationService; it never creates or alters a refund.
+  app.post('/api/invoices/:invoiceId/payments/:paymentId/stripe/refunds/:refundRequestId/reconcile', isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+      const result = await recoverStripeRefundFromProcessor({
+        organizationId,
+        invoiceId: String(req.params.invoiceId || "").trim(),
+        paymentId: String(req.params.paymentId || "").trim(),
+        refundRequestId: String(req.params.refundRequestId || "").trim(),
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const known = error instanceof StripeRefundRecoveryError;
+      const statusCode = known ? error.statusCode : 500;
+      return res.status(statusCode).json({
+        success: false,
+        code: known ? error.code : "STRIPE_REFUND_RECOVERY_FAILED",
+        error: known ? error.message : "Unable to verify the existing Stripe refund.",
+      });
     }
   });
 

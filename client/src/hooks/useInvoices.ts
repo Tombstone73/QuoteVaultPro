@@ -52,6 +52,15 @@ export interface InvoicePaymentWithCreatedBy extends Payment {
   createdBy?: { id: string; name: string | null; email: string | null } | null;
 }
 
+export type StripeInvoiceRefundRequest = {
+  id: string;
+  paymentId: string;
+  status: 'reserved' | 'submitted' | 'succeeded' | 'failed' | string;
+  amountCents: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 // List invoices
 export function useInvoices(filters?: {
   status?: string;
@@ -192,6 +201,42 @@ export function useInitiateStripeInvoiceRefund() {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+    },
+  });
+}
+
+/** Owner/admin-only view of durable, non-financial Stripe refund requests. */
+export function useStripeInvoiceRefundRequests(invoiceId: string | undefined, enabled: boolean) {
+  return useQuery<StripeInvoiceRefundRequest[]>({
+    queryKey: ['stripeInvoiceRefundRequests', invoiceId],
+    queryFn: async () => {
+      if (!invoiceId) return [];
+      const res = await fetch(`/api/invoices/${encodeURIComponent(invoiceId)}/stripe/refund-requests`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch Stripe refund requests');
+      const body = await res.json();
+      return (body.data || []) as StripeInvoiceRefundRequest[];
+    },
+    enabled: Boolean(invoiceId) && enabled,
+  });
+}
+
+/** Reads an existing Stripe refund and delegates reconciliation to the server. */
+export function useRecoverStripeInvoiceRefund() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { invoiceId: string; paymentId: string; refundRequestId: string }) => {
+      const res = await apiRequest(
+        'POST',
+        `/api/invoices/${encodeURIComponent(payload.invoiceId)}/payments/${encodeURIComponent(payload.paymentId)}/stripe/refunds/${encodeURIComponent(payload.refundRequestId)}/reconcile`,
+      );
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['stripeInvoiceRefundRequests', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
     },
   });
 }
