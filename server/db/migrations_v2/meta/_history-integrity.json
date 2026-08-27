@@ -7,5 +7,13 @@
     "when": 1788048000079,
     "tag": "0232_v2_fulfillment_handoff_snapshot_tenant_key"
   },
-  "canonicalSha256": "af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3"
+  "canonicalSha256": "c876a064a89e49410b459dd8888fb174af13baf540f3024f45dcbbb30d5821d2",
+  "unappliedRepair": {
+    "priorCanonicalSha256": "af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3",
+    "tags": [
+      "0231_v2_fulfillment_handoff_document_snapshots",
+      "0232_v2_fulfillment_handoff_snapshot_tenant_key"
+    ],
+    "reason": "DEV rejected the unreleased 0231 composite FK before either migration committed; the parent key is now created before the child FK."
+  }
 }

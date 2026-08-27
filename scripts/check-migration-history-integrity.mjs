@@ -23,6 +23,15 @@ const migrationsDir = path.join(root, "server", "db", "migrations_v2");
 const journalPath = path.join(migrationsDir, "meta", "_journal.json");
 const manifestPath = path.join(migrationsDir, "meta", "_history-integrity.json");
 const refresh = process.argv.slice(2).includes("--refresh");
+// Historic migration source remains immutable. This is the one reviewed
+// exception for the 0231/0232 transaction that PostgreSQL rejected before
+// either migration could be recorded in a shared ledger.
+const permittedUnappliedRepairs = new Map([
+  ["af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3", [
+    "0231_v2_fulfillment_handoff_document_snapshots",
+    "0232_v2_fulfillment_handoff_snapshot_tenant_key",
+  ]],
+]);
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -76,15 +85,44 @@ function canonical(entries) {
   }).join("\n") + "\n";
 }
 
-function makeManifest(entries) {
+function makeManifest(entries, previousManifest) {
   const last = entries.at(-1);
-  return {
+  const manifest = {
     version: 1,
     purpose: "CI trust anchor for immutable V2 migration history",
     entryCount: entries.length,
     immutableThrough: { idx: last.idx, when: last.when, tag: last.tag },
     canonicalSha256: sha256(canonical(entries)),
   };
+  if (previousManifest?.unappliedRepair) manifest.unappliedRepair = previousManifest.unappliedRepair;
+  return manifest;
+}
+
+function validateRecordedUnappliedRepair(manifest, entries) {
+  const repair = manifest.unappliedRepair;
+  if (repair === undefined) return;
+  if (
+    !repair ||
+    typeof repair.priorCanonicalSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(repair.priorCanonicalSha256) ||
+    !Array.isArray(repair.tags) ||
+    repair.tags.length === 0 ||
+    repair.tags.some((tag) => typeof tag !== "string") ||
+    typeof repair.reason !== "string" ||
+    repair.reason.length === 0
+  ) fail("invalid recorded unapplied migration repair metadata");
+
+  const permittedTags = permittedUnappliedRepairs.get(repair.priorCanonicalSha256);
+  if (
+    !permittedTags ||
+    permittedTags.length !== repair.tags.length ||
+    permittedTags.some((tag, index) => tag !== repair.tags[index])
+  ) fail("recorded unapplied migration repair is not a permitted immutable-history exception");
+
+  const protectedTags = new Set(entries.filter((entry) => entry.idx <= manifest.immutableThrough.idx).map((entry) => entry.tag));
+  if (repair.tags.some((tag) => !protectedTags.has(tag))) {
+    fail("recorded unapplied migration repair references a tag outside protected history");
+  }
 }
 
 function verifyManifest(manifest, entries) {
@@ -107,6 +145,7 @@ function verifyManifest(manifest, entries) {
     protectedLast.tag !== manifest.immutableThrough.tag
   ) fail("journal order/tag/timestamp changed inside protected migration history");
 
+  validateRecordedUnappliedRepair(manifest, entries);
   const protectedDigest = sha256(canonical(protectedEntries));
   if (protectedDigest !== manifest.canonicalSha256) {
     fail("historical migration SQL or journal metadata changed; create a new repair migration instead of editing applied history");
@@ -125,7 +164,7 @@ try {
   } else if (!refresh) {
     fail(`${additions.length} new migration(s) are not yet recorded in the integrity manifest. Run the reviewed refresh command after confirming this is an append-only change.`);
   } else {
-    const nextManifest = makeManifest(entries);
+    const nextManifest = makeManifest(entries, manifest);
     writeFileSync(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`);
     console.log(`[migration-integrity] REFRESHED: protected append-only V2 history through ${nextManifest.immutableThrough.tag}.`);
   }

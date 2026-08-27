@@ -1,5 +1,10 @@
 -- Completed handoffs are immutable physical facts. Their printed customer
 -- documents need the exact contemporary presentation, not today's Sales/CRM.
+-- The paired parent key is established before the child FK. 0231 had never
+-- committed because PostgreSQL rejects a composite FK without this exact key.
+ALTER TABLE v2_fulfillment_handoffs
+  ADD CONSTRAINT v2_fulfillment_handoffs_id_org_uidx UNIQUE (id, organization_id);
+
 CREATE TABLE v2_fulfillment_handoff_document_snapshots (
   organization_id varchar NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
   handoff_id varchar NOT NULL,
