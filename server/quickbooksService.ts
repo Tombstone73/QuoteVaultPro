@@ -7,6 +7,8 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
+import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHistoricalNumbering';
+import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quickBooksHistoricalInvoiceNumbering.service';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePricing';
@@ -3310,6 +3312,7 @@ export type QBInvoiceImportResult = {
   failed: number;
   importedOpenAr: number;
   importedHistorical: number;
+  numberingConflicts: number;
   errors: string[];
 };
 
@@ -3320,7 +3323,7 @@ export async function importQBInvoicesByIds(
   createdByUserId: string,
   perInvoiceModes: Record<string, QBInvoiceImportOverride> = {},
 ): Promise<QBInvoiceImportResult> {
-  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, errors: [] };
+  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, numberingConflicts: 0, errors: [] };
 
   if (qbInvoiceIds.length === 0) return result;
 
@@ -3529,8 +3532,33 @@ export async function importQBInvoicesByIds(
         result.updated++;
         if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
       } else {
-        const invoiceNumber = await generateNextInvoiceNumber(organizationId);
-        const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, 'invoice', invoiceNumber);
+        const historicalNumber = isHistorical
+          ? resolveHistoricalQuickBooksInvoiceNumber(qbInvoice.DocNumber)
+          : null;
+        if (historicalNumber && 'error' in historicalNumber) {
+          result.skipped++;
+          result.errors.push(`Invoice ${qbInvoice.Id}: ${historicalNumber.error}`);
+          continue;
+        }
+        if (historicalNumber) {
+          const conflicts = await findHistoricalQuickBooksInvoiceNumberConflicts({
+            organizationId,
+            identity: historicalNumber.value,
+          });
+          if (conflicts.length > 0) {
+            result.skipped++;
+            result.numberingConflicts++;
+            result.errors.push(`Invoice ${historicalNumber.value.sourceDocNumber}: historical number conflict (${conflicts.map((conflict) => `${conflict.kind}:${conflict.entity}:${conflict.id}`).join(', ')})`);
+            continue;
+          }
+        }
+
+        // Historical QuickBooks invoices retain their source DocNumber and do
+        // not invoke any native document or shared Job Number allocator.
+        const invoiceNumber = historicalNumber?.value.invoiceNumber ?? await generateNextInvoiceNumber(organizationId);
+        const { displayNumber, numberCore } = historicalNumber
+          ? historicalNumber.value
+          : await buildDocumentNumberParts(organizationId, 'invoice', invoiceNumber);
 
         await db.insert(invoices).values({
           organizationId,
@@ -3579,7 +3607,7 @@ export async function importQBInvoicesByIds(
     }
   }
 
-  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, openAr: ${result.importedOpenAr}, historical: ${result.importedHistorical}, errors: ${result.errors.length}`, { organizationId });
+  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, openAr: ${result.importedOpenAr}, historical: ${result.importedHistorical}, numberingConflicts: ${result.numberingConflicts}, errors: ${result.errors.length}`, { organizationId });
   return result;
 }
 

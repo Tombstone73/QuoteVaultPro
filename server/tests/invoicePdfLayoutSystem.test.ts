@@ -138,4 +138,23 @@ describe('Invoice PDF v1 layout system', () => {
     expect(getInvoicePdfWatermarkState('Unpaid')).toBeNull();
     expect(getInvoicePdfWatermarkState('Partially Paid')).toBeNull();
   });
+
+  test('uses the imported QuickBooks display number in a historical invoice PDF', async () => {
+    const bytes = await generateInvoicePdfBytes({
+      invoice: {
+        invoiceNumber: 15970,
+        displayNumber: '15970',
+        status: 'paid',
+        currency: 'USD',
+        subtotalCents: 6000,
+        totalCents: 6000,
+      },
+      customer: null,
+      companySettings: null,
+      paymentSummary: { totalCents: 6000, amountPaidCents: 6000, amountDueCents: 0, statusLabel: 'Paid' },
+      lineItems: [],
+    } as any);
+
+    expect(readPdfContentStream(bytes)).toContain('INVOICE #15970');
+  });
 });
