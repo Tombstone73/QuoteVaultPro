@@ -9,7 +9,7 @@ test('invoice preview is scope-filtered and bounded before it reaches the browse
   const routes = read('server/routes/quickbooks.routes.ts');
 
   expect(routes).toContain("scope must be one of: open_ar, historical, all_unsynced");
-  expect(routes).toContain("pageSize must be one of: 50, 100, 200");
+  expect(routes).toContain("pageSize must be one of: 25, 50, 100, 200");
   expect(routes).toContain('fetchQBInvoicePreviewPage');
   expect(service).toContain("WHERE Balance > '0'");
   expect(service).toContain("WHERE Balance <= '0'");
@@ -22,8 +22,13 @@ test('preview selection starts empty and all selection/import actions are page-b
   const page = read('client/src/pages/settings/integrations.tsx');
 
   expect(page).toContain("const [invoicePreviewScope, setInvoicePreviewScope] = useState<QBInvoicePreviewScope>('open_ar')");
+  expect(page).toContain("const [invoicePreviewPageSize, setInvoicePreviewPageSize] = useState<25 | 50 | 100 | 200>(50)");
   expect(page).toContain('setSelectedQBIds(new Set());');
   expect(page).not.toContain('Auto-select all importable');
+  expect(page).toContain("['historical', 'Preview Historical']");
+  expect(page).toContain("['open_ar', 'Preview Open A/R']");
+  expect(page).toContain("['all_unsynced', 'Preview All Unsynced']");
+  expect(page).toContain('<SelectItem value="25">25 per page</SelectItem>');
   expect(page).toContain('Select eligible on this page');
   expect(page).toContain('Import Selected ({selectedQBIds.size})');
   expect(page).toContain('Import this batch');

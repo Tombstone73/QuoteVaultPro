@@ -589,7 +589,7 @@ export function registerQuickBooksRoutes(
    *
    * Query params:
    *   scope=open_ar|historical|all_unsynced (defaults to open_ar)
-   *   page=1..n, pageSize=50|100|200 (defaults to 100)
+   *   page=1..n, pageSize=25|50|100|200 (defaults to 50)
    *   debugReferenceFields=1  (admin/owner only, already enforced by isAdminOrOwner)
    *     When present, each preview row includes a `referenceDebug` object with
    *     custom fields, privateNote, customerMemo, and line descriptions — used
@@ -601,15 +601,15 @@ export function registerQuickBooksRoutes(
       const includeReferenceDebug = req.query.debugReferenceFields === '1';
       const scope = String(req.query.scope ?? 'open_ar');
       const page = Number(req.query.page ?? 1);
-      const pageSize = Number(req.query.pageSize ?? 100);
+      const pageSize = Number(req.query.pageSize ?? 50);
       if (!['open_ar', 'historical', 'all_unsynced'].includes(scope)) {
         return res.status(400).json({ success: false, error: 'scope must be one of: open_ar, historical, all_unsynced' });
       }
       if (!Number.isInteger(page) || page < 1) {
         return res.status(400).json({ success: false, error: 'page must be a positive integer' });
       }
-      if (![50, 100, 200].includes(pageSize)) {
-        return res.status(400).json({ success: false, error: 'pageSize must be one of: 50, 100, 200' });
+      if (![25, 50, 100, 200].includes(pageSize)) {
+        return res.status(400).json({ success: false, error: 'pageSize must be one of: 25, 50, 100, 200' });
       }
       const preview = await quickbooksService.fetchQBInvoicePreviewPage({
         organizationId,

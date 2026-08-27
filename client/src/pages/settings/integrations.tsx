@@ -213,7 +213,7 @@ type QBInvoicePreviewPage = {
   rows: QBInvoicePreviewRow[];
   scope: QBInvoicePreviewScope;
   page: number;
-  pageSize: 50 | 100 | 200;
+  pageSize: 25 | 50 | 100 | 200;
   sourceTotal: number | null;
   sourceRowsOnPage: number;
   alreadyImportedExcludedOnPage: number;
@@ -332,7 +332,7 @@ export default function SettingsIntegrations() {
   const [invoicePreviewPage, setInvoicePreviewPage] = useState<QBInvoicePreviewPage | null>(null);
   const [invoicePreviewScope, setInvoicePreviewScope] = useState<QBInvoicePreviewScope>('open_ar');
   const [invoicePreviewPageNumber, setInvoicePreviewPageNumber] = useState(1);
-  const [invoicePreviewPageSize, setInvoicePreviewPageSize] = useState<50 | 100 | 200>(100);
+  const [invoicePreviewPageSize, setInvoicePreviewPageSize] = useState<25 | 50 | 100 | 200>(50);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [selectedQBIds, setSelectedQBIds] = useState<Set<string>>(new Set());
   const [isImportingInvoices, setIsImportingInvoices] = useState(false);
@@ -675,7 +675,7 @@ export default function SettingsIntegrations() {
     return { openAr, historical, skipped, excluded, importable: openAr + historical };
   }, [invoicePreview, selectedQBIds, invoiceOverrides]);
 
-  const handlePreviewInvoices = async (options?: { scope?: QBInvoicePreviewScope; page?: number; pageSize?: 50 | 100 | 200 }) => {
+  const handlePreviewInvoices = async (options?: { scope?: QBInvoicePreviewScope; page?: number; pageSize?: 25 | 50 | 100 | 200 }) => {
     const scope = options?.scope ?? invoicePreviewScope;
     const page = options?.page ?? invoicePreviewPageNumber;
     const pageSize = options?.pageSize ?? invoicePreviewPageSize;
@@ -1099,7 +1099,7 @@ export default function SettingsIntegrations() {
                   </label>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   {/* Pull Customers — preview first, then confirm */}
                   <Button
                     onClick={handlePreviewCustomers}
@@ -1112,17 +1112,47 @@ export default function SettingsIntegrations() {
                     Pull Customers
                   </Button>
 
-                  {/* The normal, bounded migration entry point. */}
-                  <Button
-                    onClick={() => handlePreviewInvoices({ scope: 'open_ar', page: 1 })}
-                    disabled={isLoadingPreview || isImportingInvoices}
-                    variant="outline"
-                  >
-                    {isLoadingPreview
-                      ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      : <Download className="w-4 h-4 mr-2" />}
-                    Preview Open A/R
-                  </Button>
+                  <div className="rounded-md border bg-muted/30 p-3 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium">Invoice Import</p>
+                        <p className="text-xs text-muted-foreground">Choose a bounded QuickBooks invoice batch. Nothing is selected automatically.</p>
+                      </div>
+                      <Select
+                        value={String(invoicePreviewPageSize)}
+                        onValueChange={(value) => {
+                          const pageSize = Number(value) as 25 | 50 | 100 | 200;
+                          if (invoicePreview) void handlePreviewInvoices({ page: 1, pageSize });
+                          else setInvoicePreviewPageSize(pageSize);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 w-[120px] text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="25">25 per page</SelectItem>
+                          <SelectItem value="50">50 per page</SelectItem>
+                          <SelectItem value="100">100 per page</SelectItem>
+                          <SelectItem value="200">200 per page</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      {([
+                        ['open_ar', 'Preview Open A/R'],
+                        ['historical', 'Preview Historical'],
+                        ['all_unsynced', 'Preview All Unsynced'],
+                      ] as Array<[QBInvoicePreviewScope, string]>).map(([scope, label]) => (
+                        <Button
+                          key={scope}
+                          onClick={() => handlePreviewInvoices({ scope, page: 1 })}
+                          disabled={isLoadingPreview || isImportingInvoices}
+                          variant="outline"
+                        >
+                          {isLoadingPreview ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                          {label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Invoice Preview Table */}
@@ -1145,17 +1175,6 @@ export default function SettingsIntegrations() {
                             {label}{invoicePreviewScope === scope && invoicePreviewPage?.sourceTotal != null ? ` (${invoicePreviewPage.sourceTotal})` : ''}
                           </Button>
                         ))}
-                        <Select
-                          value={String(invoicePreviewPageSize)}
-                          onValueChange={(value) => handlePreviewInvoices({ page: 1, pageSize: Number(value) as 50 | 100 | 200 })}
-                        >
-                          <SelectTrigger className="h-8 w-[120px] text-xs"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="50">50 per page</SelectItem>
-                            <SelectItem value="100">100 per page</SelectItem>
-                            <SelectItem value="200">200 per page</SelectItem>
-                          </SelectContent>
-                        </Select>
                       </div>
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
@@ -1239,6 +1258,7 @@ export default function SettingsIntegrations() {
                             <TableHead className="text-xs">QB #</TableHead>
                             <TableHead className="text-xs">Customer</TableHead>
                             <TableHead className="text-xs">Date</TableHead>
+                            <TableHead className="text-xs">Due date</TableHead>
                             <TableHead className="text-xs">Total</TableHead>
                             <TableHead className="text-xs">Balance</TableHead>
                             <TableHead className="text-xs">PO / Legacy Reference</TableHead>
@@ -1251,7 +1271,7 @@ export default function SettingsIntegrations() {
                           {invoicePreview.map(row => {
                             const isExpanded = expandedDebugIds.has(row.qbInvoiceId);
                             const hasDebug = !!row.referenceDebug || !!row.inspection;
-                            const colSpan = 10;
+                            const colSpan = 11;
                             const effectiveMode = getEffectiveInvoiceMode(row);
                             return (
                               <>
@@ -1283,6 +1303,7 @@ export default function SettingsIntegrations() {
                                     {row.localCustomerName ?? <span className="text-muted-foreground italic">{row.customerRefName}</span>}
                                   </TableCell>
                                   <TableCell className="text-xs">{row.txnDate}</TableCell>
+                                  <TableCell className="text-xs">{row.dueDate ?? '-'}</TableCell>
                                   <TableCell className="text-xs">${row.totalAmt.toFixed(2)}</TableCell>
                                   <TableCell className="text-xs">${row.balance.toFixed(2)}</TableCell>
                                   <TableCell className="text-xs">
@@ -1378,6 +1399,9 @@ export default function SettingsIntegrations() {
                                           ? <Badge variant="secondary" className="text-xs">New</Badge>
                                           : <Badge variant="destructive" className="text-xs" title={row.cannotImportReason}>Excluded</Badge>
                                       }
+                                      {!row.alreadyImported && row.canImport && (row.warningReasons?.length ?? 0) > 0 && (
+                                        <Badge variant="outline" className="text-xs border-amber-500 text-amber-700">Warning</Badge>
+                                      )}
                                       {effectiveMode === 'skip' && <Badge variant="outline" className="text-xs">Skip</Badge>}
                                       {hasDebug && (
                                         <button
