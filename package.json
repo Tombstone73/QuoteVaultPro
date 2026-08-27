@@ -81,6 +81,7 @@
     "v2:pricing:parity:pure": "tsx v2/tests/modules/pricingParityCorrections.pure.ts && tsx v2/tests/modules/legacyFormulaDraftAuthoring.pure.ts",
     "v2:sales-tax:pure": "tsx v2/tests/modules/salesTaxComposition.pure.ts",
     "v2:sales-lifecycle:pure": "tsx v2/tests/modules/salesLifecycleContracts.pure.ts && tsx v2/tests/modules/customerDocumentRenderer.test.ts",
+    "v2:sales-sort-preference:pure": "tsx v2/ui/src/salesSortPreference.test.ts",
     "v2:sales-operator:pure": "tsx v2/tests/modules/salesOperatorParityContracts.pure.ts",
     "v2:owner-documents:pure": "tsx v2/tests/modules/ownerDocumentRenderer.test.ts && tsx v2/tests/infrastructure/productionDocumentService.test.ts && tsx v2/tests/infrastructure/fulfillmentSnapshotPersistence.test.ts && tsx v2/tests/persistence/fulfillmentMigration.contract.test.ts && tsx v2/tests/interfaces/ownerDocumentRoutes.pure.ts",
     "v2:ui:test:money": "tsx v2/ui/src/productBuilder/money-input.test.ts",

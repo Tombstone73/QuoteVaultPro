@@ -55,7 +55,8 @@ assert.match(orderUi, /termsCode/);
 for (const ui of [quoteListUi, orderListUi]) {
   assert.match(ui, /Due from/);
   assert.match(ui, /Updated: newest/);
-  assert.match(ui, /localStorage/);
+  assert.match(ui, /useSalesUpdatedSortPreference/);
+  assert.match(ui, /preferenceReady/);
   assert.match(ui, /<summary>Actions<\/summary>/);
 }
 

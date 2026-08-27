@@ -2,6 +2,7 @@ import { Plus, Search } from "lucide-react";
 import React, { useState } from "react";
 import { money, type QuoteListItem } from "./api";
 import { useSalesQuotes } from "./quoteFormQueries";
+import { useSalesUpdatedSortPreference } from "./salesSortPreference";
 
 const filters = ["All", "Draft", "Sent", "Accepted", "Converted"] as const;
 const lifecycleFor = (filter: (typeof filters)[number]) =>
@@ -10,16 +11,6 @@ const date = (value?: string) =>
   value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
 const statusTone = (value: string) =>
   value === "accepted" ? "ok" : value === "sent" ? "info" : value === "converted" ? "accent" : "neutral";
-type UpdatedSort = "updated_desc" | "updated_asc";
-const preferenceKey = (sessionScope: string, organizationId: string) =>
-  `ph.v2.sales.quotes.updated-sort.${sessionScope}.${organizationId}`;
-const readSortPreference = (sessionScope: string, organizationId: string): UpdatedSort => {
-  try {
-    return window.localStorage.getItem(preferenceKey(sessionScope, organizationId)) === "updated_asc"
-      ? "updated_asc"
-      : "updated_desc";
-  } catch { return "updated_desc"; }
-};
 
 const Status = ({ value }: Readonly<{ value: string }>) => (
   <span data-tone={statusTone(value)} className="status-badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-[11px] font-medium leading-none whitespace-nowrap">
@@ -46,7 +37,7 @@ export const QuotesList = ({
   const [filter, setFilter] = useState<(typeof filters)[number]>("All");
   const [dueFrom, setDueFrom] = useState("");
   const [dueTo, setDueTo] = useState("");
-  const [sort, setSort] = useState<UpdatedSort>(() => readSortPreference(sessionScope, organizationId));
+  const { sort, setSort, preferenceReady } = useSalesUpdatedSortPreference("quotes", sessionScope, organizationId);
   const [cursor, setCursor] = useState("");
   const list = useSalesQuotes(sessionScope, organizationId, {
     q: search,
@@ -62,10 +53,9 @@ export const QuotesList = ({
     if (row.source === "legacy") onOpenLegacy(row.recordId);
     else onOpenV2(row.quoteId);
   };
-  const selectSort = (next: UpdatedSort) => {
+  const selectSort = (next: "updated_desc" | "updated_asc") => {
     setSort(next);
     setCursor("");
-    try { window.localStorage.setItem(preferenceKey(sessionScope, organizationId), next); } catch { /* persistence is a convenience only */ }
   };
 
   return (
@@ -92,7 +82,7 @@ export const QuotesList = ({
         </div>
         <label className="v2-quotes-date-filter">Due from <input type="date" value={dueFrom} onChange={(event) => { setDueFrom(event.target.value); setCursor(""); }} /></label>
         <label className="v2-quotes-date-filter">Due to <input type="date" value={dueTo} onChange={(event) => { setDueTo(event.target.value); setCursor(""); }} /></label>
-        <label className="v2-quotes-sort">Sort <select value={sort} onChange={(event) => selectSort(event.target.value === "updated_asc" ? "updated_asc" : "updated_desc")}><option value="updated_desc">Updated: newest</option><option value="updated_asc">Updated: oldest</option></select></label>
+        <label className="v2-quotes-sort">Sort <select value={sort} disabled={!preferenceReady} onChange={(event) => selectSort(event.target.value === "updated_asc" ? "updated_asc" : "updated_desc")}><option value="updated_desc">Updated: newest</option><option value="updated_asc">Updated: oldest</option></select></label>
       </div>
 
       <div className="panel overflow-hidden v2-quotes-table-wrap">
