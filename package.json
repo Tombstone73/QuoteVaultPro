@@ -80,6 +80,7 @@
     "v2:m5:financial-parity": "jest --runInBand v2/tests/parity/financialSpineParity.test.ts",
     "v2:pricing:parity:pure": "tsx v2/tests/modules/pricingParityCorrections.pure.ts && tsx v2/tests/modules/legacyFormulaDraftAuthoring.pure.ts",
     "v2:sales-tax:pure": "tsx v2/tests/modules/salesTaxComposition.pure.ts",
+    "v2:quote-tax-refresh:pure": "tsx v2/tests/infrastructure/quoteMutableTaxProjection.pure.ts",
     "v2:sales-tax-settings:pure": "tsx v2/tests/modules/taxSettings.pure.ts",
     "v2:sales-tax-settings:http": "tsx v2/tests/interfaces/taxSettingsRoutes.pure.ts",
     "v2:sales-lifecycle:pure": "tsx v2/tests/modules/salesLifecycleContracts.pure.ts && tsx v2/tests/modules/customerDocumentRenderer.test.ts",

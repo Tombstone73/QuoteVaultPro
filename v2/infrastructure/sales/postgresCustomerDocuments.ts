@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { salesConfigurationPresentation } from "../../src/modules/sales/configurationPresentation.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { OrganizationId, OrderId, QuoteId } from "../../src/modules/shared/commercialValues.js";
@@ -23,18 +23,26 @@ export class PostgresCustomerDocumentService {
   constructor(private readonly pool: Pool) {}
 
   async quote(organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
+    return this.quoteFrom(this.pool, organizationId, quoteId);
+  }
+  /** Builds the attachment from rows held by the delivery-preparation
+   * transaction, so its tax evidence is the exact composition being frozen. */
+  async quoteInTransaction(client: PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
+    return this.quoteFrom(client, organizationId, quoteId);
+  }
+  private async quoteFrom(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
     const [header, branding, sent] = await Promise.all([
-      this.quoteHeader(organizationId, quoteId), this.branding(organizationId),
-      this.pool.query<CheckpointRow>("SELECT payload,occurred_at FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 AND checkpoint_kind='quote_sent' ORDER BY checkpoint_sequence DESC LIMIT 1", [organizationId, quoteId]),
+      this.quoteHeader(queryable, organizationId, quoteId), this.branding(queryable, organizationId),
+      queryable.query<CheckpointRow>("SELECT payload,occurred_at FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 AND checkpoint_kind='quote_sent' ORDER BY checkpoint_sequence DESC LIMIT 1", [organizationId, quoteId]),
     ]);
     if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
     if (sent.rows[0]) return this.fromCheckpoint("quote", header, branding, sent.rows[0]);
-    const lines = await this.lines(organizationId, quoteId);
+    const lines = await this.lines(queryable, organizationId, quoteId);
     return this.current("quote", header, branding, lines);
   }
 
   async order(organizationId: OrganizationId, orderId: OrderId): Promise<CustomerSalesDocument> {
-    const [header, branding, lines] = await Promise.all([this.orderHeader(organizationId, orderId), this.branding(organizationId), this.lines(organizationId, orderId)]);
+    const [header, branding, lines] = await Promise.all([this.orderHeader(this.pool, organizationId, orderId), this.branding(this.pool, organizationId), this.lines(this.pool, organizationId, orderId)]);
     if (!header) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
     return this.current("order", header, branding, lines);
   }
@@ -44,27 +52,33 @@ export class PostgresCustomerDocumentService {
   /** Quote delivery intentionally does not fall back to a different Customer
    * address. A Quote Contact is the explicit recipient selection. */
   async quoteRecipient(organizationId: OrganizationId, quoteId: QuoteId): Promise<string | undefined> {
-    const header = await this.quoteHeader(organizationId, quoteId);
+    return this.quoteRecipientFrom(this.pool, organizationId, quoteId);
+  }
+  async quoteRecipientInTransaction(client: PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<string | undefined> {
+    return this.quoteRecipientFrom(client, organizationId, quoteId);
+  }
+  private async quoteRecipientFrom(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<string | undefined> {
+    const header = await this.quoteHeader(queryable, organizationId, quoteId);
     if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
     return text(header.contact_email);
   }
 
-  private async branding(organizationId: OrganizationId): Promise<BrandingRow> {
-    const result = await this.pool.query<BrandingRow>("SELECT COALESCE(NULLIF(btrim(cs.company_display_name),''),NULLIF(btrim(cs.company_name),''),o.name) name,cs.address,cs.phone,cs.email,cs.website FROM organizations o LEFT JOIN company_settings cs ON cs.organization_id=o.id WHERE o.id=$1", [organizationId]);
+  private async branding(queryable: Pool | PoolClient, organizationId: OrganizationId): Promise<BrandingRow> {
+    const result = await queryable.query<BrandingRow>("SELECT COALESCE(NULLIF(btrim(cs.company_display_name),''),NULLIF(btrim(cs.company_name),''),o.name) name,cs.address,cs.phone,cs.email,cs.website FROM organizations o LEFT JOIN company_settings cs ON cs.organization_id=o.id WHERE o.id=$1", [organizationId]);
     const row = result.rows[0];
     if (!row) throw new V2ApplicationError("NOT_FOUND", "Organization was not found.");
     return row;
   }
 
-  private quoteHeader(organizationId: OrganizationId, quoteId: QuoteId): Promise<HeaderRow | null> { return this.header(organizationId, quoteId, "quote"); }
-  private orderHeader(organizationId: OrganizationId, orderId: OrderId): Promise<HeaderRow | null> { return this.header(organizationId, orderId, "order"); }
-  private async header(organizationId: OrganizationId, documentId: string, kind: "quote" | "order"): Promise<HeaderRow | null> {
+  private quoteHeader(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<HeaderRow | null> { return this.header(queryable, organizationId, quoteId, "quote"); }
+  private orderHeader(queryable: Pool | PoolClient, organizationId: OrganizationId, orderId: OrderId): Promise<HeaderRow | null> { return this.header(queryable, organizationId, orderId, "order"); }
+  private async header(queryable: Pool | PoolClient, organizationId: OrganizationId, documentId: string, kind: "quote" | "order"): Promise<HeaderRow | null> {
     const detail = kind === "quote" ? "v2_sales_quote_details" : "v2_sales_order_details";
-    const result = await this.pool.query<HeaderRow>(`SELECT d.id,d.display_number,d.currency,d.purchase_order_number,d.requested_due_date,d.commercial_notes,COALESCE(c.display_name,c.company_name) customer_name,c.email customer_email,trim(concat_ws(' ',ct.first_name,ct.last_name)) contact_name,ct.email contact_email,x.requested_fulfillment_method,x.selling_adjustment_cents,x.selling_adjustment_reason,x.commercial_charge,x.tax_composition${kind === "quote" ? ",x.delivery_state" : ""} FROM v2_sales_documents d JOIN ${detail} x ON x.organization_id=d.organization_id AND x.document_id=d.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN customer_contacts ct ON ct.organization_id=d.organization_id AND ct.id=d.contact_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind=$3`, [organizationId, documentId, kind]);
+    const result = await queryable.query<HeaderRow>(`SELECT d.id,d.display_number,d.currency,d.purchase_order_number,d.requested_due_date,d.commercial_notes,COALESCE(c.display_name,c.company_name) customer_name,c.email customer_email,trim(concat_ws(' ',ct.first_name,ct.last_name)) contact_name,ct.email contact_email,x.requested_fulfillment_method,x.selling_adjustment_cents,x.selling_adjustment_reason,x.commercial_charge,x.tax_composition${kind === "quote" ? ",x.delivery_state" : ""} FROM v2_sales_documents d JOIN ${detail} x ON x.organization_id=d.organization_id AND x.document_id=d.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN customer_contacts ct ON ct.organization_id=d.organization_id AND ct.id=d.contact_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind=$3`, [organizationId, documentId, kind]);
     return result.rows[0] ?? null;
   }
-  private async lines(organizationId: OrganizationId, documentId: string): Promise<readonly LineRow[]> {
-    return (await this.pool.query<LineRow>("SELECT description,quantity,selling_unit_cents,selling_line_cents,resolved_configuration FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId, documentId])).rows;
+  private async lines(queryable: Pool | PoolClient, organizationId: OrganizationId, documentId: string): Promise<readonly LineRow[]> {
+    return (await queryable.query<LineRow>("SELECT description,quantity,selling_unit_cents,selling_line_cents,resolved_configuration FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId, documentId])).rows;
   }
   private current(kind: "quote" | "order", header: HeaderRow, branding: BrandingRow, lines: readonly LineRow[]): CustomerSalesDocument {
     const tax = record(header.tax_composition); const charge = record(header.commercial_charge);

@@ -36,7 +36,7 @@ import type {
   SalesOrderAdjustment,
   SalesLineSnapshot,
 } from "../../src/modules/sales/contracts.js";
-import type { CommercialCharge } from "../../src/modules/sales/taxComposition.js";
+import type { CommercialCharge, SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
 
 type HeaderRow = {
   id: string;
@@ -304,6 +304,63 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
             : {}),
         }
       : { organizationId, contactId: brandedId<"ContactId">(row.contact_id!) };
+    /**
+     * A Quote is commercially mutable until it has crossed a customer-document
+     * boundary.  Its persisted tax snapshot is useful for edit writes and for
+     * historical evidence, but it is not the authority for an open, unsent
+     * Quote: tenant jurisdiction or Customer exemption evidence can change
+     * without an operator editing the Quote again.
+     *
+     * This is intentionally projection-only.  `read` never persists the
+     * composition it derives; the send transition explicitly freezes its
+     * authoritative composition before delivery instead.
+     */
+    const mutableCommercialProjection = row.delivery_state === "not_sent" &&
+      row.acceptance_state === "not_accepted" &&
+      row.lifecycle_state === "open";
+    // Send preparation writes the exact composition represented to the
+    // provider, then records a pending delivery attempt before releasing its
+    // lock.  `recordDelivered` must subsequently checkpoint that same
+    // composition, even if tenant Settings change while the provider call is
+    // in flight.  A failed preparation has no pending attempt and therefore
+    // remains a normal mutable projection on the next read.
+    const hasPendingDelivery = mutableCommercialProjection &&
+      await this.hasPendingDeliveryAttempt(organizationId, quoteId);
+    const taxComposition = mutableCommercialProjection && !hasPendingDelivery
+      ? await this.composeCurrentTaxComposition({
+          organizationId,
+          ...(row.customer_id ? { customerId: row.customer_id } : {}),
+          fulfillment: row.requested_fulfillment_method
+            ? {
+                method: row.requested_fulfillment_method,
+                ...(row.requested_destination
+                  ? {
+                      destination: asObject<
+                        NonNullable<QuoteCurrentState["requestedFulfillment"]>["destination"]
+                      >(row.requested_destination),
+                    }
+                  : {}),
+                ...(row.fulfillment_instructions
+                  ? { instructions: row.fulfillment_instructions }
+                  : {}),
+              } as RequestedFulfillment
+            : undefined,
+          lines: salesLines,
+          adjustment:
+            Number(row.selling_adjustment_cents) !== 0 &&
+            row.selling_adjustment_reason
+              ? {
+                  cents: Number(row.selling_adjustment_cents),
+                  reason: row.selling_adjustment_reason,
+                }
+              : undefined,
+          charge: row.commercial_charge
+            ? asObject<CommercialCharge>(row.commercial_charge)
+            : undefined,
+        })
+      : row.tax_composition
+        ? asObject<QuoteCurrentState["taxComposition"]>(row.tax_composition)
+        : undefined;
     const quote: QuoteCurrentState = {
       organizationId,
       quoteId,
@@ -337,7 +394,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       ...(row.requested_fulfillment_method ? { requestedFulfillment: { method: row.requested_fulfillment_method, ...(row.requested_destination ? { destination: asObject<NonNullable<QuoteCurrentState["requestedFulfillment"]>["destination"]>(row.requested_destination) } : {}), ...(row.fulfillment_instructions ? { instructions: row.fulfillment_instructions } : {}) } as RequestedFulfillment } : {}),
       ...(Number(row.selling_adjustment_cents) !== 0 && row.selling_adjustment_reason ? { sellingAdjustment: { cents: Number(row.selling_adjustment_cents), reason: row.selling_adjustment_reason } } : {}),
       ...(row.commercial_charge ? { commercialCharge: asObject<QuoteCurrentState["commercialCharge"]>(row.commercial_charge) } : {}),
-      ...(row.tax_composition ? { taxComposition: asObject<QuoteCurrentState["taxComposition"]>(row.tax_composition) } : {}),
+      ...(taxComposition ? { taxComposition } : {}),
       ...(conversion.rows[0]
         ? { convertedOrderId: brandedId<"OrderId">(conversion.rows[0].order_document_id) }
         : {}),
@@ -406,15 +463,19 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
   ): Promise<boolean> {
     // State is transitioned before the revision bump so an unsuccessful lifecycle
     // operation cannot commit a revision increment.
+    if (input.kind === "send" && !input.frozenTaxComposition)
+      throw new Error("Quote send transition requires a frozen tax composition.");
     const state = await this.client.query(
       input.kind === "send"
-        ? "UPDATE v2_sales_quote_details SET delivery_state='sent',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='not_sent'"
+        ? "UPDATE v2_sales_quote_details SET delivery_state='sent',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='not_sent' AND tax_composition=$3::jsonb"
         : input.kind === "accept"
           ? "UPDATE v2_sales_quote_details SET acceptance_state='accepted',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='sent' AND acceptance_state='not_accepted'"
           : input.kind === "decline"
             ? "UPDATE v2_sales_quote_details SET lifecycle_state='declined',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='sent'"
             : "UPDATE v2_sales_quote_details SET lifecycle_state='voided',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open'",
-      [input.organizationId, input.quoteId],
+      input.kind === "send"
+        ? [input.organizationId, input.quoteId, JSON.stringify(input.frozenTaxComposition)]
+        : [input.organizationId, input.quoteId],
     );
     if (state.rowCount !== 1) return false;
     const header = await this.client.query(
@@ -452,6 +513,22 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       ],
     );
     return true;
+  }
+  async freezeTaxComposition(
+    input: Parameters<QuoteTransaction["freezeTaxComposition"]>[0],
+  ): Promise<QuoteReadModel | null> {
+    const current = await this.read(input.organizationId, input.quoteId, true);
+    if (!current || current.revision !== input.expectedRevision) return current;
+    if (
+      current.quote.deliveryState !== "not_sent" ||
+      current.quote.acceptanceState !== "not_accepted" ||
+      current.quote.lifecycleState !== "open"
+    ) return current;
+    const composition = current.quote.taxComposition;
+    if (!composition)
+      throw new Error("Quote tax composition is unavailable for delivery preparation.");
+    await this.persistTaxComposition(input.organizationId, input.quoteId, composition);
+    return { ...current, quote: { ...current.quote, taxComposition: composition } };
   }
   async readCheckpoint(
     organizationId: OrganizationId,
@@ -495,9 +572,45 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     lines: readonly SalesLineSnapshot[],
     adjustment: SalesOrderAdjustment | undefined,
     charge: CommercialCharge | undefined,
+  ): Promise<SalesTaxComposition> {
+    const composition = await this.composeCurrentTaxComposition({
+      organizationId,
+      ...(customerId ? { customerId } : {}),
+      fulfillment,
+      lines,
+      adjustment,
+      charge,
+    });
+    await this.persistTaxComposition(organizationId, quoteId, composition);
+    return composition;
+  }
+  private async persistTaxComposition(
+    organizationId: OrganizationId,
+    quoteId: QuoteId,
+    composition: SalesTaxComposition,
   ): Promise<void> {
-    const composition = await composePostgresSalesTax({ client: this.client, organizationId, ...(customerId ? { customerId } : {}), fulfillment, lines, adjustment, charge });
     await this.client.query("UPDATE v2_sales_quote_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [organizationId, quoteId, JSON.stringify(composition)]);
+  }
+  /** The one Quote-side adapter into the canonical Sales tax composer. */
+  private composeCurrentTaxComposition(input: Readonly<{
+    organizationId: string;
+    customerId?: string;
+    fulfillment?: RequestedFulfillment;
+    lines: readonly SalesLineSnapshot[];
+    adjustment?: SalesOrderAdjustment;
+    charge?: CommercialCharge;
+  }>) {
+    return composePostgresSalesTax({ client: this.client, ...input });
+  }
+  private async hasPendingDeliveryAttempt(
+    organizationId: OrganizationId,
+    quoteId: QuoteId,
+  ): Promise<boolean> {
+    const result = await this.client.query<{ exists: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state='pending') AS exists",
+      [organizationId, quoteId],
+    );
+    return result.rows[0]?.exists === true;
   }
   private async writeLines(
     organizationId: OrganizationId,

@@ -47,7 +47,7 @@ import {
   type SalesLineSnapshot,
   type SellingPriceDecision,
 } from "./contracts.js";
-import type { CommercialCharge } from "./taxComposition.js";
+import type { CommercialCharge, SalesTaxComposition } from "./taxComposition.js";
 import {
   toQuoteCheckpointPersistenceEnvelope,
   toSalesDocumentTermsPersistence,
@@ -122,6 +122,10 @@ export type QuoteLifecycleInput = Readonly<{
 export type QuoteDeliveredInput = QuoteLifecycleInput & Readonly<{
   deliveryAttemptId: string;
   providerMessageId: string;
+  /** Captured by the delivery adapter before provider invocation. It is
+   * persisted atomically with the pending attempt and must be the exact
+   * composition recorded in the immutable sent checkpoint. */
+  frozenTaxComposition?: SalesTaxComposition;
 }>;
 export type QuoteTerminalInput = QuoteLifecycleInput & Readonly<{ reason: string }>;
 export type QuoteReadModel = Readonly<{
@@ -243,8 +247,18 @@ export interface QuoteTransaction {
       kind: "send" | "accept" | "decline" | "void";
       checkpoint: QuoteCheckpoint;
       operationRequestId: string;
+      /** A send transition may only consume the composition atomically
+       * frozen during delivery preparation. */
+      frozenTaxComposition?: SalesTaxComposition;
     }>,
   ): Promise<boolean>;
+  /** The customer-document adapter owns this explicit mutation boundary.
+   * Normal Quote reads must never call it. */
+  freezeTaxComposition(input: Readonly<{
+    organizationId: OrganizationId;
+    quoteId: QuoteId;
+    expectedRevision: string;
+  }>): Promise<QuoteReadModel | null>;
 }
 
 /** Conversion-only persistence operations.  They are intentionally separate
@@ -860,7 +874,7 @@ export class QuoteApplicationService {
   }
   private async lifecycle(
     context: OperationContext,
-    input: QuoteLifecycleInput,
+    input: QuoteDeliveredInput,
     kind: "send",
     capability: "quote.send",
     operation: string,
@@ -898,12 +912,19 @@ export class QuoteApplicationService {
             "CONFLICT",
             "Quote has already been sent.",
           );
+        const frozenTaxComposition = input.frozenTaxComposition ?? current.quote.taxComposition;
+        if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved")
+          throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
         const presentation = await tx.customers.getPresentationIdentity(
           current.quote.customerContact,
         );
         const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
+        const checkpointQuote = {
+          ...current.quote,
+          taxComposition: frozenTaxComposition,
+        };
         const checkpoint = createQuoteLifecycleCheckpoint(
-          current.quote,
+          checkpointQuote,
           kind,
           checkpointId,
           presentation,
@@ -916,6 +937,7 @@ export class QuoteApplicationService {
           kind,
           checkpoint,
           operationRequestId: request.id,
+          frozenTaxComposition,
         });
         if (!applied)
           throw new V2ApplicationError(

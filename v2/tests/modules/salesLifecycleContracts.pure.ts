@@ -28,7 +28,15 @@ assert.match(quoteApplication, /async decline\(/);
 assert.match(quoteApplication, /async void\(/);
 assert.match(conversion, /current\.quote\.lifecycleState !== "open"/);
 
-assert.match(delivery, /quoteRecipient\(/);
+assert.match(delivery, /quoteRecipient(?:InTransaction)?\(/);
+assert.match(delivery, /freezeTaxComposition\(/);
+assert.match(delivery, /quoteInTransaction\(/);
+assert.match(delivery, /frozenTaxComposition: prepared\.frozenTaxComposition/);
+assert.ok(
+  delivery.indexOf("freezeTaxComposition(") < delivery.indexOf("quoteInTransaction(") &&
+    delivery.indexOf("quoteInTransaction(") < delivery.indexOf("INSERT INTO v2_sales_quote_delivery_attempts"),
+  "delivery must freeze tax, render the exact transactional customer document, then reserve its provider attempt",
+);
 assert.match(delivery, /markPermanentFailure/);
 assert.match(delivery, /automatic retry is disabled/);
 assert.match(delivery, /recordDelivered\(context, committed\)/);

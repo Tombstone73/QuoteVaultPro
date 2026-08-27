@@ -21,6 +21,28 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(source).not.toMatch(/resolveActivePricingInput/);
   });
 
+  test("accepted and converted commercial evidence remains pinned to the sent tax composition", async () => {
+    const quote = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteApplication.ts"), "utf8");
+    const conversion = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
+
+    // The sent checkpoint captures the exact composition committed at the
+    // customer-document boundary.  Acceptance and conversion consume that
+    // evidence rather than consulting mutable tenant tax settings again.
+    expect(quote).toMatch(/quote\.taxComposition \? \{ taxComposition: quote\.taxComposition \} : \{\}/);
+    expect(conversion).toMatch(/taxComposition: source\.commercial\.taxComposition/);
+    expect(conversion).toMatch(/commercial: source\.commercial/);
+    expect(conversion).not.toMatch(/composePostgresSalesTax|resolveTaxJurisdiction|TaxSettings/);
+  });
+
+  test("duplicating a Quote creates a fresh mutable document without copying its frozen tax snapshot", async () => {
+    const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteApplication.ts"), "utf8");
+    const duplicate = source.slice(source.indexOf("async duplicate("), source.indexOf("async update(", source.indexOf("async duplicate(")));
+
+    expect(duplicate).toMatch(/await tx\.create\(/);
+    expect(duplicate).not.toMatch(/taxComposition:/);
+    expect(duplicate).not.toMatch(/convertedOrderId/);
+  });
+
   test("the normal Quote HTTP and UI flows do not expose standalone acceptance or conversion", async () => {
     const routes = await readFile(path.join(process.cwd(), "v2", "src", "interfaces", "http", "quoteRoutes.ts"), "utf8");
     const ui = await readFile(path.join(process.cwd(), "v2", "ui", "src", "App.tsx"), "utf8");

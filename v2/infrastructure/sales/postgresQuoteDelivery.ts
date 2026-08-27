@@ -12,9 +12,19 @@ import { PostgresOperationRequestRepository } from "../persistence/postgresOpera
 import type { CustomerSalesDocument } from "./customerDocumentRenderer.js";
 import { customerDocumentFilename, renderCustomerSalesPdf } from "./customerDocumentRenderer.js";
 import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
+import { PostgresQuoteTransaction } from "./postgresQuoteTransaction.js";
+import type { SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
 
 type EmailSettingsRow = { provider: string; from_address: string; from_name: string; refresh_token: string | null; connection_status: string; };
 type AttemptRow = { id: string; delivery_state: "pending" | "succeeded" | "failed" | "uncertain"; };
+type PreparedDelivery = Readonly<{
+  requestId: string;
+  attemptId: string;
+  recipient: string;
+  document: CustomerSalesDocument;
+  pdf: Uint8Array;
+  frozenTaxComposition: SalesTaxComposition;
+}> | Readonly<{ requestId: string; replay: QuoteOperationResult }>;
 const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 const email = (value: string | undefined): string | null => value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value : null;
 const providerDefinitelyRejected = (cause: unknown): boolean => {
@@ -58,16 +68,11 @@ export class PostgresQuoteDeliveryService {
       if (quote.value.quote.deliveryState !== "not_sent") throw new V2ApplicationError("CONFLICT", "Quote has already been sent.");
       if (quote.value.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before sending.");
 
-      const projection = await this.documents.quote(brandedId<"OrganizationId">(context.organizationId), input.quoteId);
-      const recipient = email(await this.documents.quoteRecipient(brandedId<"OrganizationId">(context.organizationId), input.quoteId));
-      if (!recipient) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Quote contact needs a valid email address before sending.");
-      const pdf = await renderCustomerSalesPdf(projection);
-      const sha = `sha256:${createHash("sha256").update(pdf).digest("hex")}`;
-      const prepared = await this.prepare(context, input, recipient, sha);
-      if (prepared.replay) return success(prepared.replay);
+      const prepared = await this.prepare(context, input);
+      if ("replay" in prepared) return success(prepared.replay);
 
       let providerMessageId: string;
-      try { providerMessageId = await this.deliver(context.organizationId, recipient, projection, pdf); }
+      try { providerMessageId = await this.deliver(context.organizationId, prepared.recipient, prepared.document, prepared.pdf); }
       catch (cause) {
         if (providerDefinitelyRejected(cause)) {
           await this.failed(context.organizationId, prepared.requestId, prepared.attemptId, "The email provider rejected the delivery before accepting it.");
@@ -77,7 +82,7 @@ export class PostgresQuoteDeliveryService {
         throw new V2ApplicationError("CONFLICT", "Quote delivery outcome is unknown. The Quote was not marked sent; reconcile delivery before trying again.");
       }
 
-      const committed: QuoteDeliveredInput = { ...input, deliveryAttemptId: prepared.attemptId, providerMessageId };
+      const committed: QuoteDeliveredInput = { ...input, deliveryAttemptId: prepared.attemptId, providerMessageId, frozenTaxComposition: prepared.frozenTaxComposition };
       const transitioned = await this.quoteService.recordDelivered(context, committed);
       if (!transitioned.ok) {
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery but the Quote lifecycle transition requires reconciliation; automatic retry is disabled.", providerMessageId);
@@ -99,29 +104,48 @@ export class PostgresQuoteDeliveryService {
     }
   }
 
-  private async prepare(context: OperationContext, input: QuoteLifecycleInput, recipient: string, sha: string): Promise<Readonly<{ requestId: string; attemptId: string; replay?: QuoteOperationResult }>> {
+  /**
+   * The only mutable-to-customer-document boundary.  It locks the current
+   * Quote, recomposes current authoritative tax, persists that exact JSON
+   * evidence, renders the attachment from the same transaction, then creates
+   * the pending provider attempt.  Nothing has left the platform if this
+   * transaction rolls back.
+   */
+  private async prepare(context: OperationContext, input: QuoteLifecycleInput): Promise<PreparedDelivery> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const reservation = await this.requests.reserve(client, { organizationId: context.organizationId, operation: "sales.quote.delivery.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint({ quoteId: input.quoteId, expectedRevision: input.expectedRevision, recipient, sha }), principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
+      const reservation = await this.requests.reserve(client, { organizationId: context.organizationId, operation: "sales.quote.delivery.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint({ quoteId: input.quoteId, expectedRevision: input.expectedRevision }), principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
       if (reservation.kind === "replay") {
-        if (reservation.request.status === "succeeded") { await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: "", replay: reservation.request.resultJson as QuoteOperationResult }; }
+        if (reservation.request.status === "succeeded") { await client.query("COMMIT"); return { requestId: reservation.request.id, replay: reservation.request.resultJson as QuoteOperationResult }; }
         throw new V2ApplicationError("CONFLICT", "This Quote delivery request is already in progress.");
       }
-      const locked = await client.query<{ delivery_state: "not_sent" | "sent"; revision: string }>("SELECT q.delivery_state,d.revision FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.organization_id=d.organization_id AND q.document_id=d.id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote' FOR UPDATE OF d,q", [context.organizationId, input.quoteId]);
-      if (!locked.rows[0]) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
-      if (locked.rows[0].delivery_state !== "not_sent") throw new V2ApplicationError("CONFLICT", "Quote has already been sent.");
-      if (locked.rows[0].revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before sending.");
+      const transaction = new PostgresQuoteTransaction(client);
+      const frozen = await transaction.freezeTaxComposition({ organizationId: brandedId<"OrganizationId">(context.organizationId), quoteId: input.quoteId, expectedRevision: input.expectedRevision });
+      if (!frozen) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+      if (frozen.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before sending.");
+      if (frozen.quote.deliveryState !== "not_sent") throw new V2ApplicationError("CONFLICT", "Quote has already been sent.");
+      if (frozen.quote.acceptanceState !== "not_accepted" || frozen.quote.lifecycleState !== "open") throw new V2ApplicationError("CONFLICT", "This Quote cannot be sent.");
+      const frozenTaxComposition = frozen.quote.taxComposition;
+      if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
+      const [recipientValue, document] = await Promise.all([
+        this.documents.quoteRecipientInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId),
+        this.documents.quoteInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId),
+      ]);
+      const recipient = email(recipientValue);
+      if (!recipient) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Quote contact needs a valid email address before sending.");
+      const pdf = await renderCustomerSalesPdf(document);
+      const sha = `sha256:${createHash("sha256").update(pdf).digest("hex")}`;
       const uncertain = await client.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain') LIMIT 1 FOR UPDATE", [context.organizationId, input.quoteId]);
       if (uncertain.rows[0]) throw new V2ApplicationError("CONFLICT", "A previous Quote delivery is still unresolved. Reconcile it before sending again.");
       const existing = await client.query<AttemptRow>("SELECT id,delivery_state FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND operation_request_id=$2 FOR UPDATE", [context.organizationId, reservation.request.id]);
       let attemptId = existing.rows[0]?.id;
-      if (attemptId) await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='pending',failure_message=NULL,completed_at=NULL,attempted_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='failed'", [context.organizationId, attemptId]);
+      if (attemptId) await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='pending',recipient_email=$3,document_sha256=$4,failure_message=NULL,completed_at=NULL,attempted_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='failed'", [context.organizationId, attemptId, recipient, sha]);
       else {
         const row = await client.query<{ id: string }>("INSERT INTO v2_sales_quote_delivery_attempts(organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject,initiated_staff_actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id", [context.organizationId, input.quoteId, reservation.request.id, recipient, sha, context.principal.kind, principalSubject(context.principal), staffActorId(context.principal) ?? null]);
         attemptId = row.rows[0]!.id;
       }
-      await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId! };
+      await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, frozenTaxComposition };
     } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
   }
   private async failed(org: string, requestId: string, attemptId: string, message: string): Promise<void> { const client = await this.pool.connect(); try { await client.query("BEGIN"); await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='failed',failure_message=$3,completed_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='pending'", [org, attemptId, message]); await this.requests.markRetryableFailure(client, org, requestId); await client.query("COMMIT"); } catch { await client.query("ROLLBACK"); } finally { client.release(); } }
