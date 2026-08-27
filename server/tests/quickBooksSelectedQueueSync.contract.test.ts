@@ -22,11 +22,24 @@ test('selected sync is tenant-scoped, sequential, eligibility-checked, and idemp
   expect(worker).toContain('for (const item of unique)');
 });
 
-test('queue list uses canonical ids and selection remains page-scoped by default', () => {
+test('historical QuickBooks imports cannot become outbound queue candidates', () => {
+  const importer = read('server/quickbooksService.ts');
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+
+  expect(importer).toContain("importSource: 'quickbooks'");
+  expect(importer).toContain("qbSyncStatus: 'synced'");
+  expect(worker).toContain("inArray(invoices.qbSyncStatus, ['pending', 'failed'] as any)");
+  expect(worker).toContain("Invoice is no longer pending sync.");
+});
+
+test('queue list uses canonical ids, supports a single-row sync, and is reachable from the Push settings section', () => {
   const page = read('client/src/pages/settings/quickbooks-sync-queue.tsx');
   const settings = read('client/src/pages/settings/integrations.tsx');
   expect(page).toContain('const keyOf');
   expect(page).toContain('Select all eligible on this page');
   expect(page).toContain('Sync Selected (');
+  expect(page).toContain('>Sync now</Button>');
   expect(settings).toContain('Open Sync Queue');
+  expect(settings).toContain('Review pending invoices and payments, then sync individually or in selected batches.');
+  expect(settings).toContain('Runs one bounded background queue batch.');
 });

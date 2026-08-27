@@ -1575,32 +1575,43 @@ export default function SettingsIntegrations() {
               {/* Push to QuickBooks — unchanged */}
               <div>
                 <h3 className="font-semibold mb-3">Push to QuickBooks</h3>
-                <Button
-                  onClick={() => handleSync('push', ['customers'])}
-                  disabled={syncMutation.isPending || isSyncing || qbPushDisabled}
-                  variant="outline"
-                  title={qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue instead).' : undefined}
-                >
-                  <Upload className="w-4 h-4 mr-2" />
-                  Push to QuickBooks
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    onClick={() => handleSync('push', ['customers'])}
+                    disabled={syncMutation.isPending || isSyncing || qbPushDisabled}
+                    variant="outline"
+                    title={qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue instead).' : undefined}
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Push to QuickBooks
+                  </Button>
+                  <Button asChild>
+                    <Link to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</Link>
+                  </Button>
+                </div>
                 <p className="text-xs text-muted-foreground mt-2">
                   {qbPushDisabled
                     ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue / Sync now).'
                     : 'Send local customers to QuickBooks'}
                 </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Review pending invoices and payments, then sync individually or in selected batches.
+                </p>
               </div>
 
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => triggerMutation.mutate()}
-                  disabled={triggerMutation.isPending}
-                  variant="secondary"
-                  size="sm"
-                >
-                  <RefreshCw className={`w-4 h-4 mr-2 ${triggerMutation.isPending ? 'animate-spin' : ''}`} />
-                  Run queue worker batch
-                </Button>
+              <div className="flex flex-wrap items-end gap-2">
+                <div>
+                  <Button
+                    onClick={() => triggerMutation.mutate()}
+                    disabled={triggerMutation.isPending}
+                    variant="secondary"
+                    size="sm"
+                  >
+                    <RefreshCw className={`w-4 h-4 mr-2 ${triggerMutation.isPending ? 'animate-spin' : ''}`} />
+                    Run queue worker batch
+                  </Button>
+                  <p className="mt-1 text-xs text-muted-foreground">Runs one bounded background queue batch.</p>
+                </div>
                 <Button
                   onClick={() => disconnectMutation.mutate()}
                   disabled={disconnectMutation.isPending}
