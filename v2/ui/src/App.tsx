@@ -61,6 +61,7 @@ import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
 import { quoteLineProductPresentation } from "./quoteLinePresentation";
+import { quoteRouteMode } from "./quoteRouteMode";
 import {
   legacyProductEditorRedirect,
   productBuilderPath,
@@ -80,6 +81,7 @@ import {
   pushProductionLocation,
   pushProductionWorkLocation,
   pushProofingLocation,
+  pushNewQuoteLocation,
   pushQuoteLocation,
   pushWorkspaceLocation,
   readWorkspaceLocation,
@@ -109,7 +111,11 @@ export const App = ({
   appearance: VisualAppearance;
   setAppearance: (patch: Partial<VisualAppearance>) => void;
 }) => {
-  const [page, setPage] = useState<V2VisualPage>("home");
+  const initialLocation =
+    typeof window === "undefined" ? null : readWorkspaceLocation();
+  const [page, setPage] = useState<V2VisualPage>(
+    () => initialLocation?.page ?? "home",
+  );
   const [organizationId, setOrganizationId] = useState("");
   const [sessionScope, setSessionScope] = useState("");
   const sessionScopeRef = useRef(sessionScope);
@@ -135,7 +141,13 @@ export const App = ({
       /* Stored scope is optional and never authority. */
     }
   }, [organizationId]);
-  const [quoteId, setQuoteId] = useState("");
+  const [quoteId, setQuoteId] = useState(
+    () =>
+      initialLocation?.page === "quotes" ? initialLocation.quoteId ?? "" : "",
+  );
+  const [newQuoteRequested, setNewQuoteRequested] = useState(
+    () => initialLocation?.page === "quotes" && initialLocation.newQuote === true,
+  );
   const [orderId, setOrderId] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [contactId, setContactId] = useState("");
@@ -177,6 +189,7 @@ export const App = ({
       clearV2SessionQueryState(queryClient);
       setOrganizationId("");
       setQuoteId("");
+      setNewQuoteRequested(false);
       setOrderId("");
       setCustomerId("");
       setContactId("");
@@ -222,7 +235,10 @@ export const App = ({
         "quotes",
       ],
     });
-    if (organizationRef.current === resultOrganizationId) setQuoteId(id);
+    if (organizationRef.current === resultOrganizationId) {
+      setQuoteId(id);
+      setNewQuoteRequested(false);
+    }
   };
   const reconcileAuthority = () =>
     reconcileForbiddenQuoteMutation(
@@ -239,6 +255,7 @@ export const App = ({
       setSessionScope("");
       setOrganizationId("");
       setQuoteId("");
+      setNewQuoteRequested(false);
       setOrderId("");
       setCustomerId("");
       setContactId("");
@@ -288,7 +305,10 @@ export const App = ({
         setCustomerId(location.customerId ?? "");
       else if (location.page === "contacts")
         setContactId(location.contactId ?? "");
-      else if (location.page === "quotes") setQuoteId(location.quoteId ?? "");
+      else if (location.page === "quotes") {
+        setQuoteId(location.quoteId ?? "");
+        setNewQuoteRequested(location.newQuote === true);
+      }
       else if (location.page === "orders") setOrderId(location.orderId ?? "");
       else if (location.page === "invoices")
         setInvoiceId(location.invoiceId ?? "");
@@ -347,6 +367,7 @@ export const App = ({
     if (nextPage === "quotes") {
       pushQuoteLocation();
       setQuoteId("");
+      setNewQuoteRequested(false);
     }
     if (nextPage === "orders") {
       pushOrderLocation();
@@ -774,6 +795,7 @@ export const App = ({
               openQuote={(id) => {
                 pushQuoteLocation(id);
                 setQuoteId(id);
+                setNewQuoteRequested(false);
                 setPage("quotes");
               }}
             />
@@ -786,9 +808,11 @@ export const App = ({
               }}
               sessionScope={sessionScope}
               quoteId={quoteId}
+              newQuoteRequested={newQuoteRequested}
               setQuoteId={(id) => {
                 pushQuoteLocation(id || undefined);
                 setQuoteId(id);
+                setNewQuoteRequested(false);
               }}
               quote={quote.data}
               error={quote.error ?? bootstrap.error}
@@ -796,6 +820,7 @@ export const App = ({
               load={(id) => {
                 pushQuoteLocation(id);
                 setQuoteId(id);
+                setNewQuoteRequested(false);
                 setNotice("");
               }}
               reload={() =>
@@ -1284,6 +1309,7 @@ const QuotesPage = (
   props: WorkspaceProps &
     Readonly<{
       quoteId: string;
+      newQuoteRequested: boolean;
       setQuoteId: (value: string) => void;
       canCreate: boolean;
       canEdit: boolean;
@@ -1307,6 +1333,12 @@ const QuotesPage = (
     return () => window.removeEventListener("v2:new-quote", open);
   }, []);
   const [legacyQuoteId, setLegacyQuoteId] = useState("");
+  const mode = quoteRouteMode({
+    quoteId: props.quoteId,
+    createRequested: creating || props.newQuoteRequested,
+    hasQuote: Boolean(props.quote),
+    hasError: Boolean(props.error),
+  });
   if (legacyQuoteId)
     return (
       <LegacyQuoteWorkspace
@@ -1316,7 +1348,7 @@ const QuotesPage = (
         onBack={() => setLegacyQuoteId("")}
       />
     );
-  if (creating && !props.quoteId)
+  if (mode === "create")
     return (
       <SalesEntryWorkspace
         mode="quote"
@@ -1325,7 +1357,10 @@ const QuotesPage = (
         canCreate={props.canCreate}
         canOverridePrice={props.canOverridePrice}
         csrfReady={props.csrfReady}
-        onCancel={() => setCreating(false)}
+        onCancel={() => {
+          setCreating(false);
+          if (props.newQuoteRequested) props.setQuoteId("");
+        }}
         onQuoteCreated={(result) => {
           props.applyQuoteResult(
             result,
@@ -1337,7 +1372,27 @@ const QuotesPage = (
         }}
       />
     );
-  if (props.quoteId) {
+  if (mode === "loading-existing") {
+    return (
+      <section className="lab v2-sales-workspace v2-quote-editor" aria-busy="true">
+        <SalesDocumentEmpty>Loading Quote…</SalesDocumentEmpty>
+      </section>
+    );
+  }
+  if (mode === "unavailable") {
+    return (
+      <section className="lab v2-sales-workspace v2-quote-editor">
+        <SalesDocumentEmpty>
+          <h2>Quote unavailable</h2>
+          <p>{errorText(props.error)}</p>
+          <button className="button secondary" type="button" onClick={props.reload}>
+            Retry
+          </button>
+        </SalesDocumentEmpty>
+      </section>
+    );
+  }
+  if (mode === "existing") {
     return (
       <section className="lab v2-sales-workspace v2-quote-editor">
         <button
@@ -1358,7 +1413,10 @@ const QuotesPage = (
       organizationId={props.organizationId}
       sessionScope={props.sessionScope}
       canCreate={props.canCreate}
-      onCreate={() => setCreating(true)}
+      onCreate={() => {
+        pushNewQuoteLocation();
+        setCreating(true);
+      }}
       onOpenV2={props.setQuoteId}
       onOpenLegacy={setLegacyQuoteId}
     />

@@ -20,8 +20,9 @@ export type ProductBuilderLocation = Readonly<{
 }>;
 export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
-export type SalesLocation = Readonly<{ quoteId?: string }> | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll"; productionWorkId?: string }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" }>;
+export type QuoteLocation = Readonly<{ quoteId?: string; newQuote?: true }>;
+export type SalesLocation = QuoteLocation | Readonly<{ orderId?: string }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string; newQuote?: true }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll"; productionWorkId?: string }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -135,9 +136,10 @@ export const readContactLocation = (pathname = window.location.pathname): Contac
   if (parts.length === 2 && parts[0] === "contacts") return productId(parts[1]) ? { contactId: productId(parts[1]) } : null;
   return null;
 };
-export const readQuoteLocation = (pathname = window.location.pathname): SalesLocation | null => {
+export const readQuoteLocation = (pathname = window.location.pathname): QuoteLocation | null => {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "quotes") return {};
+  if (parts.length === 2 && parts[0] === "quotes" && parts[1] === "new") return { newQuote: true };
   if (parts.length === 2 && parts[0] === "quotes") return productId(parts[1]) ? { quoteId: productId(parts[1]) } : null;
   return null;
 };
@@ -245,6 +247,8 @@ export const contactPath = (id?: string) => id ? `/contacts/${encodeURIComponent
 export const pushContactLocation = (id?: string) => window.history.pushState({}, "", contactPath(id));
 export const quotePath = (id?: string) => id ? `/quotes/${encodeURIComponent(id)}` : "/quotes";
 export const pushQuoteLocation = (id?: string) => window.history.pushState({}, "", quotePath(id));
+export const newQuotePath = () => "/quotes/new";
+export const pushNewQuoteLocation = () => window.history.pushState({}, "", newQuotePath());
 export const orderPath = (id?: string) => id ? `/orders/${encodeURIComponent(id)}` : "/orders";
 export const pushOrderLocation = (id?: string) => window.history.pushState({}, "", orderPath(id));
 export const invoicePath = (id?: string) => id ? `/invoices/${encodeURIComponent(id)}` : "/invoices";

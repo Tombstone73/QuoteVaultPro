@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, orderPath, prepressPath, prepressUnitPath, productBuilderPath, productPath, productionPath, productionWorkPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readPrepressLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
+import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, newQuotePath, orderPath, prepressPath, prepressUnitPath, productBuilderPath, productPath, productionPath, productionWorkPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readPrepressLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
 assert.equal(readProductLocation("/products/product-a"), null);
@@ -67,10 +67,13 @@ assert.deepEqual(readWorkspaceLocation("/prepress/units/unit-a"), { page: "prepr
 assert.equal(prepressUnitPath("unit a"), "/prepress/units/unit%20a");
 assert.equal(workspacePath("artwork"), "/artwork");
 assert.deepEqual(readQuoteLocation("/quotes/quote-a"), { quoteId: "quote-a" });
+assert.deepEqual(readQuoteLocation("/quotes/new"), { newQuote: true });
 assert.deepEqual(readOrderLocation("/orders/order-a"), { orderId: "order-a" });
 assert.deepEqual(readWorkspaceLocation("/quotes/quote-a"), { page: "quotes", quoteId: "quote-a" });
+assert.deepEqual(readWorkspaceLocation("/quotes/new"), { page: "quotes", newQuote: true });
 assert.deepEqual(readWorkspaceLocation("/orders/order-a"), { page: "orders", orderId: "order-a" });
 assert.equal(quotePath("quote a"), "/quotes/quote%20a");
+assert.equal(newQuotePath(), "/quotes/new");
 assert.equal(orderPath("order a"), "/orders/order%20a");
 assert.deepEqual(readInvoiceLocation("/invoices/invoice-a"), { invoiceId: "invoice-a" });
 assert.deepEqual(readWorkspaceLocation("/invoices"), { page: "invoices" });
