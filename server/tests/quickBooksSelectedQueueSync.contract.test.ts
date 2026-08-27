@@ -35,11 +35,16 @@ test('historical QuickBooks imports cannot become outbound queue candidates', ()
 test('queue list uses canonical ids, supports a single-row sync, and is reachable from the Push settings section', () => {
   const page = read('client/src/pages/settings/quickbooks-sync-queue.tsx');
   const settings = read('client/src/pages/settings/integrations.tsx');
+  const app = read('client/src/App.tsx');
   expect(page).toContain('const keyOf');
   expect(page).toContain('Select all eligible on this page');
   expect(page).toContain('Sync Selected (');
   expect(page).toContain('>Sync now</Button>');
+  expect(settings).toContain('Link as RouterLink } from "react-router-dom"');
+  expect(settings).toContain('<RouterLink to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</RouterLink>');
   expect(settings).toContain('Open Sync Queue');
   expect(settings).toContain('Review pending invoices and payments, then sync individually or in selected batches.');
   expect(settings).toContain('Runs one bounded background queue batch.');
+  expect(app).toContain('import QuickBooksSyncQueuePage from "@/pages/settings/quickbooks-sync-queue"');
+  expect(app).toContain('<Route path="integrations/quickbooks-sync-queue" element={<QuickBooksSyncQueuePage />} />');
 });

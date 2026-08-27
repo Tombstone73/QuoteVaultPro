@@ -5,6 +5,7 @@ import epsLogoUrl from '@/assets/integrations/enhanced-payment-systems-logo.png'
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
+import { Link as RouterLink } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -903,7 +904,7 @@ export default function SettingsIntegrations() {
                       <RefreshCw className={`w-4 h-4 mr-2 ${qbFlushMutation.isPending ? 'animate-spin' : ''}`} />
                       Sync now
                     </Button>
-                    <Button asChild size="sm" variant="outline"><Link to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</Link></Button>
+                    <Button asChild size="sm" variant="outline"><RouterLink to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</RouterLink></Button>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
@@ -1586,7 +1587,7 @@ export default function SettingsIntegrations() {
                     Push to QuickBooks
                   </Button>
                   <Button asChild>
-                    <Link to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</Link>
+                    <RouterLink to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</RouterLink>
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">
