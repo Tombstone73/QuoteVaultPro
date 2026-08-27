@@ -94,7 +94,9 @@ export function useInvoice(id: string | undefined) {
     queryKey: ['invoices', id],
     queryFn: async () => {
       if (!id) return null;
-      const res = await fetch(`/api/invoices/${id}`, { credentials: 'include' });
+      // Invoice financial state must be authoritative after a payment settles.
+      // Avoid accepting a browser-cached representation during settlement.
+      const res = await fetch(`/api/invoices/${id}`, { credentials: 'include', cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to fetch invoice');
       const data = await res.json();
       return data.data as InvoiceWithRelations;
@@ -109,7 +111,9 @@ export function useInvoicePayments(id: string | undefined) {
     queryKey: ['invoicePayments', id],
     queryFn: async () => {
       if (!id) return [] as InvoicePaymentWithCreatedBy[];
-      const res = await fetch(`/api/invoices/${id}/payments`, { credentials: 'include' });
+      // Keep payment history in lockstep with the invoice detail after Stripe
+      // confirmation by requesting a fresh authoritative representation.
+      const res = await fetch(`/api/invoices/${id}/payments`, { credentials: 'include', cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to fetch invoice payments');
       const data = await res.json();
       return (data.data || []) as InvoicePaymentWithCreatedBy[];

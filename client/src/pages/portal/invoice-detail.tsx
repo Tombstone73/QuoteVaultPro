@@ -161,6 +161,7 @@ export default function PortalInvoiceDetailPage() {
             window.setTimeout(() => void refreshInvoiceState(), 1500);
             window.setTimeout(() => void refreshInvoiceState(), 5000);
           }
+          return { reconciled: serverConfirmed };
         }}
       />
 

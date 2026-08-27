@@ -29,7 +29,7 @@ import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle,
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
-import { useOrder } from "@/hooks/useOrders";
+import { orderDetailQueryKey, useOrder } from "@/hooks/useOrders";
 import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
 import { useCreateEpsHostedSession, usePaymentSettings, useRecordEpsHostedResult } from "@/hooks/usePaymentSettings";
@@ -47,6 +47,7 @@ import { getHostedCardUnavailableReason, resolveInvoiceAutoPaymentAction } from 
 import { isValidInvoiceRecipientEmail } from "@shared/invoiceEmailRecipients";
 import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
+import { hasReconciledStripePayment } from "@shared/stripePaymentSettlement";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -1457,29 +1458,36 @@ export default function InvoiceDetailPage() {
           onOpenChange={setStripePayOpen}
           invoiceId={invoiceId ?? ''}
           apiBasePath="/api/invoices"
-          onSettled={async ({ serverConfirmed }) => {
-            await Promise.all([
-              queryClient.invalidateQueries({ queryKey: ['invoices'] }),
-              queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] }),
-              ...(orderId ? [queryClient.invalidateQueries({ queryKey: ['orders', orderId] })] : []),
-            ]);
-            await Promise.all([refetch(), invoicePayments.refetch()]);
-            if (!serverConfirmed) {
-              window.setTimeout(() => {
-                void queryClient.invalidateQueries({ queryKey: ['invoices'] });
-                void queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] });
-                if (orderId) void queryClient.invalidateQueries({ queryKey: ['orders', orderId] });
-                void refetch();
-                void invoicePayments.refetch();
-              }, 1500);
-              window.setTimeout(() => {
-                void queryClient.invalidateQueries({ queryKey: ['invoices'] });
-                void queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] });
-                if (orderId) void queryClient.invalidateQueries({ queryKey: ['orders', orderId] });
-                void refetch();
-                void invoicePayments.refetch();
-              }, 3500);
+          onSettled={async ({ serverConfirmed, paymentIntentId }) => {
+            const refreshAuthoritativePaymentState = async () => {
+              await Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+                queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] }),
+                ...(orderId ? [queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) })] : []),
+              ]);
+
+              const [, paymentResult] = await Promise.all([
+                refetch({ throwOnError: true }),
+                invoicePayments.refetch({ throwOnError: true }),
+              ]);
+              return hasReconciledStripePayment(paymentResult.data || [], paymentIntentId);
+            };
+
+            if (serverConfirmed && await refreshAuthoritativePaymentState()) {
+              return { reconciled: true };
             }
+
+            // The server has not yet confirmed canonical settlement. Poll only
+            // the authoritative invoice/payment resources, keeping the dialog
+            // visible rather than silently closing a stale financial screen.
+            for (const delayMs of [1500, 3500, 7000, 8000, 8000, 8000, 10000, 10000, 6000]) {
+              await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+              if (await refreshAuthoritativePaymentState()) {
+                return { reconciled: true };
+              }
+            }
+
+            return { reconciled: false };
           }}
         />
 

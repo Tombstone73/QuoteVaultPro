@@ -1026,20 +1026,36 @@ export async function registerMvpInvoicingRoutes(
         const type = piStatus === "succeeded"
           ? "payment_intent.succeeded"
           : piStatus === "canceled" ? "payment_intent.canceled" : "payment_intent.payment_failed";
-        await captureAndApplyStripeObservation({
-          // Version the synthetic browser observation so legacy observations
-          // missing attempt identity cannot block the current fast path.
-          eventId: `stripe-browser-confirm:v2:${paymentIntentId}:${type}`,
-          type,
-          organizationId,
-          invoiceId: inv.id,
-          paymentIntentId,
-          paymentAttemptId,
-          stripeAccountId,
-          amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? (payment as any).amountCents ?? 0))),
-          currency: String((pi as any).currency || (payment as any).currency || "USD"),
-          occurredAt: new Date(),
-        });
+        const expectedEffect = type === "payment_intent.succeeded"
+          ? "succeeded"
+          : type === "payment_intent.canceled" ? "canceled" : "failed";
+        // A browser retry can encounter a previously captured observation for
+        // this same PaymentIntent. Reapply that durable canonical observation
+        // rather than returning a 500 and waiting for the background worker.
+        const browserConfirmEventId = `stripe-browser-confirm:v2:${paymentIntentId}:${type}`;
+        try {
+          await captureAndApplyStripeObservation({
+            // Version the synthetic browser observation so legacy observations
+            // missing attempt identity cannot block the current fast path.
+            eventId: browserConfirmEventId,
+            type,
+            organizationId,
+            invoiceId: inv.id,
+            paymentIntentId,
+            paymentAttemptId,
+            stripeAccountId,
+            amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? (payment as any).amountCents ?? 0))),
+            currency: String((pi as any).currency || (payment as any).currency || "USD"),
+            occurredAt: new Date(),
+          });
+        } catch (captureError: any) {
+          if (captureError?.code !== "STRIPE_EVENT_CONFLICT") throw captureError;
+
+          const replay = await retryStripeObservationByEvent(browserConfirmEventId);
+          if (!replay.processed || replay.effect !== expectedEffect || replay.invoiceId !== inv.id) {
+            throw captureError;
+          }
+        }
       }
 
       // Fetch updated invoice with payments for rollup

@@ -29,13 +29,14 @@ function StripePayInner(props: {
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
-  onSettled: (result: { serverConfirmed: boolean }) => void | Promise<void>;
+  onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
   sessionId: string;
 }) {
   const stripe = useStripe();
   const elements = useElements();
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
+  const [awaitingReconciliation, setAwaitingReconciliation] = useState(false);
   const [paymentElementReady, setPaymentElementReady] = useState(false);
 
   const confirmAttemptRef = useRef(0);
@@ -178,12 +179,14 @@ function StripePayInner(props: {
             });
           } else {
             const confirmData = await confirmRes.json() as StripePaymentConfirmResponse;
-            serverConfirmed = isStripePaymentConfirmSucceeded(confirmData);
-            if (DEV) {
-              console.log('[StripePayDialog] Payment confirmed', {
-                sessionId: props.sessionId,
-                paymentStatus: serverConfirmed ? confirmData.data.paymentStatus : null,
-              });
+            if (isStripePaymentConfirmSucceeded(confirmData)) {
+              serverConfirmed = true;
+              if (DEV) {
+                console.log('[StripePayDialog] Payment confirmed', {
+                  sessionId: props.sessionId,
+                  paymentStatus: confirmData.data.paymentStatus,
+                });
+              }
             }
           }
         } catch (confirmErr) {
@@ -198,18 +201,32 @@ function StripePayInner(props: {
           : 'Your payment was submitted and is awaiting processor reconciliation.',
       });
 
-      // Always refresh immediately. Server-confirmed payment state is already
-      // reconciled; a failed confirmation remains safely convergent via webhook.
+      // Always fetch server-authoritative invoice state before settling the
+      // dialog. A failed confirmation remains safely convergent via webhook,
+      // but must not silently close onto a stale invoice.
+      let reconciled = false;
       try {
-        await props.onSettled({ serverConfirmed });
+        reconciled = (await props.onSettled({
+          serverConfirmed,
+          paymentIntentId: result.paymentIntent.id,
+        })).reconciled;
       } catch (refreshError) {
         console.warn('[StripePayDialog] Settlement refresh failed', refreshError);
       }
-      
-      // Close dialog after a brief delay to ensure refetch completes
-      setTimeout(() => {
-        props.onClose();
-      }, 500);
+
+      if (reconciled) {
+        // Close only after the authoritative invoice and payment-history fetch
+        // has observed the canonical succeeded payment.
+        setTimeout(() => {
+          props.onClose();
+        }, 500);
+      } else if (mountedRef.current) {
+        setAwaitingReconciliation(true);
+        toast({
+          title: 'Payment received',
+          description: 'Waiting for processor reconciliation. This invoice will remain open until its payment state is confirmed.',
+        });
+      }
     } finally {
       if (mountedRef.current) setSubmitting(false);
     }
@@ -232,6 +249,11 @@ function StripePayInner(props: {
         {!paymentElementReady ? (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>
         ) : null}
+        {awaitingReconciliation ? (
+          <div className="text-sm text-muted-foreground" role="status">
+            Payment received. Waiting for processor reconciliation…
+          </div>
+        ) : null}
       </div>
       <DialogFooter>
         <Button variant="outline" onClick={props.onClose} disabled={submitting}>
@@ -239,7 +261,7 @@ function StripePayInner(props: {
         </Button>
         <Button
           onClick={handleConfirm}
-          disabled={!stripe || !elements || !props.clientSecret || !paymentElementReady || submitting}
+          disabled={!stripe || !elements || !props.clientSecret || !paymentElementReady || submitting || awaitingReconciliation}
         >
           {submitting ? 'Processing…' : 'Pay'}
         </Button>
@@ -271,7 +293,7 @@ export default function StripePayDialog(props: {
   invoiceId: string;
   apiBasePath: string;
   disabled?: boolean;
-  onSettled: (result: { serverConfirmed: boolean }) => void | Promise<void>;
+  onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
 }) {
   const apiBasePath = props.apiBasePath;
   const [runtimeConfig, setRuntimeConfig] = useState<{
