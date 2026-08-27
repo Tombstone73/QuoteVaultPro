@@ -907,7 +907,35 @@ export class AssistantService {
           ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
           : null;
         const rejected = product.cards.some((card) => card.kind === "product_validation_errors");
-        return { status: rejected ? "rejected" as const : "succeeded" as const, ...(rejected ? { failureCode: "product_operations_rejected", warning: product.response } : {}), result: { status: rejected ? "failed" : "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { mayApplyBusinessOperations: true } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
+        const recovery = product.recovery;
+        const failedOperation = recovery?.validation.semanticBatch?.failingOperation;
+        return {
+          status: rejected ? "rejected" as const : "succeeded" as const,
+          ...(rejected ? {
+            failureCategory: recovery?.retryable ? "recoverable_validation" : "product_validation",
+            failureCode: "product_operations_rejected",
+            warning: product.response,
+            ...(recovery ? {
+              failingStep: recovery.stage,
+              validationSchema: "SemanticProductOperations",
+              validationIssuePaths: recovery.validation.issuePaths,
+              validationIssueCodes: recovery.validation.issueCodes,
+              ...(failedOperation ? { operationType: failedOperation.type } : {}),
+            } : {}),
+          } : {}),
+          result: {
+            status: rejected ? "failed" : "succeeded",
+            data: {
+              response: product.response,
+              proposalId,
+              taskDomain: "products",
+              draftContext,
+              ...(recovery ? { validation: recovery } : {}),
+              continuation: { mayApplyBusinessOperations: true, ...(recovery?.retryable ? { revisePlan: true } : {}) },
+            },
+          } as any,
+          presentation: { cards: product.cards as AssistantStructuredCard[] },
+        };
       },
       }] : [];
     const previewProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{

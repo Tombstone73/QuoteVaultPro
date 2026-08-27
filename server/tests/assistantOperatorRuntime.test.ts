@@ -386,4 +386,37 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "completed", response: "I updated the product draft." });
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  test("requires a revised product plan after recoverable canonical validation instead of accepting a premature failure", async () => {
+    const first = { operations: [{ op: "set_option_rate", optionGroup: "Finish", value: "Gloss", priceCents: 500, basis: "per_square_foot" }] };
+    const revised = { operations: [{ op: "add_option_value", optionGroup: "Finish", value: "Gloss" }, { op: "set_option_rate", optionGroup: "Finish", value: "Gloss", priceCents: 500, basis: "per_square_foot" }] };
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations }) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: first }] };
+      if (observations.length === 1) return { kind: "fail", response: "Canonical validation failed." };
+      if (observations.some((observation) => observation.toolName === "products.apply_operations" && observation.status === "succeeded")) return { kind: "complete", response: "I added Gloss and its per-square-foot price to the active draft." };
+      if (observations.some((observation) => observation.toolName === "operator.replan_required")) {
+        expect(observations[0]?.result?.data).toMatchObject({ validation: { retryable: true, stage: "semantic_operation_validation", validation: { issuePaths: ["operations.0.value"] } } });
+        return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: revised }] };
+      }
+      return { kind: "fail", response: "Expected a product-plan revision request." };
+    }) };
+    const execute = jest.fn(async ({ toolName, arguments: args }: any) => {
+      if (JSON.stringify(args) === JSON.stringify(first)) return {
+        toolName,
+        status: "rejected" as const,
+        warning: "The requested option value is not available.",
+        failureCategory: "recoverable_validation",
+        failureCode: "product_operations_rejected",
+        failingStep: "semantic_operation_validation",
+        result: { status: "failed" as const, data: { draftContext: { optionGroups: [{ label: "Finish", values: ["Matte"] }] }, validation: { retryable: true, stage: "semantic_operation_validation", validation: { issuePaths: ["operations.0.value"], issueCodes: ["custom"], requestedOperations: ["set_option_rate"] } } } } as any,
+      };
+      return { toolName, status: "succeeded" as const, result: { status: "succeeded" as const, data: { response: "Draft updated." } } as any };
+    });
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [{ name: "products.apply_operations", description: "Apply product changes." }], execute }).run({ goal: "Add Gloss at $5 per square foot.", taskId: "task_product_replan", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", response: expect.stringContaining("Gloss") });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: revised }));
+    expect(result.observations).toEqual(expect.arrayContaining([expect.objectContaining({ toolName: "operator.replan_required", failureCode: "product_plan_revision_required" })]));
+  });
 });

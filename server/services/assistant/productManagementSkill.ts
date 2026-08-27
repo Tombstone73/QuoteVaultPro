@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products, productTypes, stations } from "@shared/schema";
-import { CanonicalProductIntentService, type CanonicalProductIntentInspection, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
+import { CanonicalProductIntentService, type CanonicalProductIntentInspection, type CanonicalProductIntentOutcome, type CanonicalProductIntentRecovery } from "../productIntentCompiler/canonicalProductIntentService";
 import type { ProductDraftIntent } from "@shared/productDraftIntent";
 import { projectProductDraftIntentToProductBuilderDraft } from "../productIntentCompiler/productIntentProjection";
 import { evaluatePricingPreviewFromTree } from "../pricing/PricingService";
@@ -352,7 +352,7 @@ export class ProductManagementSkillService {
     conversationId: string;
     message: string;
     operations: unknown;
-  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[]; recovery?: CanonicalProductIntentRecovery }> {
     const router = this.deps.canonicalProductIntent;
     if (!router?.applySemanticOperations) return { handled: true, response: "Semantic Product Builder changes are not available in this deployment.", cards: [] };
     let current: CanonicalProductIntentSession | null;
@@ -374,7 +374,7 @@ export class ProductManagementSkillService {
       });
       return outcome.ok
         ? { handled: true, response: `${outcome.changed === false ? "I confirmed the requested product detail is already in the active draft." : outcome.card.readiness.ready ? "I saved the product revision. It is ready for review." : "I saved the product revision and kept only its remaining questions."}${unsupportedProductDetailNotice(input.operations)}`, cards: canonicalProductIntentCards(outcome) }
-        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }], ...(outcome.recovery ? { recovery: outcome.recovery } : {}) };
     } catch (error) {
       const message = error instanceof Error ? error.message : "The semantic product change could not be applied safely.";
       return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product change unavailable", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };

@@ -260,6 +260,15 @@ function isDeterministicToolFailure(observation: Pick<AssistantOperatorObservati
     || observation.failureCode === "result_validation_failed";
 }
 
+function latestRecoverableProductValidation(observations: readonly AssistantOperatorObservation[]): AssistantOperatorObservation | null {
+  for (let index = observations.length - 1; index >= 0; index -= 1) {
+    const observation = observations[index]!;
+    if (observation.toolName === "products.apply_operations" && observation.status === "rejected" && observation.failureCategory === "recoverable_validation") return observation;
+    if (observation.toolName === "products.apply_operations" && observation.status === "succeeded") return null;
+  }
+  return null;
+}
+
 /** Keep diagnostics useful without recording provider text, arguments, or
  * business data. These facts identify the boundary that rejected a decision. */
 function decisionDiagnosticShape(value: unknown): { decisionKind: string | null; toolCallCount: number | null } {
@@ -290,6 +299,11 @@ export class AssistantOperatorRuntime {
     let continuationCount = 0;
     const deterministicFailureKeys = new Set<string>();
     let productResolutionEpoch = 0;
+    // A rejected semantic product operation is often a correct canonical
+    // safety result, not a terminal workflow failure.  Require one explicit
+    // reconsideration per rejected observation before accepting a terminal
+    // provider decision; the finite step budget still bounds bad providers.
+    let forcedProductReplanForObservationStep = -1;
 
     for (let step = 1; step <= boundedSteps; step += 1) {
       let decision: AssistantOperatorDecision;
@@ -315,6 +329,24 @@ export class AssistantOperatorRuntime {
       }
       safeWorkingSummary = decision.kind === "fail" ? decision.recoverySummary ?? safeWorkingSummary : decision.workingSummary ?? safeWorkingSummary;
       if (decision.kind === "continue") { continuationCount += 1; continue; }
+      const recoverableProductValidation = latestRecoverableProductValidation(observations);
+      if ((decision.kind === "complete" || decision.kind === "fail")
+        && recoverableProductValidation
+        && recoverableProductValidation.step !== forcedProductReplanForObservationStep
+        && step < boundedSteps) {
+        forcedProductReplanForObservationStep = recoverableProductValidation.step;
+        observations.push({
+          step,
+          toolName: "operator.replan_required",
+          status: "partial",
+          warning: "A product operation was rejected by recoverable canonical validation. Inspect its safe validation feedback and refreshed draft context, then use a changed products.apply_operations plan or ask only for a genuinely missing business choice.",
+          failureCategory: "recoverable_validation",
+          failureCode: "product_plan_revision_required",
+          failingStep: recoverableProductValidation.failingStep,
+        });
+        console.info("[AI_OPERATOR_TRACE]", { stage: "recoverable_product_replan_required", taskId: input.taskId, step, failedStep: recoverableProductValidation.failingStep ?? null });
+        continue;
+      }
       if (decision.kind === "complete") {
         console.info("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, step, succeeded: true });
         return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };

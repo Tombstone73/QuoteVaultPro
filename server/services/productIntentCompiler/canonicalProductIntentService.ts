@@ -34,9 +34,23 @@ export type CanonicalProductIntentCandidates = {
   existingProducts?: readonly ExistingProductCandidate[];
 };
 
+export type CanonicalProductIntentRecovery = {
+  /** Safe, model-facing facts for revising a rejected semantic operation.
+   * This deliberately excludes raw provider input, IDs, patches, and errors. */
+  retryable: boolean;
+  stage: string;
+  code: string;
+  validation: {
+    issuePaths: string[];
+    issueCodes: string[];
+    requestedOperations: string[];
+    semanticBatch?: SemanticBatchDiagnostic;
+  };
+};
+
 export type CanonicalProductIntentOutcome =
   | { ok: true; session: CanonicalProductIntentSession; card: CanonicalProductIntentProposalDto; issues: ProductIntentIssue[]; changed?: boolean }
-  | { ok: false; code: string; message: string };
+  | { ok: false; code: string; message: string; recovery?: CanonicalProductIntentRecovery };
 
 /** Read-only view of the latest persisted revision. It is intentionally
  * separate from continuation so inquiries cannot append revisions or invoke
@@ -534,7 +548,30 @@ async function continuationFailure(input: {
     providerResultType: input.providerResultType ?? null, patchSchemaPaths: issue.paths, requestedOperationCount: input.requestedOperations?.length ?? null,
     requestedOperationTypes: input.requestedOperations ?? [], failingOperation: input.failingOperation ?? null, semanticBatch: input.semanticBatch ?? null, code: input.code,
   });
-  return { ok: false as const, code: input.code, message: input.message };
+  // A semantic batch that never reached persistence is safe to reconsider
+  // against the freshly-read active draft.  Expose only bounded validation
+  // metadata so the Operator can revise its business operations rather than
+  // treating a recoverable canonical rejection as a terminal AI failure.
+  const retryable = input.code === "PRODUCT_SEMANTIC_OPERATION_REJECTED"
+    && input.semanticBatch?.originalRevisionUnchanged === true;
+  return {
+    ok: false as const,
+    code: input.code,
+    message: input.message,
+    ...(retryable ? {
+      recovery: {
+        retryable: true,
+        stage: input.stage,
+        code: input.code,
+        validation: {
+          issuePaths: issue.paths,
+          issueCodes: issue.codes,
+          requestedOperations: (input.requestedOperations ?? []).slice(0, 24),
+          ...(input.semanticBatch ? { semanticBatch: input.semanticBatch } : {}),
+        },
+      },
+    } : {}),
+  };
 }
 
 type CanonicalIntentPipelineStage = "tenant_reference_resolution" | "canonical_validation" | "presentation" | "persistence_preparation";

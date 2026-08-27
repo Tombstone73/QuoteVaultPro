@@ -395,6 +395,35 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "I saved the product revision and kept only its remaining questions." }));
   });
 
+  test("passes safe canonical validation feedback to the Operator so it can revise a product operation", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const invalid = [{ op: "set_option_rate", optionGroup: "Finish", value: "Gloss", priceCents: 500, basis: "per_square_foot" }];
+    const revised = [{ op: "add_option_value", optionGroup: "Finish", value: "Gloss" }, ...invalid];
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({ name: "Window Vinyl", category: { state: "resolved", label: "Roll Printing", provenance: "explicit_user" }, measurementMode: "dimensions_required", pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Finish", rates: [] }, optionGroups: [{ label: "Finish", required: false, selectionMode: "single", defaultValue: null, values: ["Matte"], availableWhen: null }], outstandingDecisions: [], recentBusinessOperations: [], trustedSelections: [], readyForReview: false })),
+      applyCanonicalProductOperations: jest.fn()
+        .mockResolvedValueOnce({ handled: true, response: "Gloss could not be priced because the value is not in Finish.", recovery: { retryable: true, stage: "semantic_operation_validation", code: "PRODUCT_SEMANTIC_OPERATION_REJECTED", validation: { issuePaths: ["operations.0.value"], issueCodes: ["custom"], requestedOperations: ["set_option_rate"], semanticBatch: { operationCount: 1, operationTypes: ["set_option_rate"], failingOperation: { index: 1, type: "set_option_rate", targetLabels: ["Finish", "Gloss"], validationStage: "semantic_operation_validation", dependsOnPriorBatchOperation: false, failureCode: "OPTION_VALUE_NOT_FOUND" }, originalRevisionUnchanged: true } } }, cards: [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No revision", sourceLinks: [] }] })
+        .mockResolvedValueOnce({ handled: true, response: "I saved the product revision.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Updated", sourceLinks: [], details: { proposalId: "proposal_1" } }] }),
+    };
+    const provider = { decide: jest.fn(async ({ observations }: any) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: invalid } }] };
+      if (observations.length === 1) {
+        expect(observations[0]).toMatchObject({ status: "rejected", failureCategory: "recoverable_validation", failureCode: "product_operations_rejected", failingStep: "semantic_operation_validation", validationIssuePaths: ["operations.0.value"], operationType: "set_option_rate", result: { data: { validation: { retryable: true, validation: { requestedOperations: ["set_option_rate"] } }, continuation: { revisePlan: true }, draftContext: { optionGroups: [expect.objectContaining({ label: "Finish", values: ["Matte"] })] } } } });
+        return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: revised } }] };
+      }
+      return { kind: "complete", response: "I added Gloss and its price to the draft." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Add Gloss to Finish and price it at $5 per square foot.", context });
+
+    expect(product.applyCanonicalProductOperations).toHaveBeenNthCalledWith(1, expect.objectContaining({ operations: invalid }));
+    expect(product.applyCanonicalProductOperations).toHaveBeenNthCalledWith(2, expect.objectContaining({ operations: revised }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "responded", response: "I saved the product revision." }));
+  });
+
   test("an outstanding Layers default answer continues the same semantic draft without compiler continuation", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore("proposal_1");

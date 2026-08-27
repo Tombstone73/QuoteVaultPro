@@ -109,6 +109,18 @@ test("records safe ordered-batch failure evidence without persisting a revision"
   });
 
   expect(outcome).toMatchObject({ ok: false, code: "PRODUCT_SEMANTIC_OPERATION_REJECTED" });
+  expect(outcome).toMatchObject({
+    recovery: {
+      retryable: true,
+      stage: "semantic_operation_validation",
+      code: "PRODUCT_SEMANTIC_OPERATION_REJECTED",
+      validation: {
+        requestedOperations: ["add_option_group", "set_option_default"],
+        semanticBatch: { originalRevisionUnchanged: true },
+      },
+    },
+  });
+  expect(JSON.stringify(outcome)).not.toContain("referenceId");
   expect(appendPatch).not.toHaveBeenCalled();
   expect(persistAiDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
     semanticBatch: {
