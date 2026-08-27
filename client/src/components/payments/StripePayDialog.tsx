@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { getStripePromise } from '@/lib/stripeClient';
+import { isStripePaymentConfirmSucceeded, type StripePaymentConfirmResponse } from '@shared/stripePaymentConfirm';
 
 const DEV = Boolean((import.meta as any).env?.DEV);
 
@@ -28,7 +29,7 @@ function StripePayInner(props: {
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
-  onSettled: () => void;
+  onSettled: (result: { serverConfirmed: boolean }) => void | Promise<void>;
   sessionId: string;
 }) {
   const stripe = useStripe();
@@ -176,12 +177,12 @@ function StripePayInner(props: {
               sessionId: props.sessionId,
             });
           } else {
-            const confirmData = await confirmRes.json();
-            serverConfirmed = confirmData?.data?.payment?.status === 'succeeded';
+            const confirmData = await confirmRes.json() as StripePaymentConfirmResponse;
+            serverConfirmed = isStripePaymentConfirmSucceeded(confirmData);
             if (DEV) {
               console.log('[StripePayDialog] Payment confirmed', {
                 sessionId: props.sessionId,
-                paymentStatus: confirmData?.data?.payment?.status,
+                paymentStatus: serverConfirmed ? confirmData.data.paymentStatus : null,
               });
             }
           }
@@ -194,11 +195,16 @@ function StripePayInner(props: {
         title: serverConfirmed ? 'Payment confirmed' : 'Payment submitted',
         description: serverConfirmed
           ? 'Your invoice has been updated.'
-          : 'We are verifying the payment and will refresh the invoice shortly.',
+          : 'Your payment was submitted and is awaiting processor reconciliation.',
       });
 
-      // Trigger immediate refresh before closing dialog
-      props.onSettled();
+      // Always refresh immediately. Server-confirmed payment state is already
+      // reconciled; a failed confirmation remains safely convergent via webhook.
+      try {
+        await props.onSettled({ serverConfirmed });
+      } catch (refreshError) {
+        console.warn('[StripePayDialog] Settlement refresh failed', refreshError);
+      }
       
       // Close dialog after a brief delay to ensure refetch completes
       setTimeout(() => {
@@ -265,7 +271,7 @@ export default function StripePayDialog(props: {
   invoiceId: string;
   apiBasePath: string;
   disabled?: boolean;
-  onSettled: () => void;
+  onSettled: (result: { serverConfirmed: boolean }) => void | Promise<void>;
 }) {
   const apiBasePath = props.apiBasePath;
   const [runtimeConfig, setRuntimeConfig] = useState<{
