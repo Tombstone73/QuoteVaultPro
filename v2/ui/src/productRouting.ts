@@ -22,7 +22,7 @@ export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
 export type QuoteLocation = Readonly<{ quoteId?: string; newQuote?: true }>;
 export type SalesLocation = QuoteLocation | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string; newQuote?: true }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll"; productionWorkId?: string }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string; newQuote?: true }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll"; productionWorkId?: string }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" | "settings" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -239,7 +239,7 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   const prepress = readPrepressLocation(pathname);
   if (prepress) return { page: "prepress", ...prepress };
   const page = pathname.replace(/^\/+|\/+$/gu, "");
-  return page === "appearance" || page === "routing" || page === "payments" || page === "formulas" ? { page } : null;
+  return page === "appearance" || page === "routing" || page === "payments" || page === "formulas" || page === "settings" ? { page } : null;
 };
 export const customerPath = (id?: string) => id ? `/customers/${encodeURIComponent(id)}` : "/customers";
 export const pushCustomerLocation = (id?: string) => window.history.pushState({}, "", customerPath(id));
@@ -268,5 +268,5 @@ export const pushProofingLocation = (proofWorkId?: string, orderId?: string, lin
 export const prepressPath = (lineId?: string) => lineId ? `/prepress/lines/${encodeURIComponent(lineId)}` : "/prepress";
 export const pushPrepressLocation = (lineId?: string) => window.history.pushState({}, "", prepressPath(lineId));
 export const prepressUnitPath = (prepressUnitId: string) => `/prepress/units/${encodeURIComponent(prepressUnitId)}`;
-export const workspacePath = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas") => `/${page}`;
-export const pushWorkspaceLocation = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas") => window.history.pushState({}, "", workspacePath(page));
+export const workspacePath = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas" | "settings") => `/${page}`;
+export const pushWorkspaceLocation = (page: "appearance" | "routing" | "payments" | "artwork" | "proofing" | "prepress" | "formulas" | "settings") => window.history.pushState({}, "", workspacePath(page));

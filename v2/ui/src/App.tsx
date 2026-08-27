@@ -59,6 +59,7 @@ import { RoutingWorkspace } from "./RoutingWorkspace";
 import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
+import { SalesTaxSettingsWorkspace } from "./SalesTaxSettingsWorkspace";
 import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
 import { quoteLineProductPresentation } from "./quoteLinePresentation";
 import { quoteRouteMode } from "./quoteRouteMode";
@@ -397,7 +398,7 @@ export const App = ({
       nextPage === "artwork" ||
       nextPage === "proofing" ||
       nextPage === "prepress" ||
-      nextPage === "formulas"
+      nextPage === "formulas" || nextPage === "settings"
     )
       pushWorkspaceLocation(nextPage);
     setPage(nextPage);
@@ -428,6 +429,8 @@ export const App = ({
           appearance={appearance}
           setAppearance={setAppearance}
         />
+      ) : page === "settings" ? (
+        <SalesTaxSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.pricingConfigure === true} />
       ) : page === "formulas" ? (
         <FormulaLibraryWorkspace
           organizationId={organizationId}

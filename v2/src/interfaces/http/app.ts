@@ -27,6 +27,7 @@ import { createProductRouter, type ProductHttpDependencies } from "./productRout
 import { createRoutingRouter, type RoutingHttpDependencies } from "./routingRoutes.js";
 import { createInventoryRouter, type InventoryHttpDependencies } from "./inventoryRoutes.js";
 import { createFormulaRouter, type FormulaHttpDependencies } from "./formulaRoutes.js";
+import { createTaxSettingsRouter, type TaxSettingsHttpDependencies } from "./taxSettingsRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -36,6 +37,7 @@ export type AuthenticatedQuoteRouteRuntime = Readonly<{
   customerDependencies: CustomerHttpDependencies;
   contactDependencies: ContactHttpDependencies;
   productDependencies: ProductHttpDependencies;
+  taxSettingsDependencies: TaxSettingsHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -213,6 +215,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createProductRouter(quote.productDependencies),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/settings/sales-tax",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createTaxSettingsRouter(quote.taxSettingsDependencies),
     );
   if (order)
     app.use(

@@ -1,6 +1,7 @@
 import type { ProductOptionRule } from "../../../shared/productOptionRules";
 
 export type ApiError = Readonly<{ code: string; message: string }>;
+export type SalesTaxSettings = Readonly<{ homeBusiness?: Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; updatedAt: string }> }>;
 export type QuoteSellingInstruction = Readonly<
   | { kind: "calculated" }
   | { kind: "unit_override"; unitCents: number; reason: string }
@@ -1245,6 +1246,10 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
 export const clearV2ApiSessionState = (): void => {
   csrfTokens.clear();
   sessionScope = undefined;
+};
+export const taxSettingsApi = {
+  get: (organizationId: string) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax`),
+  saveHomeBusiness: (organizationId: string, businessRequestId: string, input: Readonly<{name:string;countryCode:string;regionCode:string;postalCode?:string;ratePercent:string;active:boolean;}>) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax/home-business`, { method:"PUT", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({...input,businessRequestId}) }),
 };
 const adoptSessionScope = (nextScope: string): void => {
   if (sessionScope && sessionScope !== nextScope) {

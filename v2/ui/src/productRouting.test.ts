@@ -99,3 +99,4 @@ assert.deepEqual(readWorkspaceLocation("/formulas"), { page: "formulas" });
 assert.equal(workspacePath("formulas"), "/formulas");
 assert.deepEqual(readWorkspaceLocation("/"), { page: "home" });
 assert.deepEqual(readWorkspaceLocation("/appearance"), { page: "appearance" });
+assert.deepEqual(readWorkspaceLocation("/settings"), { page: "settings" });

@@ -1,0 +1,13 @@
+import { Router, type Request, type Response } from "express";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import { V2ApplicationError } from "../../errors/applicationError.js";
+import { homeBusinessTaxSettingsInput, type HomeBusinessTaxSettings } from "../../modules/sales/taxSettings.js";
+import type { Principal } from "../../authorization/principals.js";
+
+export type TaxSettingsHttpDependencies = Readonly<{
+  settings: Readonly<{ read(organizationId:string):Promise<HomeBusinessTaxSettings>; save(organizationId:string,input:ReturnType<typeof homeBusinessTaxSettingsInput>,principal:Principal,requestId:string):Promise<HomeBusinessTaxSettings> }>;
+  principals: Readonly<{ principal(request:Request,organizationId:string):Promise<Principal> }>;
+}>;
+const id = (body:unknown) => { const value=body&&typeof body==="object"?(body as {businessRequestId?:unknown}).businessRequestId:undefined; if(typeof value!=="string"||!value.trim()) throw new V2ApplicationError("VALIDATION_ERROR","businessRequestId is required."); return value; };
+const failure=(response:Response,cause:unknown)=>{const error=cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","Sales Tax settings are unavailable.");const status=error.code==="VALIDATION_ERROR"?400:error.code==="FORBIDDEN"?403:error.code==="NOT_FOUND"||error.code==="WRONG_TENANT"?404:500;return response.status(status).json({ok:false,error:{code:error.code,message:error.publicMessage}});};
+export const createTaxSettingsRouter=(dependencies:TaxSettingsHttpDependencies)=>{const router=Router({mergeParams:true});const auth=async(request:Request)=>{const organizationId=request.params.organizationId;if(!organizationId)throw new V2ApplicationError("VALIDATION_ERROR","organizationId is required.");const principal=await dependencies.principals.principal(request,organizationId);if(principal.organizationId!==organizationId||!new AuthorityPolicy().decide(principal,{capability:"pricing.configure",resource:{organizationId}}).allowed)throw new V2ApplicationError("FORBIDDEN","You do not have permission to configure Sales Tax.");return{organizationId,principal};};router.get("/",async(request,response)=>{try{const {organizationId}=await auth(request);response.json({ok:true,data:await dependencies.settings.read(organizationId)});}catch(error){failure(response,error);}});router.put("/home-business",async(request,response)=>{try{const {organizationId,principal}=await auth(request);response.json({ok:true,data:await dependencies.settings.save(organizationId,homeBusinessTaxSettingsInput(request.body),principal,id(request.body))});}catch(error){failure(response,error);}});return router;};
