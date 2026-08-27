@@ -1,4 +1,4 @@
-import {
+import React, {
   useEffect,
   useMemo,
   useState,
@@ -41,6 +41,8 @@ const centsFromInput = (text: string): number | null => {
 };
 const centsForInput = (cents: number) =>
   `${Math.trunc(cents / 100)}.${String(Math.abs(cents % 100)).padStart(2, "0")}`;
+export const invoiceDocumentPath = (organizationId: string, invoiceId: string) =>
+  `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}/document.pdf`;
 const sortRows = <T,>(
   rows: readonly T[],
   column: GridColumn<T> | undefined,
@@ -240,6 +242,7 @@ export const FinanceWorkspace = ({
   onSelectInvoice,
   backToInvoices,
   canIssue,
+  canInvoiceView,
   canPaymentView,
   canPaymentRecord,
   canRefundIssue,
@@ -254,6 +257,7 @@ export const FinanceWorkspace = ({
   onSelectInvoice: (invoiceId: string) => void;
   backToInvoices: () => void;
   canIssue: boolean;
+  canInvoiceView: boolean;
   canPaymentView: boolean;
   canPaymentRecord: boolean;
   canRefundIssue: boolean;
@@ -615,6 +619,20 @@ export const FinanceWorkspace = ({
               </button>
             </div>
             <div className="v2-finance-actions">
+              {invoice.source !== "legacy" && canInvoiceView && (
+                <button
+                  className="v2-quiet-button"
+                  onClick={() =>
+                    window.open(
+                      invoiceDocumentPath(organizationId, invoice.invoiceId),
+                      "_blank",
+                      "noopener,noreferrer",
+                    )
+                  }
+                >
+                  Preview PDF
+                </button>
+              )}
               {invoice.source !== "legacy" && invoice.lifecycle === "draft" && canIssue && (
                 <button
                   className="v2-invoice-issue"
