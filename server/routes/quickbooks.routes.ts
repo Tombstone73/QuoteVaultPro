@@ -38,6 +38,7 @@ import {
 } from "../services/quickbooksSyncQueueWorker";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { requireDeveloperAccess } from "../middleware/requireDeveloperAccess";
+import { z } from 'zod';
 
 export function registerQuickBooksRoutes(
   app: Express,
@@ -111,6 +112,34 @@ export function registerQuickBooksRoutes(
     } catch (error: any) {
       console.error('[QB Queue] Error:', error);
       return res.status(500).json({ success: false, error: 'Failed to fetch QuickBooks sync queue' });
+    }
+  });
+
+  app.get('/api/integrations/quickbooks/queue/items', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+      const page = Math.max(1, Number(req.query.page || 1));
+      const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize || 25)));
+      const data = await syncWorker.listQuickBooksSyncQueueItemsForOrg({ organizationId, page, pageSize, search: String(req.query.search || '') });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message || 'Failed to list QuickBooks sync queue items' });
+    }
+  });
+
+  app.post('/api/integrations/quickbooks/queue/sync-selected', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    const parsed = z.object({
+      items: z.array(z.object({ id: z.string().min(1), resourceType: z.enum(['invoice', 'payment']) })).min(1).max(100),
+    }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, error: 'Select between 1 and 100 QuickBooks queue records.' });
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+      const data = await syncWorker.runSelectedQuickBooksSyncForOrg({ organizationId, items: parsed.data.items });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message || 'Selected QuickBooks sync failed' });
     }
   });
 

@@ -912,6 +912,7 @@ export default function SettingsIntegrations() {
                       <RefreshCw className={`w-4 h-4 mr-2 ${qbFlushMutation.isPending ? 'animate-spin' : ''}`} />
                       Sync now
                     </Button>
+                    <Button asChild size="sm" variant="outline"><Link to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</Link></Button>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
@@ -1568,7 +1569,7 @@ export default function SettingsIntegrations() {
                   size="sm"
                 >
                   <RefreshCw className={`w-4 h-4 mr-2 ${triggerMutation.isPending ? 'animate-spin' : ''}`} />
-                  Process Pending Jobs
+                  Run queue worker batch
                 </Button>
                 <Button
                   onClick={() => disconnectMutation.mutate()}

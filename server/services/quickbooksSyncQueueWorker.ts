@@ -25,6 +25,27 @@ export type QuickBooksSyncWorkerRunResult = {
   payments: { attempted: number; succeeded: number; failed: number };
 };
 
+export type QuickBooksSyncQueueItem = {
+  id: string;
+  resourceType: 'invoice' | 'payment';
+  displayNumber: string;
+  status: string;
+  syncStatus: string;
+  updatedAt: Date;
+  eligible: boolean;
+  ineligibleReason: string | null;
+  lastError: string | null;
+};
+
+export type QuickBooksSelectedSyncResult = {
+  requested: number;
+  synced: number;
+  failed: number;
+  skipped: number;
+  rejected: number;
+  results: Array<{ id: string; resourceType: 'invoice' | 'payment'; outcome: 'synced' | 'failed' | 'skipped' | 'rejected'; reason: string | null }>;
+};
+
 export const DEFAULT_QB_SYNC_STABILITY_WINDOW_MS = 30 * 60 * 1000;
 
 function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
@@ -405,5 +426,85 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
     );
   }
 
+  return result;
+}
+
+export async function listQuickBooksSyncQueueItemsForOrg(params: {
+  organizationId: string;
+  page: number;
+  pageSize: number;
+  search?: string;
+}): Promise<{ items: QuickBooksSyncQueueItem[]; total: number; page: number; pageSize: number }> {
+  const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
+  const cutoff = cutoffDate({ now: new Date(), stabilityWindowMs, ignoreStabilityWindow: false });
+  const [invoiceRows, paymentRows] = await Promise.all([
+    db.select({ id: invoices.id, displayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber, status: invoices.status, syncStatus: invoices.qbSyncStatus, updatedAt: invoices.updatedAt, lastError: invoices.qbLastError })
+      .from(invoices)
+      .where(and(eq(invoices.organizationId, params.organizationId), inArray(invoices.qbSyncStatus, ['pending', 'failed'] as any))),
+    db.select({ id: payments.id, invoiceDisplayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber, status: payments.status, syncStatus: payments.syncStatus, updatedAt: payments.updatedAt, lastError: payments.syncError, qbInvoiceId: invoices.qbInvoiceId })
+      .from(payments)
+      .innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId)))
+      .where(and(eq(payments.organizationId, params.organizationId), inArray(payments.syncStatus, ['pending', 'failed'] as any))),
+  ]);
+
+  const items: QuickBooksSyncQueueItem[] = [
+    ...invoiceRows.map((row: any) => {
+      const eligible = String(row.status || '').toLowerCase() !== 'draft' && new Date(row.updatedAt).getTime() <= cutoff.getTime();
+      return { id: String(row.id), resourceType: 'invoice' as const, displayNumber: String(row.displayNumber || row.invoiceNumber), status: String(row.status), syncStatus: String(row.syncStatus), updatedAt: row.updatedAt, eligible, ineligibleReason: eligible ? null : String(row.status || '').toLowerCase() === 'draft' ? 'Draft invoices cannot sync.' : 'Waiting for the stability window.', lastError: row.lastError ?? null };
+    }),
+    ...paymentRows.map((row: any) => {
+      const eligible = ['succeeded', 'captured'].includes(String(row.status || '').toLowerCase()) && Boolean(row.qbInvoiceId) && new Date(row.updatedAt).getTime() <= cutoff.getTime();
+      return { id: String(row.id), resourceType: 'payment' as const, displayNumber: `Payment for ${String(row.invoiceDisplayNumber || row.invoiceNumber)}`, status: String(row.status), syncStatus: String(row.syncStatus), updatedAt: row.updatedAt, eligible, ineligibleReason: eligible ? null : !row.qbInvoiceId ? 'Invoice must sync first.' : 'Waiting for eligibility.', lastError: row.lastError ?? null };
+    }),
+  ];
+  const needle = String(params.search || '').trim().toLowerCase();
+  const filtered = items
+    .filter((item) => !needle || `${item.displayNumber} ${item.resourceType} ${item.status} ${item.syncStatus}`.toLowerCase().includes(needle))
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  const page = Math.max(1, params.page);
+  const pageSize = Math.max(1, Math.min(100, params.pageSize));
+  return { items: filtered.slice((page - 1) * pageSize, page * pageSize), total: filtered.length, page, pageSize };
+}
+
+export async function runSelectedQuickBooksSyncForOrg(params: {
+  organizationId: string;
+  items: Array<{ id: string; resourceType: 'invoice' | 'payment' }>;
+}): Promise<QuickBooksSelectedSyncResult> {
+  const unique = Array.from(new Map(params.items.map((item) => [`${item.resourceType}:${item.id}`, item])).values());
+  const result: QuickBooksSelectedSyncResult = { requested: unique.length, synced: 0, failed: 0, skipped: 0, rejected: 0, results: [] };
+  if (unique.length === 0) return result;
+  const cutoff = cutoffDate({ now: new Date(), stabilityWindowMs: getQuickBooksSyncStabilityWindowMs(), ignoreStabilityWindow: false });
+
+  for (const item of unique) {
+    if (item.resourceType === 'invoice') {
+      const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId))).limit(1);
+      if (!invoice) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
+      if (!['pending', 'failed'].includes(String(invoice.qbSyncStatus))) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice is no longer pending sync.' }); continue; }
+      if (String(invoice.status).toLowerCase() === 'draft' || new Date(invoice.updatedAt).getTime() > cutoff.getTime()) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice is not currently eligible.' }); continue; }
+      try {
+        const qb = await syncSingleInvoiceToQuickBooksForOrganization(params.organizationId, item.id);
+        await db.update(invoices).set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: 'synced', qbLastError: null, syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
+        result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null });
+      } catch (error: any) {
+        const reason = toOneLineHumanMessage(error?.message || error);
+        await db.update(invoices).set({ qbSyncStatus: 'failed', qbLastError: reason, syncStatus: 'error', syncError: reason, updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
+        result.failed++; result.results.push({ ...item, outcome: 'failed', reason });
+      }
+      continue;
+    }
+
+    const [payment] = await db.select({ id: payments.id, status: payments.status, syncStatus: payments.syncStatus, updatedAt: payments.updatedAt, qbInvoiceId: invoices.qbInvoiceId }).from(payments).innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId))).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId))).limit(1);
+    if (!payment) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
+    if (!['pending', 'failed'].includes(String(payment.syncStatus)) || !['succeeded', 'captured'].includes(String(payment.status).toLowerCase()) || !payment.qbInvoiceId || new Date(payment.updatedAt).getTime() > cutoff.getTime()) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Payment is not currently eligible.' }); continue; }
+    try {
+      const qb = await syncSinglePaymentToQuickBooksForOrganization(params.organizationId, item.id);
+      await db.update(payments).set({ externalAccountingId: qb.qbPaymentId, syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId)));
+      result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null });
+    } catch (error: any) {
+      const reason = toOneLineHumanMessage(error?.message || error);
+      await db.update(payments).set({ syncStatus: 'failed', syncError: reason, updatedAt: new Date() } as any).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId)));
+      result.failed++; result.results.push({ ...item, outcome: 'failed', reason });
+    }
+  }
   return result;
 }
