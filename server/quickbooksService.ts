@@ -3172,13 +3172,12 @@ function buildQBInvoicePayloadInspection(params: {
   };
 }
 
-export async function fetchQBInvoicesForPreview(organizationId: string, includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
-  const qbInvoices: any[] = await fetchAllQBEntities(
-    'Invoice',
-    'SELECT * FROM Invoice',
-    (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
-  );
-  console.log(`[QB Preview Invoices] Fetched ${qbInvoices.length} QuickBooks invoices`);
+async function buildQBInvoicePreviewRows(
+  organizationId: string,
+  qbInvoices: any[],
+  includeReferenceDebug = false,
+): Promise<QBInvoicePreviewRow[]> {
+  console.log(`[QB Preview Invoices] Building ${qbInvoices.length} QuickBooks invoice preview rows`);
 
   // All QB-linked local customers for this org
   const localCustomers = await db
@@ -3193,14 +3192,21 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
 
   // All QB-linked local invoices for this org
   const localInvoices = await db
-    .select({ id: invoices.id, externalAccountingId: invoices.externalAccountingId })
+    .select({ id: invoices.id, externalAccountingId: invoices.externalAccountingId, qbInvoiceId: invoices.qbInvoiceId })
     .from(invoices)
     .where(and(
       eq(invoices.organizationId, organizationId),
-      isNotNull(invoices.externalAccountingId),
+      or(
+        isNotNull(invoices.externalAccountingId),
+        isNotNull(invoices.qbInvoiceId),
+      ),
     ));
 
-  const invoiceByQBId = new Map(localInvoices.map(i => [i.externalAccountingId!, i.id]));
+  const invoiceByQBId = new Map<string, string>();
+  for (const invoice of localInvoices) {
+    if (invoice.externalAccountingId) invoiceByQBId.set(invoice.externalAccountingId, invoice.id);
+    if (invoice.qbInvoiceId) invoiceByQBId.set(invoice.qbInvoiceId, invoice.id);
+  }
 
   return qbInvoices.map((qbInvoice): QBInvoicePreviewRow => {
     const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
@@ -3286,6 +3292,64 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
       } : {}),
     };
   });
+}
+
+export type QBInvoicePreviewScope = 'open_ar' | 'historical' | 'all_unsynced';
+
+export type QBInvoicePreviewPage = {
+  rows: QBInvoicePreviewRow[];
+  scope: QBInvoicePreviewScope;
+  page: number;
+  pageSize: number;
+  sourceTotal: number | null;
+  sourceRowsOnPage: number;
+  alreadyImportedExcludedOnPage: number;
+  hasNextPage: boolean;
+};
+
+/**
+ * Fetch one operator-sized page of the QB invoice corpus.  The scope filters
+ * are pushed to QuickBooks so the normal Open A/R workflow never downloads the
+ * complete historical archive.  Local source-ID matching is set based, scoped
+ * to the organization, and applied before rows are returned to the browser.
+ */
+export async function fetchQBInvoicePreviewPage(input: {
+  organizationId: string;
+  scope: QBInvoicePreviewScope;
+  page: number;
+  pageSize: number;
+  includeReferenceDebug?: boolean;
+}): Promise<QBInvoicePreviewPage> {
+  const page = Math.max(1, Math.floor(input.page));
+  const pageSize = Math.max(1, Math.min(200, Math.floor(input.pageSize)));
+  const whereClause = input.scope === 'open_ar'
+    ? " WHERE Balance > '0'"
+    : input.scope === 'historical'
+    ? " WHERE Balance <= '0'"
+    : '';
+  const startPosition = ((page - 1) * pageSize) + 1;
+  const query = `SELECT * FROM Invoice${whereClause} STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`;
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId);
+  const qbInvoices: any[] = Array.isArray(response?.QueryResponse?.Invoice)
+    ? response.QueryResponse.Invoice
+    : [];
+  const sourceTotalValue = Number(response?.QueryResponse?.totalCount);
+  const sourceTotal = Number.isFinite(sourceTotalValue) ? sourceTotalValue : null;
+  const allRows = await buildQBInvoicePreviewRows(input.organizationId, qbInvoices, input.includeReferenceDebug === true);
+  const rows = allRows.filter((row) => !row.alreadyImported);
+
+  return {
+    rows,
+    scope: input.scope,
+    page,
+    pageSize,
+    sourceTotal,
+    sourceRowsOnPage: allRows.length,
+    alreadyImportedExcludedOnPage: allRows.length - rows.length,
+    hasNextPage: sourceTotal !== null
+      ? startPosition + allRows.length <= sourceTotal
+      : allRows.length === pageSize,
+  };
 }
 
 /**

@@ -583,11 +583,13 @@ export function registerQuickBooksRoutes(
 
   /**
    * GET /api/integrations/quickbooks/import-preview/invoices
-   * Read-only preview of all QB invoices with local match status.
+   * Read-only, bounded preview of QB invoices with local match status.
    * Returns classification (open_ar vs historical), already-imported flag,
    * and canImport flag. No writes — safe to call repeatedly.
    *
    * Query params:
+   *   scope=open_ar|historical|all_unsynced (defaults to open_ar)
+   *   page=1..n, pageSize=50|100|200 (defaults to 100)
    *   debugReferenceFields=1  (admin/owner only, already enforced by isAdminOrOwner)
    *     When present, each preview row includes a `referenceDebug` object with
    *     custom fields, privateNote, customerMemo, and line descriptions — used
@@ -597,8 +599,26 @@ export function registerQuickBooksRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       const includeReferenceDebug = req.query.debugReferenceFields === '1';
-      const rows = await quickbooksService.fetchQBInvoicesForPreview(organizationId, includeReferenceDebug);
-      return res.json({ success: true, data: rows });
+      const scope = String(req.query.scope ?? 'open_ar');
+      const page = Number(req.query.page ?? 1);
+      const pageSize = Number(req.query.pageSize ?? 100);
+      if (!['open_ar', 'historical', 'all_unsynced'].includes(scope)) {
+        return res.status(400).json({ success: false, error: 'scope must be one of: open_ar, historical, all_unsynced' });
+      }
+      if (!Number.isInteger(page) || page < 1) {
+        return res.status(400).json({ success: false, error: 'page must be a positive integer' });
+      }
+      if (![50, 100, 200].includes(pageSize)) {
+        return res.status(400).json({ success: false, error: 'pageSize must be one of: 50, 100, 200' });
+      }
+      const preview = await quickbooksService.fetchQBInvoicePreviewPage({
+        organizationId,
+        scope: scope as quickbooksService.QBInvoicePreviewScope,
+        page,
+        pageSize,
+        includeReferenceDebug,
+      });
+      return res.json({ success: true, data: preview });
     } catch (error: any) {
       console.error('[QB Invoice Preview] Error:', error);
       return res.status(500).json({ success: false, error: error.message || 'Failed to fetch invoice preview' });
@@ -636,6 +656,9 @@ export function registerQuickBooksRoutes(
         if (invoicesArray.length === 0) {
           return res.status(400).json({ success: false, error: 'invoices array is empty' });
         }
+        if (invoicesArray.length > 100) {
+          return res.status(400).json({ success: false, error: 'A QuickBooks invoice import batch may contain at most 100 entries.' });
+        }
         for (const item of invoicesArray) {
           const qbId = String(item?.qbId ?? '').trim();
           const cls = String(item?.classification ?? '');
@@ -650,6 +673,9 @@ export function registerQuickBooksRoutes(
         resolvedMode = 'auto'; // each invoice's classification is already in perInvoiceModes
       } else if (Array.isArray(rawIds) && rawIds.length > 0) {
         // Legacy format: { quickBooksInvoiceIds, mode, invoiceModes? }
+        if (rawIds.length > 100) {
+          return res.status(400).json({ success: false, error: 'A QuickBooks invoice import batch may contain at most 100 entries.' });
+        }
         ids = rawIds;
         const validModes = ['auto', 'open_ar', 'historical'];
         if (!validModes.includes(rawMode)) {
@@ -676,7 +702,12 @@ export function registerQuickBooksRoutes(
         return res.json({ success: true, data: { created: 0, updated: 0, skipped: invoicesArray?.length ?? 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, errors: [] } });
       }
 
-      const result = await quickbooksService.importQBInvoicesByIds(organizationId, ids, resolvedMode, userId, perInvoiceModes);
+      const uniqueIds = Array.from(new Set(ids.map((id) => String(id).trim()).filter(Boolean)));
+      if (uniqueIds.length > 100) {
+        return res.status(400).json({ success: false, error: 'A QuickBooks invoice import batch may contain at most 100 unique invoice IDs.' });
+      }
+
+      const result = await quickbooksService.importQBInvoicesByIds(organizationId, uniqueIds, resolvedMode, userId, perInvoiceModes);
       return res.json({ success: true, data: result });
     } catch (error: any) {
       console.error('[QB Invoice Import] Error:', error);
