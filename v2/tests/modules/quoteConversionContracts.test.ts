@@ -21,6 +21,14 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(source).not.toMatch(/resolveActivePricingInput/);
   });
 
+  test("unexpected acceptance rollbacks emit only a bounded transaction stage", async () => {
+    const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
+    expect(source).toMatch(/event: "v2\.sales\.quote_acceptance\.failed"/);
+    expect(source).toMatch(/stage,/);
+    expect(source).toMatch(/if \(!\(cause instanceof V2ApplicationError\)\) logAcceptanceFailure\(stage\)/);
+    expect(source).not.toMatch(/quote_acceptance\.failed[\s\S]{0,300}(input|customer|message|stack)/);
+  });
+
   test("accepted and converted commercial evidence remains pinned to the sent tax composition", async () => {
     const quote = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteApplication.ts"), "utf8");
     const conversion = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
@@ -63,6 +71,13 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(core).toMatch(/not fully configured for production routing/);
     expect(core).not.toMatch(/\.reserve\(/);
     expect(core).not.toMatch(/\.pricing\.calculate\(/);
+  });
+
+  test("unexpected Order-construction rollbacks emit only a bounded stage", async () => {
+    const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "orderApplication.ts"), "utf8");
+    expect(source).toMatch(/event: "v2\.sales\.order_creation\.failed"/);
+    expect(source).toMatch(/stage,/);
+    expect(source).not.toMatch(/order_creation\.failed[\s\S]{0,300}(input|customer|message|stack)/);
   });
 
   test("Quote send readiness and send both reject unroutable production lines before a document freeze or provider preparation", async () => {
