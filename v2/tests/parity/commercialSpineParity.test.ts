@@ -51,6 +51,7 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
   let invoiceInput: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } } | undefined;
   const routes: string[] = [];
   const conversionOperations = new Map<string, { id: string; resultJson: unknown | null }>();
+  let productionRouteConfigured = !options.unroutable;
   const products = {
     resolveActivePricingInput: async (input: { productId: string; quantity: number; selections?: Record<string, unknown>; dimensions?: { width: string; height: string; unit: "in" } }) => ({ ok: true as const, value: productInput(input.productId, input.quantity, input.selections, input.dimensions) }),
     resolveCurrentRoutingProduct: async (_org: OrganizationId, productId: string) => ({ productTypeId: brandedId<"ProductTypeId">(productId === "banner" ? "print-route" : "stock-no-route") }),
@@ -64,7 +65,7 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
         ? { kind: "unconfigured" as const }
         : { kind: "no_route" as const },
     resolveOrderRoutability: async (_org: OrganizationId, productId: string) => {
-      if (productId === "unroutable" || options.unroutable)
+      if (productId === "unroutable" && !productionRouteConfigured)
         return { kind: "unroutable" as const, productName: "Unroutable production Product" };
       const routing = productId === "banner"
         ? { kind: "route_required" as const, routeTemplateId: brandedId<"RouteTemplateId">("print-template"), routeTemplateName: "Print route", sourceTemplateRevision: "1", sourceTemplateFingerprint: "sha256:route", steps: [{ position: 0, kind: "production" as const }] }
@@ -146,7 +147,7 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
       if (operation) operation.resultJson = result;
     },
   };
-  return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService({ transaction: async (work) => work({ quote: conversionQuote as never, order: orderTx as never }) }, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), get quoteRead() { return quoteRead; }, get createdOrder() { return createdOrder; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, audits };
+  return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService({ transaction: async (work) => work({ quote: conversionQuote as never, order: orderTx as never }) }, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), setProductionRouteConfigured(value: boolean) { productionRouteConfigured = value; }, get quoteRead() { return quoteRead; }, get createdOrder() { return createdOrder; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, audits };
 };
 
 describe("M5 commercial spine parity baseline", () => {
@@ -252,7 +253,7 @@ describe("M5 commercial spine parity baseline", () => {
   });
 
   test("rejects an unroutable production Product before creating any Order or Draft Invoice", async () => {
-    const runtime = createFixtureRuntime();
+    const runtime = createFixtureRuntime({ unroutable: true });
     const created = await runtime.quote.create(context("unroutable-create"), {
       businessRequestId: "unroutable-create", customerContact,
       lines: [{ productId: "unroutable", quantity: 1 }],
@@ -274,5 +275,14 @@ describe("M5 commercial spine parity baseline", () => {
     expect(runtime.invoiceInput).toBeUndefined();
     expect(runtime.routes).toEqual([]);
     expect(runtime.quoteRead?.quote.acceptanceState).toBe("not_accepted");
+
+    // A sent Quote is not rewritten. Once a legitimate canonical route is
+    // supplied, the same frozen Product Version can pass conversion.
+    runtime.setProductionRouteConfigured(true);
+    const repaired = await runtime.conversion.accept(context("unroutable-repaired"), {
+      businessRequestId: "unroutable-repaired", quoteId: created.value.quote.quote.quoteId,
+      expectedRevision: sent.value.quote.revision,
+    });
+    expect(repaired.ok).toBe(true);
   });
 });
