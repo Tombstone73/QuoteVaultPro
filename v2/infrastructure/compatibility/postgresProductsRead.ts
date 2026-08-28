@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { TransactionalClient } from "../persistence/types.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../src/errors/applicationError.js";
 import { canonicalJson, brandedId, currencyCode, type JsonValue, type OrganizationId, type PricingConfigurationId, type ProductId, type ProductTypeId } from "../../src/modules/shared/commercialValues.js";
-import type { HistoricalPricingConfigurationReference, ProductPricingCompatibilityPort, ProductTypeRoutePolicy, ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "../../src/modules/products/contracts.js";
+import type { HistoricalPricingConfigurationReference, ProductOrderRoutability, ProductPricingCompatibilityPort, ProductTypeRoutePolicy, ResolveActivePricingInput, ResolvedPricingInput, SellableProductConfiguration } from "../../src/modules/products/contracts.js";
 import { resolveActivePbv2PricingInput, type ActivePbv2CompatibilityRecord } from "../../src/modules/products/pbv2CompatibilityResolution.js";
 import { PostgresProductVersionRoutingReader } from "../products/postgresProductRouting.js";
 
@@ -65,6 +65,28 @@ export class PostgresProductsCompatibilityReader implements ProductPricingCompat
 
   async resolveVersionRoutingPolicy(organizationId: OrganizationId, productId: ProductId, productVersionId: string) {
     return new PostgresProductVersionRoutingReader(this.client).read(organizationId, productId, productVersionId);
+  }
+
+  async resolveOrderRoutability(organizationId: OrganizationId, productId: ProductId, productVersionId: string): Promise<ProductOrderRoutability> {
+    const product = (await this.client.query<{
+      name: string; product_type_id: string | null;
+      workflow_intent: "standard_production" | "fulfillment_only" | "service_fee";
+      requires_production_job: boolean;
+    }>(
+      "SELECT name,product_type_id,workflow_intent,requires_production_job FROM products WHERE organization_id=$1 AND id=$2 AND is_active=TRUE",
+      [organizationId, productId],
+    )).rows[0];
+    if (!product) return { kind: "unroutable", productName: "This Product" };
+    const routing = await this.resolveVersionRoutingPolicy(organizationId, productId, productVersionId);
+    // Only physical standard-production work requires a route.  A route is
+    // never inferred from a Product name or a generic production default.
+    if (product.workflow_intent === "standard_production" && product.requires_production_job && routing.kind !== "route_required")
+      return { kind: "unroutable", productName: product.name };
+    return {
+      kind: "routable", productName: product.name,
+      ...(product.product_type_id ? { productTypeId: brandedId<"ProductTypeId">(product.product_type_id) } : {}),
+      routing,
+    };
   }
 
   async resolveActivePricingInput(input: ResolveActivePricingInput): Promise<ApplicationResult<ResolvedPricingInput>> {

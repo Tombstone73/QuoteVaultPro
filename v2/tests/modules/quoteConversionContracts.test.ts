@@ -59,9 +59,25 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(core.indexOf("materialRequirements.freeze")).toBeLessThan(core.indexOf("createDraftInvoice"));
     expect(core).toMatch(/createDraftInvoice/);
     expect(core).toMatch(/instantiateRoutes/);
-    expect(core).toMatch(/resolveCurrentRoutingProduct/);
+    expect(core).toMatch(/resolveOrderRoutability/);
+    expect(core).toMatch(/not fully configured for production routing/);
     expect(core).not.toMatch(/\.reserve\(/);
     expect(core).not.toMatch(/\.pricing\.calculate\(/);
+  });
+
+  test("Quote send readiness and send both reject unroutable production lines before a document freeze or provider preparation", async () => {
+    const source = await readFile(path.join(process.cwd(), "v2", "infrastructure", "sales", "postgresQuoteDelivery.ts"), "utf8");
+    const send = source.slice(source.indexOf("async send("), source.indexOf("private async prepare("));
+    const prepare = source.slice(source.indexOf("private async prepare("), source.indexOf("private async routability("));
+
+    expect(source).toMatch(/resolveOrderRoutability/);
+    expect(source).toMatch(/routability: Readonly<\{ status: "ready" \| "unroutable"/);
+    expect(send).toMatch(/await this\.requireRoutability/);
+    expect(send.indexOf("requireRoutability")).toBeLessThan(send.indexOf("integrations.requireReady"));
+    expect(send.indexOf("requireRoutability")).toBeLessThan(send.indexOf("this.prepare"));
+    expect(prepare).toMatch(/await this\.requireRoutability/);
+    expect(prepare.indexOf("requireRoutability")).toBeLessThan(prepare.indexOf("quoteRecipientInTransaction"));
+    expect(prepare.indexOf("requireRoutability")).toBeLessThan(prepare.indexOf("renderCustomerSalesPdf"));
   });
 
   test("conversion has one same-client orchestration boundary and no V1 or HTTP dependency", async () => {

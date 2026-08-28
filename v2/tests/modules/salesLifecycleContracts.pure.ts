@@ -30,6 +30,13 @@ assert.match(conversion, /current\.quote\.lifecycleState !== "open"/);
 
 assert.match(delivery, /quoteRecipient(?:InTransaction)?\(/);
 assert.match(delivery, /freezeTaxComposition\(/);
+assert.match(delivery, /resolveOrderRoutability/);
+assert.match(delivery, /routability: Readonly<\{ status: "ready" \| "unroutable"/);
+const send = delivery.slice(delivery.indexOf("async send("), delivery.indexOf("private async prepare("));
+const prepare = delivery.slice(delivery.indexOf("private async prepare("), delivery.indexOf("private async routability("));
+assert.ok(send.indexOf("requireRoutability") < send.indexOf("integrations.requireReady"), "send must reject unroutable Product lines before email readiness/provider preparation");
+assert.ok(send.indexOf("requireRoutability") < send.indexOf("this.prepare"), "send must reject unroutable Product lines before commercial freeze");
+assert.ok(prepare.indexOf("requireRoutability") < prepare.indexOf("quoteInTransaction"), "the locked send preparation must recheck routability before PDF rendering");
 assert.match(delivery, /quoteInTransaction\(/);
 assert.match(delivery, /frozenTaxComposition: prepared\.frozenTaxComposition/);
 assert.ok(

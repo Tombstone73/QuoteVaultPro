@@ -8,6 +8,8 @@ import { principalSubject, staffActorId } from "../../src/authorization/principa
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { QuoteDeliveredInput, QuoteLifecycleInput, QuoteOperationResult, QuoteApplicationService } from "../../src/modules/sales/quoteApplication.js";
 import { brandedId, canonicalJson, type OrganizationId, type QuoteId } from "../../src/modules/shared/commercialValues.js";
+import type { ProductsReadPort } from "../../src/modules/products/contracts.js";
+import { PostgresProductsCompatibilityReader } from "../compatibility/postgresProductsRead.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import type { CustomerSalesDocument } from "./customerDocumentRenderer.js";
 import { customerDocumentFilename, renderCustomerSalesPdf } from "./customerDocumentRenderer.js";
@@ -46,6 +48,7 @@ const providerRequiresReauth = (cause: unknown): boolean => {
 export type QuoteSendReadiness = Readonly<{
   recipient: Readonly<{ status: "ready" | "contact_missing" | "email_missing" | "contact_unavailable"; email?: string }>;
   tax: Readonly<{ status: "ready" | "unresolved" }>;
+  routability: Readonly<{ status: "ready" | "unroutable"; productNames?: readonly string[] }>;
   email: EmailReadiness;
   canSend: boolean;
 }>;
@@ -72,7 +75,8 @@ export class PostgresQuoteDeliveryService {
   private readonly requests = new PostgresOperationRequestRepository();
   private readonly documents: PostgresCustomerDocumentService;
   private readonly integrations: PostgresEmailIntegrationService;
-  constructor(private readonly pool: Pool, private readonly quoteService: QuoteApplicationService, integrations?: PostgresEmailIntegrationService) { this.documents = new PostgresCustomerDocumentService(pool); this.integrations = integrations ?? new PostgresEmailIntegrationService(pool); }
+  private readonly products: ProductsReadPort;
+  constructor(private readonly pool: Pool, private readonly quoteService: QuoteApplicationService, integrations?: PostgresEmailIntegrationService) { this.documents = new PostgresCustomerDocumentService(pool); this.integrations = integrations ?? new PostgresEmailIntegrationService(pool); this.products = new PostgresProductsCompatibilityReader(pool); }
 
   async readiness(context: OperationContext, quoteId: QuoteId): Promise<QuoteSendReadiness> {
     requireOperationPrincipalScope(context);
@@ -82,8 +86,9 @@ export class PostgresQuoteDeliveryService {
       throw new V2ApplicationError("FORBIDDEN", "Quote delivery is unavailable.");
     const recipient = await this.documents.quoteRecipientReadiness(brandedId<"OrganizationId">(context.organizationId), quoteId);
     const tax = quote.value.quote.taxComposition?.status === "resolved" ? { status: "ready" as const } : { status: "unresolved" as const };
+    const routability = await this.routability(context.organizationId, quote.value.quote.lines);
     const integration = await this.integrations.readiness(context.organizationId);
-    return { recipient, tax, email: integration, canSend: recipient.status === "ready" && tax.status === "ready" && integration.status === "ready" };
+    return { recipient, tax, routability, email: integration, canSend: recipient.status === "ready" && tax.status === "ready" && routability.status === "ready" && integration.status === "ready" };
   }
 
   async send(context: OperationContext, input: QuoteLifecycleInput): Promise<ApplicationResult<QuoteOperationResult>> {
@@ -102,6 +107,7 @@ export class PostgresQuoteDeliveryService {
       const recipient = email(await this.documents.quoteRecipient(brandedId<"OrganizationId">(context.organizationId), input.quoteId));
       if (!recipient) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Quote contact needs a valid email address before sending.");
       if (quote.value.quote.taxComposition?.status !== "resolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
+      await this.requireRoutability(context.organizationId, quote.value.quote.lines);
       const integration = await this.integrations.requireReady(context.organizationId);
 
       const prepared = await this.prepare(context, input, integration);
@@ -169,6 +175,7 @@ export class PostgresQuoteDeliveryService {
       if (frozen.quote.acceptanceState !== "not_accepted" || frozen.quote.lifecycleState !== "open") throw new V2ApplicationError("CONFLICT", "This Quote cannot be sent.");
       const frozenTaxComposition = frozen.quote.taxComposition;
       if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
+      await this.requireRoutability(context.organizationId, frozen.quote.lines, new PostgresProductsCompatibilityReader(client));
       const [recipientValue, document] = await Promise.all([
         this.documents.quoteRecipientInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId),
         this.documents.quoteInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId),
@@ -188,6 +195,18 @@ export class PostgresQuoteDeliveryService {
       }
       await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, frozenTaxComposition, integration };
     } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
+  }
+  private async routability(organizationId: string, lines: readonly Readonly<{ productId: string; resolvedConfiguration: Readonly<{ pricingConfigurationId: string }> }>[], products: ProductsReadPort = this.products): Promise<QuoteSendReadiness["routability"]> {
+    const resolved = await Promise.all(lines.map((line) => products.resolveOrderRoutability(
+      brandedId<"OrganizationId">(organizationId), brandedId<"ProductId">(line.productId), line.resolvedConfiguration.pricingConfigurationId,
+    )));
+    const productNames = [...new Set(resolved.flatMap((result) => result.kind === "unroutable" ? [result.productName] : []))];
+    return productNames.length ? { status: "unroutable", productNames } : { status: "ready" };
+  }
+  private async requireRoutability(organizationId: string, lines: readonly Readonly<{ productId: string; resolvedConfiguration: Readonly<{ pricingConfigurationId: string }> }>[], products: ProductsReadPort = this.products): Promise<void> {
+    const readiness = await this.routability(organizationId, lines, products);
+    if (readiness.status === "unroutable")
+      throw new V2ApplicationError("CONFLICT", `This Quote contains a Product that is not fully configured for production routing: ${readiness.productNames?.join(", ") ?? "Product"}.`);
   }
   private async failed(org: string, requestId: string, attemptId: string, message: string): Promise<void> { const client = await this.pool.connect(); try { await client.query("BEGIN"); await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='failed',failure_message=$3,completed_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='pending'", [org, attemptId, message]); await this.requests.markRetryableFailure(client, org, requestId); await client.query("COMMIT"); } catch { await client.query("ROLLBACK"); } finally { client.release(); } }
   private async uncertain(org: string, requestId: string, attemptId: string, message: string, providerMessageId?: string): Promise<void> { const client = await this.pool.connect(); try { await client.query("BEGIN"); await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='uncertain',failure_message=$3,provider_message_id=$4,completed_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='pending'", [org, attemptId, message, providerMessageId ?? null]); await this.requests.markPermanentFailure(client, org, requestId); await client.query("COMMIT"); } catch { await client.query("ROLLBACK"); } finally { client.release(); } }

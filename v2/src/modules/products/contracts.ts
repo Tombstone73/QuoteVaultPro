@@ -20,6 +20,16 @@ export type ProductTypeRoutePolicy =
   | Readonly<{ kind: "no_route" }>
   | Readonly<{ kind: "unconfigured" }>;
 
+/**
+ * The single compatibility decision consumed by Sales before a commercial
+ * line can cross into an Order.  A Product Version's route selection is the
+ * authority; Product Type remains an explicit compatibility fallback inside
+ * the Products/Routing boundary only.
+ */
+export type ProductOrderRoutability =
+  | Readonly<{ kind: "routable"; productName: string; productTypeId?: ProductTypeId; routing: ProductRoutingPolicy }>
+  | Readonly<{ kind: "unroutable"; productName: string }>;
+
 export interface ProductsReadPort {
   getSellableProduct(organizationId: OrganizationId, productId: ProductId): Promise<SellableProductConfiguration | null>;
   resolveProductType(organizationId: OrganizationId, productTypeId: ProductTypeId): Promise<Readonly<{ id: ProductTypeId; routePolicy: ProductTypeRoutePolicy }> | null>;
@@ -30,6 +40,8 @@ export interface ProductsReadPort {
   resolveCurrentRoutingProduct(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ productTypeId: ProductTypeId }> | null>;
   /** Route selection is bound to the exact PBV2/Product Version priced on a commercial line. */
   resolveVersionRoutingPolicy(organizationId: OrganizationId, productId: ProductId, productVersionId: string): Promise<ProductRoutingPolicy>;
+  /** Validates the exact priced Product Version for conversion without inventing a route. */
+  resolveOrderRoutability(organizationId: OrganizationId, productId: ProductId, productVersionId: string): Promise<ProductOrderRoutability>;
   /** Current Product policy is read only once, then Sales freezes it on its line. */
   resolveCurrentTaxability(organizationId: OrganizationId, productId: ProductId): Promise<Readonly<{ taxable: boolean }> | null>;
 }

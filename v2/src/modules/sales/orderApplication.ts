@@ -504,15 +504,17 @@ export class OrderApplicationService {
     const currency = source.lines[0]!.pricingResult.currency;
     if (source.lines.some((line) => line.pricingResult.currency !== currency))
       throw new V2ApplicationError("VALIDATION_ERROR", "Order lines must share one currency.");
-    // Pricing/configuration are frozen above.  Only the Product Type route
-    // policy is deliberately resolved at Order-creation time.
+    // Pricing/configuration are frozen above. Products/Routing validates the
+    // exact priced Product Version before any Order, Invoice, or Route work
+    // is written. It never invents a route for compatibility Products.
     const lines = await Promise.all(source.lines.map(async (line) => {
-      const current = await tx.products.resolveCurrentRoutingProduct(
+      const routability = await tx.products.resolveOrderRoutability(
         brandedId<"OrganizationId">(context.organizationId), line.productId,
+        line.resolvedConfiguration.pricingConfigurationId,
       );
-      if (!current)
-        throw new V2ApplicationError("CONFLICT", "The Product or its current routing policy is unavailable.");
-      return Object.freeze({ ...line, productTypeId: current.productTypeId });
+      if (routability.kind === "unroutable")
+        throw new V2ApplicationError("CONFLICT", `${routability.productName} is not fully configured for production routing.`);
+      return Object.freeze({ ...line, ...(routability.productTypeId ? { productTypeId: routability.productTypeId } : {}) });
     }));
     const orderId = brandedId<"OrderId">(randomUUID());
     const number = await tx.allocateNumber(context.organizationId);
@@ -859,9 +861,12 @@ export class OrderApplicationService {
   ): Promise<InstantiateRouteResult["routeInstance"][]> {
     const routes: InstantiateRouteResult["routeInstance"][] = [];
     for (const line of lines) {
-      const policy = await tx.products.resolveVersionRoutingPolicy(
+      const routability = await tx.products.resolveOrderRoutability(
         brandedId<"OrganizationId">(context.organizationId), line.productId, line.resolvedConfiguration.pricingConfigurationId,
       );
+      if (routability.kind === "unroutable")
+        throw new V2ApplicationError("CONFLICT", `${routability.productName} is not fully configured for production routing.`);
+      const policy = routability.routing;
       // Existing versions without a spec use the compatibility reader's
       // explicit Product Type fallback. An explicitly unconfigured/no-route
       // version creates no synthetic route.
