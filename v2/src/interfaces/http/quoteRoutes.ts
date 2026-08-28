@@ -384,7 +384,15 @@ export const createQuoteRouter = (
       };
       const result = await dependencies.conversion.accept(await context(request, dependencies, true), body, trace);
       if (!result.ok) return error(response, result.error);
-      response.status(200).json({ ok: true, data: { ...result.value, quote: quoteForUi(result.value.quote) } });
+      response
+        .status(200)
+        .type("application/json")
+        .send(
+          JSON.stringify(
+            { ok: true, data: { ...result.value, quote: quoteForUi(result.value.quote) } },
+            (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value,
+          ),
+        );
     } catch (cause) { trace.failure("acceptance_request_received", cause); error(response, cause); }
   });
   router.post("/:quoteId/convert", async (request, response) => {
