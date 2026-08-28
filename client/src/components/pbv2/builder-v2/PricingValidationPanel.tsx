@@ -639,8 +639,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   const fixedDimensions = useMemo(() => getPbv2FixedDimensions(treeForPreview), [treeForPreview]);
   const hourlyBillingUnit = useMemo(() => {
     const billingUnit = (treeForPreview as any)?.meta?.billingUnit;
-    return billingUnit?.kind === "hour" ? billingUnit : null;
-  }, [treeForPreview]);
+    if (billingUnit?.kind === "hour") return billingUnit;
+    // Existing products and unsaved edits may have selected the Hourly profile
+    // before their draft tree is hydrated with billingUnit metadata.
+    return pricingProfileKey === "hourly"
+      ? { kind: "hour", selectionKey: "hours", step: 0.25 }
+      : null;
+  }, [treeForPreview, pricingProfileKey]);
   const previewWidth = nonDimensionalPricing ? 0 : (fixedDimensions?.widthIn ?? previewState.width);
   const previewHeight = nonDimensionalPricing ? 0 : (fixedDimensions?.heightIn ?? previewState.height);
 

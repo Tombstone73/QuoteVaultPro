@@ -956,6 +956,9 @@ function PricingEngineRadioSection({
       pricingFormulaVariables: variables,
       pricingProfileKey: form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey || "default",
       pricingFormula: form.getValues("pricingFormula") || getDefaultFormula(form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey || "default"),
+      ...((form.getValues("pricingProfileKey") || currentProfile || pricingProfileKey) === "hourly" ? {
+        billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 },
+      } : {}),
     });
   }, [currentProfile, form, onUpdateTreeMeta, pricingProfileKey]);
 
@@ -979,6 +982,9 @@ function PricingEngineRadioSection({
     onUpdateTreeMeta?.({
       pricingProfileKey: nextProfileKey,
       pricingFormula: formulaToSave || nextFormula,
+      ...(nextProfileKey === "hourly" ? {
+        billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 },
+      } : {}),
     });
   }, [form, isAutoManagedFormula, onUpdateTreeMeta]);
 

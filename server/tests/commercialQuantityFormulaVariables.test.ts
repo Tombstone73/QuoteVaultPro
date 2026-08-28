@@ -15,6 +15,15 @@ describe("commercial quantity formula binding", () => {
     expect(bindCommercialQuantityToFormulaVariables({ treeJson: { meta: {} }, quantity: 2.5, existing: { quantity: 2.5 } })).toEqual({ quantity: 2.5 });
   });
 
+  test("uses the standard hours key for an hourly product whose legacy or unsaved tree lacks billing metadata", () => {
+    expect(bindCommercialQuantityToFormulaVariables({
+      treeJson: { meta: {} },
+      quantity: 1,
+      existing: { hourly_rate: 60 },
+      pricingProfileKey: "hourly",
+    })).toEqual({ hours: 1, hourly_rate: 60 });
+  });
+
   test.each([[1, 60], [0.25, 15], [1.25, 75], [2.5, 150]])("evaluates zero-option hourly preview at %p hours", (quantity, total) => {
     const result = evaluatePricingPreviewFromTree({
       treeJson: {

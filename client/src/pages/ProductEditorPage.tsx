@@ -152,6 +152,9 @@ function mergeProductPricingMetaIntoPbv2Tree(treeJson: unknown, productValues: P
       ...((treeJson as any).meta || {}),
       pricingProfileKey,
       pricingFormula,
+      ...(pricingProfileKey === "hourly" ? {
+        billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 },
+      } : {}),
       formulaVariables,
       pricingFormulaVariables: formulaVariables,
     },

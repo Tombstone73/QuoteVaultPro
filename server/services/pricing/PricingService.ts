@@ -843,6 +843,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   const selectionFormulaVariables = bindCommercialQuantityToFormulaVariables({
     treeJson: treeVersion.treeJson,
     quantity,
+    pricingProfileKey: product.pricingProfileKey,
     existing: buildNumericSelectionFormulaVariables({
     treeJson: treeVersion.treeJson,
     selections: ruleValidatedSelections.selected,
@@ -1154,6 +1155,7 @@ export function evaluatePricingPreviewFromTree(input: {
   const selectionFormulaVariables = bindCommercialQuantityToFormulaVariables({
     treeJson: input.treeJson,
     quantity,
+    pricingProfileKey: input.pricingProfileKey,
     existing: buildNumericSelectionFormulaVariables({
     treeJson: input.treeJson,
     selections: ruleValidatedSelections.selected,
