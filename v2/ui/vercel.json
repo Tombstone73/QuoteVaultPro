@@ -5,6 +5,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/email/google/callback",
+      "destination": "https://api-dev.printershero.com/api/email/google/callback"
+    },
+    {
       "source": "/v2/:path*",
       "destination": "https://api-dev.printershero.com/v2/:path*"
     },

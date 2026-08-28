@@ -60,8 +60,9 @@ describe("V2 DEV cutover deployment wiring", () => {
     const v1Vercel = fs.readFileSync(path.join(repoRoot, "vercel.json"), "utf8");
     const v2Vercel = JSON.parse(fs.readFileSync(path.join(repoRoot, "v2", "ui", "vercel.json"), "utf8")) as { rewrites: Array<{ source: string; destination: string }> };
     expect(v1Vercel).toContain("api-dev.printershero.com");
-    expect(v2Vercel.rewrites[0]).toEqual({ source: "/v2/:path*", destination: "https://api-dev.printershero.com/v2/:path*" });
-    expect(v2Vercel.rewrites[1]).toEqual({ source: "/:path*", destination: "/index.html" });
+    expect(v2Vercel.rewrites[0]).toEqual({ source: "/api/email/google/callback", destination: "https://api-dev.printershero.com/api/email/google/callback" });
+    expect(v2Vercel.rewrites[1]).toEqual({ source: "/v2/:path*", destination: "https://api-dev.printershero.com/v2/:path*" });
+    expect(v2Vercel.rewrites[2]).toEqual({ source: "/:path*", destination: "/index.html" });
     expect(v1Vercel).not.toContain('"/v2/:path*"');
   });
 
