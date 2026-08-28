@@ -168,7 +168,7 @@ export type OrderReservation = Readonly<{
 }>;
 
 export type OrderAuditEvent = Readonly<{
-  eventType: "order_created" | "order_updated" | "order_cancelled";
+  eventType: "order_created" | "order_updated" | "order_duplicated" | "order_cancelled";
   resourceId: OrderId;
   changes: readonly MeaningfulAuditChange[];
 }>;
@@ -476,9 +476,12 @@ export class OrderApplicationService {
         commercialCharge: source.order.commercialCharge,
         lines,
       }, "sales.order.duplicate.v1");
+      // The new Order already has its one creation audit row for this request.
+      // Record the duplication relationship against the source Order instead
+      // of attempting a second request/resource audit row for the new Order.
       await this.history(tx, context, request.id, "sales.order.duplicate.v1", {
-        eventType: "order_updated",
-        resourceId: created.order.order.orderId,
+        eventType: "order_duplicated",
+        resourceId: input.orderId,
         changes: [{ group: "line", kind: "line_added", summary: `New Order ${created.order.number.display} duplicated from ${source.number.display}.` }],
       });
       return created;
