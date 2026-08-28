@@ -673,7 +673,7 @@ export function OptionDetailsEditor({
                                 showUsageValidation={false}
                               />
                               <div className="text-[11px] text-slate-500 mt-1">
-                                Use this when the selected choice should resolve to a canonical material, separate from additive usage rules.
+                                Selects the canonical material for this choice. If inventory consumption is also configured below, it must use this same material; the consumption rule supplies quantity and basis.
                               </div>
                             </div>
 

@@ -3215,6 +3215,8 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
               path: `${cPath}.materialOverride`,
               entityId: n.id,
               context: {
+                optionGroupLabel: isNonEmptyString((n.raw as any).label) ? String((n.raw as any).label) : n.id,
+                choiceLabel: isNonEmptyString((choice as any).label) ? String((choice as any).label) : String((choice as any).value ?? "selected choice"),
                 materialOverrideId: String((materialOverride as any).materialId),
                 conflictingInventoryMaterialIds: conflictingInventoryMaterialIds.sort(),
               },

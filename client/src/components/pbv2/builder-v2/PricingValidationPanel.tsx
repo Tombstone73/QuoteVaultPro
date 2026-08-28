@@ -25,6 +25,7 @@ import { pbv2TreeToEditorModel, type EditorModel } from "@/lib/pbv2/pbv2ViewMode
 import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 import { filterPbv2ChoicesForRuntime } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
+import { presentPbv2FindingForOperator } from "@shared/pbv2/validationPresentation";
 
 export type PricingPreviewState = {
   width: number;
@@ -319,6 +320,7 @@ interface PricingValidationPanelProps {
   measurementMode?: "dimensions_required" | "quantity_only";
   allowZeroPrice?: boolean;
   productPrimaryMaterialId?: string | null;
+  materialNamesById?: Record<string, string>;
   findings: Finding[];
 }
 
@@ -568,7 +570,7 @@ function PreviewErrorBanner({
   );
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode, allowZeroPrice = false, productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode, allowZeroPrice = false, productPrimaryMaterialId, materialNamesById, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -1891,18 +1893,32 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
               </div>
             ) : (
               <div className="space-y-2">
-                {errors.map((finding, i) => (
-                  <div key={`err-${i}`} className="p-3 bg-red-500/10 border border-red-500/40 rounded text-sm text-red-200">
-                    <div className="font-semibold">{finding.code}</div>
-                    <div>{finding.message}</div>
-                  </div>
-                ))}
-                {warnings.map((finding, i) => (
-                  <div key={`warn-${i}`} className="p-3 bg-amber-500/10 border border-amber-500/40 rounded text-sm text-amber-200">
-                    <div className="font-semibold">{finding.code}</div>
-                    <div>{finding.message}</div>
-                  </div>
-                ))}
+                {errors.map((finding) => {
+                  const presentation = presentPbv2FindingForOperator(finding, (materialId) => materialNamesById?.[materialId]);
+                  return (
+                    <div key={`err-${finding.code}-${finding.path}-${finding.entityId ?? ""}`} className="p-3 bg-red-500/10 border border-red-500/40 rounded text-sm text-red-200">
+                      <div className="font-semibold">{presentation.title}</div>
+                      <div>{presentation.message}</div>
+                      <details className="mt-2 text-xs text-red-200/80">
+                        <summary className="cursor-pointer">Show technical details</summary>
+                        <code className="block mt-1 break-all">{finding.code}</code>
+                      </details>
+                    </div>
+                  );
+                })}
+                {warnings.map((finding) => {
+                  const presentation = presentPbv2FindingForOperator(finding, (materialId) => materialNamesById?.[materialId]);
+                  return (
+                    <div key={`warn-${finding.code}-${finding.path}-${finding.entityId ?? ""}`} className="p-3 bg-amber-500/10 border border-amber-500/40 rounded text-sm text-amber-200">
+                      <div className="font-semibold">{presentation.title}</div>
+                      <div>{presentation.message}</div>
+                      <details className="mt-2 text-xs text-amber-200/80">
+                        <summary className="cursor-pointer">Show technical details</summary>
+                        <code className="block mt-1 break-all">{finding.code}</code>
+                      </details>
+                    </div>
+                  );
+                })}
                 {errors.length === 0 && warnings.length === 0 ? (
                   <div className="p-3 bg-blue-500/10 border border-blue-500/40 rounded text-sm text-blue-200 flex items-center gap-2">
                     <AlertCircleIcon className="h-4 w-4" />

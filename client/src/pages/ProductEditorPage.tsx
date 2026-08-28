@@ -254,6 +254,10 @@ const ProductEditorPage = () => {
 
   const materialsQuery = useMaterials();
   const materials = materialsQuery.data;
+  const materialNamesById = useMemo(
+    () => Object.fromEntries((materials ?? []).map((material) => [material.id, material.name])),
+    [materials],
+  );
   const { data: pricingFormulas } = usePricingFormulas();
   const { data: productTypes, isError: productTypesError } = useProductTypes();
   const draft = useProductBuilderDraft({ form, materials, pricingFormulas });
@@ -1241,6 +1245,7 @@ const ProductEditorPage = () => {
             measurementMode={form.watch("measurementMode") || "dimensions_required"}
             allowZeroPrice={form.watch("allowZeroPrice") === true}
             productPrimaryMaterialId={form.watch("primaryMaterialId") || null}
+            materialNamesById={materialNamesById}
             findings={pbv2PricingData.findings}
           />
         }

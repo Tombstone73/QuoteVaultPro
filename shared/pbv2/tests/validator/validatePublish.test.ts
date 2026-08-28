@@ -183,6 +183,39 @@ describe("pbv2/validator/validatePublish", () => {
     );
   });
 
+  test("matching material override and inventory consumption are compatible", () => {
+    const result = validateTreeForPublish(
+      makeMaterialOverrideTree({ materialOverride: { materialId: "mat_a" } }) as any,
+      DEFAULT_VALIDATE_OPTS
+    );
+
+    expect(result.errors.some((f) => f.code === "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT")).toBe(false);
+  });
+
+  test("reports one conflict per affected choice with stable contextual detail", () => {
+    const tree = makeMaterialOverrideTree({ materialOverride: { materialId: "mat_b" } });
+    tree.nodes[0].label = "Thickness";
+    tree.nodes[0].choices.push({
+      value: "3mm",
+      label: "3mm",
+      materialOverride: { materialId: "mat_c" },
+      inventoryConsumption: [{ materialId: "mat_d", quantityBasis: "fixed", fixedQty: 1 }],
+    });
+
+    const conflicts = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS).errors
+      .filter((finding) => finding.code === "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT");
+
+    expect(conflicts).toHaveLength(2);
+    expect(conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        context: expect.objectContaining({ optionGroupLabel: "Thickness", choiceLabel: "ACM", materialOverrideId: "mat_b", conflictingInventoryMaterialIds: ["mat_a"] }),
+      }),
+      expect.objectContaining({
+        context: expect.objectContaining({ optionGroupLabel: "Thickness", choiceLabel: "3mm", materialOverrideId: "mat_c", conflictingInventoryMaterialIds: ["mat_d"] }),
+      }),
+    ]));
+  });
+
   test("Ambiguous edges => ERROR when ambiguousEdgesStrict=true", () => {
     const tree = {
       status: "DRAFT",
