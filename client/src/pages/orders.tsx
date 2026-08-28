@@ -38,6 +38,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
+import { isOrdersRowNavigationExcluded } from "@/lib/ordersRowNavigation";
 import {
   DEFAULT_ORDERS_LIST_PREFERENCES,
   persistOrdersListPreferences,
@@ -341,13 +342,6 @@ export default function Orders() {
   const hasPrev = isPaginated ? ordersData.hasPrev : false;
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
-
-  // Helper to determine if a click event should prevent row navigation
-  const shouldIgnoreRowNav = (e: React.MouseEvent): boolean => {
-    const target = e.target as HTMLElement;
-    // Check if click originated from interactive element or marked container
-    return !!target.closest('button, a, input, select, textarea, [data-stop-row-nav="true"]');
-  };
 
   // Core identity/state/pill/priority filtering is server-side and paginated.
   // Production/proof summaries are derived list projections for this page.
@@ -1286,7 +1280,7 @@ export default function Orders() {
                       key={order.id} 
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={(e) => {
-                        if (!shouldIgnoreRowNav(e)) {
+                        if (!isOrdersRowNavigationExcluded(e.target)) {
                           navigate(ROUTES.orders.detail(order.id), { state: { referrer: buildReferrer(location) } });
                         }
                       }}
@@ -1298,6 +1292,8 @@ export default function Orders() {
                             key={col.key}
                             style={getColStyle(col.key)}
                             className={col.align === "right" ? "text-right" : ""}
+                            data-stop-row-nav={col.key === "status" ? "true" : undefined}
+                            data-testid={col.key === "status" ? `order-status-cell-${order.id}` : undefined}
                           >
                             {renderCell(order, col.key)}
                           </TableCell>
