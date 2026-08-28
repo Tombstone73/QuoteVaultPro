@@ -70,24 +70,23 @@ export async function calculateAuthoritativeOrderTax(input: {
  * Recomputes commercial order totals from persisted lines and synchronizes its
  * one native editable draft invoice in the same database transaction.
  */
-export async function recalculateEditableOrderFinancials(input: {
+export async function recalculateEditableOrderFinancialsInTransaction(executor: any, input: {
   organizationId: string;
   orderId: string;
   actorUserId?: string | null;
 }) {
-  return db.transaction(async (tx) => {
-    const [order] = await tx.select().from(orders).where(and(
+    const [order] = await executor.select().from(orders).where(and(
       eq(orders.id, input.orderId),
       eq(orders.organizationId, input.organizationId),
     )).limit(1);
     if (!order) return null;
-    const lines = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, input.orderId));
-    const { billableLines, totals } = await calculateTaxForLines(tx, {
+    const lines = await executor.select().from(orderLineItems).where(eq(orderLineItems.orderId, input.orderId));
+    const { billableLines, totals } = await calculateTaxForLines(executor, {
       organizationId: input.organizationId,
       customerId: order.customerId,
       lines,
     });
-    await Promise.all(billableLines.map((line, index) => tx.update(orderLineItems).set({
+    await Promise.all(billableLines.map((line, index) => executor.update(orderLineItems).set({
       taxAmount: totals.lineItemsWithTax[index]!.taxAmount.toFixed(2),
       isTaxableSnapshot: totals.lineItemsWithTax[index]!.isTaxableSnapshot,
       updatedAt: new Date(),
@@ -95,7 +94,7 @@ export async function recalculateEditableOrderFinancials(input: {
     const discount = Number(order.discount) || 0;
     const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;
     const total = totals.subtotal - discount + totals.taxAmount + shipping;
-    const [updated] = await tx.update(orders).set({
+    const [updated] = await executor.update(orders).set({
       subtotal: totals.subtotal.toFixed(2),
       tax: totals.taxAmount.toFixed(2),
       taxRate: totals.taxRate.toFixed(6),
@@ -104,7 +103,14 @@ export async function recalculateEditableOrderFinancials(input: {
       total: total.toFixed(2),
       updatedAt: new Date(),
     } as any).where(and(eq(orders.id, input.orderId), eq(orders.organizationId, input.organizationId))).returning();
-    await synchronizeDraftInvoiceFromOrderInTransaction(tx, input);
+    await synchronizeDraftInvoiceFromOrderInTransaction(executor, input);
     return updated ?? null;
-  });
+}
+
+export async function recalculateEditableOrderFinancials(input: {
+  organizationId: string;
+  orderId: string;
+  actorUserId?: string | null;
+}) {
+  return db.transaction((tx) => recalculateEditableOrderFinancialsInTransaction(tx, input));
 }

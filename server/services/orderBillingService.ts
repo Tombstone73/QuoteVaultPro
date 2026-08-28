@@ -62,8 +62,8 @@ export function resolveInvoiceFinancialEligibility(lines: Array<{
 }
 export type OrderBillingStatus = 'not_ready' | 'ready' | 'billed';
 
-export async function getBillingReadyPolicyForOrg(organizationId: string): Promise<BillingReadyPolicy> {
-  const [org] = await db
+export async function getBillingReadyPolicyForOrg(organizationId: string, executor: any = db): Promise<BillingReadyPolicy> {
+  const [org] = await executor
     .select({ settings: organizations.settings })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
@@ -76,12 +76,14 @@ export async function getBillingReadyPolicyForOrg(organizationId: string): Promi
 export async function recomputeOrderBillingStatus(params: {
   organizationId: string;
   orderId: string;
+  executor?: any;
 }): Promise<{ updated: boolean; from?: OrderBillingStatus; to?: OrderBillingStatus } | { updated: false } > {
   const { organizationId, orderId } = params;
+  const executor = params.executor ?? db;
 
   const now = new Date();
 
-  const [order] = await db
+  const [order] = await executor
     .select({
       id: orders.id,
       billingStatus: orders.billingStatus,
@@ -124,7 +126,7 @@ export async function recomputeOrderBillingStatus(params: {
 
     if (!changed) return { updated: false };
 
-    await db
+    await executor
       .update(orders)
       .set(updates)
       .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
@@ -140,15 +142,15 @@ export async function recomputeOrderBillingStatus(params: {
   const allowedPolicies = new Set<string>(['all_line_items_done', 'manual', 'none']);
   let policy: BillingReadyPolicy = (rawOrderPolicy && allowedPolicies.has(rawOrderPolicy))
     ? (rawOrderPolicy as BillingReadyPolicy)
-    : (await getBillingReadyPolicyForOrg(organizationId));
+    : (await getBillingReadyPolicyForOrg(organizationId, executor));
 
   if (!allowedPolicies.has(policy)) {
-    policy = await getBillingReadyPolicyForOrg(organizationId);
+    policy = await getBillingReadyPolicyForOrg(organizationId, executor);
   }
 
   let target: OrderBillingStatus = 'not_ready';
   if (policy === 'all_line_items_done') {
-    const lineItems = await db
+    const lineItems = await executor
       .select({
         status: orderLineItems.status,
         totalPrice: orderLineItems.totalPrice,
@@ -181,7 +183,7 @@ export async function recomputeOrderBillingStatus(params: {
   if (shouldClearReadyAt) updates.billingReadyAt = null;
   if (shouldClearOverrideAt) updates.billingReadyOverrideAt = null;
 
-  await db
+  await executor
     .update(orders)
     .set(updates)
     .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));

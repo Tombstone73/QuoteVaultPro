@@ -3,8 +3,9 @@ import { and, eq } from "drizzle-orm";
 import { auditLogs, orders } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
+import { OrdersRepository } from "../../storage/orders.repo";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
-import { synchronizeDraftInvoiceFromOrder } from "../../invoicesService";
+import { synchronizeDraftInvoiceFromOrderInTransaction } from "../../invoicesService";
 import { orderChangesRequireDraftInvoiceSynchronization } from "./orderHeaderUpdatePolicy";
 import { assertCustomerCreditForOrder, orderPayloadTotalCents } from "../customerCreditPolicyService";
 import { parseMoneyToCents } from "@shared/customerCreditExposure";
@@ -52,16 +53,21 @@ class CanonicalOrderOperations {
       override: input.creditOverride,
       overrideReason: input.creditOverrideReason,
     });
-    const order = await storage.updateOrder(input.organizationId, input.orderId, { ...input.changes, ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}) });
-    if (orderChangesRequireDraftInvoiceSynchronization(input.changes)) {
-      await synchronizeDraftInvoiceFromOrder({
-        organizationId: input.organizationId,
-        orderId: order.id,
-        actorUserId: input.actorUserId,
+    return db.transaction(async (tx) => {
+      const order = await new OrdersRepository(tx).updateOrder(input.organizationId, input.orderId, {
+        ...input.changes,
+        ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}),
       });
-    }
-    await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
-    return order;
+      if (orderChangesRequireDraftInvoiceSynchronization(input.changes)) {
+        await synchronizeDraftInvoiceFromOrderInTransaction(tx, {
+          organizationId: input.organizationId,
+          orderId: order.id,
+          actorUserId: input.actorUserId,
+        });
+      }
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
+      return order;
+    });
   }
 
   async convertQuoteToOrder(input: { organizationId: string; actorUserId: string; quoteId: string; options?: CanonicalQuoteConversionOptions }) {

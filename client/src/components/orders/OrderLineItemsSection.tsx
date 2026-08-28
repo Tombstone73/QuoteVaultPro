@@ -2568,8 +2568,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   };
 
   const handleRemoveItem = async (itemId: string) => {
+    let deleted = false;
     try {
       await deleteLineItem.mutateAsync(itemId);
+      deleted = true;
       setSelectedForProduction((current) => {
         if (!current.has(itemId)) return current;
         const next = new Set(current);
@@ -2577,10 +2579,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         return next;
       });
       if (expandedId === itemId) setExpandedId(null);
-      if (onAfterLineItemsChange) {
-        await onAfterLineItemsChange();
+      try {
+        await onAfterLineItemsChange?.();
+      } catch (refreshError) {
+        console.error("[OrderLineItemsSection] Line item was deleted but the order refresh failed", refreshError);
+        toast({
+          title: "Line item removed",
+          description: "The change was saved, but the Order could not be refreshed. Refresh the page to see the latest totals.",
+        });
       }
     } catch (err: any) {
+      if (deleted) return;
       toast({
         title: "Error",
         description: err?.message || "Failed to remove item",

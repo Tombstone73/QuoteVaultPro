@@ -70,11 +70,11 @@ describe("forward Order to Invoice financial integrity", () => {
   });
 
   it("puts required draft creation, duplicate prevention, and draft-only synchronization at shared boundaries", async () => {
-    const [ordersRepository, invoiceService, automation, orderRoutes, customerRoutes, creditPolicy, exposureService, schema] = await Promise.all([
+    const [ordersRepository, invoiceService, automation, canonicalOrderOperations, customerRoutes, creditPolicy, exposureService, schema] = await Promise.all([
       source("server/storage/orders.repo.ts"),
       source("server/invoicesService.ts"),
       source("server/services/billingInvoiceAutomation.ts"),
-      source("server/routes/orders.routes.ts"),
+      source("server/services/orders/canonicalOrderOperations.ts"),
       source("server/routes/customers.routes.ts"),
       source("server/services/customerCreditPolicyService.ts"),
       source("server/services/customerCreditExposureService.ts"),
@@ -87,7 +87,7 @@ describe("forward Order to Invoice financial integrity", () => {
     expect(invoiceService).toContain("synchronizeDraftInvoiceFromOrderInTransaction");
     expect(invoiceService).toContain("String(linkedInvoices[0]!.status).toLowerCase() !== \"draft\"");
     expect(automation).toContain("ne(invoices.status, \"void\")");
-    expect(orderRoutes).toContain("synchronizeDraftInvoiceFromOrder");
+    expect(canonicalOrderOperations).toContain("synchronizeDraftInvoiceFromOrderInTransaction");
     expect(customerRoutes).toContain("getCustomerCreditExposures");
     expect(customerRoutes).toContain("canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)");
     expect(customerRoutes).toContain("customer_credit_limit_updated");

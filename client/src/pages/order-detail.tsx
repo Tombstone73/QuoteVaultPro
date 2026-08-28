@@ -1099,65 +1099,15 @@ export default function OrderDetail() {
       })
     : customerContacts;
 
-  // Customer change mutation
-  const changeCustomerMutation = useMutation({
-    mutationFn: async (customerId: string | null) => {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId }),
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error("Failed to update customer");
-      return response.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
-      toast({
-        title: "Success",
-        description: "Customer updated successfully",
-      });
-      setIsCustomerPickerOpen(false);
-      exitAllEditModes(); // Exit edit mode after successful update
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  // Contact change mutation
-  const changeContactMutation = useMutation({
-    mutationFn: async (contactId: string) => {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contactId }),
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error("Failed to update contact");
-      return response.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
-      toast({
-        title: "Success",
-        description: "Contact updated successfully",
-      });
-      setIsContactPickerOpen(false);
-      exitAllEditModes(); // Exit edit mode after successful update
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  const saveOrderOwner = (changes: { customerId?: string | null; contactId?: string | null }) => {
+    updateOrder.mutate(changes, {
+      onSuccess: () => {
+        setIsCustomerPickerOpen(false);
+        setIsContactPickerOpen(false);
+        exitAllEditModes();
+      },
+    });
+  };
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -2323,7 +2273,7 @@ export default function OrderDetail() {
                                   {order?.contactId && order?.customerId && (
                                     <CommandItem
                                       value="contact-only"
-                                      onSelect={() => changeCustomerMutation.mutate(null)}
+                                      onSelect={() => saveOrderOwner({ customerId: null })}
                                     >
                                       Keep the selected contact; remove customer
                                     </CommandItem>
@@ -2338,7 +2288,7 @@ export default function OrderDetail() {
                                         key={customer.id}
                                         value={searchValue}
                                         onSelect={() => {
-                                          changeCustomerMutation.mutate(customer.id);
+                                          saveOrderOwner({ customerId: customer.id });
                                         }}
                                       >
                                         <Check
@@ -2517,7 +2467,7 @@ export default function OrderDetail() {
                                         key={contact.id}
                                         value={contactName}
                                         onSelect={() => {
-                                          changeContactMutation.mutate(contact.id);
+                                          saveOrderOwner({ contactId: contact.id });
                                         }}
                                       >
                                         <Check

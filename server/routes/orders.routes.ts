@@ -48,7 +48,7 @@ import { synchronizeFinalArtworkForLineQuantityChange } from "../services/canoni
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
-import { OrderDeletionProtectedError, OrderIdentityError } from "../storage/orders.repo";
+import { OrderDeletionProtectedError, OrderIdentityError, OrdersRepository } from "../storage/orders.repo";
 import { resolveOrderCustomerContactIds } from "../services/orderCustomerResolutionService";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -168,7 +168,7 @@ import { normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdat
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
-import { recalculateEditableOrderFinancials } from "../services/orders/orderTaxCalculationService";
+import { recalculateEditableOrderFinancials, recalculateEditableOrderFinancialsInTransaction } from "../services/orders/orderTaxCalculationService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -341,12 +341,12 @@ async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organ
     return recalculateEditableOrderFinancials({ organizationId, orderId, actorUserId: actorUserId ?? null });
 }
 
-async function recalculateOrderBundleParent(parentLineItemId: string) {
-    const [parent] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, parentLineItemId)).limit(1);
+async function recalculateOrderBundleParent(parentLineItemId: string, executor: any = db) {
+    const [parent] = await executor.select().from(orderLineItems).where(eq(orderLineItems.id, parentLineItemId)).limit(1);
     if (!parent || parent.lineItemRole !== "parent") return null;
-    const children = await db.select().from(orderLineItems).where(eq(orderLineItems.parentLineItemId, parent.id));
+    const children = await executor.select().from(orderLineItems).where(eq(orderLineItems.parentLineItemId, parent.id));
     const pricing = parentBundlePricingUpdate(parent as any, children as any);
-    const [updated] = await db.update(orderLineItems).set({
+    const [updated] = await executor.update(orderLineItems).set({
         childCalculatedTotalCents: pricing.childCalculatedTotalCents,
         unitPrice: pricing.unitPrice.toFixed(2), totalPrice: pricing.totalPrice.toFixed(2), updatedAt: new Date(),
     }).where(eq(orderLineItems.id, parent.id)).returning();
@@ -897,13 +897,14 @@ async function createProofApprovalManualOverrideAuditLog(args: {
     entityType: "quote_line_item" | "order_line_item";
     entityId: string;
     entityName?: string | null;
+    executor?: any;
 }) {
     const auditEvent = buildProofApprovalManualOverrideAuditEvent({
         entityType: args.entityType,
         entityId: args.entityId,
         entityName: args.entityName,
     });
-    await db.insert(auditLogs).values({
+    await (args.executor ?? db).insert(auditLogs).values({
         organizationId: args.organizationId,
         userId: args.userId ?? null,
         userName: args.userName ?? null,
@@ -7294,8 +7295,11 @@ export async function registerOrderRoutes(
                 }
                 : designSnapshot;
 
-            // Create line item with server-computed pricing
-            const created = await storage.createOrderLineItem({
+            // Persist the line item, its financial rollup, invoice snapshot, and
+            // billing state as one unit. A failed response must never leave a
+            // successful add/delete visible only after reopening the Order.
+            const created = await db.transaction(async (tx) => {
+              const createdLineItem = await new OrdersRepository(tx).createOrderLineItem({
                 ...lineItemData,
                 ...(pricingResult.pbv2TreeVersionId
                     ? {
@@ -7333,25 +7337,33 @@ export async function registerOrderRoutes(
                 overrideByUserId: effectivePricing.hasPriceOverride ? (userId ?? null) : null,
                 unitPrice: effectivePricing.effectiveUnitPriceCents / 100,
                 totalPrice: effectivePricing.effectiveTotalCents / 100,
-            });
+              });
 
-            if (lineItemData.parentLineItemId) {
-                const [parent] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, String(lineItemData.parentLineItemId))).limit(1);
+              if (lineItemData.parentLineItemId) {
+                const [parent] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, String(lineItemData.parentLineItemId))).limit(1);
                 if (parent?.lineItemRole === "parent") {
-                    await recalculateOrderBundleParent(parent.id);
+                    await recalculateOrderBundleParent(parent.id, tx);
                 }
-            }
-
-            if (routing.proofApprovalManualOverride) {
+              }
+              await recalculateEditableOrderFinancialsInTransaction(tx, {
+                organizationId,
+                orderId: String(createdLineItem.orderId),
+                actorUserId: userId ?? null,
+              });
+              await recomputeOrderBillingStatus({ organizationId, orderId: String(createdLineItem.orderId), executor: tx });
+              if (routing.proofApprovalManualOverride) {
                 await createProofApprovalManualOverrideAuditLog({
-                    organizationId,
-                    userId,
-                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                    entityType: "order_line_item",
-                    entityId: String(created.id),
-                    entityName: (created as any).description ?? null,
+                  organizationId,
+                  userId,
+                  userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                  entityType: "order_line_item",
+                  entityId: String(createdLineItem.id),
+                  entityName: (createdLineItem as any).description ?? null,
+                  executor: tx,
                 });
-            }
+              }
+              return createdLineItem;
+            });
 
             // Auto-schedule production job if the product type has sendToProductionDefault=true.
             // Fail-soft: scheduling failure does not block the line item create response.
@@ -7398,9 +7410,6 @@ export async function registerOrderRoutes(
                     console.error('[AutoProofSync:LINE_ITEM_CREATE] Failed (non-fatal):', proofSyncError);
                 }
             }
-
-            await recomputeOrderTotalsFromPersistedLineItems(String(created.orderId), organizationId, userId ?? null);
-            await recomputeOrderBillingStatus({ organizationId, orderId: String(created.orderId) });
 
             res.json(enrichLineItemWithEffectivePricing(created as any));
         } catch (error) {
@@ -8827,17 +8836,26 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
             const lineItemId = String(req.params.id);
-            const [ownership] = await db
-                .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
-                .from(orderLineItems)
-                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
-                .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
-                .limit(1);
+            const ownership = await db.transaction(async (tx) => {
+                const [ownedLineItem] = await tx
+                    .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
+                    .from(orderLineItems)
+                    .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                    .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                    .limit(1);
+                if (!ownedLineItem) return null;
+
+                await new OrdersRepository(tx).deleteOrderLineItem(lineItemId);
+                await recalculateEditableOrderFinancialsInTransaction(tx, {
+                    organizationId,
+                    orderId: String(ownedLineItem.orderId),
+                    actorUserId: getUserId(req.user) ?? null,
+                });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(ownedLineItem.orderId), executor: tx });
+                return ownedLineItem;
+            });
 
             if (!ownership) return res.status(404).json({ message: "Order line item not found" });
-
-            await storage.deleteOrderLineItem(lineItemId);
-            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId, getUserId(req.user) ?? null);
             res.json({ message: "Order line item deleted successfully" });
         } catch (error) {
             res.status(500).json({ message: "Failed to delete order line item" });
