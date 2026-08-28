@@ -14,7 +14,8 @@ export type ProjectedProductBuilderDraft = {
   product: {
     name: string; category: string; description: string; pricingMode: "area" | "quantity";
     measurementMode: "dimensions_required" | "quantity_only"; pricingEngine: "pricingProfile";
-    pricingProfileKey: "default" | "qty_only" | "fee" | "hourly"; requiresProductionJob: boolean;
+    pricingProfileKey: "default" | "qty_only" | "fee" | "hourly"; pricingFormula: string | null;
+    pricingProfileConfig: { formulaVariables: Record<string, number> } | null; requiresProductionJob: boolean;
     requiresProofApproval: boolean; isService: boolean; isTaxable: boolean; isActive: false;
   };
   treeJson: Record<string, unknown>;
@@ -197,6 +198,8 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const isFee = pricing.model === "scalar" && pricing.unit === "flat_fee";
   const isHourly = pricing.model === "scalar" && pricing.unit === "per_hour";
   const pricingProfileKey = pricingProfileKeyFor(pricing);
+  const productFormulaVariables = isFee ? { flatFee: pricing.priceCents / 100 } : isHourly ? { hourly_rate: pricing.priceCents / 100 } : null;
+  const productPricingFormula = isFee ? "flatFee" : isHourly ? "hours * hourly_rate" : null;
   assert(!isFee || intent.workflow.kind === "service_fee", "FLAT_FEE_WORKFLOW_INVALID", "Flat-fee pricing requires the service-fee workflow.", "workflow.kind");
   const perSqft = pricing.model === "scalar" && pricing.unit === "per_square_foot" ? pricing.priceCents : null;
   const perPiece = pricing.model === "scalar" && pricing.unit === "per_piece" ? pricing.priceCents : null;
@@ -244,7 +247,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const route = intent.production.route.state === "resolved" ? { id: intent.production.route.id, label: intent.production.route.label } : null;
   const material = intent.material.state === "resolved" ? { state: "resolved" as const, id: intent.material.id, label: intent.material.label } : { state: "explicitly_unset" as const };
   return {
-    product: { name: intent.identity.name, category: intent.identity.category.label, description: intent.identity.description, pricingMode: pricing.model === "scalar" && pricing.unit === "per_square_foot" || pricing.model === "one_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "two_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "quantity_tiers" && pricing.unit === "per_square_foot" || pricing.model === "option_quantity_tiers" && pricing.unit === "per_square_foot" ? "area" : "quantity", measurementMode: intent.measurement.mode === "quantity_only" ? "quantity_only" : "dimensions_required", pricingEngine: "pricingProfile", pricingProfileKey, requiresProductionJob: intent.workflow.requiresProductionJob, requiresProofApproval: intent.workflow.requiresProofApproval, isService: intent.workflow.kind === "service_fee", isTaxable: true, isActive: false },
+    product: { name: intent.identity.name, category: intent.identity.category.label, description: intent.identity.description, pricingMode: pricing.model === "scalar" && pricing.unit === "per_square_foot" || pricing.model === "one_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "two_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "quantity_tiers" && pricing.unit === "per_square_foot" || pricing.model === "option_quantity_tiers" && pricing.unit === "per_square_foot" ? "area" : "quantity", measurementMode: intent.measurement.mode === "quantity_only" ? "quantity_only" : "dimensions_required", pricingEngine: "pricingProfile", pricingProfileKey, pricingFormula: productPricingFormula, pricingProfileConfig: productFormulaVariables ? { formulaVariables: productFormulaVariables } : null, requiresProductionJob: intent.workflow.requiresProductionJob, requiresProofApproval: intent.workflow.requiresProofApproval, isService: intent.workflow.kind === "service_fee", isTaxable: true, isActive: false },
     treeJson, relationships: { productionRoute: route, material }, audit: { contractVersion: 1, intentId: intent.intentId, revision: intent.revision, fingerprint, fieldMetadata: intent.fieldMetadata },
   };
 }

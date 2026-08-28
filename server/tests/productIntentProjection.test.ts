@@ -216,7 +216,7 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
       workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false },
       production: { route: { state: "explicitly_unset" }, configuration: {} },
     }));
-    expect(projected.product).toMatchObject({ category: "Fees", pricingProfileKey: "hourly", measurementMode: "quantity_only", requiresProductionJob: false, requiresProofApproval: false, isService: true });
+    expect(projected.product).toMatchObject({ category: "Fees", pricingProfileKey: "hourly", pricingFormula: "hours * hourly_rate", pricingProfileConfig: { formulaVariables: { hourly_rate: 60 } }, measurementMode: "quantity_only", requiresProductionJob: false, requiresProofApproval: false, isService: true });
     expect((projected.treeJson.meta as any)).toMatchObject({ pricingFormula: "hours * hourly_rate", pricingFormulaVariables: { hourly_rate: 60 }, billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 } });
     expect((projected.treeJson.meta as any).pricingV2.base).toEqual({ perSqftCents: null, perPieceCents: null, minimumChargeCents: null });
     const hours = Object.values(projected.treeJson.nodes as Record<string, any>).find((node: any) => node.input?.selectionKey === "hours");
@@ -224,6 +224,10 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     const variables = buildNumericSelectionFormulaVariables({ treeJson: projected.treeJson, selections: { hours: { value: 2.5 } } });
     expect(variables.hours).toBe(2.5);
     expect(variables.hours * (projected.treeJson.meta as any).pricingFormulaVariables.hourly_rate * 100).toBe(15000);
+
+    for (const [hoursValue, total] of [[0.25, 15], [0.5, 30], [1, 60], [1.25, 75], [2.5, 150]] as const) {
+      expect(hoursValue * (projected.product.pricingProfileConfig!.formulaVariables.hourly_rate)!).toBe(total);
+    }
   });
 
   it("projects a flat service fee as the canonical zero-option tree", () => {

@@ -5175,6 +5175,7 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   // NEW: v2 canonical option selections (additive)
   optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
+  pbv2SnapshotJson: jsonb("pbv2_snapshot_json").$type<Record<string, any>>(),
   // Immutable bundle display snapshot (migration 0131).
   parentLineItemId: varchar("parent_line_item_id"),
   lineItemRole: lineItemRoleEnum("line_item_role").notNull().default("standalone"),

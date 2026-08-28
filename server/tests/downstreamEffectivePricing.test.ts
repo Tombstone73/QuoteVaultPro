@@ -71,4 +71,19 @@ describe("downstream effective line item pricing consumers", () => {
     expect(line.Amount).toBe(19.8);
     expect(line.SalesItemLineDetail.UnitPrice).toBe(19.8);
   });
+
+  test("hourly PBV2 snapshots retain fractional hours and rate for QuickBooks", () => {
+    const snapshot = {
+      treeJson: { meta: { billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 }, pricingFormulaVariables: { hourly_rate: 60 } } },
+      selections: { hours: { value: 2.5 } },
+    };
+    const pricing = resolveOrderLineItemInvoicePricing({ quantity: 1, unitPrice: "150.00", totalPrice: "150.00", pbv2SnapshotJson: snapshot });
+    expect(pricing.quantity).toBe(1); // Physical line quantity remains intact.
+    expect(pricing.commercialQuantity).toBe(2.5);
+    expect(pricing.commercialRateCents).toBe(6000);
+
+    const [line] = buildQuickBooksInvoiceLinePayloads([{ description: "Design", quantity: 1, unitPriceCents: 15000, lineTotalCents: 15000, pbv2SnapshotJson: snapshot }]);
+    expect(line.Amount).toBe(150);
+    expect(line.SalesItemLineDetail).toEqual({ Qty: 2.5, UnitPrice: 60 });
+  });
 });

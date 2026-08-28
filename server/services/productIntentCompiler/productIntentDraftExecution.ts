@@ -201,6 +201,8 @@ export function createCanonicalProductDraftExecutionWriter(database: any = defau
           workflowIntent: intent.workflow.kind,
           pricingEngine: projected.product.pricingEngine,
           pricingProfileKey: projected.product.pricingProfileKey,
+          pricingFormula: projected.product.pricingFormula,
+          pricingProfileConfig: projected.product.pricingProfileConfig,
           primaryMaterialId: projected.relationships.material.state === "resolved" ? projected.relationships.material.id : null,
           requiresProductionJob: projected.product.requiresProductionJob,
           requiresProofApproval: projected.product.requiresProofApproval,

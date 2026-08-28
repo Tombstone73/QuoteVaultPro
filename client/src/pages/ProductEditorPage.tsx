@@ -123,13 +123,28 @@ function getNumericFormulaVariables(config: unknown): Record<string, number> {
   return out;
 }
 
+function getTreeNumericFormulaVariables(treeJson: unknown): Record<string, number> {
+  if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) return {};
+  const meta = (treeJson as Record<string, any>).meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
+  return {
+    ...getNumericFormulaVariables({ formulaVariables: meta.pricingFormulaVariables }),
+    ...getNumericFormulaVariables({ formulaVariables: meta.formulaVariables }),
+  };
+}
+
 function mergeProductPricingMetaIntoPbv2Tree(treeJson: unknown, productValues: ProductFormData): unknown {
   if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) return treeJson;
 
   const pricingProfileKey = productValues.pricingProfileKey || "default";
   const profile = getProfile(pricingProfileKey);
   const pricingFormula = String(productValues.pricingFormula || profile.defaultFormula || getDefaultFormula(pricingProfileKey) || "").trim();
-  const formulaVariables = getNumericFormulaVariables(productValues.pricingProfileConfig);
+  // Product configuration overrides legacy tree metadata, but an editor save
+  // must never erase deterministic compiler variables before they are hydrated.
+  const formulaVariables = {
+    ...getTreeNumericFormulaVariables(treeJson),
+    ...getNumericFormulaVariables(productValues.pricingProfileConfig),
+  };
 
   return {
     ...(treeJson as Record<string, any>),

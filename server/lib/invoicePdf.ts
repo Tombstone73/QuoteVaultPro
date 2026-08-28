@@ -14,6 +14,7 @@ import {
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 import { getCustomerVisibleBundleLines } from '../services/lineItemBundles';
+import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';
 
 type CompanySettingsLike = CompanyDocumentBrandingInput & {
   remittanceAddress?: RemittanceAddress | null;
@@ -72,6 +73,7 @@ type InvoiceLineItemLike = {
   parentLineItemId?: string | null;
   lineItemRole?: "standalone" | "parent" | "child" | null;
   childDisplayMode?: "hidden" | "visible_summary" | "visible_detail" | null;
+  pbv2SnapshotJson?: Record<string, any> | null;
 } | null;
 
 type InvoicePdfParams = {
@@ -769,14 +771,15 @@ export async function generateInvoicePdfBytes(
   for (const li of lineItems) {
     ensureSpace(bottomSafeY + 170);
 
-    const qty = Math.max(0, Math.round(Number(li?.quantity ?? 0) || 0));
-    const unitCents = li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice);
+    const hourlyTerms = resolveHourlyServiceCommercialTerms(li as Record<string, any>);
+    const qty = hourlyTerms?.quantity ?? Math.max(0, Math.round(Number(li?.quantity ?? 0) || 0));
+    const unitCents = hourlyTerms?.rateCents ?? (li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice));
     const totalCents = li?.lineTotalCents != null ? toSafeCents(li.lineTotalCents) : toCentsFromDecimal(li?.totalPrice);
 
     const descRaw = (li?.description || li?.name || '').toString().trim() || '-';
     const sku = (li?.sku || '').toString().trim();
 
-    const unitLine = unitCents > 0 ? `Unit: ${fmtMoney(unitCents, currency)}` : '';
+    const unitLine = unitCents > 0 ? `${hourlyTerms ? "Rate" : "Unit"}: ${fmtMoney(unitCents, currency)}${hourlyTerms ? "/hr" : ""}` : '';
     const baseDesc = sku ? `${descRaw}\nSKU: ${sku}${unitLine ? `\n${unitLine}` : ''}` : `${descRaw}${unitLine ? `\n${unitLine}` : ''}`;
 
     const descLines = wrapText({
@@ -836,7 +839,7 @@ export async function generateInvoicePdfBytes(
     let descY = rowTopY - 11;
     for (let i = 0; i < descLines.length; i++) {
       const line = descLines[i];
-      const isMeta = line.startsWith('SKU:') || line.startsWith('Unit:');
+      const isMeta = line.startsWith('SKU:') || line.startsWith('Unit:') || line.startsWith('Rate:');
       drawText(line, {
         x: xDesc,
         y: descY,
@@ -847,7 +850,7 @@ export async function generateInvoicePdfBytes(
     }
 
     // qty and price (right-aligned)
-    drawTextRight(String(qty), {
+    drawTextRight(`${qty}${hourlyTerms ? " hr" : ""}`, {
       rightX: xQty + qtyW,
       y: rowTopY - 11,
       size: theme.fontSizes.body,

@@ -1293,6 +1293,7 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
       unitPrice: invoiceLineItems.unitPrice,
       lineTotalCents: invoiceLineItems.lineTotalCents,
       totalPrice: invoiceLineItems.totalPrice,
+      pbv2SnapshotJson: invoiceLineItems.pbv2SnapshotJson,
     })
     .from(invoiceLineItems)
     .where(eq(invoiceLineItems.invoiceId, invoiceId))

@@ -18,7 +18,13 @@ export function resolveOrderLineItemInvoicePricing(lineItem: Record<string, any>
   quantity: number;
   effectiveUnitPriceCents: number;
   effectiveTotalCents: number;
+  commercialQuantity: number | null;
+  commercialRateCents: number | null;
+  billingUnit: "hour" | null;
 } {
+  const hourlyTerms = resolveHourlyServiceCommercialTerms(lineItem);
+  // `quantity` is the pre-existing physical/document line count.  Hourly
+  // commercial terms are retained separately in the immutable PBV2 snapshot.
   const quantity = Math.round(toPositiveQuantity(lineItem.quantity));
   const effectiveTotalCents =
     toOptionalCents(lineItem.effectiveTotalCents) ??
@@ -33,6 +39,9 @@ export function resolveOrderLineItemInvoicePricing(lineItem: Record<string, any>
     quantity,
     effectiveUnitPriceCents: explicitUnitCents > 0 ? explicitUnitCents : Math.round(effectiveTotalCents / quantity),
     effectiveTotalCents,
+    commercialQuantity: hourlyTerms?.quantity ?? null,
+    commercialRateCents: hourlyTerms?.rateCents ?? null,
+    billingUnit: hourlyTerms?.unit ?? null,
   };
 }
 
@@ -45,10 +54,11 @@ export function buildQuickBooksInvoiceLinePayloads(lineItems: any[]): any[] {
       Amount: Number((pricing.effectiveTotalCents / 100).toFixed(2)),
       DetailType: "SalesItemLineDetail",
       SalesItemLineDetail: {
-        Qty: pricing.quantity,
-        UnitPrice: Number((pricing.effectiveUnitPriceCents / 100).toFixed(2)),
+        Qty: pricing.commercialQuantity ?? pricing.quantity,
+        UnitPrice: Number(((pricing.commercialRateCents ?? pricing.effectiveUnitPriceCents) / 100).toFixed(2)),
       },
       Description: String(lineItem.description || ""),
     };
   });
 }
+import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';

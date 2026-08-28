@@ -859,6 +859,7 @@ function PricingEngineRadioSection({
   const recommendedFormula = getDefaultFormula(currentProfile || pricingProfileKey || "default");
   const formulaForValidation = String(currentFormula || selectedFormulaLibraryValues.pricingFormula || recommendedFormula || "");
   const formulaReferencesFlatFee = /\bflatFee\b/.test(formulaForValidation);
+  const formulaReferencesHourlyRate = /\bhourly_rate\b/.test(formulaForValidation);
   const shouldShowRotationControl = shouldShowPricingEngineRotationControl({
     pricingProfileKey: currentProfile || pricingProfileKey,
     pricingFormula: formulaForValidation,
@@ -874,6 +875,9 @@ function PricingEngineRadioSection({
   const flatFeeValueRaw = currentFormulaVariables.flatFee ?? treeMeta?.formulaVariables?.flatFee ?? treeMeta?.pricingFormulaVariables?.flatFee;
   const flatFeeInputValue = flatFeeValueRaw === undefined || flatFeeValueRaw === null ? "" : String(flatFeeValueRaw);
   const hasFlatFeeValue = flatFeeInputValue !== "" && Number.isFinite(Number(flatFeeInputValue));
+  const hourlyRateValueRaw = currentFormulaVariables.hourly_rate ?? treeMeta?.formulaVariables?.hourly_rate ?? treeMeta?.pricingFormulaVariables?.hourly_rate;
+  const hourlyRateInputValue = hourlyRateValueRaw === undefined || hourlyRateValueRaw === null ? "" : String(hourlyRateValueRaw);
+  const hasHourlyRateValue = hourlyRateInputValue !== "" && Number.isFinite(Number(hourlyRateInputValue));
   const isLegacyFeeSqftFormula = currentProfile === "fee" && String(currentFormula || "").trim() === LEGACY_SQFT_BASIC_FORMULA;
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
@@ -1398,6 +1402,25 @@ function PricingEngineRadioSection({
                     This Fee / Service formula uses sqft or base-rate variables. Confirm that square-foot pricing is intentional for this fee.
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+
+            {currentProfile === "hourly" ? (
+              <div className="mt-2 rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-2">
+                <div className="text-xs font-medium text-slate-300">Hourly Rate</div>
+                <p className="text-[11px] text-slate-400">Customers enter billable hours in quarter-hour increments. This rate is stored with the product pricing configuration.</p>
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-400">Hourly Rate ($/hr)</Label>
+                  <Input type="number" min={0} step="0.01" value={hourlyRateInputValue}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === "") { updatePricingFormulaVariable("hourly_rate", null, true); return; }
+                      const parsed = Number(raw);
+                      if (Number.isFinite(parsed) && parsed >= 0) updatePricingFormulaVariable("hourly_rate", parsed, true);
+                    }}
+                    className="h-8" placeholder="60.00" />
+                </div>
+                {formulaReferencesHourlyRate && !hasHourlyRateValue ? <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive">This formula requires an hourly rate. Enter the product hourly rate before using it in order entry.</div> : null}
               </div>
             ) : null}
           </div>
