@@ -89,6 +89,10 @@ const taxEnvelope = (input: DraftInvoiceSynchronizationInput): Readonly<{
   };
 };
 
+/** Optional JSONB fields must remain SQL NULL when absent. PostgreSQL JSON
+ * `null` is a value, and would violate the schema's object-or-null contract. */
+const jsonObjectOrNull = (value: unknown): string | null => value == null ? null : JSON.stringify(value);
+
 /**
  * Billing-owned Draft Invoice persistence participant. It deliberately takes
  * an already-open transaction client and never starts, commits, or rolls back
@@ -131,7 +135,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         totals.subtotalCents, totals.taxCents, totals.totalCents,
         input.taxInput.taxContextReference ?? null,
         totals.taxCalculatorVersion,
-        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null, JSON.stringify(totals.charge ?? null), JSON.stringify(totals.composition ?? null),
+        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null, jsonObjectOrNull(totals.charge), jsonObjectOrNull(totals.composition),
       ],
     );
     const row = inserted.rows[0];
@@ -288,7 +292,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         totals.subtotalCents, totals.taxCents, totals.totalCents,
         input.taxInput.taxContextReference ?? null,
         totals.taxCalculatorVersion,
-        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null, JSON.stringify(totals.charge ?? null), JSON.stringify(totals.composition ?? null),
+        JSON.stringify(totals.taxEvidence), input.salesAdjustment?.cents ?? 0, input.salesAdjustment?.reason ?? null, jsonObjectOrNull(totals.charge), jsonObjectOrNull(totals.composition),
       ],
     );
     if (!updated.rows[0]) {

@@ -75,6 +75,7 @@
     "v2:m3:billing:browser": "playwright test --config v2/playwright.m34.config.ts",
     "v2:m1:quote-conversion:contracts": "jest --runInBand v2/tests/modules/quoteConversionContracts.test.ts",
     "v2:quote-conversion-diagnostics:pure": "tsx v2/tests/modules/quoteConversionDiagnostics.pure.ts",
+    "v2:billing-draft-invoice:pure": "tsx v2/tests/infrastructure/billingDraftInvoiceOptionalJson.pure.ts",
     "v2:m1:quote-conversion": "tsx v2/scripts/runM110QuoteConversionRehearsal.ts",
     "v2:m5:commercial-parity": "jest --runInBand v2/tests/parity/commercialSpineParity.test.ts",
     "v2:m5:operational-parity": "jest --runInBand v2/tests/parity/operationalSpineParity.test.ts",
