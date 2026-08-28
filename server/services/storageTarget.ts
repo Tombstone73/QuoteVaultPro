@@ -5,6 +5,24 @@ export { normalizeTitanManagedStorageConfig };
 
 export type StorageTarget = "supabase" | "local_dev";
 
+/**
+ * `local_dev` is an intentionally non-durable development fallback.  It must
+ * never become the only canonical placement for a production file record:
+ * Railway container files disappear on redeploy, while the database record
+ * survives and would otherwise point at a permanently missing object.
+ */
+export function assertDurableCanonicalStorageTarget(
+  storageTarget: StorageTarget,
+  environment: Pick<NodeJS.ProcessEnv, "NODE_ENV"> = process.env,
+): void {
+  if (storageTarget !== "local_dev" || environment.NODE_ENV !== "production") return;
+
+  throw Object.assign(
+    new Error("A durable object-storage target is required for production uploads. Configure Supabase or another durable provider."),
+    { code: "DURABLE_STORAGE_REQUIRED", statusCode: 409 },
+  );
+}
+
 export const DEFAULT_MAX_CLOUD_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
 
 function parseBytes(raw: string | undefined | null): number | null {

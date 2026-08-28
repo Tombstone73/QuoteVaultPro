@@ -11,7 +11,7 @@ import {
 } from "../../../utils/fileStorage";
 import { resolveLocalStoragePath } from "../../localStoragePath";
 import { SupabaseStorageService, isSupabaseConfigured } from "../../../supabaseStorage";
-import { getEffectiveMaxCloudUploadBytes, decideStorageTarget } from "../../storageTarget";
+import { assertDurableCanonicalStorageTarget, getEffectiveMaxCloudUploadBytes, decideStorageTarget } from "../../storageTarget";
 import { normalizeObjectKeyForDb } from "../../../lib/supabaseObjectHelpers";
 import type { StorageProviderConfig } from "@shared/schema";
 import { normalizeTitanManagedStorageConfig } from "@shared/storageSettings";
@@ -88,6 +88,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       context: "StorageApplicationService.initiateUpload",
       providerConfigJson: input.providerConfig.configJson,
     });
+    assertDurableCanonicalStorageTarget(storageTarget);
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
       const supabase = new SupabaseStorageService();
@@ -126,6 +127,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       context: "StorageApplicationService.putObject",
       providerConfigJson: input.providerConfig.configJson,
     });
+    assertDurableCanonicalStorageTarget(storageTarget);
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
       const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
@@ -296,6 +298,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       context: "StorageApplicationService.finalizeUpload",
       providerConfigJson: input.providerConfig.configJson,
     });
+    assertDurableCanonicalStorageTarget(storageTarget);
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
       const absolutePath = resolveLocalStoragePath(input.sourceRelativePath);
