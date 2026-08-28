@@ -1,13 +1,14 @@
 import type { Pool, PoolClient } from "pg";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import type { ProductPublicationTransaction, ProductPublicationTransactionRunner, PublishedProductVersion } from "../../src/modules/products/productPublication.js";
+import { PostgresProductVersionRoutingReader } from "./postgresProductRouting.js";
 
 class Transaction implements ProductPublicationTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
   constructor(private readonly client: PoolClient) {}
   async readDraftPublicationState(input: Parameters<ProductPublicationTransaction["readDraftPublicationState"]>[0]) {
-    const row = (await this.client.query<{ product_updated_at: Date; draft_updated_at: Date; status: string }>(
-      `SELECT p.updated_at product_updated_at,d.updated_at draft_updated_at,d.status
+    const row = (await this.client.query<{ product_updated_at: Date; draft_updated_at: Date; status: string; workflow_intent:"standard_production"|"fulfillment_only"|"service_fee"; requires_production_job:boolean }>(
+      `SELECT p.updated_at product_updated_at,p.workflow_intent,p.requires_production_job,d.updated_at draft_updated_at,d.status
        FROM products p
        JOIN pbv2_tree_versions d ON d.organization_id=p.organization_id AND d.product_id=p.id
        WHERE p.organization_id=$1 AND p.id=$2 AND d.id=$3`,
@@ -18,6 +19,9 @@ class Transaction implements ProductPublicationTransaction {
       productUpdatedAt: row.product_updated_at.toISOString(),
       draftUpdatedAt: row.draft_updated_at.toISOString(),
       lifecycle: row.status === "DRAFT" ? "draft" as const : row.status === "ACTIVE" ? "active" as const : "historical" as const,
+      workflowIntent: row.workflow_intent,
+      requiresProductionJob: row.requires_production_job,
+      routing: await new PostgresProductVersionRoutingReader(this.client).read(input.organizationId,input.productId,input.draftVersionId),
     };
   }
   async reserve(input: Parameters<ProductPublicationTransaction["reserve"]>[0]) { return this.requests.reserve(this.client, input); }

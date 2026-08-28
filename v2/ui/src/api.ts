@@ -687,6 +687,14 @@ export type ProductCatalogPage = Readonly<{
   total: number;
   hasMore: boolean;
 }>;
+export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_STANDARD_PRODUCTION" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
+export type ProductRoutingCompatibility = Readonly<{
+  productId:string; productName:string; productUpdatedAt:string; readiness:ProductRoutingReadiness;
+  productTypeId?:string; productTypeName?:string; versionRouteName?:string; compatibilityRouteName?:string;
+  productTypes:readonly Readonly<{productTypeId:string;name:string;updatedAt:string;defaultRoute?:Readonly<{routeTemplateId:string;name:string}>}>[];
+  routeTemplates:readonly Readonly<{routeTemplateId:string;name:string}>[];
+}>;
+export type ProductRoutingReadinessAudit = Readonly<{products:readonly Readonly<{productId:string;productName:string;readiness:ProductRoutingReadiness;versionRouteName?:string;compatibilityRouteName?:string}>[];counts:Readonly<{activeStandardProduction:number;routableByVersion:number;routableByCompatibility:number;unroutable:number}>}>;
 export type CreatedProductWithInitialDraft = Readonly<{
   productId: string;
   draftVersionId: string;
@@ -1739,6 +1747,10 @@ export const productApi = {
     request<ProductWorkspaceDetail>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}`,
     ),
+  routingReadiness: (organizationId:string) => request<ProductRoutingReadinessAudit>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/routing-readiness`),
+  routingCompatibility: (organizationId:string,productId:string) => request<ProductRoutingCompatibility>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/routing-compatibility`),
+  assignRoutingCompatibility: (organizationId:string,productId:string,input:Readonly<{businessRequestId:string;productTypeId:string|null;expectedProductUpdatedAt:string}>) => request<ProductRoutingCompatibility>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/routing-compatibility`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify(input)}),
+  setProductTypeDefaultRoute: (organizationId:string,productTypeId:string,input:Readonly<{businessRequestId:string;routeTemplateId:string;expectedProductTypeUpdatedAt:string}>) => request<unknown>(`/v2/organizations/${encodeURIComponent(organizationId)}/products/product-types/${encodeURIComponent(productTypeId)}/default-route`,{method:"PATCH",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId))??""},body:JSON.stringify(input)}),
   createProduct: (
     organizationId: string,
     businessRequestId: string,

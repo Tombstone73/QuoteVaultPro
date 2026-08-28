@@ -4,6 +4,7 @@ import { requireOperationPrincipalScope } from "../../application/operation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
+import type { ProductRoutingPolicy } from "./productRouting.js";
 
 export type PublishProductDraftInput = Readonly<{
   productId: string;
@@ -39,6 +40,9 @@ type DraftPublicationState = Readonly<{
   productUpdatedAt: string;
   draftUpdatedAt: string;
   lifecycle: "draft" | "active" | "historical";
+  workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
+  requiresProductionJob: boolean;
+  routing: ProductRoutingPolicy;
 }>;
 
 /** Thin structural port around the existing canonical V1 Product publisher. */
@@ -145,6 +149,8 @@ export class ProductPublicationApplicationService {
       if (state.lifecycle !== "draft") throw new V2ApplicationError("CONFLICT", "Only the current Product Draft can be published.");
       if (state.productUpdatedAt !== input.expectedProductUpdatedAt || state.draftUpdatedAt !== input.expectedDraftUpdatedAt)
         throw new V2ApplicationError("STALE_STATE", "The Product Draft changed before publication. Refresh and try again.");
+      if (state.workflowIntent === "standard_production" && state.requiresProductionJob && state.routing.kind !== "route_required")
+        throw new V2ApplicationError("VALIDATION_ERROR", "Production routing is required before this Product can be published. Select a Production Route in the Routing section.");
 
       const canonicalPlan = await this.publisher.propose({
         organizationId: context.organizationId,

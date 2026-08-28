@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   newBusinessRequestId,
   productApi,
+  type ProductRoutingCompatibility,
   type ProductCatalogItem,
   type ProductWorkspaceDetail,
 } from "./api";
@@ -81,6 +82,7 @@ export const ProductWorkspace = ({
     queryFn: () => productApi.list(organizationId, query, page),
     enabled: Boolean(organizationId && sessionScope && canView && !productId),
   });
+  const routingAudit = useQuery({queryKey:["v2",sessionScope,organizationId,"product-routing-readiness"],queryFn:()=>productApi.routingReadiness(organizationId),enabled:Boolean(organizationId&&sessionScope&&canView&&!productId)});
   const detail = useQuery({
     queryKey: keys.detail(sessionScope, organizationId, productId),
     queryFn: () => productApi.get(organizationId, productId),
@@ -178,6 +180,7 @@ export const ProductWorkspace = ({
           />
         </label>
       </div>
+      {routingAudit.data?.counts.unroutable ? <p className="v2-proof-empty" role="status">{routingAudit.data.counts.unroutable} active standard-production Product{routingAudit.data.counts.unroutable===1?" is":"s are"} unroutable. Open the Product and configure its compatibility route or a version route before publishing.</p> : null}
       <div className="v2-products-table-wrap">
         <table className="v2-products-table">
           <thead>
@@ -275,6 +278,12 @@ const ProductDraftEntry = ({
 }>) => {
   const automaticDraftRequest = useRef("");
   const product = state.data;
+  const routing = useQuery({queryKey:["v2",sessionScope,organizationId,"product-routing-compatibility",product?.productId],queryFn:()=>productApi.routingCompatibility(organizationId,product!.productId),enabled:Boolean(product?.productId && canEdit)});
+  const [productTypeId,setProductTypeId]=useState("");
+  const [routeTemplateId,setRouteTemplateId]=useState("");
+  useEffect(()=>{ if(routing.data){setProductTypeId(routing.data.productTypeId??""); const type=routing.data.productTypes.find((item)=>item.productTypeId===(routing.data.productTypeId??"")); setRouteTemplateId(type?.defaultRoute?.routeTemplateId??"");}},[routing.data]);
+  const saveCompatibility=useMutation({mutationFn:()=>productApi.assignRoutingCompatibility(organizationId,product!.productId,{businessRequestId:newBusinessRequestId(),productTypeId:productTypeId||null,expectedProductUpdatedAt:product!.productUpdatedAt}),onSuccess:()=>{void routing.refetch();void state.refetch();}});
+  const saveDefaultRoute=useMutation({mutationFn:()=>{const type=routing.data?.productTypes.find((item)=>item.productTypeId===productTypeId); if(!type||!routeTemplateId) throw new Error("Choose a Product Type and active Route Template."); return productApi.setProductTypeDefaultRoute(organizationId,type.productTypeId,{businessRequestId:newBusinessRequestId(),routeTemplateId,expectedProductTypeUpdatedAt:type.updatedAt});},onSuccess:()=>void routing.refetch()});
   useEffect(() => {
     if (!product || !canEdit || product.versions.draft || !product.versions.active || automaticDraftRequest.current === product.productId) return;
     automaticDraftRequest.current = product.productId;
@@ -288,5 +297,19 @@ const ProductDraftEntry = ({
     return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">You do not have permission to edit this Product.</p></section>;
   if (!product.versions.draft)
     return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">{draftCreationError ?? (creatingDraft ? "Preparing an editable Draft…" : "This Product has no editable Draft.")}</p></section>;
-  return <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} publishError={publishError} />;
+  return <>
+    <CompatibilityRoutingPanel routing={routing.data} loading={routing.isLoading} productTypeId={productTypeId} routeTemplateId={routeTemplateId} setProductTypeId={setProductTypeId} setRouteTemplateId={setRouteTemplateId} saveCompatibility={()=>saveCompatibility.mutate()} saveDefaultRoute={()=>saveDefaultRoute.mutate()} saving={saveCompatibility.isPending||saveDefaultRoute.isPending} error={(saveCompatibility.error??saveDefaultRoute.error) as Error|null}/>
+    <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} publishError={publishError} />
+  </>;
+};
+
+const CompatibilityRoutingPanel = ({routing,loading,productTypeId,routeTemplateId,setProductTypeId,setRouteTemplateId,saveCompatibility,saveDefaultRoute,saving,error}:Readonly<{routing?:ProductRoutingCompatibility;loading:boolean;productTypeId:string;routeTemplateId:string;setProductTypeId:(value:string)=>void;setRouteTemplateId:(value:string)=>void;saveCompatibility:()=>void;saveDefaultRoute:()=>void;saving:boolean;error:Error|null}>) => {
+  if(loading||!routing) return null;
+  const exact=routing.readiness==="ROUTABLE_VERSION_ROUTE";
+  return <section className="v2-products" aria-label="Routing compatibility">
+    <header className="v2-products-heading"><div><h2>Routing compatibility</h2><p>{exact?`This ProductVersion is routed by ${routing.versionRouteName}.`:routing.readiness==="ROUTABLE_COMPATIBILITY_ROUTE"?`Legacy compatibility route: ${routing.compatibilityRouteName}.`:routing.readiness==="UNROUTABLE_STANDARD_PRODUCTION"?"This active physical Product is not routable.":"Routing is not required for this Product."}</p></div></header>
+    {!exact && <div className="v2-products-tools"><label>Product Type<select aria-label="Compatibility Product Type" value={productTypeId} onChange={(event)=>setProductTypeId(event.target.value)}><option value="">Select Product Type…</option>{routing.productTypes.map((item)=><option key={item.productTypeId} value={item.productTypeId}>{item.name}{item.defaultRoute?` — ${item.defaultRoute.name}`:" — no active default route"}</option>)}</select></label><button type="button" className="button secondary" disabled={saving||!productTypeId} onClick={saveCompatibility}>Save Product Type</button></div>}
+    {!exact && productTypeId && <div className="v2-products-tools"><label>Default Route<select aria-label="Product Type default Route" value={routeTemplateId} onChange={(event)=>setRouteTemplateId(event.target.value)}><option value="">Select active Route Template…</option>{routing.routeTemplates.map((item)=><option key={item.routeTemplateId} value={item.routeTemplateId}>{item.name}</option>)}</select></label><button type="button" className="button secondary" disabled={saving||!routeTemplateId} onClick={saveDefaultRoute}>Save default Route</button></div>}
+    {error&&<p role="alert" className="v2-proof-empty">{error.message}</p>}
+  </section>;
 };

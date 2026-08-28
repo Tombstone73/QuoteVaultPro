@@ -25,6 +25,7 @@ import type {
   ProductDraftRouting,
   ProductRoutingApplicationService,
 } from "../../modules/products/productRouting.js";
+import type { ProductRoutingCompatibilityApplicationService, ProductRoutingCompatibilityReadPort } from "../../modules/products/productRoutingCompatibility.js";
 
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
@@ -231,6 +232,8 @@ export type ProductHttpDependencies = Readonly<{
   routing: ProductRoutingApplicationService;
   lifecycle: ProductVersionLifecycleApplicationService;
   publication: ProductPublicationApplicationService;
+  routingCompatibility: ProductRoutingCompatibilityReadPort;
+  routingCompatibilityCommands: ProductRoutingCompatibilityApplicationService;
   principals: Readonly<{
     principal(request: Request, organizationId: string): Promise<Principal>;
   }>;
@@ -264,6 +267,23 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
       }).allowed,
     };
   };
+  const commandStatus = (code: string) => code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" || code === "WRONG_TENANT" ? 404 : code === "VALIDATION_ERROR" ? 400 : 409;
+  router.get("/routing-readiness", async (request,response) => {
+    try { const {organizationId,allowed}=await principalFor(request); if(!allowed) return deny(response,403,"FORBIDDEN","Product access is unavailable."); return response.status(200).json({ok:true,data:await dependencies.routingCompatibility.audit(organizationId)}); }
+    catch { return deny(response,403,"FORBIDDEN","Authenticated access is required."); }
+  });
+  router.get("/:productId/routing-compatibility", async (request,response) => {
+    try { const {organizationId,allowed}=await principalFor(request); if(!allowed) return deny(response,403,"FORBIDDEN","Product access is unavailable."); if(!validProductId(request.params.productId)) return deny(response,404,"NOT_FOUND","Product is unavailable in this organization."); const value=await dependencies.routingCompatibility.read(organizationId,request.params.productId); return value?response.status(200).json({ok:true,data:value}):deny(response,404,"NOT_FOUND","Product is unavailable in this organization."); }
+    catch { return deny(response,403,"FORBIDDEN","Authenticated access is required."); }
+  });
+  router.patch("/:productId/routing-compatibility", async (request,response) => {
+    try { const organizationId=(request.params as Record<string,string>).organizationId; const principal=await dependencies.principals.principal(request,organizationId); const body=request.body as Record<string,unknown>; const businessRequestId=typeof body.businessRequestId==="string"?body.businessRequestId:""; const expectedProductUpdatedAt=typeof body.expectedProductUpdatedAt==="string"?body.expectedProductUpdatedAt:""; const productTypeId=body.productTypeId===null?null:typeof body.productTypeId==="string"?body.productTypeId:null; if(!validProductId(request.params.productId)||!businessRequestId||!expectedProductUpdatedAt) return response.status(400).json({ok:false,error:{code:"VALIDATION_ERROR",message:"A Product, current revision, and business request are required."}}); const result=await dependencies.routingCompatibilityCommands.assign({principal,organizationId,operationId:businessRequestId,businessRequest:{id:businessRequestId,payloadFingerprint:businessRequestId}},{productId:request.params.productId,productTypeId,expectedProductUpdatedAt,businessRequestId}); return result.ok?response.status(200).json({ok:true,data:result.value}):response.status(commandStatus(result.error.code)).json({ok:false,error:{code:result.error.code,message:result.error.publicMessage}}); }
+    catch { return response.status(409).json({ok:false,error:{code:"CONFLICT",message:"Product routing compatibility could not be saved."}}); }
+  });
+  router.patch("/product-types/:productTypeId/default-route", async (request,response) => {
+    try { const organizationId=(request.params as Record<string,string>).organizationId; const principal=await dependencies.principals.principal(request,organizationId); const body=request.body as Record<string,unknown>; const businessRequestId=typeof body.businessRequestId==="string"?body.businessRequestId:""; const expectedProductTypeUpdatedAt=typeof body.expectedProductTypeUpdatedAt==="string"?body.expectedProductTypeUpdatedAt:""; const routeTemplateId=typeof body.routeTemplateId==="string"?body.routeTemplateId:""; if(!validProductId(request.params.productTypeId)||!validProductId(routeTemplateId)||!businessRequestId||!expectedProductTypeUpdatedAt) return response.status(400).json({ok:false,error:{code:"VALIDATION_ERROR",message:"A Product Type, active Route Template, current revision, and business request are required."}}); const result=await dependencies.routingCompatibilityCommands.setDefaultRoute({principal,organizationId,operationId:businessRequestId,businessRequest:{id:businessRequestId,payloadFingerprint:businessRequestId}},{productTypeId:request.params.productTypeId,routeTemplateId,expectedProductTypeUpdatedAt,businessRequestId}); return result.ok?response.status(200).json({ok:true,data:result.value}):response.status(commandStatus(result.error.code)).json({ok:false,error:{code:result.error.code,message:result.error.publicMessage}}); }
+    catch { return response.status(409).json({ok:false,error:{code:"CONFLICT",message:"Product Type routing could not be saved."}}); }
+  });
   router.get("/", async (request, response) => {
     try {
       const { organizationId, allowed } = await principalFor(request);

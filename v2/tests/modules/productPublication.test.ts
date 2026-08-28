@@ -12,7 +12,7 @@ class MemoryRunner implements ProductPublicationTransactionRunner {
   async transaction<T>(action: (transaction: ProductPublicationTransaction) => Promise<T>): Promise<T> {
     const requests = this.requests;
     return action({
-      readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const }),
+      readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}),
       reserve: async (input) => {
         const current = requests.get(input.businessRequestId);
         if (current && current.fingerprint !== input.payloadFingerprint) throw Object.assign(new Error("conflict"), { code: "IDEMPOTENCY_CONFLICT" });
@@ -60,5 +60,12 @@ describe("V2 Product publication adapter", () => {
     const service = new ProductPublicationApplicationService(runner, publisher([]));
     const stale = await service.publish(context("stale"), { ...command("stale"), expectedDraftUpdatedAt: "2026-08-18T00:01:00.000Z" });
     expect(stale).toMatchObject({ ok: false, error: { code: "STALE_STATE" } });
+  });
+  test("blocks physical standard-production Draft publication when neither an exact route nor compatibility fallback is valid", async () => {
+    const runner = new MemoryRunner();
+    const original = runner.transaction.bind(runner);
+    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, routing:{kind:"unconfigured" as const} }) }));
+    const result = await new ProductPublicationApplicationService(runner, publisher([])).publish(context("routing-required"),command("routing-required"));
+    expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
   });
 });
