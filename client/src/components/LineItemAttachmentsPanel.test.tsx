@@ -174,6 +174,12 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(quoteBranch).not.toContain("linkBody");
   });
 
+  test("Order artwork downloads use the authenticated canonical proxy instead of a persisted URL", () => {
+    const panel = readFileSync(path.join(process.cwd(), "client/src/components/LineItemAttachmentsPanel.tsx"), "utf8");
+    expect(panel).toContain('/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/download/proxy');
+    expect(panel).not.toContain('This file does not have a downloadable URL.');
+  });
+
   test("shows explicit Front/Back assignment controls only for double-sided line items", () => {
     const doubleSided = renderPanel(true);
     expect(doubleSided).toContain("Use same artwork on both sides");

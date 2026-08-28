@@ -29,7 +29,9 @@ import {
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
+  createRequestLogOnce,
   normalizeObjectKeyForDb,
+  resolveOriginalFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -237,6 +239,82 @@ export function registerOrderLineItemFileRoutes(
     } catch (error) {
       console.error("[OrderLineItemFiles:GET] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
+    }
+  });
+
+  // Canonical artwork download.  The UI action handle can be either the
+  // compatibility attachment ID or the canonical artwork relationship ID;
+  // neither requires a persisted public/signed URL.
+  app.get("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const [lineItem] = await db.select({ id: orderLineItems.id }).from(orderLineItems)
+        .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+      if (!lineItem) return res.status(404).json({ error: "Order line item not found" });
+
+      const resolution = await lineItemArtworkReadResolver.resolveForLineItem({ organizationId, lineItemId, purpose: "order" });
+      let artwork = resolution.artwork.find((item) => String(item.relationshipId) === String(fileId)) ?? null;
+      let downloadSource: {
+        id?: string | null;
+        fileRecordId?: string | null;
+        fileName?: string | null;
+        originalFilename?: string | null;
+        mimeType?: string | null;
+        fileUrl?: string | null;
+        fileKey?: string | null;
+      } | null = artwork ? {
+        id: artwork.relationshipId,
+        fileRecordId: artwork.fileRecordId,
+        originalFilename: artwork.file.originalFilename,
+        mimeType: artwork.file.mimeType,
+      } : null;
+      if (!artwork) {
+        const [attachment] = await db.select().from(orderAttachments)
+          .where(and(eq(orderAttachments.id, fileId), eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId), eq(orderAttachments.organizationId, organizationId)))
+          .limit(1);
+        if (attachment) {
+          artwork = attachment.fileRecordId
+            ? resolution.artwork.find((item) => item.fileRecordId === attachment.fileRecordId) ?? null
+            : null;
+          downloadSource = artwork ? {
+            id: artwork.relationshipId,
+            fileRecordId: artwork.fileRecordId,
+            originalFilename: artwork.file.originalFilename,
+            mimeType: artwork.file.mimeType,
+          } : attachment;
+        }
+      }
+      if (!downloadSource) {
+        const [asset] = await db.select({
+          id: assets.id,
+          fileRecordId: assets.fileRecordId,
+          fileName: assets.fileName,
+          fileKey: assets.fileKey,
+          mimeType: assets.mimeType,
+        }).from(assets)
+          .innerJoin(assetLinks, and(
+            eq(assetLinks.assetId, assets.id),
+            eq(assetLinks.organizationId, organizationId),
+            eq(assetLinks.parentType, "order_line_item"),
+            eq(assetLinks.parentId, lineItemId),
+          ))
+          .where(and(eq(assets.id, fileId), eq(assets.organizationId, organizationId)))
+          .limit(1);
+        downloadSource = asset ?? null;
+      }
+      if (!downloadSource) return res.status(404).json({ error: "Artwork file not found" });
+
+      const resolved = await resolveOriginalFileAccess(downloadSource, { logOnce: createRequestLogOnce() });
+      if (!resolved.downloadUrl) return res.status(404).json({ error: "Artwork file is unavailable", availabilityStatus: resolved.availabilityStatus });
+      return res.redirect(resolved.downloadUrl);
+    } catch (error) {
+      console.error("[OrderLineItemFiles:DOWNLOAD:PROXY] Failed to resolve artwork download", error);
+      return res.status(500).json({ error: "Unable to prepare artwork download" });
     }
   });
 

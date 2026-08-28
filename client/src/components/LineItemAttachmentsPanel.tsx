@@ -784,51 +784,12 @@ export function LineItemAttachmentsPanel({
 
     try {
       if (parentType === "order") {
-        const file = attachments.find((f) => f.id === fileId) || null;
-        
-        // Construct download URL from objectPath (preferred) or fall back to other URLs
-        let downloadUrl: string | null = null;
-        
-        if (file?.objectPath) {
-          downloadUrl = objectsUrl(`/objects/${file.objectPath}?download=1&filename=${encodeURIComponent(fileName)}`);
-        } else {
-          const directUrl = file?.originalUrl ?? file?.previewUrl;
-          if (typeof directUrl === "string") {
-            const isDirectDownloadable =
-              directUrl.startsWith("/objects/") ||
-              directUrl.startsWith("http://") ||
-              directUrl.startsWith("https://");
-
-            if (isDirectDownloadable) {
-              // Prefer an explicit forced-download URL when possible.
-              if (directUrl.startsWith("/objects/") && !/([?&]download=1)|([?&]disposition=attachment)/i.test(directUrl)) {
-                try {
-                  const url = new URL(directUrl, window.location.origin);
-                  url.searchParams.set("download", "1");
-                  if (!url.searchParams.get("filename")) {
-                    url.searchParams.set("filename", fileName);
-                  }
-                  downloadUrl = url.toString();
-                } catch {
-                  downloadUrl = directUrl;
-                }
-              } else {
-                downloadUrl = directUrl;
-              }
-            }
-          }
-        }
-        
-        if (downloadUrl) {
-          void downloadFileFromUrl(downloadUrl, fileName);
-          return;
-        }
-
-        toast({
-          title: "Download unavailable",
-          description: "This file does not have a downloadable URL.",
-          variant: "destructive",
-        });
+        if (!orderId || !lineItemId) return;
+        // Match Quote behavior: download through an authenticated route that
+        // resolves the canonical file record at click time.  URLs are not
+        // durable attachment state and may legitimately be absent.
+        const proxyUrl = `/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/download/proxy`;
+        void downloadFileFromUrl(proxyUrl, fileName);
         return;
       }
 

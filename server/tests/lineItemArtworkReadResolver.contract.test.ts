@@ -34,6 +34,15 @@ describe("line-item artwork read migration", () => {
     expect(panel).toContain("buildArtworkAccessUrl(file.fileRecordId, \"thumbnail\")");
   });
 
+  test("Order artwork download resolves canonical identity at request time and preserves legacy reads", () => {
+    const orderFiles = source("../routes/orderLineItemFiles.routes.ts");
+    expect(orderFiles).toContain('/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy');
+    expect(orderFiles).toContain("lineItemArtworkReadResolver.resolveForLineItem");
+    expect(orderFiles).toContain("resolveOriginalFileAccess(downloadSource");
+    expect(orderFiles).toContain("createRequestLogOnce()");
+    expect(orderFiles).toContain("assetLinks.parentType, \"order_line_item\"");
+  });
+
   test("remaining inbound, replacement, and portal paths write or read ordinary artwork canonically", () => {
     const inbound = source("../services/inboundOrders/InboundOrderService.ts");
     expect(inbound).toContain("canonicalArtworkWriteService.attachSourceArtwork");
