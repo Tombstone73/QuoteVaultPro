@@ -115,6 +115,23 @@ const operationResultFromStorage = (value: unknown): unknown => {
   };
 };
 
+/** The combined accept-and-convert result includes a Quote read model with a
+ * bigint document-number core. Normalize it before the operation-request
+ * repository serializes JSONB, while standalone conversion results stay
+ * unchanged. */
+const conversionResultForStorage = (result: unknown): unknown => {
+  if (!result || typeof result !== "object" || !("quote" in result)) return result;
+  const quote = (result as { quote?: QuoteReadModel }).quote;
+  if (!quote || typeof quote.number?.core !== "bigint") return result;
+  return {
+    ...(result as Record<string, unknown>),
+    quote: {
+      ...quote,
+      number: { ...quote.number, core: quote.number.core.toString() },
+    },
+  };
+};
+
 const asObject = <T>(value: unknown): T => value as T;
 const dateText = (value: Date | null): string | undefined =>
   value ? value.toISOString() : undefined;
@@ -172,7 +189,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     await this.requests.succeed(this.client, organizationId, requestId, {
       resourceType: "quote",
       resourceId: quoteId,
-      resultJson: result,
+      resultJson: conversionResultForStorage(result),
     });
   }
   async attribute(
