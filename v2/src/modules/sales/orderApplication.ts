@@ -52,6 +52,7 @@ import {
 import type { CommercialCharge } from "./taxComposition.js";
 import type { SalesTaxComposition } from "./taxComposition.js";
 import type { SalesDocumentNumber } from "./persistenceContracts.js";
+import type { QuoteConversionTrace } from "./quoteConversionApplication.js";
 
 /**
  * This is the server-side Order-entry input. It deliberately contains neither
@@ -234,7 +235,7 @@ export interface OrderTransaction {
     sellingAdjustment?: SalesOrderAdjustment;
     commercialCharge?: CommercialCharge;
     taxComposition?: SalesTaxComposition;
-  }>): Promise<void>;
+  }>, trace?: QuoteConversionTrace): Promise<void>;
   read(
     organizationId: OrganizationId,
     orderId: OrderId,
@@ -496,10 +497,13 @@ export class OrderApplicationService {
     operationRequestId: string,
     source: FrozenOrderCommercialSource,
     auditOperation: string,
+    trace?: QuoteConversionTrace,
   ): Promise<OrderOperationResult> {
-    let stage: "reference_validation" | "routability" | "number_allocation" | "order_persistence" | "material_freeze" | "draft_invoice" | "route_instantiation" | "order_read" | "audit" = "reference_validation";
+    let stage = "order_reference_validation";
     try {
+      trace?.event(stage, "started");
       await validateReference(context.organizationId, tx.customers, source.customerContact);
+      trace?.event(stage, "ok");
       if (!source.lines.length)
         throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
       for (const line of source.lines) assertSalesLineSnapshot(line);
@@ -509,7 +513,8 @@ export class OrderApplicationService {
       // Pricing/configuration are frozen above. Products/Routing validates the
       // exact priced Product Version before any Order, Invoice, or Route work
       // is written. It never invents a route for compatibility Products.
-      stage = "routability";
+      stage = "routing_resolution";
+      trace?.event(stage, "started");
       const lines = await Promise.all(source.lines.map(async (line) => {
         const routability = await tx.products.resolveOrderRoutability(
           brandedId<"OrganizationId">(context.organizationId), line.productId,
@@ -519,19 +524,25 @@ export class OrderApplicationService {
           throw new V2ApplicationError("CONFLICT", `${routability.productName} is not fully configured for production routing.`);
         return Object.freeze({ ...line, ...(routability.productTypeId ? { productTypeId: routability.productTypeId } : {}) });
       }));
+      trace?.event(stage, "ok");
       const orderId = brandedId<"OrderId">(randomUUID());
       stage = "number_allocation";
+      trace?.event(stage, "started");
       const number = await tx.allocateNumber(context.organizationId);
+      trace?.event(stage, "ok");
       stage = "order_persistence";
       await tx.create({ orderId, organizationId: brandedId<"OrganizationId">(context.organizationId), number,
         customerContact: source.customerContact, purchaseOrderNumber: source.purchaseOrderNumber,
-        requestedDueDate: source.requestedDueDate, terms: source.terms, lines, requestedFulfillment: source.requestedFulfillment, sellingAdjustment: source.sellingAdjustment, commercialCharge: source.commercialCharge, taxComposition: source.taxComposition });
+        requestedDueDate: source.requestedDueDate, terms: source.terms, lines, requestedFulfillment: source.requestedFulfillment, sellingAdjustment: source.sellingAdjustment, commercialCharge: source.commercialCharge, taxComposition: source.taxComposition }, trace);
       // The source checkpoint has immutable Product Version/configuration facts.
       // Freeze expected material requirements in this same conversion transaction
       // before Billing or Routing can observe a partially-created Order.
       stage = "material_freeze";
+      trace?.event("material_requirements", "started");
       await tx.materialRequirements.freeze(context.organizationId, orderId, lines);
+      trace?.event("material_requirements", "ok");
       stage = "draft_invoice";
+      trace?.event(stage, "started");
       const draft = await tx.billing.createDraftInvoice(this.draftInput(
         context.organizationId, orderId, operationRequestId, source.customerContact,
         source.purchaseOrderNumber, source.terms, lines, source.sellingAdjustment, source.commercialCharge, "1",
@@ -540,23 +551,26 @@ export class OrderApplicationService {
         if (draft.status === "not_editable") asDraftFailure(draft);
         throw new V2ApplicationError("CONFLICT", "The Order already has a Draft Invoice projection.");
       }
+      trace?.event(stage, "ok");
       stage = "route_instantiation";
+      trace?.event(stage, "started");
       const routeInstances = await this.instantiateRoutes(tx, context, orderId, lines);
+      trace?.event(stage, "ok");
       stage = "order_read";
+      trace?.event("order_reread", "started");
       const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), orderId);
       if (!order) throw new Error("Created Order could not be read.");
+      trace?.event("order_reread", "ok");
       stage = "audit";
+      trace?.event(stage, "started");
       await this.history(tx, context, operationRequestId, auditOperation, {
         eventType: "order_created", resourceId: orderId,
         changes: [{ group: "line", kind: "line_added", summary: `Order created with ${source.lines.length} line(s).` }],
       });
+      trace?.event(stage, "ok");
       return { order, draftInvoiceId: draft.invoiceId, routeInstances };
     } catch (cause) {
-      if (!(cause instanceof V2ApplicationError)) console.error(JSON.stringify({
-        level: "error",
-        event: "v2.sales.order_creation.failed",
-        stage,
-      }));
+      trace?.failure(stage, cause);
       throw cause;
     }
   }

@@ -17,30 +17,50 @@ export type QuoteAcceptanceOperationResult = Readonly<QuoteConversionOperationRe
 /** Test-only deterministic barriers; production composition never supplies them. */
 export type QuoteConversionTestHooks = Readonly<{ afterQuoteLocked?: () => Promise<void> }>;
 
-/**
- * Acceptance is a cross-domain transaction.  Keep the public error envelope
- * deliberately generic, but retain a bounded operational breadcrumb for
- * diagnosing an unexpected rollback.  The event intentionally excludes
- * request payloads, customer identifiers, SQL, and exception messages.
- */
-type QuoteAcceptanceStage =
-  | "preflight"
-  | "reserve"
-  | "quote_locked"
-  | "acceptance_checkpoint"
-  | "quote_transition"
-  | "accepted_quote_read"
-  | "order_creation"
-  | "conversion_evidence"
-  | "conversion_quote_read"
-  | "request_completion";
+export type QuoteConversionTrace = Readonly<{
+  requestId: string;
+  event(stage: string, result: "started" | "ok" | "replayed" | "committed" | "rolled_back"): void;
+  failure(stage: string, cause: unknown): void;
+  durableRequest(businessRequestId: string, status: "new" | "resumed" | "replay"): void;
+}>;
 
-const logAcceptanceFailure = (stage: QuoteAcceptanceStage): void => {
-  console.error(JSON.stringify({
-    level: "error",
-    event: "v2.sales.quote_acceptance.failed",
-    stage,
-  }));
+export type QuoteConversionTraceOptions = Readonly<{
+  requestId?: string;
+  sink?: (message: string) => void;
+}>;
+
+const safeFailureClassification = (cause: unknown): string => {
+  if (cause instanceof V2ApplicationError) return `V2_APPLICATION_ERROR_${cause.code}`;
+  if (cause instanceof TypeError) return "TYPE_ERROR";
+  const code = cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : undefined;
+  if (code && /^23\d{3}$/.test(code)) return "DATABASE_CONSTRAINT";
+  if (code && /^22\d{3}$/.test(code)) return "DATABASE_DATA";
+  return "UNEXPECTED_EXCEPTION";
+};
+
+const durableRequestClassification = (businessRequestId: string): string =>
+  createHash("sha256").update(businessRequestId).digest("hex").slice(0, 16);
+
+/**
+ * A bounded plaintext diagnostic specifically for the temporary conversion
+ * investigation. The message, rather than logger metadata, carries every
+ * useful field because the DEV log aggregator discards structured stderr.
+ */
+export const createQuoteConversionTrace = (options: QuoteConversionTraceOptions = {}): QuoteConversionTrace => {
+  const requestId = options.requestId ?? randomUUID();
+  const sink = options.sink ?? ((message: string) => console.log(message));
+  const emit = (stage: string, result: string, classification?: string, durable?: string): void => {
+    const message = `V2_QUOTE_CONVERSION_TRACE request=${requestId} stage=${stage} result=${result}`
+      + (classification ? ` class=${classification}` : "")
+      + (durable ? ` durable=${durable}` : "");
+    try { sink(message); } catch { /* Diagnostics must never affect conversion. */ }
+  };
+  return Object.freeze({
+    requestId,
+    event: (stage, result) => emit(stage, result),
+    failure: (stage, cause) => emit(stage, "failed", safeFailureClassification(cause)),
+    durableRequest: (businessRequestId, status) => emit("durable_request", status === "replay" ? "replayed" : "ok", undefined, durableRequestClassification(businessRequestId)),
+  });
 };
 
 const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
@@ -60,27 +80,39 @@ const requireCapability = (authority: AuthorityPolicy, context: OperationContext
 export class QuoteConversionApplicationService {
   constructor(private readonly runner: QuoteConversionTransactionRunner, private readonly orders: OrderApplicationService, private readonly authority = new AuthorityPolicy(), private readonly hooks?: QuoteConversionTestHooks) {}
 
-  async accept(context: OperationContext, input: QuoteLifecycleInput): Promise<ApplicationResult<QuoteAcceptanceOperationResult>> {
-    let stage: QuoteAcceptanceStage = "preflight";
+  async accept(context: OperationContext, input: QuoteLifecycleInput, trace?: QuoteConversionTrace): Promise<ApplicationResult<QuoteAcceptanceOperationResult>> {
+    let stage = "acceptance_request_received";
+    let transactionStarted = false;
     try {
       requireOperationPrincipalScope(context);
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId)
         throw new V2ApplicationError("VALIDATION_ERROR", "The command business request identity does not match the operation context.");
-      return success(await this.runner.transaction(async ({ quote, order }) => {
-        stage = "reserve";
+      transactionStarted = true;
+      trace?.event("transaction", "started");
+      const result = await this.runner.transaction(async ({ quote, order }) => {
+        stage = "durable_request";
+        trace?.event(stage, "started");
         const reservation = await quote.reserve({ organizationId: context.organizationId, operation: "sales.quote.accept_and_convert.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
+        trace?.durableRequest(input.businessRequestId, reservation.kind);
         if (reservation.kind === "replay") return reservation.request.resultJson as QuoteAcceptanceOperationResult;
-        stage = "quote_locked";
+        stage = "quote_loaded";
+        trace?.event(stage, "started");
         const current = await quote.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
         if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        trace?.event(stage, "ok");
         await this.hooks?.afterQuoteLocked?.();
+        stage = "quote_state_validated";
+        trace?.event(stage, "started");
         requireCapability(this.authority, context, "quote.edit", current.quote.customerContact.customerId);
         requireCapability(this.authority, context, "quote.convert", current.quote.customerContact.customerId);
         if (current.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before acceptance.");
         if (current.quote.taxComposition?.status === "unresolved")
           throw new V2ApplicationError("VALIDATION_ERROR", "Tax jurisdiction not configured. Configure the receipt jurisdiction before accepting this Quote.");
+        trace?.event("quote_state_validated", "ok");
         if (current.quote.convertedOrderId) {
           const result = await this.existingAcceptance(quote, order, context, current);
+          stage = "durable_request_completed";
+          trace?.event(stage, "started");
           await quote.succeedConversion(
             context.organizationId,
             reservation.request.id,
@@ -94,37 +126,53 @@ export class QuoteConversionApplicationService {
         let checkpoint: Extract<QuoteCheckpoint, { kind: "quote_accepted" }>;
         if (current.quote.acceptanceState === "accepted") {
           stage = "acceptance_checkpoint";
+          trace?.event(stage, "started");
           const checkpointId = current.checkpoints.find((item) => item.kind === "quote_accepted")?.checkpointId;
           const source = checkpointId && await quote.readCheckpoint(brandedId<"OrganizationId">(context.organizationId), input.quoteId, checkpointId);
           if (!source || source.kind !== "quote_accepted") throw new V2ApplicationError("CONFLICT", "The accepted Quote checkpoint is required for conversion.");
           checkpoint = source;
+          trace?.event(stage, "ok");
         } else {
           if (current.quote.deliveryState !== "sent" || current.quote.acceptanceState !== "not_accepted")
             throw new V2ApplicationError("CONFLICT", "Only a sent, unaccepted Quote can be accepted.");
           stage = "acceptance_checkpoint";
+          trace?.event(stage, "started");
           const presentation = await quote.customers.getPresentationIdentity(current.quote.customerContact);
           checkpoint = createQuoteLifecycleCheckpoint(current.quote, "accept", brandedId<"QuoteCheckpointId">(randomUUID()), presentation, context) as Extract<QuoteCheckpoint, { kind: "quote_accepted" }>;
-          stage = "quote_transition";
           const applied = await quote.transition({ organizationId: brandedId<"OrganizationId">(context.organizationId), quoteId: input.quoteId, expectedRevision: Number(current.revision), kind: "accept", checkpoint, operationRequestId: reservation.request.id });
           if (!applied) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before acceptance.");
+          trace?.event(stage, "ok");
           stage = "accepted_quote_read";
+          trace?.event(stage, "started");
           const reread = await quote.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
           if (!reread) throw new Error("Accepted Quote could not be read.");
+          trace?.event(stage, "ok");
           accepted = reread;
+          stage = "audit";
+          trace?.event(stage, "started");
           await quote.audit({ organizationId: context.organizationId, requestId: reservation.request.id, operation: "sales.quote.accept_and_convert.v1", event: { eventType: "quote_accepted", resourceId: input.quoteId, changes: [] }, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
+          trace?.event(stage, "ok");
         }
         stage = "order_creation";
-        const converted = await this.convertAccepted({ quote, order }, context, reservation.request.id, accepted, checkpoint, "sales.quote.accept_and_convert.v1", (next) => { stage = next; });
+        trace?.event(stage, "started");
+        const converted = await this.convertAccepted({ quote, order }, context, reservation.request.id, accepted, checkpoint, "sales.quote.accept_and_convert.v1", trace, (next) => { stage = next; });
         stage = "conversion_quote_read";
+        trace?.event(stage, "started");
         const read = await quote.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId);
         if (!read?.quote.convertedOrderId) throw new Error("Accepted Quote conversion could not be read.");
+        trace?.event(stage, "ok");
         const result: QuoteAcceptanceOperationResult = { ...converted, quote: read };
-        stage = "request_completion";
+        stage = "durable_request_completed";
+        trace?.event(stage, "started");
         await quote.succeedConversion(context.organizationId, reservation.request.id, input.quoteId, result);
+        trace?.event(stage, "ok");
         return result;
-      }));
+      });
+      trace?.event("transaction", "committed");
+      return success(result);
     } catch (cause) {
-      if (!(cause instanceof V2ApplicationError)) logAcceptanceFailure(stage);
+      trace?.failure(stage, cause);
+      if (transactionStarted) trace?.event("transaction", "rolled_back");
       return failure(cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Quote acceptance could not create its Order."));
     }
   }
@@ -167,18 +215,24 @@ export class QuoteConversionApplicationService {
     return { quote: read, quoteId: current.quote.quoteId, sourceCheckpointId: source.checkpointId, conversionCheckpointId: converted.checkpointId, orderId: current.quote.convertedOrderId!, draftInvoiceId: orderRead.draftInvoice.invoiceId, orderNumber: orderRead.number.display };
   }
 
-  private async convertAccepted(transaction: QuoteConversionTransaction, context: OperationContext, operationRequestId: string, current: QuoteReadModel, source: Extract<QuoteCheckpoint, { kind: "quote_accepted" }>, operation: string, trace?: (stage: QuoteAcceptanceStage) => void): Promise<QuoteConversionOperationResult> {
+  private async convertAccepted(transaction: QuoteConversionTransaction, context: OperationContext, operationRequestId: string, current: QuoteReadModel, source: Extract<QuoteCheckpoint, { kind: "quote_accepted" }>, operation: string, trace?: QuoteConversionTrace, setStage?: (stage: string) => void): Promise<QuoteConversionOperationResult> {
     if (source.sourceDocument.quoteId !== current.quote.quoteId) throw new V2ApplicationError("WRONG_TENANT", "Quote checkpoint is unavailable.");
     const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, requestedFulfillment: source.commercial.requestedFulfillment, sellingAdjustment: source.commercial.sellingAdjustment, commercialCharge: source.commercial.commercialCharge, taxComposition: source.commercial.taxComposition, lines: cloneLines(source.commercial.lines) };
-    trace?.("order_creation");
-    const created = await this.orders.createFromCommercialSnapshot(transaction.order, context, operationRequestId, frozen, operation);
-    trace?.("conversion_evidence");
+    trace?.event("commercial_snapshot_loaded", "ok");
+    setStage?.("order_creation");
+    const created = await this.orders.createFromCommercialSnapshot(transaction.order, context, operationRequestId, frozen, operation, trace);
+    setStage?.("conversion_link");
+    trace?.event("conversion_link", "started");
     const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
     const converted: QuoteCheckpoint = Object.freeze({ ...source, checkpointId, kind: "quote_converted", occurredAt: new Date().toISOString(), principal: attribution(context), sourceCheckpointId: source.checkpointId, sourceDocument: { quoteId: current.quote.quoteId, orderId: created.order.order.orderId }, evidenceFingerprint: fingerprint({ sourceCheckpointId: source.checkpointId, orderId: created.order.order.orderId, commercial: source.commercial }) });
     await transaction.quote.appendConvertedCheckpoint({ organizationId: brandedId<"OrganizationId">(context.organizationId), quoteId: current.quote.quoteId, checkpoint: converted, operationRequestId });
     await transaction.quote.createConversionLineage({ organizationId: brandedId<"OrganizationId">(context.organizationId), quoteId: current.quote.quoteId, sourceCheckpointId: source.checkpointId, convertedCheckpointId: checkpointId, orderId: created.order.order.orderId, operationRequestId });
+    trace?.event("conversion_link", "ok");
+    setStage?.("audit");
+    trace?.event("audit", "started");
     await transaction.quote.audit({ organizationId: context.organizationId, requestId: operationRequestId, operation, event: { eventType: "quote_converted", resourceId: current.quote.quoteId, changes: [] }, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
     await transaction.quote.attribute({ organizationId: context.organizationId, requestId: operationRequestId, operation, resourceType: "quote", resourceId: current.quote.quoteId, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
+    trace?.event("audit", "ok");
     return { quoteId: current.quote.quoteId, sourceCheckpointId: source.checkpointId, conversionCheckpointId: checkpointId, orderId: created.order.order.orderId, draftInvoiceId: created.draftInvoiceId, orderNumber: created.order.number.display };
   }
 }

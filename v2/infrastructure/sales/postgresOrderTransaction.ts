@@ -17,6 +17,7 @@ import type { OrderCurrentState, RequestedFulfillment, SalesLineSnapshot, SalesO
 import type { CommercialCharge } from "../../src/modules/sales/taxComposition.js";
 import type { BillingPort, BillingReadPort } from "../../src/modules/billing/contracts.js";
 import type { RoutingPort } from "../../src/modules/routing/contracts.js";
+import type { QuoteConversionTrace } from "../../src/modules/sales/quoteConversionApplication.js";
 
 type HeaderRow = Readonly<{
   id: string; organization_id: string; business_number: string; display_number: string;
@@ -105,14 +106,18 @@ export class PostgresOrderTransaction implements OrderTransaction {
     await this.hooks?.afterAudit?.();
   }
   allocateNumber(organizationId: string) { return this.numbers.allocate(this.client, organizationId, "order"); }
-  async create(input: Parameters<OrderTransaction["create"]>[0]): Promise<void> {
+  async create(input: Parameters<OrderTransaction["create"]>[0], trace?: QuoteConversionTrace): Promise<void> {
     const terms = toSalesDocumentTermsPersistence(input.terms);
+    trace?.event("order_insert", "started");
     await this.client.query(
       "INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,currency,terms_json,tax_context_reference,sales_representative_id,commercial_notes) VALUES($1,$2,'order',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)",
       [input.orderId,input.organizationId,input.number.core.toString(),input.number.display,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,input.lines[0]?.pricingResult.currency ?? "USD",JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null],
     );
     await this.client.query("INSERT INTO v2_sales_order_details(document_id,organization_id,requested_fulfillment_method,requested_destination,fulfillment_instructions,selling_adjustment_cents,selling_adjustment_reason,commercial_charge) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)", [input.orderId,input.organizationId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
+    trace?.event("order_insert", "ok");
+    trace?.event("order_lines_insert", "started");
     await this.writeLines(input.organizationId, input.orderId, input.lines);
+    trace?.event("order_lines_insert", "ok");
     if (input.taxComposition) await this.client.query("UPDATE v2_sales_order_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId, input.orderId, JSON.stringify(input.taxComposition)]);
     else await this.writeTaxComposition(input.organizationId, input.orderId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     await this.hooks?.afterSales?.();

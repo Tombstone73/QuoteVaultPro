@@ -12,7 +12,7 @@ import type {
   QuoteReadModel,
   UpdateQuoteInput,
 } from "../../modules/sales/quoteApplication.js";
-import type { QuoteConversionApplicationService } from "../../modules/sales/quoteConversionApplication.js";
+import { createQuoteConversionTrace, type QuoteConversionApplicationService } from "../../modules/sales/quoteConversionApplication.js";
 import type { ConvertQuoteCommand } from "../../modules/sales/contracts.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
@@ -372,6 +372,8 @@ export const createQuoteRouter = (
     } catch (cause) { error(response, cause); }
   });
   router.post("/:quoteId/accept", async (request, response) => {
+    const trace = createQuoteConversionTrace();
+    trace.event("acceptance_request_received", "started");
     try {
       if (!dependencies.conversion)
         throw new V2ApplicationError("INTERNAL_ERROR", "Quote acceptance runtime is unavailable.");
@@ -380,10 +382,10 @@ export const createQuoteRouter = (
         quoteId: brandedId<"QuoteId">(request.params.quoteId),
         expectedRevision: String((request.body as { expectedRevision?: unknown }).expectedRevision ?? ""),
       };
-      const result = await dependencies.conversion.accept(await context(request, dependencies, true), body);
+      const result = await dependencies.conversion.accept(await context(request, dependencies, true), body, trace);
       if (!result.ok) return error(response, result.error);
       response.status(200).json({ ok: true, data: { ...result.value, quote: quoteForUi(result.value.quote) } });
-    } catch (cause) { error(response, cause); }
+    } catch (cause) { trace.failure("acceptance_request_received", cause); error(response, cause); }
   });
   router.post("/:quoteId/convert", async (request, response) => {
     try {

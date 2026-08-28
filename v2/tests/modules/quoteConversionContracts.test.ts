@@ -21,12 +21,13 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(source).not.toMatch(/resolveActivePricingInput/);
   });
 
-  test("unexpected acceptance rollbacks emit only a bounded transaction stage", async () => {
+  test("acceptance uses an opaque plaintext trace without changing its response contract", async () => {
     const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
-    expect(source).toMatch(/event: "v2\.sales\.quote_acceptance\.failed"/);
-    expect(source).toMatch(/stage,/);
-    expect(source).toMatch(/if \(!\(cause instanceof V2ApplicationError\)\) logAcceptanceFailure\(stage\)/);
-    expect(source).not.toMatch(/quote_acceptance\.failed[\s\S]{0,300}(input|customer|message|stack)/);
+    expect(source).toMatch(/V2_QUOTE_CONVERSION_TRACE request=\$\{requestId\} stage=\$\{stage\} result=\$\{result\}/);
+    expect(source).toMatch(/durableRequestClassification/);
+    expect(source).toMatch(/trace\?\.event\("transaction", "committed"\)/);
+    expect(source).toMatch(/trace\?\.event\("transaction", "rolled_back"\)/);
+    expect(source).not.toMatch(/V2_QUOTE_CONVERSION_TRACE[\s\S]{0,300}(customer|email|token|cookie|sql)/i);
   });
 
   test("accepted and converted commercial evidence remains pinned to the sent tax composition", async () => {
@@ -73,11 +74,11 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(core).not.toMatch(/\.pricing\.calculate\(/);
   });
 
-  test("unexpected Order-construction rollbacks emit only a bounded stage", async () => {
+  test("Order construction retains bounded persistence-stage diagnostics", async () => {
     const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "orderApplication.ts"), "utf8");
-    expect(source).toMatch(/event: "v2\.sales\.order_creation\.failed"/);
-    expect(source).toMatch(/stage,/);
-    expect(source).not.toMatch(/order_creation\.failed[\s\S]{0,300}(input|customer|message|stack)/);
+    expect(source).toMatch(/trace\?\.event\("routing_resolution", "started"\)/);
+    expect(source).toMatch(/trace\?\.event\("draft_invoice", "started"\)/);
+    expect(source).toMatch(/trace\?\.failure\(stage, cause\)/);
   });
 
   test("Quote send readiness and send both reject unroutable production lines before a document freeze or provider preparation", async () => {
