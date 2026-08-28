@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { teamCapabilityGroups, parseCapabilities } from "../../src/modules/organization/teamAccess.js";
+
+assert.ok(teamCapabilityGroups.some((group)=>group.key==="settings"&&group.capabilities.includes("permissions.manageSets")));
+assert.deepEqual(parseCapabilities(["quote.view","quote.view"]),["quote.view"]);
+assert.throws(()=>parseCapabilities(["not-a-capability"]),/known capability IDs/);
+const migration=readFileSync(resolve("server/db/migrations_v2/0235_v2_team_access_membership_bootstrap.sql"),"utf8");
+assert.match(migration,/v2_bootstrap_permission_membership/u);
+assert.match(migration,/legacy_role_bootstrap/u);
+assert.match(migration,/v2_permission_organization_bootstrap/u);
+const delivery=readFileSync(resolve("server/db/migrations_v2/0236_v2_team_invitation_delivery.sql"),"utf8");
+assert.match(delivery,/v2_team_invitation_delivery_attempts/u);
+const administration=readFileSync(resolve("v2/infrastructure/authorization/postgresPermissionAdministration.ts"),"utf8");
+assert.match(administration,/assertCustomSet/u);
+assert.match(administration,/System permission sets are managed templates/u);
+console.log("team access contracts passed");

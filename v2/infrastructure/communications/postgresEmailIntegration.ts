@@ -53,6 +53,19 @@ export class PostgresEmailIntegrationService {
     try { return { provider:"gmail",sendingAddress:row.sending_address,displayName:row.display_name?.trim() || row.sending_address,refreshToken:decryptEmailCredential(row.encrypted_refresh_token) }; }
     catch { await this.markReauth(organizationId,"credential_unavailable"); throw new V2ApplicationError("VALIDATION_ERROR","The organization Gmail connection requires reconnecting."); }
   }
+  /** Communications-owned provider operation for the existing organization
+   * invitation token flow. It accepts only already-authorized recipient/link
+   * facts and never returns credential material. */
+  async sendStaffInvitation(organizationId:string, recipient:string, invitationUrl:string): Promise<string> {
+    const integration=await this.requireReady(organizationId);
+    const clientId=process.env.GOOGLE_CLIENT_ID,clientSecret=process.env.GOOGLE_CLIENT_SECRET;
+    if(!clientId||!clientSecret)throw new V2ApplicationError("RETRYABLE_FAILURE","The platform Gmail delivery connection is unavailable.");
+    const oauth=new google.auth.OAuth2(clientId,clientSecret);oauth.setCredentials({refresh_token:integration.refreshToken});
+    const raw=Buffer.from([`From: \"${integration.displayName}\" <${integration.sendingAddress}>`,`To: ${recipient}`,"Subject: You are invited to PrintersHero","MIME-Version: 1.0","Content-Type: text/plain; charset=utf-8","",`You have been invited to PrintersHero. Accept your invitation: ${invitationUrl}`].join("\r\n")).toString("base64url");
+    const response=await google.gmail({version:"v1",auth:oauth}).users.messages.send({userId:"me",requestBody:{raw}});
+    if(!response.data.id)throw new V2ApplicationError("RETRYABLE_FAILURE","The email provider did not confirm invitation delivery.");
+    return response.data.id;
+  }
   async adoptLegacy(organizationId:string, principal:Principal): Promise<EmailReadiness> {
     if (!emailCredentialEncryptionConfigured()) throw new V2ApplicationError("RETRYABLE_FAILURE","Provider credential encryption is unavailable.");
     const client=await this.pool.connect(); try { await client.query("BEGIN");

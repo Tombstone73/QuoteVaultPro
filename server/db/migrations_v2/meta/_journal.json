@@ -1611,6 +1611,20 @@
       "when": 1788048000081,
       "tag": "0234_v2_organization_settings_capability",
       "breakpoints": true
+    },
+    {
+      "idx": 236,
+      "version": "7",
+      "when": 1788048000082,
+      "tag": "0235_v2_team_access_membership_bootstrap",
+      "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "7",
+      "when": 1788048000083,
+      "tag": "0236_v2_team_invitation_delivery",
+      "breakpoints": true
     }
   ]
 }
