@@ -94,7 +94,7 @@ describe("CanonicalProductPricingOperations", () => {
       readFile(path.resolve(process.cwd(), "docs/architecture/canonical-product-pricing-migration.md"), "utf8"),
     ]);
     expect(route).toContain("canonicalProductPricingOperations.updateProductMetadata");
-    expect(route).toContain("canonicalProductPricingOperations.propagateEditorDraftBaseToActive");
+    expect(route).not.toContain("canonicalProductPricingOperations.propagateEditorDraftBaseToActive");
     expect(canonicalSource).not.toMatch(/\bpricingTier\b|\bwholesaleBaseRate\b|\bretailBaseRate\b/);
     expect(scalarAdapter).toContain("canonicalProductPricingOperations.applyScalarPricing");
     expect(matrixAdapter).toContain("validateCanonicalPricingMatrixReplacement");

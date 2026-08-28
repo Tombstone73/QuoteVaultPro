@@ -1,7 +1,33 @@
 import { describe, expect, test } from "@jest/globals";
-import { completeDeferredProductLifecycle } from "./productEditorLifecycleSave";
+import { completeDeferredProductLifecycle, isolateProductEditorLifecycleChange } from "./productEditorLifecycleSave";
 
 describe("completeDeferredProductLifecycle", () => {
+  test("keeps unchanged active availability out of an ordinary Draft save", () => {
+    const result = isolateProductEditorLifecycleChange({
+      isNewProduct: false,
+      currentIsActive: true,
+      payload: { name: "Banner", isActive: true },
+    });
+
+    expect(result).toEqual({
+      productPayload: { name: "Banner" },
+      deferredLifecycle: null,
+    });
+  });
+
+  test("defers only an explicit availability transition", () => {
+    const result = isolateProductEditorLifecycleChange({
+      isNewProduct: false,
+      currentIsActive: true,
+      payload: { name: "Banner", isActive: false },
+    });
+
+    expect(result).toEqual({
+      productPayload: { name: "Banner" },
+      deferredLifecycle: { desiredIsActive: false },
+    });
+  });
+
   test("publishes an unpublished draft before activating the Product", async () => {
     const calls: string[] = [];
 

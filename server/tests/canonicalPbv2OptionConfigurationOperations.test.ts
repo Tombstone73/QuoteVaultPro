@@ -26,10 +26,36 @@ function fixture(options: { activeOnly?: boolean; missingActive?: boolean; confl
     saveEditorDraft: async ({ treeJson, actorUserId }: any) => { draft = { ...(draft ?? active), id: draft?.id ?? "tree_created", status: "DRAFT", treeJson, updatedByUserId: actorUserId, updatedAt: new Date("2026-08-12T12:00:01.000Z") }; return { ...draft }; },
     saveOptionMutation: async ({ source, treeJson, actorUserId }: any) => { if (options.conflict) return null; draft = { ...source, id: source.status === "DRAFT" ? source.id : "tree_created", status: "DRAFT", treeJson, updatedByUserId: actorUserId, updatedAt: new Date("2026-08-12T12:00:01.000Z") }; return { ...draft }; },
   };
-  return { service: new CanonicalPbv2OptionConfigurationOperations(repository as any), current: () => draft ? structuredClone(draft) : null };
+  return { service: new CanonicalPbv2OptionConfigurationOperations(repository as any), current: () => draft ? structuredClone(draft) : null, active: () => active ? structuredClone(active) : null };
 }
 
 describe("CanonicalPbv2OptionConfigurationOperations", () => {
+  it("creates a reusable DRAFT from an active Product without changing the published version", async () => {
+    const state = fixture({ activeOnly: true });
+    const activeBefore = state.active();
+    const nextTree = structuredClone(activeBefore.treeJson);
+    nextTree.meta.pricingV2.base.perSqftCents = 250;
+
+    const result = await state.service.saveEditorDraft({
+      organizationId: "org_1",
+      actorUserId: "admin_1",
+      productId: "product_1",
+      treeJson: nextTree,
+    });
+
+    expect(result.draft).toMatchObject({ id: "tree_created", status: "DRAFT" });
+    expect(result.draft.treeJson.meta.pricingV2.base.perSqftCents).toBe(250);
+    expect(state.active()).toEqual(activeBefore);
+
+    const reopened = await state.service.saveEditorDraft({
+      organizationId: "org_1",
+      actorUserId: "admin_1",
+      productId: "product_1",
+      treeJson: nextTree,
+    });
+    expect(reopened.draft.id).toBe("tree_created");
+  });
+
   it("applies group metadata, input required/default, choice metadata, and ordering without changing pricing", () => {
     const original = tree();
     const result = applyPbv2OptionConfigurationMutations(original, [

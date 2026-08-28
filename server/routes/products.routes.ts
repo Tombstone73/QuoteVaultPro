@@ -2175,17 +2175,6 @@ export function registerProductRoutes(
         });
       }
 
-      const userId = getUserId(req.user);
-      if (product.pbv2ActiveTreeVersionId && userId) {
-        try {
-          const propagation = await canonicalProductPricingOperations.propagateEditorDraftBaseToActive({ organizationId, actorUserId: userId, productId });
-          if (propagation.changed && propagation.activeTreeVersionId) product.pbv2ActiveTreeVersionId = propagation.activeTreeVersionId;
-        } catch (propagationError: any) {
-          // Preserve the established fail-soft Product Editor behavior.
-          console.error('[PBV2_BASE_PRICING_PROPAGATION] failed', { productId, error: propagationError.message, stack: propagationError.stack });
-        }
-      }
-
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {

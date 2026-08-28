@@ -12,6 +12,32 @@ export type DeferredProductLifecycleInput = {
 };
 
 /**
+ * The Product Editor submits its full form state, including availability.  On
+ * an existing Product, availability is a distinct lifecycle command: it must
+ * not be sent as part of an ordinary configuration/DRAFT save.  In
+ * particular, an unchanged `isActive: true` must not cause the lifecycle
+ * boundary to revalidate the currently published tree before staff can repair
+ * it in a DRAFT revision.
+ */
+export function isolateProductEditorLifecycleChange(input: {
+  isNewProduct: boolean;
+  currentIsActive: boolean | undefined;
+  payload: Record<string, unknown>;
+}): { productPayload: Record<string, unknown>; deferredLifecycle: { desiredIsActive: boolean } | null } {
+  const productPayload = { ...input.payload };
+  if (input.isNewProduct || typeof productPayload.isActive !== "boolean") {
+    return { productPayload, deferredLifecycle: null };
+  }
+
+  const desiredIsActive = productPayload.isActive;
+  delete productPayload.isActive;
+  return {
+    productPayload,
+    deferredLifecycle: desiredIsActive !== input.currentIsActive ? { desiredIsActive } : null,
+  };
+}
+
+/**
  * Completes the lifecycle portion of a Product Editor save only after the
  * caller has durably saved the PBV2 draft. Publishing and activating an
  * unpublished draft are one canonical server transaction; legacy products

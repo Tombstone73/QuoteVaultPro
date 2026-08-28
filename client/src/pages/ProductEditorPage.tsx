@@ -46,7 +46,7 @@ import {
   type ProductAiParsingDescriptionMode,
 } from "@/lib/productAiParsingDescription";
 import { ProductActiveStatusHeaderControl } from "@/components/products/ProductActiveStatusHeaderControl";
-import { completeDeferredProductLifecycle } from "@/lib/productEditorLifecycleSave";
+import { completeDeferredProductLifecycle, isolateProductEditorLifecycleChange } from "@/lib/productEditorLifecycleSave";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
@@ -569,16 +569,15 @@ const ProductEditorPage = () => {
           primaryMaterialId: data.primaryMaterialId || null,
           pricingEngine: pricingEngine, // Include pricing engine selection
         };
-        // The Product lifecycle guard correctly rejects an inactive Product
-        // with an unpublished PBV2 draft. Do not ask it to activate until this
-        // Save has durably saved and, when required, published that draft.
-        const deferredLifecycle = !effectiveIsNewProduct
-          && typeof payload.isActive === "boolean"
-          && payload.isActive !== product?.isActive
-          ? { desiredIsActive: payload.isActive }
-          : null;
-        const productPayload = { ...payload } as Record<string, unknown>;
-        if (deferredLifecycle) delete productPayload.isActive;
+        // Availability is a separate lifecycle command.  Keep it out of the
+        // ordinary save payload—even when unchanged—so an Active Product can
+        // create or repair its PBV2 DRAFT without revalidating the published
+        // version first.
+        const { productPayload, deferredLifecycle } = isolateProductEditorLifecycleChange({
+          isNewProduct: effectiveIsNewProduct,
+          currentIsActive: product?.isActive,
+          payload: payload as Record<string, unknown>,
+        });
         
         let response;
         if (effectiveIsNewProduct) {
@@ -1000,7 +999,7 @@ const ProductEditorPage = () => {
             </div>
 
             <Badge variant={hasUnsavedChanges ? "secondary" : "outline"} className="text-[11px]">
-              {hasUnsavedChanges ? "Draft" : "Saved"}
+              {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
             </Badge>
 
             <ProductActiveStatusHeaderControl

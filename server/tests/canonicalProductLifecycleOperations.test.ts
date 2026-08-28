@@ -1,8 +1,17 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { CanonicalProductLifecycleError, CanonicalProductLifecycleOperations } from "../services/products/canonicalProductLifecycleOperations";
+import { isolateProductEditorLifecycleChange } from "../../client/src/lib/productEditorLifecycleSave";
 
 const base = { id: "product-1", organizationId: "org-a", name: ".040 Styrene Signs", isActive: false, pbv2ActiveTreeVersionId: null, draftTreeVersionId: null, updatedAt: new Date("2026-08-12T12:00:00.000Z") };
 describe("CanonicalProductLifecycleOperations", () => {
+  test("an ordinary active Product editor save does not invoke the availability lifecycle", () => {
+    expect(isolateProductEditorLifecycleChange({
+      isNewProduct: false,
+      currentIsActive: true,
+      payload: { name: "Banner", isActive: true },
+    })).toEqual({ productPayload: { name: "Banner" }, deferredLifecycle: null });
+  });
+
   test("blocks draft-only activation and allows legacy no-tree activation", async () => {
     const blocked = new CanonicalProductLifecycleOperations({ get: jest.fn(async () => ({ ...base, draftTreeVersionId: "draft-1" })), update: jest.fn() } as any);
     await expect(blocked.propose({ organizationId: "org-a", productId: "product-1", isActive: true })).rejects.toMatchObject({ code: "PBV2_DRAFT_MUST_BE_PUBLISHED" });
