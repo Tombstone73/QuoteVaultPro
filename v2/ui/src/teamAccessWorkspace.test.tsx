@@ -12,8 +12,10 @@ const value: TeamAccessRead = {
   permissionSets: [
     { permissionSetId: "system-1", name: "Operations", description: "Managed template", revision: "revision-1", principalKind: "staff", active: true, systemManaged: true, capabilities: ["orders.view"], assignmentCount: 1 },
     { permissionSetId: "custom-1", name: "QA custom", revision: "revision-2", principalKind: "staff", active: true, systemManaged: false, capabilities: ["orders.view"], assignmentCount: 0 },
+    { permissionSetId: "portal-1", name: "Customer portal basic", revision: "revision-3", principalKind: "portal", active: true, systemManaged: true, capabilities: ["portal.orders.view"], assignmentCount: 0 },
   ],
   portalAccess: [],
+  portalCandidates: [{ customerId: "customer-1", customerName: "QA Customer", contactId: "contact-1", contactName: "QA Contact", email: "qa.contact@example.test", eligibility: "eligible" }],
   readiness: { status: "ready", reasons: [], activeStaffCount: 1, viableAdministratorCount: 1, pendingInvitationCount: 0 },
   capabilityGroups: [{ key: "orders", label: "Orders", capabilities: ["orders.view"] }],
 };
@@ -38,7 +40,7 @@ assert.match(sets, /QA custom/);
 const portal = render("portal");
 assert.match(portal, /Open Customers/);
 assert.match(portal, /does not create Contacts or convert Staff identities/);
-assert.doesNotMatch(portal, /Grant portal access/);
+assert.match(portal, /Grant Portal access/);
 
 const denied = render("staff", false);
 assert.match(denied, /do not have permission to view this setting/);

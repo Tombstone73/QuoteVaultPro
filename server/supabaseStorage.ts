@@ -297,8 +297,8 @@ export class SupabaseStorageService {
 
     return data.map((file) => ({
       name: file.name,
-      id: file.id,
-      createdAt: file.created_at,
+      id: file.id ?? file.name,
+      createdAt: file.created_at ?? "",
       metadata: file.metadata || {},
     }));
   }

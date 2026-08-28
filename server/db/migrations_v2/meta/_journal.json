@@ -1646,6 +1646,13 @@
       "when": 1788048000086,
       "tag": "0239_v2_destination_sales_tax_jurisdictions",
       "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1788048000087,
+      "tag": "0240_v2_portal_invitation_delivery",
+      "breakpoints": true
     }
   ]
 }

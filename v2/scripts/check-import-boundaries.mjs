@@ -34,6 +34,9 @@ const isRawDatabasePackage = (specifier) =>
 const isCanonicalProductPublicationBridge = (relativeFilename, specifier) =>
   relativeFilename === "infrastructure/sales/authenticatedQuoteRuntime.ts" &&
   specifier.endsWith("server/services/products/canonicalProductPublishOperations.js");
+const isCanonicalOrganizationLogoStorageBridge = (relativeFilename, specifier) =>
+  relativeFilename === "infrastructure/organization/organizationLogoAdoption.ts" &&
+  specifier.endsWith("server/services/storage/StorageApplicationService.js");
 
 // Test and future infrastructure source must obey the same no-POC/no-V1
 // runtime boundary. Generated output is intentionally not scanned.
@@ -45,7 +48,7 @@ for (const filename of await listTypeScriptFiles(root)) {
       const specifier = match[1];
     const fail = (rule) => violations.push(`${relativeFilename}: ${rule} (${specifier})`);
 
-    if (imported(specifier, filename, "v2-poc") || imported(specifier, filename, "server/index") || imported(specifier, filename, "server/routes") || (imported(specifier, filename, "server/services") && !isCanonicalProductPublicationBridge(relativeFilename, specifier))) {
+    if (imported(specifier, filename, "v2-poc") || imported(specifier, filename, "server/index") || imported(specifier, filename, "server/routes") || (imported(specifier, filename, "server/services") && !isCanonicalProductPublicationBridge(relativeFilename, specifier) && !isCanonicalOrganizationLogoStorageBridge(relativeFilename, specifier))) {
       fail("production V2 must not import POC or V1 route/service code");
     }
     if (relativeFilename.startsWith("src/interfaces/") && (imported(specifier, filename, "/repositories") || imported(specifier, filename, "/infrastructure/persistence") || imported(specifier, filename, "server/db") || isRawDatabasePackage(specifier))) {

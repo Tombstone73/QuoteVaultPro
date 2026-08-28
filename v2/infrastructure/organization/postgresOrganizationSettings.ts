@@ -102,6 +102,35 @@ export class PostgresOrganizationSettings {
     });
   }
 
+  /** Commits a previously reserved private generic asset as the current logo.
+   * The asset is tenant-checked here; URLs and object keys never enter the
+   * organization configuration authority. */
+  async adoptLogoAsset(organizationId: string, input: Readonly<{ expectedRevision: string; assetId: string }>, principal: Principal, requestId: string): Promise<OrganizationSettings> {
+    const client = await this.pool.connect();
+    const operation = "organization.documents_branding.logo.adopt.v1";
+    try {
+      await client.query("BEGIN");
+      const request = await client.query<Readonly<{ id: string; status: string }>>("SELECT id,status FROM v2_operation_requests WHERE organization_id=$1 AND id=$2 AND operation=$3 FOR UPDATE", [organizationId, requestId, operation]);
+      if (!request.rows[0] || request.rows[0].status !== "in_progress") throw new V2ApplicationError("STALE_STATE", "The logo adoption request is no longer current.");
+      const organization = await this.organization(client, organizationId, true);
+      const company = await this.company(client, organizationId, true);
+      const prior = settingsValue(organization, company ?? undefined);
+      this.assertRevision(prior, input.expectedRevision);
+      const asset = await client.query<Readonly<{ id: string }>>("SELECT id FROM assets WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, input.assetId]);
+      if (!asset.rows[0]) throw new V2ApplicationError("NOT_FOUND", "The uploaded logo asset was not found.");
+      if (company) await client.query("UPDATE company_settings SET invoice_logo_asset_id=$3,invoice_logo_url=NULL,logo_url=NULL,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, company.id, input.assetId]);
+      else await client.query("INSERT INTO company_settings(organization_id,company_name,invoice_logo_asset_id) VALUES($1,$2,$3)", [organizationId, organization.name, input.assetId]);
+      const afterOrganization = await this.organization(client, organizationId, true);
+      const afterCompany = await this.company(client, organizationId, true);
+      const result = settingsValue(afterOrganization, afterCompany ?? undefined);
+      await this.requests.recordAttribution(client, { organizationId, operationRequestId: requestId, operation, resourceType: "organization_settings", resourceId: organizationId, principalKind: principal.kind, principalSubject: principalSubject(principal), staffActorUserId: staffActorId(principal) });
+      await client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,'organization_logo_adopted','organization_settings',$4,$5,$6,$7,$8::jsonb)", [organizationId, requestId, operation, organizationId, principal.kind, principalSubject(principal), staffActorId(principal) ?? null, JSON.stringify([{ kind: operation, before: prior.documentsBranding.logo, after: result.documentsBranding.logo }])]);
+      await this.requests.succeed(client, organizationId, requestId, { resourceType: "organization_settings", resourceId: organizationId, resultJson: result });
+      await client.query("COMMIT");
+      return result;
+    } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
+  }
+
   private async save<T extends { expectedRevision: string }>(organizationId: string, input: T, principal: Principal, requestId: string, operation: string, eventType: string, trace: OrganizationSettingsSaveTrace | undefined, work: (client: PoolClient, organization: OrganizationRow, company: SettingsRow | null) => Promise<Readonly<{ before: OrganizationSettings; after: OrganizationSettings }>>): Promise<OrganizationSettings> {
     const client = await this.pool.connect();
     try {
