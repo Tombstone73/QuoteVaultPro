@@ -687,14 +687,14 @@ export type ProductCatalogPage = Readonly<{
   total: number;
   hasMore: boolean;
 }>;
-export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_STANDARD_PRODUCTION" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
+export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_NO_PRODUCT_TYPE" | "UNROUTABLE_PRODUCT_TYPE_NO_DEFAULT_ROUTE" | "UNROUTABLE_INVALID_ROUTE" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
 export type ProductRoutingCompatibility = Readonly<{
   productId:string; productName:string; productUpdatedAt:string; readiness:ProductRoutingReadiness;
   productTypeId?:string; productTypeName?:string; versionRouteName?:string; compatibilityRouteName?:string;
   productTypes:readonly Readonly<{productTypeId:string;name:string;updatedAt:string;defaultRoute?:Readonly<{routeTemplateId:string;name:string}>}>[];
-  routeTemplates:readonly Readonly<{routeTemplateId:string;name:string}>[];
+  routeTemplates:readonly Readonly<{routeTemplateId:string;name:string;steps:readonly string[]}>[];
 }>;
-export type ProductRoutingReadinessAudit = Readonly<{products:readonly Readonly<{productId:string;productName:string;readiness:ProductRoutingReadiness;versionRouteName?:string;compatibilityRouteName?:string}>[];counts:Readonly<{activeStandardProduction:number;routableByVersion:number;routableByCompatibility:number;unroutable:number}>}>;
+export type ProductRoutingReadinessAudit = Readonly<{products:readonly Readonly<{productId:string;productName:string;readiness:ProductRoutingReadiness;versionRouteName?:string;compatibilityRouteName?:string}>[];worklist:readonly Readonly<{productId:string;productName:string;workflowIntent:"standard_production";productTypeName?:string;exactVersionRouteStatus:string;productTypeDefaultRouteStatus:string;reason:string;remediation:"compatibility"|"version_routing"}>[];routeTemplates:readonly Readonly<{routeTemplateId:string;name:string;steps:readonly string[]}>[];counts:Readonly<{activeProducts:number;activeStandardProduction:number;routableByVersion:number;routableByCompatibility:number;unroutable:number}>}>;
 export type CreatedProductWithInitialDraft = Readonly<{
   productId: string;
   draftVersionId: string;

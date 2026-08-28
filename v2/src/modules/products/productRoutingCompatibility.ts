@@ -5,7 +5,8 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 
-export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_STANDARD_PRODUCTION" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
+export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_NO_PRODUCT_TYPE" | "UNROUTABLE_PRODUCT_TYPE_NO_DEFAULT_ROUTE" | "UNROUTABLE_INVALID_ROUTE" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
+export type RouteTemplateChoice = Readonly<{ routeTemplateId: string; name: string; steps: readonly ("proofing" | "prepress" | "production" | "fulfillment")[] }>;
 export type ProductTypeRoutingChoice = Readonly<{ productTypeId: string; name: string; updatedAt: string; defaultRoute?: Readonly<{ routeTemplateId: string; name: string }> }>;
 export type ProductRoutingCompatibility = Readonly<{
   productId: string; productName: string; productUpdatedAt: string;
@@ -14,9 +15,10 @@ export type ProductRoutingCompatibility = Readonly<{
   readiness: ProductRoutingReadiness; productTypeId?: string; productTypeName?: string;
   versionRouteName?: string; compatibilityRouteName?: string;
   productTypes: readonly ProductTypeRoutingChoice[];
-  routeTemplates: readonly Readonly<{ routeTemplateId: string; name: string }>[];
+  routeTemplates: readonly RouteTemplateChoice[];
 }>;
-export type ProductRoutingReadinessAudit = Readonly<{ products: ReadonlyArray<Omit<ProductRoutingCompatibility, "productTypes" | "routeTemplates">>; counts: Readonly<{ activeStandardProduction: number; routableByVersion: number; routableByCompatibility: number; unroutable: number }> }>;
+export type ProductRoutingDebtItem = Readonly<{ productId: string; productName: string; workflowIntent: "standard_production"; productTypeName?: string; exactVersionRouteStatus: "missing" | "configured" | "invalid"; productTypeDefaultRouteStatus: "not_assigned" | "configured" | "missing" | "invalid"; readiness: Extract<ProductRoutingReadiness, `UNROUTABLE_${string}`>; reason: string; remediation: "compatibility" | "version_routing" }>;
+export type ProductRoutingReadinessAudit = Readonly<{ products: ReadonlyArray<Omit<ProductRoutingCompatibility, "productTypes" | "routeTemplates">>; worklist: readonly ProductRoutingDebtItem[]; routeTemplates: readonly RouteTemplateChoice[]; counts: Readonly<{ activeProducts: number; activeStandardProduction: number; routableByVersion: number; routableByCompatibility: number; unroutable: number }> }>;
 export type AssignProductTypeCompatibilityInput = Readonly<{ productId: string; productTypeId: string | null; expectedProductUpdatedAt: string; businessRequestId: string }>;
 export type UpdateProductTypeDefaultRouteInput = Readonly<{ productTypeId: string; routeTemplateId: string; expectedProductTypeUpdatedAt: string; businessRequestId: string }>;
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
