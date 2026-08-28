@@ -40,6 +40,14 @@ import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/o
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
 import { isOrdersRowNavigationExcluded } from "@/lib/ordersRowNavigation";
 import {
+  activeOrderStatusPills,
+  hideCompleteOrderStatusPill,
+  orderStatusPillFilterLabel,
+  orderStatusPillIdsForQuery,
+  selectedOrderStatusPillIds,
+  toggleOrderStatusPillId,
+} from "@/lib/orderStatusPillFilter";
+import {
   DEFAULT_ORDERS_LIST_PREFERENCES,
   persistOrdersListPreferences,
   readPersistedOrdersListPreferences,
@@ -200,7 +208,9 @@ export default function Orders() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search.trim());
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
-  const [statusPillFilter, setStatusPillFilter] = useState<string>("all");
+  // null means every active pill is included. An empty array intentionally
+  // means no pills are included, producing a server-backed empty result.
+  const [statusPillSelection, setStatusPillSelection] = useState<string[] | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [productionFilter, setProductionFilter] = useState<ProductionFilterValue>("all");
   const [proofFilter, setProofFilter] = useState<ProofFilterValue>("all");
@@ -296,13 +306,24 @@ export default function Orders() {
     }
   }, [stateFilter, columnSettings, setColumnSettings]);
 
-  // Reset pill filter when switching state tab (keeps filters consistent)
-  useEffect(() => {
-    setStatusPillFilter('all');
-  }, [stateFilter]);
-
   const pillFilterEnabled = true;
   const { data: pillsForFilter, isLoading: pillsForFilterLoading } = useOrderStatusPills();
+  const activeStatusPills = useMemo(() => activeOrderStatusPills(pillsForFilter), [pillsForFilter]);
+  const selectedStatusPillIds = useMemo(
+    () => selectedOrderStatusPillIds(statusPillSelection, activeStatusPills),
+    [statusPillSelection, activeStatusPills],
+  );
+  const statusPillIdsForQuery = useMemo(
+    () => orderStatusPillIdsForQuery(statusPillSelection, activeStatusPills),
+    [statusPillSelection, activeStatusPills],
+  );
+  const statusPillFilterLabel = useMemo(
+    () => orderStatusPillFilterLabel(statusPillSelection, activeStatusPills),
+    [statusPillSelection, activeStatusPills],
+  );
+  const completeStatusPill = activeStatusPills.find((pill) =>
+    pill.name.trim().toLowerCase() === "complete" || pill.key === "complete",
+  );
 
   // Computed ordered columns (ensures Actions column always last)
   const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
@@ -311,19 +332,19 @@ export default function Orders() {
   const ordersFilters = useMemo(() => ({
     search: debouncedSearch || undefined,
     state: stateFilter === "all" ? undefined : stateFilter,
-    statusPillId: statusPillFilter === "all" ? undefined : statusPillFilter,
+    statusPillIds: statusPillIdsForQuery,
     priority: priorityFilter === "all" ? undefined : priorityFilter,
     page,
     pageSize,
     includeThumbnails,
     sortBy: sortKey,
     sortDir: sortDirection,
-  }), [debouncedSearch, stateFilter, statusPillFilter, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
+  }), [debouncedSearch, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
 
   // Every change to the server query shape starts at the first matching page.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, stateFilter, statusPillFilter, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
+  }, [debouncedSearch, stateFilter, statusPillIdsForQuery, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
 
   // Fetch orders with pagination support
   const { data: ordersData, isLoading, error } = useOrders(ordersFilters);
@@ -1082,30 +1103,68 @@ export default function Orders() {
             />
           </div>
           {pillFilterEnabled && (
-            <Select value={statusPillFilter} onValueChange={setStatusPillFilter}>
-              <SelectTrigger className="w-[200px] h-9">
-                <SelectValue
-                  placeholder={
-                    pillsForFilterLoading
-                      ? 'Loading status pills…'
-                      : (!pillsForFilter || pillsForFilter.length === 0)
-                      ? 'No status pills configured…'
-                      : 'All Status Pills'
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status Pills</SelectItem>
-                {(pillsForFilter || []).filter((pill) => pill.isActive !== false).map((pill) => (
-                  <SelectItem key={pill.id} value={pill.id}>
-                    <div className="flex items-center gap-2">
-                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
-                      {pill.name}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 w-[200px] justify-between font-normal"
+                  disabled={pillsForFilterLoading || activeStatusPills.length === 0}
+                  aria-label="Filter orders by status pills"
+                >
+                  <span className="truncate">
+                    {pillsForFilterLoading ? "Loading status pills…" : statusPillFilterLabel}
+                  </span>
+                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[260px] p-2" align="start">
+                <div className="mb-2 flex items-center justify-between gap-2 border-b pb-2">
+                  <span className="text-sm font-medium">Status Pills</span>
+                  <div className="flex items-center gap-1">
+                    <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setStatusPillSelection(activeStatusPills.map((pill) => pill.id))}>
+                      Select All
+                    </Button>
+                    <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setStatusPillSelection([])}>
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+                {completeStatusPill && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="mb-1 h-8 w-full justify-start px-2 text-xs"
+                    onClick={() => setStatusPillSelection((current) => hideCompleteOrderStatusPill(current, activeStatusPills))}
+                  >
+                    Hide Complete
+                  </Button>
+                )}
+                <div className="max-h-64 space-y-0.5 overflow-y-auto">
+                  {activeStatusPills.map((pill) => {
+                    const selected = selectedStatusPillIds.includes(pill.id);
+                    return (
+                      <Button
+                        key={pill.id}
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-full justify-start px-2 text-sm font-normal"
+                        aria-pressed={selected}
+                        onClick={() => setStatusPillSelection((current) => toggleOrderStatusPillId(current, pill.id, activeStatusPills))}
+                      >
+                        <span className={cn("mr-2 flex h-4 w-4 items-center justify-center rounded border", selected ? "border-primary bg-primary text-primary-foreground" : "border-input bg-background")}>
+                          {selected && <Check className="h-3 w-3" />}
+                        </span>
+                        <span className="mr-2 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
+                        <span className="truncate">{pill.name}</span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
           )}
           <Select value={priorityFilter} onValueChange={setPriorityFilter}>
             <SelectTrigger className="w-[140px] h-9">
@@ -1262,8 +1321,8 @@ export default function Orders() {
                     <TableCell colSpan={visibleColumnCount} className="text-center py-6 text-muted-foreground">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="w-8 h-8 text-muted-foreground" />
-                        <p>{debouncedSearch || stateFilter !== "all" || statusPillFilter !== "all" || priorityFilter !== "all" || productionFilter !== "all" || proofFilter !== "all" ? "No orders match your search" : "No orders yet"}</p>
-                        {!debouncedSearch && stateFilter === "all" && statusPillFilter === "all" && priorityFilter === "all" && productionFilter === "all" && proofFilter === "all" ? (
+                        <p>{debouncedSearch || stateFilter !== "all" || statusPillIdsForQuery !== undefined || priorityFilter !== "all" || productionFilter !== "all" || proofFilter !== "all" ? "No orders match your search" : "No orders yet"}</p>
+                        {!debouncedSearch && stateFilter === "all" && statusPillIdsForQuery === undefined && priorityFilter === "all" && productionFilter === "all" && proofFilter === "all" ? (
                           <Link to={ROUTES.orders.new}>
                             <Button variant="outline" size="sm">
                               <Plus className="w-4 h-4 mr-2" />

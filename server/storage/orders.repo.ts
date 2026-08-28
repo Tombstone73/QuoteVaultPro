@@ -813,6 +813,7 @@ export class OrdersRepository {
         status?: string;
         state?: string;
         statusPillId?: string;
+        statusPillIds?: string[];
         priority?: string;
         customerId?: string;
         startDate?: string;
@@ -853,6 +854,11 @@ export class OrdersRepository {
         if (opts.status) conditions.push(eq(orders.status, opts.status));
         if (opts.state) conditions.push(eq(orders.state, opts.state));
         if (opts.statusPillId) conditions.push(eq(orders.statusPillId, opts.statusPillId));
+        if (opts.statusPillIds !== undefined) {
+            conditions.push(opts.statusPillIds.length > 0
+                ? inArray(orders.statusPillId, opts.statusPillIds)
+                : sql`false`);
+        }
         if (opts.priority) conditions.push(eq(orders.priority, opts.priority));
         if (opts.customerId) conditions.push(eq(orders.customerId, opts.customerId));
         if (opts.startDate) conditions.push(gte(orders.createdAt, opts.startDate));

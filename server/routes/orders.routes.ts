@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { db } from "../db";
+import { parseOrderStatusPillIdsQuery } from "./helpers/orderStatusPillFilter";
 import { DEFAULT_PRODUCTION_ROUTING_RULES } from "../services/productionMapService";
 import {
     auditLogs,
@@ -1456,12 +1457,14 @@ export async function registerOrderRoutes(
                 const pageSize = Math.min(200, Math.max(1, parseInt(pageSizeRaw || '25', 10) || 25));
                 // Default to false to avoid breaking page load if thumbnails schema is incomplete
                 const includeThumbnails = includeThumbnailsRaw === 'true' || includeThumbnailsRaw === '1';
+                const statusPillIds = parseOrderStatusPillIdsQuery(req.query.statusPillIds);
 
                 const result = await storage.getAllOrdersPaginated(organizationId, {
                     search: req.query.search as string | undefined,
                     status: req.query.status as string | undefined,
                     state: req.query.state as string | undefined,
                     statusPillId: req.query.statusPillId as string | undefined,
+                    ...(statusPillIds !== undefined ? { statusPillIds } : {}),
                     priority: req.query.priority as string | undefined,
                     customerId: req.query.customerId as string | undefined,
                     startDate: req.query.startDate as string | undefined,

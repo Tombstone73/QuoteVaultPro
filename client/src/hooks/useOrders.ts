@@ -27,6 +27,7 @@ export const ordersListQueryKey = (filters?: OrdersQueryParams) => {
     status: filters.status,
     state: filters.state,
     statusPillId: filters.statusPillId,
+    statusPillIds: filters.statusPillIds ? [...filters.statusPillIds].sort() : filters.statusPillIds,
     priority: filters.priority,
     customerId: filters.customerId,
     startDate: filters.startDate,
@@ -418,6 +419,7 @@ export interface OrdersFilterParams {
   status?: string;
   state?: string;
   statusPillId?: string;
+  statusPillIds?: string[];
   priority?: string;
   customerId?: string;
   startDate?: string;
@@ -454,6 +456,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
       if (filters?.status) params.append("status", filters.status);
       if (filters?.state) params.append("state", filters.state);
       if (filters?.statusPillId) params.append("statusPillId", filters.statusPillId);
+      if (filters?.statusPillIds !== undefined) params.append("statusPillIds", filters.statusPillIds.join(","));
       if (filters?.priority) params.append("priority", filters.priority);
       if (filters?.customerId) params.append("customerId", filters.customerId);
       if (filters?.startDate) params.append("startDate", filters.startDate);
