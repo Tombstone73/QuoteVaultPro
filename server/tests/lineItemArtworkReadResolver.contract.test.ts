@@ -46,6 +46,11 @@ describe("line-item artwork read migration", () => {
     expect(orderFiles).toContain("STORAGE_KEY_MISSING");
     expect(orderFiles).toContain("STORAGE_OBJECT_NOT_FOUND");
     expect(orderFiles).toContain("FILE_ACCESS_DENIED");
+    expect(orderFiles).toContain("CANONICAL_STORAGE_READ_FAILED");
+    expect(orderFiles).toContain("requestId,");
+    expect(orderFiles).toContain("attachOrderArtworkDownloadDiagnostics");
+    expect(orderFiles).toContain("authCookiePresent");
+    expect(orderFiles).toContain("storageFetchAttempted");
     expect(orderFiles).toContain("resolveOriginalFileAccess(downloadSource");
     expect(orderFiles).toContain("createRequestLogOnce()");
     expect(orderFiles).toContain("assetLinks.parentType, \"order_line_item\"");

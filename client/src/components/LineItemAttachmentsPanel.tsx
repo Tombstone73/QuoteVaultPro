@@ -11,7 +11,7 @@ import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachm
 import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
-import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
@@ -789,14 +789,14 @@ export function LineItemAttachmentsPanel({
         // resolves the canonical file record at click time.  URLs are not
         // durable attachment state and may legitimately be absent.
         const proxyUrl = `/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/download/proxy`;
-        void downloadFileFromUrl(proxyUrl, fileName);
+        await downloadAuthenticatedFile(proxyUrl, fileName);
         return;
       }
 
       // Quote behavior: proxy endpoint streams file with correct filename
       const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
 
-      void downloadFileFromUrl(proxyUrl, fileName);
+      await downloadAuthenticatedFile(proxyUrl, fileName);
     } catch (error: any) {
       console.error("[handleDownloadFile] Error:", error);
       toast({

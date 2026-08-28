@@ -64,6 +64,40 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+/**
+ * A download can be rejected by authentication before the route handler runs.
+ * Record safe lifecycle telemetry at the route boundary so a production 401 is
+ * distinguishable from a canonical-file or provider read failure. Never log
+ * cookie values, signed URLs, or file bytes here.
+ */
+function attachOrderArtworkDownloadDiagnostics(req: any, res: any, next: any): void {
+  const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"].trim()
+    ? req.headers["x-request-id"].trim()
+    : randomUUID();
+  const diagnostics = {
+    requestId,
+    stage: "authenticate",
+    canonicalFileResolved: false,
+    storageFetchAttempted: false,
+  };
+  req.orderArtworkDownloadDiagnostics = diagnostics;
+  res.setHeader("X-Request-Id", requestId);
+  res.once("finish", () => {
+    console.info("[OrderLineItemFiles:DOWNLOAD:REQUEST]", {
+      requestId: diagnostics.requestId,
+      method: req.method,
+      status: res.statusCode,
+      authCookiePresent: Boolean(req.headers.cookie),
+      authenticated: Boolean(req.isAuthenticated?.()),
+      organizationContextPresent: Boolean(getRequestOrganizationId(req)),
+      stage: diagnostics.stage,
+      canonicalFileResolved: diagnostics.canonicalFileResolved,
+      storageFetchAttempted: diagnostics.storageFetchAttempted,
+    });
+  });
+  next();
+}
+
 function toLegacyStorageProvider(provider: string | null | undefined): "local" | "s3" | "gcs" | "supabase" | null {
   if (provider === "local" || provider === "s3" || provider === "gcs" || provider === "supabase") {
     return provider;
@@ -247,11 +281,9 @@ export function registerOrderLineItemFileRoutes(
   // Canonical artwork download.  The UI action handle can be either the
   // compatibility attachment ID or the canonical artwork relationship ID;
   // neither requires a persisted public/signed URL.
-  app.get("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy", isAuthenticated, tenantContext, async (req: any, res) => {
-    const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"].trim()
-      ? req.headers["x-request-id"].trim()
-      : randomUUID();
-    res.setHeader("X-Request-Id", requestId);
+  app.get("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy", attachOrderArtworkDownloadDiagnostics, isAuthenticated, tenantContext, async (req: any, res) => {
+    const diagnostics = req.orderArtworkDownloadDiagnostics;
+    const requestId = diagnostics.requestId;
     const request = {
       requestId,
       orderId: String(req.params.orderId ?? ""),
@@ -259,6 +291,7 @@ export function registerOrderLineItemFileRoutes(
       requestedFileId: String(req.params.fileId ?? ""),
     };
     let stage = "validate_order_line_item";
+    diagnostics.stage = stage;
     let relationshipType: "line_item_artwork" | "order_attachment" | "reference_asset" | null = null;
     let canonicalFileRecordId: string | null = null;
     const logFailure = (code: string, details: Record<string, unknown> = {}) => {
@@ -284,6 +317,7 @@ export function registerOrderLineItemFileRoutes(
       if (!lineItem) return res.status(404).json({ error: "Order line item not found" });
 
       stage = "resolve_artwork_relationship";
+      diagnostics.stage = stage;
       const resolution = await lineItemArtworkReadResolver.resolveForLineItem({ organizationId, lineItemId, purpose: "order" });
       let artwork = resolution.artwork.find((item) => String(item.relationshipId) === String(fileId)) ?? null;
       if (artwork) relationshipType = "line_item_artwork";
@@ -348,7 +382,9 @@ export function registerOrderLineItemFileRoutes(
       // hop and avoids making a browser download depend on a second redirect.
       if (canonicalFileRecordId) {
         stage = "resolve_canonical_file";
+        diagnostics.stage = stage;
         const canonical = await canonicalFileReadResolver.resolveOriginal(canonicalFileRecordId);
+        diagnostics.canonicalFileResolved = true;
         const storageKey = canonical.objectKey ?? canonical.localPathRef ?? null;
         const storageDetails = {
           availabilityStatus: canonical.status,
@@ -371,6 +407,8 @@ export function registerOrderLineItemFileRoutes(
         }
 
         stage = "stream_canonical_file";
+        diagnostics.stage = stage;
+        diagnostics.storageFetchAttempted = true;
         const file = await readArtworkFileForOrganization({
           organizationId,
           fileRecordId: canonicalFileRecordId,
@@ -392,6 +430,7 @@ export function registerOrderLineItemFileRoutes(
       // Legacy attachments have no canonical file record and retain their
       // existing key-based compatibility path.
       stage = "resolve_legacy_attachment";
+      diagnostics.stage = stage;
       const resolved = await resolveOriginalFileAccess(downloadSource, { logOnce: createRequestLogOnce() });
       if (!resolved.downloadUrl) {
         logFailure("DOWNLOAD_URL_RESOLUTION_FAILED", { availabilityStatus: resolved.availabilityStatus });
@@ -404,6 +443,8 @@ export function registerOrderLineItemFileRoutes(
         ? "STORAGE_OBJECT_NOT_FOUND"
         : error?.status === 403 || /access denied|forbidden|not authorized/i.test(errorMessage)
           ? "FILE_ACCESS_DENIED"
+          : stage === "stream_canonical_file"
+            ? "CANONICAL_STORAGE_READ_FAILED"
           : "DOWNLOAD_URL_RESOLUTION_FAILED";
       logFailure(errorCode, { errorName: error?.name ?? "Error", errorMessage: errorMessage || "Unknown failure" });
       if (errorCode === "STORAGE_OBJECT_NOT_FOUND") {
@@ -412,7 +453,11 @@ export function registerOrderLineItemFileRoutes(
       if (errorCode === "FILE_ACCESS_DENIED") {
         return res.status(403).json({ error: "Artwork file access denied" });
       }
-      return res.status(500).json({ error: "Unable to prepare artwork download" });
+      return res.status(500).json({
+        error: "Unable to prepare artwork download",
+        code: errorCode,
+        requestId,
+      });
     }
   });
 

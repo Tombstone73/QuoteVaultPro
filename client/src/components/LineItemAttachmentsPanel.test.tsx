@@ -8,9 +8,14 @@ import path from "node:path";
 import { createRoot } from "react-dom/client";
 import { LineItemAttachmentsPanel } from "./LineItemAttachmentsPanel";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
+import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 
 jest.mock("@/lib/uploads/chunkedAttachmentUpload", () => ({
   uploadAttachmentViaChunked: jest.fn(),
+}));
+
+jest.mock("@/lib/authenticatedFileDownload", () => ({
+  downloadAuthenticatedFile: jest.fn(),
 }));
 
 jest.mock("@/lib/apiConfig", () => ({
@@ -177,7 +182,51 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
   test("Order artwork downloads use the authenticated canonical proxy instead of a persisted URL", () => {
     const panel = readFileSync(path.join(process.cwd(), "client/src/components/LineItemAttachmentsPanel.tsx"), "utf8");
     expect(panel).toContain('/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/download/proxy');
+    expect(panel).toContain("await downloadAuthenticatedFile(proxyUrl, fileName)");
+    expect(panel).not.toContain("downloadFileFromUrl(proxyUrl, fileName)");
     expect(panel).not.toContain('This file does not have a downloadable URL.');
+  });
+
+  test("one Order artwork download click makes one credential-aware proxy request", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    client.setQueryData([filesPath], [{
+      id: "saved-1",
+      fileRecordId: "record-1",
+      source: "canonical",
+      fileName: "saved-art.pdf",
+      originalFilename: "saved-art.pdf",
+      mimeType: "application/pdf",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      side: "na",
+    }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ data: [], assets: [] }) })) as unknown as typeof fetch;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+        </QueryClientProvider>,
+      ));
+      const downloadButton = host.querySelector("button[title='Download original file']") as HTMLButtonElement;
+      await act(async () => downloadButton.click());
+
+      expect(downloadAuthenticatedFile).toHaveBeenCalledTimes(1);
+      expect(downloadAuthenticatedFile).toHaveBeenCalledWith(
+        "/api/orders/order-1/line-items/line-1/files/saved-1/download/proxy",
+        "saved-art.pdf",
+      );
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      globalThis.fetch = previousFetch;
+      jest.mocked(downloadAuthenticatedFile).mockReset();
+    }
   });
 
   test("shows explicit Front/Back assignment controls only for double-sided line items", () => {
