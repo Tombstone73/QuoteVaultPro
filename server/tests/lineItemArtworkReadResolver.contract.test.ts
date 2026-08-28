@@ -34,10 +34,16 @@ describe("line-item artwork read migration", () => {
     expect(panel).toContain("buildArtworkAccessUrl(file.fileRecordId, \"thumbnail\")");
   });
 
-  test("Order artwork download resolves canonical identity at request time and preserves legacy reads", () => {
+  test("Order artwork downloads use the canonical authenticated file reader and preserve legacy reads", () => {
     const orderFiles = source("../routes/orderLineItemFiles.routes.ts");
     expect(orderFiles).toContain('/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy');
     expect(orderFiles).toContain("lineItemArtworkReadResolver.resolveForLineItem");
+    expect(orderFiles).toContain("redirect_to_canonical_file_reader");
+    expect(orderFiles).toContain("/api/artwork/file-records/${encodeURIComponent(canonicalFileRecordId)}/content?download=1");
+    expect(orderFiles).toContain("FILE_RELATIONSHIP_NOT_FOUND");
+    expect(orderFiles).toContain("STORAGE_KEY_MISSING");
+    expect(orderFiles).toContain("STORAGE_OBJECT_NOT_FOUND");
+    expect(orderFiles).toContain("FILE_ACCESS_DENIED");
     expect(orderFiles).toContain("resolveOriginalFileAccess(downloadSource");
     expect(orderFiles).toContain("createRequestLogOnce()");
     expect(orderFiles).toContain("assetLinks.parentType, \"order_line_item\"");

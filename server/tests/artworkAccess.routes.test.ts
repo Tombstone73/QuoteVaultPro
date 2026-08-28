@@ -57,6 +57,14 @@ describe("artwork access route", () => {
     expect(readArtworkFileForOrganization).toHaveBeenCalledWith({ organizationId: "org_7", fileRecordId: "fr_7", variant: "thumbnail" });
   });
 
+  test("serves canonical originals as an attachment when a download is requested", async () => {
+    readArtworkFileForOrganization.mockResolvedValue({ buffer: Buffer.from("pdf"), mimeType: "application/pdf", filename: "artwork.pdf" });
+    const response = await request(buildApp({ organizationId: "org_7" })).get("/api/artwork/file-records/fr_7/content?download=1");
+    expect(response.status).toBe(200);
+    expect(response.headers["content-disposition"]).toContain("attachment");
+    expect(readArtworkFileForOrganization).toHaveBeenCalledWith({ organizationId: "org_7", fileRecordId: "fr_7", variant: "original" });
+  });
+
   test("treats cross-tenant, unknown, or non-ready records as 404", async () => {
     readArtworkFileForOrganization.mockResolvedValue(null);
     const response = await request(buildApp({ organizationId: "org_other" })).get("/api/artwork/file-records/fr_1/content?variant=preview");

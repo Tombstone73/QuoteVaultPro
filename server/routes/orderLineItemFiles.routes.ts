@@ -246,6 +246,25 @@ export function registerOrderLineItemFileRoutes(
   // compatibility attachment ID or the canonical artwork relationship ID;
   // neither requires a persisted public/signed URL.
   app.get("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy", isAuthenticated, tenantContext, async (req: any, res) => {
+    const request = {
+      orderId: String(req.params.orderId ?? ""),
+      lineItemId: String(req.params.lineItemId ?? ""),
+      requestedFileId: String(req.params.fileId ?? ""),
+    };
+    let stage = "validate_order_line_item";
+    let relationshipType: "line_item_artwork" | "order_attachment" | "reference_asset" | null = null;
+    let canonicalFileRecordId: string | null = null;
+    const logFailure = (code: string, details: Record<string, unknown> = {}) => {
+      console.warn("[OrderLineItemFiles:DOWNLOAD:PROXY]", {
+        code,
+        stage,
+        ...request,
+        relationshipType,
+        canonicalFileRecordId,
+        ...details,
+      });
+    };
+
     try {
       const { orderId, lineItemId, fileId } = req.params;
       const organizationId = getRequestOrganizationId(req);
@@ -257,8 +276,10 @@ export function registerOrderLineItemFileRoutes(
         .limit(1);
       if (!lineItem) return res.status(404).json({ error: "Order line item not found" });
 
+      stage = "resolve_artwork_relationship";
       const resolution = await lineItemArtworkReadResolver.resolveForLineItem({ organizationId, lineItemId, purpose: "order" });
       let artwork = resolution.artwork.find((item) => String(item.relationshipId) === String(fileId)) ?? null;
+      if (artwork) relationshipType = "line_item_artwork";
       let downloadSource: {
         id?: string | null;
         fileRecordId?: string | null;
@@ -281,6 +302,7 @@ export function registerOrderLineItemFileRoutes(
           artwork = attachment.fileRecordId
             ? resolution.artwork.find((item) => item.fileRecordId === attachment.fileRecordId) ?? null
             : null;
+          relationshipType = "order_attachment";
           downloadSource = artwork ? {
             id: artwork.relationshipId,
             fileRecordId: artwork.fileRecordId,
@@ -305,15 +327,63 @@ export function registerOrderLineItemFileRoutes(
           ))
           .where(and(eq(assets.id, fileId), eq(assets.organizationId, organizationId)))
           .limit(1);
+        if (asset) relationshipType = "reference_asset";
         downloadSource = asset ?? null;
       }
-      if (!downloadSource) return res.status(404).json({ error: "Artwork file not found" });
+      if (!downloadSource) {
+        logFailure("FILE_RELATIONSHIP_NOT_FOUND");
+        return res.status(404).json({ error: "Artwork file not found" });
+      }
 
+      canonicalFileRecordId = downloadSource.fileRecordId ? String(downloadSource.fileRecordId) : null;
+      // Canonical artwork is read through the same authenticated file-record
+      // endpoint used by the viewer.  Sending a canonical storage key through
+      // the legacy /objects proxy loses the provider adapter boundary and can
+      // fail for otherwise readable provider-backed records.
+      if (canonicalFileRecordId) {
+        stage = "resolve_canonical_file";
+        const canonical = await canonicalFileReadResolver.resolveOriginal(canonicalFileRecordId);
+        const storageKey = canonical.objectKey ?? canonical.localPathRef ?? null;
+        const storageDetails = {
+          availabilityStatus: canonical.status,
+          storageProvider: canonical.providerType,
+          storageBucket: canonical.bucket,
+          storageKey,
+        };
+
+        if (canonical.status !== "available") {
+          logFailure("CANONICAL_FILE_NOT_FOUND", storageDetails);
+          return res.status(404).json({ error: "Artwork file is unavailable" });
+        }
+        if (!storageKey) {
+          logFailure("STORAGE_KEY_MISSING", storageDetails);
+          return res.status(404).json({ error: "Artwork file is unavailable" });
+        }
+        if (!canonical.providerConfigId) {
+          logFailure("DOWNLOAD_URL_RESOLUTION_FAILED", storageDetails);
+          return res.status(404).json({ error: "Artwork file is unavailable" });
+        }
+
+        stage = "redirect_to_canonical_file_reader";
+        return res.redirect(`/api/artwork/file-records/${encodeURIComponent(canonicalFileRecordId)}/content?download=1`);
+      }
+
+      // Legacy attachments have no canonical file record and retain their
+      // existing key-based compatibility path.
+      stage = "resolve_legacy_attachment";
       const resolved = await resolveOriginalFileAccess(downloadSource, { logOnce: createRequestLogOnce() });
-      if (!resolved.downloadUrl) return res.status(404).json({ error: "Artwork file is unavailable", availabilityStatus: resolved.availabilityStatus });
+      if (!resolved.downloadUrl) {
+        logFailure("DOWNLOAD_URL_RESOLUTION_FAILED", { availabilityStatus: resolved.availabilityStatus });
+        return res.status(404).json({ error: "Artwork file is unavailable", availabilityStatus: resolved.availabilityStatus });
+      }
       return res.redirect(resolved.downloadUrl);
-    } catch (error) {
-      console.error("[OrderLineItemFiles:DOWNLOAD:PROXY] Failed to resolve artwork download", error);
+    } catch (error: any) {
+      const errorCode = error?.code === "ENOENT" || error?.status === 404
+        ? "STORAGE_OBJECT_NOT_FOUND"
+        : error?.status === 403
+          ? "FILE_ACCESS_DENIED"
+          : "DOWNLOAD_URL_RESOLUTION_FAILED";
+      logFailure(errorCode, { errorName: error?.name ?? "Error", errorMessage: error?.message ?? "Unknown failure" });
       return res.status(500).json({ error: "Unable to prepare artwork download" });
     }
   });
