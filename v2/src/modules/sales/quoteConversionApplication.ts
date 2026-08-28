@@ -38,6 +38,15 @@ const safeFailureClassification = (cause: unknown): string => {
   return "UNEXPECTED_EXCEPTION";
 };
 
+/** PostgreSQL constraint identifiers are schema-owned diagnostic labels, not
+ * customer data. Keep the retained trace bounded to ordinary identifier text
+ * so a driver error message can never reach the DEV log sink. */
+const safeConstraintIdentifier = (cause: unknown): string | undefined => {
+  const constraint = cause && typeof cause === "object" && "constraint" in cause
+    && typeof cause.constraint === "string" ? cause.constraint : undefined;
+  return constraint && /^[a-z0-9_]{1,128}$/i.test(constraint) ? constraint : undefined;
+};
+
 const durableRequestClassification = (businessRequestId: string): string =>
   createHash("sha256").update(businessRequestId).digest("hex").slice(0, 16);
 
@@ -49,16 +58,17 @@ const durableRequestClassification = (businessRequestId: string): string =>
 export const createQuoteConversionTrace = (options: QuoteConversionTraceOptions = {}): QuoteConversionTrace => {
   const requestId = options.requestId ?? randomUUID();
   const sink = options.sink ?? ((message: string) => console.log(message));
-  const emit = (stage: string, result: string, classification?: string, durable?: string): void => {
+  const emit = (stage: string, result: string, classification?: string, durable?: string, constraint?: string): void => {
     const message = `V2_QUOTE_CONVERSION_TRACE request=${requestId} stage=${stage} result=${result}`
       + (classification ? ` class=${classification}` : "")
-      + (durable ? ` durable=${durable}` : "");
+      + (durable ? ` durable=${durable}` : "")
+      + (constraint ? ` constraint=${constraint}` : "");
     try { sink(message); } catch { /* Diagnostics must never affect conversion. */ }
   };
   return Object.freeze({
     requestId,
     event: (stage, result) => emit(stage, result),
-    failure: (stage, cause) => emit(stage, "failed", safeFailureClassification(cause)),
+    failure: (stage, cause) => emit(stage, "failed", safeFailureClassification(cause), undefined, safeConstraintIdentifier(cause)),
     durableRequest: (businessRequestId, status) => emit("durable_request", status === "replay" ? "replayed" : "ok", undefined, durableRequestClassification(businessRequestId)),
   });
 };
