@@ -4,6 +4,7 @@ import {
   money,
   newBusinessRequestId,
   contactApi,
+  type QuoteSendReadiness,
   orderApi,
   quoteApi,
   clearV2ApiSessionState,
@@ -60,6 +61,7 @@ import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { SalesTaxSettingsWorkspace } from "./SalesTaxSettingsWorkspace";
+import { EmailSettingsWorkspace } from "./EmailSettingsWorkspace";
 import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
 import { quoteLineProductPresentation } from "./quoteLinePresentation";
 import { quoteRouteMode } from "./quoteRouteMode";
@@ -430,7 +432,7 @@ export const App = ({
           setAppearance={setAppearance}
         />
       ) : page === "settings" ? (
-        <SalesTaxSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.pricingConfigure === true} />
+        <><SalesTaxSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.pricingConfigure === true} /><EmailSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.communicationsConfigure === true} /></>
       ) : page === "formulas" ? (
         <FormulaLibraryWorkspace
           organizationId={organizationId}
@@ -1745,6 +1747,12 @@ const QuoteWorkspace = ({
       quote?.quote.customerContact.contactId,
     ),
   });
+  const sendReadiness = useQuery<QuoteSendReadiness>({
+    queryKey: ["v2", sessionScope, organizationId, "quote-send-readiness", quote?.quote.quoteId ?? ""],
+    queryFn: () => quoteApi.sendReadiness(organizationId, quote!.quote.quoteId),
+    enabled: Boolean(sendDialogOpen && sessionScope && organizationId && quote?.quote.quoteId),
+  });
+  const sendReadinessError = sendReadiness.error as unknown as ApiError | null;
   const requestIds = useRef<Record<string, { id: string; payload: string }>>(
     {},
   );
@@ -2499,7 +2507,9 @@ const QuoteWorkspace = ({
               </button>
             </header>
             <p className="v2-quote-send-notice">This sends the authoritative Quote PDF through the configured tenant Gmail connection. The recipient is the selected Quote contact; recipient, document fingerprint, provider message identity, and immutable Quote checkpoint are recorded server-side.</p>
-            <p className="v2-quote-send-notice"><strong>Recipient:</strong> {recipientContact.data?.email || "A valid selected contact email is required."}</p>
+            <p className="v2-quote-send-notice"><strong>Recipient:</strong> {sendReadinessError ? (sendReadinessError.code === "FORBIDDEN" ? "Your session or permission no longer allows Quote delivery. Reload and sign in again if needed." : sendReadinessError.message ?? "Quote send readiness is temporarily unavailable.") : sendReadiness.data?.recipient.status === "ready" ? sendReadiness.data.recipient.email : sendReadiness.data?.recipient.status === "contact_missing" ? "Select a Quote contact before sending." : sendReadiness.data?.recipient.status === "contact_unavailable" ? "The selected Quote contact is unavailable." : "The selected Quote contact needs a valid email address."}</p>
+            <p className="v2-quote-send-notice"><strong>Tenant email:</strong> {sendReadinessError ? "Readiness could not be confirmed." : sendReadiness.data?.email.status === "ready" ? `Ready (${sendReadiness.data.email.sendingAddress ?? "Gmail"})` : sendReadiness.data?.email.actionRequired ?? "Email integration is not configured."}</p>
+            {sendReadiness.data?.tax.status === "unresolved" && <p className="v2-quote-send-notice">Authoritative tax must be resolved before a customer document can be sent.</p>}
             <label className="v2-quote-send-pdf">
               <input aria-label="Attach Quote PDF" type="checkbox" checked readOnly />
               Attach authoritative Quote PDF
@@ -2518,7 +2528,7 @@ const QuoteWorkspace = ({
                 type="button"
                 onClick={() => action.mutate()}
                 disabled={
-                  !csrfReady || action.isPending || recipientContact.isLoading || !recipientContact.data?.email
+                  !csrfReady || action.isPending || sendReadiness.isLoading || sendReadiness.data?.canSend !== true
                 }
               >
                 {action.isPending ? "Sending…" : "Send Quote PDF"}

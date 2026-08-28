@@ -23,6 +23,7 @@ export interface QuoteCustomerDocumentPort {
 }
 export interface QuoteDeliveryPort {
   send(context: OperationContext, input: QuoteLifecycleInput): Promise<import("../../errors/applicationError.js").ApplicationResult<QuoteOperationResult>>;
+  readiness(context: OperationContext, quoteId: import("../../modules/shared/commercialValues.js").QuoteId): Promise<unknown>;
 }
 
 /** Authentication is injected by the real V2 host; routes never trust headers or body principal claims. */
@@ -291,6 +292,12 @@ export const createQuoteRouter = (
         quoteId: brandedId<"QuoteId">(request.params.quoteId),
         businessRequestId: requestId(request.body) as import("../../modules/shared/commercialValues.js").BusinessRequestId,
       }));
+    } catch (cause) { error(response, cause); }
+  });
+  router.get("/:quoteId/send-readiness", async (request, response) => {
+    try {
+      if (!dependencies.delivery) throw new V2ApplicationError("INTERNAL_ERROR", "Quote delivery runtime is unavailable.");
+      response.json({ ok: true, data: await dependencies.delivery.readiness(await context(request, dependencies), brandedId<"QuoteId">(request.params.quoteId)) });
     } catch (cause) { error(response, cause); }
   });
   router.get("/:quoteId", async (request, response) => {

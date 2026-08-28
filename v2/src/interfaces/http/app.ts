@@ -28,6 +28,7 @@ import { createRoutingRouter, type RoutingHttpDependencies } from "./routingRout
 import { createInventoryRouter, type InventoryHttpDependencies } from "./inventoryRoutes.js";
 import { createFormulaRouter, type FormulaHttpDependencies } from "./formulaRoutes.js";
 import { createTaxSettingsRouter, type TaxSettingsHttpDependencies } from "./taxSettingsRoutes.js";
+import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -70,6 +71,7 @@ export const createV2HttpApp = (
   configure?: (app: Express) => void,
   inventory?: AuthenticatedInventoryRouteRuntime,
   formulas?: AuthenticatedFormulaRouteRuntime,
+  emailIntegration?: EmailIntegrationHttpDependencies,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -119,7 +121,7 @@ export const createV2HttpApp = (
           const policy = new AuthorityPolicy();
           const quoteView = policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed;
           const productView = policy.decide(principal, { capability: "product.view", resource: { organizationId } }).allowed;
-          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
+          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view", "communications.configure"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
           if (!anyWorkspaceView)
             return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "V2 workspace access is unavailable." } });
           return response.status(200).json({
@@ -135,6 +137,7 @@ export const createV2HttpApp = (
                 productView,
                 productEdit: policy.decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed,
                 pricingConfigure: policy.decide(principal, { capability: "pricing.configure", resource: { organizationId } }).allowed,
+                communicationsConfigure: policy.decide(principal, { capability: "communications.configure", resource: { organizationId } }).allowed,
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
                 quoteCreate: policy.decide(principal, { capability: "quote.create", resource: { organizationId } }).allowed,
                 quoteEdit: policy.decide(principal, { capability: "quote.edit", resource: { organizationId } }).allowed,
@@ -229,6 +232,16 @@ export const createV2HttpApp = (
       },
       createTaxSettingsRouter({ ...quote.taxSettingsDependencies, logger }),
     );
+  if (quote && emailIntegration) {
+    app.use(
+      "/v2/organizations/:organizationId/settings/email",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request,response,next),
+      createEmailIntegrationRouter(emailIntegration),
+    );
+    app.get("/api/email/google/callback", createEmailIntegrationCallback(emailIntegration));
+  }
   if (order)
     app.use(
       "/v2/organizations/:organizationId/orders",

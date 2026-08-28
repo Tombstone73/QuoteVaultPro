@@ -27,6 +27,7 @@ import { composeAuthenticatedFulfillmentRuntime } from "../../infrastructure/ful
 import { composeAuthenticatedRoutingRuntime } from "../../infrastructure/routing/authenticatedRoutingRuntime.js";
 import { composeAuthenticatedInventoryRuntime } from "../../infrastructure/inventory/authenticatedInventoryRuntime.js";
 import { composeAuthenticatedFormulaRuntime } from "../../infrastructure/pricing/authenticatedFormulaRuntime.js";
+import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructure/communications/authenticatedEmailIntegrationRuntime.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -51,6 +52,7 @@ export const createV2DeploymentApp = (
   const routing = composeAuthenticatedRoutingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const inventory = composeAuthenticatedInventoryRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const formulas = composeAuthenticatedFormulaRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const emailIntegration = composeAuthenticatedEmailIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
 
   return createV2HttpApp(
     config,
@@ -75,6 +77,7 @@ export const createV2DeploymentApp = (
     authentication.install,
     inventory,
     formulas,
+    emailIntegration,
   );
 };
 

@@ -2,6 +2,8 @@ import type { ProductOptionRule } from "../../../shared/productOptionRules";
 
 export type ApiError = Readonly<{ code: string; message: string }>;
 export type SalesTaxSettings = Readonly<{ homeBusiness?: Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; updatedAt: string }> }>;
+export type EmailIntegrationReadiness = Readonly<{ provider: "gmail"; status: "not_configured" | "ready" | "reauth_required" | "error"; sendingAddress?: string; displayName?: string; lastValidatedAt?: string; actionRequired?: string; legacyAvailable?: boolean }>;
+export type QuoteSendReadiness = Readonly<{ recipient: Readonly<{ status: "ready" | "contact_missing" | "email_missing" | "contact_unavailable"; email?: string }>; tax: Readonly<{ status: "ready" | "unresolved" }>; email: EmailIntegrationReadiness; canSend: boolean }>;
 export type QuoteSellingInstruction = Readonly<
   | { kind: "calculated" }
   | { kind: "unit_override"; unitCents: number; reason: string }
@@ -90,6 +92,7 @@ export type UiBootstrap = Readonly<{
     productEdit?: boolean;
     /** Formula-domain authoring is deliberately separate from Product editing. */
     pricingConfigure?: boolean;
+    communicationsConfigure?: boolean;
     quoteOverridePrice: boolean;
     quoteCreate?: boolean;
     quoteEdit?: boolean;
@@ -1251,6 +1254,12 @@ export const taxSettingsApi = {
   get: (organizationId: string) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax`),
   saveHomeBusiness: (organizationId: string, businessRequestId: string, input: Readonly<{name:string;countryCode:string;regionCode:string;postalCode?:string;ratePercent:string;active:boolean;}>) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax/home-business`, { method:"PUT", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({...input,businessRequestId}) }),
 };
+export const emailIntegrationApi = {
+  get: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email`),
+  connect: (organizationId: string) => request<Readonly<{ authorizeUrl: string }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email/connect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
+  adoptLegacy: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email/adopt-legacy`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
+  disconnect: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email/disconnect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
+};
 const adoptSessionScope = (nextScope: string): void => {
   if (sessionScope && sessionScope !== nextScope) {
     csrfTokens.clear();
@@ -1268,6 +1277,7 @@ export const quoteApi = {
     csrfTokens.set(csrfKey(organizationId), value.csrfToken);
     return value;
   },
+  sendReadiness: (organizationId: string, quoteId: string) => request<QuoteSendReadiness>(endpoint(organizationId, `/${encodeURIComponent(quoteId)}/send-readiness`)),
   customers: (organizationId: string) =>
     request<readonly Selection[]>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/customers`,

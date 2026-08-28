@@ -4,7 +4,7 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { OrganizationId, OrderId, QuoteId } from "../../src/modules/shared/commercialValues.js";
 import { renderCustomerSalesPdf, type CustomerSalesDocument } from "./customerDocumentRenderer.js";
 
-type HeaderRow = { id: string; display_number: string; currency: string; purchase_order_number: string | null; requested_due_date: Date | null; commercial_notes: string | null; customer_name: string | null; customer_email: string | null; contact_name: string | null; contact_email: string | null; requested_fulfillment_method: string | null; selling_adjustment_cents: string; selling_adjustment_reason: string | null; commercial_charge: unknown; tax_composition: unknown; delivery_state?: "not_sent" | "sent"; };
+type HeaderRow = { id: string; display_number: string; currency: string; purchase_order_number: string | null; requested_due_date: Date | null; commercial_notes: string | null; customer_name: string | null; customer_email: string | null; contact_id: string | null; contact_exists: string | null; contact_name: string | null; contact_email: string | null; requested_fulfillment_method: string | null; selling_adjustment_cents: string; selling_adjustment_reason: string | null; commercial_charge: unknown; tax_composition: unknown; delivery_state?: "not_sent" | "sent"; };
 type LineRow = { description: string; quantity: number; selling_unit_cents: string; selling_line_cents: string; resolved_configuration: unknown };
 type BrandingRow = { name: string; address: string | null; phone: string | null; email: string | null; website: string | null };
 type CheckpointRow = { payload: unknown; occurred_at: Date };
@@ -57,6 +57,14 @@ export class PostgresCustomerDocumentService {
   async quoteRecipientInTransaction(client: PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<string | undefined> {
     return this.quoteRecipientFrom(client, organizationId, quoteId);
   }
+  async quoteRecipientReadiness(organizationId: OrganizationId, quoteId: QuoteId): Promise<Readonly<{ status: "ready" | "contact_missing" | "email_missing" | "contact_unavailable"; email?: string }>> {
+    const header = await this.quoteHeader(this.pool, organizationId, quoteId);
+    if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+    if (!header.contact_id) return { status: "contact_missing" };
+    if (!header.contact_exists) return { status: "contact_unavailable" };
+    const recipient = text(header.contact_email);
+    return recipient ? { status: "ready", email: recipient } : { status: "email_missing" };
+  }
   private async quoteRecipientFrom(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<string | undefined> {
     const header = await this.quoteHeader(queryable, organizationId, quoteId);
     if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
@@ -74,7 +82,7 @@ export class PostgresCustomerDocumentService {
   private orderHeader(queryable: Pool | PoolClient, organizationId: OrganizationId, orderId: OrderId): Promise<HeaderRow | null> { return this.header(queryable, organizationId, orderId, "order"); }
   private async header(queryable: Pool | PoolClient, organizationId: OrganizationId, documentId: string, kind: "quote" | "order"): Promise<HeaderRow | null> {
     const detail = kind === "quote" ? "v2_sales_quote_details" : "v2_sales_order_details";
-    const result = await queryable.query<HeaderRow>(`SELECT d.id,d.display_number,d.currency,d.purchase_order_number,d.requested_due_date,d.commercial_notes,COALESCE(c.display_name,c.company_name) customer_name,c.email customer_email,trim(concat_ws(' ',ct.first_name,ct.last_name)) contact_name,ct.email contact_email,x.requested_fulfillment_method,x.selling_adjustment_cents,x.selling_adjustment_reason,x.commercial_charge,x.tax_composition${kind === "quote" ? ",x.delivery_state" : ""} FROM v2_sales_documents d JOIN ${detail} x ON x.organization_id=d.organization_id AND x.document_id=d.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN customer_contacts ct ON ct.organization_id=d.organization_id AND ct.id=d.contact_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind=$3`, [organizationId, documentId, kind]);
+    const result = await queryable.query<HeaderRow>(`SELECT d.id,d.display_number,d.currency,d.purchase_order_number,d.requested_due_date,d.commercial_notes,COALESCE(c.display_name,c.company_name) customer_name,c.email customer_email,d.contact_id,ct.id contact_exists,trim(concat_ws(' ',ct.first_name,ct.last_name)) contact_name,ct.email contact_email,x.requested_fulfillment_method,x.selling_adjustment_cents,x.selling_adjustment_reason,x.commercial_charge,x.tax_composition${kind === "quote" ? ",x.delivery_state" : ""} FROM v2_sales_documents d JOIN ${detail} x ON x.organization_id=d.organization_id AND x.document_id=d.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN customer_contacts ct ON ct.organization_id=d.organization_id AND ct.id=d.contact_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind=$3`, [organizationId, documentId, kind]);
     return result.rows[0] ?? null;
   }
   private async lines(queryable: Pool | PoolClient, organizationId: OrganizationId, documentId: string): Promise<readonly LineRow[]> {

@@ -131,6 +131,7 @@ export type StandaloneStaffAuthentication = Readonly<{
   install: (app: Express) => void;
   trustedHostIdentity: TrustedHostIdentitySource;
   trustedHostMiddleware: RequestHandler;
+  publicWebOrigin?: string;
 }>;
 
 export const createStandaloneStaffAuthentication = (input: Readonly<{
@@ -215,5 +216,5 @@ export const createStandaloneStaffAuthentication = (input: Readonly<{
       });
     });
   };
-  return { install, trustedHostIdentity: identity, trustedHostMiddleware: requireStaff };
+  return { install, trustedHostIdentity: identity, trustedHostMiddleware: requireStaff, publicWebOrigin: input.config.publicWebOrigin };
 };
