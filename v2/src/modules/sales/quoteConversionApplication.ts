@@ -158,10 +158,10 @@ export class QuoteConversionApplicationService {
           if (!reread) throw new Error("Accepted Quote could not be read.");
           trace?.event(stage, "ok");
           accepted = reread;
-          stage = "audit";
-          trace?.event(stage, "started");
-          await quote.audit({ organizationId: context.organizationId, requestId: reservation.request.id, operation: "sales.quote.accept_and_convert.v1", event: { eventType: "quote_accepted", resourceId: input.quoteId, changes: [] }, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
-          trace?.event(stage, "ok");
+          // This combined operation leaves one Quote audit row. Acceptance is
+          // immutable checkpoint evidence inside the same transaction; the
+          // final conversion audit is the one semantic operation record and
+          // satisfies the one request/resource audit invariant.
         }
         stage = "order_creation";
         trace?.event(stage, "started");
