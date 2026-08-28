@@ -30,6 +30,7 @@ import { createFormulaRouter, type FormulaHttpDependencies } from "./formulaRout
 import { createTaxSettingsRouter, type TaxSettingsHttpDependencies } from "./taxSettingsRoutes.js";
 import { createOrganizationSettingsRouter, type OrganizationSettingsHttpDependencies } from "./organizationSettingsRoutes.js";
 import { createTeamAccessRouter, type TeamAccessHttpDependencies } from "./teamAccessRoutes.js";
+import { createDocumentNumberingSettingsRouter, type DocumentNumberingSettingsHttpDependencies } from "./documentNumberingSettingsRoutes.js";
 import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
@@ -43,6 +44,7 @@ export type AuthenticatedQuoteRouteRuntime = Readonly<{
   taxSettingsDependencies: Omit<TaxSettingsHttpDependencies, "logger">;
   organizationSettingsDependencies: Omit<OrganizationSettingsHttpDependencies, "logger">;
   teamAccessDependencies: TeamAccessHttpDependencies;
+  documentNumberingSettingsDependencies: DocumentNumberingSettingsHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -142,6 +144,7 @@ export const createV2HttpApp = (
                 productEdit: policy.decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed,
                 pricingConfigure: policy.decide(principal, { capability: "pricing.configure", resource: { organizationId } }).allowed,
                 organizationConfigure: policy.decide(principal, { capability: "organization.configure", resource: { organizationId } }).allowed,
+                numberingConfigure: policy.decide(principal, { capability: "numbering.configure", resource: { organizationId } }).allowed,
                 communicationsConfigure: policy.decide(principal, { capability: "communications.configure", resource: { organizationId } }).allowed,
                 permissionsView: policy.decide(principal, { capability: "permissions.view", resource: { organizationId } }).allowed,
                 permissionsManageSets: policy.decide(principal, { capability: "permissions.manageSets", resource: { organizationId } }).allowed,
@@ -235,6 +238,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request, response, next),
       createOrganizationSettingsRouter({ ...quote.organizationSettingsDependencies, logger }),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/settings/organization/numbering",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request, response, next),
+      createDocumentNumberingSettingsRouter(quote.documentNumberingSettingsDependencies),
     );
   if (quote)
     app.use(

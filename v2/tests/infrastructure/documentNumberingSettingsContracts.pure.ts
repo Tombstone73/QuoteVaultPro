@@ -1,0 +1,26 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { assertFutureNextNumber, displayFor, numberingSettingsInput } from "../../src/modules/organization/documentNumbering.js";
+
+assert.equal(displayFor("QT-", 1000n), "QT-1000");
+assert.equal(numberingSettingsInput({ expectedRevision: "quote:1|order:1", quote: { prefix: "Q_", nextNumber: "1001" }, order: { prefix: "ORD-", nextNumber: "1002" } }).quote.nextNumber, 1001n);
+assert.throws(() => numberingSettingsInput({ expectedRevision: "x", quote: { prefix: "bad prefix", nextNumber: "1000" }, order: { prefix: "ORD-", nextNumber: "1000" } }), /Quote prefix/);
+assert.throws(() => numberingSettingsInput({ expectedRevision: "x", quote: { prefix: "QT-", nextNumber: "1000" }, order: { prefix: "ORD-", nextNumber: "0" } }), /Order next number/);
+assert.throws(() => assertFutureNextNumber("quote", 1000n, 1001n, 999n), /cannot move backward/);
+assert.throws(() => assertFutureNextNumber("order", 1000n, 1000n, 1000n), /greater than existing native/);
+assert.doesNotThrow(() => assertFutureNextNumber("order", 1002n, 1001n, 1000n));
+const allocator = readFileSync(resolve("v2/infrastructure/sales/postgresCommercialPrimitives.ts"), "utf8");
+assert.match(allocator, /display_prefix/);
+assert.match(allocator, /revision = v2_sales_document_number_counters\.revision \+ 1/);
+const settings = readFileSync(resolve("v2/infrastructure/organization/postgresDocumentNumberingSettings.ts"), "utf8");
+assert.match(settings, /FOR UPDATE/);
+assert.match(settings, /assertFutureNextNumber/);
+assert.match(settings, /v2_audit_events/);
+const migration = readFileSync(resolve("server/db/migrations_v2/0237_v2_document_numbering_settings.sql"), "utf8");
+assert.match(migration, /display_prefix/);
+assert.match(migration, /revision/);
+const capability = readFileSync(resolve("server/db/migrations_v2/0238_v2_document_numbering_capability.sql"), "utf8");
+assert.match(capability, /numbering\.configure/);
+assert.match(capability, /template_key='owner'/);
+console.log("document numbering settings contracts passed");

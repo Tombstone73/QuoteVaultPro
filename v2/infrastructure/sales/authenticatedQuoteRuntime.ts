@@ -42,6 +42,8 @@ import type { OrganizationSettingsHttpDependencies } from "../../src/interfaces/
 import { PostgresOrganizationSettings } from "../organization/postgresOrganizationSettings.js";
 import { PostgresTeamAccess } from "../organization/postgresTeamAccess.js";
 import type { TeamAccessHttpDependencies } from "../../src/interfaces/http/teamAccessRoutes.js";
+import { PostgresDocumentNumberingSettings } from "../organization/postgresDocumentNumberingSettings.js";
+import type { DocumentNumberingSettingsHttpDependencies } from "../../src/interfaces/http/documentNumberingSettingsRoutes.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -57,6 +59,7 @@ export type AuthenticatedQuoteRuntime = Readonly<{
   taxSettingsDependencies: Omit<TaxSettingsHttpDependencies, "logger">;
   organizationSettingsDependencies: Omit<OrganizationSettingsHttpDependencies, "logger">;
   teamAccessDependencies: TeamAccessHttpDependencies;
+  documentNumberingSettingsDependencies: DocumentNumberingSettingsHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 
@@ -94,6 +97,7 @@ export const composeAuthenticatedQuoteRuntime = (
     taxSettingsDependencies: { settings: new PostgresSalesTaxSettings(input.pool), principals },
     organizationSettingsDependencies: { settings: new PostgresOrganizationSettings(input.pool), principals },
     teamAccessDependencies: { teamAccess: new PostgresTeamAccess(input.pool), principals },
+    documentNumberingSettingsDependencies: { settings: new PostgresDocumentNumberingSettings(input.pool), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

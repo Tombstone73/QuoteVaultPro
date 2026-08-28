@@ -92,6 +92,8 @@ export type UiBootstrap = Readonly<{
     productEdit?: boolean;
     /** Formula-domain authoring is deliberately separate from Product editing. */
     pricingConfigure?: boolean;
+    /** Future Organization → Numbering settings authority; no UI is shipped here. */
+    numberingConfigure?: boolean;
     communicationsConfigure?: boolean;
     quoteOverridePrice: boolean;
     quoteCreate?: boolean;

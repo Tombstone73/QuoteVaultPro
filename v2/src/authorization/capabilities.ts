@@ -4,6 +4,7 @@ export const capabilityIds = [
   "order.view", "order.create", "order.edit", "order.cancel", "order.overridePrice",
   "customer.view", "customer.edit", "product.view", "product.edit",
   "organization.configure",
+  "numbering.configure",
   "communications.configure",
   "pricing.preview", "pricing.configure", "pricing.publish",
   "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue",
