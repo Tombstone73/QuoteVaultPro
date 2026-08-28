@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { PostgresProductRoutingCompatibilityReader } from "../../infrastructure/products/postgresProductRoutingCompatibility.js";
+import { PostgresProductRoutingCompatibilityReader, PostgresProductRoutingCompatibilityTransactionRunner } from "../../infrastructure/products/postgresProductRoutingCompatibility.js";
 
 const base={product_id:"product-a",product_name:"Physical",product_updated_at:new Date("2026-08-28T00:00:00.000Z"),workflow_intent:"standard_production" as const,requires_production_job:true,active_product_version_id:"version-a",product_type_id:"type-a",product_type_name:"Sheet",routing_mode:"route_required" as const,default_route_template_id:"route-a",version_mode:null,version_route:null,compatibility_route:"Standard"};
 const client={query:async<T>(text:string,values?:readonly unknown[])=>{assert.equal(values?.[0],"org-a","every compatibility read is tenant-scoped");if(text.includes("FROM products p"))return{rows:[base]as T[]};if(text.includes("FROM product_types"))return{rows:[{id:"type-a",name:"Sheet",updated_at:new Date("2026-08-28T00:00:00.000Z"),route_id:"route-a",route_name:"Standard"}]as T[]};return{rows:[{id:"route-a",name:"Standard",steps:["production"]}]as T[]};},release:()=>undefined};
@@ -7,6 +7,13 @@ const reader=new PostgresProductRoutingCompatibilityReader({connect:async()=>cli
 const value=await reader.read("org-a","product-a");
 assert.equal(value?.readiness,"ROUTABLE_COMPATIBILITY_ROUTE");
 assert.equal(value?.compatibilityRouteName,"Standard");
+const writes:string[]=[];
+const mutationClient={query:async<T>(text:string,values?:readonly unknown[])=>{if(text==="BEGIN"||text==="COMMIT"||text==="ROLLBACK")return{rows:[]as T[]};if(text.startsWith("UPDATE products SET")){writes.push(text);assert.deepEqual(values,["type-a","org-a","product-a"]);assert.ok(!text.includes("updated_by_user_id"),"Product compatibility attribution belongs to the operation/audit record, not products.");return{rows:[{id:"product-a"}]as T[]};}if(text.includes("FROM products p"))return{rows:[base]as T[]};if(text.includes("FROM product_types"))return{rows:[{id:"type-a",name:"Sheet",updated_at:new Date("2026-08-28T00:00:00.000Z"),route_id:"route-a",route_name:"Standard"}]as T[]};return{rows:[{id:"route-a",name:"Standard",steps:["production"]}]as T[]};},release:()=>undefined};
+const runner=new PostgresProductRoutingCompatibilityTransactionRunner({connect:async()=>mutationClient} as any);
+const assigned=await runner.transaction(tx=>tx.assignProductType({organizationId:"org-a",productId:"product-a",productTypeId:"type-a",expectedProductUpdatedAt:"2026-08-28T00:00:00.000Z",staffActorUserId:"staff-a"}));
+assert.equal(writes.length,1);
+assert.equal(assigned.productTypeId,"type-a");
+assert.equal(assigned.compatibilityRouteName,"Standard");
 const audit=await reader.audit("org-a");
 assert.equal(audit.counts.routableByCompatibility,1);
 assert.equal(audit.worklist.length,0);
