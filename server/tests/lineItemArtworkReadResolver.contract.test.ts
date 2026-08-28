@@ -34,19 +34,16 @@ describe("line-item artwork read migration", () => {
     expect(panel).toContain("buildArtworkAccessUrl(file.fileRecordId, \"thumbnail\")");
   });
 
-  test("Order artwork downloads stream canonical files through the authenticated provider reader and preserve legacy reads", () => {
+  test("Order artwork downloads use the same authenticated canonical object reader as Quotes and preserve legacy reads", () => {
     const orderFiles = source("../routes/orderLineItemFiles.routes.ts");
     expect(orderFiles).toContain('/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy');
     expect(orderFiles).toContain("lineItemArtworkReadResolver.resolveForLineItem");
-    expect(orderFiles).toContain("readArtworkFileForOrganization");
-    expect(orderFiles).toContain('stage = "stream_canonical_file"');
-    expect(orderFiles).toContain('logFailure("STREAM_STARTED"');
-    expect(orderFiles).toContain('Content-Disposition", `attachment; filename="${filename}"`');
+    expect(orderFiles).not.toContain("readArtworkFileForOrganization");
+    expect(orderFiles).toContain('stage = "resolve_canonical_download_handle"');
+    expect(orderFiles).toContain('stage = "redirect_canonical_object"');
+    expect(orderFiles).toContain('logFailure("CANONICAL_OBJECT_REDIRECT"');
     expect(orderFiles).toContain("FILE_RELATIONSHIP_NOT_FOUND");
-    expect(orderFiles).toContain("STORAGE_KEY_MISSING");
-    expect(orderFiles).toContain("STORAGE_OBJECT_NOT_FOUND");
-    expect(orderFiles).toContain("FILE_ACCESS_DENIED");
-    expect(orderFiles).toContain("CANONICAL_STORAGE_READ_FAILED");
+    expect(orderFiles).toContain("CANONICAL_DOWNLOAD_HANDLE_FAILED");
     expect(orderFiles).toContain("requestId,");
     expect(orderFiles).toContain("attachOrderArtworkDownloadDiagnostics");
     expect(orderFiles).toContain("authCookiePresent");

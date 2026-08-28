@@ -52,7 +52,6 @@ import {
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
-import { readArtworkFileForOrganization } from "../services/artwork/ArtworkFileAccessService";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
 import {
   ArtworkSetOperationError,
@@ -377,54 +376,24 @@ export function registerOrderLineItemFileRoutes(
       }
 
       canonicalFileRecordId = downloadSource.fileRecordId ? String(downloadSource.fileRecordId) : null;
-      // Canonical artwork is streamed through the same provider adapter used
-      // by the authenticated artwork reader.  This keeps one authorization
-      // hop and avoids making a browser download depend on a second redirect.
+      // Quotes already use resolveOriginalFileAccess to enter the authenticated
+      // /objects canonical reader. Keep Orders on that proven boundary too.
+      // The client performs one credential-aware fetch; Fetch follows this
+      // same-origin redirect and receives the final attachment bytes without
+      // navigating the operator to an API response.
       if (canonicalFileRecordId) {
-        stage = "resolve_canonical_file";
+        stage = "resolve_canonical_download_handle";
         diagnostics.stage = stage;
-        const canonical = await canonicalFileReadResolver.resolveOriginal(canonicalFileRecordId);
-        diagnostics.canonicalFileResolved = true;
-        const storageKey = canonical.objectKey ?? canonical.localPathRef ?? null;
-        const storageDetails = {
-          availabilityStatus: canonical.status,
-          storageProvider: canonical.providerType,
-          storageBucket: canonical.bucket,
-          storageKey,
-        };
-
-        if (canonical.status !== "available") {
-          logFailure("CANONICAL_FILE_NOT_FOUND", storageDetails);
+        const resolved = await resolveOriginalFileAccess(downloadSource, { logOnce: createRequestLogOnce() });
+        diagnostics.canonicalFileResolved = resolved.availabilityStatus === "available";
+        if (!resolved.downloadUrl) {
+          logFailure("CANONICAL_FILE_NOT_FOUND", { availabilityStatus: resolved.availabilityStatus });
           return res.status(404).json({ error: "Artwork file is unavailable" });
         }
-        if (!storageKey) {
-          logFailure("STORAGE_KEY_MISSING", storageDetails);
-          return res.status(404).json({ error: "Artwork file is unavailable" });
-        }
-        if (!canonical.providerConfigId) {
-          logFailure("DOWNLOAD_URL_RESOLUTION_FAILED", storageDetails);
-          return res.status(404).json({ error: "Artwork file is unavailable" });
-        }
-
-        stage = "stream_canonical_file";
+        stage = "redirect_canonical_object";
         diagnostics.stage = stage;
-        diagnostics.storageFetchAttempted = true;
-        const file = await readArtworkFileForOrganization({
-          organizationId,
-          fileRecordId: canonicalFileRecordId,
-          variant: "original",
-        });
-        if (!file) {
-          logFailure("STORAGE_OBJECT_NOT_FOUND", storageDetails);
-          return res.status(404).json({ error: "Artwork file is unavailable" });
-        }
-
-        const filename = file.filename.replace(/[\r\n\\"]/g, "_");
-        res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
-        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-        res.type(file.mimeType);
-        logFailure("STREAM_STARTED", storageDetails);
-        return res.status(200).send(file.buffer);
+        logFailure("CANONICAL_OBJECT_REDIRECT", { availabilityStatus: resolved.availabilityStatus });
+        return res.redirect(resolved.downloadUrl);
       }
 
       // Legacy attachments have no canonical file record and retain their
@@ -443,8 +412,8 @@ export function registerOrderLineItemFileRoutes(
         ? "STORAGE_OBJECT_NOT_FOUND"
         : error?.status === 403 || /access denied|forbidden|not authorized/i.test(errorMessage)
           ? "FILE_ACCESS_DENIED"
-          : stage === "stream_canonical_file"
-            ? "CANONICAL_STORAGE_READ_FAILED"
+          : stage === "resolve_canonical_download_handle"
+            ? "CANONICAL_DOWNLOAD_HANDLE_FAILED"
           : "DOWNLOAD_URL_RESOLUTION_FAILED";
       logFailure(errorCode, { errorName: error?.name ?? "Error", errorMessage: errorMessage || "Unknown failure" });
       if (errorCode === "STORAGE_OBJECT_NOT_FOUND") {
