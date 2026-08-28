@@ -24,12 +24,12 @@ const cents = z.number().int().min(0);
 /** Canonical pre-persistence Product pricing contract. It intentionally mirrors
  * the currently supported Product Builder models without introducing new math. */
 export const canonicalProductPricingConfigurationSchema = z.discriminatedUnion("model", [
-  z.object({ model: z.literal("scalar"), unit: z.enum(["per_piece", "per_square_foot", "flat_fee"]), priceCents: cents, minimumChargeCents: cents.optional() }).strict(),
+  z.object({ model: z.literal("scalar"), unit: z.enum(["per_piece", "per_square_foot", "per_hour", "flat_fee"]), priceCents: cents, minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("one_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), optionKey: nonEmpty, cells: z.array(z.object({ option: nonEmpty, priceCents: cents }).strict()), minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(z.object({ row: nonEmpty, column: nonEmpty, priceCents: cents }).strict()), minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1), minimumChargeCents: cents.optional() }).strict(),
   z.object({ model: z.literal("option_quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), optionKey: nonEmpty, rows: z.array(z.object({ option: nonEmpty, tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1) }).strict()).min(1), minimumChargeCents: cents.optional() }).strict(),
-  z.object({ model: z.literal("unresolved"), unit: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
+  z.object({ model: z.literal("unresolved"), unit: z.enum(["per_piece", "per_square_foot", "per_hour"]).optional() }).strict(),
 ]).superRefine((pricing, ctx) => {
   if (pricing.model === "two_dimensional_matrix" && pricing.rowOptionKey === pricing.columnOptionKey) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["columnOptionKey"], message: "Matrix axes must use different option groups." });

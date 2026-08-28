@@ -10,7 +10,7 @@ export const PRODUCT_DRAFT_INTENT_VERSION = 1 as const;
 const nonEmpty = z.string().trim().min(1);
 const centsSchema = z.number().int().min(0);
 const positiveNumber = z.number().finite().positive();
-export const fieldSourceSchema = z.enum(["explicit_user", "structured_candidate", "ai_interpreted", "selected_template", "canonical_default", "unresolved"]);
+export const fieldSourceSchema = z.enum(["explicit_user", "structured_candidate", "ai_interpreted", "semantic_inference", "selected_template", "canonical_default", "unresolved"]);
 export const fieldMetadataSchema = z.object({ source: fieldSourceSchema, confidence: z.number().min(0).max(1).optional() }).strict();
 export const unresolvedFieldSchema = z.object({ path: nonEmpty, code: nonEmpty, question: nonEmpty.optional() }).strict();
 
@@ -57,7 +57,7 @@ const matrixCellSchema = z.object({ row: nonEmpty, column: nonEmpty, priceCents:
  * preserves stated rates without inventing another customer-facing axis. */
 const oneDimensionalMatrixCellSchema = z.object({ option: nonEmpty, priceCents: centsSchema }).strict();
 const pricingSchema = z.discriminatedUnion("model", [
-  z.object({ model: z.literal("scalar"), unit: z.enum(["per_piece", "per_square_foot", "flat_fee"]), priceCents: centsSchema, minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("scalar"), unit: z.enum(["per_piece", "per_square_foot", "per_hour", "flat_fee"]), priceCents: centsSchema, minimumChargeCents: centsSchema.optional() }).strict(),
   // A matrix can be fully captured before its pricing basis is known.  The
   // explicit sentinel preserves the typed cells without inventing a unit; the
   // resolver and projection gate keep it non-executable until it is answered.
@@ -69,7 +69,7 @@ const pricingSchema = z.discriminatedUnion("model", [
   // supplied enough information to choose a pricing structure or amount.
   // Keeping it here avoids discarding an explicit square-foot decision while
   // the draft remains safely non-executable.
-  z.object({ model: z.literal("unresolved"), unit: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
+  z.object({ model: z.literal("unresolved"), unit: z.enum(["per_piece", "per_square_foot", "per_hour"]).optional() }).strict(),
 ]).superRefine((pricing, ctx) => {
   if (pricing.model === "two_dimensional_matrix" && pricing.rowOptionKey === pricing.columnOptionKey) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Matrix axes must use different option groups.", path: ["columnOptionKey"] });
   if (pricing.model === "quantity_tiers") pricing.tiers.forEach((tier, index) => { if (tier.maximumQuantity !== null && tier.maximumQuantity < tier.minimumQuantity) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Tier maximum cannot precede its minimum.", path: ["tiers", index, "maximumQuantity"] }); });

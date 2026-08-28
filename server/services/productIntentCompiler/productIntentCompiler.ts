@@ -176,7 +176,7 @@ const providerPayloadGuide = {
     lifecycle: { productStatus: "inactive", published: false },
     measurement: "{ mode: 'dimensions_required' } | { mode: 'fixed_size', dimensions: { widthIn, heightIn, allowRotation? } } | { mode: 'quantity_only' }",
     quantity: "{ behavior: 'customer_entered', minimum?, maximum? } | { behavior: 'fixed', quantity } | { behavior: 'not_applicable' }",
-    pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'flat_fee', priceCents } | { model: 'one_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', optionKey, cells: [{ option, priceCents }] } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers: [{ minimumQuantity, maximumQuantity, priceCents }] } | { model: 'option_quantity_tiers', unit: 'per_piece'|'per_square_foot', optionKey, rows: [{ option, tiers: [{ minimumQuantity, maximumQuantity, priceCents }] }] } | { model: 'unresolved' }. Quantity tiers are continuous inclusive ranges beginning at 1; only the final tier is open ended. Prices are integer cents.",
+    pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'per_hour'|'flat_fee', priceCents } | { model: 'one_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', optionKey, cells: [{ option, priceCents }] } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers: [{ minimumQuantity, maximumQuantity, priceCents }] } | { model: 'option_quantity_tiers', unit: 'per_piece'|'per_square_foot', optionKey, rows: [{ option, tiers: [{ minimumQuantity, maximumQuantity, priceCents }] }] } | { model: 'unresolved' }. Use per_hour only for a stated hourly service rate. Quantity tiers are continuous inclusive ranges beginning at 1; only the final tier is open ended. Prices are integer cents.",
     material: "{ state: 'resolved', id, label } | { state: 'unresolved', label } | { state: 'explicitly_unset' }",
     optionGroups: "[{ key, label, required, selectionMode: 'single'|'multiple', availableWhen?: { optionGroupKey, optionValueKey }, values: [{ key, label, isDefault, priceImpact?: { kind: 'percentage_of_base', percent }, totalPercentOfBaseWhenEnabled?: { percent, prerequisite: { optionGroupKey, optionValueKey } } }] }]. Use priceImpact only for an explicit percentage of the resolved base price. For a dependent total, use totalPercentOfBaseWhenEnabled: e.g. Contour has priceImpact 10, Weed and Tape has totalPercentOfBaseWhenEnabled percent 30 with prerequisite Contour. The server derives +20, so selection totals +30 rather than +40. A dependent group must use availableWhen with the same prerequisite. Never invent a material or route.",
     workflow: "{ kind: 'standard_production'|'fulfillment_only'|'service_fee', requiresProofApproval, requiresProductionJob }",
@@ -547,6 +547,58 @@ function normalizeUnsafeProviderOptionDefaults(intent: Record<string, unknown>):
   };
 }
 
+function hourlyRateCents(request: string): number | null {
+  const match = request.match(/\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s*)?(?:hour|hours|hr|hrs)\b/i);
+  if (!match) return null;
+  const amount = Number(match[1]!.replace(/,/g, ""));
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) : null;
+}
+
+/** Server-owned semantic inference keeps fee language from being forced into
+ * physical-product schema defaults. It does not select a tenant record: the
+ * resolver below still resolves the semantic Fees label against this tenant. */
+function normalizeServiceFeeIntent(request: string, candidate: Record<string, unknown>): Record<string, unknown> {
+  const text = normalizedText(request);
+  const hourly = /\b(?:hour|hours|hourly|hr|hrs)\b/.test(text);
+  const feeLanguage = /\b(?:fee|fees)\b/.test(text)
+    || /\bservice\s+(?:product|fee)\b/.test(text)
+    || (hourly && /\b(?:design|installation)\b/.test(text));
+  if (!feeLanguage) return candidate;
+  const rateCents = hourlyRateCents(request);
+  const metadata = candidate.fieldMetadata && typeof candidate.fieldMetadata === "object" && !Array.isArray(candidate.fieldMetadata)
+    ? candidate.fieldMetadata as Record<string, unknown>
+    : {};
+  const unresolved = Array.isArray(candidate.unresolvedFields) ? candidate.unresolvedFields.filter((field: any) =>
+    field?.path !== "material" && field?.path !== "production.route" && field?.path !== "workflow.requiresProofApproval" && field?.path !== "workflow.requiresProductionJob" && field?.path !== "pricing"
+  ) : [];
+  if (hourly && rateCents === null) unresolved.push({ path: "pricing", code: "HOURLY_RATE_UNRESOLVED", question: "What hourly rate should this service use?" });
+  const identity = candidate.identity && typeof candidate.identity === "object" && !Array.isArray(candidate.identity)
+    ? candidate.identity as Record<string, unknown>
+    : {};
+  return {
+    ...candidate,
+    identity: { ...identity, category: { state: "unresolved", label: "Fees" } },
+    measurement: { mode: "quantity_only" },
+    quantity: hourly ? { behavior: "not_applicable" } : candidate.quantity,
+    ...(hourly ? { pricing: rateCents === null ? { model: "unresolved", unit: "per_hour" } : { model: "scalar", unit: "per_hour", priceCents: rateCents } } : {}),
+    material: { state: "explicitly_unset" },
+    workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false },
+    production: { route: { state: "explicitly_unset" }, configuration: {} },
+    unresolvedFields: unresolved,
+    fieldMetadata: {
+      ...metadata,
+      "identity.category": { source: "semantic_inference" },
+      "measurement.mode": { source: "semantic_inference" },
+      pricing: { source: rateCents === null ? "unresolved" : "semantic_inference" },
+      material: { source: "semantic_inference" },
+      "workflow.kind": { source: "semantic_inference" },
+      "workflow.requiresProofApproval": { source: "semantic_inference" },
+      "workflow.requiresProductionJob": { source: "semantic_inference" },
+      "production.route": { source: "semantic_inference" },
+    },
+  };
+}
+
 function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value: unknown, intentId: string): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const root = value as Record<string, unknown>;
@@ -554,10 +606,22 @@ function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value
   const candidate = root.intent as Record<string, unknown>;
   const forbidden = ["contractVersion", "intentId", "organizationId", "revision", "state", "revisionMetadata", "operationContext"].filter((key) => key in candidate);
   if (forbidden.length) throw new Error(`Provider included server-owned fields: ${forbidden.join(", ")}`);
+  const normalizedCandidate = normalizeServerOwnedProductDefaults(
+    input.request,
+    normalizeServiceFeeIntent(
+      input.request,
+      normalizeUnsafeProviderOptionDefaults(
+        normalizeUnsafeProviderOperationalReferences(
+          input.request,
+          normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) }),
+        ),
+      ),
+    ),
+  );
   return {
     ...root,
     intent: {
-      ...normalizeServerOwnedProductDefaults(input.request, normalizeUnsafeProviderOptionDefaults(normalizeUnsafeProviderOperationalReferences(input.request, normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) })))),
+      ...normalizedCandidate,
       contractVersion: 1,
       intentId,
       organizationId: input.orgId,
@@ -586,6 +650,22 @@ function normalizeContinuationPatch(input: ProductIntentCompilerInput, value: un
  * resolution against the current canonical intent. */
 function normalizeSemanticContinuation(input: ProductIntentCompilerInput, value: unknown): unknown {
   if (!input.currentIntent || input.currentRevision == null || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (input.currentIntent.workflow.kind === "service_fee" && input.currentIntent.pricing.model === "unresolved" && input.currentIntent.pricing.unit === "per_hour") {
+    const rateCents = hourlyRateCents(input.request) ?? (/\$\s*\d/.test(input.request) ? (() => {
+      const amount = input.request.match(/\$\s*(\d[\d,]*(?:\.\d{1,2})?)/)?.[1];
+      return amount ? Math.round(Number(amount.replace(/,/g, "")) * 100) : null;
+    })() : null);
+    if (rateCents !== null && Number.isFinite(rateCents)) {
+      return { kind: "intent_patch", patch: {
+        contractVersion: 1, baseRevision: input.currentRevision, preserveUnchanged: true,
+        operations: [
+          { op: "set_pricing", value: { model: "scalar", unit: "per_hour", priceCents: rateCents } },
+          { op: "set_unresolved_fields", value: input.currentIntent.unresolvedFields.filter((field) => field.path !== "pricing") },
+          { op: "merge_field_metadata", value: { pricing: { source: "explicit_user" } } },
+        ],
+      } };
+    }
+  }
   const parsed = semanticProductOperationsResultSchema.safeParse(value);
   if (!parsed.success) return value;
   return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision, input.request, { categoryLabels: input.candidateLabels?.categories }) };

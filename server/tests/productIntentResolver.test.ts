@@ -1,4 +1,4 @@
-import { resolveAndValidateProductDraftIntent } from "../services/productIntentCompiler/productIntentResolver";
+import { resolveAndValidateProductDraftIntent, resolveProductDraftIntentReferences } from "../services/productIntentCompiler/productIntentResolver";
 
 function yardSignsIntent() {
   return {
@@ -28,5 +28,22 @@ describe("Product Intent resolver", () => {
     expect(result.ready).toBe(false);
     expect(result.intent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: "unresolved", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }, { row: "6mm", column: "double", priceCents: 2200 }]) });
     expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "PRICING_UNIT_UNRESOLVED", id: "0:pricing.matrix.unit:required", path: "pricing.matrix.unit", severity: "question" })]));
+  });
+
+  test("resolves the single tenant Fees capability for an inferred service fee without selecting physical categories", () => {
+    const raw = yardSignsIntent();
+    raw.identity.category = { state: "unresolved", label: "Fees" } as any;
+    raw.measurement = { mode: "quantity_only" } as any;
+    raw.quantity = { behavior: "not_applicable" } as any;
+    raw.pricing = { model: "scalar", unit: "per_hour", priceCents: 6000 } as any;
+    raw.material = { state: "explicitly_unset" } as any;
+    raw.optionGroups = [];
+    raw.workflow = { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false } as any;
+    raw.production = { route: { state: "explicitly_unset" }, configuration: {} } as any;
+    raw.unresolvedFields = [];
+    raw.fieldMetadata = { "identity.category": { source: "semantic_inference" }, pricing: { source: "semantic_inference" } } as any;
+    const resolved = resolveProductDraftIntentReferences(raw, { categories: [{ id: "roll", label: "Roll" }, { id: "fees", label: "Fees" }], materials: [], productionRoutes: [] });
+    expect(resolved.identity.category).toEqual({ state: "resolved", id: "fees", label: "Fees" });
+    expect(resolved.workflow).toEqual({ kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false });
   });
 });

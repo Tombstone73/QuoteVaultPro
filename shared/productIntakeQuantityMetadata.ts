@@ -14,7 +14,7 @@ export type ProductIntakeQuantitySourceOption = {
   sourcePaths: string[];
 };
 
-export type ProductIntakeQuantityPricingBehavior = "per_piece" | "quantity_tiers" | "flat_fee" | "per_square_foot";
+export type ProductIntakeQuantityPricingBehavior = "per_piece" | "quantity_tiers" | "flat_fee" | "per_hour" | "per_square_foot";
 
 export type ProductIntakeQuantityMetadata = {
   configured: boolean;

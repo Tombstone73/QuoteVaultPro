@@ -134,7 +134,7 @@ function compilerInput(orgId: string, request: string, candidates: { categories:
   return {
     orgId, request, operationContext: { operation: "new_product" },
     schemaDescription: "Strict ProductIntentCompilerResult JSON for ProductDraftIntent contract version 1.",
-    allowedEnums: { operation: ["new_product"], lifecycleStatus: ["inactive"], pricingUnit: ["per_piece", "per_square_foot", "flat_fee", "unresolved"], workflow: ["standard_production", "fulfillment_only", "service_fee"] },
+    allowedEnums: { operation: ["new_product"], lifecycleStatus: ["inactive"], pricingUnit: ["per_piece", "per_square_foot", "per_hour", "flat_fee", "unresolved"], workflow: ["standard_production", "fulfillment_only", "service_fee"] },
     supportedArchetypes: ["standard_production", "fulfillment_only", "service_fee"],
     candidateLabels: { categories: candidates.categories.map((item) => item.label), materials: candidates.materials.map((item) => item.label), productionRoutes: candidates.productionRoutes.map((item) => item.label) },
     serverConstraints: ["Create one inactive, unpublished product only.", "Do not invent tenant IDs; use supplied labels only."],

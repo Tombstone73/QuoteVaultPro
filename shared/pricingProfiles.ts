@@ -80,6 +80,16 @@ export const PRICING_PROFILES: Record<string, PricingProfile> = {
     usesFormula: true,
     defaultFormula: "flatFee",
   },
+  hourly: {
+    key: "hourly",
+    label: "Hourly Service",
+    description: "Time-based service pricing using the entered billable hours",
+    kind: "qty_only",
+    requiresDimensions: false,
+    usesNestingCalculator: false,
+    usesFormula: true,
+    defaultFormula: "hours * hourly_rate",
+  },
 };
 
 // Type for profile keys

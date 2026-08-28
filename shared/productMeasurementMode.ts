@@ -21,7 +21,7 @@ export function productRequiresEnteredDimensions(
   if (getPbv2FixedDimensions(treeJson)) return false;
   if (treeJson?.meta?.requiresDimensions !== undefined) return treeJson.meta.requiresDimensions;
   if (typeof product.requiresDimensions === "boolean") return product.requiresDimensions;
-  if (product.pricingProfileKey === "fee" || product.pricingMode === "fee" || product.pricingMode === "addon" || product.pricingMode === "flat") return false;
+  if (product.pricingProfileKey === "fee" || product.pricingProfileKey === "hourly" || product.pricingMode === "fee" || product.pricingMode === "addon" || product.pricingMode === "flat") return false;
   return true;
 }
 
@@ -31,6 +31,6 @@ export function dimensionsForProductPricing(
   width: unknown,
   height: unknown,
 ): { widthIn: number; heightIn: number } {
-  if (product?.measurementMode === "quantity_only" || product?.pricingProfileKey === "fee") return { widthIn: 1, heightIn: 1 };
+  if (product?.measurementMode === "quantity_only" || product?.pricingProfileKey === "fee" || product?.pricingProfileKey === "hourly") return { widthIn: 1, heightIn: 1 };
   return { widthIn: Number(width), heightIn: Number(height) };
 }

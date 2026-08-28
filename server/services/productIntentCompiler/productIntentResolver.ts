@@ -37,7 +37,7 @@ function includesLabel(labels: readonly string[] | undefined, label: string): bo
 function mayResolveOperationalReference(intent: ProductDraftIntent, field: ReferenceField): boolean {
   const metadata = intent.fieldMetadata[field];
   if (!metadata) return false;
-  if (["explicit_user", "selected_template", "canonical_default"].includes(metadata.source)) return true;
+  if (["explicit_user", "semantic_inference", "selected_template", "canonical_default"].includes(metadata.source)) return true;
   return metadata.source === "ai_interpreted" && (metadata.confidence ?? 0) >= 0.95;
 }
 
@@ -110,6 +110,15 @@ export function resolveProductDraftIntentReferences(rawIntent: unknown, candidat
     return fallback === "explicitly_unset" ? { state: "explicitly_unset" } : { state: "unresolved", label: label || "Not selected" };
   };
   intent.identity.category = resolve(intent.identity.category, candidates.categories, "identity.category", "unresolved");
+  // A service-fee classification is a semantic fact, not a request to choose
+  // among physical product categories. Resolve only the uniquely named Fees
+  // capability; anything broader remains a real business decision.
+  if (intent.workflow.kind === "service_fee" && intent.identity.category.state === "unresolved") {
+    const feeCategories = candidates.categories.filter((candidate) => /^(?:fees?|services?)$/i.test(candidate.label.trim()));
+    if (feeCategories.length === 1) {
+      intent.identity.category = { state: "resolved", id: feeCategories[0]!.id, label: feeCategories[0]!.label };
+    }
+  }
   // Retain an unresolved material hint. It is distinct from an explicit choice
   // to leave material unset and can safely drive a nonblocking, relevant
   // suggestion when material is optional.
@@ -146,8 +155,8 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.production.route.state === "unresolved") issues.push({ code: "ROUTE_UNRESOLVED", path: "production.route", severity: "question", message: "Which production route should this product use?" });
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });
   if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: intent.pricing.unit
-    ? `What pricing structure should use the stated ${intent.pricing.unit === "per_square_foot" ? "per-square-foot" : "per-piece"} basis?`
-    : "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
+    ? `What pricing structure should use the stated ${intent.pricing.unit === "per_square_foot" ? "per-square-foot" : intent.pricing.unit === "per_hour" ? "hourly" : "per-piece"} basis?`
+    : "Should pricing be per piece, per square foot, per hour, a matrix, or quantity tiers?" });
   if ((intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
   for (const group of intent.optionGroups) {
     if (!group.inputType && group.values.length === 0) {

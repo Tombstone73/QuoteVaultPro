@@ -36,6 +36,21 @@ function hasFlatFeeFormula(meta: AnyRecord): boolean {
   return Number.isFinite(variables.flatFee);
 }
 
+function hasHourlyFormula(meta: AnyRecord): boolean {
+  const formula = typeof meta.pricingFormula === "string" ? meta.pricingFormula.replace(/\s+/g, "") : "";
+  const variables = {
+    ...numericRecord((meta as any).pricingFormulaVariables),
+    ...numericRecord((meta as any).formulaVariables),
+  };
+  const billingUnit = asRecord((meta as any).billingUnit);
+  return formula === "hours*hourly_rate"
+    && billingUnit?.kind === "hour"
+    && billingUnit?.selectionKey === "hours"
+    && Number(billingUnit?.step) > 0
+    && Number.isFinite(variables.hourly_rate)
+    && variables.hourly_rate >= 0;
+}
+
 /**
  * Formula-priced matrix products deliberately keep the scalar base at zero:
  * the selected matrix row supplies `base_price` at runtime.  A positive row
@@ -177,6 +192,9 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   }
 
   if (meta.pricingProfileKey === "fee" && hasFlatFeeFormula(meta)) {
+    return toResult([]);
+  }
+  if (meta.pricingProfileKey === "hourly" && hasHourlyFormula(meta)) {
     return toResult([]);
   }
 

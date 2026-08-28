@@ -328,7 +328,7 @@ export type OptionTreeV2 = {
         mapping?: {
           source: "line_item_quantity" | "fixed_quantity" | "not_applicable";
           variable: "q" | null;
-          pricingBehavior: "per_piece" | "quantity_tiers" | "flat_fee" | "per_square_foot";
+          pricingBehavior: "per_piece" | "quantity_tiers" | "flat_fee" | "per_hour" | "per_square_foot";
           pricingPreviewField: "quantity" | null;
           quoteLineItemField: "quantity" | null;
           orderLineItemField: "quantity" | null;
@@ -698,6 +698,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       outputMeaning: z.enum(["billable", "final_price", "generic"]).optional(),
       formulaVariables: z.record(z.union([z.number(), z.boolean()])).optional(),
       pricingFormulaVariables: z.record(z.union([z.number(), z.boolean()])).optional(),
+      billingUnit: z.object({ kind: z.literal("hour"), selectionKey: z.string().min(1), step: z.number().positive() }).optional(),
       pricingV2: pricingV2Schema.optional(),
       shippingConfig: shippingConfigSchema.optional(),
       productImages: z.array(productImageSchema).optional(),
@@ -768,7 +769,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           mapping: z.object({
             source: z.enum(["line_item_quantity", "fixed_quantity", "not_applicable"]),
             variable: z.enum(["q"]).nullable(),
-            pricingBehavior: z.enum(["per_piece", "quantity_tiers", "flat_fee", "per_square_foot"]),
+            pricingBehavior: z.enum(["per_piece", "quantity_tiers", "flat_fee", "per_hour", "per_square_foot"]),
             pricingPreviewField: z.literal("quantity").nullable(),
             quoteLineItemField: z.literal("quantity").nullable(),
             orderLineItemField: z.literal("quantity").nullable(),

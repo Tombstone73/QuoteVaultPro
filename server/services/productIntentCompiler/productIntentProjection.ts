@@ -14,7 +14,7 @@ export type ProjectedProductBuilderDraft = {
   product: {
     name: string; category: string; description: string; pricingMode: "area" | "quantity";
     measurementMode: "dimensions_required" | "quantity_only"; pricingEngine: "pricingProfile";
-    pricingProfileKey: "default" | "qty_only" | "fee"; requiresProductionJob: boolean;
+    pricingProfileKey: "default" | "qty_only" | "fee" | "hourly"; requiresProductionJob: boolean;
     requiresProofApproval: boolean; isService: boolean; isTaxable: boolean; isActive: false;
   };
   treeJson: Record<string, unknown>;
@@ -51,7 +51,7 @@ function assertReady(intent: ProductDraftIntent): void {
   assert(intent.workflow.kind !== "service_fee" || !intent.workflow.requiresProductionJob, "SERVICE_FEE_PRODUCTION_JOB", "Service fees cannot create production jobs.", "workflow.requiresProductionJob");
   assert(intent.production.route.state === "explicitly_unset" || intent.workflow.requiresProductionJob, "ROUTE_WITHOUT_PRODUCTION_JOB", "A production route requires a production job.", "production.route");
   if (intent.measurement.mode === "quantity_only") {
-    assert(intent.quantity.behavior !== "not_applicable", "QUANTITY_ONLY_QUANTITY_UNCONFIGURED", "Quantity-only products must declare a customer-entered or fixed quantity behavior.", "quantity");
+    assert(intent.quantity.behavior !== "not_applicable" || (intent.pricing.model === "scalar" && intent.pricing.unit === "per_hour"), "QUANTITY_ONLY_QUANTITY_UNCONFIGURED", "Quantity-only products must declare a customer-entered or fixed quantity behavior unless pricing is collected from billable hours.", "quantity");
     assert(!(intent.pricing.model === "scalar" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot pricing requires dimensions or fixed dimensions.", "pricing");
     assert(!(intent.pricing.model === "quantity_tiers" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot quantity tiers require dimensions or fixed dimensions.", "pricing");
     assert(!(intent.pricing.model === "option_quantity_tiers" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot option quantity tiers require dimensions or fixed dimensions.", "pricing");
@@ -155,8 +155,9 @@ function buildMatrix(intent: ProductDraftIntent, groups: Map<string, ProductDraf
  * canonical per-piece shape must select the existing quantity-only evaluator
  * instead, including option matrices whose rate is resolved from a cell.
  */
-function pricingProfileKeyFor(pricing: ProductDraftIntent["pricing"]): "default" | "qty_only" | "fee" {
+function pricingProfileKeyFor(pricing: ProductDraftIntent["pricing"]): "default" | "qty_only" | "fee" | "hourly" {
   if (pricing.model === "scalar" && pricing.unit === "flat_fee") return "fee";
+  if (pricing.model === "scalar" && pricing.unit === "per_hour") return "hourly";
   if (
     (pricing.model === "scalar" && pricing.unit === "per_piece")
     || (pricing.model === "quantity_tiers" && pricing.unit === "per_piece")
@@ -183,6 +184,7 @@ function quantityMetadataForIntent(intent: ProductDraftIntent) {
     pricingBehavior: quantityPricingBehaviorFor(pricing),
     matrixAxes: pricing.model === "one_dimensional_matrix" || pricing.model === "option_quantity_tiers" ? [pricing.optionKey] : pricing.model === "two_dimensional_matrix" ? [pricing.rowOptionKey, pricing.columnOptionKey] : [],
     ...(fixedQuantity === undefined ? {} : { fixedQuantity }),
+    ...(pricing.model === "scalar" && pricing.unit === "per_hour" ? { customerFacingOptionGenerated: true, notes: "Billable hours are entered as a fractional PBV2 service field." } : {}),
   });
 }
 
@@ -192,6 +194,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const optionTree = buildOptions(intent); const matrix = buildMatrix(intent, optionTree.groups);
   const pricing = intent.pricing;
   const isFee = pricing.model === "scalar" && pricing.unit === "flat_fee";
+  const isHourly = pricing.model === "scalar" && pricing.unit === "per_hour";
   const pricingProfileKey = pricingProfileKeyFor(pricing);
   assert(!isFee || intent.workflow.kind === "service_fee", "FLAT_FEE_WORKFLOW_INVALID", "Flat-fee pricing requires the service-fee workflow.", "workflow.kind");
   const perSqft = pricing.model === "scalar" && pricing.unit === "per_square_foot" ? pricing.priceCents : null;
@@ -206,12 +209,21 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const fixedDimensions = intent.measurement.mode === "fixed_size" ? { ...intent.measurement.dimensions, unit: "in" as const, label: `${intent.measurement.dimensions.widthIn}\" x ${intent.measurement.dimensions.heightIn}\"` } : null;
   const fingerprint = productDraftIntentFingerprint(intent);
   const quantityMetadata = quantityMetadataForIntent(intent);
+  if (isHourly) {
+    const nodeId = stableId("intent_input", "hours");
+    optionTree.rootNodeIds.push(nodeId);
+    optionTree.nodes[nodeId] = {
+      id: nodeId, kind: "question", type: "INPUT", status: "ENABLED", key: "hours", label: "Billable hours", ui: { sortOrder: intent.optionGroups.length + 1, helpText: "Enter time in quarter-hour increments." },
+      input: { type: "number", required: true, selectionKey: "hours", valueType: "NUMBER", constraints: { number: { min: 0.25, step: 0.25 } } },
+    };
+  }
   const treeJson: Record<string, unknown> = {
     schemaVersion: 2, status: "DRAFT", rootNodeIds: optionTree.rootNodeIds, nodes: optionTree.nodes, edges: optionTree.edges,
     ...(matrix ? { pricingMatrix: matrix } : {}),
     meta: {
       title: `${intent.identity.name} PBV2 Draft`, pricingProfileKey, pricingV2,
       ...(isFee ? { pricingFormula: "flatFee", pricingFormulaVariables: { flatFee: pricing.priceCents / 100 } } : {}),
+      ...(isHourly ? { pricingFormula: "hours * hourly_rate", pricingFormulaVariables: { hourly_rate: pricing.priceCents / 100 }, billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 } } : {}),
       requiresDimensions: intent.measurement.mode === "dimensions_required", ...(fixedDimensions ? { fixedDimensions } : {}),
       productIntake: {
         architecture: "product_draft_intent", contractVersion: intent.contractVersion, intentId: intent.intentId, revision: intent.revision, fingerprint,

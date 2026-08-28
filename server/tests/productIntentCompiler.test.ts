@@ -132,6 +132,27 @@ describe("ProductIntentCompiler", () => {
     expect(requests[0].user).not.toContain("currentRevision");
   });
 
+  test("derives a safe hourly service intent from explicit Design fee language and asks only for the missing rate", async () => {
+    const payload = structuredClone(yardSignsPayload);
+    payload.intent.identity = { name: "Design", description: "", category: { state: "unresolved", label: "Product category" } };
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(payload))) });
+    const result = await compiler.compile({ ...compilerInput, request: "I need to make a new product for design. It will be a fee product and will be charged by the hour." });
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent", intent: {
+      identity: { category: { state: "unresolved", label: "Fees" } }, measurement: { mode: "quantity_only" }, quantity: { behavior: "not_applicable" },
+      pricing: { model: "unresolved", unit: "per_hour" }, material: { state: "explicitly_unset" },
+      workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false }, production: { route: { state: "explicitly_unset" } },
+      unresolvedFields: expect.arrayContaining([expect.objectContaining({ code: "HOURLY_RATE_UNRESOLVED" })]),
+    } } });
+  });
+
+  test("applies a stated hourly rate on a service-fee continuation without converting it to per-piece", async () => {
+    const current: any = { ...yardSignsPayload.intent, contractVersion: 1, intentId: "hourly-1", organizationId: "org_test", revision: 0, state: "needs_answers", revisionMetadata: { parentRevision: null }, operationContext: {},
+      identity: { name: "Design", description: "", category: { state: "resolved", id: "fees", label: "Fees" } }, measurement: { mode: "quantity_only" }, quantity: { behavior: "not_applicable" }, pricing: { model: "unresolved", unit: "per_hour" }, material: { state: "explicitly_unset" }, optionGroups: [], workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false }, production: { route: { state: "explicitly_unset" }, configuration: {} }, unresolvedFields: [{ path: "pricing", code: "HOURLY_RATE_UNRESOLVED" }], fieldMetadata: { pricing: { source: "unresolved" } } };
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_scalar_price", priceCents: 6000, basis: "per_piece" }] }))) });
+    const result = await compiler.compile({ ...compilerInput, request: "$60", currentIntent: current, currentRevision: 0 });
+    expect(result).toMatchObject({ ok: true, result: { kind: "intent_patch", patch: { operations: expect.arrayContaining([expect.objectContaining({ op: "set_pricing", value: { model: "scalar", unit: "per_hour", priceCents: 6000 } })]) } } });
+  });
+
   test("repairs invalid JSON once with issue paths and preserves the Yard Signs matrix", async () => {
     const requests: any[] = [];
     const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async (request) => {

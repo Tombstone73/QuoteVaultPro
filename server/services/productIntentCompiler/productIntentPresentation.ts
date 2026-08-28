@@ -18,7 +18,7 @@ function money(cents: number): string { return new Intl.NumberFormat("en-US", { 
 function reference(value: ProductDraftIntent["material"], unresolvedLabel = "Not selected"): string { return value.state === "resolved" ? value.label : value.state === "explicitly_unset" ? unresolvedLabel : `Unresolved: ${value.label}`; }
 function pricing(intent: ProductDraftIntent): string {
   const value = intent.pricing;
-  if (value.model === "scalar") return `${money(value.priceCents)} ${value.unit === "per_square_foot" ? "per square foot" : value.unit === "per_piece" ? "per piece" : "flat fee"}${value.minimumChargeCents == null ? "" : `; minimum ${money(value.minimumChargeCents)}`}`;
+  if (value.model === "scalar") return `${money(value.priceCents)} ${value.unit === "per_square_foot" ? "per square foot" : value.unit === "per_piece" ? "per piece" : value.unit === "per_hour" ? "per hour" : "flat fee"}${value.minimumChargeCents == null ? "" : `; minimum ${money(value.minimumChargeCents)}`}`;
   if (value.model === "quantity_tiers") return `Quantity tiers ${value.unit === "per_piece" ? "per piece" : "per square foot"}: ${value.tiers.map((tier) => `${tier.minimumQuantity}${tier.maximumQuantity == null ? "+" : `–${tier.maximumQuantity}`}: ${money(tier.priceCents)}`).join(", ")}`;
   if (value.model === "option_quantity_tiers") return `${value.unit === "per_piece" ? "Per piece" : "Per square foot"} option quantity tiers (${value.rows.length} schedules)`;
   if (value.model === "one_dimensional_matrix" || value.model === "two_dimensional_matrix") return value.unit === "unresolved" ? `Matrix — pricing unit not selected (${value.cells.length} prices)` : `${value.unit === "per_square_foot" ? "Per square foot" : "Per piece"} matrix (${value.cells.length} prices)`;
@@ -28,16 +28,6 @@ function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): 
   if (issue.id == null || issue.path !== "pricing.matrix.unit" || issue.code !== "PRICING_UNIT_UNRESOLVED" || (intent.pricing.model !== "one_dimensional_matrix" && intent.pricing.model !== "two_dimensional_matrix") || intent.pricing.unit !== "unresolved") return undefined;
   return { issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice", allowedChoices: [{ displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] }, { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] }], baseRevision: intent.revision };
 }
-function provenance(intent: ProductDraftIntent, path: string): string {
-  const source = intent.fieldMetadata[path]?.source ?? "unresolved";
-  return source === "canonical_default" ? "Authoritative server default"
-    : source === "explicit_user" ? "User supplied"
-      : source === "selected_template" ? "Selected template"
-        : source === "structured_candidate" ? "Server-selected candidate"
-          : source === "ai_interpreted" ? "AI interpreted (not execution authority)"
-            : "Unresolved";
-}
-
 /** Presentation is intentionally a pure projection of the canonical revision;
  * it never sees source text, legacy briefs, or a PBV2 tree. */
 export function presentProductDraftIntent(intent: ProductDraftIntent, issues: readonly ProductIntentIssue[], interactions: { candidateResolutions?: ProductIntentCandidateAction[]; optionalRecommendations?: ProductIntentRecommendation[] } = {}): CanonicalProductIntentProposalDto {
@@ -69,9 +59,6 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
       Pricing: pricing(intent), Material: reference(intent.material), Options: optionGroups,
       ...(deferredRequirements.length ? { "Deferred requirements": deferredRequirements } : {}),
       Proof: intent.workflow.requiresProofApproval ? "Required" : "Not required", "Production job": intent.workflow.requiresProductionJob ? "Required" : "Not required",
-      "Category provenance": provenance(intent, "identity.category"),
-      "Proof provenance": provenance(intent, "workflow.requiresProofApproval"),
-      "Production-job provenance": provenance(intent, "workflow.requiresProductionJob"),
       "Production route": reference(intent.production.route, "Not set"), Lifecycle: "Inactive draft", Visibility: intent.visibility.catalogVisible ? "Visible" : "Hidden",
     },
   };
