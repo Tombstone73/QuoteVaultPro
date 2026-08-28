@@ -152,6 +152,17 @@ describe("buildDuplicatedProductInsert", () => {
     expect(dup.priceBreaks).toEqual({ enabled: false, type: "quantity", tiers: [] });
   });
 
+  test("does not carry a stale choice consumption material into a PBV2 duplicate", () => {
+    const original: any = {
+      id: "pbv2_material_authority", organizationId: "org_1", name: "Foam Board", description: "", productTypeId: null, pricingFormula: null, variantLabel: "Variant", category: null, storeUrl: null, showStoreLink: true, thumbnailUrls: [], priceBreaks: { enabled: false, type: "quantity", tiers: [] }, pricingMode: "area", isService: false, primaryMaterialId: null, optionsJson: null,
+      optionTreeJson: { schemaVersion: 2, nodes: { thickness: { id: "thickness", choices: [{ value: "3mm", materialOverride: { materialId: "oppbogga_3mm" }, inventoryConsumption: [{ materialId: "foam_half", quantityBasis: "area_sqft", multiplier: 2, wastePercent: 5 }] }] } }, edges: [] },
+      pbv2ActiveTreeVersionId: null, artworkPolicy: "not_required", pricingProfileKey: "default", pricingProfileConfig: null, pricingEngine: "pricingProfile", pricingFormulaId: null, useNestingCalculator: false, sheetWidth: null, sheetHeight: null, materialType: "sheet", minPricePerItem: null, nestingVolumePricing: { enabled: false, tiers: [] }, requiresProductionJob: true, requiresProofApproval: false, isTaxable: true, isActive: true, createdAt: new Date(), updatedAt: new Date(),
+    };
+    const duplicate: any = buildDuplicatedProductInsert(original);
+    expect(duplicate.optionTreeJson.nodes.thickness.choices[0].inventoryConsumption[0]).toMatchObject({ materialId: "oppbogga_3mm", quantityBasis: "area_sqft", multiplier: 2, wastePercent: 5 });
+    expect(original.optionTreeJson.nodes.thickness.choices[0].inventoryConsumption[0].materialId).toBe("foam_half");
+  });
+
   test("preserves product option enabled states while keeping duplicate JSON independent", () => {
     const original = {
       id: "pbv2_disabled_option",

@@ -5,6 +5,7 @@ import { pbv2TreeVersions, products } from "@shared/schema";
 import { visibilityRuleSchema, type VisibilityRule } from "@shared/optionTreeV2";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
+import { normalizePbv2ChoiceConsumptionMaterialAuthority } from "@shared/pbv2/materialAuthority";
 import { normalizeCanonicalProductPricingTree } from "./canonicalProductPricingOperations";
 
 const referenceSchema = z.string().trim().min(1).max(160);
@@ -303,7 +304,9 @@ export class CanonicalPbv2OptionConfigurationOperations {
   async saveEditorDraft(input: { organizationId: string; actorUserId: string; productId: string; treeJson: unknown }): Promise<{ draft: TreeRow; sanitizerChanges: readonly unknown[] }> {
     if (!input.actorUserId) throw new CanonicalPbv2OptionConfigurationError("ACTOR_REQUIRED", "An authenticated actor is required.");
     if (!await this.repository.getProduct(input)) throw new CanonicalPbv2OptionConfigurationError("PRODUCT_NOT_FOUND", "The product is no longer available.");
-    const candidate = cloneTree(input.treeJson); const sanitized = sanitizePbv2PricingMatrix(candidate, { allowIncompleteMatrix: true });
+    const candidate = cloneTree(input.treeJson);
+    const materialAuthority = normalizePbv2ChoiceConsumptionMaterialAuthority(candidate);
+    const sanitized = sanitizePbv2PricingMatrix(materialAuthority.tree, { allowIncompleteMatrix: true });
     const pricingFindings = validateTreeForPublish(sanitized.tree as any, DEFAULT_VALIDATE_OPTS).errors.filter((finding: any) => {
       if (!String(finding?.code ?? "").startsWith("PBV2_E_PRICING_MATRIX")) return false;
       if (finding?.code !== "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE" || !String(finding?.path ?? "").endsWith(".rows")) return true;
@@ -313,7 +316,7 @@ export class CanonicalPbv2OptionConfigurationOperations {
     if (pricingFindings.length) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", "PBV2 pricing matrix still has invalid references after cleanup.", pricingFindings);
     const findings = validateOptionConfiguration(sanitized.tree, false); if (findings.length) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", "The PBV2 DRAFT option structure is invalid.", findings);
     const pricing = normalizeCanonicalProductPricingTree(sanitized.tree, { allowIncompleteMatrix: true });
-    return { draft: await this.repository.saveEditorDraft({ ...input, treeJson: pricing.tree }), sanitizerChanges: [...sanitized.changes, ...pricing.sanitizerChanges] };
+    return { draft: await this.repository.saveEditorDraft({ ...input, treeJson: pricing.tree }), sanitizerChanges: [...materialAuthority.changes, ...sanitized.changes, ...pricing.sanitizerChanges] };
   }
   async propose(input: { organizationId: string; productId: string; mutations: unknown }): Promise<CanonicalPbv2OptionConfigurationProposal> {
     const source = await this.source(input); const applied = applyPbv2OptionConfigurationMutations(source.tree.treeJson, input.mutations); const findings = validateOptionConfiguration(applied.tree, true);

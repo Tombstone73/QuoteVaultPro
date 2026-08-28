@@ -1,5 +1,6 @@
 import type { OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
+import { getChoiceMaterialOverrideId } from "@shared/pbv2/materialAuthority";
 
 type QuantityBasis = "area_sqft" | "perimeter_ft" | "linear_ft" | "each" | "fixed";
 
@@ -164,9 +165,10 @@ export function computePlannedMaterialsForLineItem({
       const entries = Array.isArray((choice as any).inventoryConsumption)
         ? ((choice as any).inventoryConsumption as InventoryConsumption[])
         : [];
+      const resolvedChoiceMaterialId = getChoiceMaterialOverrideId(choice);
 
       for (const entry of entries) {
-        const materialId = String(entry?.materialId || "").trim();
+        const materialId = resolvedChoiceMaterialId ?? String(entry?.materialId || "").trim();
         if (!materialId) continue;
 
         const basis = entry.quantityBasis;

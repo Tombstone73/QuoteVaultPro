@@ -908,7 +908,7 @@ export function OptionDetailsEditor({
                                     inventoryConsumption: [
                                       ...currentConsumption,
                                       {
-                                        materialId: "",
+                                        materialId: choice.materialOverride?.materialId?.trim() || "",
                                         quantityBasis: "area_sqft",
                                         multiplier: 1,
                                       },
@@ -918,7 +918,7 @@ export function OptionDetailsEditor({
                                 className="h-6 text-xs text-slate-400 hover:text-slate-200"
                               >
                                 <Plus className="h-3 w-3 mr-1" />
-                                Add Material
+                                {choice.materialOverride?.materialId ? "Add Consumption Rule" : "Add Material"}
                               </Button>
                             </div>
 
@@ -926,6 +926,8 @@ export function OptionDetailsEditor({
                               <div className="space-y-2">
                                 {choice.inventoryConsumption.map((entry: any, entryIdx: number) => {
                                   const basis = entry?.quantityBasis || "area_sqft";
+                                  const materialOverrideId = choice.materialOverride?.materialId?.trim() || "";
+                                  const materialIsSelectedByChoice = Boolean(materialOverrideId);
                                   const showFixedQty = basis === "fixed" || basis === "each";
                                   const rowKey = getRowKey(index, entryIdx);
 
@@ -940,9 +942,9 @@ export function OptionDetailsEditor({
                                       <div className="flex items-start gap-2">
                                         <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2">
                                           <div>
-                                            <Label className="text-xs text-slate-500 mb-1 block">Material ID *</Label>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Material {materialIsSelectedByChoice ? "(selected by choice)" : "ID *"}</Label>
                                             <MaterialIdSearchField
-                                              value={entry?.materialId ?? ""}
+                                              value={materialOverrideId || entry?.materialId || ""}
                                               onChange={(nextMaterialId) => updateEntry({ materialId: nextMaterialId })}
                                               quantityBasis={basis as QuantityBasis}
                                               onRequestAddMaterial={() => {
@@ -952,6 +954,7 @@ export function OptionDetailsEditor({
                                               }}
                                               createdMaterialOverride={recentlyCreatedByRowKey[rowKey] ?? null}
                                               canCreateMaterials={canCreateMaterials}
+                                              readOnly={materialIsSelectedByChoice}
                                             />
                                           </div>
 
@@ -1353,6 +1356,7 @@ function MaterialIdSearchField({
   createdMaterialOverride,
   canCreateMaterials,
   showUsageValidation = true,
+  readOnly = false,
 }: {
   value: string;
   onChange: (materialId: string) => void;
@@ -1361,6 +1365,7 @@ function MaterialIdSearchField({
   createdMaterialOverride?: MaterialSearchItem | null;
   canCreateMaterials: boolean;
   showUsageValidation?: boolean;
+  readOnly?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [searchText, setSearchText] = React.useState('');
@@ -1413,6 +1418,21 @@ function MaterialIdSearchField({
     !(selectedMaterial.materialForm === 'roll' &&
       ((selectedMaterialUom === 'square_foot' && impliedUom === 'linear_foot') ||
         (selectedMaterialUom === 'linear_foot' && impliedUom === 'square_foot')));
+
+  if (readOnly) {
+    return (
+      <div className="space-y-1 rounded border border-slate-700 bg-[#0a0f1a] px-2 py-1.5 text-xs text-slate-200">
+        <div className="truncate">{selectedMaterial ? selectedMaterial.name ?? '—' : value ? `Missing material (${value})` : 'No material selected'}</div>
+        <div className="text-[10px] text-slate-500">Selected by this Option Choice</div>
+        {hasUomMismatch ? (
+          <div className="text-[10px] text-amber-300 flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" />
+            Warning: Material unit is &lt;{selectedMaterialUom}&gt; but this rule consumes &lt;{impliedUom}&gt;. Check quantity basis.
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-1">

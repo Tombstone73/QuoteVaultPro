@@ -53,6 +53,7 @@ import {
 } from "@shared/schema";
 import { eq, and, sql, desc, inArray } from "drizzle-orm";
 import { validatePbv2MaterialReferences, collectPbv2MaterialValidationIds } from "../services/pbv2MaterialValidation";
+import { normalizePbv2ChoiceConsumptionMaterialAuthority } from "@shared/pbv2/materialAuthority";
 
 function cloneJson<T>(value: T): T {
     const sc = (globalThis as any).structuredClone as ((v: any) => any) | undefined;
@@ -473,7 +474,7 @@ export class SharedRepository {
 
             if (originalDraft) {
                 const draftTreeJson = {
-                    ...cloneJson(originalDraft.treeJson as any),
+                    ...(normalizePbv2ChoiceConsumptionMaterialAuthority(originalDraft.treeJson as any).tree as any),
                     status: 'DRAFT',
                 };
                 await tx.insert(pbv2TreeVersions).values({
@@ -507,7 +508,7 @@ export class SharedRepository {
                 const { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } = await import("../../shared/pbv2/validator");
 
                 const draftCandidateTree = {
-                    ...cloneJson(originalActive.treeJson as any),
+                    ...(normalizePbv2ChoiceConsumptionMaterialAuthority(originalActive.treeJson as any).tree as any),
                     schemaVersion: 2,
                     status: "DRAFT",
                 };

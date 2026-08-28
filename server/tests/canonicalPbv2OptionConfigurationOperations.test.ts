@@ -56,6 +56,21 @@ describe("CanonicalPbv2OptionConfigurationOperations", () => {
     expect(reopened.draft.id).toBe("tree_created");
   });
 
+  it("normalizes a conflicting editor payload to the choice material without changing consumption parameters", async () => {
+    const state = fixture();
+    const nextTree: any = tree();
+    nextTree.nodes.input_grommets.choices[0] = {
+      ...nextTree.nodes.input_grommets.choices[0],
+      materialOverride: { materialId: "oppbogga_3mm" },
+      inventoryConsumption: [{ materialId: "foam_board_half", quantityBasis: "area_sqft", multiplier: 1.5, wastePercent: 7 }],
+    };
+
+    const result = await state.service.saveEditorDraft({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", treeJson: nextTree });
+    const saved = result.draft.treeJson.nodes.input_grommets.choices[0];
+    expect(saved.inventoryConsumption).toEqual([{ materialId: "oppbogga_3mm", quantityBasis: "area_sqft", multiplier: 1.5, wastePercent: 7 }]);
+    expect(result.sanitizerChanges).toEqual(expect.arrayContaining([expect.objectContaining({ fromMaterialId: "foam_board_half", toMaterialId: "oppbogga_3mm" })]));
+  });
+
   it("applies group metadata, input required/default, choice metadata, and ordering without changing pricing", () => {
     const original = tree();
     const result = applyPbv2OptionConfigurationMutations(original, [

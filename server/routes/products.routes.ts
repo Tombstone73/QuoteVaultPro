@@ -51,6 +51,7 @@ import { collectPbv2WeightMaterialIds } from "../services/pbv2WeightResolver";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../services/pbv2MaterialValidation";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import { normalizePbv2ChoiceConsumptionMaterialAuthority } from "@shared/pbv2/materialAuthority";
 import {
   validatePricingPreviewRequest,
   buildPreviewErrorEnvelope,
@@ -2144,7 +2145,7 @@ export function registerProductRoutes(
 
           // Round-trip to ensure it can be serialized safely.
           try {
-            productData.optionTreeJson = JSON.parse(jsonText);
+            productData.optionTreeJson = normalizePbv2ChoiceConsumptionMaterialAuthority(JSON.parse(jsonText)).tree;
           } catch {
             return res.status(400).json({ success: false, message: "optionTreeJson must be valid JSON" });
           }

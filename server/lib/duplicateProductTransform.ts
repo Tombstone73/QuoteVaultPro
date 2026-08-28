@@ -4,6 +4,7 @@ import {
   normalizeProductPricingRotationConfig,
   shouldPersistProductRotation,
 } from "@shared/pbv2/productPricingRotation";
+import { normalizePbv2ChoiceConsumptionMaterialAuthority } from "@shared/pbv2/materialAuthority";
 
 function cloneJson<T>(value: T): T {
   const sc = (globalThis as any).structuredClone as ((v: any) => any) | undefined;
@@ -66,7 +67,9 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
     primaryMaterialId: original.primaryMaterialId ?? null,
 
     optionsJson: original.optionsJson ? cloneJson(original.optionsJson) : null,
-    optionTreeJson: (original as any).optionTreeJson ? cloneJson((original as any).optionTreeJson) : null,
+    optionTreeJson: (original as any).optionTreeJson
+      ? normalizePbv2ChoiceConsumptionMaterialAuthority((original as any).optionTreeJson).tree
+      : null,
 
     storeUrl: original.storeUrl ?? null,
     showStoreLink: original.showStoreLink ?? true,

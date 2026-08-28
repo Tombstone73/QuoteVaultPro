@@ -13,6 +13,7 @@
  */
 
 import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact, VisibilityRule } from '@shared/optionTreeV2';
+import { synchronizeChoiceInventoryConsumptionMaterial } from '@shared/pbv2/materialAuthority';
 import { normalizeLegacyPricingImpact } from './pricing/pricingImpact';
 
 /**
@@ -1208,7 +1209,7 @@ export function createUpdateChoicePatch(
         if (!updates.workflowTags || updates.workflowTags.length === 0) delete updated.workflowTags;
         else updated.workflowTags = updates.workflowTags;
       }
-      return updated;
+      return synchronizeChoiceInventoryConsumptionMaterial(updated);
     });
 
     // Update defaultValue if it referenced the old choice value

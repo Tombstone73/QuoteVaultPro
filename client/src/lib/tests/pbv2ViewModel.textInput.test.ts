@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { applyPatchToTree, createUpdateGroupPatch, createUpdateOptionPatch, normalizeTreeJson, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
+import { applyPatchToTree, createUpdateChoicePatch, createUpdateGroupPatch, createUpdateOptionPatch, normalizeTreeJson, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
 
 function makeTextOptionTree() {
   return {
@@ -200,5 +200,29 @@ describe("pbv2ViewModel — text input type", () => {
 
     expect(model.options.contour_cutting.hasPricing).toBe(true);
     expect(model.tags.groupPricing.has("group_cutting")).toBe(true);
+  });
+
+  test("changing a choice material override keeps its consumption basis, multiplier, and waste while synchronizing the material", () => {
+    const tree = normalizeTreeJson({
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: ["thickness"],
+      nodes: {
+        thickness: {
+          id: "thickness", kind: "question", type: "INPUT", status: "ENABLED", label: "Thickness", key: "thickness",
+          input: { type: "select", selectionKey: "thickness" },
+          choices: [{ value: "3mm", label: "3mm", materialOverride: { materialId: "foam_half" }, inventoryConsumption: [{ materialId: "foam_half", quantityBasis: "area_sqft", multiplier: 1.5, wastePercent: 7 }] }],
+        },
+      },
+      edges: [],
+    });
+
+    const { patch } = createUpdateChoicePatch(tree, "thickness", "3mm", { materialOverride: { materialId: "oppbogga_3mm" } });
+    const updated: any = applyPatchToTree(tree, patch);
+    const node = Array.isArray(updated.nodes) ? updated.nodes.find((item: any) => item.id === "thickness") : updated.nodes.thickness;
+    expect(node.choices[0]).toMatchObject({
+      materialOverride: { materialId: "oppbogga_3mm" },
+      inventoryConsumption: [{ materialId: "oppbogga_3mm", quantityBasis: "area_sqft", multiplier: 1.5, wastePercent: 7 }],
+    });
   });
 });
