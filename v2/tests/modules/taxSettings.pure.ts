@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { basisPointsToPercentage, homeBusinessTaxSettingsInput, percentageToBasisPoints } from "../../src/modules/sales/taxSettings.js";
+import { basisPointsToPercentage, destinationTaxJurisdictionInput, homeBusinessTaxSettingsInput, percentageToBasisPoints } from "../../src/modules/sales/taxSettings.js";
 import { resolveTaxJurisdiction } from "../../src/modules/sales/taxComposition.js";
 
 assert.equal(percentageToBasisPoints("7"),700);
@@ -9,6 +9,10 @@ assert.throws(()=>percentageToBasisPoints("7.255"));
 assert.throws(()=>percentageToBasisPoints("Infinity"));
 assert.throws(()=>percentageToBasisPoints("101"));
 assert.deepEqual(homeBusinessTaxSettingsInput({name:"Home",countryCode:"us",regionCode:"in",ratePercent:"7.25",active:true}),{name:"Home",countryCode:"US",regionCode:"IN",rateBasisPoints:725,active:true});
+assert.deepEqual(destinationTaxJurisdictionInput({expectedRevision:"revision-a",name:"Destination",countryCode:"us",regionCode:"oh",postalCode:"44114",ratePercent:"7.25",active:true,destinationMethods:["shipping","local_delivery","shipping"]}),{expectedRevision:"revision-a",name:"Destination",countryCode:"US",regionCode:"OH",postalCode:"44114",rateBasisPoints:725,active:true,destinationMethods:["shipping","local_delivery"]});
+assert.throws(()=>destinationTaxJurisdictionInput({expectedRevision:"",name:"Destination",countryCode:"US",regionCode:"OH",ratePercent:"7",active:true,destinationMethods:["shipping"]}));
+assert.throws(()=>destinationTaxJurisdictionInput({expectedRevision:"revision-a",name:"Destination",countryCode:"US",regionCode:"OH",ratePercent:"7",active:true,destinationMethods:[]}));
+assert.throws(()=>destinationTaxJurisdictionInput({expectedRevision:"revision-a",name:"Destination",countryCode:"US",regionCode:"OH",ratePercent:"7",active:true,destinationMethods:["pickup"]}));
 const active=resolveTaxJurisdiction({fulfillment:{method:"pickup"},jurisdictions:[{jurisdictionId:"home",name:"Home",receiptLocation:{country:"US",region:"IN"},rateBasisPoints:725,active:true,homeBusiness:true}]});
 assert.equal(active.status,"resolved");
 const inactive=resolveTaxJurisdiction({fulfillment:{method:"pickup"},jurisdictions:[{jurisdictionId:"home",name:"Home",receiptLocation:{country:"US",region:"IN"},rateBasisPoints:725,active:false,homeBusiness:true}]});

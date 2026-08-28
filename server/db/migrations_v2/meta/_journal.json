@@ -1639,6 +1639,13 @@
       "when": 1788048000085,
       "tag": "0238_v2_document_numbering_capability",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1788048000086,
+      "tag": "0239_v2_destination_sales_tax_jurisdictions",
+      "breakpoints": true
     }
   ]
 }
