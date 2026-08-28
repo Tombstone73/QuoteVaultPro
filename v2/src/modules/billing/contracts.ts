@@ -1,5 +1,6 @@
 import type { CustomerContactReference } from "../customers/contracts.js";
 import type { CustomerPresentationIdentity } from "../customers/contracts.js";
+import type { DocumentOrganizationIdentity } from "../organization/businessProfile.js";
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { BusinessRequestId, CurrencyCode, CustomerId, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrderLineId, OrganizationId, PaymentId, PercentageBasisPoints, ProductId, ProviderFinancialOperationId, RefundId, SalesLineId } from "../shared/commercialValues.js";
 
@@ -51,6 +52,8 @@ export type IssuedInvoiceCheckpoint = Readonly<{
   occurredAt: string;
   principal: BillingAttributionSnapshot;
   customerPresentation: CustomerPresentationIdentity;
+  /** Immutable rendered organization facts at Invoice issuance. */
+  organizationPresentation?: DocumentOrganizationIdentity;
   commercial: Readonly<{ currency: CurrencyCode; purchaseOrderNumber?: string; termsCode?: string; subtotal: Money; salesAdjustment?: Readonly<{ amount: Money; reason: string }>; taxTotal: Money; total: Money }>;
   taxEvidence: Readonly<{ calculationId: string; calculatorVersion: string; contextReference?: string; components: readonly Readonly<{ jurisdiction: string; rateBasisPoints: PercentageBasisPoints; taxableBase: Money; amount: Money }>[] }>;
   lines: readonly InvoiceIssuedLineSnapshot[];

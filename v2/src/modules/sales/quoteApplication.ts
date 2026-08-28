@@ -47,6 +47,7 @@ import {
   type SalesLineSnapshot,
   type SellingPriceDecision,
 } from "./contracts.js";
+import type { DocumentOrganizationIdentity } from "../organization/businessProfile.js";
 import type { CommercialCharge, SalesTaxComposition } from "./taxComposition.js";
 import {
   toQuoteCheckpointPersistenceEnvelope,
@@ -126,6 +127,8 @@ export type QuoteDeliveredInput = QuoteLifecycleInput & Readonly<{
    * persisted atomically with the pending attempt and must be the exact
    * composition recorded in the immutable sent checkpoint. */
   frozenTaxComposition?: SalesTaxComposition;
+  /** Trusted only from the V2 delivery adapter's already-rendered document. */
+  documentOrganizationIdentity?: DocumentOrganizationIdentity;
 }>;
 export type QuoteTerminalInput = QuoteLifecycleInput & Readonly<{ reason: string }>;
 export type QuoteReadModel = Readonly<{
@@ -322,6 +325,7 @@ export const createQuoteLifecycleCheckpoint = (
   presentation: CustomerPresentationIdentity,
   context: OperationContext,
   reason?: string,
+  organizationPresentation?: DocumentOrganizationIdentity,
 ): QuoteCheckpoint => {
   const raw = {
     schemaVersion: 1 as const,
@@ -331,6 +335,7 @@ export const createQuoteLifecycleCheckpoint = (
     occurredAt: new Date().toISOString(),
     principal: toAttribution(context),
     customerPresentation: presentation,
+    ...(organizationPresentation ? { organizationPresentation } : {}),
     commercial: {
       currency: quote.currency,
       terms: quote.terms,
@@ -929,6 +934,8 @@ export class QuoteApplicationService {
           checkpointId,
           presentation,
           context,
+          undefined,
+          input.documentOrganizationIdentity,
         );
         const applied = await tx.transition({
           organizationId: brandedId<"OrganizationId">(context.organizationId),

@@ -90,6 +90,7 @@
     "v2:email-integration:pure": "tsx v2/tests/infrastructure/emailIntegrationContracts.pure.ts && tsx v2/tests/interfaces/emailIntegrationCallbackRoutes.pure.ts && tsx v2/ui/src/emailIntegrationCallbackNotice.test.ts",
     "v2:sales-tax-settings:pure": "tsx v2/tests/modules/taxSettings.pure.ts",
     "v2:sales-tax-settings:http": "tsx v2/tests/interfaces/taxSettingsRoutes.pure.ts",
+    "v2:organization-settings:pure": "tsx v2/tests/modules/businessProfile.pure.ts && tsx v2/tests/interfaces/organizationSettingsRoutes.pure.ts && tsx v2/tests/infrastructure/organizationSettingsContracts.pure.ts",
     "v2:sales-lifecycle:pure": "tsx v2/tests/modules/salesLifecycleContracts.pure.ts && tsx v2/tests/modules/customerDocumentRenderer.test.ts",
     "v2:sales-sort-preference:pure": "tsx v2/ui/src/salesSortPreference.test.ts",
     "v2:quote-due-filter:pure": "tsx v2/tests/interfaces/quoteDueDateListRoutes.pure.ts",

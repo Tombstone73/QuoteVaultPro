@@ -28,6 +28,7 @@ import { createRoutingRouter, type RoutingHttpDependencies } from "./routingRout
 import { createInventoryRouter, type InventoryHttpDependencies } from "./inventoryRoutes.js";
 import { createFormulaRouter, type FormulaHttpDependencies } from "./formulaRoutes.js";
 import { createTaxSettingsRouter, type TaxSettingsHttpDependencies } from "./taxSettingsRoutes.js";
+import { createOrganizationSettingsRouter, type OrganizationSettingsHttpDependencies } from "./organizationSettingsRoutes.js";
 import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
@@ -39,6 +40,7 @@ export type AuthenticatedQuoteRouteRuntime = Readonly<{
   contactDependencies: ContactHttpDependencies;
   productDependencies: ProductHttpDependencies;
   taxSettingsDependencies: Omit<TaxSettingsHttpDependencies, "logger">;
+  organizationSettingsDependencies: Omit<OrganizationSettingsHttpDependencies, "logger">;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -137,6 +139,7 @@ export const createV2HttpApp = (
                 productView,
                 productEdit: policy.decide(principal, { capability: "product.edit", resource: { organizationId } }).allowed,
                 pricingConfigure: policy.decide(principal, { capability: "pricing.configure", resource: { organizationId } }).allowed,
+                organizationConfigure: policy.decide(principal, { capability: "organization.configure", resource: { organizationId } }).allowed,
                 communicationsConfigure: policy.decide(principal, { capability: "communications.configure", resource: { organizationId } }).allowed,
                 quoteOverridePrice: policy.decide(principal, { capability: "quote.overridePrice", resource: { organizationId } }).allowed,
                 quoteCreate: policy.decide(principal, { capability: "quote.create", resource: { organizationId } }).allowed,
@@ -218,6 +221,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createProductRouter(quote.productDependencies),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/settings/organization",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request, response, next),
+      createOrganizationSettingsRouter({ ...quote.organizationSettingsDependencies, logger }),
     );
   if (quote)
     app.use(

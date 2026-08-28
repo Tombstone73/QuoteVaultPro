@@ -1604,6 +1604,13 @@
       "when": 1788048000080,
       "tag": "0233_v2_tenant_email_integration",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1788048000081,
+      "tag": "0234_v2_organization_settings_capability",
+      "breakpoints": true
     }
   ]
 }

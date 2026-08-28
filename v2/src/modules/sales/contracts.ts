@@ -7,6 +7,7 @@ import type {
 } from "../shared/commercialValues.js";
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { CommercialCharge, SalesTaxComposition } from "./taxComposition.js";
+import type { DocumentOrganizationIdentity } from "../organization/businessProfile.js";
 
 type SellingPriceBase = Readonly<{
   pricingResultId: PricingResultId;
@@ -114,6 +115,9 @@ type QuoteCheckpointBase = Readonly<{
   occurredAt: string;
   principal: AttributionSnapshot;
   customerPresentation: CustomerPresentationIdentity;
+  /** Captured at a customer-document/issuance boundary; absent only on
+   * historical checkpoints created before organization identity snapshots. */
+  organizationPresentation?: DocumentOrganizationIdentity;
   commercial: Readonly<{ purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
   sourceCheckpointId?: QuoteCheckpointId;
 }>;

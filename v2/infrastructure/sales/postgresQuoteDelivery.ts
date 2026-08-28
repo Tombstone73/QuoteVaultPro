@@ -16,6 +16,7 @@ import { customerDocumentFilename, renderCustomerSalesPdf } from "./customerDocu
 import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
 import { PostgresQuoteTransaction } from "./postgresQuoteTransaction.js";
 import type { SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
+import type { DocumentOrganizationIdentity } from "../../src/modules/organization/businessProfile.js";
 import { PostgresEmailIntegrationService, type EmailReadiness, type ReadyGmailIntegration } from "../communications/postgresEmailIntegration.js";
 
 type AttemptRow = { id: string; delivery_state: "pending" | "succeeded" | "failed" | "uncertain"; };
@@ -26,6 +27,7 @@ type PreparedDelivery = Readonly<{
   document: CustomerSalesDocument;
   pdf: Uint8Array;
   frozenTaxComposition: SalesTaxComposition;
+  documentOrganizationIdentity: DocumentOrganizationIdentity;
   integration: ReadyGmailIntegration;
 }> | Readonly<{ requestId: string; replay: QuoteOperationResult }>;
 const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
@@ -129,7 +131,7 @@ export class PostgresQuoteDeliveryService {
         throw new V2ApplicationError("CONFLICT", "Quote delivery outcome is unknown. The Quote was not marked sent; reconcile delivery before trying again.");
       }
 
-      const committed: QuoteDeliveredInput = { ...input, deliveryAttemptId: prepared.attemptId, providerMessageId, frozenTaxComposition: prepared.frozenTaxComposition };
+      const committed: QuoteDeliveredInput = { ...input, deliveryAttemptId: prepared.attemptId, providerMessageId, frozenTaxComposition: prepared.frozenTaxComposition, documentOrganizationIdentity: prepared.documentOrganizationIdentity };
       const transitioned = await this.quoteService.recordDelivered(context, committed);
       if (!transitioned.ok) {
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery but the Quote lifecycle transition requires reconciliation; automatic retry is disabled.", providerMessageId);
@@ -193,7 +195,7 @@ export class PostgresQuoteDeliveryService {
         const row = await client.query<{ id: string }>("INSERT INTO v2_sales_quote_delivery_attempts(organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject,initiated_staff_actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id", [context.organizationId, input.quoteId, reservation.request.id, recipient, sha, context.principal.kind, principalSubject(context.principal), staffActorId(context.principal) ?? null]);
         attemptId = row.rows[0]!.id;
       }
-      await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, frozenTaxComposition, integration };
+      await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, frozenTaxComposition, documentOrganizationIdentity: document.organization, integration };
     } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
   }
   private async routability(organizationId: string, lines: readonly Readonly<{ productId: string; resolvedConfiguration: Readonly<{ pricingConfigurationId: string }> }>[], products: ProductsReadPort = this.products): Promise<QuoteSendReadiness["routability"]> {

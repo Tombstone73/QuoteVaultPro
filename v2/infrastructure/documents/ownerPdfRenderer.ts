@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import type { DocumentOrganizationIdentity } from "../../src/modules/organization/businessProfile.js";
 
-export type TenantBranding = Readonly<{ name: string; address?: string; phone?: string; email?: string; website?: string }>;
+export type TenantBranding = DocumentOrganizationIdentity;
 export type OwnerDocumentSection = Readonly<{ heading: string; entries: readonly Readonly<{ label?: string; value: string }>[] }>;
 export type OwnerPdfDocument = Readonly<{
   kind: "traveler" | "packing-slip" | "pickup-receipt" | "invoice";
@@ -16,7 +17,7 @@ const clean = (value: string) => value.replace(/[\u0000-\u001f]/g, " ").trim();
 const visible = (document: OwnerPdfDocument) => [
   document.title, document.number, document.issuedAt,
   document.organization.name, document.organization.address, document.organization.phone,
-  document.organization.email, document.organization.website,
+  document.organization.email, document.organization.website, document.organization.footerNote,
   ...document.sections.flatMap((section) => [section.heading, ...section.entries.flatMap((entry) => [entry.label, entry.value])]),
 ].filter((value): value is string => typeof value === "string");
 
@@ -58,5 +59,6 @@ export const renderOwnerPdf = async (input: OwnerPdfDocument): Promise<Uint8Arra
     write(section.heading, { bold: true, size: 11 });
     for (const entry of section.entries) write(entry.label ? `${entry.label}: ${entry.value}` : entry.value, { size: 9, indent: entry.label ? 0 : 8 });
   }
+  if (document.organization.footerNote) { y -= 7; write(document.organization.footerNote, { size: 8, color: [0.32, 0.35, 0.4] }); }
   return pdf.save();
 };

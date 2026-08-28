@@ -38,6 +38,8 @@ import { ProductRoutingCompatibilityApplicationService } from "../../src/modules
 import { canonicalProductPublishOperations } from "../../../server/services/products/canonicalProductPublishOperations.js";
 import { PostgresSalesTaxSettings } from "./postgresSalesTaxSettings.js";
 import type { TaxSettingsHttpDependencies } from "../../src/interfaces/http/taxSettingsRoutes.js";
+import type { OrganizationSettingsHttpDependencies } from "../../src/interfaces/http/organizationSettingsRoutes.js";
+import { PostgresOrganizationSettings } from "../organization/postgresOrganizationSettings.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -51,6 +53,7 @@ export type AuthenticatedQuoteRuntime = Readonly<{
   contactDependencies: ContactHttpDependencies;
   productDependencies: ProductHttpDependencies;
   taxSettingsDependencies: Omit<TaxSettingsHttpDependencies, "logger">;
+  organizationSettingsDependencies: Omit<OrganizationSettingsHttpDependencies, "logger">;
   trustedHostMiddleware: RequestHandler;
 }>;
 
@@ -86,6 +89,7 @@ export const composeAuthenticatedQuoteRuntime = (
     })(),
     productDependencies: { workspace: new PostgresProductWorkspaceReads(input.pool), draftGeneral: new PostgresProductDraftGeneralReader(input.pool), draftOptions: new PostgresProductDraftOptionsReader(input.pool), draftPricing: new PostgresProductDraftPricingReader(input.pool), draftMatrix: new PostgresProductDraftPricingMatrixReader(input.pool), draftFormula: new PostgresProductDraftFormulaReader(input.pool), draftOptionPricing: new PostgresProductDraftOptionPricingReader(input.pool), draftPreview: new PostgresProductDraftPricingPreview(input.pool), draftRecipe: new PostgresProductWorkspaceRecipeReader(input.pool), draftRouting: new PostgresProductDraftRoutingReader(input.pool), materials: new PostgresProductMaterialSearch(input.pool), recipes: new ProductRecipeApplicationService(new PostgresProductRecipeTransactionRunner(input.pool)), routing: new ProductRoutingApplicationService(new PostgresProductRoutingTransactionRunner(input.pool)), routingCompatibility: new PostgresProductRoutingCompatibilityReader(input.pool), routingCompatibilityCommands: new ProductRoutingCompatibilityApplicationService(new PostgresProductRoutingCompatibilityTransactionRunner(input.pool)), lifecycle: new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(input.pool)), publication: new ProductPublicationApplicationService(new PostgresProductPublicationTransactionRunner(input.pool), canonicalProductPublishOperations), principals },
     taxSettingsDependencies: { settings: new PostgresSalesTaxSettings(input.pool), principals },
+    organizationSettingsDependencies: { settings: new PostgresOrganizationSettings(input.pool), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

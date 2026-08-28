@@ -18,7 +18,8 @@ export interface BillingIssueTransaction {
   lockInvoice(organizationId:OrganizationId,invoiceId:InvoiceId):Promise<LockedInvoice|null>;
   issue(input:Readonly<{organizationId:OrganizationId;invoiceId:InvoiceId}&Actor>):Promise<LockedInvoice["invoice"]|null>;
   customerPresentation(input:Readonly<{organizationId:OrganizationId;customerId?:string;contactId?:string}>):Promise<IssuedInvoiceCheckpoint["customerPresentation"]>;
-  buildCheckpoint(input:Readonly<{organizationId:OrganizationId;invoice:LockedInvoice["invoice"];lines:LockedInvoice["lines"];checkpointId:InvoiceCheckpointId;customerPresentation:IssuedInvoiceCheckpoint["customerPresentation"]}&Actor>):IssuedInvoiceCheckpoint;
+  organizationPresentation(organizationId:OrganizationId):Promise<NonNullable<IssuedInvoiceCheckpoint["organizationPresentation"]>>;
+  buildCheckpoint(input:Readonly<{organizationId:OrganizationId;invoice:LockedInvoice["invoice"];lines:LockedInvoice["lines"];checkpointId:InvoiceCheckpointId;customerPresentation:IssuedInvoiceCheckpoint["customerPresentation"];organizationPresentation:NonNullable<IssuedInvoiceCheckpoint["organizationPresentation"]>}&Actor>):IssuedInvoiceCheckpoint;
   writeCheckpoint(input:Readonly<{organizationId:OrganizationId;invoiceId:InvoiceId;checkpoint:IssuedInvoiceCheckpoint}>):Promise<void>;
   attribute(input:Readonly<{organizationId:string;requestId:string;operation:string;invoiceId:string}&Actor>):Promise<void>;
   audit(input:Readonly<{organizationId:string;requestId:string;operation:string;invoiceId:string;orderId:string;checkpointId:string}&Actor>):Promise<void>;
@@ -90,7 +91,8 @@ export class BillingApplicationService {
         if(!issued)throw new V2ApplicationError("CONFLICT","Invoice issuance lost its Draft state.");
         const presentation=await tx.customerPresentation({organizationId:brandedId<"OrganizationId">(context.organizationId),...(issued.customer_id?{customerId:issued.customer_id}:{}),...(issued.contact_id?{contactId:issued.contact_id}:{})});
         const checkpointId=brandedId<"InvoiceCheckpointId">(randomUUID());
-        const checkpoint=tx.buildCheckpoint({organizationId:brandedId<"OrganizationId">(context.organizationId),invoice:issued,lines:locked.lines,checkpointId,customerPresentation:presentation,...actor(context)});
+        const organizationPresentation=await tx.organizationPresentation(brandedId<"OrganizationId">(context.organizationId));
+        const checkpoint=tx.buildCheckpoint({organizationId:brandedId<"OrganizationId">(context.organizationId),invoice:issued,lines:locked.lines,checkpointId,customerPresentation:presentation,organizationPresentation,...actor(context)});
         await tx.writeCheckpoint({organizationId:brandedId<"OrganizationId">(context.organizationId),invoiceId:input.invoiceId,checkpoint});
         const invoice:DraftInvoiceReadModel={invoiceId:input.invoiceId,organizationId:brandedId<"OrganizationId">(context.organizationId),sourceOrderId:brandedId<"OrderId">(issued.sales_order_document_id),lifecycle:"issued",...(issued.customer_id?{customerId:brandedId<"CustomerId">(issued.customer_id)}:{}),currency:checkpoint.commercial.currency,synchronizationVersion:issued.synchronization_version,lines:checkpoint.lines.map(line=>({sourceOrderLineId:brandedId<"OrderLineId">(line.lineId),productId:line.productId,description:line.description,quantity:line.quantity,sellingUnitAmount:line.unitAmount,lineAmount:line.lineAmount})),subtotal:checkpoint.commercial.subtotal,taxTotal:checkpoint.commercial.taxTotal,total:checkpoint.commercial.total,createdAt:issued.created_at.toISOString(),updatedAt:issued.updated_at.toISOString()};
         const result={invoice,checkpoint,boundary:{invoiceId:input.invoiceId,status:"issued" as const,checkpointId,silentOrderSynchronization:false as const}};

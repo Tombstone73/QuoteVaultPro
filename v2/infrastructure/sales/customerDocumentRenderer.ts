@@ -9,7 +9,7 @@ export type CustomerSalesDocument = Readonly<{
   kind: "quote" | "order";
   number: string;
   issuedAt: string;
-  organization: Readonly<{ name: string; address?: string; phone?: string; email?: string; website?: string }>;
+  organization: Readonly<{ name: string; address?: string; phone?: string; email?: string; website?: string; footerNote?: string }>;
   customer: Readonly<{ displayName: string; contactName?: string; email?: string; purchaseOrderNumber?: string; requestedDueDate?: string }>;
   lines: readonly (Readonly<{ description: string; quantity: number; configuration: string; unitCents: number; totalCents: number }>)[];
   currency: string;
@@ -35,7 +35,7 @@ export const assertCustomerDocumentSafe = (document: CustomerSalesDocument): Cus
   const forbidden = /(?:\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b|\b(?:opt|choice)_[\w-]+\b|\b\w*_import\w*\b)/iu;
   const visible = [
     document.number, document.organization.name, document.organization.address, document.organization.phone,
-    document.organization.email, document.organization.website, document.customer.displayName,
+    document.organization.email, document.organization.website, document.organization.footerNote, document.customer.displayName,
     document.customer.contactName, document.customer.email, document.customer.purchaseOrderNumber,
     document.customer.requestedDueDate, document.fulfillment, document.notes,
     ...document.lines.flatMap((line) => [line.description, line.configuration]),
@@ -88,5 +88,6 @@ export const renderCustomerSalesPdf = async (input: CustomerSalesDocument): Prom
   write(`Tax: ${money(document.currency, document.taxCents)}`, { size: 9 });
   write(`Total: ${money(document.currency, document.totalCents)}`, { bold: true, size: 12 });
   if (document.notes) { y -= 8; write("Notes", { bold: true, size: 10 }); write(document.notes, { size: 9 }); }
+  if (document.organization.footerNote) { y -= 8; write(document.organization.footerNote, { size: 8, color: [0.32, 0.35, 0.4] }); }
   return pdf.save();
 };

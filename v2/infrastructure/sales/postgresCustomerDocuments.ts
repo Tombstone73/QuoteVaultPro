@@ -3,16 +3,23 @@ import { salesConfigurationPresentation } from "../../src/modules/sales/configur
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { OrganizationId, OrderId, QuoteId } from "../../src/modules/shared/commercialValues.js";
 import { renderCustomerSalesPdf, type CustomerSalesDocument } from "./customerDocumentRenderer.js";
+import { readTenantBranding } from "../documents/postgresTenantBranding.js";
+import type { TenantBranding } from "../documents/ownerPdfRenderer.js";
+import type { DocumentOrganizationIdentity } from "../../src/modules/organization/businessProfile.js";
 
 type HeaderRow = { id: string; display_number: string; currency: string; purchase_order_number: string | null; requested_due_date: Date | null; commercial_notes: string | null; customer_name: string | null; customer_email: string | null; contact_id: string | null; contact_exists: string | null; contact_name: string | null; contact_email: string | null; requested_fulfillment_method: string | null; selling_adjustment_cents: string; selling_adjustment_reason: string | null; commercial_charge: unknown; tax_composition: unknown; delivery_state?: "not_sent" | "sent"; };
 type LineRow = { description: string; quantity: number; selling_unit_cents: string; selling_line_cents: string; resolved_configuration: unknown };
-type BrandingRow = { name: string; address: string | null; phone: string | null; email: string | null; website: string | null };
 type CheckpointRow = { payload: unknown; occurred_at: Date };
 type AnyRecord = Record<string, unknown>;
 const record = (value: unknown): AnyRecord => value && typeof value === "object" && !Array.isArray(value) ? value as AnyRecord : {};
 const integer = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) ? value : typeof value === "string" && /^-?\d+$/.test(value) ? Number(value) : 0;
 const text = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value.trim() : undefined;
 const date = (value: Date | null | undefined): string => value ? value.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+const organizationIdentity = (value: unknown): DocumentOrganizationIdentity | undefined => {
+  const source = record(value); const name = text(source.name);
+  if (!name) return undefined;
+  return { name, ...(text(source.address) ? { address: text(source.address)! } : {}), ...(text(source.phone) ? { phone: text(source.phone)! } : {}), ...(text(source.email) ? { email: text(source.email)! } : {}), ...(text(source.website) ? { website: text(source.website)! } : {}), ...(text(source.footerNote) ? { footerNote: text(source.footerNote)! } : {}), ...(text(source.paymentInstructions) ? { paymentInstructions: text(source.paymentInstructions)! } : {}), ...(text(source.checksPayableTo) ? { checksPayableTo: text(source.checksPayableTo)! } : {}), ...(text(source.remittanceAddress) ? { remittanceAddress: text(source.remittanceAddress)! } : {}) };
+};
 
 /**
  * Tenant-scoped projection only. It is shared by HTTP download/preview and
@@ -71,12 +78,7 @@ export class PostgresCustomerDocumentService {
     return text(header.contact_email);
   }
 
-  private async branding(queryable: Pool | PoolClient, organizationId: OrganizationId): Promise<BrandingRow> {
-    const result = await queryable.query<BrandingRow>("SELECT COALESCE(NULLIF(btrim(cs.company_display_name),''),NULLIF(btrim(cs.company_name),''),o.name) name,cs.address,cs.phone,cs.email,cs.website FROM organizations o LEFT JOIN company_settings cs ON cs.organization_id=o.id WHERE o.id=$1", [organizationId]);
-    const row = result.rows[0];
-    if (!row) throw new V2ApplicationError("NOT_FOUND", "Organization was not found.");
-    return row;
-  }
+  private branding(queryable: Pool | PoolClient, organizationId: OrganizationId): Promise<TenantBranding> { return readTenantBranding(queryable, organizationId); }
 
   private quoteHeader(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<HeaderRow | null> { return this.header(queryable, organizationId, quoteId, "quote"); }
   private orderHeader(queryable: Pool | PoolClient, organizationId: OrganizationId, orderId: OrderId): Promise<HeaderRow | null> { return this.header(queryable, organizationId, orderId, "order"); }
@@ -88,7 +90,7 @@ export class PostgresCustomerDocumentService {
   private async lines(queryable: Pool | PoolClient, organizationId: OrganizationId, documentId: string): Promise<readonly LineRow[]> {
     return (await queryable.query<LineRow>("SELECT description,quantity,selling_unit_cents,selling_line_cents,resolved_configuration FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId, documentId])).rows;
   }
-  private current(kind: "quote" | "order", header: HeaderRow, branding: BrandingRow, lines: readonly LineRow[]): CustomerSalesDocument {
+  private current(kind: "quote" | "order", header: HeaderRow, branding: TenantBranding, lines: readonly LineRow[]): CustomerSalesDocument {
     const tax = record(header.tax_composition); const charge = record(header.commercial_charge);
     if (tax.status === "unresolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
     const lineSubtotalCents = lines.reduce((sum, line) => sum + integer(line.selling_line_cents), 0);
@@ -102,13 +104,13 @@ export class PostgresCustomerDocumentService {
       ? integer(tax.finalTotalCents)
       : lineSubtotalCents + adjustmentCents + chargeCents;
     return {
-      kind, number: header.display_number, issuedAt: date(undefined), organization: { name: branding.name, ...(text(branding.address) ? { address: branding.address! } : {}), ...(text(branding.phone) ? { phone: branding.phone! } : {}), ...(text(branding.email) ? { email: branding.email! } : {}), ...(text(branding.website) ? { website: branding.website! } : {}) },
+      kind, number: header.display_number, issuedAt: date(undefined), organization: branding,
       customer: { displayName: header.customer_name ?? "Customer", ...(text(header.contact_name) ? { contactName: header.contact_name! } : {}), ...(text(header.contact_email) || text(header.customer_email) ? { email: text(header.contact_email) ?? text(header.customer_email)! } : {}), ...(text(header.purchase_order_number) ? { purchaseOrderNumber: header.purchase_order_number! } : {}), ...(header.requested_due_date ? { requestedDueDate: date(header.requested_due_date) } : {}) },
       lines: lines.map((line) => ({ description: line.description, quantity: line.quantity, configuration: salesConfigurationPresentation(record(line.resolved_configuration)), unitCents: integer(line.selling_unit_cents), totalCents: integer(line.selling_line_cents) })),
       currency: header.currency, lineSubtotalCents, adjustmentCents, ...(text(header.selling_adjustment_reason) ? { adjustmentReason: header.selling_adjustment_reason! } : {}), chargeCents, ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind)! } : {}), taxCents, totalCents, ...(text(header.requested_fulfillment_method) ? { fulfillment: header.requested_fulfillment_method! } : {}), ...(text(header.commercial_notes) ? { notes: header.commercial_notes! } : {}),
     };
   }
-  private fromCheckpoint(kind: "quote", header: HeaderRow, branding: BrandingRow, checkpoint: CheckpointRow): CustomerSalesDocument {
+  private fromCheckpoint(kind: "quote", header: HeaderRow, branding: TenantBranding, checkpoint: CheckpointRow): CustomerSalesDocument {
     const payload = record(checkpoint.payload); const commercial = record(payload.commercial); const presentation = record(payload.customerPresentation); const tax = record(commercial.taxComposition); const adjustment = record(commercial.sellingAdjustment); const charge = record(commercial.commercialCharge);
     if (tax.status === "unresolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
     const rawLines = Array.isArray(commercial.lines) ? commercial.lines : [];
@@ -118,6 +120,6 @@ export class PostgresCustomerDocumentService {
     const chargeCents = integer(charge.cents);
     const taxCents = integer(tax.taxCents);
     const totalCents = text(tax.status) === "resolved" ? integer(tax.finalTotalCents) : lineSubtotalCents + adjustmentCents + chargeCents;
-    return { kind, number: header.display_number, issuedAt: date(checkpoint.occurred_at), organization: { name: branding.name, ...(text(branding.address) ? { address: branding.address! } : {}), ...(text(branding.phone) ? { phone: branding.phone! } : {}), ...(text(branding.email) ? { email: branding.email! } : {}), ...(text(branding.website) ? { website: branding.website! } : {}) }, customer: { displayName: text(presentation.customerDisplayName) ?? text(presentation.companyName) ?? "Customer", ...(text(presentation.contactDisplayName) ? { contactName: text(presentation.contactDisplayName)! } : {}), ...(text(presentation.email) ? { email: text(presentation.email)! } : {}), ...(text(commercial.purchaseOrderNumber) ? { purchaseOrderNumber: text(commercial.purchaseOrderNumber)! } : {}), ...(text(commercial.requestedDueDate) ? { requestedDueDate: text(commercial.requestedDueDate)! } : {}) }, lines, currency: text(commercial.currency) ?? header.currency, lineSubtotalCents, adjustmentCents, ...(text(adjustment.reason) ? { adjustmentReason: text(adjustment.reason)! } : {}), chargeCents, ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind)! } : {}), taxCents, totalCents, ...(text(record(commercial.requestedFulfillment).method) ? { fulfillment: text(record(commercial.requestedFulfillment).method)! } : {}), ...(text(record(commercial.terms).commercialNotes) ? { notes: text(record(commercial.terms).commercialNotes)! } : {}) };
+    return { kind, number: header.display_number, issuedAt: date(checkpoint.occurred_at), organization: organizationIdentity(payload.organizationPresentation) ?? branding, customer: { displayName: text(presentation.customerDisplayName) ?? text(presentation.companyName) ?? "Customer", ...(text(presentation.contactDisplayName) ? { contactName: text(presentation.contactDisplayName)! } : {}), ...(text(presentation.email) ? { email: text(presentation.email)! } : {}), ...(text(commercial.purchaseOrderNumber) ? { purchaseOrderNumber: text(commercial.purchaseOrderNumber)! } : {}), ...(text(commercial.requestedDueDate) ? { requestedDueDate: text(commercial.requestedDueDate)! } : {}) }, lines, currency: text(commercial.currency) ?? header.currency, lineSubtotalCents, adjustmentCents, ...(text(adjustment.reason) ? { adjustmentReason: text(adjustment.reason)! } : {}), chargeCents, ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind)! } : {}), taxCents, totalCents, ...(text(record(commercial.requestedFulfillment).method) ? { fulfillment: text(record(commercial.requestedFulfillment).method)! } : {}), ...(text(record(commercial.terms).commercialNotes) ? { notes: text(record(commercial.terms).commercialNotes)! } : {}) };
   }
 }
