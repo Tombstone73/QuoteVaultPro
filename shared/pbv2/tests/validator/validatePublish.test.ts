@@ -26,11 +26,24 @@ describe("pbv2/validator/validatePublish", () => {
     edges: [],
   });
 
-  test("Missing roots => ERROR", () => {
+  test("canonical zero-option trees publish without runtime roots", () => {
+    const tree = {
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: [],
+      nodes: {},
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors).toEqual([]);
+  });
+
+  test("non-empty trees without roots remain invalid", () => {
     const tree = {
       status: "DRAFT",
       rootNodeIds: [],
-      nodes: [],
+      nodes: [{ id: "input", type: "INPUT", status: "ENABLED", key: "input", input: { selectionKey: "input", valueType: "TEXT" } }],
       edges: [],
     };
 

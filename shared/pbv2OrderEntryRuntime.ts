@@ -1,4 +1,4 @@
-import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "./optionTreeV2";
+import { isCanonicalEmptyOptionTreeV2, type LineItemOptionSelectionsV2, type OptionNodeV2, type OptionTreeV2 } from "./optionTreeV2";
 import { resolveRuntimeVisibility } from "./optionTreeV2Runtime";
 
 const RENDERABLE_INPUT_TYPES = new Set([
@@ -67,7 +67,16 @@ function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
     nodes[id] = node;
   }
 
-  if (Object.keys(nodes).length === 0) return null;
+  if (Object.keys(nodes).length === 0) {
+    if (!isCanonicalEmptyOptionTreeV2(treeRecord)) return null;
+    return {
+      ...(treeRecord as any),
+      schemaVersion: 2,
+      rootNodeIds: [],
+      nodes: {},
+      edges: [],
+    } as OptionTreeV2;
+  }
 
   return {
     ...(treeRecord as any),

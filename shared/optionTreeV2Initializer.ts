@@ -192,8 +192,10 @@ export function buildOptionTreeV2FromLegacyOptions(optionsJson: unknown): Option
 export function createEmptyPBV2Tree(meta?: { title?: string; updatedAt?: string }): OptionTreeV2 {
   return {
     schemaVersion: 2,
+    status: "DRAFT",
     rootNodeIds: [],
     nodes: {},
+    edges: [],
     meta: meta || {},
   };
 }

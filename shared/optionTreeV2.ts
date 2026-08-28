@@ -448,6 +448,26 @@ export type OptionTreeV2 = {
   };
 };
 
+/**
+ * A product without product-option groups has no runtime decision graph.
+ * This is the canonical PBV2 representation for that domain state; it is
+ * deliberately distinct from a malformed configurable tree missing roots.
+ */
+export function isCanonicalEmptyOptionTreeV2(tree: unknown): boolean {
+  if (!tree || typeof tree !== "object" || Array.isArray(tree)) return false;
+  const record = tree as Record<string, unknown>;
+  const nodes = record.nodes;
+  const edges = record.edges;
+  return record.schemaVersion === 2
+    && Array.isArray(record.rootNodeIds)
+    && record.rootNodeIds.length === 0
+    && Boolean(nodes)
+    && typeof nodes === "object"
+    && !Array.isArray(nodes)
+    && Object.keys(nodes as Record<string, unknown>).length === 0
+    && (edges === undefined || (Array.isArray(edges) && edges.length === 0));
+}
+
 export type LineItemOptionSelectionsV2 = {
   schemaVersion: 2;
   selected: Record<string, { value?: any; note?: string; origin?: "DEFAULT" | "AI_INFERRED" | "SOURCE_EVIDENCE" | "USER_SELECTED"; evidence?: string | null }>;
@@ -990,15 +1010,17 @@ export function validateOptionTreeV2(tree: unknown): { ok: true } | { ok: false;
     errors.push("schemaVersion must be 2");
   }
 
-  if (!Array.isArray(anyTree.rootNodeIds) || anyTree.rootNodeIds.length === 0) {
-    errors.push("rootNodeIds must be a non-empty array");
-  }
-
   if (!anyTree.nodes || typeof anyTree.nodes !== "object") {
     errors.push("nodes must be an object map");
   }
 
   const nodes: Record<string, any> = anyTree.nodes && typeof anyTree.nodes === "object" ? anyTree.nodes : {};
+
+  if (!Array.isArray(anyTree.rootNodeIds)) {
+    errors.push("rootNodeIds must be an array");
+  } else if (anyTree.rootNodeIds.length === 0 && !isCanonicalEmptyOptionTreeV2(anyTree)) {
+    errors.push("rootNodeIds must be non-empty when the option tree has nodes or edges");
+  }
 
   // roots exist in nodes
   if (Array.isArray(anyTree.rootNodeIds)) {

@@ -3,7 +3,7 @@
  */
 
 import type { Product } from "@shared/schema";
-import type { OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { isCanonicalEmptyOptionTreeV2, type OptionNodeV2, type OptionTreeV2 } from "@shared/optionTreeV2";
 
 export type Pbv2TreeSummary = {
   exists: boolean;
@@ -93,7 +93,8 @@ export function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
     : Object.keys(normalizedNodes);
 
   if (Object.keys(normalizedNodes).length === 0) {
-    return null;
+    if (!isCanonicalEmptyOptionTreeV2(treeRecord)) return null;
+    return { ...(treeRecord as any), schemaVersion: 2, rootNodeIds: [], nodes: {}, edges: [] } as OptionTreeV2;
   }
 
   return {

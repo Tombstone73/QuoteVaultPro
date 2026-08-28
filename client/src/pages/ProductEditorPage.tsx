@@ -697,8 +697,9 @@ const ProductEditorPage = () => {
         let savedDraftId: string | null = null;
         let draftAlreadyPublished = false;
 
-        // Only persist if there are actual nodes (not just empty seed)
-        if (nodeCount > 0) {
+        // Persist the canonical empty PBV2 tree too. It is the durable
+        // no-options contract used by preview, publish, and order entry.
+        {
           if (import.meta.env.DEV) {
             console.log('[PBV2_DRAFT_PUT] start', {
               productId: targetProductId,
@@ -733,10 +734,6 @@ const ProductEditorPage = () => {
           if (import.meta.env.DEV) {
             console.log('[PBV2_DRAFT_PUT] ok', { draftId: draftData.data?.id });
           }
-        } else {
-          if (import.meta.env.DEV) {
-            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=empty-tree');
-          }
         }
 
         await completeDeferredProductLifecycle({
@@ -768,7 +765,7 @@ const ProductEditorPage = () => {
 
         setLastSavedAt(new Date());
         
-        // SUCCESS: Both product and PBV2 saved (or PBV2 skipped because empty)
+        // SUCCESS: Both product and its PBV2 configuration saved.
         toast({
           title: isNewProduct ? "Product Created" : "Product Updated",
           description: isNewProduct

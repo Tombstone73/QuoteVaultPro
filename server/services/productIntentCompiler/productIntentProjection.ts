@@ -51,7 +51,8 @@ function assertReady(intent: ProductDraftIntent): void {
   assert(intent.workflow.kind !== "service_fee" || !intent.workflow.requiresProductionJob, "SERVICE_FEE_PRODUCTION_JOB", "Service fees cannot create production jobs.", "workflow.requiresProductionJob");
   assert(intent.production.route.state === "explicitly_unset" || intent.workflow.requiresProductionJob, "ROUTE_WITHOUT_PRODUCTION_JOB", "A production route requires a production job.", "production.route");
   if (intent.measurement.mode === "quantity_only") {
-    assert(intent.quantity.behavior !== "not_applicable" || (intent.pricing.model === "scalar" && intent.pricing.unit === "per_hour"), "QUANTITY_ONLY_QUANTITY_UNCONFIGURED", "Quantity-only products must declare a customer-entered or fixed quantity behavior unless pricing is collected from billable hours.", "quantity");
+    const pricingDoesNotUseLineItemQuantity = intent.pricing.model === "scalar" && (intent.pricing.unit === "per_hour" || intent.pricing.unit === "flat_fee");
+    assert(intent.quantity.behavior !== "not_applicable" || pricingDoesNotUseLineItemQuantity, "QUANTITY_ONLY_QUANTITY_UNCONFIGURED", "Quantity-only products must declare a customer-entered or fixed quantity behavior unless pricing is a fixed service fee or collected from billable hours.", "quantity");
     assert(!(intent.pricing.model === "scalar" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot pricing requires dimensions or fixed dimensions.", "pricing");
     assert(!(intent.pricing.model === "quantity_tiers" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot quantity tiers require dimensions or fixed dimensions.", "pricing");
     assert(!(intent.pricing.model === "option_quantity_tiers" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot option quantity tiers require dimensions or fixed dimensions.", "pricing");
@@ -231,13 +232,9 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
       },
     },
   };
-  // The historical minimal graph validator cannot validate a valid zero-option
-  // PBV2 tree. Run it whenever a graph exists; scalar service products retain
-  // the established empty-tree representation.
-  if (optionTree.rootNodeIds.length) {
-    const graph = validateOptionTreeV2(treeJson);
-    assert(graph.ok, "PBV2_TREE_INVALID", graph.ok ? "" : graph.errors.join(" "), "treeJson");
-  }
+  // Validate both configurable graphs and the canonical zero-option tree.
+  const graph = validateOptionTreeV2(treeJson);
+  assert(graph.ok, "PBV2_TREE_INVALID", graph.ok ? "" : graph.errors.join(" "), "treeJson");
   const metadataContract = optionTreeV2Schema.safeParse(treeJson);
   assert(metadataContract.success, "PBV2_PRODUCT_INTAKE_METADATA_INVALID", metadataContract.success ? "" : metadataContract.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join(" "), "treeJson.meta.productIntake.quantity");
   if (pricing.model !== "one_dimensional_matrix" && pricing.model !== "two_dimensional_matrix" && pricing.model !== "option_quantity_tiers") {

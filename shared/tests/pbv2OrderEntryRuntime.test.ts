@@ -62,6 +62,13 @@ function makeTree(): OptionTreeV2 {
 }
 
 describe("PBV2 order-entry runtime", () => {
+  test("canonical zero-option trees render no controls and create no fake selections", () => {
+    const tree: OptionTreeV2 = { schemaVersion: 2, rootNodeIds: [], nodes: {}, edges: [] };
+    expect(getRenderablePbv2QuestionNodeIds(tree)).toEqual([]);
+    expect(hasRenderablePbv2Tree(tree)).toBe(false);
+    expect(buildPbv2DefaultSelections(tree)).toBeNull();
+  });
+
   test("PBV2 options remain renderable with blank or zero base rate", () => {
     const tree = {
       ...makeTree(),

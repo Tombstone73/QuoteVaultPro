@@ -1,6 +1,6 @@
 import { productDraftIntentFingerprint } from "@shared/productDraftIntent";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
-import { optionTreeV2Schema } from "@shared/optionTreeV2";
+import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildNumericSelectionFormulaVariables } from "@shared/pbv2/numericSelectionFormulaVariables";
 import { validatePricingPreviewRequest } from "../services/pricing/pricingPreviewValidation";
 import { ProductIntentProjectionError, projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
@@ -224,6 +224,19 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     const variables = buildNumericSelectionFormulaVariables({ treeJson: projected.treeJson, selections: { hours: { value: 2.5 } } });
     expect(variables.hours).toBe(2.5);
     expect(variables.hours * (projected.treeJson.meta as any).pricingFormulaVariables.hourly_rate * 100).toBe(15000);
+  });
+
+  it("projects a flat service fee as the canonical zero-option tree", () => {
+    const projected = projectProductDraftIntentToProductBuilderDraft(intent({
+      identity: { name: "Setup Fee", description: "", category: { state: "resolved", id: "fees", label: "Fees" } },
+      measurement: { mode: "quantity_only" }, quantity: { behavior: "not_applicable" },
+      pricing: { model: "scalar", unit: "flat_fee", priceCents: 6000 }, material: { state: "explicitly_unset" }, optionGroups: [],
+      workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false },
+      production: { route: { state: "explicitly_unset" }, configuration: {} },
+    }));
+    expect(projected.treeJson).toMatchObject({ schemaVersion: 2, status: "DRAFT", rootNodeIds: [], nodes: {}, edges: [] });
+    expect(validateOptionTreeV2(projected.treeJson).ok).toBe(true);
+    expect(validatePricingPreviewRequest({ treeJson: projected.treeJson, measurementMode: "quantity_only", quantity: 1, optionSelectionsJson: {} })).toMatchObject({ ok: true });
   });
 
   it("projects continuous quantity tiers into PBV2 lower-bound tiers", () => {
