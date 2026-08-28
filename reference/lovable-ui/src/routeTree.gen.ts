@@ -52,6 +52,22 @@ import { Route as ShellInvoicesIndexRouteImport } from './routes/_shell.invoices
 import { Route as ShellInvoicesIdRouteImport } from './routes/_shell.invoices.$id'
 import { Route as ShellProductsIdRouteImport } from './routes/_shell.products.$id'
 import { Route as ShellSalesIdRouteImport } from './routes/_shell.sales.$id'
+import { Route as ShellSettingsIndexRouteImport } from './routes/_shell.settings.index'
+import { Route as ShellSettingsAccountingRouteImport } from './routes/_shell.settings.accounting'
+import { Route as ShellSettingsBusinessProfileRouteImport } from './routes/_shell.settings.business-profile'
+import { Route as ShellSettingsDocumentsRouteImport } from './routes/_shell.settings.documents'
+import { Route as ShellSettingsEmailRouteImport } from './routes/_shell.settings.email'
+import { Route as ShellSettingsInvoiceDefaultsRouteImport } from './routes/_shell.settings.invoice-defaults'
+import { Route as ShellSettingsNotificationsRouteImport } from './routes/_shell.settings.notifications'
+import { Route as ShellSettingsNumberingRouteImport } from './routes/_shell.settings.numbering'
+import { Route as ShellSettingsPaymentsRouteImport } from './routes/_shell.settings.payments'
+import { Route as ShellSettingsPermissionSetsRouteImport } from './routes/_shell.settings.permission-sets'
+import { Route as ShellSettingsPortalAccessRouteImport } from './routes/_shell.settings.portal-access'
+import { Route as ShellSettingsPreferencesRouteImport } from './routes/_shell.settings.preferences'
+import { Route as ShellSettingsProductionConnectionsRouteImport } from './routes/_shell.settings.production-connections'
+import { Route as ShellSettingsSalesTaxRouteImport } from './routes/_shell.settings.sales-tax'
+import { Route as ShellSettingsShippingRouteImport } from './routes/_shell.settings.shipping'
+import { Route as ShellSettingsStaffRouteImport } from './routes/_shell.settings.staff'
 
 const ShellRoute = ShellRouteImport.update({
   id: '/_shell',
@@ -268,6 +284,93 @@ const ShellSalesIdRoute = ShellSalesIdRouteImport.update({
   path: '/sales/$id',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellSettingsIndexRoute = ShellSettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsAccountingRoute = ShellSettingsAccountingRouteImport.update({
+  id: '/accounting',
+  path: '/accounting',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsBusinessProfileRoute =
+  ShellSettingsBusinessProfileRouteImport.update({
+    id: '/business-profile',
+    path: '/business-profile',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsDocumentsRoute = ShellSettingsDocumentsRouteImport.update({
+  id: '/documents',
+  path: '/documents',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsEmailRoute = ShellSettingsEmailRouteImport.update({
+  id: '/email',
+  path: '/email',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsInvoiceDefaultsRoute =
+  ShellSettingsInvoiceDefaultsRouteImport.update({
+    id: '/invoice-defaults',
+    path: '/invoice-defaults',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsNotificationsRoute =
+  ShellSettingsNotificationsRouteImport.update({
+    id: '/notifications',
+    path: '/notifications',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsNumberingRoute = ShellSettingsNumberingRouteImport.update({
+  id: '/numbering',
+  path: '/numbering',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsPaymentsRoute = ShellSettingsPaymentsRouteImport.update({
+  id: '/payments',
+  path: '/payments',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsPermissionSetsRoute =
+  ShellSettingsPermissionSetsRouteImport.update({
+    id: '/permission-sets',
+    path: '/permission-sets',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsPortalAccessRoute =
+  ShellSettingsPortalAccessRouteImport.update({
+    id: '/portal-access',
+    path: '/portal-access',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsPreferencesRoute =
+  ShellSettingsPreferencesRouteImport.update({
+    id: '/preferences',
+    path: '/preferences',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsProductionConnectionsRoute =
+  ShellSettingsProductionConnectionsRouteImport.update({
+    id: '/production-connections',
+    path: '/production-connections',
+    getParentRoute: () => ShellSettingsRoute,
+  } as any)
+const ShellSettingsSalesTaxRoute = ShellSettingsSalesTaxRouteImport.update({
+  id: '/sales-tax',
+  path: '/sales-tax',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsShippingRoute = ShellSettingsShippingRouteImport.update({
+  id: '/shipping',
+  path: '/shipping',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
+const ShellSettingsStaffRoute = ShellSettingsStaffRouteImport.update({
+  id: '/staff',
+  path: '/staff',
+  getParentRoute: () => ShellSettingsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
@@ -298,7 +401,7 @@ export interface FileRoutesByFullPath {
   '/quotes': typeof ShellQuotesRoute
   '/reports': typeof ShellReportsRoute
   '/routing': typeof ShellRoutingRoute
-  '/settings': typeof ShellSettingsRoute
+  '/settings': typeof ShellSettingsRouteWithChildren
   '/shipping': typeof ShellShippingRoute
   '/users': typeof ShellUsersRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
@@ -308,10 +411,26 @@ export interface FileRoutesByFullPath {
   '/invoices/$id': typeof ShellInvoicesIdRoute
   '/products/$id': typeof ShellProductsIdRoute
   '/sales/$id': typeof ShellSalesIdRoute
+  '/settings/accounting': typeof ShellSettingsAccountingRoute
+  '/settings/business-profile': typeof ShellSettingsBusinessProfileRoute
+  '/settings/documents': typeof ShellSettingsDocumentsRoute
+  '/settings/email': typeof ShellSettingsEmailRoute
+  '/settings/invoice-defaults': typeof ShellSettingsInvoiceDefaultsRoute
+  '/settings/notifications': typeof ShellSettingsNotificationsRoute
+  '/settings/numbering': typeof ShellSettingsNumberingRoute
+  '/settings/payments': typeof ShellSettingsPaymentsRoute
+  '/settings/permission-sets': typeof ShellSettingsPermissionSetsRoute
+  '/settings/portal-access': typeof ShellSettingsPortalAccessRoute
+  '/settings/preferences': typeof ShellSettingsPreferencesRoute
+  '/settings/production-connections': typeof ShellSettingsProductionConnectionsRoute
+  '/settings/sales-tax': typeof ShellSettingsSalesTaxRoute
+  '/settings/shipping': typeof ShellSettingsShippingRoute
+  '/settings/staff': typeof ShellSettingsStaffRoute
   '/contacts/': typeof ShellContactsIndexRoute
   '/customers/': typeof ShellCustomersIndexRoute
   '/formula-library/': typeof ShellFormulaLibraryIndexRoute
   '/invoices/': typeof ShellInvoicesIndexRoute
+  '/settings/': typeof ShellSettingsIndexRoute
 }
 export interface FileRoutesByTo {
   '/appearance': typeof ShellAppearanceRoute
@@ -337,7 +456,6 @@ export interface FileRoutesByTo {
   '/quotes': typeof ShellQuotesRoute
   '/reports': typeof ShellReportsRoute
   '/routing': typeof ShellRoutingRoute
-  '/settings': typeof ShellSettingsRoute
   '/shipping': typeof ShellShippingRoute
   '/users': typeof ShellUsersRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
@@ -348,10 +466,26 @@ export interface FileRoutesByTo {
   '/invoices/$id': typeof ShellInvoicesIdRoute
   '/products/$id': typeof ShellProductsIdRoute
   '/sales/$id': typeof ShellSalesIdRoute
+  '/settings/accounting': typeof ShellSettingsAccountingRoute
+  '/settings/business-profile': typeof ShellSettingsBusinessProfileRoute
+  '/settings/documents': typeof ShellSettingsDocumentsRoute
+  '/settings/email': typeof ShellSettingsEmailRoute
+  '/settings/invoice-defaults': typeof ShellSettingsInvoiceDefaultsRoute
+  '/settings/notifications': typeof ShellSettingsNotificationsRoute
+  '/settings/numbering': typeof ShellSettingsNumberingRoute
+  '/settings/payments': typeof ShellSettingsPaymentsRoute
+  '/settings/permission-sets': typeof ShellSettingsPermissionSetsRoute
+  '/settings/portal-access': typeof ShellSettingsPortalAccessRoute
+  '/settings/preferences': typeof ShellSettingsPreferencesRoute
+  '/settings/production-connections': typeof ShellSettingsProductionConnectionsRoute
+  '/settings/sales-tax': typeof ShellSettingsSalesTaxRoute
+  '/settings/shipping': typeof ShellSettingsShippingRoute
+  '/settings/staff': typeof ShellSettingsStaffRoute
   '/contacts': typeof ShellContactsIndexRoute
   '/customers': typeof ShellCustomersIndexRoute
   '/formula-library': typeof ShellFormulaLibraryIndexRoute
   '/invoices': typeof ShellInvoicesIndexRoute
+  '/settings': typeof ShellSettingsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -383,7 +517,7 @@ export interface FileRoutesById {
   '/_shell/quotes': typeof ShellQuotesRoute
   '/_shell/reports': typeof ShellReportsRoute
   '/_shell/routing': typeof ShellRoutingRoute
-  '/_shell/settings': typeof ShellSettingsRoute
+  '/_shell/settings': typeof ShellSettingsRouteWithChildren
   '/_shell/shipping': typeof ShellShippingRoute
   '/_shell/users': typeof ShellUsersRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
@@ -394,10 +528,26 @@ export interface FileRoutesById {
   '/_shell/invoices/$id': typeof ShellInvoicesIdRoute
   '/_shell/products/$id': typeof ShellProductsIdRoute
   '/_shell/sales/$id': typeof ShellSalesIdRoute
+  '/_shell/settings/accounting': typeof ShellSettingsAccountingRoute
+  '/_shell/settings/business-profile': typeof ShellSettingsBusinessProfileRoute
+  '/_shell/settings/documents': typeof ShellSettingsDocumentsRoute
+  '/_shell/settings/email': typeof ShellSettingsEmailRoute
+  '/_shell/settings/invoice-defaults': typeof ShellSettingsInvoiceDefaultsRoute
+  '/_shell/settings/notifications': typeof ShellSettingsNotificationsRoute
+  '/_shell/settings/numbering': typeof ShellSettingsNumberingRoute
+  '/_shell/settings/payments': typeof ShellSettingsPaymentsRoute
+  '/_shell/settings/permission-sets': typeof ShellSettingsPermissionSetsRoute
+  '/_shell/settings/portal-access': typeof ShellSettingsPortalAccessRoute
+  '/_shell/settings/preferences': typeof ShellSettingsPreferencesRoute
+  '/_shell/settings/production-connections': typeof ShellSettingsProductionConnectionsRoute
+  '/_shell/settings/sales-tax': typeof ShellSettingsSalesTaxRoute
+  '/_shell/settings/shipping': typeof ShellSettingsShippingRoute
+  '/_shell/settings/staff': typeof ShellSettingsStaffRoute
   '/_shell/contacts/': typeof ShellContactsIndexRoute
   '/_shell/customers/': typeof ShellCustomersIndexRoute
   '/_shell/formula-library/': typeof ShellFormulaLibraryIndexRoute
   '/_shell/invoices/': typeof ShellInvoicesIndexRoute
+  '/_shell/settings/': typeof ShellSettingsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -440,10 +590,26 @@ export interface FileRouteTypes {
     | '/invoices/$id'
     | '/products/$id'
     | '/sales/$id'
+    | '/settings/accounting'
+    | '/settings/business-profile'
+    | '/settings/documents'
+    | '/settings/email'
+    | '/settings/invoice-defaults'
+    | '/settings/notifications'
+    | '/settings/numbering'
+    | '/settings/payments'
+    | '/settings/permission-sets'
+    | '/settings/portal-access'
+    | '/settings/preferences'
+    | '/settings/production-connections'
+    | '/settings/sales-tax'
+    | '/settings/shipping'
+    | '/settings/staff'
     | '/contacts/'
     | '/customers/'
     | '/formula-library/'
     | '/invoices/'
+    | '/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/appearance'
@@ -469,7 +635,6 @@ export interface FileRouteTypes {
     | '/quotes'
     | '/reports'
     | '/routing'
-    | '/settings'
     | '/shipping'
     | '/users'
     | '/storefront/$slug'
@@ -480,10 +645,26 @@ export interface FileRouteTypes {
     | '/invoices/$id'
     | '/products/$id'
     | '/sales/$id'
+    | '/settings/accounting'
+    | '/settings/business-profile'
+    | '/settings/documents'
+    | '/settings/email'
+    | '/settings/invoice-defaults'
+    | '/settings/notifications'
+    | '/settings/numbering'
+    | '/settings/payments'
+    | '/settings/permission-sets'
+    | '/settings/portal-access'
+    | '/settings/preferences'
+    | '/settings/production-connections'
+    | '/settings/sales-tax'
+    | '/settings/shipping'
+    | '/settings/staff'
     | '/contacts'
     | '/customers'
     | '/formula-library'
     | '/invoices'
+    | '/settings'
   id:
     | '__root__'
     | '/_shell'
@@ -525,10 +706,26 @@ export interface FileRouteTypes {
     | '/_shell/invoices/$id'
     | '/_shell/products/$id'
     | '/_shell/sales/$id'
+    | '/_shell/settings/accounting'
+    | '/_shell/settings/business-profile'
+    | '/_shell/settings/documents'
+    | '/_shell/settings/email'
+    | '/_shell/settings/invoice-defaults'
+    | '/_shell/settings/notifications'
+    | '/_shell/settings/numbering'
+    | '/_shell/settings/payments'
+    | '/_shell/settings/permission-sets'
+    | '/_shell/settings/portal-access'
+    | '/_shell/settings/preferences'
+    | '/_shell/settings/production-connections'
+    | '/_shell/settings/sales-tax'
+    | '/_shell/settings/shipping'
+    | '/_shell/settings/staff'
     | '/_shell/contacts/'
     | '/_shell/customers/'
     | '/_shell/formula-library/'
     | '/_shell/invoices/'
+    | '/_shell/settings/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -839,6 +1036,118 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellSalesIdRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/settings/': {
+      id: '/_shell/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof ShellSettingsIndexRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/accounting': {
+      id: '/_shell/settings/accounting'
+      path: '/accounting'
+      fullPath: '/settings/accounting'
+      preLoaderRoute: typeof ShellSettingsAccountingRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/business-profile': {
+      id: '/_shell/settings/business-profile'
+      path: '/business-profile'
+      fullPath: '/settings/business-profile'
+      preLoaderRoute: typeof ShellSettingsBusinessProfileRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/documents': {
+      id: '/_shell/settings/documents'
+      path: '/documents'
+      fullPath: '/settings/documents'
+      preLoaderRoute: typeof ShellSettingsDocumentsRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/email': {
+      id: '/_shell/settings/email'
+      path: '/email'
+      fullPath: '/settings/email'
+      preLoaderRoute: typeof ShellSettingsEmailRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/invoice-defaults': {
+      id: '/_shell/settings/invoice-defaults'
+      path: '/invoice-defaults'
+      fullPath: '/settings/invoice-defaults'
+      preLoaderRoute: typeof ShellSettingsInvoiceDefaultsRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/notifications': {
+      id: '/_shell/settings/notifications'
+      path: '/notifications'
+      fullPath: '/settings/notifications'
+      preLoaderRoute: typeof ShellSettingsNotificationsRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/numbering': {
+      id: '/_shell/settings/numbering'
+      path: '/numbering'
+      fullPath: '/settings/numbering'
+      preLoaderRoute: typeof ShellSettingsNumberingRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/payments': {
+      id: '/_shell/settings/payments'
+      path: '/payments'
+      fullPath: '/settings/payments'
+      preLoaderRoute: typeof ShellSettingsPaymentsRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/permission-sets': {
+      id: '/_shell/settings/permission-sets'
+      path: '/permission-sets'
+      fullPath: '/settings/permission-sets'
+      preLoaderRoute: typeof ShellSettingsPermissionSetsRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/portal-access': {
+      id: '/_shell/settings/portal-access'
+      path: '/portal-access'
+      fullPath: '/settings/portal-access'
+      preLoaderRoute: typeof ShellSettingsPortalAccessRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/preferences': {
+      id: '/_shell/settings/preferences'
+      path: '/preferences'
+      fullPath: '/settings/preferences'
+      preLoaderRoute: typeof ShellSettingsPreferencesRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/production-connections': {
+      id: '/_shell/settings/production-connections'
+      path: '/production-connections'
+      fullPath: '/settings/production-connections'
+      preLoaderRoute: typeof ShellSettingsProductionConnectionsRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/sales-tax': {
+      id: '/_shell/settings/sales-tax'
+      path: '/sales-tax'
+      fullPath: '/settings/sales-tax'
+      preLoaderRoute: typeof ShellSettingsSalesTaxRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/shipping': {
+      id: '/_shell/settings/shipping'
+      path: '/shipping'
+      fullPath: '/settings/shipping'
+      preLoaderRoute: typeof ShellSettingsShippingRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
+    '/_shell/settings/staff': {
+      id: '/_shell/settings/staff'
+      path: '/staff'
+      fullPath: '/settings/staff'
+      preLoaderRoute: typeof ShellSettingsStaffRouteImport
+      parentRoute: typeof ShellSettingsRoute
+    }
   }
 }
 
@@ -909,6 +1218,49 @@ const ShellProductsRouteWithChildren = ShellProductsRoute._addFileChildren(
   ShellProductsRouteChildren,
 )
 
+interface ShellSettingsRouteChildren {
+  ShellSettingsAccountingRoute: typeof ShellSettingsAccountingRoute
+  ShellSettingsBusinessProfileRoute: typeof ShellSettingsBusinessProfileRoute
+  ShellSettingsDocumentsRoute: typeof ShellSettingsDocumentsRoute
+  ShellSettingsEmailRoute: typeof ShellSettingsEmailRoute
+  ShellSettingsInvoiceDefaultsRoute: typeof ShellSettingsInvoiceDefaultsRoute
+  ShellSettingsNotificationsRoute: typeof ShellSettingsNotificationsRoute
+  ShellSettingsNumberingRoute: typeof ShellSettingsNumberingRoute
+  ShellSettingsPaymentsRoute: typeof ShellSettingsPaymentsRoute
+  ShellSettingsPermissionSetsRoute: typeof ShellSettingsPermissionSetsRoute
+  ShellSettingsPortalAccessRoute: typeof ShellSettingsPortalAccessRoute
+  ShellSettingsPreferencesRoute: typeof ShellSettingsPreferencesRoute
+  ShellSettingsProductionConnectionsRoute: typeof ShellSettingsProductionConnectionsRoute
+  ShellSettingsSalesTaxRoute: typeof ShellSettingsSalesTaxRoute
+  ShellSettingsShippingRoute: typeof ShellSettingsShippingRoute
+  ShellSettingsStaffRoute: typeof ShellSettingsStaffRoute
+  ShellSettingsIndexRoute: typeof ShellSettingsIndexRoute
+}
+
+const ShellSettingsRouteChildren: ShellSettingsRouteChildren = {
+  ShellSettingsAccountingRoute: ShellSettingsAccountingRoute,
+  ShellSettingsBusinessProfileRoute: ShellSettingsBusinessProfileRoute,
+  ShellSettingsDocumentsRoute: ShellSettingsDocumentsRoute,
+  ShellSettingsEmailRoute: ShellSettingsEmailRoute,
+  ShellSettingsInvoiceDefaultsRoute: ShellSettingsInvoiceDefaultsRoute,
+  ShellSettingsNotificationsRoute: ShellSettingsNotificationsRoute,
+  ShellSettingsNumberingRoute: ShellSettingsNumberingRoute,
+  ShellSettingsPaymentsRoute: ShellSettingsPaymentsRoute,
+  ShellSettingsPermissionSetsRoute: ShellSettingsPermissionSetsRoute,
+  ShellSettingsPortalAccessRoute: ShellSettingsPortalAccessRoute,
+  ShellSettingsPreferencesRoute: ShellSettingsPreferencesRoute,
+  ShellSettingsProductionConnectionsRoute:
+    ShellSettingsProductionConnectionsRoute,
+  ShellSettingsSalesTaxRoute: ShellSettingsSalesTaxRoute,
+  ShellSettingsShippingRoute: ShellSettingsShippingRoute,
+  ShellSettingsStaffRoute: ShellSettingsStaffRoute,
+  ShellSettingsIndexRoute: ShellSettingsIndexRoute,
+}
+
+const ShellSettingsRouteWithChildren = ShellSettingsRoute._addFileChildren(
+  ShellSettingsRouteChildren,
+)
+
 interface ShellRouteChildren {
   ShellAppearanceRoute: typeof ShellAppearanceRoute
   ShellArtworkRoute: typeof ShellArtworkRoute
@@ -937,7 +1289,7 @@ interface ShellRouteChildren {
   ShellQuotesRoute: typeof ShellQuotesRoute
   ShellReportsRoute: typeof ShellReportsRoute
   ShellRoutingRoute: typeof ShellRoutingRoute
-  ShellSettingsRoute: typeof ShellSettingsRoute
+  ShellSettingsRoute: typeof ShellSettingsRouteWithChildren
   ShellShippingRoute: typeof ShellShippingRoute
   ShellUsersRoute: typeof ShellUsersRoute
   ShellIndexRoute: typeof ShellIndexRoute
@@ -972,7 +1324,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellQuotesRoute: ShellQuotesRoute,
   ShellReportsRoute: ShellReportsRoute,
   ShellRoutingRoute: ShellRoutingRoute,
-  ShellSettingsRoute: ShellSettingsRoute,
+  ShellSettingsRoute: ShellSettingsRouteWithChildren,
   ShellShippingRoute: ShellShippingRoute,
   ShellUsersRoute: ShellUsersRoute,
   ShellIndexRoute: ShellIndexRoute,

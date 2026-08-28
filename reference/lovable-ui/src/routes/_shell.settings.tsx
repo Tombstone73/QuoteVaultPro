@@ -1,54 +1,89 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { PageHeader, Panel } from "@/components/app/primitives";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { CURRENT_USER, stations } from "@/lib/mock/data";
+import { Outlet, createFileRoute, useNavigate, useRouterState, Link } from "@tanstack/react-router";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_shell/settings")({
-  head: () => ({
-    meta: [
-      { title: "Settings — PrintersHero V2" },
-      { name: "description", content: "Shop profile, tax, numbering, stations and document defaults for the print shop operating system." },
-      { property: "og:title", content: "Settings — PrintersHero V2" },
-      { property: "og:description", content: "Shop-wide defaults for documents, tax and stations." },
-    ],
-  }),
-  component: SettingsPage,
+  component: SettingsLayout,
 });
 
-function SettingsPage() {
+export const NAV: { group: string; items: { to: string; label: string }[] }[] = [
+  { group: "", items: [{ to: "/settings", label: "Overview" }] },
+  { group: "Organization", items: [
+    { to: "/settings/business-profile", label: "Business Profile" },
+    { to: "/settings/documents", label: "Documents & Branding" },
+    { to: "/settings/numbering", label: "Numbering" },
+  ] },
+  { group: "Team & Access", items: [
+    { to: "/settings/staff", label: "Staff & Users" },
+    { to: "/settings/permission-sets", label: "Permission Sets" },
+    { to: "/settings/portal-access", label: "Customer Portal Access" },
+  ] },
+  { group: "Sales", items: [{ to: "/settings/sales-tax", label: "Sales Tax" }] },
+  { group: "Communications", items: [{ to: "/settings/email", label: "Email Delivery" }] },
+  { group: "Billing & Payments", items: [
+    { to: "/settings/invoice-defaults", label: "Invoice Defaults" },
+    { to: "/settings/payments", label: "Payments" },
+  ] },
+  { group: "Integrations", items: [
+    { to: "/settings/accounting", label: "Accounting" },
+    { to: "/settings/shipping", label: "Shipping & Carriers" },
+    { to: "/settings/production-connections", label: "Production Connections" },
+  ] },
+  { group: "My Preferences", items: [
+    { to: "/settings/preferences", label: "Appearance" },
+    { to: "/settings/notifications", label: "Notifications" },
+  ] },
+];
+
+function SettingsLayout() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
+  const flat = NAV.flatMap((g) => g.items);
+
   return (
-    <div className="space-y-3 p-4">
-      <PageHeader title="Settings" subtitle={CURRENT_USER.org} />
-      <div className="grid gap-3 lg:grid-cols-2">
-        <Panel title="Shop profile">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-1.5"><Label className="text-[12px]">Company</Label><Input className="h-8 text-[13px]" defaultValue={CURRENT_USER.org} /></div>
-            <div className="grid gap-1.5"><Label className="text-[12px]">Phone</Label><Input className="num h-8 text-[13px]" defaultValue="765-555-8800" /></div>
-            <div className="grid gap-1.5 sm:col-span-2"><Label className="text-[12px]">Address</Label><Input className="h-8 text-[13px]" defaultValue="1400 Sagamore Pkwy, Lafayette, IN" /></div>
+    <div className="flex min-h-full flex-col lg:flex-row">
+      <nav className="hidden w-[212px] shrink-0 border-r border-border bg-surface-2/40 py-3 lg:block">
+        {NAV.map((g) => (
+          <div key={g.group || "root"} className="px-2 pb-2">
+            {g.group && (
+              <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{g.group}</div>
+            )}
+            {g.items.map((it) => {
+              const active = it.to === "/settings" ? pathname === "/settings" : pathname.startsWith(it.to);
+              return (
+                <Link
+                  key={it.to}
+                  to={it.to}
+                  className={cn(
+                    "mb-0.5 block rounded-md px-2 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                    active && "bg-primary/12 font-medium text-primary",
+                  )}
+                >
+                  {it.label}
+                </Link>
+              );
+            })}
           </div>
-        </Panel>
-        <Panel title="Documents & tax">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-1.5"><Label className="text-[12px]">Next quote number</Label><Input className="num h-8 text-[13px]" defaultValue="10461" /></div>
-            <div className="grid gap-1.5"><Label className="text-[12px]">Next order number</Label><Input className="num h-8 text-[13px]" defaultValue="10674" /></div>
-            <div className="grid gap-1.5"><Label className="text-[12px]">Default terms</Label><Input className="h-8 text-[13px]" defaultValue="Net 30" /></div>
-            <div className="grid gap-1.5"><Label className="text-[12px]">Sales tax rate</Label><Input className="num h-8 text-[13px]" defaultValue="7.00%" /></div>
-          </div>
-        </Panel>
-        <Panel title="Workflow defaults">
-          <div className="space-y-2.5">
-            {["Require proof approval before production", "Auto-create draft invoice with each order", "Allow partial pickups", "Warn when selling price is below calculated price"].map((s, i) => (
-              <div key={s} className="flex items-center justify-between text-[13px]"><span>{s}</span><Switch defaultChecked={i !== 3} /></div>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Stations">
-          <ul className="flex flex-wrap gap-2">
-            {stations.map((s) => <li key={s} className="rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[12px]">{s}</li>)}
-          </ul>
-        </Panel>
+        ))}
+      </nav>
+
+      <div className="border-b border-border p-3 lg:hidden">
+        <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground" htmlFor="settings-nav">Settings section</label>
+        <select
+          id="settings-nav"
+          className="mt-1 h-9 w-full rounded-md border border-border bg-surface px-2 text-[13px]"
+          value={flat.find((i) => (i.to === "/settings" ? pathname === "/settings" : pathname.startsWith(i.to)))?.to ?? "/settings"}
+          onChange={(e) => navigate({ to: e.target.value })}
+        >
+          {NAV.map((g) => (
+            <optgroup key={g.group || "root"} label={g.group || "Settings"}>
+              {g.items.map((i) => <option key={i.to} value={i.to}>{i.label}</option>)}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <Outlet />
       </div>
     </div>
   );
