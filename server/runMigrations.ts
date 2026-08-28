@@ -254,6 +254,10 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "index_exists", index: "invoices_job_number_idx", label: "invoices_job_number_idx index" },
   { type: "index_exists", index: "invoices_org_job_sequence_unique", label: "invoices_org_job_sequence_unique index" },
   { type: "index_absent", index: "invoices_org_number_core_unique", label: "invoices_org_number_core_unique index removed" },
+  // migration 0189 — invoice snapshots persist frozen PBV2 commercial terms.
+  // Quote-to-order conversion creates the draft invoice synchronously, so fail
+  // startup explicitly rather than letting that transaction fail at runtime.
+  { type: "column_exists", table: "invoice_line_items", column: "pbv2_snapshot_json", label: "invoice_line_items.pbv2_snapshot_json" },
   { type: "row_exists", table: "stations", where: "key = 'fulfillment' OR NOT EXISTS (SELECT 1 FROM organizations)", label: "stations.key='fulfillment' exists (migration 0034 data)" },
 
   // migrations 0109-0114 — customer/contact migration, portal onboarding,

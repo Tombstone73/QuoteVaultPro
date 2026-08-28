@@ -1289,6 +1289,13 @@
       "when": 1788048000035,
       "tag": "0188_shared_commercial_job_numbering",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1788048000036,
+      "tag": "0189_invoice_line_item_pbv2_snapshot",
+      "breakpoints": true
     }
   ]
 }
