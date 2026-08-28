@@ -637,6 +637,10 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [treeJson, pricingV2Override, nonDimensionalPricing]);
 
   const fixedDimensions = useMemo(() => getPbv2FixedDimensions(treeForPreview), [treeForPreview]);
+  const hourlyBillingUnit = useMemo(() => {
+    const billingUnit = (treeForPreview as any)?.meta?.billingUnit;
+    return billingUnit?.kind === "hour" ? billingUnit : null;
+  }, [treeForPreview]);
   const previewWidth = nonDimensionalPricing ? 0 : (fixedDimensions?.widthIn ?? previewState.width);
   const previewHeight = nonDimensionalPricing ? 0 : (fixedDimensions?.heightIn ?? previewState.height);
 
@@ -708,11 +712,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     if (!nonDimensionalPricing && (!Number.isFinite(previewHeight) || previewHeight <= 0)) {
       next.height = "Height must be greater than 0.";
     }
-    if (!Number.isFinite(previewState.quantity) || previewState.quantity < 1 || !Number.isInteger(previewState.quantity)) {
-      next.quantity = "Quantity must be an integer of 1 or more.";
+    const hourlyStep = Number(hourlyBillingUnit?.step ?? 0.25);
+    const hasValidHourlyIncrement = hourlyBillingUnit
+      ? Number.isFinite(previewState.quantity) && previewState.quantity >= hourlyStep && Math.abs((previewState.quantity / hourlyStep) - Math.round(previewState.quantity / hourlyStep)) < 0.000001
+      : false;
+    if (hourlyBillingUnit ? !hasValidHourlyIncrement : (!Number.isFinite(previewState.quantity) || previewState.quantity < 1 || !Number.isInteger(previewState.quantity))) {
+      next.quantity = hourlyBillingUnit ? `Billable hours must use ${hourlyStep}-hour increments.` : "Quantity must be an integer of 1 or more.";
     }
     return next;
-  }, [previewWidth, previewHeight, previewState.quantity, nonDimensionalPricing]);
+  }, [previewWidth, previewHeight, previewState.quantity, nonDimensionalPricing, hourlyBillingUnit]);
 
   const hasInputErrors = Boolean(inputErrors.width || inputErrors.height || inputErrors.quantity);
 
@@ -1121,7 +1129,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
             <div className="rounded-md border border-slate-700 bg-slate-800/50 p-3 space-y-3 min-w-0 max-w-full overflow-hidden">
               <div className="flex items-center justify-between gap-2 min-w-0">
                 <div className="text-xs text-slate-400 uppercase tracking-wide min-w-0">Inputs</div>
-                <div className="text-[11px] text-slate-500 shrink-0">Units: {previewState.unit === "in" ? "inches" : previewState.unit}</div>
+                <div className="text-[11px] text-slate-500 shrink-0">Units: {hourlyBillingUnit ? "hours" : previewState.unit === "in" ? "inches" : previewState.unit}</div>
               </div>
 
               <div className={nonDimensionalPricing ? "grid grid-cols-1 gap-2 min-w-0 max-w-full" : fixedDimensions ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2 min-w-0 max-w-full" : "grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 min-w-0 max-w-full"}>
@@ -1161,11 +1169,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                   </>
                 )}
                 <div className="min-w-0">
-                  <Label className="text-xs text-slate-400">Quantity</Label>
+                  <Label className="text-xs text-slate-400">{hourlyBillingUnit ? "Billable Hours" : "Quantity"}</Label>
                   <Input
                     type="number"
-                    min={1}
-                    step={1}
+                    min={hourlyBillingUnit ? hourlyBillingUnit.step ?? 0.25 : 1}
+                    step={hourlyBillingUnit ? hourlyBillingUnit.step ?? 0.25 : 1}
                     value={previewState.quantity}
                     onChange={(e) => setPreviewState((prev) => ({ ...prev, quantity: Number(e.target.value) }))}
                     className="bg-slate-950/60 border-slate-700/60 h-8 w-full min-w-0"

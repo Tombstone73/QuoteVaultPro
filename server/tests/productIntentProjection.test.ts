@@ -2,6 +2,7 @@ import { productDraftIntentFingerprint } from "@shared/productDraftIntent";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildNumericSelectionFormulaVariables } from "@shared/pbv2/numericSelectionFormulaVariables";
+import { bindCommercialQuantityToFormulaVariables } from "@shared/pbv2/commercialQuantityFormulaVariables";
 import { validatePricingPreviewRequest } from "../services/pricing/pricingPreviewValidation";
 import { ProductIntentProjectionError, projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
 import { evaluateOptionTreeV2 } from "../services/optionTreeV2Evaluator";
@@ -219,9 +220,9 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     expect(projected.product).toMatchObject({ category: "Fees", pricingProfileKey: "hourly", pricingFormula: "hours * hourly_rate", pricingProfileConfig: { formulaVariables: { hourly_rate: 60 } }, measurementMode: "quantity_only", requiresProductionJob: false, requiresProofApproval: false, isService: true });
     expect((projected.treeJson.meta as any)).toMatchObject({ pricingFormula: "hours * hourly_rate", pricingFormulaVariables: { hourly_rate: 60 }, billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 } });
     expect((projected.treeJson.meta as any).pricingV2.base).toEqual({ perSqftCents: null, perPieceCents: null, minimumChargeCents: null });
-    const hours = Object.values(projected.treeJson.nodes as Record<string, any>).find((node: any) => node.input?.selectionKey === "hours");
-    expect(hours?.input).toMatchObject({ type: "number", required: true, constraints: { number: { min: 0.25, step: 0.25 } } });
-    const variables = buildNumericSelectionFormulaVariables({ treeJson: projected.treeJson, selections: { hours: { value: 2.5 } } });
+    expect(projected.treeJson.rootNodeIds).toEqual([]);
+    expect(projected.treeJson.nodes).toEqual({});
+    const variables = bindCommercialQuantityToFormulaVariables({ treeJson: projected.treeJson, quantity: 2.5, existing: buildNumericSelectionFormulaVariables({ treeJson: projected.treeJson, selections: {} }) });
     expect(variables.hours).toBe(2.5);
     expect(variables.hours * (projected.treeJson.meta as any).pricingFormulaVariables.hourly_rate * 100).toBe(15000);
 

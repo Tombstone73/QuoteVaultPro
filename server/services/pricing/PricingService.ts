@@ -60,6 +60,7 @@ import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensio
 import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
 import { skipsRequiredPrintOptionValidation } from '../../../shared/productPricingValidation';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
+import { bindCommercialQuantityToFormulaVariables } from '../../../shared/pbv2/commercialQuantityFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
   resolvePbv2WeightSource,
@@ -839,9 +840,13 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   );
   const ruleValidatedSelections = selectionResolution;
   const pricingMatrixResolution = selectionResolution.pricingMatrixResolution;
-  const selectionFormulaVariables = buildNumericSelectionFormulaVariables({
+  const selectionFormulaVariables = bindCommercialQuantityToFormulaVariables({
+    treeJson: treeVersion.treeJson,
+    quantity,
+    existing: buildNumericSelectionFormulaVariables({
     treeJson: treeVersion.treeJson,
     selections: ruleValidatedSelections.selected,
+    }),
   });
   const treeFormulaForPricing = typeof (treeVersion.treeJson as any)?.meta?.pricingFormula === "string"
     ? String((treeVersion.treeJson as any).meta.pricingFormula).trim()
@@ -1146,9 +1151,13 @@ export function evaluatePricingPreviewFromTree(input: {
     input.treeJson,
     ruleValidatedSelections.selected
   );
-  const selectionFormulaVariables = buildNumericSelectionFormulaVariables({
+  const selectionFormulaVariables = bindCommercialQuantityToFormulaVariables({
+    treeJson: input.treeJson,
+    quantity,
+    existing: buildNumericSelectionFormulaVariables({
     treeJson: input.treeJson,
     selections: ruleValidatedSelections.selected,
+    }),
   });
   const treeFormulaForPricing = typeof input.treeJson?.meta?.pricingFormula === "string"
     ? String(input.treeJson.meta.pricingFormula).trim()
@@ -2827,11 +2836,14 @@ function calculateBasePriceDetails(
     && declaresProductQuantityTiers
     ? validateQuantityOnlyPerPieceTierFamily(pricingV2)
     : null;
+  const isHourlyCommercialFormula = requestedPricingProfileKey === "hourly"
+    && (meta as any)?.billingUnit?.kind === "hour"
+    && typeof (meta as any)?.billingUnit?.selectionKey === "string";
   if (quantityOnlyTierValidation && !quantityOnlyTierValidation.ok) {
     const finding = quantityOnlyTierValidation.errors[0]!;
     throw Object.assign(new Error(finding.message), { code: finding.code, details: quantityOnlyTierValidation.errors });
   }
-  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !quantityOnlyTierValidation?.ok) {
+  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !isHourlyCommercialFormula && !quantityOnlyTierValidation?.ok) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -3295,7 +3307,7 @@ function calculateBasePriceDetails(
     };
   }
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only") {
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only" && !isHourlyCommercialFormula) {
     throw new Error(
       'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
     );
@@ -5284,7 +5296,7 @@ function buildPbv2PricingFormulaError(input: {
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
   const normalized = String(formula || '').toLowerCase();
   if (!normalized.trim()) return 'unknown';
-  if (/\b(quantity|q|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized) || /\broll_nesting_billable_sqft\s*\(/.test(normalized)) {
+  if (/\b(quantity|q|hours|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized) || /\broll_nesting_billable_sqft\s*\(/.test(normalized)) {
     return 'totalPrice';
   }
   return 'unitPrice';

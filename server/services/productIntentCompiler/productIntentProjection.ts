@@ -213,14 +213,6 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const fixedDimensions = intent.measurement.mode === "fixed_size" ? { ...intent.measurement.dimensions, unit: "in" as const, label: `${intent.measurement.dimensions.widthIn}\" x ${intent.measurement.dimensions.heightIn}\"` } : null;
   const fingerprint = productDraftIntentFingerprint(intent);
   const quantityMetadata = quantityMetadataForIntent(intent);
-  if (isHourly) {
-    const nodeId = stableId("intent_input", "hours");
-    optionTree.rootNodeIds.push(nodeId);
-    optionTree.nodes[nodeId] = {
-      id: nodeId, kind: "question", type: "INPUT", status: "ENABLED", key: "hours", label: "Billable hours", ui: { sortOrder: intent.optionGroups.length + 1, helpText: "Enter time in quarter-hour increments." },
-      input: { type: "number", required: true, selectionKey: "hours", valueType: "NUMBER", constraints: { number: { min: 0.25, step: 0.25 } } },
-    };
-  }
   const treeJson: Record<string, unknown> = {
     schemaVersion: 2, status: "DRAFT", rootNodeIds: optionTree.rootNodeIds, nodes: optionTree.nodes, edges: optionTree.edges,
     ...(matrix ? { pricingMatrix: matrix } : {}),
