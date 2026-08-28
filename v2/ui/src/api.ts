@@ -1,8 +1,13 @@
 import type { ProductOptionRule } from "../../../shared/productOptionRules";
 
 export type ApiError = Readonly<{ code: string; message: string }>;
-export type SalesTaxSettings = Readonly<{ homeBusiness?: Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; updatedAt: string }> }>;
+export type SalesTaxJurisdiction = Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; destinationMethods?: readonly ("shipping"|"local_delivery")[]; updatedAt: string }>;
+export type SalesTaxSettings = Readonly<{ homeBusiness?: SalesTaxJurisdiction; destinationJurisdictions: readonly SalesTaxJurisdiction[]; readiness: Readonly<{ status:"ready"|"needs_attention"; pickup: Readonly<{status:string; jurisdictionName?:string; rateBasisPoints?:number; reason?:string}>; shipping: Readonly<{status:string; jurisdictionName?:string; rateBasisPoints?:number; reason?:string}>; localDelivery: Readonly<{status:string; jurisdictionName?:string; rateBasisPoints?:number; reason?:string}> }>; revision:string }>;
 export type EmailIntegrationReadiness = Readonly<{ provider: "gmail"; status: "not_configured" | "ready" | "reauth_required" | "error"; sendingAddress?: string; displayName?: string; lastValidatedAt?: string; actionRequired?: string; legacyAvailable?: boolean }>;
+export type OrganizationAddress = Readonly<{ line1?: string; line2?: string; city?: string; region?: string; postalCode?: string; country?: string }>;
+export type OrganizationSettings = Readonly<{ businessProfile: Readonly<{ displayName: string; legalName?: string; phone?: string; email?: string; website?: string; businessAddress: OrganizationAddress; pickupAddressSource: "business_address"; timeZone?: string; currency?: string }>; documentsBranding: Readonly<{ logo: Readonly<{ status: "configured" | "not_configured" }>; footerNote?: string; paymentInstructions?: string; checksPayableTo?: string; remittanceAddress?: OrganizationAddress }>; readiness: Readonly<{ status: "ready" | "needs_attention"; missing: readonly string[] }>; revision: string }>;
+export type NumberingSettings = Readonly<{ revision: string; documents: readonly Readonly<{ kind: "quote" | "order"; prefix: string; nextNumber: string; nextDisplayNumber: string; status: "ready"; adoption: "native_v2" | "lazy_native_default" }>[]; sharedJobNumber: Readonly<{ owner: "order_number"; behavior: "order_display_number"; configurableSeparately: false }>; compatibility: Readonly<{ legacyQuoteOrder: "migration_required"; legacyInvoice: "migration_required"; legacyPurchaseOrder: "migration_required"; importedHistoricalDocuments: "preserved" }>; readiness: Readonly<{ status: "ready" | "migration_required" | "needs_attention"; reasons: readonly string[] }> }>;
+export type TeamAccessRead = Readonly<{ authorityRevision: string; staff: readonly Readonly<{ memberId: string; displayName: string; email: string; status: "active" | "disabled"; permissionSets: readonly string[]; administratorCapable: boolean }>[]; invitations: readonly Readonly<{ invitationId: string; email: string; status: string; deliveryState: string; expiresAt: string; createdAt: string }>[]; permissionSets: readonly Readonly<{ permissionSetId: string; name: string; description?: string; active: boolean; principalKind: "staff" | "portal"; capabilities: readonly string[] }>[]; portalAccess: readonly Readonly<{ portalAccessId: string; customerId: string; status: string; permissionSets: readonly string[] }>[]; readiness: Readonly<{ status: "ready" | "needs_attention"; reasons: readonly string[]; activeStaffCount: number; viableAdministratorCount: number; pendingInvitationCount: number }> }>;
 export type QuoteSendReadiness = Readonly<{ recipient: Readonly<{ status: "ready" | "contact_missing" | "email_missing" | "contact_unavailable"; email?: string }>; tax: Readonly<{ status: "ready" | "unresolved" }>; routability: Readonly<{ status: "ready" | "unroutable"; productNames?: readonly string[] }>; email: EmailIntegrationReadiness; canSend: boolean }>;
 export type QuoteSellingInstruction = Readonly<
   | { kind: "calculated" }
@@ -92,9 +97,13 @@ export type UiBootstrap = Readonly<{
     productEdit?: boolean;
     /** Formula-domain authoring is deliberately separate from Product editing. */
     pricingConfigure?: boolean;
-    /** Future Organization → Numbering settings authority; no UI is shipped here. */
+    organizationConfigure?: boolean;
     numberingConfigure?: boolean;
     communicationsConfigure?: boolean;
+    permissionsView?: boolean;
+    permissionsManageSets?: boolean;
+    permissionsAssignStaff?: boolean;
+    permissionsAssignPortal?: boolean;
     quoteOverridePrice: boolean;
     quoteCreate?: boolean;
     quoteEdit?: boolean;
@@ -1263,6 +1272,21 @@ export const clearV2ApiSessionState = (): void => {
 export const taxSettingsApi = {
   get: (organizationId: string) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax`),
   saveHomeBusiness: (organizationId: string, businessRequestId: string, input: Readonly<{name:string;countryCode:string;regionCode:string;postalCode?:string;ratePercent:string;active:boolean;}>) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax/home-business`, { method:"PUT", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({...input,businessRequestId}) }),
+  createDestination: (organizationId:string,businessRequestId:string,input:Readonly<{expectedRevision:string;name:string;countryCode:string;regionCode:string;postalCode?:string;ratePercent:string;active:boolean;destinationMethods:readonly ("shipping"|"local_delivery")[]}>) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax/destination-jurisdictions`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({...input,businessRequestId})}),
+  updateDestination: (organizationId:string,jurisdictionId:string,businessRequestId:string,input:Readonly<{expectedRevision:string;name:string;countryCode:string;regionCode:string;postalCode?:string;ratePercent:string;active:boolean;destinationMethods:readonly ("shipping"|"local_delivery")[]}>) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax/destination-jurisdictions/${encodeURIComponent(jurisdictionId)}`,{method:"PUT",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({...input,businessRequestId})}),
+};
+const settingsEndpoint = (organizationId: string, suffix = "") => `/v2/organizations/${encodeURIComponent(organizationId)}/settings/organization${suffix}`;
+export const organizationSettingsApi = {
+  get: (organizationId: string) => request<OrganizationSettings>(settingsEndpoint(organizationId)),
+  saveBusinessProfile: (organizationId: string, businessRequestId: string, input: Readonly<{ expectedRevision: string; displayName: string; legalName?: string; phone?: string; email?: string; website?: string; businessAddress: OrganizationAddress; timeZone?: string; currency?: string }>) => request<OrganizationSettings>(settingsEndpoint(organizationId, "/business-profile"), { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+  saveDocumentsBranding: (organizationId: string, businessRequestId: string, input: Readonly<{ expectedRevision: string; footerNote?: string; paymentInstructions?: string; checksPayableTo?: string; remittanceAddress?: OrganizationAddress }>) => request<OrganizationSettings>(settingsEndpoint(organizationId, "/documents-branding"), { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+};
+export const numberingSettingsApi = {
+  get: (organizationId: string) => request<NumberingSettings>(`${settingsEndpoint(organizationId)}/numbering`),
+  save: (organizationId: string, businessRequestId: string, input: Readonly<{ expectedRevision: string; quote: Readonly<{ prefix: string; nextNumber: string }>; order: Readonly<{ prefix: string; nextNumber: string }> }>) => request<NumberingSettings>(`${settingsEndpoint(organizationId)}/numbering`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
+};
+export const teamAccessApi = {
+  get: (organizationId: string) => request<TeamAccessRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/team-access`),
 };
 export const emailIntegrationApi = {
   get: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email`),

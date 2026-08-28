@@ -62,6 +62,10 @@ import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { SalesTaxSettingsWorkspace } from "./SalesTaxSettingsWorkspace";
 import { EmailSettingsWorkspace } from "./EmailSettingsWorkspace";
+import { SettingsWorkspace } from "./SettingsWorkspace";
+import { OrganizationSettingsWorkspace } from "./OrganizationSettingsWorkspace";
+import { NumberingSettingsWorkspace } from "./NumberingSettingsWorkspace";
+import { TeamAccessWorkspace } from "./TeamAccessWorkspace";
 import { orderConfigurationPresentation } from "./orderConfigurationPresentation";
 import { quoteLineProductPresentation } from "./quoteLinePresentation";
 import { quoteRouteMode } from "./quoteRouteMode";
@@ -432,7 +436,7 @@ export const App = ({
           setAppearance={setAppearance}
         />
       ) : page === "settings" ? (
-        <><SalesTaxSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.pricingConfigure === true} /><EmailSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.communicationsConfigure === true} /></>
+        <SettingsWorkspace salesTax={<SalesTaxSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.pricingConfigure === true} />} email={<EmailSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.communicationsConfigure === true} />} businessProfile={<OrganizationSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.organizationConfigure === true} section="business" />} documents={<OrganizationSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.organizationConfigure === true} section="documents" />} numbering={<NumberingSettingsWorkspace organizationId={organizationId} sessionScope={sessionScope} canConfigure={bootstrap.data?.capabilities.numberingConfigure === true} />} staff={<TeamAccessWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.permissionsView === true} section="staff" />} permissionSets={<TeamAccessWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.permissionsView === true} section="permission-sets" />} portalAccess={<TeamAccessWorkspace organizationId={organizationId} sessionScope={sessionScope} canView={bootstrap.data?.capabilities.permissionsView === true} section="portal" />} />
       ) : page === "formulas" ? (
         <FormulaLibraryWorkspace
           organizationId={organizationId}
