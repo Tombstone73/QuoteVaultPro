@@ -62,6 +62,7 @@ describe("artwork access route", () => {
     const response = await request(buildApp({ organizationId: "org_7" })).get("/api/artwork/file-records/fr_7/content?download=1");
     expect(response.status).toBe(200);
     expect(response.headers["content-disposition"]).toContain("attachment");
+    expect(response.headers["content-type"]).toContain("application/pdf");
     expect(readArtworkFileForOrganization).toHaveBeenCalledWith({ organizationId: "org_7", fileRecordId: "fr_7", variant: "original" });
   });
 

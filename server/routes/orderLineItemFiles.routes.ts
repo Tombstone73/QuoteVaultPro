@@ -13,6 +13,7 @@
  */
 
 import type { Express } from "express";
+import { randomUUID } from "node:crypto";
 import { eq, and, desc, sql, inArray, ne } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -51,6 +52,7 @@ import {
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
+import { readArtworkFileForOrganization } from "../services/artwork/ArtworkFileAccessService";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
 import {
   ArtworkSetOperationError,
@@ -246,7 +248,12 @@ export function registerOrderLineItemFileRoutes(
   // compatibility attachment ID or the canonical artwork relationship ID;
   // neither requires a persisted public/signed URL.
   app.get("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/download/proxy", isAuthenticated, tenantContext, async (req: any, res) => {
+    const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"].trim()
+      ? req.headers["x-request-id"].trim()
+      : randomUUID();
+    res.setHeader("X-Request-Id", requestId);
     const request = {
+      requestId,
       orderId: String(req.params.orderId ?? ""),
       lineItemId: String(req.params.lineItemId ?? ""),
       requestedFileId: String(req.params.fileId ?? ""),
@@ -336,10 +343,9 @@ export function registerOrderLineItemFileRoutes(
       }
 
       canonicalFileRecordId = downloadSource.fileRecordId ? String(downloadSource.fileRecordId) : null;
-      // Canonical artwork is read through the same authenticated file-record
-      // endpoint used by the viewer.  Sending a canonical storage key through
-      // the legacy /objects proxy loses the provider adapter boundary and can
-      // fail for otherwise readable provider-backed records.
+      // Canonical artwork is streamed through the same provider adapter used
+      // by the authenticated artwork reader.  This keeps one authorization
+      // hop and avoids making a browser download depend on a second redirect.
       if (canonicalFileRecordId) {
         stage = "resolve_canonical_file";
         const canonical = await canonicalFileReadResolver.resolveOriginal(canonicalFileRecordId);
@@ -364,8 +370,23 @@ export function registerOrderLineItemFileRoutes(
           return res.status(404).json({ error: "Artwork file is unavailable" });
         }
 
-        stage = "redirect_to_canonical_file_reader";
-        return res.redirect(`/api/artwork/file-records/${encodeURIComponent(canonicalFileRecordId)}/content?download=1`);
+        stage = "stream_canonical_file";
+        const file = await readArtworkFileForOrganization({
+          organizationId,
+          fileRecordId: canonicalFileRecordId,
+          variant: "original",
+        });
+        if (!file) {
+          logFailure("STORAGE_OBJECT_NOT_FOUND", storageDetails);
+          return res.status(404).json({ error: "Artwork file is unavailable" });
+        }
+
+        const filename = file.filename.replace(/[\r\n\\"]/g, "_");
+        res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        res.type(file.mimeType);
+        logFailure("STREAM_STARTED", storageDetails);
+        return res.status(200).send(file.buffer);
       }
 
       // Legacy attachments have no canonical file record and retain their
@@ -378,12 +399,19 @@ export function registerOrderLineItemFileRoutes(
       }
       return res.redirect(resolved.downloadUrl);
     } catch (error: any) {
-      const errorCode = error?.code === "ENOENT" || error?.status === 404
+      const errorMessage = String(error?.message ?? "");
+      const errorCode = error?.code === "ENOENT" || error?.status === 404 || /not found|does not exist|object.*missing/i.test(errorMessage)
         ? "STORAGE_OBJECT_NOT_FOUND"
-        : error?.status === 403
+        : error?.status === 403 || /access denied|forbidden|not authorized/i.test(errorMessage)
           ? "FILE_ACCESS_DENIED"
           : "DOWNLOAD_URL_RESOLUTION_FAILED";
-      logFailure(errorCode, { errorName: error?.name ?? "Error", errorMessage: error?.message ?? "Unknown failure" });
+      logFailure(errorCode, { errorName: error?.name ?? "Error", errorMessage: errorMessage || "Unknown failure" });
+      if (errorCode === "STORAGE_OBJECT_NOT_FOUND") {
+        return res.status(404).json({ error: "Artwork file is unavailable" });
+      }
+      if (errorCode === "FILE_ACCESS_DENIED") {
+        return res.status(403).json({ error: "Artwork file access denied" });
+      }
       return res.status(500).json({ error: "Unable to prepare artwork download" });
     }
   });
