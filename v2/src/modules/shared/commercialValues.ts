@@ -26,6 +26,10 @@ export type RouteInstanceStepId = Brand<string, "RouteInstanceStepId">;
 /** Artwork owns file identity; these never imply a separate customer/production file universe. */
 export type ArtworkFileId = Brand<string, "ArtworkFileId">;
 export type ArtworkAssignmentId = Brand<string, "ArtworkAssignmentId">;
+/** Quote artwork is a business association to the canonical Artwork file. */
+export type QuoteArtworkAssignmentId = Brand<string, "QuoteArtworkAssignmentId">;
+/** Accepted Quote artwork is immutable evidence, never a copied binary. */
+export type QuoteAcceptedArtworkSnapshotId = Brand<string, "QuoteAcceptedArtworkSnapshotId">;
 export type ProofWorkId = Brand<string, "ProofWorkId">;
 export type ProofVersionId = Brand<string, "ProofVersionId">;
 export type ProofResponseId = Brand<string, "ProofResponseId">;

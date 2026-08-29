@@ -986,6 +986,31 @@ export type ArtworkOrderProjection = Readonly<{
     createdAt: string;
   }>;
 }>;
+/**
+ * A Quote-line usage of the canonical Artwork file.  This is deliberately a
+ * business association, not a second file representation: the file remains
+ * owned by Artwork and can later be referenced by the converted Order.
+ */
+export type QuoteArtworkProjection = Readonly<{
+  association: Readonly<{
+    id: string;
+    quoteId: string;
+    quoteLineId: string;
+    artworkFileId: string;
+    purpose: "customer_supplied" | "production" | "proof" | "reference";
+    side?: "front" | "back";
+    sourcePageIndex?: number;
+    layerKey?: string;
+    layerOrder?: number;
+    createdAt: string;
+  }>;
+  file: ArtworkOrderProjection["file"];
+}>;
+export type QuoteArtworkMutationResult = Readonly<{
+  artworkFile: ArtworkOrderProjection["file"];
+  assignment: QuoteArtworkProjection["association"];
+  quoteRevision: string;
+}>;
 export type ArtworkWorkspaceDetailAssignment = Readonly<{
   assignment: ArtworkOrderProjection["assignment"];
   orderNumber: string;
@@ -1379,6 +1404,59 @@ export const quoteApi = {
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
+    ),
+  artwork: (organizationId: string, quoteId: string) =>
+    request<readonly QuoteArtworkProjection[]>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/artwork`),
+    ),
+  uploadArtwork: (
+    organizationId: string,
+    quoteId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      quoteLineId: string;
+      expectedRevision: string;
+      side?: "front" | "back";
+      file: File;
+    }>,
+  ) => {
+    const body = new FormData();
+    body.append("businessRequestId", businessRequestId);
+    body.append("quoteLineId", input.quoteLineId);
+    body.append("expectedRevision", input.expectedRevision);
+    body.append("purpose", "customer_supplied");
+    if (input.side) body.append("side", input.side);
+    body.append("file", input.file);
+    return request<QuoteArtworkMutationResult>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/artwork/uploads`),
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body,
+      },
+    );
+  },
+  removeArtwork: (
+    organizationId: string,
+    quoteId: string,
+    quoteArtworkAssociationId: string,
+    businessRequestId: string,
+    expectedRevision: string,
+  ) =>
+    request<Readonly<{ quoteRevision: string }>>(
+      endpoint(
+        organizationId,
+        `/${encodeURIComponent(quoteId)}/artwork/${encodeURIComponent(quoteArtworkAssociationId)}`,
+      ),
+      {
+        method: "DELETE",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body: JSON.stringify({ businessRequestId, expectedRevision }),
+      },
     ),
   legacy: (organizationId: string, recordId: string) =>
     request<LegacyCommercialDetail>(

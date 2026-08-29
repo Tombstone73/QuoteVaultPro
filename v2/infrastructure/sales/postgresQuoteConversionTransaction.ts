@@ -9,10 +9,12 @@ import {
   PostgresQuoteTransaction,
   type QuotePersistenceTestHooks,
 } from "./postgresQuoteTransaction.js";
+import { PostgresQuoteArtworkConversionPort } from "../artwork/postgresQuoteArtworkTransaction.js";
 
 export type QuoteConversionTransaction = Readonly<{
   quote: QuoteConversionPersistencePort;
   order: OrderTransaction;
+  artwork: PostgresQuoteArtworkConversionPort;
 }>;
 export interface QuoteConversionTransactionRunner {
   transaction<T>(action: (transaction: QuoteConversionTransaction) => Promise<T>): Promise<T>;
@@ -34,6 +36,7 @@ export class PostgresQuoteConversionTransactionRunner implements QuoteConversion
       const result = await action({
         quote: new PostgresQuoteTransaction(client, this.hooks?.quote),
         order: new PostgresOrderTransaction(client, this.hooks?.order),
+        artwork: new PostgresQuoteArtworkConversionPort(client),
       });
       await client.query("COMMIT");
       return result;

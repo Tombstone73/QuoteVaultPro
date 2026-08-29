@@ -60,6 +60,7 @@ import { RoutingWorkspace } from "./RoutingWorkspace";
 import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
+import { QuoteArtworkPanel } from "./QuoteArtworkPanel";
 import { SalesTaxSettingsWorkspace } from "./SalesTaxSettingsWorkspace";
 import { EmailSettingsWorkspace } from "./EmailSettingsWorkspace";
 import { SettingsWorkspace } from "./SettingsWorkspace";
@@ -2335,10 +2336,15 @@ const QuoteWorkspace = ({
               panels={{
                 Items: items,
                 Artwork: (
-                  <SalesDocumentEmpty>
-                    No artwork is attached to this Quote in the available V2
-                    sales read model.
-                  </SalesDocumentEmpty>
+                  <QuoteArtworkPanel
+                    organizationId={organizationId}
+                    sessionScope={sessionScope}
+                    quote={quote}
+                    canEdit={canEdit}
+                    csrfReady={csrfReady}
+                    onQuoteRefresh={reload}
+                    onError={handleMutationError}
+                  />
                 ),
                 Notes: (
                   <section className="v2-sales-notes">

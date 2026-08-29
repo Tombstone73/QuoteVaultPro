@@ -12,10 +12,12 @@ describe("M1.10 Quote to Order conversion contract", () => {
     const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
     expect(source).toMatch(/async accept\(context: OperationContext, input: QuoteLifecycleInput\)/);
     expect(source).toMatch(/createQuoteLifecycleCheckpoint\(current\.quote, "accept"/);
-    expect(source).toMatch(/convertAccepted\(\{ quote, order \}, context, reservation\.request\.id, accepted, checkpoint/);
+    expect(source).toMatch(/snapshotAccepted\(context\.organizationId, input\.quoteId, checkpoint\.checkpointId\)/);
+    expect(source).toMatch(/convertAccepted\(\{ quote, order, artwork \}, context, reservation\.request\.id, accepted, checkpoint/);
     expect(source).toMatch(/succeedConversion\(context\.organizationId, reservation\.request\.id/);
     expect(source).toMatch(/source\.kind !== "quote_accepted"/);
-    expect(source).toMatch(/cloneLines\(source\.commercial\.lines\)/);
+    expect(source).toMatch(/sourceToOrderLine\.set\(line\.lineId, orderLine\.lineId\)/);
+    expect(source).toMatch(/carryAcceptedToOrder/);
     expect(source).toMatch(/createFromCommercialSnapshot/);
     expect(source).not.toMatch(/\.pricing\.calculate\(/);
     expect(source).not.toMatch(/resolveActivePricingInput/);

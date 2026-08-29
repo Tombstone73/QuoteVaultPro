@@ -1,13 +1,13 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 237,
+  "entryCount": 238,
   "immutableThrough": {
-    "idx": 242,
-    "when": 1788048000088,
-    "tag": "0241_v2_customer_contact_command_revisions"
+    "idx": 243,
+    "when": 1788048000089,
+    "tag": "0242_v2_quote_artwork_lineage"
   },
-  "canonicalSha256": "611283e522ef9a40e19644e7039f5a4649e089b85561c20c2668a3e3439067b1",
+  "canonicalSha256": "373461d5c98a07ce90f47f1d4611dd716b77991e6f2bf7e052842b1ddd30154c",
   "unappliedRepair": {
     "priorCanonicalSha256": "af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3",
     "tags": [

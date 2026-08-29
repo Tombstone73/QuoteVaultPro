@@ -46,6 +46,10 @@ import { PostgresTeamAccess } from "../organization/postgresTeamAccess.js";
 import type { TeamAccessHttpDependencies } from "../../src/interfaces/http/teamAccessRoutes.js";
 import { PostgresDocumentNumberingSettings } from "../organization/postgresDocumentNumberingSettings.js";
 import type { DocumentNumberingSettingsHttpDependencies } from "../../src/interfaces/http/documentNumberingSettingsRoutes.js";
+import { QuoteArtworkApplicationService } from "../../src/modules/artwork/quoteArtworkApplication.js";
+import { PostgresQuoteArtworkTransactionRunner } from "../artwork/postgresQuoteArtworkTransaction.js";
+import { QuoteArtworkUploadService } from "../artwork/quoteArtworkUploadService.js";
+import { SupabaseArtworkBinaryStorage } from "../artwork/artworkBinaryStorage.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -74,6 +78,7 @@ export const composeAuthenticatedQuoteRuntime = (
   );
   const principals = new IssuedV2PrincipalProvider(input.trustedHostIdentity, principalIssuer);
   const service = new QuoteApplicationService(new PostgresQuoteTransactionRunner(input.pool));
+  const quoteArtwork = new QuoteArtworkApplicationService(new PostgresQuoteArtworkTransactionRunner(input.pool));
   return {
     dependencies: {
       service,
@@ -86,6 +91,7 @@ export const composeAuthenticatedQuoteRuntime = (
       workspace: new PostgresSalesWorkspaceReads(input.pool),
       documents: new PostgresCustomerDocumentService(input.pool),
       delivery: new PostgresQuoteDeliveryService(input.pool, service),
+      artwork: { service: quoteArtwork, upload: new QuoteArtworkUploadService(quoteArtwork, new SupabaseArtworkBinaryStorage()) },
     },
     customerDependencies: (() => {
       const customers = new PostgresCustomerWorkspaceReader(input.pool);

@@ -16,6 +16,9 @@ import { createQuoteConversionTrace, type QuoteConversionApplicationService } fr
 import type { ConvertQuoteCommand } from "../../modules/sales/contracts.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
+import type { QuoteArtworkApplicationService } from "../../modules/artwork/quoteArtworkApplication.js";
+import type { QuoteArtworkUploadService } from "../../../infrastructure/artwork/quoteArtworkUploadService.js";
+import busboy from "busboy";
 
 export interface QuoteCustomerDocumentPort {
   quotePdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId): Promise<Uint8Array>;
@@ -44,7 +47,19 @@ export type QuoteHttpDependencies = Readonly<{
   workspace?: SalesWorkspaceReadPort;
   documents?: QuoteCustomerDocumentPort;
   delivery?: QuoteDeliveryPort;
+  artwork?: Readonly<{ service: QuoteArtworkApplicationService; upload: QuoteArtworkUploadService }>;
 }>;
+
+type QuoteArtworkMultipart = Readonly<{ businessRequestId:string; expectedRevision:string; quoteLineId:string; purpose:string; side?:string; filename:string; contentType:string; bytes:Buffer }>;
+const quoteArtworkMultipart = (request: Request): Promise<QuoteArtworkMultipart> => new Promise((resolve,reject) => {
+  if (!request.headers["content-type"]?.startsWith("multipart/form-data")) return reject(new V2ApplicationError("VALIDATION_ERROR","Artwork upload must use multipart/form-data."));
+  const fields: Record<string,string> = {}; let file: Readonly<{filename:string;contentType:string;bytes:Buffer}>|undefined; let failed: V2ApplicationError|undefined;
+  const parser=busboy({headers:request.headers,limits:{files:1,fileSize:10*1024*1024}});
+  parser.on("field",(name:string,value:string)=>{fields[name]=value;});
+  parser.on("file",(name:string,stream:any,info:Readonly<{filename:string;mimeType:string}>)=>{if(name!=="file"||file){failed??=new V2ApplicationError("VALIDATION_ERROR","Exactly one Artwork file is required.");stream.resume();return;}const chunks:Buffer[]=[];stream.on("data",(chunk:Buffer)=>chunks.push(chunk));stream.on("limit",()=>{failed=new V2ApplicationError("VALIDATION_ERROR","Artwork file exceeds the 10 MB limit.");});stream.on("end",()=>{if(!failed)file={filename:info.filename,contentType:info.mimeType,bytes:Buffer.concat(chunks)};});});
+  parser.on("error",()=>reject(new V2ApplicationError("VALIDATION_ERROR","Artwork upload could not be read.")));
+  parser.on("finish",()=>{if(failed)return reject(failed);if(!file)return reject(new V2ApplicationError("VALIDATION_ERROR","Exactly one Artwork file is required."));resolve({businessRequestId:fields.businessRequestId??"",expectedRevision:fields.expectedRevision??"",quoteLineId:fields.quoteLineId??"",purpose:fields.purpose??"",...(fields.side?{side:fields.side}:{}),...file});}); request.pipe(parser);
+});
 
 const status = (code: string): number =>
   code === "VALIDATION_ERROR"
@@ -152,6 +167,18 @@ const uiResult = (value: QuoteOperationResult) => ({
   quote: quoteForUi(value.quote),
   ...(value.checkpointId ? { checkpointId: value.checkpointId } : {}),
 });
+/** Never expose a private storage key or provider object reference to the browser. */
+const quoteArtworkForUi = (value: readonly import("../../modules/artwork/quoteArtworkApplication.js").QuoteArtworkProjection[]) => value.map(({ assignment, file }) => ({
+  assignment,
+  file: {
+    id: file.id, organizationId: file.organizationId, originalFilename: file.originalFilename,
+    displayFilename: file.displayFilename, contentType: file.contentType, byteSize: file.byteSize,
+    source: file.source, ...(file.pageCount !== undefined ? { pageCount: file.pageCount } : {}),
+    ...(file.detectedWidthMicrons !== undefined ? { detectedWidthMicrons: file.detectedWidthMicrons } : {}),
+    ...(file.detectedHeightMicrons !== undefined ? { detectedHeightMicrons: file.detectedHeightMicrons } : {}),
+    ...(file.derivedFromArtworkFileId ? { derivedFromArtworkFileId: file.derivedFromArtworkFileId } : {}), createdAt: file.createdAt,
+  },
+}));
 const context = async (
   request: Request,
   dependencies: QuoteHttpDependencies,
@@ -250,6 +277,33 @@ export const createQuoteRouter = (
     } catch (cause) {
       error(response, cause);
     }
+  });
+  router.get("/:quoteId/artwork", async (request,response) => {
+    try {
+      if (!dependencies.artwork) throw new V2ApplicationError("RETRYABLE_FAILURE","Quote artwork is unavailable.");
+      const result=await dependencies.artwork.service.list(await context(request,dependencies),brandedId<"QuoteId">(request.params.quoteId));
+      if(!result.ok)return error(response,result.error); response.json({ok:true,data:quoteArtworkForUi(result.value)});
+    } catch(cause){error(response,cause);}
+  });
+  router.post("/:quoteId/artwork/uploads", async (request,response) => {
+    try {
+      if(!dependencies.artwork)throw new V2ApplicationError("RETRYABLE_FAILURE","Quote artwork is unavailable.");
+      const body=await quoteArtworkMultipart(request); if(!body.businessRequestId.trim())throw new V2ApplicationError("VALIDATION_ERROR","businessRequestId is required.");
+      const organizationId=(request.params as Record<string,string>).organizationId; if(!organizationId)throw new V2ApplicationError("VALIDATION_ERROR","organizationId is required.");
+      if(body.purpose!=="customer_supplied")throw new V2ApplicationError("VALIDATION_ERROR","Quote artwork must be customer-supplied source evidence.");
+      if(body.side!==undefined&&body.side!=="front"&&body.side!=="back")throw new V2ApplicationError("VALIDATION_ERROR","Artwork side is invalid.");
+      const result=await dependencies.artwork.upload.upload({principal:await dependencies.principals.principal(request,organizationId),organizationId,operationId:`http:${request.method}:${request.path}`,businessRequest:{id:body.businessRequestId,payloadFingerprint:"quote-artwork-upload-fingerprint-is-derived-by-operation"}},{businessRequestId:body.businessRequestId,expectedRevision:body.expectedRevision,quoteId:request.params.quoteId,quoteLineId:body.quoteLineId,purpose:"customer_supplied",...(body.side?{side:body.side as "front" | "back"}:{}),filename:body.filename,contentType:body.contentType,bytes:body.bytes});
+      if(!result.ok)return error(response,result.error);response.json({ok:true,data:{assignment:result.value.assignment,artworkFile:quoteArtworkForUi([{assignment:result.value.assignment,file:result.value.artworkFile}])[0]!.file,quoteRevision:result.value.quoteRevision}});
+    }catch(cause){error(response,cause);}
+  });
+  router.delete("/:quoteId/artwork/:assignmentId", async (request,response) => {
+    try {
+      if(!dependencies.artwork)throw new V2ApplicationError("RETRYABLE_FAILURE","Quote artwork is unavailable.");
+      const body=request.body&&typeof request.body==="object"?request.body as {businessRequestId?:unknown;expectedRevision?:unknown}:{};
+      if(typeof body.expectedRevision!=="string"||!body.expectedRevision.trim())throw new V2ApplicationError("VALIDATION_ERROR","expectedRevision is required.");
+      const result=await dependencies.artwork.service.remove(await context(request,dependencies,true),{businessRequestId:requestId(body),expectedRevision:body.expectedRevision,quoteId:brandedId<"QuoteId">(request.params.quoteId),assignmentId:brandedId<"QuoteArtworkAssignmentId">(request.params.assignmentId)});
+      if(!result.ok)return error(response,result.error);response.json({ok:true,data:result.value});
+    }catch(cause){error(response,cause);}
   });
   router.get("/", async (request, response) => {
     try {

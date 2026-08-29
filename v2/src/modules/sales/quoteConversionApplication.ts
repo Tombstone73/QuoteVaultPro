@@ -10,7 +10,13 @@ import { assertSalesLineSnapshot } from "./contracts.js";
 import type { FrozenOrderCommercialSource, OrderApplicationService, OrderTransaction } from "./orderApplication.js";
 import { createQuoteLifecycleCheckpoint, type QuoteConversionPersistencePort, type QuoteLifecycleInput, type QuoteReadModel } from "./quoteApplication.js";
 
-export type QuoteConversionTransaction = Readonly<{ quote: QuoteConversionPersistencePort; order: OrderTransaction }>;
+/** Transaction-scoped only: artwork conversion consumes an already accepted
+ * snapshot and writes Order associations before the encompassing commit. */
+export interface QuoteArtworkConversionPort {
+  snapshotAccepted(organizationId: string, quoteId: string, checkpointId: string): Promise<void>;
+  carryAcceptedToOrder(input: Readonly<{ organizationId: string; quoteId: string; acceptanceCheckpointId: string; orderId: string; lineMap: ReadonlyMap<string, string> }>): Promise<void>;
+}
+export type QuoteConversionTransaction = Readonly<{ quote: QuoteConversionPersistencePort; order: OrderTransaction; artwork: QuoteArtworkConversionPort }>;
 export interface QuoteConversionTransactionRunner { transaction<T>(action: (transaction: QuoteConversionTransaction) => Promise<T>): Promise<T>; }
 export type QuoteConversionOperationResult = Readonly<ConvertQuoteResult & { orderNumber: string }>;
 export type QuoteAcceptanceOperationResult = Readonly<QuoteConversionOperationResult & { quote: QuoteReadModel }>;
@@ -77,10 +83,6 @@ const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").u
 const attribution = (context: OperationContext) => context.principal.kind === "delegated_ai"
   ? { principalKind: "delegated_ai" as const, subjectId: principalSubject(context.principal), staffActorUserId: staffActorId(context.principal)! }
   : { principalKind: context.principal.kind, subjectId: principalSubject(context.principal) };
-const cloneLines = (lines: readonly SalesLineSnapshot[]): readonly SalesLineSnapshot[] => lines.map((line) => {
-  assertSalesLineSnapshot(line);
-  return Object.freeze({ ...line, lineId: brandedId<"SalesLineId">(randomUUID()) });
-});
 const requireCapability = (authority: AuthorityPolicy, context: OperationContext, capability: "quote.edit" | "quote.convert", customerId?: string): void => {
   if (!authority.decide(context.principal, { capability, resource: { organizationId: context.organizationId, customerId } }).allowed)
     throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Quote operation.");
@@ -99,7 +101,7 @@ export class QuoteConversionApplicationService {
         throw new V2ApplicationError("VALIDATION_ERROR", "The command business request identity does not match the operation context.");
       transactionStarted = true;
       trace?.event("transaction", "started");
-      const result = await this.runner.transaction(async ({ quote, order }) => {
+      const result = await this.runner.transaction(async ({ quote, order, artwork }) => {
         stage = "durable_request";
         trace?.event(stage, "started");
         const reservation = await quote.reserve({ organizationId: context.organizationId, operation: "sales.quote.accept_and_convert.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
@@ -165,7 +167,14 @@ export class QuoteConversionApplicationService {
         }
         stage = "order_creation";
         trace?.event(stage, "started");
-        const converted = await this.convertAccepted({ quote, order }, context, reservation.request.id, accepted, checkpoint, "sales.quote.accept_and_convert.v1", trace, (next) => { stage = next; });
+        // Quote-artwork mutations lock the same Quote header. Capturing this
+        // normalized snapshot while that lock is held makes commercial and
+        // artwork evidence one accepted state, never two racing projections.
+        stage = "accepted_artwork_snapshot";
+        trace?.event(stage, "started");
+        await artwork.snapshotAccepted(context.organizationId, input.quoteId, checkpoint.checkpointId);
+        trace?.event(stage, "ok");
+        const converted = await this.convertAccepted({ quote, order, artwork }, context, reservation.request.id, accepted, checkpoint, "sales.quote.accept_and_convert.v1", trace, (next) => { stage = next; });
         stage = "conversion_quote_read";
         trace?.event(stage, "started");
         const read = await quote.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId);
@@ -192,7 +201,7 @@ export class QuoteConversionApplicationService {
       requireOperationPrincipalScope(context);
       if (input.organizationId !== context.organizationId) throw new V2ApplicationError("WRONG_TENANT", "Quote is unavailable in this organization.");
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "The command business request identity does not match the operation context.");
-      return success(await this.runner.transaction(async ({ quote, order }) => {
+      return success(await this.runner.transaction(async ({ quote, order, artwork }) => {
         const reservation = await quote.reserve({ organizationId: context.organizationId, operation: "sales.quote.convert.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
         if (reservation.kind === "replay") return reservation.request.resultJson as QuoteConversionOperationResult;
         const current = await quote.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
@@ -206,7 +215,8 @@ export class QuoteConversionApplicationService {
         if (current.quote.taxComposition?.status === "unresolved") throw new V2ApplicationError("VALIDATION_ERROR", "Tax jurisdiction not configured. This Quote cannot be converted.");
         const source = await quote.readCheckpoint(brandedId<"OrganizationId">(context.organizationId), input.quoteId, input.sourceCheckpointId);
         if (!source || source.kind !== "quote_accepted" || source.sourceDocument.quoteId !== input.quoteId) throw new V2ApplicationError("CONFLICT", "The accepted Quote checkpoint is required for conversion.");
-        const result = await this.convertAccepted({ quote, order }, context, reservation.request.id, current, source, "sales.quote.convert.v1");
+        await artwork.snapshotAccepted(context.organizationId, input.quoteId, source.checkpointId);
+        const result = await this.convertAccepted({ quote, order, artwork }, context, reservation.request.id, current, source, "sales.quote.convert.v1");
         await quote.succeedConversion(context.organizationId, reservation.request.id, input.quoteId, result);
         return result;
       }));
@@ -227,10 +237,20 @@ export class QuoteConversionApplicationService {
 
   private async convertAccepted(transaction: QuoteConversionTransaction, context: OperationContext, operationRequestId: string, current: QuoteReadModel, source: Extract<QuoteCheckpoint, { kind: "quote_accepted" }>, operation: string, trace?: QuoteConversionTrace, setStage?: (stage: string) => void): Promise<QuoteConversionOperationResult> {
     if (source.sourceDocument.quoteId !== current.quote.quoteId) throw new V2ApplicationError("WRONG_TENANT", "Quote checkpoint is unavailable.");
-    const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, requestedFulfillment: source.commercial.requestedFulfillment, sellingAdjustment: source.commercial.sellingAdjustment, commercialCharge: source.commercial.commercialCharge, taxComposition: source.commercial.taxComposition, lines: cloneLines(source.commercial.lines) };
+    const sourceToOrderLine = new Map<string, string>();
+    const lines = source.commercial.lines.map((line) => {
+      const orderLine = Object.freeze({ ...line, lineId: brandedId<"SalesLineId">(randomUUID()) });
+      sourceToOrderLine.set(line.lineId, orderLine.lineId);
+      return orderLine;
+    });
+    const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, requestedFulfillment: source.commercial.requestedFulfillment, sellingAdjustment: source.commercial.sellingAdjustment, commercialCharge: source.commercial.commercialCharge, taxComposition: source.commercial.taxComposition, lines };
     trace?.event("commercial_snapshot_loaded", "ok");
     setStage?.("order_creation");
     const created = await this.orders.createFromCommercialSnapshot(transaction.order, context, operationRequestId, frozen, operation, trace);
+    setStage?.("artwork_lineage");
+    trace?.event("artwork_lineage", "started");
+    await transaction.artwork.carryAcceptedToOrder({ organizationId: context.organizationId, quoteId: current.quote.quoteId, acceptanceCheckpointId: source.checkpointId, orderId: created.order.order.orderId, lineMap: sourceToOrderLine });
+    trace?.event("artwork_lineage", "ok");
     setStage?.("conversion_link");
     trace?.event("conversion_link", "started");
     const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
