@@ -41,6 +41,10 @@ const safeFailureClassification = (cause: unknown): string => {
   const code = cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : undefined;
   if (code && /^23\d{3}$/.test(code)) return "DATABASE_CONSTRAINT";
   if (code && /^22\d{3}$/.test(code)) return "DATABASE_DATA";
+  // SQLSTATE is structural diagnostic data, not a customer value.  Preserve
+  // other PostgreSQL classes too so an integration error is not mislabeled as
+  // an application exception.
+  if (code && /^[0-9A-Z]{5}$/.test(code)) return `DATABASE_SQLSTATE_${code}`;
   return "UNEXPECTED_EXCEPTION";
 };
 
