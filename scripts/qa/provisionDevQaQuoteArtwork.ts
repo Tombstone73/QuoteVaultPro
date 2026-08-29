@@ -51,10 +51,22 @@ const parse = (): Args => {
   };
 };
 const safe = (value: unknown) => console.log(JSON.stringify(value));
+type SafeStorageDiagnostic = ArtworkStorageFailureReason | "network_unavailable" | "storage_configuration";
 class ObservedArtworkStorage implements ArtworkBinaryStorage {
-  failureReason: ArtworkStorageFailureReason | undefined;
+  failureReason: SafeStorageDiagnostic | undefined;
   constructor(private readonly delegate: ArtworkBinaryStorage) {}
-  async put(input: Parameters<ArtworkBinaryStorage["put"]>[0]) { try { return await this.delegate.put(input); } catch (error) { this.failureReason = error instanceof ArtworkStorageUnavailableError ? error.reason : undefined; throw error; } }
+  async put(input: Parameters<ArtworkBinaryStorage["put"]>[0]) {
+    try { return await this.delegate.put(input); }
+    catch (error) {
+      if (error instanceof ArtworkStorageUnavailableError) this.failureReason = error.reason;
+      else {
+        const candidate = error as { code?: unknown; cause?: { code?: unknown } };
+        const code = typeof candidate.code === "string" ? candidate.code : typeof candidate.cause?.code === "string" ? candidate.cause.code : "";
+        this.failureReason = /^(?:ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT)/u.test(code) ? "network_unavailable" : "storage_configuration";
+      }
+      throw error;
+    }
+  }
   remove(objectKey: string) { return this.delegate.remove(objectKey); }
   exists(objectKey: string) { return this.delegate.exists(objectKey); }
   read(objectKey: string) { return this.delegate.read(objectKey); }

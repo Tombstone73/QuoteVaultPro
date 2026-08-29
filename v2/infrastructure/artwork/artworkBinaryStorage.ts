@@ -2,6 +2,13 @@ import { createClient } from "@supabase/supabase-js";
 
 export type StoredArtworkObject = Readonly<{ storageProvider: "supabase"; objectKey: string; created: boolean }>;
 
+/** Safe diagnostic classification: no provider message, object key, or credential is retained. */
+export type ArtworkStorageFailureReason = "access_denied" | "bucket_unavailable" | "upload_unavailable";
+export class ArtworkStorageUnavailableError extends Error {
+  override readonly name = "ArtworkStorageUnavailableError";
+  constructor(readonly reason: ArtworkStorageFailureReason) { super("Artwork storage is unavailable."); }
+}
+
 export interface ArtworkBinaryStorage {
   put(input: Readonly<{ organizationId: string; objectKey: string; contentType: string; bytes: Buffer }>): Promise<StoredArtworkObject>;
   remove(objectKey: string): Promise<void>;
@@ -33,7 +40,8 @@ export class SupabaseArtworkBinaryStorage implements ArtworkBinaryStorage {
     const { error } = await this.getClient().storage.from(this.bucket).upload(input.objectKey, input.bytes, { contentType: input.contentType, upsert: false });
     if (!error) return { storageProvider: "supabase", objectKey: input.objectKey, created: true };
     if (await this.exists(input.objectKey)) return { storageProvider: "supabase", objectKey: input.objectKey, created: false };
-    throw new Error("Artwork object storage is unavailable.");
+    const status = typeof (error as { status?: unknown }).status === "number" ? (error as { status: number }).status : undefined;
+    throw new ArtworkStorageUnavailableError(status === 401 || status === 403 ? "access_denied" : status === 404 ? "bucket_unavailable" : "upload_unavailable");
   }
 
   async remove(objectKey: string): Promise<void> {
@@ -50,7 +58,7 @@ export class SupabaseArtworkBinaryStorage implements ArtworkBinaryStorage {
   }
   async read(objectKey: string): Promise<Buffer> {
     const { data, error } = await this.getClient().storage.from(this.bucket).download(objectKey);
-    if (error || !data) throw new Error("Artwork object storage is unavailable.");
+    if (error || !data) throw new ArtworkStorageUnavailableError("upload_unavailable");
     return Buffer.from(await data.arrayBuffer());
   }
 }
