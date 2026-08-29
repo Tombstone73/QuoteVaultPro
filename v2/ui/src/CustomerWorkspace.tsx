@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { contactApi, customerApi, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
+import { contactApi, customerApi, newBusinessRequestId, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
 
 const keys = {
   list: (scope: string, organizationId: string, search: string) => ["v2", scope, organizationId, "customers", search] as const,
@@ -88,6 +88,7 @@ const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, openCo
   if (state.isLoading) return <section className="v2-customers"><p className="v2-proof-empty">Loading Customer…</p></section>;
   if (state.isError || !state.data) return <section className="v2-customers"><button className="v2-customers-back" type="button" onClick={backToCatalog}>← Customers</button><p className="v2-proof-empty">Customer not found.</p></section>;
   const customer = state.data;
+  const readiness = customer.contactReadiness ?? { status: "needs_attention" as const, reasons: ["contact data is incomplete"] };
   const identity = customer.presentation;
   // Primary ownership belongs to the Customer/contact relationship.  Do not
   // infer it from list position when a legacy Customer has no primary link.
@@ -102,17 +103,18 @@ const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, openCo
     <header className="v2-customer-detail-header"><div><h1>{displayName}</h1>{identity.companyName && identity.companyName !== displayName && <p>{identity.companyName}</p>}</div><dl><div><dt>Primary Contact</dt><dd>{primaryName ?? unavailable}</dd></div><div><dt>Email</dt><dd>{email ?? unavailable}</dd></div><div><dt>Phone</dt><dd>{phone ?? unavailable}</dd></div></dl></header>
     <div className="v2-customer-metric-band"><DetailMetric label="Contacts" value={String(customer.contacts.length)} /><DetailMetric label="Primary Contact" value={primaryName ?? unavailable} /><DetailMetric label="Email" value={email ?? unavailable} /><DetailMetric label="Phone" value={phone ?? unavailable} /></div>
     <div className="v2-customer-overview-grid">
-      <SummaryCard title="Account Details"><dl className="v2-customer-detail-facts"><div><dt>Company</dt><dd>{identity.companyName ?? customer.displayName}</dd></div><div><dt>Primary Contact</dt><dd>{primaryName ?? unavailable}</dd></div><div><dt>Billing Address</dt><dd>{address(identity.billingAddress)}</dd></div><div><dt>Shipping Address</dt><dd>{address(identity.shippingAddress)}</dd></div></dl></SummaryCard>
-      <SummaryCard title="Contacts" count={String(customer.contacts.length)}><ContactCreateForm organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} canCreate={canCreate} />{customer.contacts.length ? <ul className="v2-customer-contact-list">{customer.contacts.map((contact) => <li key={contact.contactId}><div><button type="button" onClick={() => openContact(contact.contactId)}>{contact.displayName}</button>{contact.primary && <em>Primary</em>}</div><small>{contact.email ?? unavailable}{contact.phone ? ` · ${contact.phone}` : ""}</small></li>)}</ul> : <p className="v2-customer-empty">No Contacts are linked to this Customer.</p>}</SummaryCard>
+      <SummaryCard title="Account Details"><CustomerEditForm organizationId={organizationId} sessionScope={sessionScope} customer={customer} canEdit={canCreate} /><dl className="v2-customer-detail-facts"><div><dt>Company</dt><dd>{identity.companyName ?? customer.displayName}</dd></div><div><dt>Primary Contact</dt><dd>{primaryName ?? unavailable}</dd></div><div><dt>Billing Address</dt><dd>{address(identity.billingAddress)}</dd></div><div><dt>Shipping Address</dt><dd>{address(identity.shippingAddress)}</dd></div></dl></SummaryCard>
+      <SummaryCard title="Contacts" count={String(customer.contacts.length)}>{readiness.status === "needs_attention" && <p className="v2-customer-empty" role="status">Contact attention: {readiness.reasons.map((reason) => reason.replaceAll("_", " ")).join(", ")}.</p>}<ContactCreateForm organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} customerRevision={customer.revision} canCreate={canCreate} />{customer.contacts.length ? <ul className="v2-customer-contact-list">{customer.contacts.map((contact) => <li key={contact.contactId}><div><button type="button" onClick={() => openContact(contact.contactId)}>{contact.displayName}</button>{contact.primary && <em>Primary</em>}{contact.status === "archived" && <em>Inactive</em>}</div><small>{contact.email ?? unavailable}{contact.phone ? ` · ${contact.phone}` : ""}{contact.portalAccessStatus ? ` · Portal ${contact.portalAccessStatus}` : ""}</small>{canCreate && contact.status === "active" && !contact.primary && <PrimaryContactButton organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} customerRevision={customer.revision} contactId={contact.contactId} />}</li>)}</ul> : <p className="v2-customer-empty">No Contacts are linked to this Customer.</p>}</SummaryCard>
       <SummaryCard title="Commercial Context"><p className="v2-customer-empty">Customer commercial history remains owned by Sales and Billing. A customer-keyed read projection is not available yet.</p></SummaryCard>
     </div>
   </section>;
 };
 
-const ContactCreateForm = ({ organizationId, sessionScope, customerId, canCreate }: Readonly<{
+const ContactCreateForm = ({ organizationId, sessionScope, customerId, customerRevision, canCreate }: Readonly<{
   organizationId: string;
   sessionScope: string;
   customerId: string;
+  customerRevision: string;
   canCreate: boolean;
 }>) => {
   const [creating, setCreating] = useState(false);
@@ -123,7 +125,7 @@ const ContactCreateForm = ({ organizationId, sessionScope, customerId, canCreate
   const [title, setTitle] = useState("");
   const queryClient = useQueryClient();
   const create = useMutation({
-    mutationFn: () => contactApi.create(organizationId, { customerId, firstName, lastName, ...(email.trim() ? { email } : {}), ...(phone.trim() ? { phone } : {}), ...(title.trim() ? { title } : {}) }),
+    mutationFn: () => contactApi.create(organizationId, { businessRequestId: newBusinessRequestId(), expectedCustomerRevision: customerRevision, customerId, firstName, lastName, ...(email.trim() ? { email } : {}), ...(phone.trim() ? { phone } : {}), ...(title.trim() ? { title } : {}) }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers", customerId] });
       await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers"] });
@@ -140,4 +142,35 @@ const ContactCreateForm = ({ organizationId, sessionScope, customerId, canCreate
     <button type="submit" disabled={create.isPending}>{create.isPending ? "Creating…" : "Create Contact"}</button><button type="button" onClick={() => setCreating(false)}>Cancel</button>
     {create.isError && <p role="alert">Contact creation is unavailable.</p>}
   </form> : <button type="button" onClick={() => setCreating(true)}>Add Contact</button>}</>;
+};
+
+const PrimaryContactButton = ({ organizationId, sessionScope, customerId, customerRevision, contactId }: Readonly<{ organizationId: string; sessionScope: string; customerId: string; customerRevision: string; contactId: string }>) => {
+  const queryClient = useQueryClient();
+  const setPrimary = useMutation({ mutationFn: () => customerApi.setPrimaryContact(organizationId, customerId, { businessRequestId: newBusinessRequestId(), expectedCustomerRevision: customerRevision, contactId }), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers"] }); } });
+  return <button type="button" disabled={setPrimary.isPending} onClick={() => setPrimary.mutate()}>{setPrimary.isPending ? "Setting Primary…" : "Set as Primary"}</button>;
+};
+
+const CustomerEditForm = ({ organizationId, sessionScope, customer, canEdit }: Readonly<{ organizationId: string; sessionScope: string; customer: CustomerWorkspaceRead; canEdit: boolean }>) => {
+  const editable = customer.editable ?? { companyName: customer.presentation.companyName ?? customer.displayName };
+  const [editing, setEditing] = useState(false);
+  const [companyName, setCompanyName] = useState(editable.companyName);
+  const [displayName, setDisplayName] = useState(editable.displayName ?? "");
+  const [email, setEmail] = useState(editable.email ?? "");
+  const [phone, setPhone] = useState(editable.phone ?? "");
+  const [billingStreet, setBillingStreet] = useState(editable.billingAddress?.street1 ?? "");
+  const [billingStreet2, setBillingStreet2] = useState(editable.billingAddress?.street2 ?? "");
+  const [billingCity, setBillingCity] = useState(editable.billingAddress?.city ?? "");
+  const [billingState, setBillingState] = useState(editable.billingAddress?.state ?? "");
+  const [billingPostalCode, setBillingPostalCode] = useState(editable.billingAddress?.postalCode ?? "");
+  const [billingCountry, setBillingCountry] = useState(editable.billingAddress?.country ?? "");
+  const [shippingStreet, setShippingStreet] = useState(editable.shippingAddress?.street1 ?? "");
+  const [shippingStreet2, setShippingStreet2] = useState(editable.shippingAddress?.street2 ?? "");
+  const [shippingCity, setShippingCity] = useState(editable.shippingAddress?.city ?? "");
+  const [shippingState, setShippingState] = useState(editable.shippingAddress?.state ?? "");
+  const [shippingPostalCode, setShippingPostalCode] = useState(editable.shippingAddress?.postalCode ?? "");
+  const [shippingCountry, setShippingCountry] = useState(editable.shippingAddress?.country ?? "");
+  const queryClient = useQueryClient();
+  const save = useMutation({ mutationFn: () => customerApi.update(organizationId, customer.customerId, { businessRequestId: newBusinessRequestId(), expectedRevision: customer.revision ?? "", companyName, ...(displayName.trim() ? { displayName } : {}), ...(email.trim() ? { email } : {}), ...(phone.trim() ? { phone } : {}), billingAddress: { ...(billingStreet.trim() ? { street1: billingStreet } : {}), ...(billingStreet2.trim() ? { street2: billingStreet2 } : {}), ...(billingCity.trim() ? { city: billingCity } : {}), ...(billingState.trim() ? { state: billingState } : {}), ...(billingPostalCode.trim() ? { postalCode: billingPostalCode } : {}), ...(billingCountry.trim() ? { country: billingCountry } : {}) }, shippingAddress: { ...(shippingStreet.trim() ? { street1: shippingStreet } : {}), ...(shippingStreet2.trim() ? { street2: shippingStreet2 } : {}), ...(shippingCity.trim() ? { city: shippingCity } : {}), ...(shippingState.trim() ? { state: shippingState } : {}), ...(shippingPostalCode.trim() ? { postalCode: shippingPostalCode } : {}), ...(shippingCountry.trim() ? { country: shippingCountry } : {}) } }), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customers"] }); setEditing(false); } });
+  if (!canEdit) return null;
+  return editing ? <form className="v2-customer-create" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label>Company name <input required maxLength={255} value={companyName} onChange={(event) => setCompanyName(event.target.value)} /></label><label>Display name <input maxLength={255} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label><label>Email <input type="email" maxLength={255} value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>Phone <input maxLength={50} value={phone} onChange={(event) => setPhone(event.target.value)} /></label><label>Billing street <input maxLength={255} value={billingStreet} onChange={(event) => setBillingStreet(event.target.value)} /></label><label>Billing unit / suite <input maxLength={255} value={billingStreet2} onChange={(event) => setBillingStreet2(event.target.value)} /></label><label>Billing city <input maxLength={100} value={billingCity} onChange={(event) => setBillingCity(event.target.value)} /></label><label>Billing state <input maxLength={100} value={billingState} onChange={(event) => setBillingState(event.target.value)} /></label><label>Billing postal code <input maxLength={20} value={billingPostalCode} onChange={(event) => setBillingPostalCode(event.target.value)} /></label><label>Billing country <input maxLength={100} value={billingCountry} onChange={(event) => setBillingCountry(event.target.value)} /></label><label>Shipping street <input maxLength={255} value={shippingStreet} onChange={(event) => setShippingStreet(event.target.value)} /></label><label>Shipping unit / suite <input maxLength={255} value={shippingStreet2} onChange={(event) => setShippingStreet2(event.target.value)} /></label><label>Shipping city <input maxLength={100} value={shippingCity} onChange={(event) => setShippingCity(event.target.value)} /></label><label>Shipping state <input maxLength={100} value={shippingState} onChange={(event) => setShippingState(event.target.value)} /></label><label>Shipping postal code <input maxLength={20} value={shippingPostalCode} onChange={(event) => setShippingPostalCode(event.target.value)} /></label><label>Shipping country <input maxLength={100} value={shippingCountry} onChange={(event) => setShippingCountry(event.target.value)} /></label><button type="submit" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save Customer"}</button><button type="button" onClick={() => setEditing(false)}>Cancel</button>{save.isError && <p role="alert">Customer correction could not be saved. Reload and try again.</p>}</form> : <button type="button" onClick={() => setEditing(true)}>Edit Customer</button>;
 };

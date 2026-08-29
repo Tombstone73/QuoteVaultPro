@@ -480,6 +480,7 @@ export const App = ({
           sessionScope={sessionScope}
           contactId={contactId}
           canView={bootstrap.data?.capabilities.customerView === true}
+          canEdit={bootstrap.data?.capabilities.customerEdit === true}
           openContact={(id) => {
             pushContactLocation(id);
             setContactId(id);

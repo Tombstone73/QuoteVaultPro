@@ -1672,6 +1672,8 @@ const financeEndpoint = (org: string, suffix = "") =>
 export type CustomerWorkspaceRead = Readonly<{
   customerId: string;
   displayName: string;
+  revision: string;
+  editable: Readonly<{ companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: Readonly<{ street1?: string; street2?: string; city?: string; state?: string; postalCode?: string; country?: string }>; shippingAddress?: Readonly<{ street1?: string; street2?: string; city?: string; state?: string; postalCode?: string; country?: string }> }>;
   presentation: Readonly<{
     customerDisplayName?: string;
     contactDisplayName?: string;
@@ -1699,7 +1701,12 @@ export type CustomerWorkspaceRead = Readonly<{
     email?: string;
     phone?: string;
     primary: boolean;
+    title?: string;
+    status: "active" | "archived";
+    revision: string;
+    portalAccessStatus?: string;
   }>[];
+  contactReadiness: Readonly<{ status: "ready" | "needs_attention"; reasons: readonly string[] }>;
 }>;
 export type CustomerCatalogItem = Readonly<{
   customerId: string;
@@ -1733,6 +1740,8 @@ export const customerApi = {
         body: JSON.stringify(input),
       },
     ),
+  update: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedRevision: string; companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerWorkspaceRead["editable"]["billingAddress"]; shippingAddress?: CustomerWorkspaceRead["editable"]["shippingAddress"] }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`, { method: "PATCH", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
+  setPrimaryContact: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedCustomerRevision: string; contactId: string }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}/primary-contact`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
 };
 export type ContactCatalogItem = Readonly<{
   contactId: string;
@@ -1742,11 +1751,18 @@ export type ContactCatalogItem = Readonly<{
   customerId: string;
   customerName: string;
   primary: boolean;
+  title?: string;
+  status: "active" | "archived";
+  revision: string;
+  portalAccessStatus?: string;
 }>;
 export type ContactWorkspaceRead = ContactCatalogItem &
   Readonly<{
+    firstName: string;
+    lastName: string;
     customerPresentation: CustomerWorkspaceRead["presentation"];
     relatedContacts: readonly ContactCatalogItem[];
+    customerRevision: string;
   }>;
 export const contactApi = {
   list: (organizationId: string, query = "") =>
@@ -1761,7 +1777,7 @@ export const contactApi = {
     request<ContactWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/contacts/${encodeURIComponent(contactId)}`,
     ),
-  create: (organizationId: string, input: Readonly<{ customerId: string; firstName: string; lastName: string; email?: string; phone?: string; title?: string }>) =>
+  create: (organizationId: string, input: Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; firstName: string; lastName: string; email?: string; phone?: string; title?: string }>) =>
     request<ContactWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/contacts`,
       {
@@ -1770,6 +1786,7 @@ export const contactApi = {
         body: JSON.stringify(input),
       },
     ),
+  update: (organizationId: string, contactId: string, input: Readonly<{ customerId: string; businessRequestId: string; expectedCustomerRevision: string; expectedContactRevision: string; firstName: string; lastName: string; email?: string; phone?: string; title?: string; active: boolean }>) => request<ContactWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/contacts/${encodeURIComponent(contactId)}`, { method: "PATCH", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
 };
 export const productApi = {
   /** Shared Formula Library is read-only from Product Builder. */

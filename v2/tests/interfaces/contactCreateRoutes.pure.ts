@@ -9,7 +9,7 @@ const staff = (organizationId = "org-a", capabilities = ["customer.view", "custo
   kind: "staff", organizationId, userId: "staff-a", authority: { membershipId: "membership-a", capabilities },
 });
 const created = {
-  contactId: "contact-a", displayName: "DEV QA Contact", email: "qa@example.test", customerId: "customer-a", customerName: "DEV QA - Sales Operator Fixture", primary: false,
+  contactId: "contact-a", displayName: "DEV QA Contact", firstName: "DEV", lastName: "QA Contact", email: "qa@example.test", customerId: "customer-a", customerName: "DEV QA - Sales Operator Fixture", primary: false, status: "active" as const, revision: "revision-1", customerRevision: "customer-revision-1",
   customerPresentation: { customerDisplayName: "DEV QA - Sales Operator Fixture", companyName: "DEV QA - Sales Operator Fixture" }, relatedContacts: [],
 };
 const app = (actor: StaffPrincipal, calls: Array<Record<string, unknown>>) => express().use(express.json()).use(
@@ -20,16 +20,16 @@ const app = (actor: StaffPrincipal, calls: Array<Record<string, unknown>>) => ex
       list: async () => ({ items: calls.length ? [created] : [], total: calls.length, accounts: calls.length }),
       read: async (_organizationId, contactId) => contactId === created.contactId ? created : null,
     },
-    creation: { create: async (context, input) => { calls.push({ organizationId: context.organizationId, actor: context.principal.kind, ...input }); return created; } },
+    administration: { createContact: async (organizationId, principal, input) => { calls.push({ organizationId, actor: principal.kind, ...input }); return created.contactId; }, updateContact: async () => undefined },
   } satisfies ContactHttpDependencies),
 );
 
 const calls: Array<Record<string, unknown>> = [];
 const createdResponse = await request(app(staff(), calls)).post("/v2/organizations/org-a/contacts").send({
-  customerId: " customer-a ", firstName: " DEV ", lastName: " QA Contact ", email: " qa@example.test ", organizationId: "org-b", isPrimary: true,
+  businessRequestId: "request-1", expectedCustomerRevision: "customer-revision-1", customerId: " customer-a ", firstName: " DEV ", lastName: " QA Contact ", email: " qa@example.test ", organizationId: "org-b", isPrimary: true,
 }).expect(201);
 assert.deepEqual(createdResponse.body, { ok: true, data: created });
-assert.deepEqual(calls, [{ organizationId: "org-a", actor: "staff", customerId: "customer-a", firstName: "DEV", lastName: "QA Contact", email: "qa@example.test" }]);
+assert.deepEqual(calls, [{ organizationId: "org-a", actor: "staff", businessRequestId: "request-1", expectedCustomerRevision: "customer-revision-1", customerId: "customer-a", firstName: "DEV", lastName: "QA Contact", email: "qa@example.test" }]);
 const listResponse = await request(app(staff(), calls)).get("/v2/organizations/org-a/contacts?q=DEV QA").expect(200);
 assert.equal(listResponse.body.data.items[0].contactId, created.contactId);
 const readResponse = await request(app(staff(), calls)).get("/v2/organizations/org-a/contacts/contact-a").expect(200);

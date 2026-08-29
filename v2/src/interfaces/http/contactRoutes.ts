@@ -5,6 +5,7 @@ import { brandedId } from "../../modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { OperationContext } from "../../application/operation.js";
 import type { ContactCatalogRead, ContactWorkspaceRead } from "../../../infrastructure/compatibility/postgresContactWorkspaceRead.js";
+import type { CreateContactInput as DurableCreateContactInput, UpdateContactInput } from "../../../infrastructure/customers/postgresCustomerContactAdministration.js";
 
 export type ContactHttpDependencies = Readonly<{
   contacts: Readonly<{
@@ -13,6 +14,10 @@ export type ContactHttpDependencies = Readonly<{
   }>;
   creation?: Readonly<{
     create(context: OperationContext, input: ContactCreateInput): Promise<ContactWorkspaceRead>;
+  }>;
+  administration?: Readonly<{
+    createContact(organizationId: string, principal: Principal, input: DurableCreateContactInput): Promise<string>;
+    updateContact(organizationId: string, principal: Principal, contactId: string, input: UpdateContactInput): Promise<void>;
   }>;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
 }>;
@@ -31,7 +36,7 @@ const deny = (response: Response, status: 403 | 404, code: "FORBIDDEN" | "NOT_FO
 
 const fail = (response: Response, error: unknown) => {
   const known = error instanceof V2ApplicationError ? error : null;
-  const status = known?.code === "VALIDATION_ERROR" ? 400 : known?.code === "NOT_FOUND" ? 404 : known?.code === "FORBIDDEN" ? 403 : 500;
+  const status = known?.code === "VALIDATION_ERROR" ? 400 : known?.code === "NOT_FOUND" ? 404 : known?.code === "FORBIDDEN" ? 403 : known?.code === "CONFLICT" || known?.code === "STALE_STATE" || known?.code === "IDEMPOTENCY_CONFLICT" ? 409 : 500;
   return response.status(status).json({
     ok: false,
     error: {
@@ -64,6 +69,18 @@ const createInput = (value: unknown): ContactCreateInput => {
   const phone = optionalText(body.phone, "Phone", 50);
   const title = optionalText(body.title, "Title", 100);
   return { customerId, firstName, lastName, ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(title ? { title } : {}) };
+};
+const requiredText = (body: Record<string, unknown>, field: string, label: string, limit: number) => { const result = optionalText(body[field], label, limit); if (!result) throw new V2ApplicationError("VALIDATION_ERROR", `${label} is required.`); return result; };
+const durableCreateInput = (value: unknown): DurableCreateContactInput => {
+  const current = createInput(value); const body = value as Record<string, unknown>;
+  return { ...current, businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedCustomerRevision: requiredText(body, "expectedCustomerRevision", "Customer revision", 200) };
+};
+const updateInput = (value: unknown): UpdateContactInput => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "A Contact correction object is required.");
+  const body = value as Record<string, unknown>;
+  const active = body.active;
+  if (typeof active !== "boolean") throw new V2ApplicationError("VALIDATION_ERROR", "Contact status is required.");
+  return { customerId: requiredText(body, "customerId", "Customer", 200), businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedCustomerRevision: requiredText(body, "expectedCustomerRevision", "Customer revision", 200), expectedContactRevision: requiredText(body, "expectedContactRevision", "Contact revision", 200), firstName: requiredText(body, "firstName", "First name", 100), lastName: requiredText(body, "lastName", "Last name", 100), ...(optionalText(body.email, "Email", 255) ? { email: optionalText(body.email, "Email", 255) } : {}), ...(optionalText(body.phone, "Phone", 50) ? { phone: optionalText(body.phone, "Phone", 50) } : {}), ...(optionalText(body.title, "Title", 100) ? { title: optionalText(body.title, "Title", 100) } : {}), active };
 };
 
 export const createContactRouter = (dependencies: ContactHttpDependencies) => {
@@ -102,16 +119,25 @@ export const createContactRouter = (dependencies: ContactHttpDependencies) => {
       const { organizationId, principal } = await principalFor(request);
       if (!new AuthorityPolicy().decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed)
         return deny(response, 403, "FORBIDDEN", "Contact creation is unavailable.");
-      if (!dependencies.creation)
-        throw new V2ApplicationError("INTERNAL_ERROR", "Contact creation runtime is unavailable.");
-      const contact = await dependencies.creation.create(
-        { organizationId, principal, operationId: "contacts.create" },
-        createInput(request.body),
-      );
+      if (!dependencies.administration) throw new V2ApplicationError("INTERNAL_ERROR", "Contact administration runtime is unavailable.");
+      const contactId = await dependencies.administration.createContact(organizationId, principal, durableCreateInput(request.body));
+      const contact = await dependencies.contacts.read(brandedId<"OrganizationId">(organizationId), brandedId<"ContactId">(contactId));
+      if (!contact) throw new V2ApplicationError("NOT_FOUND", "Contact is unavailable in this organization.");
       return response.status(201).json({ ok: true, data: contact });
     } catch (error) {
       return fail(response, error);
     }
+  });
+  router.patch("/:contactId", async (request, response) => {
+    try {
+      const { organizationId, principal } = await principalFor(request);
+      if (!new AuthorityPolicy().decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed) return deny(response, 403, "FORBIDDEN", "Contact correction is unavailable.");
+      if (!dependencies.administration) throw new V2ApplicationError("INTERNAL_ERROR", "Contact administration runtime is unavailable.");
+      await dependencies.administration.updateContact(organizationId, principal, request.params.contactId, updateInput(request.body));
+      const contact = await dependencies.contacts.read(brandedId<"OrganizationId">(organizationId), brandedId<"ContactId">(request.params.contactId));
+      if (!contact) throw new V2ApplicationError("NOT_FOUND", "Contact is unavailable in this organization.");
+      return response.status(200).json({ ok: true, data: contact });
+    } catch (error) { return fail(response, error); }
   });
   return router;
 };

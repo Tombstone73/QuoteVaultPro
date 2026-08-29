@@ -5,6 +5,7 @@ import { brandedId } from "../../modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { OperationContext } from "../../application/operation.js";
 import type { CustomerCatalogItem, CustomerWorkspaceRead } from "../../../infrastructure/compatibility/postgresCustomerWorkspaceRead.js";
+import type { UpdateCustomerInput, SetPrimaryContactInput } from "../../../infrastructure/customers/postgresCustomerContactAdministration.js";
 
 export type CustomerHttpDependencies = Readonly<{
   customers: Readonly<{
@@ -13,6 +14,10 @@ export type CustomerHttpDependencies = Readonly<{
   }>;
   creation?: Readonly<{
     create(context: OperationContext, input: CustomerCreateInput): Promise<CustomerWorkspaceRead>;
+  }>;
+  administration?: Readonly<{
+    updateCustomer(organizationId: string, principal: Principal, customerId: string, input: UpdateCustomerInput): Promise<void>;
+    setPrimaryContact(organizationId: string, principal: Principal, input: SetPrimaryContactInput): Promise<void>;
   }>;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
 }>;
@@ -29,7 +34,7 @@ const deny = (response: Response, status: 403 | 404, code: "FORBIDDEN" | "NOT_FO
 
 const fail = (response: Response, error: unknown) => {
   const known = error instanceof V2ApplicationError ? error : null;
-  const status = known?.code === "VALIDATION_ERROR" ? 400 : known?.code === "FORBIDDEN" ? 403 : 500;
+  const status = known?.code === "VALIDATION_ERROR" ? 400 : known?.code === "NOT_FOUND" ? 404 : known?.code === "FORBIDDEN" ? 403 : known?.code === "CONFLICT" || known?.code === "STALE_STATE" || known?.code === "IDEMPOTENCY_CONFLICT" ? 409 : 500;
   return response.status(status).json({
     ok: false,
     error: {
@@ -58,6 +63,25 @@ const createInput = (value: unknown): CustomerCreateInput => {
   const email = optionalText(body.email, "Email", 255);
   const phone = optionalText(body.phone, "Phone", 50);
   return { companyName, ...(displayName ? { displayName } : {}), ...(email ? { email } : {}), ...(phone ? { phone } : {}) };
+};
+const requiredText = (body: Record<string, unknown>, field: string, label: string, limit: number) => {
+  const value = optionalText(body[field], label, limit); if (!value) throw new V2ApplicationError("VALIDATION_ERROR", `${label} is required.`); return value;
+};
+const address = (value: unknown, label: string) => {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", `${label} must be an address object.`);
+  const source = value as Record<string, unknown>;
+  return { ...(optionalText(source.street1, `${label} street`, 255) ? { street1: optionalText(source.street1, `${label} street`, 255) } : {}), ...(optionalText(source.street2, `${label} street`, 255) ? { street2: optionalText(source.street2, `${label} street`, 255) } : {}), ...(optionalText(source.city, `${label} city`, 100) ? { city: optionalText(source.city, `${label} city`, 100) } : {}), ...(optionalText(source.state, `${label} state`, 100) ? { state: optionalText(source.state, `${label} state`, 100) } : {}), ...(optionalText(source.postalCode, `${label} postal code`, 20) ? { postalCode: optionalText(source.postalCode, `${label} postal code`, 20) } : {}), ...(optionalText(source.country, `${label} country`, 100) ? { country: optionalText(source.country, `${label} country`, 100) } : {}) };
+};
+const updateInput = (value: unknown): UpdateCustomerInput => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "A Customer correction object is required.");
+  const body = value as Record<string, unknown>;
+  return { businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedRevision: requiredText(body, "expectedRevision", "Customer revision", 200), companyName: requiredText(body, "companyName", "Company name", 255), ...(optionalText(body.displayName, "Display name", 255) ? { displayName: optionalText(body.displayName, "Display name", 255) } : {}), ...(optionalText(body.email, "Email", 255) ? { email: optionalText(body.email, "Email", 255) } : {}), ...(optionalText(body.phone, "Phone", 50) ? { phone: optionalText(body.phone, "Phone", 50) } : {}), ...(body.billingAddress !== undefined ? { billingAddress: address(body.billingAddress, "Billing address") } : {}), ...(body.shippingAddress !== undefined ? { shippingAddress: address(body.shippingAddress, "Shipping address") } : {}) };
+};
+const primaryInput = (customerId: string, value: unknown): SetPrimaryContactInput => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "A Primary Contact selection is required.");
+  const body = value as Record<string, unknown>;
+  return { customerId, contactId: requiredText(body, "contactId", "Contact", 200), businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedCustomerRevision: requiredText(body, "expectedCustomerRevision", "Customer revision", 200) };
 };
 
 export const createCustomerRouter = (dependencies: CustomerHttpDependencies) => {
@@ -107,6 +131,28 @@ export const createCustomerRouter = (dependencies: CustomerHttpDependencies) => 
     } catch (error) {
       return fail(response, error);
     }
+  });
+  router.patch("/:customerId", async (request, response) => {
+    try {
+      const { organizationId, principal } = await principalFor(request);
+      if (!new AuthorityPolicy().decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed) return deny(response, 403, "FORBIDDEN", "Customer correction is unavailable.");
+      if (!dependencies.administration) throw new V2ApplicationError("INTERNAL_ERROR", "Customer administration runtime is unavailable.");
+      await dependencies.administration.updateCustomer(organizationId, principal, request.params.customerId, updateInput(request.body));
+      const customer = await dependencies.customers.read(brandedId<"OrganizationId">(organizationId), brandedId<"CustomerId">(request.params.customerId));
+      if (!customer) throw new V2ApplicationError("NOT_FOUND", "Customer is unavailable in this organization.");
+      return response.status(200).json({ ok: true, data: customer });
+    } catch (error) { return fail(response, error); }
+  });
+  router.put("/:customerId/primary-contact", async (request, response) => {
+    try {
+      const { organizationId, principal } = await principalFor(request);
+      if (!new AuthorityPolicy().decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed) return deny(response, 403, "FORBIDDEN", "Primary Contact administration is unavailable.");
+      if (!dependencies.administration) throw new V2ApplicationError("INTERNAL_ERROR", "Customer administration runtime is unavailable.");
+      await dependencies.administration.setPrimaryContact(organizationId, principal, primaryInput(request.params.customerId, request.body));
+      const customer = await dependencies.customers.read(brandedId<"OrganizationId">(organizationId), brandedId<"CustomerId">(request.params.customerId));
+      if (!customer) throw new V2ApplicationError("NOT_FOUND", "Customer is unavailable in this organization.");
+      return response.status(200).json({ ok: true, data: customer });
+    } catch (error) { return fail(response, error); }
   });
   return router;
 };

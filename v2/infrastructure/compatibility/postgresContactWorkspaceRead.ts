@@ -7,6 +7,10 @@ export type ContactCatalogItem = Readonly<{
   displayName: string;
   email?: string;
   phone?: string;
+  title?: string;
+  status: "active" | "archived";
+  revision: string;
+  portalAccessStatus?: string;
   customerId: CustomerId;
   customerName: string;
   primary: boolean;
@@ -15,13 +19,20 @@ export type ContactCatalogRead = Readonly<{ items: readonly ContactCatalogItem[]
 export type ContactWorkspaceRead = Readonly<{
   contactId: ContactId;
   displayName: string;
+  firstName: string;
+  lastName: string;
   email?: string;
   phone?: string;
   customerId: CustomerId;
   customerName: string;
   primary: boolean;
+  title?: string;
+  status: "active" | "archived";
+  revision: string;
+  portalAccessStatus?: string;
   customerPresentation: CustomerPresentationIdentity;
   relatedContacts: readonly ContactCatalogItem[];
+  customerRevision: string;
 }>;
 
 type ContactRow = Readonly<{
@@ -33,8 +44,13 @@ type ContactRow = Readonly<{
   customer_id: string;
   customer_name: string;
   is_primary: boolean;
+  title: string | null;
+  status: "active" | "archived";
+  crm_revision: string;
+  portal_access_status: string | null;
 }>;
 type ContactDetailRow = ContactRow & Readonly<{
+  customer_crm_revision: string;
   display_name: string | null;
   company_name: string;
   billing_street1: string | null;
@@ -59,6 +75,10 @@ const contact = (row: ContactRow): ContactCatalogItem => ({
   customerId: brandedId<"CustomerId">(row.customer_id),
   customerName: row.customer_name,
   primary: row.is_primary,
+  ...(row.title ? { title: row.title } : {}),
+  status: row.status,
+  revision: row.crm_revision,
+  ...(row.portal_access_status ? { portalAccessStatus: row.portal_access_status } : {}),
 });
 
 const address = (lines: readonly (string | null)[], city: string | null, region: string | null, postalCode: string | null, countryCode: string | null) => {
@@ -84,8 +104,8 @@ export class PostgresContactWorkspaceReader {
     const pattern = `%${query.trim().slice(0, 120)}%`;
     const [rows, count] = await Promise.all([
       this.pool.query<ContactRow>(
-        `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,
-          c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary AS is_primary
+        `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,ct.title,ct.status,ct.crm_revision::text,
+          c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary AS is_primary, NULL::varchar AS portal_access_status
         FROM customer_contact_links l
         JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
         JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
@@ -114,13 +134,15 @@ export class PostgresContactWorkspaceReader {
 
   async read(organizationId: OrganizationId, contactId: ContactId): Promise<ContactWorkspaceRead | null> {
     const selected = await this.pool.query<ContactDetailRow>(
-      `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,
-        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary AS is_primary,
+      `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,ct.title,ct.status,ct.crm_revision::text,
+        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, c.crm_revision::text AS customer_crm_revision, l.is_primary AS is_primary,
+        portal.status AS portal_access_status,
         c.display_name, c.company_name, c.billing_street1, c.billing_street2, c.billing_city, c.billing_state, c.billing_postal_code, c.billing_country,
         c.shipping_street1, c.shipping_street2, c.shipping_city, c.shipping_state, c.shipping_postal_code, c.shipping_country
       FROM customer_contact_links l
-      JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
+      JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id
       JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
+      LEFT JOIN LATERAL (SELECT status FROM customer_portal_access p WHERE p.organization_id=l.organization_id AND p.customer_id=l.customer_id AND p.contact_id=l.contact_id ORDER BY p.created_at DESC LIMIT 1) portal ON TRUE
       WHERE l.organization_id = $1 AND ct.id = $2 AND l.status = 'active' AND c.is_active IS NOT FALSE
         AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted') AND c.merged_into_customer_id IS NULL
       ORDER BY l.is_primary DESC, lower(COALESCE(NULLIF(c.display_name, ''), c.company_name)), c.id
@@ -130,8 +152,8 @@ export class PostgresContactWorkspaceReader {
     const row = selected.rows[0];
     if (!row) return null;
     const related = await this.pool.query<ContactRow>(
-      `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,
-        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary AS is_primary
+      `SELECT ct.id AS contact_id, ct.first_name, ct.last_name, ct.email, ct.phone,ct.title,ct.status,ct.crm_revision::text,
+        c.id AS customer_id, COALESCE(NULLIF(c.display_name, ''), c.company_name) AS customer_name, l.is_primary AS is_primary, NULL::varchar AS portal_access_status
       FROM customer_contact_links l
       JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
       JOIN customers c ON c.organization_id = l.organization_id AND c.id = l.customer_id
@@ -142,6 +164,6 @@ export class PostgresContactWorkspaceReader {
       [organizationId, row.customer_id],
     );
     const value = contact(row);
-    return { ...value, customerPresentation: presentation(row), relatedContacts: related.rows.map(contact) };
+    return { ...value, firstName: row.first_name, lastName: row.last_name, customerPresentation: presentation(row), relatedContacts: related.rows.map(contact), customerRevision: row.customer_crm_revision };
   }
 }

@@ -1653,6 +1653,13 @@
       "when": 1788048000087,
       "tag": "0240_v2_portal_invitation_delivery",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1788048000088,
+      "tag": "0241_v2_customer_contact_command_revisions",
+      "breakpoints": true
     }
   ]
 }

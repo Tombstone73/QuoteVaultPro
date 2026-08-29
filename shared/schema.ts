@@ -3,6 +3,7 @@ import { relations } from 'drizzle-orm';
 import {
   type AnyPgColumn,
   boolean,
+  bigint,
   date,
   decimal,
   index,
@@ -2595,6 +2596,9 @@ export const customers = pgTable("customers", {
   organizationId: varchar("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
+  // V2 CRM command boundary uses this monotonic master-data revision for
+  // durable stale-write protection; it does not alter commercial history.
+  crmRevision: bigint("crm_revision", { mode: "number" }).notNull().default(1),
 
   companyName: varchar("company_name", { length: 255 }).notNull(),
   customerType: varchar("customer_type", { length: 50 }).default("business"),
@@ -2910,6 +2914,9 @@ export type CustomerVisibleProduct = typeof customerVisibleProducts.$inferSelect
 export const customerContacts = pgTable("customer_contacts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  // Relationship-owned primary state remains on customerContactLinks. This
+  // revision covers Contact identity/facts only.
+  crmRevision: bigint("crm_revision", { mode: "number" }).notNull().default(1),
   // Deprecated compatibility field: relationship membership lives in customerContactLinks.
   customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),
   firstName: varchar("first_name", { length: 100 }).notNull(),
