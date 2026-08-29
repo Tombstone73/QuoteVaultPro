@@ -6,7 +6,7 @@ const source = await readFile(path.join(process.cwd(), "v2", "infrastructure", "
 
 assert.match(
   source,
-  /concat_ws\('\|',s\.id,\$4::text,\$5::text\)/,
-  "Quote-to-Order artwork reuse must cast order parameters before the polymorphic fingerprint call.",
+  /concat_ws\('\|',s\.id,\$4::varchar,\$5::varchar\)/,
+  "Quote-to-Order artwork reuse must keep Order parameter types consistent in the fingerprint call.",
 );
 console.log("Quote Artwork conversion SQL uses unambiguous text parameters.");
