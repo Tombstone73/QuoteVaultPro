@@ -26,9 +26,9 @@ export type NumberingSettings = Readonly<{
     configurableSeparately: false;
   }>;
   compatibility: Readonly<{
-    legacyQuoteOrder: "migration_required";
-    legacyInvoice: "migration_required";
-    legacyPurchaseOrder: "migration_required";
+    legacyQuoteOrder: "converged";
+    legacyInvoice: "compatibility_managed";
+    legacyPurchaseOrder: "compatibility_managed";
     importedHistoricalDocuments: "preserved";
   }>;
   readiness: Readonly<{

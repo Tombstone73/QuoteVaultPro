@@ -34,6 +34,12 @@ const DOCUMENT_NUMBER_SEQUENCE_NAMES = new Set([
   "next_invoice_number",
   "next_purchase_order_number",
 ]);
+const V2_OWNED_DOCUMENT_NUMBERING_NAMES = new Set([
+  "next_quote_number",
+  "next_order_number",
+  "quote_number_prefix",
+  "order_number_prefix",
+]);
 
 type JsonErrorResponse = {
   success: false;
@@ -52,6 +58,22 @@ export class GlobalVariableValidationError extends Error {
     this.name = "GlobalVariableValidationError";
     this.code = code;
     this.field = field;
+  }
+}
+
+export class V2NumberingSettingsAuthorityError extends Error {
+  status = 409;
+  code = "NUMBERING_SETTINGS_V2_OWNED";
+
+  constructor() {
+    super("Quote and Order / Job numbering is configured only through V2 Numbering Settings.");
+    this.name = "V2NumberingSettingsAuthorityError";
+  }
+}
+
+export function assertLegacyGlobalVariableIsNotV2NumberingAuthority(name: string): void {
+  if (V2_OWNED_DOCUMENT_NUMBERING_NAMES.has(name)) {
+    throw new V2NumberingSettingsAuthorityError();
   }
 }
 
@@ -229,6 +251,7 @@ export function registerCatalogSettingsRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const rawName = typeof req.body?.name === "string" ? req.body.name : "";
+      assertLegacyGlobalVariableIsNotV2NumberingAuthority(rawName);
       const normalizedValue = normalizeGlobalVariableValueForRequest(rawName, req.body?.value);
       const variableData = insertGlobalVariableSchema.parse({
         ...req.body,
@@ -266,6 +289,7 @@ export function registerCatalogSettingsRoutes(
       if (!currentVariable) {
         return res.status(404).json({ success: false, code: "GLOBAL_VARIABLE_NOT_FOUND", message: "Global variable not found." });
       }
+      assertLegacyGlobalVariableIsNotV2NumberingAuthority(currentVariable.name);
 
       const normalizedValue = req.body && Object.prototype.hasOwnProperty.call(req.body, "value")
         ? normalizeGlobalVariableValueForRequest(currentVariable.name, req.body.value)
@@ -347,6 +371,11 @@ export function registerCatalogSettingsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
+      if (!currentVariable) {
+        return res.status(404).json({ success: false, code: "GLOBAL_VARIABLE_NOT_FOUND", message: "Global variable not found." });
+      }
+      assertLegacyGlobalVariableIsNotV2NumberingAuthority(currentVariable.name);
       await storage.deleteGlobalVariable(organizationId, req.params.id);
       res.json({ message: "Global variable deleted successfully" });
     } catch (error) {

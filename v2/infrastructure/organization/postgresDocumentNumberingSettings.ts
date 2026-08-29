@@ -19,9 +19,9 @@ const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringi
 const revisionFor = (rows: readonly CounterRow[]) => nativeNumberingKinds.map((kind) => `${kind}:${rows.find((row) => row.document_kind === kind)?.revision ?? "0"}`).join("|");
 
 /**
- * Settings controls only V2's existing quote/order allocator. Compatibility
- * documents remain read-only migration evidence until their owning writers
- * are explicitly converged; this adapter never backfills or renumbers them.
+ * Settings controls the shared V2 Quote / Order-Job allocation primitive.
+ * Retained compatibility writers use that primitive too; Invoice and PO
+ * allocation remain separately compatibility-managed and are not backfilled.
  */
 export class PostgresDocumentNumberingSettings {
   private readonly requests = new PostgresOperationRequestRepository();
@@ -78,7 +78,18 @@ export class PostgresDocumentNumberingSettings {
   }
 
   private async maximumAllocatedCore(client: PoolClient, organizationId: string, kind: NativeNumberingKind): Promise<bigint> {
-    const result = await client.query<{ maximum: string }>("SELECT COALESCE(MAX(business_number),0)::text maximum FROM v2_sales_documents WHERE organization_id=$1 AND document_kind=$2", [organizationId, kind]);
+    const result = await client.query<{ maximum: string }>(
+      kind === "quote"
+        ? `SELECT GREATEST(
+             COALESCE((SELECT MAX(business_number) FROM v2_sales_documents WHERE organization_id=$1 AND document_kind='quote'),0),
+             COALESCE((SELECT MAX(COALESCE(number_core,quote_number)) FROM quotes WHERE organization_id=$1),0)
+           )::text maximum`
+        : `SELECT GREATEST(
+             COALESCE((SELECT MAX(business_number) FROM v2_sales_documents WHERE organization_id=$1 AND document_kind='order'),0),
+             COALESCE((SELECT MAX(COALESCE(number_core,CASE WHEN order_number ~ '^[0-9]+$' THEN order_number::bigint END)) FROM orders WHERE organization_id=$1),0)
+           )::text maximum`,
+      [organizationId],
+    );
     return BigInt(result.rows[0]?.maximum ?? "0");
   }
 
@@ -105,8 +116,8 @@ export class PostgresDocumentNumberingSettings {
       revision: revisionFor(result.rows),
       documents,
       sharedJobNumber: { owner: "order_number", behavior: "order_display_number", configurableSeparately: false },
-      compatibility: { legacyQuoteOrder: "migration_required", legacyInvoice: "migration_required", legacyPurchaseOrder: "migration_required", importedHistoricalDocuments: "preserved" },
-      readiness: { status: "migration_required", reasons: ["Legacy quote, order, invoice, and purchase-order allocators remain compatibility-owned and are intentionally not controlled by this V2 Settings contract."] },
+      compatibility: { legacyQuoteOrder: "converged", legacyInvoice: "compatibility_managed", legacyPurchaseOrder: "compatibility_managed", importedHistoricalDocuments: "preserved" },
+      readiness: { status: "migration_required", reasons: ["Invoice and purchase-order allocators remain compatibility-managed. Historical imported identifiers are preserved and are never renumbered."] },
     };
   }
 }

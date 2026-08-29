@@ -6,7 +6,7 @@ import {
 } from "../services/documentNumberingService";
 
 function makeExecutor(prefix: string, allocatedCore: number) {
-  const execute = jest.fn(async () => ({ rows: [{ number_core: allocatedCore }] }));
+  const execute = jest.fn(async () => ({ rows: [{ number_core: allocatedCore, display_prefix: prefix }] }));
   const prefixRows = [{ value: prefix }];
   const chain: any = {
     from: jest.fn(() => chain),
@@ -27,6 +27,18 @@ describe("documentNumberingService", () => {
 
     expect(allocated).toEqual({ numberCore: 1006, displayNumber: "ORD-1006" });
     expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.select).not.toHaveBeenCalled();
+  });
+
+  test("routes compatibility Quote and Order writers through the shared V2 allocator", async () => {
+    const executor = makeExecutor("QT-", 20016);
+
+    await expect(allocateDocumentNumber("org_1", "quote", executor)).resolves.toEqual({
+      numberCore: 20016,
+      displayNumber: "QT-20016",
+    });
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.select).not.toHaveBeenCalled();
   });
 
   test("supports blank prefixes while preserving searchable numeric core", async () => {

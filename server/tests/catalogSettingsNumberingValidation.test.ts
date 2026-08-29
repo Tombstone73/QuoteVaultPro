@@ -1,7 +1,9 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   assertStartingNumberDoesNotMoveBackward,
+  assertLegacyGlobalVariableIsNotV2NumberingAuthority,
   GlobalVariableValidationError,
+  V2NumberingSettingsAuthorityError,
   normalizeGlobalVariableValueForRequest,
   normalizeStartingNumberValue,
 } from "../routes/catalogSettings.routes";
@@ -35,6 +37,13 @@ describe("catalog settings numbering validation", () => {
 
   test("prefix remains a trimmed string", () => {
     expect(normalizeGlobalVariableValueForRequest("order_number_prefix", " ORD- ")).toBe("ORD-");
+  });
+
+  test("legacy settings cannot mutate the V2 Quote or Order / Job authority", () => {
+    expect(() => assertLegacyGlobalVariableIsNotV2NumberingAuthority("next_quote_number")).toThrow(V2NumberingSettingsAuthorityError);
+    expect(() => assertLegacyGlobalVariableIsNotV2NumberingAuthority("order_number_prefix")).toThrow(V2NumberingSettingsAuthorityError);
+    expect(() => assertLegacyGlobalVariableIsNotV2NumberingAuthority("next_invoice_number")).not.toThrow();
+    expect(() => assertLegacyGlobalVariableIsNotV2NumberingAuthority("next_purchase_order_number")).not.toThrow();
   });
 
   test("backend rejects moving the sequence below existing issued documents", async () => {

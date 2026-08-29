@@ -81,6 +81,20 @@ export async function allocateDocumentNumber(
   documentType: DocumentNumberType,
   executor: DbExecutor = db,
 ): Promise<{ numberCore: number; displayNumber: string }> {
+  if (documentType === "quote" || documentType === "order") {
+    const result = await executor.execute(sql`
+      SELECT allocated_core::text AS number_core, display_prefix
+      FROM v2_allocate_sales_document_number(${organizationId}, ${documentType})
+    `);
+    const rows = Array.isArray(result) ? result : ((result as any)?.rows ?? []);
+    const numberCore = Math.floor(Number(rows[0]?.number_core ?? rows[0]?.numberCore));
+    const displayPrefix = String(rows[0]?.display_prefix ?? rows[0]?.displayPrefix ?? "");
+    if (!Number.isSafeInteger(numberCore) || numberCore < 1 || !/^[A-Za-z0-9_-]{0,16}$/u.test(displayPrefix)) {
+      throw new Error(`Failed to allocate ${documentType} number`);
+    }
+    return { numberCore, displayNumber: `${displayPrefix}${numberCore}` };
+  }
+
   const name = DOCUMENT_NUMBER_SEQUENCE_VARIABLES[documentType];
   const description = DOCUMENT_NUMBER_SEQUENCE_DESCRIPTIONS[documentType];
   const initialValue = String(DEFAULT_SEQUENCE_START + 1);
