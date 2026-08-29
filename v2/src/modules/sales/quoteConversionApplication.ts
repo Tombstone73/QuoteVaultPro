@@ -44,6 +44,22 @@ const safeFailureClassification = (cause: unknown): string => {
   return "UNEXPECTED_EXCEPTION";
 };
 
+/** Keep diagnostic detail structural.  In particular, never copy a driver
+ * message or SQL fragment into the DEV trace: those can contain customer
+ * values.  These classifications are enough to distinguish a missing adapter
+ * method from a database or ordinary application failure. */
+const safeFailureDetail = (cause: unknown): string | undefined => {
+  if (cause && typeof cause === "object") {
+    const message = "message" in cause && typeof cause.message === "string" ? cause.message : "";
+    if (/is not a function/i.test(message)) return "missing_method";
+    if (/cannot read propert(?:y|ies)/i.test(message)) return "missing_property";
+    const name = "name" in cause && typeof cause.name === "string" ? cause.name : "";
+    if (name === "Error") return "error_without_database_code";
+    if (/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(name)) return `error_${name.toLowerCase()}`;
+  }
+  return undefined;
+};
+
 /** PostgreSQL constraint identifiers are schema-owned diagnostic labels, not
  * customer data. Keep the retained trace bounded to ordinary identifier text
  * so a driver error message can never reach the DEV log sink. */
@@ -64,17 +80,18 @@ const durableRequestClassification = (businessRequestId: string): string =>
 export const createQuoteConversionTrace = (options: QuoteConversionTraceOptions = {}): QuoteConversionTrace => {
   const requestId = options.requestId ?? randomUUID();
   const sink = options.sink ?? ((message: string) => console.log(message));
-  const emit = (stage: string, result: string, classification?: string, durable?: string, constraint?: string): void => {
+  const emit = (stage: string, result: string, classification?: string, durable?: string, constraint?: string, detail?: string): void => {
     const message = `V2_QUOTE_CONVERSION_TRACE request=${requestId} stage=${stage} result=${result}`
       + (classification ? ` class=${classification}` : "")
       + (durable ? ` durable=${durable}` : "")
-      + (constraint ? ` constraint=${constraint}` : "");
+      + (constraint ? ` constraint=${constraint}` : "")
+      + (detail ? ` detail=${detail}` : "");
     try { sink(message); } catch { /* Diagnostics must never affect conversion. */ }
   };
   return Object.freeze({
     requestId,
     event: (stage, result) => emit(stage, result),
-    failure: (stage, cause) => emit(stage, "failed", safeFailureClassification(cause), undefined, safeConstraintIdentifier(cause)),
+    failure: (stage, cause) => emit(stage, "failed", safeFailureClassification(cause), undefined, safeConstraintIdentifier(cause), safeFailureDetail(cause)),
     durableRequest: (businessRequestId, status) => emit("durable_request", status === "replay" ? "replayed" : "ok", undefined, durableRequestClassification(businessRequestId)),
   });
 };
