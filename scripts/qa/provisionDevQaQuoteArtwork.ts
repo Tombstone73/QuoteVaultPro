@@ -11,7 +11,7 @@ import { PostgresArtworkTransactionRunner } from "../../v2/infrastructure/artwor
 import { PostgresQuoteArtworkTransactionRunner } from "../../v2/infrastructure/artwork/postgresQuoteArtworkTransaction.js";
 import { ArtworkUploadService } from "../../v2/infrastructure/artwork/artworkUploadService.js";
 import { QuoteArtworkUploadService } from "../../v2/infrastructure/artwork/quoteArtworkUploadService.js";
-import { SupabaseArtworkBinaryStorage } from "../../v2/infrastructure/artwork/artworkBinaryStorage.js";
+import { ArtworkStorageUnavailableError, SupabaseArtworkBinaryStorage, type ArtworkBinaryStorage, type ArtworkStorageFailureReason } from "../../v2/infrastructure/artwork/artworkBinaryStorage.js";
 
 const INTENT = "PROVISION_DEV_QA_QUOTE_ARTWORK";
 const QA_PO = "QA - Artwork Lineage Fixture";
@@ -51,6 +51,14 @@ const parse = (): Args => {
   };
 };
 const safe = (value: unknown) => console.log(JSON.stringify(value));
+class ObservedArtworkStorage implements ArtworkBinaryStorage {
+  failureReason: ArtworkStorageFailureReason | undefined;
+  constructor(private readonly delegate: ArtworkBinaryStorage) {}
+  async put(input: Parameters<ArtworkBinaryStorage["put"]>[0]) { try { return await this.delegate.put(input); } catch (error) { this.failureReason = error instanceof ArtworkStorageUnavailableError ? error.reason : undefined; throw error; } }
+  remove(objectKey: string) { return this.delegate.remove(objectKey); }
+  exists(objectKey: string) { return this.delegate.exists(objectKey); }
+  read(objectKey: string) { return this.delegate.read(objectKey); }
+}
 const context = (organizationId: string, requestId: string): OperationContext => ({
   organizationId,
   operationId: `dev-qa-quote-artwork:${requestId}`,
@@ -91,7 +99,7 @@ async function main(): Promise<void> {
 
     const quoteService = new QuoteArtworkApplicationService(new PostgresQuoteArtworkTransactionRunner(pool));
     const orderService = new ArtworkApplicationService(new PostgresArtworkTransactionRunner(pool));
-    const storage = new SupabaseArtworkBinaryStorage();
+    const storage = new ObservedArtworkStorage(new SupabaseArtworkBinaryStorage());
     const quoteUpload = new QuoteArtworkUploadService(quoteService, storage);
     const orderUpload = new ArtworkUploadService(orderService, storage);
     let revision = quote.revision;
@@ -105,7 +113,7 @@ async function main(): Promise<void> {
       if (slot.length > 0 && !slot.every((item) => permitExisting.includes(item.file.displayFilename))) throw new Error("Quote artwork slot cannot be safely replaced.");
       const requestId = `dev-qa-quote-artwork:${args.quoteId}:${lineId}:${filename}`;
       const uploaded = await quoteUpload.upload(context(args.organizationId, requestId), { businessRequestId: requestId, expectedRevision: revision, quoteId: args.quoteId, quoteLineId: lineId, purpose: "customer_supplied", side, filename, contentType: "application/pdf", bytes: await pdf(label) });
-      if (!uploaded.ok) throw new Error(`Canonical Quote artwork adoption failed: ${uploaded.error.code}.`);
+      if (!uploaded.ok) throw new Error(`Canonical Quote artwork adoption failed: ${storage.failureReason ?? uploaded.error.code}.`);
       revision = uploaded.value.quoteRevision;
       return safeAssignment(uploaded.value);
     };
@@ -134,7 +142,7 @@ async function main(): Promise<void> {
     if (!order || order.purchase_order_number !== QA_PO || !orderLine) throw new Error("Target Order/line is not the converted DEV QA fixture.");
     const requestId = `dev-qa-order-artwork:${args.orderId}:${args.orderLineId}:${fixtureNames.orderLineAReplacement}`;
     const upload = await orderUpload.upload(context(args.organizationId, requestId), { businessRequestId: requestId, orderId: args.orderId!, orderLineId: args.orderLineId!, purpose: "customer_supplied", side: "front", filename: fixtureNames.orderLineAReplacement, contentType: "application/pdf", bytes: await pdf("ORDER LINE A — REPLACEMENT") });
-    if (!upload.ok) throw new Error(`Canonical Order artwork adoption failed: ${upload.error.code}.`);
+    if (!upload.ok) throw new Error(`Canonical Order artwork adoption failed: ${storage.failureReason ?? upload.error.code}.`);
     safe({ ok: true, mode: args.mode, quoteId: args.quoteId, orderId: args.orderId, orderLineId: args.orderLineId, assignment: safeAssignment(upload.value) });
   } finally { await pool.end(); }
 }
