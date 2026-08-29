@@ -134,7 +134,10 @@ export class PostgresCustomerContactAdministration {
       const resourceId = result.resourceId ?? defaultResourceId;
       const resourceType = result.resourceType ?? defaultResourceType;
       await this.requests.recordAttribution(client, { organizationId, operationRequestId: reservation.request.id, operation, resourceType, resourceId, principalKind: principal.kind, principalSubject: principalSubject(principal), staffActorUserId: staffActorId(principal) });
-      await client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)", [organizationId, reservation.request.id, operation, result.eventType, resourceType, resourceId, principal.kind, principalSubject(principal), staffActorId(principal) ?? null, JSON.stringify(result.changes)]);
+      // v2_audit_events deliberately stores an ordered change set. Its schema
+      // check requires a JSON array, even when this command has one semantic
+      // change record.
+      await client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)", [organizationId, reservation.request.id, operation, result.eventType, resourceType, resourceId, principal.kind, principalSubject(principal), staffActorId(principal) ?? null, JSON.stringify([result.changes])]);
       await this.requests.succeed(client, organizationId, reservation.request.id, { resourceType, resourceId, resultJson: { resourceId } });
       await client.query("COMMIT");
       return (result.resourceId ?? undefined) as T extends { resourceId: string } ? string : void;

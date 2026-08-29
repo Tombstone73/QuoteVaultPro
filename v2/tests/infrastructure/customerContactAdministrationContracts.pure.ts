@@ -14,6 +14,7 @@ assert.match(service, /Select another Primary Contact before deactivating/);
 assert.match(service, /customer_portal_access/);
 assert.match(service, /PostgresOperationRequestRepository/);
 assert.match(service, /v2_audit_events/);
+assert.match(service, /JSON\.stringify\(\[result\.changes\]\)/);
 assert.match(service, /crm_revision=crm_revision\+1/);
 assert.match(service, /organization_id=\$1 AND customer_id=\$2 AND contact_id=\$3/);
 assert.match(reader, /contactReadiness/);
