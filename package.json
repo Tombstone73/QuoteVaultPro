@@ -129,6 +129,7 @@
     "qa:provision-dev-user": "tsx scripts/qa/provisionDevQaUser.ts",
     "v2:qa:provision-quote-artwork": "tsx scripts/qa/provisionDevQaQuoteArtwork.ts",
     "v2:qa:provision-quote-artwork:guard": "tsx v2/tests/infrastructure/devQaQuoteArtworkProvisioningGuard.pure.ts",
+    "v2:quote-artwork:http:pure": "tsx v2/tests/interfaces/quoteArtworkHttpProjection.pure.ts",
     "seed:invoice-smoke": "tsx scripts/dev/seedInvoiceSmoke.ts",
     "dev:portal-validate": "tsx scripts/dev/validatePortalValidation.ts",
     "dev:portal-stripe-validate": "tsx scripts/dev/validatePortalStripePayment.ts",

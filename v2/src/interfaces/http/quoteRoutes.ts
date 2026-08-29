@@ -168,8 +168,12 @@ const uiResult = (value: QuoteOperationResult) => ({
   ...(value.checkpointId ? { checkpointId: value.checkpointId } : {}),
 });
 /** Never expose a private storage key or provider object reference to the browser. */
-const quoteArtworkForUi = (value: readonly import("../../modules/artwork/quoteArtworkApplication.js").QuoteArtworkProjection[]) => value.map(({ assignment, file }) => ({
-  assignment,
+export const quoteArtworkForUi = (value: readonly import("../../modules/artwork/quoteArtworkApplication.js").QuoteArtworkProjection[]) => value.map(({ assignment, file }) => ({
+  // The list contract predates the mutation response and calls this durable
+  // Quote-line relationship an "association". Keep that projection stable;
+  // otherwise populated Quote Artwork panels dereference `undefined` while
+  // empty panels appear healthy.
+  association: assignment,
   file: {
     id: file.id, organizationId: file.organizationId, originalFilename: file.originalFilename,
     displayFilename: file.displayFilename, contentType: file.contentType, byteSize: file.byteSize,
