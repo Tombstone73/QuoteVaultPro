@@ -15,6 +15,12 @@ const address = (value: Readonly<{ lines: readonly string[]; city?: string; regi
 };
 const initials = (value: string) => value.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "C";
 const contactSummary = (customer: CustomerCatalogItem) => customer.primaryContact?.displayName ?? unavailable;
+/** Preserve the API's typed, safe operator message instead of flattening
+ * actionable validation/conflict outcomes into a generic availability error. */
+const mutationErrorMessage = (error: unknown, fallback: string) =>
+  typeof error === "object" && error !== null && "message" in error && typeof (error as { message?: unknown }).message === "string"
+    ? (error as { message: string }).message
+    : fallback;
 
 const SummaryCard = ({ title, count, children }: Readonly<{ title: string; count?: string; children: React.ReactNode }>) => <section className="v2-customer-summary-card">
   <header><h2>{title}</h2>{count && <span>{count}</span>}<i aria-hidden /></header>
@@ -140,7 +146,7 @@ const ContactCreateForm = ({ organizationId, sessionScope, customerId, customerR
     <label>Phone <input value={phone} maxLength={50} onChange={(event) => setPhone(event.target.value)} /></label>
     <label>Title <input value={title} maxLength={100} onChange={(event) => setTitle(event.target.value)} /></label>
     <button type="submit" disabled={create.isPending}>{create.isPending ? "Creating…" : "Create Contact"}</button><button type="button" onClick={() => setCreating(false)}>Cancel</button>
-    {create.isError && <p role="alert">Contact creation is unavailable.</p>}
+    {create.isError && <p role="alert">{mutationErrorMessage(create.error, "Contact creation is unavailable.")}</p>}
   </form> : <button type="button" onClick={() => setCreating(true)}>Add Contact</button>}</>;
 };
 
