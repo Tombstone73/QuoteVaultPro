@@ -19,7 +19,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 type Mode = "discover" | "quote-initial" | "quote-front-replacement" | "order-front-replacement";
 type Args = Readonly<{ mode: Mode; organizationId: string; quoteId: string; lineAId?: string; lineBId?: string; orderId?: string; orderLineId?: string }>;
 type QuoteRow = Readonly<{ id: string; organization_id: string; display_number: string; purchase_order_number: string | null; customer_display_name: string | null; revision: string; delivery_state: string; acceptance_state: string; lifecycle_state: string }>;
-type LineRow = Readonly<{ id: string; description: string; position: number }>;
+type LineRow = Readonly<{ id: string; description: string; position: number; dimensions: string | null; print_side: string | null }>;
 
 const fixtureNames = {
   lineAFront: "QA_ART_LINE_A_FRONT.pdf",
@@ -78,8 +78,11 @@ async function main(): Promise<void> {
       JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id
       WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'`, [args.organizationId, args.quoteId])).rows[0];
     if (!quote || quote.organization_id !== args.organizationId || quote.purchase_order_number !== QA_PO || !quote.customer_display_name?.startsWith("DEV QA -")) throw new Error("Target Quote is not the explicitly labelled DEV QA fixture.");
-    const lines = (await pool.query<LineRow>("SELECT id,description,position FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position,id", [args.organizationId, args.quoteId])).rows;
-    safe({ ok: true, quote: { id: quote.id, number: quote.display_number, revision: quote.revision }, candidateLines: lines.map((line) => ({ id: line.id, description: line.description, position: line.position })) });
+    const lines = (await pool.query<LineRow>("SELECT id,description,position,resolved_configuration->'presentation'->>'dimensions' AS dimensions,resolved_configuration->'selections'->>'print_side' AS print_side FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position,id", [args.organizationId, args.quoteId])).rows;
+    // This identifies candidate lines using frozen Quote configuration facts,
+    // rather than treating the visual line order as an identity. The apply
+    // modes still require those exact IDs to be supplied explicitly.
+    safe({ ok: true, quote: { id: quote.id, number: quote.display_number, revision: quote.revision }, candidateLines: lines.map((line) => ({ id: line.id, description: line.description, dimensions: line.dimensions, printSide: line.print_side })) });
     if (args.mode === "discover") return;
     const lineIds = new Set(lines.map((line) => line.id));
     if (!lineIds.has(args.lineAId!)) throw new Error("line-a-id does not belong to the supplied QA Quote.");
