@@ -66,7 +66,10 @@ assert.doesNotMatch(provider, /const paymentRefNum = `PHV2-\$\{input\.paymentId\
 assert.match(provider, /syncV2RefundCreditMemoToQuickBooks/);
 assert.match(provider, /syncV2RefundDisbursementToQuickBooks/);
 assert.match(provider, /\/creditmemo/);
-assert.match(provider, /\/check/);
+assert.match(provider, /\/purchase/);
+assert.match(provider, /PaymentType: "Check"/);
+assert.match(provider, /AccountRef: \{ value: bankAccountId \}/);
+assert.match(provider, /FROM Purchase WHERE DocNumber/);
 assert.doesNotMatch(provider, /\/refundreceipt/iu);
 assert.match(provider, /getQuickBooksRefundDisbursementConfiguration/);
 assert.match(provider, /resolveQuickBooksRefundReceivableAccount/);

@@ -1411,14 +1411,15 @@ export async function syncV2RefundCreditMemoToQuickBooks(input: Readonly<{ organ
   }
 }
 
-/** Check is the cash/bank disbursement half.  It posts its line to the same
- * customer A/R account as the original QuickBooks Invoice, so it reconciles
- * the CreditMemo without mutating either the original Invoice or Payment. */
+/** A QuickBooks Purchase with PaymentType=Check is the cash/bank disbursement
+ * half. It posts its line to the same customer A/R account as the original
+ * QuickBooks Invoice, so it reconciles the CreditMemo without mutating either
+ * the original Invoice or Payment. */
 export async function syncV2RefundDisbursementToQuickBooks(input: Readonly<{ organizationId: string; refundId: string; quickBooksDisbursementId?: string; quickBooksCreditMemoId: string; quickBooksInvoiceId: string; quickBooksPaymentId: string; quickBooksCustomerId: string; amountCents: number; currency: string; occurredAt: string }>): Promise<{ qbDisbursementId: string }> {
   if (input.quickBooksDisbursementId) {
-    const existing = await makeQBRequest("GET", `/check/${input.quickBooksDisbursementId}`, undefined, input.organizationId);
-    if (!existing?.Check?.Id) throw new Error("QuickBooks Refund disbursement link could not be resolved.");
-    return { qbDisbursementId: String(existing.Check.Id) };
+    const existing = await makeQBRequest("GET", `/purchase/${input.quickBooksDisbursementId}`, undefined, input.organizationId);
+    if (!existing?.Purchase?.Id || existing.Purchase.PaymentType !== "Check") throw new Error("QuickBooks Refund disbursement link could not be resolved.");
+    return { qbDisbursementId: String(existing.Purchase.Id) };
   }
   // The existing refund CreditMemo is the most authoritative provider-side
   // A/R fact for this workflow. Some QBO Invoice reads omit their default A/R
@@ -1432,19 +1433,19 @@ export async function syncV2RefundDisbursementToQuickBooks(input: Readonly<{ org
   if (!arAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_AR_ACCOUNT_REQUIRED: QuickBooks did not expose a deterministic A/R account for this refund disbursement."); error.statusCode = 409; throw error; }
   if (!bankAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_ACCOUNT_CONFIGURATION_REQUIRED: Select a refund disbursement account in QuickBooks Settings before posting this refund."); error.statusCode = 409; throw error; }
   const docNumber = v2RefundReference(input.refundId, "PHRC");
-  const query = `SELECT Id, PayeeRef FROM Check WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
-  const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Check ?? [];
-  const existing = candidates.find((item: any) => String(item?.PayeeRef?.value || "") === input.quickBooksCustomerId);
+  const query = `SELECT Id, EntityRef, PaymentType FROM Purchase WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
+  const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Purchase ?? [];
+  const existing = candidates.find((item: any) => item?.PaymentType === "Check" && String(item?.EntityRef?.value || "") === input.quickBooksCustomerId);
   if (existing?.Id) return { qbDisbursementId: String(existing.Id) };
-  if (candidates.length) { const error: any = new Error("QUICKBOOKS_REFUND_REVIEW_REQUIRED: A different QuickBooks payee already uses this V2 Refund disbursement reference."); error.statusCode = 409; throw error; }
+  if (candidates.length) { const error: any = new Error("QUICKBOOKS_REFUND_REVIEW_REQUIRED: A different QuickBooks Purchase already uses this V2 Refund disbursement reference."); error.statusCode = 409; throw error; }
   const amount = exactCents(input.amountCents);
-  const payload = { PayeeRef: { value: input.quickBooksCustomerId, type: "Customer" }, BankAccountRef: { value: bankAccountId }, DocNumber: docNumber, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PrivateNote: `PrintersHero V2 refund ${input.refundId}; CreditMemo ${input.quickBooksCreditMemoId}`, Line: [{ Amount: amount, DetailType: "AccountBasedExpenseLineDetail", AccountBasedExpenseLineDetail: { AccountRef: { value: arAccountId }, CustomerRef: { value: input.quickBooksCustomerId } } }] };
+  const payload = { PaymentType: "Check", AccountRef: { value: bankAccountId }, EntityRef: { value: input.quickBooksCustomerId, type: "Customer" }, DocNumber: docNumber, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PrivateNote: `PrintersHero V2 refund ${input.refundId}; CreditMemo ${input.quickBooksCreditMemoId}`, Line: [{ Amount: amount, DetailType: "AccountBasedExpenseLineDetail", AccountBasedExpenseLineDetail: { AccountRef: { value: arAccountId }, CustomerRef: { value: input.quickBooksCustomerId } } }] };
   try {
-    const created = await makeQBRequest("POST", "/check", payload, input.organizationId);
-    if (!created?.Check?.Id) throw new Error("QuickBooks Refund disbursement create returned no Id");
-    return { qbDisbursementId: String(created.Check.Id) };
+    const created = await makeQBRequest("POST", "/purchase", payload, input.organizationId);
+    if (!created?.Purchase?.Id || created.Purchase.PaymentType !== "Check") throw new Error("QuickBooks Refund disbursement create returned no Id");
+    return { qbDisbursementId: String(created.Purchase.Id) };
   } catch (error) {
-    const resolved = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Check?.find((item: any) => String(item?.PayeeRef?.value || "") === input.quickBooksCustomerId);
+    const resolved = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Purchase?.find((item: any) => item?.PaymentType === "Check" && String(item?.EntityRef?.value || "") === input.quickBooksCustomerId);
     if (resolved?.Id) return { qbDisbursementId: String(resolved.Id) };
     throw error;
   }
