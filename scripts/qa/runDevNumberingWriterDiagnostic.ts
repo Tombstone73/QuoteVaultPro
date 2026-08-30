@@ -23,6 +23,7 @@ type Args = Readonly<{
   runId: string;
 }>;
 type DiscoverArgs = Readonly<{ mode: "discover" }>;
+type AuditArgs = Readonly<{ mode: "audit"; runId: string }>;
 type Template = Readonly<{
   productId: string;
   productName: string;
@@ -49,11 +50,12 @@ const requireIdentifier = (name: string): string => {
   if (!candidate || !stableIdentifier.test(candidate)) throw new Error(`${name} must be an explicit stable identifier.`);
   return candidate;
 };
-const parse = (): Args | DiscoverArgs => {
+const parse = (): Args | DiscoverArgs | AuditArgs => {
   if (value("qa-opt-in") !== INTENT) throw new Error("Explicit DEV QA numbering diagnostic opt-in is required.");
   if (value("mode") === "discover") return { mode: "discover" };
   const runId = value("run-id");
   if (!runId || !runIdPattern.test(runId)) throw new Error("run-id must be an explicit safe QA identifier.");
+  if (value("mode") === "audit") return { mode: "audit", runId };
   return {
     organizationId: requireIdentifier("organization-id"),
     customerId: requireUuid("customer-id"),
@@ -112,6 +114,7 @@ const legacyLineInput = (template: Template, label: string) => ({
   optionSelectionsJson: template.selections,
   specsJson: { qaDiagnostic: true, runLabel: label },
   priceBreakdown: {},
+  taxAmount: 0,
   isTaxableSnapshot: false,
   requiresPrepress: false,
   requiresProofApproval: false,
@@ -123,7 +126,7 @@ async function main(): Promise<void> {
   assertDevNumberingWriterDiagnosticEnvironment();
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 12, application_name: "dev-qa-numbering-writer-diagnostic" });
   try {
-    if ("mode" in parsed) {
+    if ("mode" in parsed && parsed.mode === "discover") {
       const [fixtures, staff] = await Promise.all([
         pool.query<{
           organization_id: string; customer_id: string; contact_id: string; source_quote_id: string; source_quote_number: string;
@@ -145,6 +148,26 @@ async function main(): Promise<void> {
           ) ORDER BY membership.organization_id,membership.user_id LIMIT 50`),
       ]);
       out({ ok: true, mode: "discover", fixtures: fixtures.rows, staff: staff.rows });
+      return;
+    }
+    if ("mode" in parsed && parsed.mode === "audit") {
+      const marker = `%${parsed.runId}%`;
+      const [legacyQuotes, legacyOrders, v2Documents] = await Promise.all([
+        pool.query<{ id: string; number: string; line_count: string }>(`SELECT q.id,COALESCE(q.display_number,CONCAT('QT-',q.quote_number::text)) AS number,count(li.id)::text AS line_count
+          FROM quotes q LEFT JOIN quote_line_items li ON li.quote_id=q.id
+          WHERE q.label LIKE $1 GROUP BY q.id,q.display_number,q.quote_number ORDER BY q.id`, [marker]),
+        pool.query<{ id: string; number: string; line_count: string }>(`SELECT o.id,COALESCE(o.display_number,CONCAT('ORD-',o.order_number::text)) AS number,count(li.id)::text AS line_count
+          FROM orders o LEFT JOIN order_line_items li ON li.order_id=o.id
+          WHERE o.label LIKE $1 GROUP BY o.id,o.display_number,o.order_number ORDER BY o.id`, [marker]),
+        pool.query<{ id: string; number: string; kind: string; line_count: string; invoice_count: string; route_count: string }>(`SELECT d.id,d.display_number AS number,d.document_kind AS kind,count(DISTINCT l.id)::text AS line_count,
+            count(DISTINCT i.id)::text AS invoice_count,count(DISTINCT r.id)::text AS route_count
+          FROM v2_sales_documents d
+          LEFT JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id
+          LEFT JOIN v2_billing_invoices i ON i.organization_id=d.organization_id AND i.sales_order_document_id=d.id
+          LEFT JOIN v2_route_instances r ON r.organization_id=d.organization_id AND r.order_document_id=d.id
+          WHERE d.purchase_order_number LIKE $1 GROUP BY d.id,d.display_number,d.document_kind ORDER BY d.document_kind,d.id`, [marker]),
+      ]);
+      out({ ok: true, mode: "audit", runId: parsed.runId, legacyQuotes: legacyQuotes.rows, legacyOrders: legacyOrders.rows, v2Documents: v2Documents.rows });
       return;
     }
     const args = parsed;
