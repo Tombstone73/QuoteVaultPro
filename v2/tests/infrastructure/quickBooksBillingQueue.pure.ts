@@ -49,5 +49,6 @@ assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "queu
 assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "legacy_jobs" }), false);
 assert.equal(quickBooksQueueFailureState({ statusCode: 409 }), "blocked");
 assert.equal(quickBooksQueueFailureState({ code: "ECONNRESET" }), "uncertain");
+assert.equal(quickBooksQueueFailureState({ code: "ETIMEDOUT" }), "uncertain");
 assert.equal(quickBooksQueueFailureState(new Error("validation failed")), "retry");
 console.log("QuickBooks V2 Billing queue contracts passed.");

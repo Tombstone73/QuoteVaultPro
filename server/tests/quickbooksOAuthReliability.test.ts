@@ -120,6 +120,15 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(makeRequestBody).toContain("replayAttempted: true");
   });
 
+  test("QuickBooks provider requests have a bounded timeout that preserves uncertain-write handling", () => {
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+    const makeRequestBody = serviceSource.slice(serviceSource.indexOf("async function makeQBRequest"), serviceSource.indexOf("async function fetchAllQuickBooksQueryPages"));
+
+    expect(makeRequestBody).toContain("const controller = new AbortController()");
+    expect(makeRequestBody).toContain("signal: controller.signal");
+    expect(makeRequestBody).toContain('timedOut.code = "ETIMEDOUT"');
+  });
+
   test("failed access token errors preserve credential manager cause and OAuth fields", () => {
     const serviceSource = readRepoFile("server/quickbooksService.ts");
     const makeRequestBody = serviceSource.slice(serviceSource.indexOf("async function makeQBRequest"), serviceSource.indexOf("async function fetchAllQuickBooksQueryPages"));

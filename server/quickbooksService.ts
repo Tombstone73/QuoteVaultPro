@@ -1025,13 +1025,32 @@ async function makeQBRequest(
     options.body = JSON.stringify(body);
   }
 
-  const sendRequest = async (token: string) => fetch(url, {
-    ...options,
-    headers: {
-      ...options.headers,
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  // A provider request that never settles must not retain a queue lease
+  // forever.  Timeouts are ambiguous provider outcomes, so callers reconcile
+  // their durable identities before any replayed write.
+  const sendRequest = async (token: string) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    try {
+      return await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          ...options.headers,
+          Authorization: `Bearer ${token}`,
+        },
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timedOut: any = new Error("QuickBooks provider request timed out.");
+        timedOut.code = "ETIMEDOUT";
+        throw timedOut;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
 
   let response: Response;
   try {
