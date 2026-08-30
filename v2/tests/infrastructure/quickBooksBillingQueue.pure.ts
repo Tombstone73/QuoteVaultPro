@@ -24,6 +24,8 @@ assert.match(queue, /refund_disbursement/);
 assert.match(queue, /v2_quickbooks_refund_sync_workflows/);
 assert.match(queue, /enqueueInvoices/);
 assert.match(queue, /Select between 1 and 100 issued V2 Invoices/);
+assert.match(queue, /id = ANY\(\$2::varchar\[\]\)/);
+assert.doesNotMatch(queue, /id = ANY\(\$2::uuid\[\]\)/);
 assert.match(queue, /state === "uncertain"/);
 assert.match(invoice, /enqueueV2QuickBooksSync\(this\.client,input\.organizationId,"invoice",input\.invoiceId\)/);
 assert.match(payment, /enqueueV2QuickBooksSync\(this\.client,input\.organizationId,"payment",id\)/);

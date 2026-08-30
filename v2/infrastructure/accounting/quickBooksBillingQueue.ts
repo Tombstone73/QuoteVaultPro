@@ -45,7 +45,10 @@ export class PostgresQuickBooksSyncNow {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id = ANY($2::uuid[]) AND invoice_state='issued'", [organizationId, unique]);
+      // V2 Billing IDs are durable varchar identities (even when their current
+      // generated values happen to look like UUIDs).  Keep the queue boundary
+      // typed to the canonical schema rather than coercing them to uuid[].
+      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id = ANY($2::varchar[]) AND invoice_state='issued'", [organizationId, unique]);
       if (invoice.rows.length !== unique.length) throw new Error("Only issued V2 Invoices may be synchronized to QuickBooks.");
       for (const item of unique) await enqueueV2QuickBooksSync(client, organizationId, "invoice", item);
       await client.query("COMMIT");
