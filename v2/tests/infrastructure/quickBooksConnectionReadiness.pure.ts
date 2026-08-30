@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 const service=readFileSync(resolve("server/quickbooksService.ts"),"utf8");
 const route=readFileSync(resolve("v2/src/interfaces/http/quickBooksIntegrationRoutes.ts"),"utf8");
 const ui=readFileSync(resolve("v2/ui/src/QuickBooksSettingsWorkspace.tsx"),"utf8");
+const notice=readFileSync(resolve("v2/ui/src/quickBooksIntegrationCallbackNotice.ts"),"utf8");
 
 assert.match(service,/getQuickBooksConnectionReadinessForOrganization/);
 assert.match(service,/configured === "sandbox"/);
@@ -17,7 +18,10 @@ assert.match(route,/\/connect/);
 assert.match(route,/\/disconnect/);
 assert.match(route,/createQuickBooksIntegrationCallback/);
 assert.match(route,/callbackUrl/);
+assert.match(route,/settings\?section=accounting&quickbooks=/);
 assert.match(ui,/Connect QuickBooks/);
 assert.match(ui,/Reconnect QuickBooks/);
 assert.match(ui,/Connection mode/);
+assert.match(ui,/quickBooksIntegrationCallbackNotice/);
+assert.match(notice,/quickbooks/);
 console.log("QuickBooks readiness and OAuth settings contracts passed.");

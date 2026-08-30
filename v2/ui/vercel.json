@@ -5,6 +5,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/integrations/quickbooks/callback",
+      "destination": "https://api-dev.printershero.com/api/integrations/quickbooks/callback"
+    },
+    {
       "source": "/api/email/google/callback",
       "destination": "https://api-dev.printershero.com/api/email/google/callback"
     },
