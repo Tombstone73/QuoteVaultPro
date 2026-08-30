@@ -69,6 +69,8 @@ assert.match(provider, /\/creditmemo/);
 assert.match(provider, /\/check/);
 assert.doesNotMatch(provider, /\/refundreceipt/iu);
 assert.match(provider, /getQuickBooksRefundDisbursementConfiguration/);
+assert.match(provider, /creditMemoResponse\?\.CreditMemo\?\.ARAccountRef/);
+assert.match(provider, /QUICKBOOKS_REFUND_AR_ACCOUNT_REQUIRED/);
 assert.doesNotMatch(provider, /QUICKBOOKS_REFUND_BANK_ACCOUNT_ID/);
 assert.match(refundMigration, /subject_kind IN \('invoice','payment','refund'\)/);
 assert.match(refundMigration, /v2_quickbooks_refund_sync_workflows/);

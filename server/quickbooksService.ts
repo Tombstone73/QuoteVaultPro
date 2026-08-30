@@ -1405,10 +1405,17 @@ export async function syncV2RefundDisbursementToQuickBooks(input: Readonly<{ org
     if (!existing?.Check?.Id) throw new Error("QuickBooks Refund disbursement link could not be resolved.");
     return { qbDisbursementId: String(existing.Check.Id) };
   }
-  const invoice = (await makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId))?.Invoice;
-  const arAccountId = String(invoice?.ARAccountRef?.value || process.env.QUICKBOOKS_AR_ACCOUNT_ID || "").trim();
+  // The existing refund CreditMemo is the most authoritative provider-side
+  // A/R fact for this workflow. Some QBO Invoice reads omit their default A/R
+  // reference, while CreditMemo exposes the account used for the credit.
+  const [invoiceResponse, creditMemoResponse] = await Promise.all([
+    makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId),
+    makeQBRequest("GET", `/creditmemo/${input.quickBooksCreditMemoId}`, undefined, input.organizationId),
+  ]);
+  const arAccountId = String(creditMemoResponse?.CreditMemo?.ARAccountRef?.value || invoiceResponse?.Invoice?.ARAccountRef?.value || "").trim();
   const bankAccountId = (await getQuickBooksRefundDisbursementConfiguration(input.organizationId)).account?.id ?? "";
-  if (!arAccountId || !bankAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_ACCOUNT_CONFIGURATION_REQUIRED: The original Invoice A/R account and refund bank account must be available before a refund disbursement can be posted."); error.statusCode = 409; throw error; }
+  if (!arAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_AR_ACCOUNT_REQUIRED: The linked QuickBooks Credit Memo and original Invoice did not expose an A/R account for this refund disbursement."); error.statusCode = 409; throw error; }
+  if (!bankAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_ACCOUNT_CONFIGURATION_REQUIRED: Select a refund disbursement account in QuickBooks Settings before posting this refund."); error.statusCode = 409; throw error; }
   const docNumber = v2RefundReference(input.refundId, "PHRC");
   const query = `SELECT Id, PayeeRef FROM Check WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
   const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Check ?? [];
