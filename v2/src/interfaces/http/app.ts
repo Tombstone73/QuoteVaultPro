@@ -32,7 +32,7 @@ import { createOrganizationSettingsRouter, type OrganizationSettingsHttpDependen
 import { createTeamAccessRouter, type TeamAccessHttpDependencies } from "./teamAccessRoutes.js";
 import { createDocumentNumberingSettingsRouter, type DocumentNumberingSettingsHttpDependencies } from "./documentNumberingSettingsRoutes.js";
 import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
-import { createQuickBooksIntegrationRouter, type QuickBooksIntegrationHttpDependencies } from "./quickBooksIntegrationRoutes.js";
+import { createQuickBooksIntegrationCallback, createQuickBooksIntegrationRouter, type QuickBooksIntegrationHttpDependencies } from "./quickBooksIntegrationRoutes.js";
 import { createStripeWebhookHandler } from "./stripeWebhookRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
@@ -298,6 +298,7 @@ export const createV2HttpApp = (
       (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request,response,next),
       createQuickBooksIntegrationRouter(quickBooksIntegration),
     );
+  if (quickBooksIntegration) app.get("/api/integrations/quickbooks/callback", createQuickBooksIntegrationCallback(quickBooksIntegration));
   if (order)
     app.use(
       "/v2/organizations/:organizationId/orders",

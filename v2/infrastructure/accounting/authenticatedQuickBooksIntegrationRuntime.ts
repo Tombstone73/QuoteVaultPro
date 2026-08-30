@@ -5,4 +5,4 @@ import { PostgresPermissionAuthorityReader } from "../authorization/postgresPerm
 import type { QuickBooksIntegrationHttpDependencies } from "../../src/interfaces/http/quickBooksIntegrationRoutes.js";
 import { QuickBooksIntegrationReadinessService } from "./quickBooksIntegrationReadiness.js";
 
-export const composeAuthenticatedQuickBooksIntegrationRuntime=(input:Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource}>):QuickBooksIntegrationHttpDependencies=>({integrations:new QuickBooksIntegrationReadinessService(),principals:new IssuedV2PrincipalProvider(input.trustedHostIdentity,new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)))});
+export const composeAuthenticatedQuickBooksIntegrationRuntime=(input:Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;publicWebOrigin?:string}>):QuickBooksIntegrationHttpDependencies=>({integrations:new QuickBooksIntegrationReadinessService(),principals:new IssuedV2PrincipalProvider(input.trustedHostIdentity,new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))),publicWebOrigin:input.publicWebOrigin});

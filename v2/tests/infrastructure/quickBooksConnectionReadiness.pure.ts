@@ -15,6 +15,8 @@ assert.doesNotMatch(route,/CLIENT_SECRET|refresh_token|access_token/iu);
 assert.match(route,/organization\.configure/);
 assert.match(route,/\/connect/);
 assert.match(route,/\/disconnect/);
+assert.match(route,/createQuickBooksIntegrationCallback/);
+assert.match(route,/callbackUrl/);
 assert.match(ui,/Connect QuickBooks/);
 assert.match(ui,/Reconnect QuickBooks/);
 assert.match(ui,/Connection mode/);

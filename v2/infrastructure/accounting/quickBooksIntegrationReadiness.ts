@@ -5,5 +5,10 @@ import * as quickBooks from "../../../server/quickbooksService.js";
 export class QuickBooksIntegrationReadinessService {
   async readiness(organizationId: string) { return quickBooks.getQuickBooksConnectionReadinessForOrganization(organizationId); }
   async beginConnect(organizationId: string) { return { authorizeUrl: await quickBooks.getAuthorizationUrlForOrganization(organizationId) }; }
+  async finishConnect(input: Readonly<{ state: string; code: string; realmId: string; callbackUrl: string }>): Promise<void> {
+    const parsed = quickBooks.parseOAuthState(input.state);
+    if (!parsed?.organizationId || !input.code || !input.realmId) throw new Error("QuickBooks OAuth callback state is invalid or expired.");
+    await quickBooks.exchangeCodeForTokens(input.callbackUrl, input.realmId, parsed.organizationId);
+  }
   async disconnect(organizationId: string) { await quickBooks.disconnectConnectionForOrganization(organizationId); return this.readiness(organizationId); }
 }
