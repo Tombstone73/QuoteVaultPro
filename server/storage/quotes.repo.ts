@@ -626,6 +626,19 @@ export class QuotesRepository {
         validUntil?: string | Date | null;
         lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
     }): Promise<QuoteWithRelations> {
+        return this.dbInstance.transaction(async (executor) => this.createQuoteWithinTransaction(organizationId, data, executor));
+    }
+
+    /**
+     * Keep the header allocation, every line write, and temporary-line adoption
+     * in one transaction.  A failed line write must not leave a numbered Quote
+     * header behind.
+     */
+    private async createQuoteWithinTransaction(
+        organizationId: string,
+        data: Parameters<QuotesRepository["createQuote"]>[1],
+        executor: any,
+    ): Promise<QuoteWithRelations> {
         // Calculate totals from line items
         const lineItemsInput = (data.lineItems ?? []).map((item) => {
             const preparedItem = {
@@ -637,9 +650,8 @@ export class QuotesRepository {
         const subtotal = lineItemsInput.reduce((sum, item) => sum + parseFloat(item.linePrice.toString()), 0);
         const totalPrice = subtotal; // Will be updated if tax is applied
 
-        // Create quote in a transaction to handle quote numbering
-        const newQuote = await this.dbInstance.transaction(async (tx) => {
-            const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
+        const newQuote = await (async () => {
+            const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", executor);
             const quoteNumber = numberCore;
 
             // Create the parent quote with tax fields
@@ -690,10 +702,10 @@ export class QuotesRepository {
                 validUntil: data.validUntil ?? null,
             } as typeof quotes.$inferInsert;
 
-            const [quote] = await tx.insert(quotes).values(quoteData).returning();
+            const [quote] = await executor.insert(quotes).values(quoteData).returning();
 
             return quote;
-        }).catch((error) => {
+        })().catch((error) => {
             if (isDocumentNumberUniqueViolation(error)) throw toDocumentNumberConflictError(error);
             throw error;
         });
@@ -713,8 +725,9 @@ export class QuotesRepository {
         const designConfigMap = await this.getDesignConfigMap(
             organizationId,
             Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean))),
+            executor,
         );
-        const [orgForProofPolicy] = await this.dbInstance
+        const [orgForProofPolicy] = await executor
             .select({ settings: organizations.settings })
             .from(organizations)
             .where(eq(organizations.id, organizationId))
@@ -724,7 +737,7 @@ export class QuotesRepository {
         // Snapshot requiresProofApproval from product so conversion is not sensitive to later product edits.
         const newLineItemProductIds = Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean)));
         const proofApprovalRows = newLineItemProductIds.length > 0
-            ? await this.dbInstance
+            ? await executor
                 .select({ id: products.id, requiresProofApproval: products.requiresProofApproval })
                 .from(products)
                 .where(inArray(products.id, newLineItemProductIds as [string, ...string[]]))
@@ -795,7 +808,7 @@ export class QuotesRepository {
         });
 
         const createdLineItems = lineItemsData.length
-            ? await this.dbInstance.insert(quoteLineItems).values(lineItemsData).returning()
+            ? await executor.insert(quoteLineItems).values(lineItemsData).returning()
             : [];
         
         // Link existing line items to this quote
@@ -804,7 +817,7 @@ export class QuotesRepository {
         // This prevents accidentally stealing line items from other quotes.
         let linkedLineItems: QuoteLineItem[] = [];
         if (existingLineItemIds.length > 0) {
-            const existingLineItems = await this.dbInstance
+            const existingLineItems = await executor
                 .select()
                 .from(quoteLineItems)
                 .where(
@@ -819,12 +832,13 @@ export class QuotesRepository {
                 const existingConfigMap = await this.getDesignConfigMap(
                     organizationId,
                     Array.from(new Set(existingLineItems.map((item) => item.productId).filter(Boolean))),
+                    executor,
                 );
 
                 // Snapshot requiresProofApproval for the temp items being linked.
                 const existingProductIds = Array.from(new Set(existingLineItems.map((item) => item.productId).filter(Boolean)));
                 const existingProofApprovalRows = existingProductIds.length > 0
-                    ? await this.dbInstance
+                    ? await executor
                         .select({ id: products.id, requiresProofApproval: products.requiresProofApproval })
                         .from(products)
                         .where(inArray(products.id, existingProductIds as [string, ...string[]]))
@@ -844,7 +858,7 @@ export class QuotesRepository {
                         proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
                     });
 
-                    const [updatedExistingLineItem] = await this.dbInstance
+                    const [updatedExistingLineItem] = await executor
                         .update(quoteLineItems)
                         .set({
                             quoteId: newQuote.id,
@@ -887,10 +901,10 @@ export class QuotesRepository {
         // Fetch user and product details for line items
         const lineItemsWithRelations = await Promise.all(
             allLineItems.map(async (lineItem) => {
-                const [product] = await this.dbInstance.select().from(products).where(eq(products.id, lineItem.productId));
+                const [product] = await executor.select().from(products).where(eq(products.id, lineItem.productId));
                 let variant = null;
                 if (lineItem.variantId) {
-                    [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+                    [variant] = await executor.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
                 }
                 return {
                     ...enrichLineItemWithEffectivePricing(lineItem as any),
@@ -900,7 +914,7 @@ export class QuotesRepository {
             })
         );
 
-        const [user] = await this.dbInstance.select().from(users).where(eq(users.id, newQuote.userId));
+        const [user] = await executor.select().from(users).where(eq(users.id, newQuote.userId));
 
         return {
             ...newQuote,

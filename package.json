@@ -131,6 +131,7 @@
     "v2:qa:provision-quote-artwork:guard": "tsx v2/tests/infrastructure/devQaQuoteArtworkProvisioningGuard.pure.ts",
     "v2:qa:numbering-writer-diagnostic": "tsx scripts/qa/runDevNumberingWriterDiagnostic.ts",
     "v2:qa:numbering-writer-diagnostic:guard": "tsx v2/tests/infrastructure/devNumberingWriterDiagnosticGuard.pure.ts",
+    "v2:quote:create-atomicity:pure": "tsx v2/tests/infrastructure/legacyQuoteCreateAtomicity.pure.ts",
     "v2:quote-artwork:http:pure": "tsx v2/tests/interfaces/quoteArtworkHttpProjection.pure.ts",
     "v2:quote-artwork:conversion-sql:pure": "tsx v2/tests/infrastructure/quoteArtworkConversionSql.pure.ts",
     "seed:invoice-smoke": "tsx scripts/dev/seedInvoiceSmoke.ts",

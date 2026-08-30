@@ -107,7 +107,7 @@ const sourceLineInput = (template: Template) => ({
   ...(template.dimensions ? { dimensions: template.dimensions } : {}),
   selling: { kind: "calculated" as const },
 });
-const legacyLineInput = (template: Template, label: string) => ({
+const legacyLineInput = (template: Template, label: string, omitTaxAmount = false) => ({
   productId: template.productId,
   productName: template.productName,
   productType: template.productTypeId ?? "wide_roll",
@@ -120,7 +120,7 @@ const legacyLineInput = (template: Template, label: string) => ({
   optionSelectionsJson: template.selections,
   specsJson: { qaDiagnostic: true, runLabel: label },
   priceBreakdown: {},
-  taxAmount: 0,
+  ...(!omitTaxAmount ? { taxAmount: 0 } : {}),
   isTaxableSnapshot: false,
   requiresPrepress: false,
   requiresProofApproval: false,
@@ -222,15 +222,16 @@ async function main(): Promise<void> {
     const orderService = new OrderApplicationService(new PostgresOrderTransactionRunner(pool));
     const request = (kind: string) => `nwd:${args.runId}:${kind}`;
 
-    const createCompatibilityQuote = async (suffix: string): Promise<Created> => {
+    const createCompatibilityQuote = async (suffix: string, omitTaxAmount = false): Promise<Created> => {
+      const label = `${QA_PREFIX} Quote ${args.runId} ${suffix}`;
       const quote = await storage.createQuote(args.organizationId, {
         userId: args.staffUserId,
         customerId: args.customerId,
         contactId: args.contactId,
         source: "dev_numbering_writer_diagnostic",
         status: "draft",
-        label: `${QA_PREFIX} Quote ${args.runId} ${suffix}`,
-        lineItems: [legacyLineInput(template, `${QA_PREFIX} Quote ${args.runId} ${suffix}`)] as any,
+        label,
+        lineItems: [legacyLineInput(template, label, omitTaxAmount)] as any,
       });
       if (!quote.id || !quote.displayNumber) fail("Compatibility Quote writer did not return a persisted document identity.");
       return { writer: "compatibility", id: quote.id, number: quote.displayNumber };
@@ -272,6 +273,22 @@ async function main(): Promise<void> {
       if (!result.ok) throw result.error;
       return { writer: "v2", id: result.value.order.order.orderId, number: result.value.order.number.display };
     };
+
+    const rollbackProbeLabel = `${QA_PREFIX} Quote ${args.runId} rb`;
+    const rollbackProbeBefore = await readCounter("quote");
+    let rollbackProbeRejected = false;
+    try {
+      await createCompatibilityQuote("rb", true);
+    } catch {
+      rollbackProbeRejected = true;
+    }
+    const [rollbackProbeAfter, rollbackProbeRows] = await Promise.all([
+      readCounter("quote"),
+      pool.query<{ count: string }>("SELECT count(*)::text AS count FROM quotes WHERE organization_id=$1 AND label=$2", [args.organizationId, rollbackProbeLabel]),
+    ]);
+    if (!rollbackProbeRejected || rollbackProbeAfter.next !== rollbackProbeBefore.next || rollbackProbeRows.rows[0]?.count !== "0") {
+      fail("Compatibility Quote rollback probe did not atomically reject the invalid line without persisting a header or consuming a number.");
+    }
 
     const compatibilityQuote = await createCompatibilityQuote("c");
     const followingV2Quote = await createV2Quote("v");
@@ -323,6 +340,7 @@ async function main(): Promise<void> {
       ok: true,
       runId: args.runId,
       baseline: { quote: baselineQuote, order: baselineOrder },
+      compatibilityFailureRollback: { rejected: true, counterUnchanged: true, noPersistedQuoteHeader: true },
       quotes: { compatibility: compatibilityQuote, followingV2: followingV2Quote, replay: { first: quoteReplayFirst, second: quoteReplaySecond, sameResult: true }, concurrent: [concurrentCompatibilityQuote, concurrentV2Quote] },
       orders: { compatibility: compatibilityOrder, followingV2: followingV2Order, replay: { first: orderReplayFirst, second: orderReplaySecond, sameResult: true }, concurrent: [concurrentCompatibilityOrder, concurrentV2Order] },
       final: { quote: finalQuote, order: finalOrder },
