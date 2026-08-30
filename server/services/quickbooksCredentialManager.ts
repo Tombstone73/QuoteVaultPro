@@ -313,6 +313,12 @@ export function classifyQuickBooksCredentialError(error: unknown): QuickBooksCre
     serialized = JSON.stringify(error).toLowerCase();
   } catch {}
   const haystack = `${message} ${serialized}`;
+  // Intuit's SDK can surface an invalid refresh grant only as its human
+  // readable description (without the OAuth `invalid_grant` field).  This is
+  // still an authorization failure, never a retryable provider outage.
+  if (haystack.includes("refresh token is invalid") || haystack.includes("refresh token has expired") || haystack.includes("refresh token expired")) {
+    return "invalid_grant";
+  }
   if (haystack.includes("invalid_client") || haystack.includes("invalid client") || haystack.includes("client_secret")) {
     return "invalid_client";
   }

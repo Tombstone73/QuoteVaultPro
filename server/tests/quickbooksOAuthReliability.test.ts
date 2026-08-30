@@ -62,6 +62,7 @@ describe("QuickBooks OAuth credential reliability", () => {
   test("classifies invalid grants separately from transient refresh failures", () => {
     expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_grant" } } })).toBe("invalid_grant");
     expect(classifyQuickBooksCredentialError(new Error("invalid_grant"))).toBe("unknown");
+    expect(classifyQuickBooksCredentialError(new Error("The Refresh token is invalid, please Authorize again."))).toBe("invalid_grant");
     expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_client" } } })).toBe("invalid_client");
     expect(classifyQuickBooksCredentialError({ status: 503, message: "Service unavailable" })).toBe("transient_api_failure");
     expect(classifyQuickBooksCredentialError(new Error("request timeout"))).toBe("network_failure");
