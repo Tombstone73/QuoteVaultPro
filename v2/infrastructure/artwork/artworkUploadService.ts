@@ -5,6 +5,7 @@ import { ArtworkApplicationService } from "../../src/modules/artwork/artworkAppl
 import type { ArtworkMutationResult, ArtworkPurpose, ArtworkSide } from "../../src/modules/artwork/contracts.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 import type { ArtworkBinaryStorage } from "./artworkBinaryStorage.js";
+import type { ArtworkStorageUploadLedger } from "./artworkStorageUploadLedger.js";
 
 export type ArtworkUploadInput = Readonly<{
   businessRequestId: string;
@@ -32,7 +33,7 @@ const validSide = (value: string | undefined): value is ArtworkSide => value ===
 
 /** Binary ingestion is deliberately thin: storage creates an object, then Artwork adopts it through its existing authority and assignment rules. */
 export class ArtworkUploadService {
-  constructor(private readonly artwork: ArtworkApplicationService, private readonly storage: ArtworkBinaryStorage) {}
+  constructor(private readonly artwork: ArtworkApplicationService, private readonly storage: ArtworkBinaryStorage, private readonly uploads: ArtworkStorageUploadLedger) {}
 
   async upload(context: OperationContext, input: ArtworkUploadInput): Promise<ApplicationResult<ArtworkMutationResult>> {
     return this.persist(context, input, false);
@@ -58,7 +59,13 @@ export class ArtworkUploadService {
 
       const checksum = createHash("sha256").update(input.bytes).digest("hex");
       const objectKey = `v2-artwork/${context.organizationId}/${checksum}.pdf`;
+      // This durable record is deliberately written before bytes leave the
+      // process. A crash after put() is therefore recoverable without bucket
+      // listing or browser state.
+      const objectAlreadyExists = await this.storage.exists(objectKey);
+      const upload = await this.uploads.reserve({ organizationId: context.organizationId, storageProvider: "supabase", objectKey, requestIdentity: input.businessRequestId, expectedChecksumSha256: checksum, expectedContentType: input.contentType, expectedByteSize: input.bytes.length, objectExpectedToBeCreated: !objectAlreadyExists });
       const stored = await this.storage.put({ organizationId: context.organizationId, objectKey, contentType: input.contentType, bytes: input.bytes });
+      await this.uploads.markStored({ organizationId: context.organizationId, intentId: upload.id, objectCreatedByIntent: stored.created });
       const common = {
         businessRequestId: input.businessRequestId,
         objectReference: { storageProvider: stored.storageProvider, objectKey: stored.objectKey },
@@ -77,7 +84,11 @@ export class ArtworkUploadService {
       const result = replacement
         ? await this.artwork.replace(context, { ...common, supersedesArtworkAssignmentId: brandedId<"ArtworkAssignmentId">(input.supersedesArtworkAssignmentId!) })
         : await this.artwork.adopt(context, common);
-      if (!result.ok && stored.created) await this.storage.remove(stored.objectKey).catch(() => undefined);
+      if (result.ok) await this.uploads.markAdopted({ organizationId: context.organizationId, intentId: upload.id, artworkFileId: result.value.artworkFile.id });
+      if (!result.ok && stored.created) {
+        try { await this.storage.remove(stored.objectKey); await this.uploads.markCleaned({ organizationId: context.organizationId, intentId: upload.id }); }
+        catch { await this.uploads.markCleanupPending({ organizationId: context.organizationId, intentId: upload.id, errorCode: "immediate_delete_failed" }); }
+      }
       return result;
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("RETRYABLE_FAILURE", "Artwork storage is unavailable."));

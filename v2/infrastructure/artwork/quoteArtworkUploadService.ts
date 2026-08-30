@@ -5,6 +5,7 @@ import { brandedId } from "../../src/modules/shared/commercialValues.js";
 import { QuoteArtworkApplicationService, type QuoteArtworkMutationResult } from "../../src/modules/artwork/quoteArtworkApplication.js";
 import type { ArtworkPurpose, ArtworkSide } from "../../src/modules/artwork/contracts.js";
 import type { ArtworkBinaryStorage } from "./artworkBinaryStorage.js";
+import type { ArtworkStorageUploadLedger } from "./artworkStorageUploadLedger.js";
 
 export type QuoteArtworkUploadInput = Readonly<{ businessRequestId:string; expectedRevision:string; quoteId:string; quoteLineId:string; purpose:ArtworkPurpose; side?:ArtworkSide; sourcePageIndex?:number; layerKey?:string; layerOrder?:number; filename:string; contentType:string; bytes:Buffer }>;
 const max = 10 * 1024 * 1024;
@@ -12,7 +13,7 @@ const filename = (value:string) => { const clean=value.replace(/[\\/]/gu,"_").re
 
 /** Same private PDF ingestion path as Order artwork; only the business association differs. */
 export class QuoteArtworkUploadService {
-  constructor(private readonly artwork:QuoteArtworkApplicationService,private readonly storage:ArtworkBinaryStorage) {}
+  constructor(private readonly artwork:QuoteArtworkApplicationService,private readonly storage:ArtworkBinaryStorage,private readonly uploads:ArtworkStorageUploadLedger) {}
   async upload(context:OperationContext,input:QuoteArtworkUploadInput):Promise<ApplicationResult<QuoteArtworkMutationResult>> {
     try {
       const display=filename(input.filename);
@@ -20,9 +21,13 @@ export class QuoteArtworkUploadService {
       if(!["customer_supplied","production","proof","reference"].includes(input.purpose)|| (input.side!==undefined&&input.side!=="front"&&input.side!=="back"))throw new V2ApplicationError("VALIDATION_ERROR","Artwork usage is invalid.");
       if(!input.bytes.length||input.bytes.length>max||input.contentType!=="application/pdf"||input.bytes.subarray(0,5).toString("ascii")!=="%PDF-")throw new V2ApplicationError("VALIDATION_ERROR","Only valid PDF Artwork files up to 10 MB are supported.");
       const checksum=createHash("sha256").update(input.bytes).digest("hex"); const objectKey=`v2-artwork/${context.organizationId}/${checksum}.pdf`;
+      const objectAlreadyExists=await this.storage.exists(objectKey);
+      const upload=await this.uploads.reserve({organizationId:context.organizationId,storageProvider:"supabase",objectKey,requestIdentity:input.businessRequestId,expectedChecksumSha256:checksum,expectedContentType:input.contentType,expectedByteSize:input.bytes.length,objectExpectedToBeCreated:!objectAlreadyExists});
       const stored=await this.storage.put({organizationId:context.organizationId,objectKey,contentType:input.contentType,bytes:input.bytes});
+      await this.uploads.markStored({organizationId:context.organizationId,intentId:upload.id,objectCreatedByIntent:stored.created});
       const result=await this.artwork.adopt(context,{businessRequestId:input.businessRequestId,expectedRevision:input.expectedRevision,objectReference:{storageProvider:stored.storageProvider,objectKey:stored.objectKey},originalFilename:display,displayFilename:display,contentType:input.contentType,byteSize:input.bytes.length,checksum:{algorithm:"sha256",value:checksum},source:"customer_upload",usage:{quoteId:brandedId<"QuoteId">(input.quoteId),quoteLineId:brandedId<"SalesLineId">(input.quoteLineId),purpose:input.purpose,...(input.side?{side:input.side}:{}),...(input.sourcePageIndex!==undefined?{sourcePageIndex:input.sourcePageIndex}:{}),...(input.layerKey!==undefined?{layerKey:input.layerKey,layerOrder:input.layerOrder!}:{})}});
-      if(!result.ok&&stored.created)await this.storage.remove(stored.objectKey).catch(()=>undefined);
+      if(result.ok)await this.uploads.markAdopted({organizationId:context.organizationId,intentId:upload.id,artworkFileId:result.value.artworkFile.id});
+      if(!result.ok&&stored.created){try{await this.storage.remove(stored.objectKey);await this.uploads.markCleaned({organizationId:context.organizationId,intentId:upload.id});}catch{await this.uploads.markCleanupPending({organizationId:context.organizationId,intentId:upload.id,errorCode:"immediate_delete_failed"});}}
       return result;
     } catch(cause) { return failure(cause instanceof V2ApplicationError?cause:new V2ApplicationError("RETRYABLE_FAILURE","Artwork storage is unavailable.")); }
   }

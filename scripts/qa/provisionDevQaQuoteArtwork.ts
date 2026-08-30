@@ -10,6 +10,7 @@ import { brandedId } from "../../v2/src/modules/shared/commercialValues.js";
 import { PostgresArtworkTransactionRunner } from "../../v2/infrastructure/artwork/postgresArtworkTransaction.js";
 import { PostgresQuoteArtworkTransactionRunner } from "../../v2/infrastructure/artwork/postgresQuoteArtworkTransaction.js";
 import { ArtworkUploadService } from "../../v2/infrastructure/artwork/artworkUploadService.js";
+import { PostgresArtworkStorageUploadLedger } from "../../v2/infrastructure/artwork/artworkStorageUploadLedger.js";
 import { QuoteArtworkUploadService } from "../../v2/infrastructure/artwork/quoteArtworkUploadService.js";
 import { ArtworkStorageUnavailableError, SupabaseArtworkBinaryStorage, type ArtworkBinaryStorage, type ArtworkStorageFailureReason } from "../../v2/infrastructure/artwork/artworkBinaryStorage.js";
 
@@ -112,8 +113,9 @@ async function main(): Promise<void> {
     const quoteService = new QuoteArtworkApplicationService(new PostgresQuoteArtworkTransactionRunner(pool));
     const orderService = new ArtworkApplicationService(new PostgresArtworkTransactionRunner(pool));
     const storage = new ObservedArtworkStorage(new SupabaseArtworkBinaryStorage());
-    const quoteUpload = new QuoteArtworkUploadService(quoteService, storage);
-    const orderUpload = new ArtworkUploadService(orderService, storage);
+    const uploads = new PostgresArtworkStorageUploadLedger(pool);
+    const quoteUpload = new QuoteArtworkUploadService(quoteService, storage, uploads);
+    const orderUpload = new ArtworkUploadService(orderService, storage, uploads);
     let revision = quote.revision;
     const ensureQuote = async (lineId: string, side: "front" | "back", filename: string, label: string, permitExisting: readonly string[]): Promise<unknown> => {
       const existing = await quoteService.list(context(args.organizationId, `read-${randomUUID()}`), brandedId<"QuoteId">(args.quoteId));

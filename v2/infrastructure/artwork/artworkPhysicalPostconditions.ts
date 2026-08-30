@@ -1,11 +1,11 @@
 import type { TransactionalClient } from "../persistence/types.js";
 
-const tables = ["v2_artwork_files", "v2_artwork_assignments"] as const;
+const tables = ["v2_artwork_files", "v2_artwork_assignments", "v2_artwork_storage_upload_intents"] as const;
 const constraints = [
   "v2_artwork_files_storage_identity_uidx", "v2_artwork_files_derived_from_tenant_fk", "v2_artwork_files_not_self_derived_chk",
-  "v2_artwork_assignments_order_line_identity_uidx", "v2_artwork_assignments_file_tenant_fk", "v2_artwork_assignments_order_tenant_fk", "v2_artwork_assignments_order_line_tenant_fk", "v2_artwork_assignments_supersedes_tenant_fk",
+  "v2_artwork_assignments_order_line_identity_uidx", "v2_artwork_assignments_file_tenant_fk", "v2_artwork_assignments_order_tenant_fk", "v2_artwork_assignments_order_line_tenant_fk", "v2_artwork_assignments_supersedes_tenant_fk", "v2_artwork_storage_upload_intents_file_tenant_fk",
 ] as const;
-const indexes = ["v2_artwork_files_org_created_idx", "v2_artwork_assignments_org_order_line_idx", "v2_artwork_assignments_org_file_idx", "v2_artwork_assignments_one_successor_uidx", "v2_artwork_assignments_org_successor_idx"] as const;
+const indexes = ["v2_artwork_files_org_created_idx", "v2_artwork_assignments_org_order_line_idx", "v2_artwork_assignments_org_file_idx", "v2_artwork_assignments_one_successor_uidx", "v2_artwork_assignments_org_successor_idx", "v2_artwork_storage_upload_intents_reconcile_idx", "v2_artwork_storage_upload_intents_org_created_idx"] as const;
 
 export async function checkV2ArtworkPhysicalPostconditions(client: TransactionalClient): Promise<readonly Readonly<{ id: string; passed: boolean; detail: string }>[]> {
   const [foundTables, foundConstraints, foundIndexes, foundTriggers] = await Promise.all([

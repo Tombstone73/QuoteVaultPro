@@ -50,6 +50,7 @@ import { QuoteArtworkApplicationService } from "../../src/modules/artwork/quoteA
 import { PostgresQuoteArtworkTransactionRunner } from "../artwork/postgresQuoteArtworkTransaction.js";
 import { QuoteArtworkUploadService } from "../artwork/quoteArtworkUploadService.js";
 import { SupabaseArtworkBinaryStorage } from "../artwork/artworkBinaryStorage.js";
+import { PostgresArtworkStorageUploadLedger } from "../artwork/artworkStorageUploadLedger.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -91,7 +92,7 @@ export const composeAuthenticatedQuoteRuntime = (
       workspace: new PostgresSalesWorkspaceReads(input.pool),
       documents: new PostgresCustomerDocumentService(input.pool),
       delivery: new PostgresQuoteDeliveryService(input.pool, service),
-      artwork: { service: quoteArtwork, upload: new QuoteArtworkUploadService(quoteArtwork, new SupabaseArtworkBinaryStorage()) },
+      artwork: { service: quoteArtwork, upload: new QuoteArtworkUploadService(quoteArtwork, new SupabaseArtworkBinaryStorage(), new PostgresArtworkStorageUploadLedger(input.pool)) },
     },
     customerDependencies: (() => {
       const customers = new PostgresCustomerWorkspaceReader(input.pool);

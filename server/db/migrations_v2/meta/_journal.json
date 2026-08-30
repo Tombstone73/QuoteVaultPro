@@ -1688,6 +1688,13 @@
       "when": 1788048000092,
       "tag": "0245_v2_order_artwork_current_slot_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 247,
+      "version": "7",
+      "when": 1788048000093,
+      "tag": "0246_v2_artwork_storage_reconciliation",
+      "breakpoints": true
     }
   ]
 }

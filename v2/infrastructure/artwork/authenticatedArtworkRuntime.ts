@@ -9,6 +9,7 @@ import { PostgresArtworkTransactionRunner } from "./postgresArtworkTransaction.j
 import { PostgresArtworkWorkspaceReads } from "./postgresArtworkWorkspaceReads.js";
 import { SupabaseArtworkBinaryStorage } from "./artworkBinaryStorage.js";
 import { ArtworkUploadService } from "./artworkUploadService.js";
+import { PostgresArtworkStorageUploadLedger } from "./artworkStorageUploadLedger.js";
 
 export type AuthenticatedArtworkRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; service?: ArtworkApplicationService; upload?: ArtworkUploadService }>;
 export type AuthenticatedArtworkRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
@@ -18,7 +19,7 @@ export const composeAuthenticatedArtworkRuntime = (input: AuthenticatedArtworkRu
   const workspace = new PostgresArtworkWorkspaceReads(input.pool);
   const storage = new SupabaseArtworkBinaryStorage();
   return {
-    dependencies: { service, upload: input.upload ?? new ArtworkUploadService(service, storage), workspace, delivery: { file: async (organizationId, artworkFileId) => { const object = await workspace.objectForDelivery(organizationId, artworkFileId); return object ? { contentType: object.contentType, bytes: await storage.read(object.objectKey) } : null; } }, principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
+    dependencies: { service, upload: input.upload ?? new ArtworkUploadService(service, storage, new PostgresArtworkStorageUploadLedger(input.pool)), workspace, delivery: { file: async (organizationId, artworkFileId) => { const object = await workspace.objectForDelivery(organizationId, artworkFileId); return object ? { contentType: object.contentType, bytes: await storage.read(object.objectKey) } : null; } }, principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))) },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

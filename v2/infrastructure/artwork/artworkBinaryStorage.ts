@@ -9,6 +9,18 @@ export class ArtworkStorageUnavailableError extends Error {
   constructor(readonly reason: ArtworkStorageFailureReason) { super("Artwork storage is unavailable."); }
 }
 
+/** Provider errors are untrusted; only a status may affect safe classification. */
+export function classifyArtworkStorageFailure(error: unknown): ArtworkStorageFailureReason {
+  const status = storageErrorStatus(error);
+  return status === 401 || status === 403 ? "access_denied" : status === 404 ? "bucket_unavailable" : "upload_unavailable";
+}
+
+function storageErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("status" in error)) return undefined;
+  const status = (error as Record<string, unknown>).status;
+  return typeof status === "number" ? status : undefined;
+}
+
 export interface ArtworkBinaryStorage {
   put(input: Readonly<{ organizationId: string; objectKey: string; contentType: string; bytes: Buffer }>): Promise<StoredArtworkObject>;
   remove(objectKey: string): Promise<void>;
@@ -40,8 +52,7 @@ export class SupabaseArtworkBinaryStorage implements ArtworkBinaryStorage {
     const { error } = await this.getClient().storage.from(this.bucket).upload(input.objectKey, input.bytes, { contentType: input.contentType, upsert: false });
     if (!error) return { storageProvider: "supabase", objectKey: input.objectKey, created: true };
     if (await this.exists(input.objectKey)) return { storageProvider: "supabase", objectKey: input.objectKey, created: false };
-    const status = typeof (error as { status?: unknown }).status === "number" ? (error as { status: number }).status : undefined;
-    throw new ArtworkStorageUnavailableError(status === 401 || status === 403 ? "access_denied" : status === 404 ? "bucket_unavailable" : "upload_unavailable");
+    throw new ArtworkStorageUnavailableError(classifyArtworkStorageFailure(error));
   }
 
   async remove(objectKey: string): Promise<void> {
