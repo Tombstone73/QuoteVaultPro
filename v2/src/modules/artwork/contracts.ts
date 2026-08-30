@@ -45,6 +45,8 @@ export type ArtworkAssignment = Readonly<{
   sourcePageIndex?: number;
   layerKey?: string;
   layerOrder?: number;
+  /** The prior immutable Order assignment when this is a current replacement. */
+  supersedesArtworkAssignmentId?: ArtworkAssignmentId;
   createdAt: string;
 }>;
 
@@ -78,6 +80,13 @@ export type ArtworkFileInput = Readonly<{
 
 export type AdoptArtworkInput = ArtworkFileInput & Readonly<{
   businessRequestId: string;
+  usage: ArtworkUsageInput;
+}>;
+
+/** A new current Order artwork choice that preserves the prior assignment. */
+export type ReplaceArtworkInput = ArtworkFileInput & Readonly<{
+  businessRequestId: string;
+  supersedesArtworkAssignmentId: ArtworkAssignmentId;
   usage: ArtworkUsageInput;
 }>;
 

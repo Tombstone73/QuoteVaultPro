@@ -1674,6 +1674,20 @@
       "when": 1788048000090,
       "tag": "0243_v2_quote_order_numbering_writer_convergence",
       "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1788048000091,
+      "tag": "0244_v2_order_artwork_replacement_lineage",
+      "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1788048000092,
+      "tag": "0245_v2_order_artwork_current_slot_guard",
+      "breakpoints": true
     }
   ]
 }

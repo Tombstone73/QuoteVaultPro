@@ -4,6 +4,7 @@ import { PostgresOperationRequestRepository } from "../persistence/postgresOpera
 import type { ArtworkTransaction, ArtworkTransactionRunner } from "../../src/modules/artwork/artworkApplication.js";
 import type { ArtworkAssignment, ArtworkFile, ArtworkFileInput, OrderLineArtworkProjection } from "../../src/modules/artwork/contracts.js";
 import { brandedId, type ArtworkAssignmentId, type ArtworkFileId, type OrganizationId } from "../../src/modules/shared/commercialValues.js";
+import { V2ApplicationError } from "../../src/errors/applicationError.js";
 
 type FileRow = Readonly<{
   id: string; organization_id: string; storage_provider: string; object_key: string; object_version: string;
@@ -15,11 +16,11 @@ type FileRow = Readonly<{
 type AssignmentRow = Readonly<{
   id: string; organization_id: string; artwork_file_id: string; order_document_id: string; order_line_id: string;
   purpose: "customer_supplied" | "production" | "proof" | "reference"; side: "front" | "back" | null;
-  source_page_index: number | null; layer_key: string | null; layer_order: number | null; created_at: Date;
+  source_page_index: number | null; layer_key: string | null; layer_order: number | null; supersedes_artwork_assignment_id: string | null; created_at: Date;
 }>;
 type ProjectionRow = FileRow & Readonly<{
   assignment_id: string; assignment_organization_id: string; artwork_file_id: string; order_document_id: string; order_line_id: string;
-  purpose: AssignmentRow["purpose"]; side: AssignmentRow["side"]; source_page_index: number | null; layer_key: string | null; layer_order: number | null; assignment_created_at: Date;
+  purpose: AssignmentRow["purpose"]; side: AssignmentRow["side"]; source_page_index: number | null; layer_key: string | null; layer_order: number | null; supersedes_artwork_assignment_id: string | null; assignment_created_at: Date;
 }>;
 const file = (row: FileRow): ArtworkFile => ({
   id: brandedId<"ArtworkFileId">(row.id), organizationId: brandedId<"OrganizationId">(row.organization_id),
@@ -36,7 +37,7 @@ const assignment = (row: AssignmentRow): ArtworkAssignment => ({
   id: brandedId<"ArtworkAssignmentId">(row.id), organizationId: brandedId<"OrganizationId">(row.organization_id), artworkFileId: brandedId<"ArtworkFileId">(row.artwork_file_id),
   orderId: brandedId<"OrderId">(row.order_document_id), orderLineId: brandedId<"OrderLineId">(row.order_line_id), purpose: row.purpose,
   ...(row.side ? { side: row.side } : {}), ...(row.source_page_index !== null ? { sourcePageIndex: row.source_page_index } : {}),
-  ...(row.layer_key !== null ? { layerKey: row.layer_key } : {}), ...(row.layer_order !== null ? { layerOrder: row.layer_order } : {}), createdAt: row.created_at.toISOString(),
+  ...(row.layer_key !== null ? { layerKey: row.layer_key } : {}), ...(row.layer_order !== null ? { layerOrder: row.layer_order } : {}), ...(row.supersedes_artwork_assignment_id ? { supersedesArtworkAssignmentId: brandedId<"ArtworkAssignmentId">(row.supersedes_artwork_assignment_id) } : {}), createdAt: row.created_at.toISOString(),
 });
 
 /** One PostgreSQL client is shared with M0 reservation, attribution, and audit. */
@@ -54,12 +55,12 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     const r = await this.client.query<FileRow>("SELECT * FROM v2_artwork_files WHERE organization_id=$1 AND id=$2", [organizationId, artworkFileId]); return r.rows[0] ? file(r.rows[0]) : null;
   }
   async findOrderLineArtwork(organizationId: OrganizationId, orderLineId: string): Promise<readonly OrderLineArtworkProjection[]> {
-    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.created_at AS assignment_created_at,f.* FROM v2_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_line_id=$2 ORDER BY a.created_at,a.id", [organizationId,orderLineId]);
-    return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, created_at: row.assignment_created_at }) }));
+    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.supersedes_artwork_assignment_id,a.created_at AS assignment_created_at,f.* FROM v2_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_line_id=$2 AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) ORDER BY a.created_at,a.id", [organizationId,orderLineId]);
+    return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, supersedes_artwork_assignment_id: row.supersedes_artwork_assignment_id, created_at: row.assignment_created_at }) }));
   }
   async findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]> {
-    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.created_at AS assignment_created_at,f.* FROM v2_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_document_id=$2 ORDER BY a.order_line_id,a.created_at,a.id", [organizationId,orderId]);
-    return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, created_at: row.assignment_created_at }) }));
+    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.supersedes_artwork_assignment_id,a.created_at AS assignment_created_at,f.* FROM v2_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_document_id=$2 AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) ORDER BY a.order_line_id,a.created_at,a.id", [organizationId,orderId]);
+    return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, supersedes_artwork_assignment_id: row.supersedes_artwork_assignment_id, created_at: row.assignment_created_at }) }));
   }
   async createOrGetFile(input: Parameters<ArtworkTransaction["createOrGetFile"]>[0]): Promise<ArtworkFile> {
     const f = input.file;
@@ -80,6 +81,25 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     const existing = await this.client.query<AssignmentRow>("SELECT * FROM v2_artwork_assignments WHERE organization_id=$1 AND order_line_id=$2 AND identity_fingerprint=$3 FOR UPDATE", [input.organizationId,u.orderLineId,fingerprint]);
     if (!existing.rows[0]) throw new Error("Artwork assignment race could not reload its authoritative row.");
     return assignment(existing.rows[0]);
+  }
+  async createOrGetReplacementAssignment(input: Parameters<ArtworkTransaction["createOrGetReplacementAssignment"]>[0]): Promise<ArtworkAssignment> {
+    const u = input.usage; const semantic = JSON.stringify({ artworkFileId: input.artworkFileId, purpose: u.purpose, side: u.side ?? null, sourcePageIndex: u.sourcePageIndex ?? null, layerKey: u.layerKey ?? null, layerOrder: u.layerOrder ?? null });
+    const fingerprint = `sha256:${createHash("sha256").update(semantic).digest("hex")}`;
+    try {
+      const r = await this.client.query<AssignmentRow>(`INSERT INTO v2_artwork_assignments(id,organization_id,artwork_file_id,order_document_id,order_line_id,purpose,side,source_page_index,layer_key,layer_order,identity_fingerprint,supersedes_artwork_assignment_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(organization_id,order_line_id,identity_fingerprint) DO NOTHING RETURNING *`, [input.id,input.organizationId,input.artworkFileId,u.orderId,u.orderLineId,u.purpose,u.side ?? null,u.sourcePageIndex ?? null,u.layerKey ?? null,u.layerOrder ?? null,fingerprint,input.supersedesArtworkAssignmentId]);
+      if (r.rows[0]) return assignment(r.rows[0]);
+      const existing = await this.client.query<AssignmentRow>("SELECT * FROM v2_artwork_assignments WHERE organization_id=$1 AND order_line_id=$2 AND identity_fingerprint=$3 FOR UPDATE", [input.organizationId,u.orderLineId,fingerprint]);
+      if (!existing.rows[0]) throw new Error("Artwork replacement race could not reload its authoritative row.");
+      if (existing.rows[0].supersedes_artwork_assignment_id !== input.supersedesArtworkAssignmentId) {
+        throw new V2ApplicationError("CONFLICT", "That artwork file already belongs to a different replacement lineage; reload before replacing it.");
+      }
+      return assignment(existing.rows[0]);
+    } catch (error: unknown) {
+      const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
+      if (code === "23505" || code === "23514") throw new V2ApplicationError("CONFLICT", "Artwork has changed or has downstream workflow evidence; reload before replacing it.");
+      throw error;
+    }
   }
 }
 

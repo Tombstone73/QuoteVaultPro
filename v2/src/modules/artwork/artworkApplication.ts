@@ -6,7 +6,7 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 import { canonicalJson, brandedId, type ArtworkAssignmentId, type ArtworkFileId, type OrganizationId } from "../shared/commercialValues.js";
 import {
   validateArtworkObjectReference, validateArtworkUsage,
-  type AdoptArtworkInput, type ArtworkAssignment, type ArtworkFile, type ArtworkFileInput,
+  type AdoptArtworkInput, type ReplaceArtworkInput, type ArtworkAssignment, type ArtworkFile, type ArtworkFileInput,
   type ArtworkMutationResult, type AssignArtworkInput, type DeriveArtworkInput,
   type OrderLineArtworkProjection,
 } from "./contracts.js";
@@ -26,6 +26,7 @@ export interface ArtworkTransaction {
   findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]>;
   createOrGetFile(input: Readonly<{ id: ArtworkFileId; organizationId: OrganizationId; file: ArtworkFileInput; derivedFromArtworkFileId?: ArtworkFileId }>): Promise<ArtworkFile>;
   createOrGetAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: AdoptArtworkInput["usage"] }>): Promise<ArtworkAssignment>;
+  createOrGetReplacementAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: ReplaceArtworkInput["usage"]; supersedesArtworkAssignmentId: ArtworkAssignmentId }>): Promise<ArtworkAssignment>;
 }
 
 export interface ArtworkTransactionRunner { transaction<T>(action: (transaction: ArtworkTransaction) => Promise<T>): Promise<T>; }
@@ -86,6 +87,16 @@ export class ArtworkApplicationService {
     }, "artwork_file_adopted", "Artwork file adopted for OrderLine work.");
   }
 
+  async replace(context: OperationContext, input: ReplaceArtworkInput): Promise<ApplicationResult<ArtworkMutationResult>> {
+    return this.mutate(context, "artwork.replace.v1", input, "artwork.adopt", async (tx) => {
+      validateFile(input); validateArtworkUsage(input.usage);
+      if (!input.supersedesArtworkAssignmentId) throw new V2ApplicationError("VALIDATION_ERROR", "The current Artwork assignment is required for replacement.");
+      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input });
+      const assignment = await tx.createOrGetReplacementAssignment({ id: brandedId<"ArtworkAssignmentId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), artworkFileId: file.id, usage: input.usage, supersedesArtworkAssignmentId: input.supersedesArtworkAssignmentId });
+      return { artworkFile: file, assignment };
+    }, "artwork_file_adopted", "Replacement Artwork file adopted for OrderLine work.");
+  }
+
   async assign(context: OperationContext, input: AssignArtworkInput): Promise<ApplicationResult<ArtworkMutationResult>> {
     return this.mutate(context, "artwork.assign.v1", input, "artwork.assign", async (tx) => {
       validateArtworkUsage(input.usage);
@@ -113,7 +124,7 @@ export class ArtworkApplicationService {
       throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Artwork operation.");
   }
 
-  private async mutate<T extends { businessRequestId: string }>(context: OperationContext, operation: "artwork.adopt.v1" | "artwork.assign.v1" | "artwork.derive.v1", input: T, capability: "artwork.adopt" | "artwork.assign", work: (tx: ArtworkTransaction) => Promise<ArtworkMutationResult>, eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added", summary: string): Promise<ApplicationResult<ArtworkMutationResult>> {
+  private async mutate<T extends { businessRequestId: string }>(context: OperationContext, operation: "artwork.adopt.v1" | "artwork.replace.v1" | "artwork.assign.v1" | "artwork.derive.v1", input: T, capability: "artwork.adopt" | "artwork.assign", work: (tx: ArtworkTransaction) => Promise<ArtworkMutationResult>, eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added", summary: string): Promise<ApplicationResult<ArtworkMutationResult>> {
     try {
       requireOperationPrincipalScope(context); this.require(context, capability);
       if (!context.businessRequest || input.businessRequestId !== context.businessRequest.id) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");

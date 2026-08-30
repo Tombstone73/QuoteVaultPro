@@ -15,6 +15,7 @@ export type ArtworkUploadInput = Readonly<{
   sourcePageIndex?: number;
   layerKey?: string;
   layerOrder?: number;
+  supersedesArtworkAssignmentId?: string;
   filename: string;
   contentType: string;
   bytes: Buffer;
@@ -34,9 +35,18 @@ export class ArtworkUploadService {
   constructor(private readonly artwork: ArtworkApplicationService, private readonly storage: ArtworkBinaryStorage) {}
 
   async upload(context: OperationContext, input: ArtworkUploadInput): Promise<ApplicationResult<ArtworkMutationResult>> {
+    return this.persist(context, input, false);
+  }
+
+  async replace(context: OperationContext, input: ArtworkUploadInput & Readonly<{ supersedesArtworkAssignmentId: string }>): Promise<ApplicationResult<ArtworkMutationResult>> {
+    return this.persist(context, input, true);
+  }
+
+  private async persist(context: OperationContext, input: ArtworkUploadInput, replacement: boolean): Promise<ApplicationResult<ArtworkMutationResult>> {
     try {
       const filename = safeFilename(input.filename);
       if (!input.businessRequestId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId is required.");
+      if (replacement && !input.supersedesArtworkAssignmentId?.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "The current Artwork assignment is required for replacement.");
       if (!validPurpose(input.purpose)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork purpose is invalid.");
       if (input.side !== undefined && !validSide(input.side)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork side is invalid.");
       if (input.bytes.length === 0) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork file cannot be empty.");
@@ -49,7 +59,7 @@ export class ArtworkUploadService {
       const checksum = createHash("sha256").update(input.bytes).digest("hex");
       const objectKey = `v2-artwork/${context.organizationId}/${checksum}.pdf`;
       const stored = await this.storage.put({ organizationId: context.organizationId, objectKey, contentType: input.contentType, bytes: input.bytes });
-      const result = await this.artwork.adopt(context, {
+      const common = {
         businessRequestId: input.businessRequestId,
         objectReference: { storageProvider: stored.storageProvider, objectKey: stored.objectKey },
         originalFilename: filename,
@@ -63,7 +73,10 @@ export class ArtworkUploadService {
           ...(input.side ? { side: input.side } : {}), ...(input.sourcePageIndex !== undefined ? { sourcePageIndex: input.sourcePageIndex } : {}),
           ...(input.layerKey !== undefined ? { layerKey: input.layerKey, layerOrder: input.layerOrder! } : {}),
         },
-      });
+      } as const;
+      const result = replacement
+        ? await this.artwork.replace(context, { ...common, supersedesArtworkAssignmentId: brandedId<"ArtworkAssignmentId">(input.supersedesArtworkAssignmentId!) })
+        : await this.artwork.adopt(context, common);
       if (!result.ok && stored.created) await this.storage.remove(stored.objectKey).catch(() => undefined);
       return result;
     } catch (error) {

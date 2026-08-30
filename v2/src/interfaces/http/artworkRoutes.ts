@@ -17,7 +17,7 @@ export interface VerifiedV2ArtworkPrincipalProvider { principal(request: Request
 export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]>; get(organizationId: string, artworkFileId: string): Promise<ArtworkWorkspaceDetail | null> }>; delivery?: Readonly<{ file(organizationId: string, artworkFileId: string): Promise<Readonly<{ contentType: string; bytes: Buffer }> | null> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
 
 const maximumUploadBytes = 10 * 1024 * 1024;
-type MultipartArtworkCommand = Readonly<{ businessRequestId: string; orderId: string; orderLineId: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; filename: string; contentType: string; bytes: Buffer }>;
+type MultipartArtworkCommand = Readonly<{ businessRequestId: string; orderId: string; orderLineId: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; supersedesArtworkAssignmentId?: string; filename: string; contentType: string; bytes: Buffer }>;
 
 const multipart = (request: Request): Promise<MultipartArtworkCommand> => new Promise((resolve, reject) => {
   if (!request.headers["content-type"]?.startsWith("multipart/form-data")) return reject(new V2ApplicationError("VALIDATION_ERROR", "Artwork upload must use multipart/form-data."));
@@ -42,7 +42,7 @@ const multipart = (request: Request): Promise<MultipartArtworkCommand> => new Pr
       if (!/^\d+$/u.test(value)) throw new V2ApplicationError("VALIDATION_ERROR", `${label} is invalid.`);
       return Number(value);
     };
-    try { resolve({ businessRequestId: fields.businessRequestId ?? "", orderId: fields.orderId ?? "", orderLineId: fields.orderLineId ?? "", purpose: fields.purpose ?? "", ...(fields.side ? { side: fields.side } : {}), ...(fields.sourcePageIndex !== undefined ? { sourcePageIndex: parseInteger(fields.sourcePageIndex, "Artwork source page index") } : {}), ...(fields.layerKey !== undefined ? { layerKey: fields.layerKey } : {}), ...(fields.layerOrder !== undefined ? { layerOrder: parseInteger(fields.layerOrder, "Artwork layer order") } : {}), ...file }); }
+    try { resolve({ businessRequestId: fields.businessRequestId ?? "", orderId: fields.orderId ?? "", orderLineId: fields.orderLineId ?? "", purpose: fields.purpose ?? "", ...(fields.side ? { side: fields.side } : {}), ...(fields.sourcePageIndex !== undefined ? { sourcePageIndex: parseInteger(fields.sourcePageIndex, "Artwork source page index") } : {}), ...(fields.layerKey !== undefined ? { layerKey: fields.layerKey } : {}), ...(fields.layerOrder !== undefined ? { layerOrder: parseInteger(fields.layerOrder, "Artwork layer order") } : {}), ...(fields.supersedesArtworkAssignmentId ? { supersedesArtworkAssignmentId: fields.supersedesArtworkAssignmentId } : {}), ...file }); }
     catch (error) { reject(error); }
   });
   request.pipe(parser);
@@ -119,7 +119,10 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
       if (!input.businessRequestId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId is required.");
       const organizationId = (request.params as Readonly<{ organizationId?: string }>).organizationId;
       if (!organizationId) throw new V2ApplicationError("VALIDATION_ERROR", "organizationId is required.");
-      const operation = await dependencies.upload.upload({ principal: await dependencies.principals.principal(request, organizationId), organizationId, operationId: `http:${request.method}:${request.path}`, businessRequest: { id: input.businessRequestId, payloadFingerprint: "artwork-upload-fingerprint-is-derived-by-operation" } }, input as never);
+      const operationContext = { principal: await dependencies.principals.principal(request, organizationId), organizationId, operationId: `http:${request.method}:${request.path}`, businessRequest: { id: input.businessRequestId, payloadFingerprint: "artwork-upload-fingerprint-is-derived-by-operation" } };
+      const operation = input.supersedesArtworkAssignmentId
+        ? await dependencies.upload.replace(operationContext, input as never)
+        : await dependencies.upload.upload(operationContext, input as never);
       send(response, operation);
     } catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Artwork upload is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }
   });

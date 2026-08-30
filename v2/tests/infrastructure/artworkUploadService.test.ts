@@ -42,4 +42,11 @@ describe("Artwork binary adoption", () => {
     await service.upload(context, input()); await service.upload(context, input());
     expect(storage.objects.size).toBe(1); expect(adopt).toHaveBeenCalledTimes(2);
   });
+
+  test("uses the canonical replacement operation only when an exact current assignment is supplied", async () => {
+    const storage = new MemoryStorage(); const replace = jest.fn(async () => successResult);
+    const service = new ArtworkUploadService({ replace } as unknown as ArtworkApplicationService, storage);
+    const result = await service.replace(context, input({ supersedesArtworkAssignmentId: "current-assignment" }));
+    expect(result).toEqual(successResult); expect(replace).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ supersedesArtworkAssignmentId: "current-assignment" }));
+  });
 });

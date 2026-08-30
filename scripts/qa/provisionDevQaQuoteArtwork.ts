@@ -153,7 +153,21 @@ async function main(): Promise<void> {
     const orderLine = (await pool.query<{ id: string }>("SELECT id FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 AND id=$3", [args.organizationId, args.orderId, args.orderLineId])).rows[0];
     if (!order || order.purchase_order_number !== QA_PO || !orderLine) throw new Error("Target Order/line is not the converted DEV QA fixture.");
     const requestId = `dev-qa-order-artwork:${args.orderId}:${args.orderLineId}:${fixtureNames.orderLineAReplacement}`;
-    const upload = await orderUpload.upload(context(args.organizationId, requestId), { businessRequestId: requestId, orderId: args.orderId!, orderLineId: args.orderLineId!, purpose: "customer_supplied", side: "front", filename: fixtureNames.orderLineAReplacement, contentType: "application/pdf", bytes: await pdf("ORDER LINE A — REPLACEMENT") });
+    const current = (await pool.query<{ id: string; artwork_file_id: string; display_filename: string; supersedes_artwork_assignment_id: string | null; source_quote_accepted_artwork_snapshot_id: string | null }>(`SELECT a.id,a.artwork_file_id,a.supersedes_artwork_assignment_id,a.source_quote_accepted_artwork_snapshot_id,f.display_filename
+      FROM v2_artwork_assignments a
+      JOIN v2_artwork_files f ON f.organization_id=a.organization_id AND f.id=a.artwork_file_id
+      WHERE a.organization_id=$1 AND a.order_document_id=$2 AND a.order_line_id=$3
+        AND a.purpose='customer_supplied' AND a.side='front'
+        AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id)
+      ORDER BY a.created_at,a.id`, [args.organizationId, args.orderId, args.orderLineId])).rows;
+    const existingReplacement = current.find((assignment) => assignment.display_filename === fixtureNames.orderLineAReplacement && assignment.supersedes_artwork_assignment_id !== null);
+    if (existingReplacement) {
+      safe({ ok: true, mode: args.mode, quoteId: args.quoteId, orderId: args.orderId, orderLineId: args.orderLineId, assignment: { assignmentId: existingReplacement.id, artworkFileId: existingReplacement.artwork_file_id, orderLineId: args.orderLineId, side: "front", filename: existingReplacement.display_filename }, reused: true });
+      return;
+    }
+    const prior = current.filter((assignment) => assignment.source_quote_accepted_artwork_snapshot_id !== null);
+    if (prior.length !== 1) throw new Error("Target Order line must have exactly one current inherited front Artwork assignment.");
+    const upload = await orderUpload.replace(context(args.organizationId, requestId), { businessRequestId: requestId, orderId: args.orderId!, orderLineId: args.orderLineId!, purpose: "customer_supplied", side: "front", supersedesArtworkAssignmentId: prior[0]!.id, filename: fixtureNames.orderLineAReplacement, contentType: "application/pdf", bytes: await pdf("ORDER LINE A — REPLACEMENT") });
     if (!upload.ok) throw new Error(`Canonical Order artwork adoption failed: ${storage.failureReason ?? upload.error.code}.`);
     safe({ ok: true, mode: args.mode, quoteId: args.quoteId, orderId: args.orderId, orderLineId: args.orderLineId, assignment: safeAssignment(upload.value) });
   } finally { await pool.end(); }
