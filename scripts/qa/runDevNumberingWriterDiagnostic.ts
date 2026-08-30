@@ -9,7 +9,10 @@ import { PostgresQuoteTransactionRunner } from "../../v2/infrastructure/sales/po
 import { PostgresOrderTransactionRunner } from "../../v2/infrastructure/sales/postgresOrderTransaction.js";
 
 const INTENT = "RUN_DEV_NUMBERING_WRITER_DIAGNOSTIC";
-const QA_PREFIX = "QA - Numbering Compatibility Writer";
+// This is intentionally short enough for the legacy label and PO fields,
+// both of which have a 64-character storage limit.  The explicit run id and
+// writer suffix still make every persistent DEV record unambiguously QA-only.
+const QA_PREFIX = "QA - Numbering Writer";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const stableIdentifier = /^[A-Za-z0-9_-]{3,120}$/u;
 const runIdPattern = /^[A-Za-z0-9_-]{8,80}$/u;
