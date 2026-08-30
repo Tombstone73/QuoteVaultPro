@@ -19,6 +19,7 @@ export type FinanceHttpDependencies = Readonly<{
   financialRead: FinancialReadApplicationService;
   payments: BillingPaymentsApplicationService;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
+  quickBooksSync?: Readonly<{ enqueueInvoice(organizationId: string, invoiceId: string): Promise<void> }>;
 }>;
 export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
   const router = Router({ mergeParams: true });
@@ -37,6 +38,16 @@ export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
   router.get("/invoices/legacy/:invoiceId", async (request, response) => {
     try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.readLegacyInvoice(context(principal, organizationId, `http:GET:${request.path}`), brandedId<"InvoiceId">(request.params.invoiceId)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
     catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
+  });
+  router.post("/invoices/:invoiceId/quickbooks-sync", async (request, response) => {
+    try {
+      if (!dependencies.quickBooksSync) throw new V2ApplicationError("INTERNAL_ERROR", "QuickBooks synchronization is unavailable.");
+      const organizationId = organization(request), principal = await dependencies.principals.principal(request, organizationId);
+      const invoice = await dependencies.financialRead.readInvoice(context(principal, organizationId, `http:POST:${request.path}`), brandedId<"InvoiceId">(request.params.invoiceId));
+      if (!invoice.ok) return fail(response, invoice.error);
+      await dependencies.quickBooksSync.enqueueInvoice(organizationId, request.params.invoiceId);
+      return response.status(202).json({ ok: true, data: { invoiceId: request.params.invoiceId, state: "queued" } });
+    } catch (error) { return fail(response, error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "QuickBooks sync could not be queued.")); }
   });
   router.post("/invoices/:invoiceId/payments", async (request, response) => {
     try {

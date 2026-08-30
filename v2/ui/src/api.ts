@@ -2250,6 +2250,11 @@ export const financeApi = {
         `/invoices/legacy/${encodeURIComponent(invoiceId)}`,
       ),
     ),
+  syncQuickBooks: (organizationId: string, invoiceId: string) =>
+    request<Readonly<{ invoiceId: string; state: "queued" }>>(
+      financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/quickbooks-sync`),
+      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" } },
+    ),
   recordPayment: (
     organizationId: string,
     invoiceId: string,

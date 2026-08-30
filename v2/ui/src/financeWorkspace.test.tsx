@@ -94,6 +94,7 @@ const issued = renderInvoice("issued");
 assert.match(issued, />Preview PDF</);
 assert.match(issued, /Issued Billing checkpoint; commercial content is immutable/);
 assert.match(issued, />Take Payment</);
+assert.match(issued, />Sync to QuickBooks</);
 assert.doesNotMatch(issued, />Issue Invoice</);
 assert.doesNotMatch(renderInvoice("draft", false), />Preview PDF</);
 const noSelection = renderToStaticMarkup(

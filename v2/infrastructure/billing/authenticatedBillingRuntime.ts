@@ -13,6 +13,7 @@ import { PostgresBillingPaymentsTransactionRunner } from "./postgresBillingPayme
 import { PostgresFinancialReadRunner } from "./postgresFinancialRead.js";
 import { PostgresInvoiceDocumentService } from "./postgresInvoiceDocuments.js";
 import { StripeProviderIngress, productionStripeWebhookVerifier } from "./stripeProviderIngress.js";
+import { PostgresQuickBooksSyncNow } from "../accounting/quickBooksBillingQueue.js";
 
 export type AuthenticatedBillingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler }>;
 export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRuntimeDependencies): Readonly<{ dependencies: InvoiceHttpDependencies & import("../../src/interfaces/http/financeRoutes.js").FinanceHttpDependencies & Readonly<{ stripeIngress: StripeProviderIngress }>; trustedHostMiddleware: RequestHandler }> => {
@@ -25,6 +26,7 @@ export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRu
       documents: new PostgresInvoiceDocumentService(input.pool),
       principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))),
       stripeIngress: new StripeProviderIngress(productionStripeWebhookVerifier(), payments),
+      quickBooksSync: new PostgresQuickBooksSyncNow(input.pool),
     },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };

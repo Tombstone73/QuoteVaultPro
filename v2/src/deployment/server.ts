@@ -28,6 +28,7 @@ import { composeAuthenticatedRoutingRuntime } from "../../infrastructure/routing
 import { composeAuthenticatedInventoryRuntime } from "../../infrastructure/inventory/authenticatedInventoryRuntime.js";
 import { composeAuthenticatedFormulaRuntime } from "../../infrastructure/pricing/authenticatedFormulaRuntime.js";
 import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructure/communications/authenticatedEmailIntegrationRuntime.js";
+import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -97,13 +98,16 @@ export const startV2DeploymentServer = async (
     sessionMiddleware: createV2SessionMiddleware(databaseUrl, authConfig),
   });
   const app = createV2DeploymentApp(config, pool, logger, authentication);
+  let stopQuickBooksWorker: (() => void) | null = null;
   let server: Server | undefined;
   try {
     server = await new Promise<Server>((resolve, reject) => {
       const instance = app.listen(config.port, () => resolve(instance));
       instance.once("error", reject);
     });
+    stopQuickBooksWorker = startV2QuickBooksBillingWorker(pool, (event, data) => logger.log("info", event, data));
   } catch (error) {
+    stopQuickBooksWorker?.();
     await pool.end();
     throw error;
   }
@@ -115,6 +119,7 @@ export const startV2DeploymentServer = async (
     await new Promise<void>((resolve, reject) =>
       server!.close((error) => (error ? reject(error) : resolve())),
     );
+    stopQuickBooksWorker?.();
     await pool.end();
     logger.log("info", "v2.deployment.stopped");
   };

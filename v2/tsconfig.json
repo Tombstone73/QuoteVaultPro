@@ -16,5 +16,5 @@
     },
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "infrastructure/**/*.ts"]
+  "include": ["src/**/*.ts", "infrastructure/**/*.ts", "types/**/*.d.ts"]
 }

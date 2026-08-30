@@ -1154,6 +1154,85 @@ function escapeQBQueryString(value: string): string {
   return String(value || '').replace(/'/g, "\\'");
 }
 
+// V2 supplies the commercial facts below.  This provider bridge intentionally
+// does not query legacy Invoice or Payment rows; OAuth/token handling remains
+// shared integration infrastructure.
+export type V2QuickBooksCustomer = Readonly<{ id: string; displayName: string; companyName?: string; email?: string; phone?: string; kind: "business" | "individual" }>;
+export type V2QuickBooksInvoiceLine = Readonly<{ description: string; quantity: number; unitAmountCents: number; lineAmountCents: number }>;
+
+async function ensureQBCustomerForV2(organizationId: string, customer: V2QuickBooksCustomer, existingId?: string): Promise<string> {
+  if (existingId) return existingId;
+  const displayName = customer.displayName.trim();
+  if (!displayName) throw new Error("V2 Customer has no display name for QuickBooks sync.");
+  const query = `SELECT Id, DisplayName, PrimaryEmailAddr FROM Customer WHERE DisplayName = '${escapeQBQueryString(displayName)}' MAXRESULTS 20`;
+  const lookup = await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const candidates = Array.isArray(lookup?.QueryResponse?.Customer) ? lookup.QueryResponse.Customer : [];
+  const email = String(customer.email || "").trim().toLowerCase();
+  const found = customer.kind === "individual"
+    ? candidates.find((candidate: any) => String(candidate?.DisplayName || "").trim() === displayName && email && String(candidate?.PrimaryEmailAddr?.Address || "").trim().toLowerCase() === email)
+    : candidates[0];
+  if (customer.kind === "individual" && candidates.length && !found) {
+    const error: any = new Error("QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED: Existing QuickBooks customer candidates require review before linking this individual V2 Customer.");
+    error.statusCode = 409;
+    throw error;
+  }
+  if (found?.Id) return String(found.Id);
+  const payload: any = { DisplayName: displayName };
+  if (customer.companyName) payload.CompanyName = customer.companyName;
+  if (customer.email) payload.PrimaryEmailAddr = { Address: customer.email };
+  if (customer.phone) payload.PrimaryPhone = { FreeFormNumber: customer.phone };
+  const created = await makeQBRequest("POST", "/customer", payload, organizationId);
+  if (!created?.Customer?.Id) throw new Error("QuickBooks customer create returned no Id");
+  return String(created.Customer.Id);
+}
+
+export async function syncV2InvoiceToQuickBooks(input: Readonly<{ organizationId: string; invoiceId: string; displayNumber: string; currency: string; issuedAt: string; customer: V2QuickBooksCustomer; customerQuickBooksId?: string; quickBooksInvoiceId?: string; lines: readonly V2QuickBooksInvoiceLine[] }>): Promise<{ qbInvoiceId: string; qbCustomerId: string }> {
+  const qbCustomerId = await ensureQBCustomerForV2(input.organizationId, input.customer, input.customerQuickBooksId);
+  const payload: any = { CustomerRef: { value: qbCustomerId }, DocNumber: input.displayNumber, TxnDate: new Date(input.issuedAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, Line: input.lines.map((line, index) => ({ LineNum: index + 1, Amount: Number((line.lineAmountCents / 100).toFixed(2)), DetailType: "SalesItemLineDetail", SalesItemLineDetail: { Qty: line.quantity, UnitPrice: Number((line.unitAmountCents / 100).toFixed(2)) }, Description: line.description })) };
+  if (input.quickBooksInvoiceId) {
+    const existing = await makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId);
+    if (!existing?.Invoice?.Id) throw new Error("QuickBooks Invoice link could not be resolved.");
+    return { qbInvoiceId: String(existing.Invoice.Id), qbCustomerId };
+  }
+  const query = `SELECT Id, CustomerRef FROM Invoice WHERE DocNumber = '${escapeQBQueryString(input.displayNumber)}' MAXRESULTS 2`;
+  const found = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Invoice?.find((item: any) => String(item?.CustomerRef?.value || "") === qbCustomerId);
+  if (found?.Id) return { qbInvoiceId: String(found.Id), qbCustomerId };
+  try {
+    const created = await makeQBRequest("POST", "/invoice", payload, input.organizationId);
+    if (!created?.Invoice?.Id) throw new Error("QuickBooks invoice create returned no Id");
+    return { qbInvoiceId: String(created.Invoice.Id), qbCustomerId };
+  } catch (error) {
+    // A lost provider response is reconciled by immutable V2 DocNumber + Customer.
+    const resolved = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Invoice?.find((item: any) => String(item?.CustomerRef?.value || "") === qbCustomerId);
+    if (resolved?.Id) return { qbInvoiceId: String(resolved.Id), qbCustomerId };
+    throw error;
+  }
+}
+
+export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId: string; paymentId: string; quickBooksPaymentId?: string; quickBooksInvoiceId: string; quickBooksCustomerId: string; amountCents: number; currency: string; occurredAt: string }>): Promise<{ qbPaymentId: string }> {
+  if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) throw new Error("V2 Payment amount must be a positive exact-cent value.");
+  if (input.quickBooksPaymentId) {
+    const existing = await makeQBRequest("GET", `/payment/${input.quickBooksPaymentId}`, undefined, input.organizationId);
+    if (!existing?.Payment?.Id) throw new Error("QuickBooks Payment link could not be resolved.");
+    return { qbPaymentId: String(existing.Payment.Id) };
+  }
+  const amount = Number((input.amountCents / 100).toFixed(2));
+  const paymentRefNum = `PHV2-${input.paymentId}`;
+  const query = `SELECT Id FROM Payment WHERE PaymentRefNum = '${escapeQBQueryString(paymentRefNum)}' MAXRESULTS 1`;
+  const found = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Payment?.[0];
+  if (found?.Id) return { qbPaymentId: String(found.Id) };
+  const payload: any = { CustomerRef: { value: input.quickBooksCustomerId }, TotalAmt: amount, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PaymentRefNum: paymentRefNum, PrivateNote: `PrintersHero V2 payment ${input.paymentId}`, Line: [{ Amount: amount, LinkedTxn: [{ TxnId: input.quickBooksInvoiceId, TxnType: "Invoice" }] }] };
+  try {
+    const created = await makeQBRequest("POST", "/payment", payload, input.organizationId);
+    if (!created?.Payment?.Id) throw new Error("QuickBooks payment create returned no Id");
+    return { qbPaymentId: String(created.Payment.Id) };
+  } catch (error) {
+    const resolved = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Payment?.[0];
+    if (resolved?.Id) return { qbPaymentId: String(resolved.Id) };
+    throw error;
+  }
+}
+
 async function ensureQBCustomerIdForLocalCustomer(organizationId: string, customer: Customer): Promise<string> {
   if ((customer as any).externalAccountingId) return String((customer as any).externalAccountingId);
 

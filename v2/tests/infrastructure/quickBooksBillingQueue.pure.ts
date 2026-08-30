@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "../../infrastructure/accounting/quickBooksQueuePolicy.js";
+
+const migration = readFileSync(resolve("server/db/migrations_v2/0248_v2_quickbooks_billing_queue.sql"), "utf8");
+const queue = readFileSync(resolve("v2/infrastructure/accounting/quickBooksBillingQueue.ts"), "utf8");
+const provider = readFileSync(resolve("server/quickbooksService.ts"), "utf8");
+const invoice = readFileSync(resolve("v2/infrastructure/billing/postgresBillingInvoiceTransaction.ts"), "utf8");
+const payment = readFileSync(resolve("v2/infrastructure/billing/postgresBillingPaymentsTransaction.ts"), "utf8");
+
+assert.match(migration, /v2_quickbooks_sync_jobs/);
+assert.match(migration, /UNIQUE \(organization_id, subject_kind, subject_id\)/);
+assert.match(queue, /FOR UPDATE SKIP LOCKED/);
+assert.match(queue, /lease_expires_at < now\(\)/);
+assert.match(queue, /checkpoint_json/);
+assert.match(queue, /v2_billing_payments/);
+assert.match(queue, /state === "uncertain"/);
+assert.match(invoice, /enqueueV2QuickBooksSync\(this\.client,input\.organizationId,"invoice",input\.invoiceId\)/);
+assert.match(payment, /enqueueV2QuickBooksSync\(this\.client,input\.organizationId,"payment",id\)/);
+assert.match(provider, /syncV2InvoiceToQuickBooks/);
+assert.match(provider, /syncV2PaymentToQuickBooks/);
+assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "queue" }), true);
+assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "legacy_jobs" }), false);
+assert.equal(quickBooksQueueFailureState({ statusCode: 409 }), "blocked");
+assert.equal(quickBooksQueueFailureState({ code: "ECONNRESET" }), "uncertain");
+assert.equal(quickBooksQueueFailureState(new Error("validation failed")), "retry");
+console.log("QuickBooks V2 Billing queue contracts passed.");

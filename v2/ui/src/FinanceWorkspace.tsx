@@ -382,6 +382,11 @@ export const FinanceWorkspace = ({
     },
     onError: (error) => setNotice(errorText(error)),
   });
+  const quickBooksSync = useMutation({
+    mutationFn: () => financeApi.syncQuickBooks(organizationId, selected),
+    onSuccess: () => setNotice("QuickBooks sync queued through the V2 Billing accounting worker."),
+    onError: (error) => setNotice(errorText(error)),
+  });
   if (!organizationId)
     return (
       <section className="v2-finance-workspace">
@@ -652,6 +657,11 @@ export const FinanceWorkspace = ({
                   }}
                 >
                   Take Payment
+                </button>
+              )}
+              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canInvoiceView && (
+                <button className="v2-quiet-button" disabled={!csrfReady || quickBooksSync.isPending} onClick={() => quickBooksSync.mutate()}>
+                  Sync to QuickBooks
                 </button>
               )}
               {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && (

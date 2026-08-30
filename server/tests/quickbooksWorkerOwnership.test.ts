@@ -19,13 +19,13 @@ afterAll(() => {
 });
 
 describe('QuickBooks autonomous worker ownership', () => {
-  test('defaults to the derived invoice/payment queue and never selects both workers', async () => {
+  test('defaults to the V2 Billing queue and starts no legacy worker', async () => {
     const ownership = await importFresh<typeof import('../workers/quickBooksWorkerOwnership')>(
       '../workers/quickBooksWorkerOwnership'
     );
 
     expect(ownership.getQuickBooksAutomationOwner()).toBe('queue');
-    expect(ownership.isQuickBooksWorkerOwnedHere('QB_QUEUE')).toBe(true);
+    expect(ownership.isQuickBooksWorkerOwnedHere('QB_QUEUE')).toBe(false);
     expect(ownership.isQuickBooksWorkerOwnedHere('QB_SYNC')).toBe(false);
   });
 
@@ -40,14 +40,14 @@ describe('QuickBooks autonomous worker ownership', () => {
     expect(ownership.isQuickBooksWorkerOwnedHere('QB_QUEUE')).toBe(false);
   });
 
-  test('invalid deployment configuration fails closed to the canonical queue owner', async () => {
+  test('invalid deployment configuration fails closed to the V2 queue owner', async () => {
     process.env.QUICKBOOKS_AUTOMATION_OWNER = 'both';
     const ownership = await importFresh<typeof import('../workers/quickBooksWorkerOwnership')>(
       '../workers/quickBooksWorkerOwnership'
     );
 
     expect(ownership.getQuickBooksAutomationOwner()).toBe('queue');
-    expect(ownership.isQuickBooksWorkerOwnedHere('QB_QUEUE')).toBe(true);
+    expect(ownership.isQuickBooksWorkerOwnedHere('QB_QUEUE')).toBe(false);
     expect(ownership.isQuickBooksWorkerOwnedHere('QB_SYNC')).toBe(false);
   });
 
