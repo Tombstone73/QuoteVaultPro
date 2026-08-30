@@ -76,6 +76,7 @@
     "v2:m1:quote-conversion:contracts": "jest --runInBand v2/tests/modules/quoteConversionContracts.test.ts",
     "v2:quote-conversion-diagnostics:pure": "tsx v2/tests/modules/quoteConversionDiagnostics.pure.ts",
     "v2:billing-draft-invoice:pure": "tsx v2/tests/infrastructure/billingDraftInvoiceOptionalJson.pure.ts",
+    "v2:stripe-ingress:pure": "tsx v2/tests/infrastructure/stripeProviderIngress.pure.ts",
     "v2:quote-conversion-audit:pure": "tsx v2/tests/modules/quoteConversionAuditUniqueness.pure.ts",
     "v2:quote-conversion-storage:pure": "tsx v2/tests/infrastructure/quoteConversionResultStorage.pure.ts",
     "v2:quote-conversion-http:pure": "tsx v2/tests/interfaces/quoteConversionHttpProjection.pure.ts",

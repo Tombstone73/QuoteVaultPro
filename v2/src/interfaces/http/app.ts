@@ -32,6 +32,7 @@ import { createOrganizationSettingsRouter, type OrganizationSettingsHttpDependen
 import { createTeamAccessRouter, type TeamAccessHttpDependencies } from "./teamAccessRoutes.js";
 import { createDocumentNumberingSettingsRouter, type DocumentNumberingSettingsHttpDependencies } from "./documentNumberingSettingsRoutes.js";
 import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
+import { createStripeWebhookHandler } from "./stripeWebhookRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -51,7 +52,7 @@ export type AuthenticatedOrderRouteRuntime = Readonly<{
   dependencies: OrderHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
-export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies & FinanceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies & FinanceHttpDependencies & Readonly<{ stripeIngress: import("../../../infrastructure/billing/stripeProviderIngress.js").StripeProviderIngress }>; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
@@ -81,6 +82,15 @@ export const createV2HttpApp = (
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
+  // Stripe signs exact bytes. This V2-only ingress is intentionally mounted
+  // before JSON parsing and bypasses staff auth/CSRF; it authenticates solely
+  // through the provider signature.
+  if (billing)
+    app.post(
+      "/v2/integrations/stripe/webhook",
+      express.raw({ type: "application/json", limit: "1mb" }),
+      createStripeWebhookHandler(billing.dependencies.stripeIngress),
+    );
   app.use(express.json({ limit: "1mb" }));
   configure?.(app);
 
