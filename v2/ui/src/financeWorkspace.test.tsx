@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -118,4 +119,9 @@ const noSelection = renderToStaticMarkup(
   </QueryClientProvider>,
 );
 assert.doesNotMatch(noSelection, />Preview PDF</);
+const workspaceSource = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
+const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
+assert.match(workspaceSource, /Select up to 100 issued V2 Invoices/);
+assert.match(workspaceSource, /syncQuickBooksSelected/);
+assert.match(apiSource, /quickbooks-sync-selected/);
 console.log("FinanceWorkspace invoice PDF action tests passed.");

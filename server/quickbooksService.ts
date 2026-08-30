@@ -7,6 +7,8 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
+import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHistoricalNumbering';
+import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quickBooksHistoricalInvoiceNumbering.service';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePricing';
@@ -1168,11 +1170,16 @@ async function ensureQBCustomerForV2(organizationId: string, customer: V2QuickBo
   const lookup = await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
   const candidates = Array.isArray(lookup?.QueryResponse?.Customer) ? lookup.QueryResponse.Customer : [];
   const email = String(customer.email || "").trim().toLowerCase();
-  const found = customer.kind === "individual"
-    ? candidates.find((candidate: any) => String(candidate?.DisplayName || "").trim() === displayName && email && String(candidate?.PrimaryEmailAddr?.Address || "").trim().toLowerCase() === email)
-    : candidates[0];
-  if (customer.kind === "individual" && candidates.length && !found) {
-    const error: any = new Error("QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED: Existing QuickBooks customer candidates require review before linking this individual V2 Customer.");
+  const nameMatches = candidates.filter((candidate: any) => String(candidate?.DisplayName || "").trim().toLocaleLowerCase() === displayName.toLocaleLowerCase());
+  const identityMatches = email
+    ? nameMatches.filter((candidate: any) => String(candidate?.PrimaryEmailAddr?.Address || "").trim().toLocaleLowerCase() === email)
+    : nameMatches;
+  // A known provider link is always preferred.  Without one, no name-only
+  // ambiguity is guessed: retries must never attach a CRM Customer to another
+  // party's QuickBooks Customer.
+  const found = identityMatches.length === 1 ? identityMatches[0] : null;
+  if (candidates.length && !found) {
+    const error: any = new Error("QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED: Existing QuickBooks customer candidates require review before linking this V2 CRM Customer.");
     error.statusCode = 409;
     throw error;
   }
@@ -1194,9 +1201,15 @@ export async function syncV2InvoiceToQuickBooks(input: Readonly<{ organizationId
     if (!existing?.Invoice?.Id) throw new Error("QuickBooks Invoice link could not be resolved.");
     return { qbInvoiceId: String(existing.Invoice.Id), qbCustomerId };
   }
-  const query = `SELECT Id, CustomerRef FROM Invoice WHERE DocNumber = '${escapeQBQueryString(input.displayNumber)}' MAXRESULTS 2`;
-  const found = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Invoice?.find((item: any) => String(item?.CustomerRef?.value || "") === qbCustomerId);
+  const query = `SELECT Id, CustomerRef FROM Invoice WHERE DocNumber = '${escapeQBQueryString(input.displayNumber)}' MAXRESULTS 20`;
+  const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Invoice ?? [];
+  const found = candidates.find((item: any) => String(item?.CustomerRef?.value || "") === qbCustomerId);
   if (found?.Id) return { qbInvoiceId: String(found.Id), qbCustomerId };
+  if (candidates.length) {
+    const error: any = new Error("QUICKBOOKS_INVOICE_REVIEW_REQUIRED: A QuickBooks Invoice already uses this V2 DocNumber for a different Customer.");
+    error.statusCode = 409;
+    throw error;
+  }
   try {
     const created = await makeQBRequest("POST", "/invoice", payload, input.organizationId);
     if (!created?.Invoice?.Id) throw new Error("QuickBooks invoice create returned no Id");
@@ -3249,13 +3262,8 @@ function buildQBInvoicePayloadInspection(params: {
   };
 }
 
-export async function fetchQBInvoicesForPreview(organizationId: string, includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
-  const qbInvoices: any[] = await fetchAllQBEntities(
-    'Invoice',
-    'SELECT * FROM Invoice',
-    (q) => makeQBRequest('GET', `/query?query=${encodeURIComponent(q)}`, undefined, organizationId),
-  );
-  console.log(`[QB Preview Invoices] Fetched ${qbInvoices.length} QuickBooks invoices`);
+async function buildQBInvoicePreviewRows(organizationId: string, qbInvoices: any[], includeReferenceDebug = false): Promise<QBInvoicePreviewRow[]> {
+  console.log(`[QB Preview Invoices] Building ${qbInvoices.length} QuickBooks invoice preview rows`);
 
   // All QB-linked local customers for this org
   const localCustomers = await db
@@ -3270,14 +3278,18 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
 
   // All QB-linked local invoices for this org
   const localInvoices = await db
-    .select({ id: invoices.id, externalAccountingId: invoices.externalAccountingId })
+    .select({ id: invoices.id, externalAccountingId: invoices.externalAccountingId, qbInvoiceId: invoices.qbInvoiceId })
     .from(invoices)
     .where(and(
       eq(invoices.organizationId, organizationId),
-      isNotNull(invoices.externalAccountingId),
+      or(isNotNull(invoices.externalAccountingId), isNotNull(invoices.qbInvoiceId)),
     ));
 
-  const invoiceByQBId = new Map(localInvoices.map(i => [i.externalAccountingId!, i.id]));
+  const invoiceByQBId = new Map<string, string>();
+  for (const invoice of localInvoices) {
+    if (invoice.externalAccountingId) invoiceByQBId.set(invoice.externalAccountingId, invoice.id);
+    if (invoice.qbInvoiceId) invoiceByQBId.set(invoice.qbInvoiceId, invoice.id);
+  }
 
   return qbInvoices.map((qbInvoice): QBInvoicePreviewRow => {
     const qbCustomerRefId: string | null = qbInvoice.CustomerRef?.value ?? null;
@@ -3365,6 +3377,25 @@ export async function fetchQBInvoicesForPreview(organizationId: string, includeR
   });
 }
 
+export type QBInvoicePreviewScope = 'open_ar' | 'historical' | 'all_unsynced';
+export type QBInvoicePreviewPage = Readonly<{ rows: QBInvoicePreviewRow[]; scope: QBInvoicePreviewScope; page: number; pageSize: number; sourceTotal: number | null; sourceRowsOnPage: number; alreadyImportedExcludedOnPage: number; hasNextPage: boolean }>;
+
+/** A bounded, provider-filtered compatibility-import preview.  It never mutates V2 Billing. */
+export async function fetchQBInvoicePreviewPage(input: { organizationId: string; scope: QBInvoicePreviewScope; page: number; pageSize: number; includeReferenceDebug?: boolean }): Promise<QBInvoicePreviewPage> {
+  const page = Math.max(1, Math.floor(input.page));
+  const pageSize = Math.max(1, Math.min(200, Math.floor(input.pageSize)));
+  const whereClause = input.scope === 'open_ar' ? " WHERE Balance > '0'" : input.scope === 'historical' ? " WHERE Balance <= '0'" : '';
+  const startPosition = ((page - 1) * pageSize) + 1;
+  const query = `SELECT * FROM Invoice${whereClause} STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`;
+  const response = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId);
+  const qbInvoices: any[] = Array.isArray(response?.QueryResponse?.Invoice) ? response.QueryResponse.Invoice : [];
+  const sourceTotalValue = Number(response?.QueryResponse?.totalCount);
+  const sourceTotal = Number.isFinite(sourceTotalValue) ? sourceTotalValue : null;
+  const allRows = await buildQBInvoicePreviewRows(input.organizationId, qbInvoices, input.includeReferenceDebug === true);
+  const rows = allRows.filter((row) => !row.alreadyImported);
+  return { rows, scope: input.scope, page, pageSize, sourceTotal, sourceRowsOnPage: allRows.length, alreadyImportedExcludedOnPage: allRows.length - rows.length, hasNextPage: sourceTotal !== null ? startPosition + allRows.length <= sourceTotal : allRows.length === pageSize };
+}
+
 /**
  * Import a list of QB invoices (identified by QB Invoice Id) into TitanOS.
  *
@@ -3389,6 +3420,7 @@ export type QBInvoiceImportResult = {
   failed: number;
   importedOpenAr: number;
   importedHistorical: number;
+  numberingConflicts: number;
   errors: string[];
 };
 
@@ -3399,7 +3431,7 @@ export async function importQBInvoicesByIds(
   createdByUserId: string,
   perInvoiceModes: Record<string, QBInvoiceImportOverride> = {},
 ): Promise<QBInvoiceImportResult> {
-  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, errors: [] };
+  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, numberingConflicts: 0, errors: [] };
 
   if (qbInvoiceIds.length === 0) return result;
 
@@ -3608,8 +3640,24 @@ export async function importQBInvoicesByIds(
         result.updated++;
         if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
       } else {
-        const invoiceNumber = await generateNextInvoiceNumber(organizationId);
-        const { displayNumber, numberCore } = await buildDocumentNumberParts(organizationId, 'invoice', invoiceNumber);
+        const historicalNumber = isHistorical ? resolveHistoricalQuickBooksInvoiceNumber(qbInvoice.DocNumber) : null;
+        if (historicalNumber && 'error' in historicalNumber) {
+          result.skipped++;
+          result.errors.push(`Invoice ${qbInvoice.Id}: ${historicalNumber.error}`);
+          continue;
+        }
+        if (historicalNumber) {
+          const conflicts = await findHistoricalQuickBooksInvoiceNumberConflicts({ organizationId, identity: historicalNumber.value });
+          if (conflicts.length > 0) {
+            result.skipped++;
+            result.numberingConflicts++;
+            result.errors.push(`Invoice ${historicalNumber.value.sourceDocNumber}: historical number conflict (${conflicts.map((conflict) => `${conflict.kind}:${conflict.entity}:${conflict.id}`).join(', ')})`);
+            continue;
+          }
+        }
+        // Imported historical records preserve DocNumber and never allocate a native job-derived number.
+        const invoiceNumber = historicalNumber?.value.invoiceNumber ?? await generateNextInvoiceNumber(organizationId);
+        const { displayNumber, numberCore } = historicalNumber ? historicalNumber.value : await buildDocumentNumberParts(organizationId, 'invoice', invoiceNumber);
 
         await db.insert(invoices).values({
           organizationId,
@@ -3658,7 +3706,7 @@ export async function importQBInvoicesByIds(
     }
   }
 
-  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, openAr: ${result.importedOpenAr}, historical: ${result.importedHistorical}, errors: ${result.errors.length}`, { organizationId });
+  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, openAr: ${result.importedOpenAr}, historical: ${result.importedHistorical}, numberingConflicts: ${result.numberingConflicts}, errors: ${result.errors.length}`, { organizationId });
   return result;
 }
 

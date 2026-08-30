@@ -2255,6 +2255,11 @@ export const financeApi = {
       financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/quickbooks-sync`),
       { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" } },
     ),
+  syncQuickBooksSelected: (organizationId: string, invoiceIds: readonly string[]) =>
+    request<Readonly<{ invoiceIds: readonly string[]; state: "queued" }>>(
+      financeEndpoint(organizationId, "/invoices/quickbooks-sync-selected"),
+      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ invoiceIds }) },
+    ),
   recordPayment: (
     organizationId: string,
     invoiceId: string,

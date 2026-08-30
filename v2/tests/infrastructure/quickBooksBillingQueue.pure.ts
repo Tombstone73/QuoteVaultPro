@@ -8,6 +8,8 @@ const queue = readFileSync(resolve("v2/infrastructure/accounting/quickBooksBilli
 const provider = readFileSync(resolve("server/quickbooksService.ts"), "utf8");
 const invoice = readFileSync(resolve("v2/infrastructure/billing/postgresBillingInvoiceTransaction.ts"), "utf8");
 const payment = readFileSync(resolve("v2/infrastructure/billing/postgresBillingPaymentsTransaction.ts"), "utf8");
+const routes = readFileSync(resolve("v2/src/interfaces/http/financeRoutes.ts"), "utf8");
+const historical = readFileSync(resolve("shared/quickBooksHistoricalNumbering.ts"), "utf8");
 
 assert.match(migration, /v2_quickbooks_sync_jobs/);
 assert.match(migration, /UNIQUE \(organization_id, subject_kind, subject_id\)/);
@@ -15,11 +17,19 @@ assert.match(queue, /FOR UPDATE SKIP LOCKED/);
 assert.match(queue, /lease_expires_at < now\(\)/);
 assert.match(queue, /checkpoint_json/);
 assert.match(queue, /v2_billing_payments/);
+assert.match(queue, /enqueueInvoices/);
+assert.match(queue, /Select between 1 and 100 issued V2 Invoices/);
 assert.match(queue, /state === "uncertain"/);
 assert.match(invoice, /enqueueV2QuickBooksSync\(this\.client,input\.organizationId,"invoice",input\.invoiceId\)/);
 assert.match(payment, /enqueueV2QuickBooksSync\(this\.client,input\.organizationId,"payment",id\)/);
 assert.match(provider, /syncV2InvoiceToQuickBooks/);
 assert.match(provider, /syncV2PaymentToQuickBooks/);
+assert.match(provider, /QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED/);
+assert.match(provider, /QUICKBOOKS_INVOICE_REVIEW_REQUIRED/);
+assert.match(routes, /quickbooks-sync-selected/);
+assert.match(routes, /enqueueInvoices\(organizationId, invoiceIds\)/);
+assert.match(historical, /QuickBooks historical invoice is missing DocNumber/);
+assert.match(historical, /native_number_collision/);
 assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "queue" }), true);
 assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "legacy_jobs" }), false);
 assert.equal(quickBooksQueueFailureState({ statusCode: 409 }), "blocked");

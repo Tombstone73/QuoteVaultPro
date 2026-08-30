@@ -33,13 +33,20 @@ export const enqueueV2QuickBooksSync = async (client: PoolClient, organizationId
 export class PostgresQuickBooksSyncNow {
   constructor(private readonly pool: Pool) {}
   async enqueueInvoice(organizationId: string, invoiceId: string): Promise<void> {
+    await this.enqueueInvoices(organizationId, [invoiceId]);
+  }
+  /** Explicit operator selection uses the same durable queue as Sync Now. */
+  async enqueueInvoices(organizationId: string, invoiceIds: readonly string[]): Promise<string[]> {
+    const unique = [...new Set(invoiceIds.map((value) => String(value).trim()).filter(Boolean))];
+    if (!unique.length || unique.length > 100) throw new Error("Select between 1 and 100 issued V2 Invoices.");
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND invoice_state='issued'", [organizationId, invoiceId]);
-      if (!invoice.rows[0]) throw new Error("Only issued V2 Invoices may be synchronized to QuickBooks.");
-      await enqueueV2QuickBooksSync(client, organizationId, "invoice", invoiceId);
+      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id = ANY($2::uuid[]) AND invoice_state='issued'", [organizationId, unique]);
+      if (invoice.rows.length !== unique.length) throw new Error("Only issued V2 Invoices may be synchronized to QuickBooks.");
+      for (const item of unique) await enqueueV2QuickBooksSync(client, organizationId, "invoice", item);
       await client.query("COMMIT");
+      return unique;
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
 }

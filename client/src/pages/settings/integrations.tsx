@@ -194,6 +194,18 @@ type QBInvoicePreviewRow = {
   inspection?: QBInvoicePayloadInspection;
 };
 
+type QBInvoicePreviewScope = 'open_ar' | 'historical' | 'all_unsynced';
+type QBInvoicePreviewPage = {
+  rows: QBInvoicePreviewRow[];
+  scope: QBInvoicePreviewScope;
+  page: number;
+  pageSize: 25 | 50 | 100 | 200;
+  sourceTotal: number | null;
+  sourceRowsOnPage: number;
+  alreadyImportedExcludedOnPage: number;
+  hasNextPage: boolean;
+};
+
 type QBInvoiceImportResult = {
   created: number;
   updated: number;
@@ -303,6 +315,9 @@ export default function SettingsIntegrations() {
 
   // QB invoice preview/import state
   const [invoicePreview, setInvoicePreview] = useState<QBInvoicePreviewRow[] | null>(null);
+  const [invoicePreviewPage, setInvoicePreviewPage] = useState<QBInvoicePreviewPage | null>(null);
+  const [invoicePreviewScope, setInvoicePreviewScope] = useState<QBInvoicePreviewScope>('open_ar');
+  const [invoicePreviewPageNumber, setInvoicePreviewPageNumber] = useState(1);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [selectedQBIds, setSelectedQBIds] = useState<Set<string>>(new Set());
   const [isImportingInvoices, setIsImportingInvoices] = useState(false);
@@ -659,30 +674,32 @@ export default function SettingsIntegrations() {
     return { openAr, historical, skipped, excluded, importable: openAr + historical };
   }, [invoicePreview, selectedQBIds, invoiceOverrides]);
 
-  const handlePreviewInvoices = async () => {
+  const handlePreviewInvoices = async (options?: { scope?: QBInvoicePreviewScope; page?: number }) => {
+    const scope = options?.scope ?? invoicePreviewScope;
+    const page = options?.page ?? invoicePreviewPageNumber;
     setIsLoadingPreview(true);
     setInvoicePreview(null);
+    setInvoicePreviewPage(null);
     setSelectedQBIds(new Set());
     setExpandedDebugIds(new Set());
     setInvoiceOverrides({});
     setInvoiceFilter('all');
     try {
-      const url = showReferenceDiagnostics
-        ? '/api/integrations/quickbooks/import-preview/invoices?debugReferenceFields=1'
-        : '/api/integrations/quickbooks/import-preview/invoices';
+      const params = new URLSearchParams({ scope, page: String(page), pageSize: '50' });
+      if (showReferenceDiagnostics) params.set('debugReferenceFields', '1');
+      const url = `/api/integrations/quickbooks/import-preview/invoices?${params.toString()}`;
       const response = await fetch(url, { credentials: 'include' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.success === false) {
         throw new Error(data?.error || 'Failed to fetch invoice preview');
       }
-      const rows: QBInvoicePreviewRow[] = data.data ?? [];
+      const preview: QBInvoicePreviewPage = data.data;
+      const rows = preview?.rows ?? [];
       setInvoicePreview(rows);
+      setInvoicePreviewPage(preview);
+      setInvoicePreviewScope(scope);
+      setInvoicePreviewPageNumber(page);
       setInvoiceOverrides({});
-      // Auto-select all importable, not-yet-imported rows
-      const autoSelected = new Set<string>(
-        rows.filter(r => r.canImport && !r.alreadyImported).map(r => r.qbInvoiceId)
-      );
-      setSelectedQBIds(autoSelected);
     } catch (error: any) {
       toast({ title: 'Preview failed', description: error.message, variant: 'destructive' });
     } finally {
@@ -1107,6 +1124,17 @@ export default function SettingsIntegrations() {
                     Preview Invoices
                   </Button>
                 </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
+                  {([
+                    ['open_ar', 'Preview Open A/R'],
+                    ['historical', 'Preview Historical'],
+                    ['all_unsynced', 'Preview All Unsynced'],
+                  ] as Array<[QBInvoicePreviewScope, string]>).map(([scope, label]) => (
+                    <Button key={scope} onClick={() => handlePreviewInvoices({ scope, page: 1 })} disabled={isLoadingPreview || isImportingInvoices} variant={invoicePreviewScope === scope ? 'default' : 'outline'} size="sm">
+                      {label}
+                    </Button>
+                  ))}
+                </div>
 
                 {/* Primary action — import each invoice using its own suggested/overridden classification */}
                 <div className="mt-3 space-y-1">
@@ -1166,7 +1194,7 @@ export default function SettingsIntegrations() {
                   <div className="mt-4">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-sm font-medium">
-                        QB Invoices ({invoicePreview.length} total, {selectedQBIds.size} selected)
+                        QB {invoicePreviewScope === 'open_ar' ? 'Open A/R' : invoicePreviewScope === 'historical' ? 'Historical' : 'Unsynced'} invoices — page {invoicePreviewPage?.page ?? 1} ({invoicePreview.length} candidates, {selectedQBIds.size} selected)
                       </p>
                       <div className="flex gap-2">
                         <Button
@@ -1174,11 +1202,11 @@ export default function SettingsIntegrations() {
                           variant="ghost"
                           className="text-xs"
                           onClick={() => {
-                            const importable = invoicePreview.filter(r => r.canImport && !r.alreadyImported);
+                            const importable = invoicePreview.filter(r => r.canImport && !r.alreadyImported).slice(0, 100);
                             setSelectedQBIds(new Set(importable.map(r => r.qbInvoiceId)));
                           }}
                         >
-                          Select New
+                          Select eligible on this page
                         </Button>
                         <Button
                           size="sm"
@@ -1188,6 +1216,8 @@ export default function SettingsIntegrations() {
                         >
                           Clear
                         </Button>
+                        <Button size="sm" variant="ghost" className="text-xs" disabled={invoicePreviewPageNumber <= 1 || isLoadingPreview || isImportingInvoices} onClick={() => handlePreviewInvoices({ page: invoicePreviewPageNumber - 1 })}>Previous</Button>
+                        <Button size="sm" variant="ghost" className="text-xs" disabled={!invoicePreviewPage?.hasNextPage || isLoadingPreview || isImportingInvoices} onClick={() => handlePreviewInvoices({ page: invoicePreviewPageNumber + 1 })}>Next</Button>
                       </div>
                     </div>
                     <Tabs value={invoiceFilter} onValueChange={(value) => setInvoiceFilter(value as typeof invoiceFilter)} className="mb-2">

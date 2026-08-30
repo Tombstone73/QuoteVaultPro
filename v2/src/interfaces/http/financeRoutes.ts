@@ -19,7 +19,7 @@ export type FinanceHttpDependencies = Readonly<{
   financialRead: FinancialReadApplicationService;
   payments: BillingPaymentsApplicationService;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
-  quickBooksSync?: Readonly<{ enqueueInvoice(organizationId: string, invoiceId: string): Promise<void> }>;
+  quickBooksSync?: Readonly<{ enqueueInvoice(organizationId: string, invoiceId: string): Promise<void>; enqueueInvoices(organizationId: string, invoiceIds: readonly string[]): Promise<string[]> }>;
 }>;
 export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
   const router = Router({ mergeParams: true });
@@ -47,6 +47,22 @@ export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
       if (!invoice.ok) return fail(response, invoice.error);
       await dependencies.quickBooksSync.enqueueInvoice(organizationId, request.params.invoiceId);
       return response.status(202).json({ ok: true, data: { invoiceId: request.params.invoiceId, state: "queued" } });
+    } catch (error) { return fail(response, error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "QuickBooks sync could not be queued.")); }
+  });
+  router.post("/invoices/quickbooks-sync-selected", async (request, response) => {
+    try {
+      if (!dependencies.quickBooksSync) throw new V2ApplicationError("INTERNAL_ERROR", "QuickBooks synchronization is unavailable.");
+      const organizationId = organization(request);
+      const supplied: unknown[] = Array.isArray(request.body?.invoiceIds) ? request.body.invoiceIds : [];
+      const invoiceIds = [...new Set<string>(supplied.map((value): string => typeof value === "string" ? value.trim() : "").filter((value): value is string => value.length > 0))];
+      if (!invoiceIds.length || invoiceIds.length > 100) return fail(response, new V2ApplicationError("VALIDATION_ERROR", "Select between 1 and 100 V2 Invoice records."));
+      const principal = await dependencies.principals.principal(request, organizationId);
+      for (const invoiceId of invoiceIds) {
+        const invoice = await dependencies.financialRead.readInvoice(context(principal, organizationId, `http:POST:${request.path}`), brandedId<"InvoiceId">(invoiceId));
+        if (!invoice.ok) return fail(response, invoice.error);
+      }
+      const queued = await dependencies.quickBooksSync.enqueueInvoices(organizationId, invoiceIds);
+      return response.status(202).json({ ok: true, data: { invoiceIds: queued, state: "queued" } });
     } catch (error) { return fail(response, error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "QuickBooks sync could not be queued.")); }
   });
   router.post("/invoices/:invoiceId/payments", async (request, response) => {
