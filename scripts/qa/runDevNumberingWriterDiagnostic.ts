@@ -15,7 +15,7 @@ const INTENT = "RUN_DEV_NUMBERING_WRITER_DIAGNOSTIC";
 const QA_PREFIX = "QA - Numbering Writer";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const stableIdentifier = /^[A-Za-z0-9_-]{3,120}$/u;
-const runIdPattern = /^[A-Za-z0-9_-]{8,80}$/u;
+const runIdPattern = /^[A-Za-z0-9_-]{8,24}$/u;
 
 type Args = Readonly<{
   organizationId: string;
@@ -73,7 +73,10 @@ const fail = (message: string): never => { throw new Error(message); };
 
 const diagnosticContext = (organizationId: string, requestId: string): OperationContext => ({
   organizationId,
-  operationId: `dev-qa-numbering-writer:${requestId}`,
+  // Durable operation ids are persisted in a varchar(64) column.  `request`
+  // below is intentionally compact so this remains a distinct but bounded
+  // canonical request identity for every QA operation.
+  operationId: requestId,
   businessRequest: { id: requestId, payloadFingerprint: "derived-by-canonical-sales-operation" },
   principal: {
     kind: "service",
@@ -217,7 +220,7 @@ async function main(): Promise<void> {
     const [baselineQuote, baselineOrder] = await Promise.all([readCounter("quote"), readCounter("order")]);
     const quoteService = new QuoteApplicationService(new PostgresQuoteTransactionRunner(pool));
     const orderService = new OrderApplicationService(new PostgresOrderTransactionRunner(pool));
-    const request = (kind: string) => `dev-qa-numbering:${args.runId}:${kind}`;
+    const request = (kind: string) => `nwd:${args.runId}:${kind}`;
 
     const createCompatibilityQuote = async (suffix: string): Promise<Created> => {
       const quote = await storage.createQuote(args.organizationId, {
@@ -270,26 +273,26 @@ async function main(): Promise<void> {
       return { writer: "v2", id: result.value.order.order.orderId, number: result.value.order.number.display };
     };
 
-    const compatibilityQuote = await createCompatibilityQuote("compatibility");
-    const followingV2Quote = await createV2Quote("following-v2");
+    const compatibilityQuote = await createCompatibilityQuote("c");
+    const followingV2Quote = await createV2Quote("v");
     const quoteReplayRequest = request("quote-replay");
-    const quoteReplayFirst = await createV2Quote("replay", quoteReplayRequest);
-    const quoteReplaySecond = await createV2Quote("replay", quoteReplayRequest);
+    const quoteReplayFirst = await createV2Quote("r", quoteReplayRequest);
+    const quoteReplaySecond = await createV2Quote("r", quoteReplayRequest);
     if (quoteReplayFirst.id !== quoteReplaySecond.id || quoteReplayFirst.number !== quoteReplaySecond.number) fail("Quote durable replay created a second logical result.");
     const [concurrentCompatibilityQuote, concurrentV2Quote] = await Promise.all([
-      createCompatibilityQuote("concurrent-compatibility"),
-      createV2Quote("concurrent-v2"),
+      createCompatibilityQuote("cc"),
+      createV2Quote("cv"),
     ]);
 
-    const compatibilityOrder = await createCompatibilityOrder("compatibility");
-    const followingV2Order = await createV2Order("following-v2");
+    const compatibilityOrder = await createCompatibilityOrder("c");
+    const followingV2Order = await createV2Order("v");
     const orderReplayRequest = request("order-replay");
-    const orderReplayFirst = await createV2Order("replay", orderReplayRequest);
-    const orderReplaySecond = await createV2Order("replay", orderReplayRequest);
+    const orderReplayFirst = await createV2Order("r", orderReplayRequest);
+    const orderReplaySecond = await createV2Order("r", orderReplayRequest);
     if (orderReplayFirst.id !== orderReplaySecond.id || orderReplayFirst.number !== orderReplaySecond.number) fail("Order durable replay created a second logical result.");
     const [concurrentCompatibilityOrder, concurrentV2Order] = await Promise.all([
-      createCompatibilityOrder("concurrent-compatibility"),
-      createV2Order("concurrent-v2"),
+      createCompatibilityOrder("cc"),
+      createV2Order("cv"),
     ]);
 
     const quoteRows = [compatibilityQuote, followingV2Quote, quoteReplayFirst, concurrentCompatibilityQuote, concurrentV2Quote];
