@@ -95,7 +95,7 @@ const issued = renderInvoice("issued");
 assert.match(issued, />Preview PDF</);
 assert.match(issued, /Issued Billing checkpoint; commercial content is immutable/);
 assert.match(issued, />Take Payment</);
-assert.match(issued, />Sync to QuickBooks</);
+assert.doesNotMatch(issued, />Sync to QuickBooks</);
 assert.doesNotMatch(issued, />Issue Invoice</);
 assert.doesNotMatch(renderInvoice("draft", false), />Preview PDF</);
 const noSelection = renderToStaticMarkup(
@@ -121,7 +121,7 @@ const noSelection = renderToStaticMarkup(
 assert.doesNotMatch(noSelection, />Preview PDF</);
 const workspaceSource = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
-assert.match(workspaceSource, /Select up to 100 issued V2 Invoices/);
-assert.match(workspaceSource, /syncQuickBooksSelected/);
-assert.match(apiSource, /quickbooks-sync-selected/);
+assert.doesNotMatch(workspaceSource, /QuickBooks sync/);
+assert.doesNotMatch(workspaceSource, /Retry Payment Sync/);
+assert.match(apiSource, /settings\/accounting\/sync-selected/);
 console.log("FinanceWorkspace invoice PDF action tests passed.");

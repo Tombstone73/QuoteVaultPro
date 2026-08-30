@@ -1330,10 +1330,19 @@ export const emailIntegrationApi = {
   disconnect: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email/disconnect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
 };
 export type QuickBooksConnectionReadiness = Readonly<{ state: "not_connected" | "connected_sandbox" | "connected_production" | "connected_unknown" | "authorization_required" | "reconnect_required" | "worker_not_ready" | "sync_ready" | "action_required"; environment: "sandbox" | "production" | "unknown"; connected: boolean; connectedCompanyName: string | null; actionRequired: string | null }>;
+export type QuickBooksOperationsRead = Readonly<{ eligibleInvoices: readonly Readonly<{invoiceId:string;displayNumber:string;customerName:string;totalCents:number;currency:string}>[]; activity: readonly Readonly<{jobId:string;subjectKind:"invoice"|"payment"|"refund";subjectId:string;displayNumber:string;amountCents:number|null;currency:string|null;state:"queued"|"processing"|"retry"|"succeeded"|"uncertain"|"blocked";attemptCount:number;lastError:string|null;updatedAt:string;completedAt:string|null;providerId:string|null;retryEligible:boolean}>[] }>;
+export type QuickBooksInvoiceImportPreview = Readonly<{rows:readonly Readonly<{qbInvoiceId:string;qbDocNumber:string;customerRefName:string;classification:"open_ar"|"historical";canImport:boolean;cannotImportReason?:string;warningReasons:readonly string[];exclusionReasons:readonly string[]}>[];scope:"open_ar"|"historical"|"all_unsynced";page:number;pageSize:number;sourceTotal:number|null;hasNextPage:boolean}>;
+export type QuickBooksCustomerImportPreview = readonly Readonly<{qbCustomerId:string;qbDisplayName:string;mappedCompanyName:string;importStatus:string;contactNeedsReview:boolean;failureReason:string|null;matchedExistingCustomerId:string|null}>[];
 export const quickBooksIntegrationApi = {
   get: (organizationId: string) => request<QuickBooksConnectionReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting`),
   connect: (organizationId: string) => request<Readonly<{ authorizeUrl: string }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/connect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
   disconnect: (organizationId: string) => request<QuickBooksConnectionReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/disconnect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
+  operations: (organizationId:string) => request<QuickBooksOperationsRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/operations`),
+  syncSelected: (organizationId:string,invoiceIds:readonly string[]) => request<Readonly<{invoiceIds:readonly string[];state:"queued"}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/sync-selected`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({invoiceIds})}),
+  retry: (organizationId:string,kind:"invoice"|"payment"|"refund",subjectId:string) => request<Readonly<{state:"queued";attemptCount:number}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/queue/${encodeURIComponent(kind)}/${encodeURIComponent(subjectId)}/retry`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:"{}"}),
+  customerImportPreview:(organizationId:string)=>request<QuickBooksCustomerImportPreview>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/import-preview/customers`),
+  invoiceImportPreview:(organizationId:string,scope:"open_ar"|"historical"|"all_unsynced",page:number)=>request<QuickBooksInvoiceImportPreview>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/import-preview/invoices?scope=${scope}&page=${page}&pageSize=25`),
+  importInvoices:(organizationId:string,invoices:readonly Readonly<{qbId:string;classification:"open_ar"|"historical"|"skip"}>[])=>request<Readonly<{created:number;updated:number;skipped:number;excluded:number;failed:number;errors:readonly string[]}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/import/invoices`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({invoices})}),
 };
 const adoptSessionScope = (nextScope: string): void => {
   if (sessionScope && sessionScope !== nextScope) {
@@ -2255,21 +2264,6 @@ export const financeApi = {
         organizationId,
         `/invoices/legacy/${encodeURIComponent(invoiceId)}`,
       ),
-    ),
-  syncQuickBooks: (organizationId: string, invoiceId: string) =>
-    request<Readonly<{ invoiceId: string; state: "queued" }>>(
-      financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/quickbooks-sync`),
-      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" } },
-    ),
-  syncQuickBooksSelected: (organizationId: string, invoiceIds: readonly string[]) =>
-    request<Readonly<{ invoiceIds: readonly string[]; state: "queued" }>>(
-      financeEndpoint(organizationId, "/invoices/quickbooks-sync-selected"),
-      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ invoiceIds }) },
-    ),
-  retryQuickBooksPayment: (organizationId: string, invoiceId: string, paymentId: string) =>
-    request<Readonly<{ paymentId: string; state: "queued"; attemptCount: number }>>(
-      financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/payments/${encodeURIComponent(paymentId)}/quickbooks-retry`),
-      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" } },
     ),
   recordPayment: (
     organizationId: string,

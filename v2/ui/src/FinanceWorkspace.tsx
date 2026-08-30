@@ -273,7 +273,6 @@ export const FinanceWorkspace = ({
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"cash" | "check" | "external">("check");
   const [paymentId, setPaymentId] = useState("");
-  const [quickBooksSelections, setQuickBooksSelections] = useState<Set<string>>(() => new Set());
   const overview = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "finance", "overview"],
     queryFn: () => financeApi.overview(organizationId),
@@ -381,21 +380,6 @@ export const FinanceWorkspace = ({
       setNotice("Invoice issued as an immutable Billing checkpoint.");
       await refresh();
     },
-    onError: (error) => setNotice(errorText(error)),
-  });
-  const quickBooksSync = useMutation({
-    mutationFn: () => financeApi.syncQuickBooks(organizationId, selected),
-    onSuccess: () => setNotice("QuickBooks sync queued through the V2 Billing accounting worker."),
-    onError: (error) => setNotice(errorText(error)),
-  });
-  const quickBooksSelectedSync = useMutation({
-    mutationFn: () => financeApi.syncQuickBooksSelected(organizationId, [...quickBooksSelections]),
-    onSuccess: (result) => { setQuickBooksSelections(new Set()); setNotice(`${result.invoiceIds.length} V2 Invoice${result.invoiceIds.length === 1 ? "" : "s"} queued through the canonical QuickBooks worker.`); },
-    onError: (error) => setNotice(errorText(error)),
-  });
-  const quickBooksPaymentRetry = useMutation({
-    mutationFn: (retryPaymentId: string) => financeApi.retryQuickBooksPayment(organizationId, selected, retryPaymentId),
-    onSuccess: (result) => setNotice(`QuickBooks Payment recovery queued (attempt ${result.attemptCount + 1}).`),
     onError: (error) => setNotice(errorText(error)),
   });
   if (!organizationId)
@@ -603,26 +587,6 @@ export const FinanceWorkspace = ({
         </div>
       </header>
       <div className="v2-finance-overview">
-        {canInvoiceView && (() => {
-          const eligible = (overview.data?.items ?? []).filter((row) => row.source === "v2" && row.lifecycle === "issued");
-          return eligible.length ? <section className="v2-finance-quickbooks-selection">
-            <h2>QuickBooks sync</h2>
-            <p>Select up to 100 issued V2 Invoices. Selection only queues the canonical accounting worker; it never calls QuickBooks from the browser.</p>
-            <label>
-              <input type="checkbox" checked={eligible.length > 0 && eligible.every((row) => quickBooksSelections.has(row.invoiceId))} onChange={(event) => setQuickBooksSelections(event.target.checked ? new Set(eligible.slice(0, 100).map((row) => row.invoiceId)) : new Set())} />
-              Select all eligible ({Math.min(eligible.length, 100)})
-            </label>
-            <div className="v2-finance-quickbooks-selection-items">
-              {eligible.slice(0, 100).map((row) => <label key={row.invoiceId}>
-                <input type="checkbox" checked={quickBooksSelections.has(row.invoiceId)} onChange={(event) => setQuickBooksSelections((current) => { const next = new Set(current); if (event.target.checked) next.add(row.invoiceId); else next.delete(row.invoiceId); return next; })} />
-                Order {row.sourceOrderNumber} · {row.customerName ?? "Customer unavailable"} · {money(row.balance)}
-              </label>)}
-            </div>
-            <button className="v2-quiet-button" disabled={!csrfReady || quickBooksSelections.size === 0 || quickBooksSelectedSync.isPending} onClick={() => quickBooksSelectedSync.mutate()}>
-              Sync selected ({quickBooksSelections.size})
-            </button>
-          </section> : null;
-        })()}
         <FinanceGrid
           grid="invoices"
           scope={sessionScope}
@@ -688,11 +652,6 @@ export const FinanceWorkspace = ({
                   }}
                 >
                   Take Payment
-                </button>
-              )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canInvoiceView && (
-                <button className="v2-quiet-button" disabled={!csrfReady || quickBooksSync.isPending} onClick={() => quickBooksSync.mutate()}>
-                  Sync to QuickBooks
                 </button>
               )}
               {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && (
@@ -780,7 +739,6 @@ export const FinanceWorkspace = ({
               facts.
             </p>
             <HistoryTable history={detail.data?.history ?? []} />
-            {(detail.data?.history ?? []).filter((entry) => entry.kind === "payment").map((entry) => <button key={`retry-${entry.id}`} className="v2-quiet-button" disabled={!csrfReady || quickBooksPaymentRetry.isPending} onClick={() => quickBooksPaymentRetry.mutate(entry.id)}>Retry Payment Sync</button>)}
           </section>
           {notice && <p className="v2-invoice-notice">{notice}</p>}
         </article>

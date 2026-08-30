@@ -6,6 +6,10 @@ import {
   syncV2PaymentToQuickBooks,
   syncV2RefundCreditMemoToQuickBooks,
   syncV2RefundDisbursementToQuickBooks,
+  fetchQBCustomersForPreview,
+  fetchQBInvoicePreviewPage,
+  importQBInvoicesByIds,
+  type QBInvoicePreviewScope,
   type V2QuickBooksCustomer,
 } from "../../../server/quickbooksService.js";
 import { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
@@ -16,6 +20,10 @@ type QuickBooksLinkKind = "customer" | "invoice" | "payment" | "refund_credit_me
 type JobState = "queued" | "processing" | "retry" | "succeeded" | "uncertain" | "blocked";
 type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; attemptCount: number }>;
 export type QuickBooksQueueRunResult = Readonly<{ claimed: number; succeeded: number; retry: number; uncertain: number; blocked: number }>;
+export type QuickBooksOperationsRead = Readonly<{
+  eligibleInvoices: ReadonlyArray<Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string }>>;
+  activity: ReadonlyArray<Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean }>>;
+}>;
 
 const retryDelayMs = (attempt: number) => Math.min(30 * 60_000, 15_000 * 2 ** Math.min(Math.max(0, attempt - 1), 7));
 const concise = (cause: unknown) => String((cause as { message?: unknown })?.message ?? cause ?? "QuickBooks sync failed").replace(/\s+/g, " ").replace(/\0/g, "").trim().slice(0, 500) || "QuickBooks sync failed";
@@ -71,6 +79,64 @@ export class PostgresQuickBooksSyncNow {
       if (state === "processing") throw new Error("This QuickBooks Payment is currently being processed.");
       throw new Error("This QuickBooks Payment is not eligible for recovery.");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  /** Accounting Settings is the sole operator console. It reads only V2 facts
+   * plus durable integration metadata; no legacy financial table is consulted. */
+  async operations(organizationId: string): Promise<QuickBooksOperationsRead> {
+    const [eligible, activity] = await Promise.all([
+      this.pool.query<{ id:string; invoice_display_number:string; customer_name:string; total_cents:string; currency:string }>(
+        `SELECT i.id,i.invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency
+           FROM v2_billing_invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
+          WHERE i.organization_id=$1 AND i.invoice_state='issued'
+            AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id)
+          ORDER BY i.issued_at DESC NULLS LAST LIMIT 100`, [organizationId]),
+      this.pool.query<{ id:string; subject_kind:QuickBooksSyncSubject; subject_id:string; state:JobState; attempt_count:number; last_error:string|null; updated_at:Date; completed_at:Date|null; display_number:string|null; amount_cents:string|null; currency:string|null; provider_id:string|null }>(
+        `SELECT j.id,j.subject_kind,j.subject_id,j.state,j.attempt_count,j.last_error,j.updated_at,j.completed_at,
+                COALESCE(i.invoice_display_number,'Invoice') display_number,
+                CASE WHEN j.subject_kind='payment' THEN p.amount_cents WHEN j.subject_kind='refund' THEN r.amount_cents ELSE i.total_cents END::text amount_cents,
+                COALESCE(p.currency,r.currency,i.currency) currency,
+                l.provider_id
+           FROM v2_quickbooks_sync_jobs j
+           LEFT JOIN v2_billing_payments p ON p.organization_id=j.organization_id AND j.subject_kind='payment' AND p.id=j.subject_id
+           LEFT JOIN v2_billing_refunds r ON r.organization_id=j.organization_id AND j.subject_kind='refund' AND r.id=j.subject_id
+           LEFT JOIN v2_billing_invoices i ON i.organization_id=j.organization_id AND ((j.subject_kind='invoice' AND i.id=j.subject_id) OR (j.subject_kind='payment' AND i.id=p.invoice_id) OR (j.subject_kind='refund' AND i.id=r.invoice_id))
+           LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=j.organization_id AND l.entity_id=j.subject_id AND ((j.subject_kind IN ('invoice','payment') AND l.entity_kind=j.subject_kind) OR (j.subject_kind='refund' AND l.entity_kind='refund_disbursement'))
+          WHERE j.organization_id=$1 ORDER BY CASE WHEN j.state IN ('blocked','uncertain') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 100`, [organizationId]),
+    ]);
+    return {
+      eligibleInvoices: eligible.rows.map((row) => ({ invoiceId:row.id, displayNumber:row.invoice_display_number, customerName:row.customer_name, totalCents:Number(row.total_cents), currency:row.currency })),
+      activity: activity.rows.map((row) => ({ jobId:row.id, subjectKind:row.subject_kind, subjectId:row.subject_id, displayNumber:row.display_number ?? "Invoice", amountCents:row.amount_cents === null ? null : Number(row.amount_cents), currency:row.currency, state:row.state, attemptCount:row.attempt_count, lastError:row.last_error, updatedAt:row.updated_at.toISOString(), completedAt:row.completed_at?.toISOString() ?? null, providerId:row.provider_id, retryEligible:row.state === "blocked" || row.state === "retry" })),
+    };
+  }
+  /** Recovery deliberately preserves the one existing queue identity. */
+  async retry(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<{ state: "queued"; attemptCount: number }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const valid = await client.query<{ id:string }>(subjectKind === "invoice"
+        ? "SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND invoice_state='issued'"
+        : subjectKind === "payment"
+          ? "SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state='issued'"
+          : "SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state='issued'", [organizationId, subjectId]);
+      if (!valid.rows[0]) throw new Error(`The V2 ${subjectKind} is unavailable for QuickBooks recovery.`);
+      const recovered = await client.query<{ attempt_count:number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId,subjectKind,subjectId]);
+      if (recovered.rows[0]) { await client.query("COMMIT"); return { state:"queued",attemptCount:recovered.rows[0].attempt_count }; }
+      const job = await client.query<{ state:JobState }>("SELECT state FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 FOR UPDATE", [organizationId,subjectKind,subjectId]);
+      const state=job.rows[0]?.state;
+      if (state === "succeeded") throw new Error(`This QuickBooks ${subjectKind} is already synchronized.`);
+      if (state === "uncertain") throw new Error(`This QuickBooks ${subjectKind} requires provider reconciliation before it can be retried.`);
+      if (state === "processing") throw new Error(`This QuickBooks ${subjectKind} is currently being processed.`);
+      throw new Error(`This QuickBooks ${subjectKind} is not eligible for recovery.`);
+    } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async importPreview(organizationId:string, scope:QBInvoicePreviewScope, page:number, pageSize:number) { return fetchQBInvoicePreviewPage({organizationId,scope,page,pageSize}); }
+  async customerImportPreview(organizationId:string) { return fetchQBCustomersForPreview(organizationId); }
+  async importInvoices(organizationId:string, userId:string, invoices:readonly Readonly<{qbId:string;classification:"open_ar"|"historical"|"skip"}>[]) {
+    const selected=[...new Map(invoices.map(row=>[row.qbId.trim(),row])).values()].filter(row=>row.qbId);
+    if (!selected.length || selected.length>100) throw new Error("Select between 1 and 100 QuickBooks invoices to import.");
+    const ids=selected.filter(row=>row.classification!=="skip").map(row=>row.qbId);
+    if (!ids.length) return {created:0,updated:0,skipped:selected.length,excluded:0,failed:0,importedOpenAr:0,importedHistorical:0,numberingConflicts:0,errors:[]};
+    return importQBInvoicesByIds(organizationId,ids,"auto",userId,Object.fromEntries(selected.map(row=>[row.qbId,row.classification])));
   }
 }
 

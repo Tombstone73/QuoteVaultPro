@@ -9,7 +9,10 @@ const queue = readFileSync(resolve("v2/infrastructure/accounting/quickBooksBilli
 const provider = readFileSync(resolve("server/quickbooksService.ts"), "utf8");
 const invoice = readFileSync(resolve("v2/infrastructure/billing/postgresBillingInvoiceTransaction.ts"), "utf8");
 const payment = readFileSync(resolve("v2/infrastructure/billing/postgresBillingPaymentsTransaction.ts"), "utf8");
-const routes = readFileSync(resolve("v2/src/interfaces/http/financeRoutes.ts"), "utf8");
+const routes = readFileSync(resolve("v2/src/interfaces/http/quickBooksIntegrationRoutes.ts"), "utf8");
+const financeRoutes = readFileSync(resolve("v2/src/interfaces/http/financeRoutes.ts"), "utf8");
+const consoleUi = readFileSync(resolve("v2/ui/src/QuickBooksSettingsWorkspace.tsx"), "utf8");
+const financeUi = readFileSync(resolve("v2/ui/src/FinanceWorkspace.tsx"), "utf8");
 const historical = readFileSync(resolve("shared/quickBooksHistoricalNumbering.ts"), "utf8");
 
 assert.match(migration, /v2_quickbooks_sync_jobs/);
@@ -28,8 +31,8 @@ assert.match(queue, /async retryPayment\(organizationId: string, invoiceId: stri
 assert.match(queue, /state IN \('blocked','retry'\)/);
 assert.match(queue, /requires provider reconciliation before it can be retried/);
 assert.match(queue, /already synchronized/);
-assert.match(routes, /quickbooks-retry/);
-assert.match(routes, /retryPayment\(organizationId, request\.params\.invoiceId, request\.params\.paymentId\)/);
+assert.match(routes, /\/queue\/:subjectKind\/:subjectId\/retry/);
+assert.match(routes, /quickBooksSync\.retry\(organizationId,kind,req\.params\.subjectId\)/);
 assert.match(queue, /id = ANY\(\$2::varchar\[\]\)/);
 assert.doesNotMatch(queue, /id = ANY\(\$2::uuid\[\]\)/);
 assert.match(queue, /SET state=\$2::varchar/);
@@ -52,8 +55,20 @@ assert.match(refundMigration, /subject_kind IN \('invoice','payment','refund'\)/
 assert.match(refundMigration, /v2_quickbooks_refund_sync_workflows/);
 assert.match(provider, /QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED/);
 assert.match(provider, /QUICKBOOKS_INVOICE_REVIEW_REQUIRED/);
-assert.match(routes, /quickbooks-sync-selected/);
-assert.match(routes, /enqueueInvoices\(organizationId, invoiceIds\)/);
+assert.match(routes, /\/sync-selected/);
+assert.match(routes, /enqueueInvoices\(organizationId,ids\)/);
+assert.match(routes, /import-preview\/invoices/);
+assert.match(routes, /import\/invoices/);
+assert.match(consoleUi, /1\. Connection/);
+assert.match(consoleUi, /2\. Import from QuickBooks/);
+assert.match(consoleUi, /3\. Sync to QuickBooks/);
+assert.match(consoleUi, /4\. Sync Queue \/ Activity/);
+assert.match(consoleUi, /5\. Action Required \/ Failures/);
+assert.match(consoleUi, /Retry \$\{kind\(row\.subjectKind\)\} Sync/);
+assert.match(consoleUi, /Provider reconciliation is required before retry/);
+assert.doesNotMatch(financeUi, /Sync to QuickBooks/);
+assert.doesNotMatch(financeUi, /Retry Payment Sync/);
+assert.doesNotMatch(financeRoutes, /quickbooks-sync-selected/);
 assert.match(historical, /QuickBooks historical invoice is missing DocNumber/);
 assert.match(historical, /native_number_collision/);
 assert.equal(v2QuickBooksQueueWorkerEnabled({ QUICKBOOKS_AUTOMATION_OWNER: "queue" }), true);
