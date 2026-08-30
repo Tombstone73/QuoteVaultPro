@@ -28,6 +28,7 @@ import { composeAuthenticatedRoutingRuntime } from "../../infrastructure/routing
 import { composeAuthenticatedInventoryRuntime } from "../../infrastructure/inventory/authenticatedInventoryRuntime.js";
 import { composeAuthenticatedFormulaRuntime } from "../../infrastructure/pricing/authenticatedFormulaRuntime.js";
 import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructure/communications/authenticatedEmailIntegrationRuntime.js";
+import { composeAuthenticatedQuickBooksIntegrationRuntime } from "../../infrastructure/accounting/authenticatedQuickBooksIntegrationRuntime.js";
 import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
 
 export const createV2DeploymentApp = (
@@ -54,6 +55,7 @@ export const createV2DeploymentApp = (
   const inventory = composeAuthenticatedInventoryRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const formulas = composeAuthenticatedFormulaRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const emailIntegration = composeAuthenticatedEmailIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
+  const quickBooksIntegration = composeAuthenticatedQuickBooksIntegrationRuntime({ pool, trustedHostIdentity });
 
   return createV2HttpApp(
     config,
@@ -79,6 +81,7 @@ export const createV2DeploymentApp = (
     inventory,
     formulas,
     emailIntegration,
+    quickBooksIntegration,
   );
 };
 

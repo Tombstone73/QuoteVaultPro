@@ -32,6 +32,7 @@ import { createOrganizationSettingsRouter, type OrganizationSettingsHttpDependen
 import { createTeamAccessRouter, type TeamAccessHttpDependencies } from "./teamAccessRoutes.js";
 import { createDocumentNumberingSettingsRouter, type DocumentNumberingSettingsHttpDependencies } from "./documentNumberingSettingsRoutes.js";
 import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
+import { createQuickBooksIntegrationRouter, type QuickBooksIntegrationHttpDependencies } from "./quickBooksIntegrationRoutes.js";
 import { createStripeWebhookHandler } from "./stripeWebhookRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
@@ -79,6 +80,7 @@ export const createV2HttpApp = (
   inventory?: AuthenticatedInventoryRouteRuntime,
   formulas?: AuthenticatedFormulaRouteRuntime,
   emailIntegration?: EmailIntegrationHttpDependencies,
+  quickBooksIntegration?: QuickBooksIntegrationHttpDependencies,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -288,6 +290,14 @@ export const createV2HttpApp = (
     );
     app.get("/api/email/google/callback", createEmailIntegrationCallback(emailIntegration));
   }
+  if (quote && quickBooksIntegration)
+    app.use(
+      "/v2/organizations/:organizationId/settings/accounting",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request,response,next),
+      createQuickBooksIntegrationRouter(quickBooksIntegration),
+    );
   if (order)
     app.use(
       "/v2/organizations/:organizationId/orders",

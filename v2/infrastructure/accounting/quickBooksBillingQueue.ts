@@ -4,12 +4,15 @@ import type { Pool, PoolClient } from "pg";
 import {
   syncV2InvoiceToQuickBooks,
   syncV2PaymentToQuickBooks,
+  syncV2RefundCreditMemoToQuickBooks,
+  syncV2RefundDisbursementToQuickBooks,
   type V2QuickBooksCustomer,
 } from "../../../server/quickbooksService.js";
 import { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
 export { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
 
-export type QuickBooksSyncSubject = "invoice" | "payment";
+export type QuickBooksSyncSubject = "invoice" | "payment" | "refund";
+type QuickBooksLinkKind = "customer" | "invoice" | "payment" | "refund_credit_memo" | "refund_disbursement";
 type JobState = "queued" | "processing" | "retry" | "succeeded" | "uncertain" | "blocked";
 type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; attemptCount: number }>;
 export type QuickBooksQueueRunResult = Readonly<{ claimed: number; succeeded: number; retry: number; uncertain: number; blocked: number }>;
@@ -67,6 +70,7 @@ export class V2QuickBooksBillingWorker {
       } catch (error) {
         const state: JobState = quickBooksQueueFailureState(error);
         if (state === "uncertain") result.uncertain += 1; else if (state === "blocked") result.blocked += 1; else result.retry += 1;
+        if (job.subjectKind === "refund") await this.workflow(job.organizationId, job.subjectId, state, concise(error));
         await this.finish(job, state, concise(error));
       }
     }
@@ -81,6 +85,7 @@ export class V2QuickBooksBillingWorker {
         `WITH candidate AS (
            SELECT id FROM v2_quickbooks_sync_jobs
            WHERE (state IN ('queued','retry') AND available_at <= now())
+              OR (state='uncertain' AND subject_kind='refund' AND available_at <= now())
               OR (state='processing' AND lease_expires_at < now())
            ORDER BY available_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1
          )
@@ -99,7 +104,8 @@ export class V2QuickBooksBillingWorker {
 
   private async process(job: Job): Promise<void> {
     if (job.subjectKind === "invoice") return this.processInvoice(job);
-    return this.processPayment(job);
+    if (job.subjectKind === "payment") return this.processPayment(job);
+    return this.processRefund(job);
   }
 
   private async processInvoice(job: Job): Promise<void> {
@@ -145,9 +151,56 @@ export class V2QuickBooksBillingWorker {
     } finally { client.release(); }
   }
 
-  private async link(organizationId: string, kind: "customer" | "invoice" | "payment", entityId: string): Promise<string | null> { const result = await this.pool.query<{provider_id:string}>("SELECT provider_id FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3", [organizationId, kind, entityId]); return result.rows[0]?.provider_id ?? null; }
-  private async upsertLink(organizationId: string, kind: "customer" | "invoice" | "payment", entityId: string, providerId: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,entity_kind,entity_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,updated_at=now()", [organizationId, kind, entityId, providerId]); }
-  private async finish(job: Job, state: JobState, error?: string): Promise<void> { const delay = state === "retry" ? retryDelayMs(job.attemptCount) : 0; await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2='retry' THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,completed_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1 AND state='processing' AND claimed_by=$5", [job.id,state,error ?? null,delay,this.workerId]); }
+  /**
+   * The V2 Refund is immutable Billing evidence.  QuickBooks receives a
+   * separate, resumable accounting representation: CreditMemo -> Check/A-R
+   * disbursement.  Links are written after every remote success so a retry
+   * never needs to guess whether a prior provider mutation completed.
+   */
+  private async processRefund(job: Job): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      const refund = await client.query<{ invoice_id:string; payment_id:string; amount_cents:string; currency:string; occurred_at:Date; customer_id:string|null; invoice_display_number:string; checkpoint_json:unknown }>(
+        `SELECT r.invoice_id,a.payment_id,r.amount_cents,r.currency,r.occurred_at,i.customer_id,i.invoice_display_number,c.checkpoint_json
+           FROM v2_billing_refunds r
+           JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id
+           JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id
+           JOIN v2_billing_invoice_checkpoints c ON c.organization_id=i.organization_id AND c.invoice_id=i.id
+          WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state='issued'`, [job.organizationId, job.subjectId]);
+      const row = refund.rows[0];
+      if (!row?.customer_id || !row.payment_id) throw new Error("V2 Refund lacks its issued Invoice or original Payment projection facts.");
+      const customerQuickBooksId = await this.link(job.organizationId, "customer", row.customer_id);
+      const invoiceQuickBooksId = await this.link(job.organizationId, "invoice", row.invoice_id);
+      const paymentQuickBooksId = await this.link(job.organizationId, "payment", row.payment_id);
+      if (!customerQuickBooksId || !invoiceQuickBooksId || !paymentQuickBooksId) throw new Error("V2 Refund waits for its Customer, Invoice, and original Payment QuickBooks projections.");
+      const lines = checkpointLines(row.checkpoint_json);
+      if (!lines.length) throw new Error("V2 Refund cannot project an issued Invoice with no immutable billable lines.");
+      await this.startRefundWorkflow(job.organizationId, job.subjectId);
+      const existingCreditMemo = await this.link(job.organizationId, "refund_credit_memo", job.subjectId);
+      const credit = await syncV2RefundCreditMemoToQuickBooks({
+        organizationId: job.organizationId, refundId: job.subjectId, quickBooksCreditMemoId: existingCreditMemo ?? undefined,
+        quickBooksInvoiceId: invoiceQuickBooksId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency,
+        occurredAt: row.occurred_at.toISOString(), invoiceDisplayNumber: row.invoice_display_number, originalInvoiceLines: lines,
+      });
+      await this.upsertLink(job.organizationId, "refund_credit_memo", job.subjectId, credit.qbCreditMemoId);
+      await this.workflow(job.organizationId, job.subjectId, "credit_created");
+      const existingDisbursement = await this.link(job.organizationId, "refund_disbursement", job.subjectId);
+      const disbursement = await syncV2RefundDisbursementToQuickBooks({
+        organizationId: job.organizationId, refundId: job.subjectId, quickBooksDisbursementId: existingDisbursement ?? undefined,
+        quickBooksCreditMemoId: credit.qbCreditMemoId, quickBooksInvoiceId: invoiceQuickBooksId, quickBooksPaymentId: paymentQuickBooksId,
+        quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString(),
+      });
+      await this.upsertLink(job.organizationId, "refund_disbursement", job.subjectId, disbursement.qbDisbursementId);
+      await this.workflow(job.organizationId, job.subjectId, "linked");
+      await this.workflow(job.organizationId, job.subjectId, "succeeded");
+    } finally { client.release(); }
+  }
+
+  private async link(organizationId: string, kind: QuickBooksLinkKind, entityId: string): Promise<string | null> { const result = await this.pool.query<{provider_id:string}>("SELECT provider_id FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3", [organizationId, kind, entityId]); return result.rows[0]?.provider_id ?? null; }
+  private async upsertLink(organizationId: string, kind: QuickBooksLinkKind, entityId: string, providerId: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,entity_kind,entity_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,updated_at=now()", [organizationId, kind, entityId, providerId]); }
+  private async startRefundWorkflow(organizationId: string, refundId: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_refund_sync_workflows(organization_id,refund_id,state) VALUES($1,$2,'queued') ON CONFLICT(organization_id,refund_id) DO NOTHING", [organizationId, refundId]); }
+  private async workflow(organizationId: string, refundId: string, state: "queued" | "credit_created" | "disbursement_created" | "linked" | "succeeded" | "uncertain" | "retry" | "blocked", error?: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_refund_sync_workflows(organization_id,refund_id,state,last_error,completed_at) VALUES($1,$2,$3,$4,CASE WHEN $3='succeeded' THEN now() ELSE NULL END) ON CONFLICT(organization_id,refund_id) DO UPDATE SET state=EXCLUDED.state,last_error=EXCLUDED.last_error,completed_at=EXCLUDED.completed_at,updated_at=now()", [organizationId, refundId, state, error ?? null]); }
+  private async finish(job: Job, state: JobState, error?: string): Promise<void> { const delay = state === "retry" || (state === "uncertain" && job.subjectKind === "refund") ? retryDelayMs(job.attemptCount) : 0; await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2='retry' OR ($2='uncertain' AND subject_kind='refund') THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,completed_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1 AND state='processing' AND claimed_by=$5", [job.id,state,error ?? null,delay,this.workerId]); }
 }
 
 const checkpointLines = (checkpoint: unknown): Array<{ description: string; quantity: number; unitAmountCents: number; lineAmountCents: number }> => {

@@ -1246,6 +1246,80 @@ export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId
   }
 }
 
+type V2QuickBooksRefundLine = Readonly<{ description: string; quantity: number; unitAmountCents: number; lineAmountCents: number }>;
+const exactCents = (value: number) => Number((value / 100).toFixed(2));
+const v2RefundReference = (refundId: string, prefix: string) => `${prefix}-${crypto.createHash("sha256").update(refundId).digest("hex").slice(0, 16)}`;
+const refundCreditLines = (lines: readonly V2QuickBooksRefundLine[], refundCents: number): any[] => {
+  const total = lines.reduce((sum, line) => sum + line.lineAmountCents, 0);
+  if (!Number.isSafeInteger(refundCents) || refundCents <= 0 || total <= 0 || refundCents > total) throw new Error("V2 Refund amount cannot be allocated to immutable issued Invoice facts.");
+  let allocated = 0;
+  return lines.map((line, index) => {
+    const cents = index === lines.length - 1 ? refundCents - allocated : Math.floor((line.lineAmountCents * refundCents) / total);
+    allocated += cents;
+    return { LineNum: index + 1, Amount: exactCents(cents), DetailType: "SalesItemLineDetail", SalesItemLineDetail: { Qty: 1, UnitPrice: exactCents(cents) }, Description: line.description };
+  }).filter((line) => line.Amount > 0);
+};
+
+/** CreditMemo is the A/R-credit half of a paid-Invoice refund.  Its DocNumber
+ * is a deterministic V2 Refund identity, so provider-response uncertainty is
+ * reconciled by a repeatable query before another CreditMemo can be created. */
+export async function syncV2RefundCreditMemoToQuickBooks(input: Readonly<{ organizationId: string; refundId: string; quickBooksCreditMemoId?: string; quickBooksInvoiceId: string; quickBooksCustomerId: string; amountCents: number; currency: string; occurredAt: string; invoiceDisplayNumber: string; originalInvoiceLines: readonly V2QuickBooksRefundLine[] }>): Promise<{ qbCreditMemoId: string }> {
+  if (input.quickBooksCreditMemoId) {
+    const existing = await makeQBRequest("GET", `/creditmemo/${input.quickBooksCreditMemoId}`, undefined, input.organizationId);
+    if (!existing?.CreditMemo?.Id) throw new Error("QuickBooks Refund CreditMemo link could not be resolved.");
+    return { qbCreditMemoId: String(existing.CreditMemo.Id) };
+  }
+  const docNumber = v2RefundReference(input.refundId, "PHR");
+  const query = `SELECT Id, CustomerRef FROM CreditMemo WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
+  const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.CreditMemo ?? [];
+  const existing = candidates.find((item: any) => String(item?.CustomerRef?.value || "") === input.quickBooksCustomerId);
+  if (existing?.Id) return { qbCreditMemoId: String(existing.Id) };
+  if (candidates.length) { const error: any = new Error("QUICKBOOKS_REFUND_REVIEW_REQUIRED: A different QuickBooks Customer already uses this V2 Refund reference."); error.statusCode = 409; throw error; }
+  const payload = { CustomerRef: { value: input.quickBooksCustomerId }, DocNumber: docNumber, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PrivateNote: `PrintersHero V2 refund ${input.refundId} for Invoice ${input.invoiceDisplayNumber}`, Line: refundCreditLines(input.originalInvoiceLines, input.amountCents) };
+  try {
+    const created = await makeQBRequest("POST", "/creditmemo", payload, input.organizationId);
+    if (!created?.CreditMemo?.Id) throw new Error("QuickBooks Refund CreditMemo create returned no Id");
+    return { qbCreditMemoId: String(created.CreditMemo.Id) };
+  } catch (error) {
+    const resolved = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.CreditMemo?.find((item: any) => String(item?.CustomerRef?.value || "") === input.quickBooksCustomerId);
+    if (resolved?.Id) return { qbCreditMemoId: String(resolved.Id) };
+    throw error;
+  }
+}
+
+/** Check is the cash/bank disbursement half.  It posts its line to the same
+ * customer A/R account as the original QuickBooks Invoice, so it reconciles
+ * the CreditMemo without mutating either the original Invoice or Payment. */
+export async function syncV2RefundDisbursementToQuickBooks(input: Readonly<{ organizationId: string; refundId: string; quickBooksDisbursementId?: string; quickBooksCreditMemoId: string; quickBooksInvoiceId: string; quickBooksPaymentId: string; quickBooksCustomerId: string; amountCents: number; currency: string; occurredAt: string }>): Promise<{ qbDisbursementId: string }> {
+  if (input.quickBooksDisbursementId) {
+    const existing = await makeQBRequest("GET", `/check/${input.quickBooksDisbursementId}`, undefined, input.organizationId);
+    if (!existing?.Check?.Id) throw new Error("QuickBooks Refund disbursement link could not be resolved.");
+    return { qbDisbursementId: String(existing.Check.Id) };
+  }
+  const invoice = (await makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId))?.Invoice;
+  const payment = (await makeQBRequest("GET", `/payment/${input.quickBooksPaymentId}`, undefined, input.organizationId))?.Payment;
+  const arAccountId = String(invoice?.ARAccountRef?.value || process.env.QUICKBOOKS_AR_ACCOUNT_ID || "").trim();
+  const bankAccountId = String(payment?.DepositToAccountRef?.value || process.env.QUICKBOOKS_REFUND_BANK_ACCOUNT_ID || "").trim();
+  if (!arAccountId || !bankAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_ACCOUNT_CONFIGURATION_REQUIRED: The original Invoice A/R account and refund bank account must be available before a refund disbursement can be posted."); error.statusCode = 409; throw error; }
+  const docNumber = v2RefundReference(input.refundId, "PHRC");
+  const query = `SELECT Id, PayeeRef FROM Check WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
+  const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Check ?? [];
+  const existing = candidates.find((item: any) => String(item?.PayeeRef?.value || "") === input.quickBooksCustomerId);
+  if (existing?.Id) return { qbDisbursementId: String(existing.Id) };
+  if (candidates.length) { const error: any = new Error("QUICKBOOKS_REFUND_REVIEW_REQUIRED: A different QuickBooks payee already uses this V2 Refund disbursement reference."); error.statusCode = 409; throw error; }
+  const amount = exactCents(input.amountCents);
+  const payload = { PayeeRef: { value: input.quickBooksCustomerId, type: "Customer" }, BankAccountRef: { value: bankAccountId }, DocNumber: docNumber, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PrivateNote: `PrintersHero V2 refund ${input.refundId}; CreditMemo ${input.quickBooksCreditMemoId}`, Line: [{ Amount: amount, DetailType: "AccountBasedExpenseLineDetail", AccountBasedExpenseLineDetail: { AccountRef: { value: arAccountId }, CustomerRef: { value: input.quickBooksCustomerId } } }] };
+  try {
+    const created = await makeQBRequest("POST", "/check", payload, input.organizationId);
+    if (!created?.Check?.Id) throw new Error("QuickBooks Refund disbursement create returned no Id");
+    return { qbDisbursementId: String(created.Check.Id) };
+  } catch (error) {
+    const resolved = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Check?.find((item: any) => String(item?.PayeeRef?.value || "") === input.quickBooksCustomerId);
+    if (resolved?.Id) return { qbDisbursementId: String(resolved.Id) };
+    throw error;
+  }
+}
+
 async function ensureQBCustomerIdForLocalCustomer(organizationId: string, customer: Customer): Promise<string> {
   if ((customer as any).externalAccountingId) return String((customer as any).externalAccountingId);
 
@@ -1597,7 +1671,9 @@ function getQuickBooksConnectedCompanyName(connection: OAuthConnection | null): 
   const meta = (connection.metadata as any) || {};
   const companyName = String(meta.companyName || meta.companyInfo?.CompanyName || '').trim();
   if (companyName) return companyName;
-  return connection.companyId ? `QuickBooks company ${connection.companyId}` : null;
+  // A realm/company identifier is integration metadata, not useful Settings
+  // copy.  Surface a recognisable provider display name only when one exists.
+  return null;
 }
 
 export async function getQuickBooksCustomerMigrationSourceStatus(organizationId: string): Promise<QuickBooksCustomerMigrationSourceStatus> {
@@ -1667,6 +1743,28 @@ export async function getQuickBooksCustomerMigrationSourceStatus(organizationId:
     expiresAt: connection.expiresAt ?? null,
     lastSuccessfulSyncAt: lastSuccessfulSync[0]?.updatedAt ?? null,
   };
+}
+
+/** Browser-safe connection projection.  Environment is explicit only: a
+ * missing or unexpected configuration is UNKNOWN rather than inferred from a
+ * DEV hostname or the provider's default endpoint. */
+export type QuickBooksConnectionReadiness = Readonly<{
+  state: "not_connected" | "connected_sandbox" | "connected_production" | "connected_unknown" | "authorization_required" | "reconnect_required" | "worker_not_ready" | "sync_ready" | "action_required";
+  environment: "sandbox" | "production" | "unknown";
+  connected: boolean;
+  connectedCompanyName: string | null;
+  actionRequired: string | null;
+}>;
+export async function getQuickBooksConnectionReadinessForOrganization(organizationId: string): Promise<QuickBooksConnectionReadiness> {
+  const status = await getQuickBooksCustomerMigrationSourceStatus(organizationId);
+  const configured = String(process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || "").trim().toLowerCase();
+  const environment: QuickBooksConnectionReadiness["environment"] = configured === "sandbox" ? "sandbox" : configured === "production" ? "production" : "unknown";
+  const workerReady = String(process.env.QUICKBOOKS_AUTOMATION_OWNER || "").trim().toLowerCase() === "queue";
+  if (!status.connected) return { state: status.authState === "needs_reauth" ? "reconnect_required" : "not_connected", environment, connected: false, connectedCompanyName: null, actionRequired: status.authState === "needs_reauth" ? "Reconnect QuickBooks to restore authorization." : "Connect QuickBooks to enable accounting synchronization." };
+  if (status.authState === "needs_reauth" || status.requiresUserAction) return { state: "authorization_required", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: status.healthMessage || "Reconnect QuickBooks to restore authorization." };
+  if (environment === "unknown") return { state: "connected_unknown", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks connection mode must be configured explicitly before provider writes are enabled." };
+  if (!workerReady) return { state: "worker_not_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks synchronization worker is not ready." };
+  return { state: "sync_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: null };
 }
 
 export async function fetchQBCustomersForMigrationSource(organizationId: string): Promise<{

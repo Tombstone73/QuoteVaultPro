@@ -1329,6 +1329,12 @@ export const emailIntegrationApi = {
   adoptLegacy: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email/adopt-legacy`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
   disconnect: (organizationId: string) => request<EmailIntegrationReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/email/disconnect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
 };
+export type QuickBooksConnectionReadiness = Readonly<{ state: "not_connected" | "connected_sandbox" | "connected_production" | "connected_unknown" | "authorization_required" | "reconnect_required" | "worker_not_ready" | "sync_ready" | "action_required"; environment: "sandbox" | "production" | "unknown"; connected: boolean; connectedCompanyName: string | null; actionRequired: string | null }>;
+export const quickBooksIntegrationApi = {
+  get: (organizationId: string) => request<QuickBooksConnectionReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting`),
+  connect: (organizationId: string) => request<Readonly<{ authorizeUrl: string }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/connect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
+  disconnect: (organizationId: string) => request<QuickBooksConnectionReadiness>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/disconnect`, { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:"{}" }),
+};
 const adoptSessionScope = (nextScope: string): void => {
   if (sessionScope && sessionScope !== nextScope) {
     csrfTokens.clear();
