@@ -47,6 +47,9 @@ assert.match(payment, /enqueueV2QuickBooksAutoSync\(this\.client,input\.organiza
 assert.match(payment, /enqueueV2QuickBooksAutoSync\(this\.client,input\.organizationId,"refund",id\)/);
 assert.match(provider, /syncV2InvoiceToQuickBooks/);
 assert.match(provider, /syncV2PaymentToQuickBooks/);
+assert.match(provider, /function shouldLatchQuickBooksReauth/);
+assert.match(provider, /refresh token is invalid/);
+assert.match(provider, /await latchQuickBooksNeedsReauth\(\{ organizationId: orgId, connection, error \}\)/);
 assert.match(provider, /const v2PaymentReference = \(paymentId: string\) => `PHV2-\$\{crypto\.createHash/);
 assert.match(provider, /const paymentRefNum = v2PaymentReference\(input\.paymentId\)/);
 assert.doesNotMatch(provider, /const paymentRefNum = `PHV2-\$\{input\.paymentId\}`/);

@@ -254,7 +254,8 @@ export async function isQuickBooksReauthRequiredForOrganization(organizationId: 
 
 function shouldLatchQuickBooksReauth(error: unknown): boolean {
   const message = String((error as any)?.message || error || '').toLowerCase();
-  if (message.includes('invalid_grant') || message.includes('invalid grant')) return true;
+  const category = String((error as any)?.category || (error as any)?.errorCategory || '').toLowerCase();
+  if (category === 'invalid_grant' || message.includes('invalid_grant') || message.includes('invalid grant') || message.includes('refresh token is invalid')) return true;
 
   try {
     const raw = JSON.stringify(error);
@@ -980,6 +981,10 @@ async function makeQBRequest(
   try {
     accessToken = await getValidAccessTokenForOrganization(orgId);
   } catch (error) {
+    if (shouldLatchQuickBooksReauth(error)) {
+      try { await latchQuickBooksNeedsReauth({ organizationId: orgId, connection, error }); }
+      catch (latchError) { console.error('[QuickBooks] Failed to persist reauthorization state', { organizationId: orgId, message: (latchError as any)?.message || String(latchError) }); }
+    }
     const cause = getQuickBooksCredentialCauseText(error);
     console.error('[QuickBooks] Failed to get valid access token', {
       organizationId: orgId,
