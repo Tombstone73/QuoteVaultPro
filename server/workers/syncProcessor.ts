@@ -5,9 +5,10 @@
 
 import { db } from '../db';
 import { accountingSyncJobs } from '../../shared/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as qbService from '../quickbooksService';
 import { getWorkerIntervalOverride, logWorkerTick } from './workerGates';
+import { getQuickBooksAutomationOwner, isQuickBooksWorkerOwnedHere } from './quickBooksWorkerOwnership';
 
 // Track if worker is running to prevent multiple instances
 let isRunning = false;
@@ -108,11 +109,23 @@ async function pollAndProcessJobs(): Promise<void> {
   let jobsProcessed = 0;
 
   try {
+    // The derived queue owns autonomous outbound invoice/payment sync by
+    // default. In that mode this retained processor is import-only when it is
+    // manually triggered, so an old pending push job cannot become a second
+    // outbound writer.
+    const owner = getQuickBooksAutomationOwner();
+    const pendingCondition = owner === 'queue'
+      ? and(
+          eq(accountingSyncJobs.status, 'pending'),
+          eq(accountingSyncJobs.direction, 'pull'),
+        )
+      : eq(accountingSyncJobs.status, 'pending');
+
     // Fetch pending jobs
     const pendingJobs = await db
       .select()
       .from(accountingSyncJobs)
-      .where(eq(accountingSyncJobs.status, 'pending'))
+      .where(pendingCondition)
       .limit(10); // Process up to 10 jobs per poll
 
     if (pendingJobs.length === 0) {
@@ -144,6 +157,11 @@ async function pollAndProcessJobs(): Promise<void> {
  * Start the background worker
  */
 export function startSyncWorker(): void {
+  if (!isQuickBooksWorkerOwnedHere('QB_SYNC')) {
+    console.warn('[Sync Worker] Not started: this deployment assigns QuickBooks automation to the derived queue');
+    return;
+  }
+
   if (workerInterval) {
     console.log('[Sync Worker] Worker already running');
     return;

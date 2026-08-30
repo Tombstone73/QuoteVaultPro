@@ -38,6 +38,7 @@ import {
 } from "../services/quickbooksSyncQueueWorker";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { requireDeveloperAccess } from "../middleware/requireDeveloperAccess";
+import { isQuickBooksWorkerOwnedHere } from "../workers/quickBooksWorkerOwnership";
 
 export function registerQuickBooksRoutes(
   app: Express,
@@ -361,6 +362,13 @@ export function registerQuickBooksRoutes(
 
       await quickbooksService.queueSyncJobsForOrganization(organizationId, 'pull', resources);
 
+      // Imports remain available while the derived queue owns outbound
+      // invoice/payment automation. The retained job processor is pull-only in
+      // that mode, so this cannot reactivate a second outbound writer.
+      syncWorker.triggerJobProcessing().catch((error) => {
+        console.error('[QB Pull Sync] Error processing queued import jobs:', error);
+      });
+
       res.json({
         success: true,
         message: `Queued ${resources.length} pull sync job(s)`,
@@ -396,6 +404,17 @@ export function registerQuickBooksRoutes(
           success: false,
           error: 'QuickBooks push is disabled by syncPolicy=queue_only. Use the QuickBooks Sync Queue (scheduled worker / Sync now) or per-item Sync buttons.',
           syncPolicy: qbSyncPolicy,
+        });
+      }
+
+      // A bulk legacy push queue is only valid during the explicit temporary
+      // migration mode. The normal V2 deployment uses the derived queue as its
+      // only autonomous outbound owner; individual Sync Now remains available.
+      if (!isQuickBooksWorkerOwnedHere('QB_SYNC')) {
+        return res.status(409).json({
+          success: false,
+          error: 'Legacy QuickBooks bulk push is disabled because the derived invoice/payment queue is the active owner. Use the QuickBooks Sync Queue or an individual Sync Now action.',
+          automationOwner: 'queue',
         });
       }
 
@@ -512,6 +531,13 @@ export function registerQuickBooksRoutes(
           ignoreStabilityWindow: force,
           includeFailed: true,
           log: true,
+        });
+
+        // In queue-owner mode, triggerJobProcessing only consumes pending pull
+        // jobs. This preserves explicit imports without permitting legacy push
+        // jobs to share the outbound queue.
+        syncWorker.triggerJobProcessing().catch((error) => {
+          console.error('[QB Manual Trigger] Pull import processing error:', error);
         });
 
         return res.json({

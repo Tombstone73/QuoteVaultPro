@@ -10,6 +10,7 @@ import { assetPreviewWorker, getAssetPreviewFallbackIntervalMs } from "./workers
 import { assertStripeServerConfig } from "./lib/stripe";
 import { getQuickBooksSyncStabilityWindowMs, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
+import { getQuickBooksWorkerOwnershipReason, isQuickBooksWorkerOwnedHere } from "./workers/quickBooksWorkerOwnership";
 import { runInvoiceReminderJob } from "./invoiceReminderJob";
 import { reconcilePendingStripeObservations } from "./services/stripePaymentReconciliationService";
 import { runMigrations } from "./runMigrations";
@@ -264,11 +265,14 @@ process.on('uncaughtException', (error) => {
       
       if (hasQbCreds) {
         // QB Sync Worker (accounting_sync_jobs processor)
-        const qbSyncEnabled = isWorkerEnabled('QB_SYNC', true);
+        // Only one autonomous QuickBooks queue owner may run in a deployment.
+        // See quickBooksWorkerOwnership.ts for the explicit cutover policy.
+        const qbSyncEnabled = isQuickBooksWorkerOwnedHere('QB_SYNC') && isWorkerEnabled('QB_SYNC', true);
         logWorkerStatus(
           'QuickBooks Sync',
           qbSyncEnabled,
-          qbSyncEnabled ? getQuickBooksSyncIntervalMs() : undefined
+          qbSyncEnabled ? getQuickBooksSyncIntervalMs() : undefined,
+          getQuickBooksWorkerOwnershipReason('QB_SYNC')
         );
         if (qbSyncEnabled) {
           console.log('[Server] Starting QuickBooks sync worker...');
@@ -276,14 +280,19 @@ process.on('uncaughtException', (error) => {
         }
 
         // QB Queue Worker (invoice/payment outbox sync)
-        const qbQueueEnabled = isWorkerEnabled('QB_QUEUE', true);
+        const qbQueueEnabled = isQuickBooksWorkerOwnedHere('QB_QUEUE') && isWorkerEnabled('QB_QUEUE', true);
         const qbQueueInterval = getWorkerIntervalOverride(
           'QB_QUEUE',
           60 * 60_000,
           300_000,
           ['QUICKBOOKS_SYNC_INTERVAL_MS', 'QB_SYNC_QUEUE_INTERVAL_MS']
         );
-        logWorkerStatus('QuickBooks Queue', qbQueueEnabled, qbQueueEnabled ? qbQueueInterval : undefined);
+        logWorkerStatus(
+          'QuickBooks Queue',
+          qbQueueEnabled,
+          qbQueueEnabled ? qbQueueInterval : undefined,
+          getQuickBooksWorkerOwnershipReason('QB_QUEUE')
+        );
         
         if (qbQueueEnabled) {
           const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
