@@ -26,6 +26,7 @@ assert.match(queue, /v2_billing_refunds/);
 assert.match(queue, /refund_credit_memo/);
 assert.match(queue, /refund_disbursement/);
 assert.match(queue, /v2_quickbooks_refund_sync_workflows/);
+assert.match(queue, /CASE WHEN \$5::boolean THEN now\(\) ELSE NULL END/);
 assert.match(queue, /enqueueInvoices/);
 assert.match(queue, /Select between 1 and 100 issued V2 Invoices/);
 assert.match(queue, /async enqueueFinancialFacts/);
