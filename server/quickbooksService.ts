@@ -1228,6 +1228,21 @@ export async function getQuickBooksRefundDisbursementConfiguration(organizationI
   return { account: selected ? { id: selected.id, name: selected.name, accountType: selected.accountType, accountSubtype: selected.accountSubtype } : null };
 }
 
+/** QBO may omit ARAccountRef when a transaction used the company's default
+ * receivables account. A single active A/R account is deterministic; more
+ * than one is intentionally not guessed. */
+async function resolveQuickBooksRefundReceivableAccount(organizationId: string, ...providerFacts: any[]): Promise<string> {
+  for (const fact of providerFacts) {
+    const accountId = String(fact?.ARAccountRef?.value || "").trim();
+    if (accountId) return accountId;
+  }
+  const query = "SELECT Id, AccountType, Active FROM Account WHERE Active = true AND AccountType = 'Accounts Receivable' MAXRESULTS 20";
+  const response = await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const accounts: any[] = Array.isArray(response?.QueryResponse?.Account) ? response.QueryResponse.Account : [];
+  const ids: string[] = [...new Set<string>(accounts.filter((account: any) => account?.Active === true && String(account?.AccountType || "") === "Accounts Receivable").map((account: any) => String(account.Id || "").trim()).filter((accountId: string) => Boolean(accountId)))];
+  return ids.length === 1 ? ids[0]! : "";
+}
+
 /** The server confirms the supplied account by querying the currently connected
  * realm. The browser can select a label, but it cannot establish authority. */
 export async function setQuickBooksRefundDisbursementAccount(input: Readonly<{ organizationId: string; accountId: string; actorUserId: string }>): Promise<Readonly<{ account: QuickBooksRefundDisbursementAccount }>> {
@@ -1412,9 +1427,9 @@ export async function syncV2RefundDisbursementToQuickBooks(input: Readonly<{ org
     makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId),
     makeQBRequest("GET", `/creditmemo/${input.quickBooksCreditMemoId}`, undefined, input.organizationId),
   ]);
-  const arAccountId = String(creditMemoResponse?.CreditMemo?.ARAccountRef?.value || invoiceResponse?.Invoice?.ARAccountRef?.value || "").trim();
+  const arAccountId = await resolveQuickBooksRefundReceivableAccount(input.organizationId, creditMemoResponse?.CreditMemo, invoiceResponse?.Invoice);
   const bankAccountId = (await getQuickBooksRefundDisbursementConfiguration(input.organizationId)).account?.id ?? "";
-  if (!arAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_AR_ACCOUNT_REQUIRED: The linked QuickBooks Credit Memo and original Invoice did not expose an A/R account for this refund disbursement."); error.statusCode = 409; throw error; }
+  if (!arAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_AR_ACCOUNT_REQUIRED: QuickBooks did not expose a deterministic A/R account for this refund disbursement."); error.statusCode = 409; throw error; }
   if (!bankAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_ACCOUNT_CONFIGURATION_REQUIRED: Select a refund disbursement account in QuickBooks Settings before posting this refund."); error.statusCode = 409; throw error; }
   const docNumber = v2RefundReference(input.refundId, "PHRC");
   const query = `SELECT Id, PayeeRef FROM Check WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
