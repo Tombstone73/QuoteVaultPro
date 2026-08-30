@@ -25,11 +25,13 @@ export type QuickBooksOperationsRead = Readonly<{
   queueSummary: Readonly<{ queued: number; processing: number; succeeded: number; actionRequired: number }>;
 }>;
 export type QuickBooksEligibleInvoice = Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string; issuedAt: string | null; syncStatus: "eligible" }>;
-export type QuickBooksQueueActivity = Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; customerName: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean }>;
+export type QuickBooksQueueActivity = Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; customerName: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean; recoveryEligible: boolean }>;
 export type QuickBooksQueuePage = Readonly<{ items: readonly QuickBooksQueueActivity[]; total: number; page: number; pageSize: number; hasNextPage: boolean }>;
 
 const retryDelayMs = (attempt: number) => Math.min(30 * 60_000, 15_000 * 2 ** Math.min(Math.max(0, attempt - 1), 7));
 const concise = (cause: unknown) => String((cause as { message?: unknown })?.message ?? cause ?? "QuickBooks sync failed").replace(/\s+/g, " ").replace(/\0/g, "").trim().slice(0, 500) || "QuickBooks sync failed";
+/** A token lookup fails before makeQBRequest can send a provider mutation. */
+export const quickBooksCredentialInterruptedRecoveryEligible = (state: JobState, lastError: string | null): boolean => state === "uncertain" && /failed to get valid access token/i.test(lastError ?? "");
 
 /** Enqueue is idempotent by V2 entity identity and intentionally carries no financial payload. */
 export const enqueueV2QuickBooksSync = async (client: PoolClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
@@ -118,7 +120,7 @@ export class PostgresQuickBooksSyncNow {
     const [rows,count]=await Promise.all([
       this.pool.query<{id:string;subject_kind:QuickBooksSyncSubject;subject_id:string;state:JobState;attempt_count:number;last_error:string|null;updated_at:Date;completed_at:Date|null;display_number:string|null;customer_name:string;amount_cents:string|null;currency:string|null;provider_id:string|null}>(`SELECT j.id,j.subject_kind,j.subject_id,j.state,j.attempt_count,j.last_error,j.updated_at,j.completed_at,COALESCE(i.invoice_display_number,'Invoice') display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,CASE WHEN j.subject_kind='payment' THEN p.amount_cents WHEN j.subject_kind='refund' THEN r.amount_cents ELSE i.total_cents END::text amount_cents,COALESCE(p.currency,r.currency,i.currency) currency,l.provider_id ${joins} WHERE ${where} ORDER BY CASE WHEN j.state IN ('blocked','retry','uncertain') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT $4 OFFSET $5`,[organizationId,search,input.actionRequiredOnly,pageSize,offset]),
       this.pool.query<{count:string}>(`SELECT count(*)::text count ${joins} WHERE ${where}`,[organizationId,search,input.actionRequiredOnly]),
-    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({jobId:row.id,subjectKind:row.subject_kind,subjectId:row.subject_id,displayNumber:row.display_number??"Invoice",customerName:row.customer_name,amountCents:row.amount_cents===null?null:Number(row.amount_cents),currency:row.currency,state:row.state,attemptCount:row.attempt_count,lastError:row.last_error,updatedAt:row.updated_at.toISOString(),completedAt:row.completed_at?.toISOString()??null,providerId:row.provider_id,retryEligible:row.state==="blocked"||row.state==="retry"})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
+    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({jobId:row.id,subjectKind:row.subject_kind,subjectId:row.subject_id,displayNumber:row.display_number??"Invoice",customerName:row.customer_name,amountCents:row.amount_cents===null?null:Number(row.amount_cents),currency:row.currency,state:row.state,attemptCount:row.attempt_count,lastError:row.last_error,updatedAt:row.updated_at.toISOString(),completedAt:row.completed_at?.toISOString()??null,providerId:row.provider_id,retryEligible:row.state==="blocked"||row.state==="retry",recoveryEligible:quickBooksCredentialInterruptedRecoveryEligible(row.state,row.last_error)})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
   }
   /** Recovery deliberately preserves the one existing queue identity. */
   async retry(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<{ state: "queued"; attemptCount: number }> {
@@ -139,6 +141,18 @@ export class PostgresQuickBooksSyncNow {
       if (state === "uncertain") throw new Error(`This QuickBooks ${subjectKind} requires provider reconciliation before it can be retried.`);
       if (state === "processing") throw new Error(`This QuickBooks ${subjectKind} is currently being processed.`);
       throw new Error(`This QuickBooks ${subjectKind} is not eligible for recovery.`);
+    } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  /** Only a pre-provider credential interruption can be resumed here. Other
+   * uncertain outcomes stay held for explicit provider reconciliation. */
+  async resumeAfterCredentialReauth(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<{ state: "queued"; attemptCount: number }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const recovered = await client.query<{ attempt_count:number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 AND state='uncertain' AND lower(COALESCE(last_error,'')) LIKE '%failed to get valid access token%' RETURNING attempt_count", [organizationId,subjectKind,subjectId]);
+      if (!recovered.rows[0]) throw new Error("This QuickBooks job is not eligible for credential-interruption recovery.");
+      await client.query("COMMIT");
+      return { state:"queued",attemptCount:recovered.rows[0].attempt_count };
     } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
   async importPreview(organizationId:string, scope:QBInvoicePreviewScope, page:number, pageSize:number) { return fetchQBInvoicePreviewPage({organizationId,scope,page,pageSize}); }
