@@ -172,8 +172,8 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
 
   async listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]> {
     const limit = Number.isInteger(request.limit) ? Math.max(1, Math.min(request.limit!, 50)) : 25;
-    const rows = await this.client.query<{ id: string; sales_order_document_id: string; display_number: string; invoice_state: InvoiceState; currency: string; customer_id: string | null; total_cents: string; issued_at: Date | null; updated_at: Date; customer_display_name: string | null }>(
-      `SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_state,i.currency,i.customer_id,i.total_cents,i.issued_at,i.updated_at,
+    const rows = await this.client.query<{ id: string; sales_order_document_id: string; display_number: string; invoice_display_number: string | null; invoice_state: InvoiceState; currency: string; customer_id: string | null; total_cents: string; issued_at: Date | null; updated_at: Date; customer_display_name: string | null }>(
+      `SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_display_number,i.invoice_state,i.currency,i.customer_id,i.total_cents,i.issued_at,i.updated_at,
         COALESCE(c.display_name,c.company_name) AS customer_display_name
        FROM v2_billing_invoices i
        JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
@@ -187,7 +187,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     return rows.rows.map((row) => {
       const currency = currencyCode(row.currency);
       return {
-        invoiceId: brandedId<"InvoiceId">(row.id), sourceOrderId: brandedId<"OrderId">(row.sales_order_document_id), sourceOrderNumber: row.display_number, ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}),
+        invoiceId: brandedId<"InvoiceId">(row.id), sourceOrderId: brandedId<"OrderId">(row.sales_order_document_id), sourceOrderNumber: row.display_number, ...(row.invoice_display_number ? { invoiceNumber: row.invoice_display_number } : {}), ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}),
         lifecycle: row.invoice_state, currency, total: money(currency, Number(row.total_cents)), updatedAt: row.updated_at.toISOString(),
         ...(row.customer_display_name ? { customerPresentation: { customerDisplayName: row.customer_display_name } } : {}),
         ...(row.issued_at ? { issuedAt: row.issued_at.toISOString() } : {}),
@@ -197,10 +197,10 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
 
   private async readModel(predicate: string, organizationId: OrganizationId, identity: string): Promise<DraftInvoiceReadModel | null> {
     const result = await this.client.query<{
-      id: string; sales_order_document_id: string; display_number: string; invoice_state: InvoiceState; currency: string; customer_id: string | null;
+      id: string; sales_order_document_id: string; display_number: string; invoice_display_number: string | null; invoice_state: InvoiceState; currency: string; customer_id: string | null;
       synchronization_version: string; subtotal_cents: string; tax_total_cents: string; total_cents: string; sales_adjustment_cents: string; sales_adjustment_reason: string | null;
       purchase_order_number: string | null; terms_code: string | null; issued_at: Date | null; created_at: Date; updated_at: Date; customer_display_name: string | null;
-    }>(`SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_state,i.currency,i.customer_id,i.synchronization_version,i.subtotal_cents,i.tax_total_cents,i.total_cents,i.sales_adjustment_cents,i.sales_adjustment_reason,i.purchase_order_number,i.terms_code,i.issued_at,i.created_at,i.updated_at,COALESCE(c.display_name,c.company_name) AS customer_display_name FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND ${predicate}`, [organizationId, identity]);
+    }>(`SELECT i.id,i.sales_order_document_id,d.display_number,i.invoice_display_number,i.invoice_state,i.currency,i.customer_id,i.synchronization_version,i.subtotal_cents,i.tax_total_cents,i.total_cents,i.sales_adjustment_cents,i.sales_adjustment_reason,i.purchase_order_number,i.terms_code,i.issued_at,i.created_at,i.updated_at,COALESCE(c.display_name,c.company_name) AS customer_display_name FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND ${predicate}`, [organizationId, identity]);
     const invoice = result.rows[0];
     if (!invoice) return null;
     const currency = currencyCode(invoice.currency);
@@ -213,7 +213,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     const issuedCheckpoint = checkpoint?.rows[0]?.checkpoint_json;
     return {
       invoiceId: brandedId<"InvoiceId">(invoice.id), organizationId,
-      sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), sourceOrderNumber: invoice.display_number, lifecycle: invoice.invoice_state,
+      sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), sourceOrderNumber: invoice.display_number, ...(invoice.invoice_display_number ? { invoiceNumber: invoice.invoice_display_number } : {}), lifecycle: invoice.invoice_state,
       ...(invoice.customer_id ? { customerId: brandedId<"CustomerId">(invoice.customer_id) } : {}),
       ...(issuedCheckpoint ? { customerPresentation: issuedCheckpoint.customerPresentation, issuedCheckpoint } : currentPresentation ? { customerPresentation: currentPresentation } : {}),
       currency, synchronizationVersion: invoice.synchronization_version,

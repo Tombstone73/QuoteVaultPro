@@ -1695,6 +1695,13 @@
       "when": 1788048000093,
       "tag": "0246_v2_artwork_storage_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1788048000094,
+      "tag": "0247_v2_job_derived_invoice_numbering",
+      "breakpoints": true
     }
   ]
 }

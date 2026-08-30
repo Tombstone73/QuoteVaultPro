@@ -20,8 +20,9 @@ const revisionFor = (rows: readonly CounterRow[]) => nativeNumberingKinds.map((k
 
 /**
  * Settings controls the shared V2 Quote / Order-Job allocation primitive.
- * Retained compatibility writers use that primitive too; Invoice and PO
- * allocation remain separately compatibility-managed and are not backfilled.
+ * Retained compatibility writers use that primitive too. Native V2 Invoices
+ * derive their issued display number from the locked Order / Job; the legacy
+ * internal vendor-purchase-order allocator remains separately managed.
  */
 export class PostgresDocumentNumberingSettings {
   private readonly requests = new PostgresOperationRequestRepository();
@@ -116,8 +117,8 @@ export class PostgresDocumentNumberingSettings {
       revision: revisionFor(result.rows),
       documents,
       sharedJobNumber: { owner: "order_number", behavior: "order_display_number", configurableSeparately: false },
-      compatibility: { legacyQuoteOrder: "converged", legacyInvoice: "compatibility_managed", legacyPurchaseOrder: "compatibility_managed", importedHistoricalDocuments: "preserved" },
-      readiness: { status: "migration_required", reasons: ["Invoice and purchase-order allocators remain compatibility-managed. Historical imported identifiers are preserved and are never renumbered."] },
+      compatibility: { legacyQuoteOrder: "converged", legacyInvoice: "native_job_derived", legacyPurchaseOrder: "compatibility_managed", importedHistoricalDocuments: "preserved" },
+      readiness: { status: "migration_required", reasons: ["Internal vendor Purchase Order allocation remains compatibility-managed. Native V2 Invoice numbers derive from the canonical Order / Job at issuance; historical imported identifiers are preserved and are never renumbered."] },
     };
   }
 }

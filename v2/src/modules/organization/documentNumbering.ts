@@ -27,7 +27,7 @@ export type NumberingSettings = Readonly<{
   }>;
   compatibility: Readonly<{
     legacyQuoteOrder: "converged";
-    legacyInvoice: "compatibility_managed";
+    legacyInvoice: "native_job_derived";
     legacyPurchaseOrder: "compatibility_managed";
     importedHistoricalDocuments: "preserved";
   }>;

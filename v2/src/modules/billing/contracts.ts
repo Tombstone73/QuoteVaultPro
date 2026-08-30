@@ -50,11 +50,13 @@ export type IssuedInvoiceCheckpoint = Readonly<{
   invoiceId: InvoiceId;
   organizationId: OrganizationId;
   occurredAt: string;
+  /** Immutable native Invoice identity, allocated from the locked Order / Job at issuance. */
+  invoiceNumber?: string;
   principal: BillingAttributionSnapshot;
   customerPresentation: CustomerPresentationIdentity;
   /** Immutable rendered organization facts at Invoice issuance. */
   organizationPresentation?: DocumentOrganizationIdentity;
-  commercial: Readonly<{ currency: CurrencyCode; purchaseOrderNumber?: string; termsCode?: string; subtotal: Money; salesAdjustment?: Readonly<{ amount: Money; reason: string }>; taxTotal: Money; total: Money }>;
+  commercial: Readonly<{ currency: CurrencyCode; purchaseOrderNumber?: string; termsCode?: string; subtotal: Money; salesAdjustment?: Readonly<{ amount: Money; reason: string | null }>; taxTotal: Money; total: Money }>;
   taxEvidence: Readonly<{ calculationId: string; calculatorVersion: string; contextReference?: string; components: readonly Readonly<{ jurisdiction: string; rateBasisPoints: PercentageBasisPoints; taxableBase: Money; amount: Money }>[] }>;
   lines: readonly InvoiceIssuedLineSnapshot[];
 }>;
@@ -82,6 +84,8 @@ export type DraftInvoiceReadModel = Readonly<{
   sourceOrderId: OrderId;
   /** The Sales-owned Order number is context, never an invented Invoice number. */
   sourceOrderNumber?: string;
+  /** Absent for Drafts; assigned once at immutable issuance from the Order / Job number. */
+  invoiceNumber?: string;
   customerId?: CustomerId;
   customerPresentation?: CustomerPresentationIdentity;
   lifecycle: "draft" | "issued" | "void";
@@ -105,6 +109,7 @@ export type InvoiceListItem = Readonly<{
   invoiceId: InvoiceId;
   sourceOrderId: OrderId;
   sourceOrderNumber: string;
+  invoiceNumber?: string;
   customerId?: CustomerId;
   lifecycle: DraftInvoiceReadModel["lifecycle"];
   customerPresentation?: CustomerPresentationIdentity;
