@@ -10,7 +10,7 @@ const groups: readonly Readonly<{ label: string; items: readonly Item[] }>[] = [
   { label: "Sales", items: [{ id: "sales-tax", label: "Sales Tax" }] },
   { label: "Communications", items: [{ id: "email", label: "Email Delivery" }] },
   { label: "Billing & Payments", items: [{ id: "invoice-defaults", label: "Invoice Defaults" }, { id: "payments", label: "Payments" }] },
-  { label: "Integrations", items: [{ id: "accounting", label: "Accounting" }, { id: "shipping", label: "Shipping & Carriers" }, { id: "production-connections", label: "Production Connections" }] },
+  { label: "Integrations", items: [{ id: "accounting", label: "QuickBooks" }, { id: "shipping", label: "Shipping & Carriers" }, { id: "production-connections", label: "Production Connections" }] },
   { label: "My Preferences", items: [{ id: "preferences", label: "Appearance" }, { id: "notifications", label: "Notifications" }] },
 ];
 const all = groups.flatMap((group) => group.items);
@@ -47,7 +47,7 @@ const Overview = ({ select }: Readonly<{ select: (section: Section) => void }>) 
     <Card title="Sales Tax" tone="optional" detail="Pickup, Shipping, and Local Delivery coverage is independently reported." action="Configure" onClick={() => select("sales-tax")} />
     <Card title="Email Delivery" tone="optional" detail="Tenant Gmail readiness for customer-document delivery." action="Manage" onClick={() => select("email")} />
     <Card title="Billing & Numbering" tone="optional" detail="Native V2 Quote and Order numbering is managed separately from historical documents." action="Numbering" onClick={() => select("numbering")} />
-    <Card title="Integrations" tone="optional" detail="Accounting, payments, carriers, and production connections remain independently optional." action="Open integrations" onClick={() => select("accounting")} />
+    <Card title="QuickBooks" tone="optional" detail="QuickBooks connection, imports, sync policy, queue activity, and recovery are managed in one console." action="Open QuickBooks" onClick={() => select("accounting")} />
   </div>
   <section className="v2-settings-panel v2-settings-attention"><AlertTriangle aria-hidden /><div><h2>Readiness is server-authoritative</h2><p>Sales Tax, Email Delivery, Organization, Numbering, and Team & Access each load their own canonical readiness and permissions.</p><button type="button" onClick={() => select("sales-tax")}>Open Sales Tax <ChevronRight aria-hidden /></button></div></section>
 </>;

@@ -21,9 +21,12 @@ type JobState = "queued" | "processing" | "retry" | "succeeded" | "uncertain" | 
 type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; attemptCount: number }>;
 export type QuickBooksQueueRunResult = Readonly<{ claimed: number; succeeded: number; retry: number; uncertain: number; blocked: number }>;
 export type QuickBooksOperationsRead = Readonly<{
-  eligibleInvoices: ReadonlyArray<Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string }>>;
-  activity: ReadonlyArray<Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean }>>;
+  eligibleInvoiceCount: number;
+  queueSummary: Readonly<{ queued: number; processing: number; succeeded: number; actionRequired: number }>;
 }>;
+export type QuickBooksEligibleInvoice = Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string; issuedAt: string | null; syncStatus: "eligible" }>;
+export type QuickBooksQueueActivity = Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; customerName: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean }>;
+export type QuickBooksQueuePage = Readonly<{ items: readonly QuickBooksQueueActivity[]; total: number; page: number; pageSize: number; hasNextPage: boolean }>;
 
 const retryDelayMs = (attempt: number) => Math.min(30 * 60_000, 15_000 * 2 ** Math.min(Math.max(0, attempt - 1), 7));
 const concise = (cause: unknown) => String((cause as { message?: unknown })?.message ?? cause ?? "QuickBooks sync failed").replace(/\s+/g, " ").replace(/\0/g, "").trim().slice(0, 500) || "QuickBooks sync failed";
@@ -40,12 +43,20 @@ export const enqueueV2QuickBooksSync = async (client: PoolClient, organizationId
     [organizationId, subjectKind, subjectId],
   );
 };
+/** Auto Sync governs only creation of new queue work.  It never stops the
+ * worker, replays a historical backlog, or changes the manual queue path. */
+export const enqueueV2QuickBooksAutoSync = async (client: PoolClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
+  const policy = await client.query<{ enabled:boolean }>("SELECT COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled FROM organizations WHERE id=$1", [organizationId]);
+  if (policy.rows[0]?.enabled) await enqueueV2QuickBooksSync(client, organizationId, subjectKind, subjectId);
+};
 
 export class PostgresQuickBooksSyncNow {
   constructor(private readonly pool: Pool) {}
   async enqueueInvoice(organizationId: string, invoiceId: string): Promise<void> {
     await this.enqueueInvoices(organizationId, [invoiceId]);
   }
+  async policy(organizationId:string):Promise<{autoSync:boolean}> { const result=await this.pool.query<{ enabled:boolean }>("SELECT COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled FROM organizations WHERE id=$1",[organizationId]); return {autoSync:result.rows[0]?.enabled===true}; }
+  async setPolicy(organizationId:string,autoSync:boolean):Promise<{autoSync:boolean}> { const result=await this.pool.query<{ enabled:boolean }>("UPDATE organizations SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{preferences,quickBooks,autoSync}',to_jsonb($2::boolean),true),updated_at=now() WHERE id=$1 RETURNING COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled",[organizationId,autoSync]); if(!result.rows[0])throw new Error("Organization is unavailable for QuickBooks configuration."); return {autoSync:result.rows[0].enabled}; }
   /** Explicit operator selection uses the same durable queue as Sync Now. */
   async enqueueInvoices(organizationId: string, invoiceIds: readonly string[]): Promise<string[]> {
     const unique = [...new Set(invoiceIds.map((value) => String(value).trim()).filter(Boolean))];
@@ -83,30 +94,31 @@ export class PostgresQuickBooksSyncNow {
   /** Accounting Settings is the sole operator console. It reads only V2 facts
    * plus durable integration metadata; no legacy financial table is consulted. */
   async operations(organizationId: string): Promise<QuickBooksOperationsRead> {
-    const [eligible, activity] = await Promise.all([
-      this.pool.query<{ id:string; invoice_display_number:string; customer_name:string; total_cents:string; currency:string }>(
-        `SELECT i.id,i.invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency
-           FROM v2_billing_invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
-          WHERE i.organization_id=$1 AND i.invoice_state='issued'
-            AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id)
-          ORDER BY i.issued_at DESC NULLS LAST LIMIT 100`, [organizationId]),
-      this.pool.query<{ id:string; subject_kind:QuickBooksSyncSubject; subject_id:string; state:JobState; attempt_count:number; last_error:string|null; updated_at:Date; completed_at:Date|null; display_number:string|null; amount_cents:string|null; currency:string|null; provider_id:string|null }>(
-        `SELECT j.id,j.subject_kind,j.subject_id,j.state,j.attempt_count,j.last_error,j.updated_at,j.completed_at,
-                COALESCE(i.invoice_display_number,'Invoice') display_number,
-                CASE WHEN j.subject_kind='payment' THEN p.amount_cents WHEN j.subject_kind='refund' THEN r.amount_cents ELSE i.total_cents END::text amount_cents,
-                COALESCE(p.currency,r.currency,i.currency) currency,
-                l.provider_id
-           FROM v2_quickbooks_sync_jobs j
-           LEFT JOIN v2_billing_payments p ON p.organization_id=j.organization_id AND j.subject_kind='payment' AND p.id=j.subject_id
-           LEFT JOIN v2_billing_refunds r ON r.organization_id=j.organization_id AND j.subject_kind='refund' AND r.id=j.subject_id
-           LEFT JOIN v2_billing_invoices i ON i.organization_id=j.organization_id AND ((j.subject_kind='invoice' AND i.id=j.subject_id) OR (j.subject_kind='payment' AND i.id=p.invoice_id) OR (j.subject_kind='refund' AND i.id=r.invoice_id))
-           LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=j.organization_id AND l.entity_id=j.subject_id AND ((j.subject_kind IN ('invoice','payment') AND l.entity_kind=j.subject_kind) OR (j.subject_kind='refund' AND l.entity_kind='refund_disbursement'))
-          WHERE j.organization_id=$1 ORDER BY CASE WHEN j.state IN ('blocked','uncertain') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT 100`, [organizationId]),
+    const [eligible, queue] = await Promise.all([
+      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i WHERE i.organization_id=$1 AND i.invoice_state='issued' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id)`, [organizationId]),
+      this.pool.query<{ queued:string; processing:string; succeeded:string; action_required:string }>(`SELECT count(*) FILTER (WHERE state IN ('queued','retry'))::text queued,count(*) FILTER (WHERE state='processing')::text processing,count(*) FILTER (WHERE state='succeeded')::text succeeded,count(*) FILTER (WHERE state IN ('blocked','retry','uncertain'))::text action_required FROM v2_quickbooks_sync_jobs WHERE organization_id=$1`, [organizationId]),
     ]);
+    const counts=queue.rows[0];
     return {
-      eligibleInvoices: eligible.rows.map((row) => ({ invoiceId:row.id, displayNumber:row.invoice_display_number, customerName:row.customer_name, totalCents:Number(row.total_cents), currency:row.currency })),
-      activity: activity.rows.map((row) => ({ jobId:row.id, subjectKind:row.subject_kind, subjectId:row.subject_id, displayNumber:row.display_number ?? "Invoice", amountCents:row.amount_cents === null ? null : Number(row.amount_cents), currency:row.currency, state:row.state, attemptCount:row.attempt_count, lastError:row.last_error, updatedAt:row.updated_at.toISOString(), completedAt:row.completed_at?.toISOString() ?? null, providerId:row.provider_id, retryEligible:row.state === "blocked" || row.state === "retry" })),
+      eligibleInvoiceCount:Number(eligible.rows[0]?.count??0),
+      queueSummary:{queued:Number(counts?.queued??0),processing:Number(counts?.processing??0),succeeded:Number(counts?.succeeded??0),actionRequired:Number(counts?.action_required??0)},
     };
+  }
+  async unsyncedInvoices(organizationId:string,input:Readonly<{page:number;pageSize:number;search:string}>):Promise<{items:readonly QuickBooksEligibleInvoice[];total:number;page:number;pageSize:number;hasNextPage:boolean}> {
+    const page=Math.max(1,Math.floor(input.page)),pageSize=Math.min(100,Math.max(10,Math.floor(input.pageSize))),search=input.search.trim(); const offset=(page-1)*pageSize;
+    const [rows,count]=await Promise.all([
+      this.pool.query<{ id:string; invoice_display_number:string; customer_name:string; total_cents:string; currency:string; issued_at:Date|null }>(`SELECT i.id,i.invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency,i.issued_at FROM v2_billing_invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND i.invoice_state='issued' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND ($2='' OR i.invoice_display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') ORDER BY i.issued_at DESC NULLS LAST LIMIT $3 OFFSET $4`,[organizationId,search,pageSize,offset]),
+      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND i.invoice_state='issued' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND ($2='' OR i.invoice_display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%')`,[organizationId,search]),
+    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({invoiceId:row.id,displayNumber:row.invoice_display_number,customerName:row.customer_name,totalCents:Number(row.total_cents),currency:row.currency,issuedAt:row.issued_at?.toISOString()??null,syncStatus:"eligible" as const})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
+  }
+  async queueActivity(organizationId:string,input:Readonly<{page:number;pageSize:number;search:string;actionRequiredOnly:boolean}>):Promise<QuickBooksQueuePage> {
+    const page=Math.max(1,Math.floor(input.page)),pageSize=Math.min(100,Math.max(10,Math.floor(input.pageSize))),search=input.search.trim(),offset=(page-1)*pageSize;
+    const where=`j.organization_id=$1 AND ($2='' OR COALESCE(i.invoice_display_number,'') ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%' OR j.subject_kind ILIKE '%'||$2||'%') AND (NOT $3::boolean OR j.state IN ('blocked','retry','uncertain'))`;
+    const joins=`FROM v2_quickbooks_sync_jobs j LEFT JOIN v2_billing_payments p ON p.organization_id=j.organization_id AND j.subject_kind='payment' AND p.id=j.subject_id LEFT JOIN v2_billing_refunds r ON r.organization_id=j.organization_id AND j.subject_kind='refund' AND r.id=j.subject_id LEFT JOIN v2_billing_invoices i ON i.organization_id=j.organization_id AND ((j.subject_kind='invoice' AND i.id=j.subject_id) OR (j.subject_kind='payment' AND i.id=p.invoice_id) OR (j.subject_kind='refund' AND i.id=r.invoice_id)) LEFT JOIN customers c ON c.organization_id=j.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=j.organization_id AND l.entity_id=j.subject_id AND ((j.subject_kind IN ('invoice','payment') AND l.entity_kind=j.subject_kind) OR (j.subject_kind='refund' AND l.entity_kind='refund_disbursement'))`;
+    const [rows,count]=await Promise.all([
+      this.pool.query<{id:string;subject_kind:QuickBooksSyncSubject;subject_id:string;state:JobState;attempt_count:number;last_error:string|null;updated_at:Date;completed_at:Date|null;display_number:string|null;customer_name:string;amount_cents:string|null;currency:string|null;provider_id:string|null}>(`SELECT j.id,j.subject_kind,j.subject_id,j.state,j.attempt_count,j.last_error,j.updated_at,j.completed_at,COALESCE(i.invoice_display_number,'Invoice') display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,CASE WHEN j.subject_kind='payment' THEN p.amount_cents WHEN j.subject_kind='refund' THEN r.amount_cents ELSE i.total_cents END::text amount_cents,COALESCE(p.currency,r.currency,i.currency) currency,l.provider_id ${joins} WHERE ${where} ORDER BY CASE WHEN j.state IN ('blocked','retry','uncertain') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT $4 OFFSET $5`,[organizationId,search,input.actionRequiredOnly,pageSize,offset]),
+      this.pool.query<{count:string}>(`SELECT count(*)::text count ${joins} WHERE ${where}`,[organizationId,search,input.actionRequiredOnly]),
+    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({jobId:row.id,subjectKind:row.subject_kind,subjectId:row.subject_id,displayNumber:row.display_number??"Invoice",customerName:row.customer_name,amountCents:row.amount_cents===null?null:Number(row.amount_cents),currency:row.currency,state:row.state,attemptCount:row.attempt_count,lastError:row.last_error,updatedAt:row.updated_at.toISOString(),completedAt:row.completed_at?.toISOString()??null,providerId:row.provider_id,retryEligible:row.state==="blocked"||row.state==="retry"})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
   }
   /** Recovery deliberately preserves the one existing queue identity. */
   async retry(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<{ state: "queued"; attemptCount: number }> {
