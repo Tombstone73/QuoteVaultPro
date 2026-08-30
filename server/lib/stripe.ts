@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 let stripeSingleton: Stripe | null = null;
 let stripeConfigLogged = false;
 
-type StripeServerConfigStatus = {
+export type StripeServerConfigStatus = {
   ok: boolean;
   mode: 'test' | 'live' | 'unknown';
   webhookSecretStatus: 'missing' | 'ok' | 'invalid';
@@ -11,6 +11,16 @@ type StripeServerConfigStatus = {
 };
 
 type StripeEnv = Record<string, string | undefined>;
+
+export type StripeRuntimeReadiness = Readonly<{
+  mode: "test" | "live" | "unknown";
+  status: "ready" | "not_configured" | "webhook_not_ready" | "action_required";
+  secretKeyConfigured: boolean;
+  publishableKeyMode: "test" | "live" | "unknown" | "missing";
+  webhook: "ready" | "missing" | "invalid";
+  configurationOwner: "platform_managed";
+  actionRequired: string;
+}>;
 
 function getStripeModeFromSecretKey(secretKey: string): 'test' | 'live' | 'unknown' {
   if (secretKey.startsWith('sk_live_')) return 'live';
@@ -51,6 +61,26 @@ export function assertStripeServerConfig(options?: { logOnce?: boolean; env?: St
   }
 
   return status;
+}
+
+const publishableKeyMode = (value: string): StripeRuntimeReadiness["publishableKeyMode"] => {
+  if (!value) return "missing";
+  if (value.startsWith("pk_test_")) return "test";
+  if (value.startsWith("pk_live_")) return "live";
+  return "unknown";
+};
+
+/** Safe, server-authoritative readiness for the V2 Payments Settings surface.
+ * It reports configuration state only; credential material never crosses this boundary. */
+export function stripeRuntimeReadiness(env: StripeEnv = process.env): StripeRuntimeReadiness {
+  const config = assertStripeServerConfig({ env });
+  const publishable = publishableKeyMode(String(env.VITE_STRIPE_PUBLISHABLE_KEY || "").trim());
+  const webhook = config.webhookSecretStatus === "ok" ? "ready" : config.webhookSecretStatus;
+  if (!config.ok) return { mode: config.mode, status: "not_configured", secretKeyConfigured: false, publishableKeyMode: publishable, webhook, configurationOwner: "platform_managed", actionRequired: "Platform-managed Stripe test credentials are not configured for this environment." };
+  if (config.mode === "live" || publishable === "live") return { mode: "live", status: "action_required", secretKeyConfigured: true, publishableKeyMode: publishable, webhook, configurationOwner: "platform_managed", actionRequired: "DEV must use Stripe test-mode credentials before provider validation can run." };
+  if (config.mode !== "test" || publishable !== "test") return { mode: config.mode, status: "action_required", secretKeyConfigured: true, publishableKeyMode: publishable, webhook, configurationOwner: "platform_managed", actionRequired: "Stripe test-mode key configuration is incomplete or inconsistent." };
+  if (webhook !== "ready") return { mode: "test", status: "webhook_not_ready", secretKeyConfigured: true, publishableKeyMode: publishable, webhook, configurationOwner: "platform_managed", actionRequired: "Configure the Stripe TEST webhook signing secret for the V2 endpoint." };
+  return { mode: "test", status: "ready", secretKeyConfigured: true, publishableKeyMode: publishable, webhook: "ready", configurationOwner: "platform_managed", actionRequired: "Stripe test-mode payment and webhook validation is ready." };
 }
 
 export function getStripeClient(): Stripe {

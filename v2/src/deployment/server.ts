@@ -82,6 +82,7 @@ export const createV2DeploymentApp = (
     formulas,
     emailIntegration,
     quickBooksIntegration,
+    { principals: billing.dependencies.principals },
   );
 };
 
