@@ -2266,6 +2266,11 @@ export const financeApi = {
       financeEndpoint(organizationId, "/invoices/quickbooks-sync-selected"),
       { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ invoiceIds }) },
     ),
+  retryQuickBooksPayment: (organizationId: string, invoiceId: string, paymentId: string) =>
+    request<Readonly<{ paymentId: string; state: "queued"; attemptCount: number }>>(
+      financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/payments/${encodeURIComponent(paymentId)}/quickbooks-retry`),
+      { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" } },
+    ),
   recordPayment: (
     organizationId: string,
     invoiceId: string,

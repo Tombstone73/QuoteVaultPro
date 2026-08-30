@@ -55,6 +55,23 @@ export class PostgresQuickBooksSyncNow {
       return unique;
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
+  /** An explicit operator recovery keeps one logical Payment job and never replays uncertainty blindly. */
+  async retryPayment(organizationId: string, invoiceId: string, paymentId: string): Promise<{ state: "queued"; attemptCount: number }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const payment = await client.query<{ id: string }>("SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND p.invoice_id=$3 AND i.invoice_state='issued'", [organizationId, paymentId, invoiceId]);
+      if (!payment.rows[0]) throw new Error("The V2 Payment is unavailable for QuickBooks recovery.");
+      const recovered = await client.query<{ attempt_count: number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId, paymentId]);
+      if (recovered.rows[0]) { await client.query("COMMIT"); return { state: "queued", attemptCount: recovered.rows[0].attempt_count }; }
+      const job = await client.query<{ state: JobState }>("SELECT state FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 FOR UPDATE", [organizationId, paymentId]);
+      const state = job.rows[0]?.state;
+      if (state === "succeeded") throw new Error("This QuickBooks Payment is already synchronized.");
+      if (state === "uncertain") throw new Error("This QuickBooks Payment requires provider reconciliation before it can be retried.");
+      if (state === "processing") throw new Error("This QuickBooks Payment is currently being processed.");
+      throw new Error("This QuickBooks Payment is not eligible for recovery.");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
 }
 
 export class V2QuickBooksBillingWorker {

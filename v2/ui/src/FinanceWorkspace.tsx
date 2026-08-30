@@ -393,6 +393,11 @@ export const FinanceWorkspace = ({
     onSuccess: (result) => { setQuickBooksSelections(new Set()); setNotice(`${result.invoiceIds.length} V2 Invoice${result.invoiceIds.length === 1 ? "" : "s"} queued through the canonical QuickBooks worker.`); },
     onError: (error) => setNotice(errorText(error)),
   });
+  const quickBooksPaymentRetry = useMutation({
+    mutationFn: (retryPaymentId: string) => financeApi.retryQuickBooksPayment(organizationId, selected, retryPaymentId),
+    onSuccess: (result) => setNotice(`QuickBooks Payment recovery queued (attempt ${result.attemptCount + 1}).`),
+    onError: (error) => setNotice(errorText(error)),
+  });
   if (!organizationId)
     return (
       <section className="v2-finance-workspace">
@@ -775,6 +780,7 @@ export const FinanceWorkspace = ({
               facts.
             </p>
             <HistoryTable history={detail.data?.history ?? []} />
+            {(detail.data?.history ?? []).filter((entry) => entry.kind === "payment").map((entry) => <button key={`retry-${entry.id}`} className="v2-quiet-button" disabled={!csrfReady || quickBooksPaymentRetry.isPending} onClick={() => quickBooksPaymentRetry.mutate(entry.id)}>Retry Payment Sync</button>)}
           </section>
           {notice && <p className="v2-invoice-notice">{notice}</p>}
         </article>
