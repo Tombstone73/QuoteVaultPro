@@ -1249,7 +1249,7 @@ export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId
     return { qbPaymentId: String(existing.Payment.Id) };
   }
   const amount = Number((input.amountCents / 100).toFixed(2));
-  const paymentRefNum = `PHV2-${input.paymentId}`;
+  const paymentRefNum = v2PaymentReference(input.paymentId);
   const query = `SELECT Id FROM Payment WHERE PaymentRefNum = '${escapeQBQueryString(paymentRefNum)}' MAXRESULTS 1`;
   const found = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Payment?.[0];
   if (found?.Id) return { qbPaymentId: String(found.Id) };
@@ -1267,6 +1267,10 @@ export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId
 
 type V2QuickBooksRefundLine = Readonly<{ description: string; quantity: number; unitAmountCents: number; lineAmountCents: number }>;
 const exactCents = (value: number) => Number((value / 100).toFixed(2));
+// QuickBooks Online limits PaymentRefNum to 21 characters.  Preserve a
+// deterministic 64-bit identity token for lookup/replay without leaking the
+// full V2 UUID into the provider field.
+const v2PaymentReference = (paymentId: string) => `PHV2-${crypto.createHash("sha256").update(paymentId).digest("hex").slice(0, 16)}`;
 const v2RefundReference = (refundId: string, prefix: string) => `${prefix}-${crypto.createHash("sha256").update(refundId).digest("hex").slice(0, 16)}`;
 const refundCreditLines = (lines: readonly V2QuickBooksRefundLine[], refundCents: number): any[] => {
   const total = lines.reduce((sum, line) => sum + line.lineAmountCents, 0);
