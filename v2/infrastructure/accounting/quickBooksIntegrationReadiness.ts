@@ -4,6 +4,8 @@ import * as quickBooks from "../../../server/quickbooksService.js";
  * boundary.  V2 only receives readiness and a redirect URL. */
 export class QuickBooksIntegrationReadinessService {
   async readiness(organizationId: string) { return quickBooks.getQuickBooksConnectionReadinessForOrganization(organizationId); }
+  async refundDisbursementAccounts(organizationId: string) { return quickBooks.listQuickBooksRefundDisbursementAccounts(organizationId); }
+  async setRefundDisbursementAccount(input: Readonly<{ organizationId: string; accountId: string; actorUserId: string }>) { return quickBooks.setQuickBooksRefundDisbursementAccount(input); }
   async beginConnect(organizationId: string) { return { authorizeUrl: await quickBooks.getAuthorizationUrlForOrganization(organizationId) }; }
   async finishConnect(input: Readonly<{ state: string; code: string; realmId: string; callbackUrl: string }>): Promise<void> {
     const parsed = quickBooks.parseOAuthState(input.state);

@@ -76,6 +76,31 @@ type QuickBooksHealthMetadata = {
   message?: string;
 };
 
+/** A non-secret, tenant-owned selection for the bank account used by the
+ * paid-Invoice refund disbursement. Account ids are meaningful only inside
+ * the QuickBooks realm that supplied them, so the realm travels with it. */
+export type QuickBooksRefundDisbursementAccount = Readonly<{
+  id: string;
+  name: string;
+  accountType: "Bank";
+  accountSubtype: string | null;
+}>;
+
+type QuickBooksRefundDisbursementMetadata = QuickBooksRefundDisbursementAccount & Readonly<{
+  realmId: string;
+  configuredAt: string;
+}>;
+
+function configuredRefundDisbursementAccount(connection: OAuthConnection): QuickBooksRefundDisbursementMetadata | null {
+  const metadata = connection.metadata && typeof connection.metadata === "object" ? connection.metadata as any : {};
+  const value = metadata.qbRefundDisbursement;
+  if (!value || typeof value !== "object" || String(value.realmId || "") !== String(connection.companyId || "")) return null;
+  const id = String(value.id || "").trim();
+  const name = String(value.name || "").trim();
+  if (!id || !name || value.accountType !== "Bank") return null;
+  return { id, name, accountType: "Bank", accountSubtype: typeof value.accountSubtype === "string" ? value.accountSubtype : null, realmId: String(connection.companyId), configuredAt: String(value.configuredAt || "") };
+}
+
 function toOneLineTruncatedMessage(input: unknown, maxLen = 220): string {
   const text = String(input || '')
     .replace(/\s+/g, ' ')
@@ -495,7 +520,8 @@ export async function exchangeCodeForTokens(
     const baseMetadata = existingAuthoritative?.metadata && typeof existingAuthoritative.metadata === 'object'
       ? { ...(existingAuthoritative.metadata as any) }
       : {};
-    const { qbAuth: _qbAuth, qbHealth: _qbHealth, qbCredential: _qbCredential, qbConnection: existingQbConnection, ...restMetadata } = baseMetadata;
+    const { qbAuth: _qbAuth, qbHealth: _qbHealth, qbCredential: _qbCredential, qbConnection: existingQbConnection, qbRefundDisbursement: existingRefundDisbursement, ...restMetadata } = baseMetadata;
+    const realmChanged = Boolean(existingAuthoritative?.companyId && existingAuthoritative.companyId !== realmId);
     const connectedAt = typeof existingQbConnection?.connectedAt === 'string' && existingQbConnection.connectedAt
       ? existingQbConnection.connectedAt
       : nowIso;
@@ -503,6 +529,9 @@ export async function exchangeCodeForTokens(
       ...restMetadata,
       realmId,
       tokenType: token.token_type,
+      // An account id from a different QuickBooks company must never survive
+      // OAuth reconnection. Same-realm reauthorization keeps the selection.
+      ...(!realmChanged && existingRefundDisbursement && typeof existingRefundDisbursement === "object" ? { qbRefundDisbursement: existingRefundDisbursement } : {}),
       qbConnection: {
         ...(existingQbConnection && typeof existingQbConnection === 'object' ? existingQbConnection : {}),
         authoritative: true,
@@ -1176,6 +1205,58 @@ async function makeQBRequest(
   return data;
 }
 
+function refundDisbursementAccountFromProvider(value: any): QuickBooksRefundDisbursementAccount | null {
+  const id = String(value?.Id || "").trim();
+  const name = String(value?.Name || "").trim();
+  if (!id || !name || value?.Active !== true || String(value?.AccountType || "") !== "Bank") return null;
+  return { id, name, accountType: "Bank", accountSubtype: typeof value?.AccountSubType === "string" ? value.AccountSubType : null };
+}
+
+/** Lists only active Bank accounts from the connected tenant's own realm. */
+export async function listQuickBooksRefundDisbursementAccounts(organizationId: string): Promise<readonly QuickBooksRefundDisbursementAccount[]> {
+  const orgId = requireQuickBooksOrganizationId(organizationId, "listQuickBooksRefundDisbursementAccounts");
+  if (!await getActiveConnection(orgId)) throw new Error("QuickBooks is not connected for this organization.");
+  const query = "SELECT Id, Name, AccountType, AccountSubType, Active FROM Account WHERE Active = true AND AccountType = 'Bank' MAXRESULTS 1000";
+  const response = await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, orgId);
+  const accounts: any[] = Array.isArray(response?.QueryResponse?.Account) ? response.QueryResponse.Account : [];
+  return accounts.map(refundDisbursementAccountFromProvider).filter((account: QuickBooksRefundDisbursementAccount | null): account is QuickBooksRefundDisbursementAccount => account !== null).sort((a: QuickBooksRefundDisbursementAccount, b: QuickBooksRefundDisbursementAccount) => a.name.localeCompare(b.name));
+}
+
+export async function getQuickBooksRefundDisbursementConfiguration(organizationId: string): Promise<Readonly<{ account: QuickBooksRefundDisbursementAccount | null }>> {
+  const connection = await getActiveConnection(organizationId);
+  const selected = connection ? configuredRefundDisbursementAccount(connection) : null;
+  return { account: selected ? { id: selected.id, name: selected.name, accountType: selected.accountType, accountSubtype: selected.accountSubtype } : null };
+}
+
+/** The server confirms the supplied account by querying the currently connected
+ * realm. The browser can select a label, but it cannot establish authority. */
+export async function setQuickBooksRefundDisbursementAccount(input: Readonly<{ organizationId: string; accountId: string; actorUserId: string }>): Promise<Readonly<{ account: QuickBooksRefundDisbursementAccount }>> {
+  const organizationId = requireQuickBooksOrganizationId(input.organizationId, "setQuickBooksRefundDisbursementAccount");
+  const accountId = String(input.accountId || "").trim();
+  if (!accountId) { const error: any = new Error("A refund disbursement account is required."); error.statusCode = 400; throw error; }
+  const connection = await getActiveConnection(organizationId);
+  if (!connection) { const error: any = new Error("QuickBooks is not connected for this organization."); error.statusCode = 409; throw error; }
+  const account = (await listQuickBooksRefundDisbursementAccounts(organizationId)).find(candidate => candidate.id === accountId);
+  if (!account) { const error: any = new Error("The selected refund account is not an active Bank account in this connected QuickBooks company."); error.statusCode = 400; throw error; }
+  const prior = configuredRefundDisbursementAccount(connection);
+  const configuredAt = new Date();
+  const metadata = connection.metadata && typeof connection.metadata === "object" ? { ...(connection.metadata as any) } : {};
+  await db.transaction(async tx => {
+    const [updated] = await tx.update(oauthConnections).set({
+      metadata: { ...metadata, qbRefundDisbursement: { ...account, realmId: connection.companyId, configuredAt: configuredAt.toISOString() } } as any,
+      updatedAt: configuredAt,
+    }).where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId), eq(oauthConnections.companyId, connection.companyId))).returning({ id: oauthConnections.id });
+    if (!updated) throw new Error("QuickBooks connection changed before the refund account could be saved.");
+    await tx.insert(auditLogs).values({
+      organizationId, userId: input.actorUserId, actionType: "quickbooks_refund_disbursement_account_configured", entityType: "quickbooks_connection", entityId: connection.id, entityName: account.name,
+      description: "Configured the tenant QuickBooks refund disbursement account.",
+      oldValues: { configured: Boolean(prior), accountName: prior?.name ?? null, realmId: prior?.realmId ?? null },
+      newValues: { accountName: account.name, accountType: account.accountType, accountSubtype: account.accountSubtype, realmId: connection.companyId },
+    });
+  });
+  return { account };
+}
+
 function escapeQBQueryString(value: string): string {
   return String(value || '').replace(/'/g, "\\'");
 }
@@ -1325,9 +1406,8 @@ export async function syncV2RefundDisbursementToQuickBooks(input: Readonly<{ org
     return { qbDisbursementId: String(existing.Check.Id) };
   }
   const invoice = (await makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId))?.Invoice;
-  const payment = (await makeQBRequest("GET", `/payment/${input.quickBooksPaymentId}`, undefined, input.organizationId))?.Payment;
   const arAccountId = String(invoice?.ARAccountRef?.value || process.env.QUICKBOOKS_AR_ACCOUNT_ID || "").trim();
-  const bankAccountId = String(payment?.DepositToAccountRef?.value || process.env.QUICKBOOKS_REFUND_BANK_ACCOUNT_ID || "").trim();
+  const bankAccountId = (await getQuickBooksRefundDisbursementConfiguration(input.organizationId)).account?.id ?? "";
   if (!arAccountId || !bankAccountId) { const error: any = new Error("QUICKBOOKS_REFUND_ACCOUNT_CONFIGURATION_REQUIRED: The original Invoice A/R account and refund bank account must be available before a refund disbursement can be posted."); error.statusCode = 409; throw error; }
   const docNumber = v2RefundReference(input.refundId, "PHRC");
   const query = `SELECT Id, PayeeRef FROM Check WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 20`;
@@ -1782,17 +1862,20 @@ export type QuickBooksConnectionReadiness = Readonly<{
   connected: boolean;
   connectedCompanyName: string | null;
   actionRequired: string | null;
+  refunds: Readonly<{ state: "ready" | "configuration_required"; account: QuickBooksRefundDisbursementAccount | null }>;
 }>;
 export async function getQuickBooksConnectionReadinessForOrganization(organizationId: string): Promise<QuickBooksConnectionReadiness> {
   const status = await getQuickBooksCustomerMigrationSourceStatus(organizationId);
   const configured = String(process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || "").trim().toLowerCase();
   const environment: QuickBooksConnectionReadiness["environment"] = configured === "sandbox" ? "sandbox" : configured === "production" ? "production" : "unknown";
   const workerReady = String(process.env.QUICKBOOKS_AUTOMATION_OWNER || "").trim().toLowerCase() === "queue";
-  if (!status.connected) return { state: status.authState === "needs_reauth" ? "reconnect_required" : "not_connected", environment, connected: false, connectedCompanyName: null, actionRequired: status.authState === "needs_reauth" ? "Reconnect QuickBooks to restore authorization." : "Connect QuickBooks to enable accounting synchronization." };
-  if (status.authState === "needs_reauth" || status.requiresUserAction) return { state: "authorization_required", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: status.healthMessage || "Reconnect QuickBooks to restore authorization." };
-  if (environment === "unknown") return { state: "connected_unknown", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks connection mode must be configured explicitly before provider writes are enabled." };
-  if (!workerReady) return { state: "worker_not_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks synchronization worker is not ready." };
-  return { state: "sync_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: null };
+  const noRefundConfig = { state: "configuration_required" as const, account: null };
+  if (!status.connected) return { state: status.authState === "needs_reauth" ? "reconnect_required" : "not_connected", environment, connected: false, connectedCompanyName: null, actionRequired: status.authState === "needs_reauth" ? "Reconnect QuickBooks to restore authorization." : "Connect QuickBooks to enable accounting synchronization.", refunds: noRefundConfig };
+  if (status.authState === "needs_reauth" || status.requiresUserAction) return { state: "authorization_required", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: status.healthMessage || "Reconnect QuickBooks to restore authorization.", refunds: noRefundConfig };
+  if (environment === "unknown") return { state: "connected_unknown", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks connection mode must be configured explicitly before provider writes are enabled.", refunds: noRefundConfig };
+  if (!workerReady) return { state: "worker_not_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks synchronization worker is not ready.", refunds: noRefundConfig };
+  const refundConfiguration = await getQuickBooksRefundDisbursementConfiguration(organizationId);
+  return { state: "sync_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: null, refunds: { state: refundConfiguration.account ? "ready" : "configuration_required", account: refundConfiguration.account } };
 }
 
 export async function fetchQBCustomersForMigrationSource(organizationId: string): Promise<{
