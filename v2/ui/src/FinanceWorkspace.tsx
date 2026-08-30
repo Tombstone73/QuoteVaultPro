@@ -6,6 +6,8 @@ import React, {
   type ReactNode,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
 import {
   financeApi,
   invoiceApi,
@@ -41,6 +43,20 @@ const centsFromInput = (text: string): number | null => {
 };
 const centsForInput = (cents: number) =>
   `${Math.trunc(cents / 100)}.${String(Math.abs(cents % 100)).padStart(2, "0")}`;
+
+const StripeCardConfirmation = ({ onSubmitted, onError }: Readonly<{ onSubmitted:()=>void; onError:(message:string)=>void }>) => {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [submitting, setSubmitting] = useState(false);
+  return <form onSubmit={async (event) => { event.preventDefault(); if (!stripe || !elements) return; setSubmitting(true); const result = await stripe.confirmPayment({ elements, redirect:"if_required" }); setSubmitting(false); if (result.error) return onError(result.error.message ?? "Card confirmation could not be completed."); onSubmitted(); }}>
+    <PaymentElement />
+    <button className="v2-invoice-issue" disabled={!stripe || submitting}>{submitting ? "Confirming…" : "Confirm card payment"}</button>
+  </form>;
+};
+const StripePaymentElement = ({ publishableKey, clientSecret, onSubmitted, onError }: Readonly<{ publishableKey:string; clientSecret:string; onSubmitted:()=>void; onError:(message:string)=>void }>) => {
+  const stripePromise = useMemo(() => loadStripe(publishableKey), [publishableKey]);
+  return <Elements stripe={stripePromise} options={{ clientSecret }}><StripeCardConfirmation onSubmitted={onSubmitted} onError={onError} /></Elements>;
+};
 export const invoiceDocumentPath = (organizationId: string, invoiceId: string) =>
   `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}/document.pdf`;
 const sortRows = <T,>(
@@ -269,10 +285,11 @@ export const FinanceWorkspace = ({
   const [selected, setSelected] = useState(invoiceId);
   const [selectedSource, setSelectedSource] = useState<"v2" | "legacy">("v2");
   const [notice, setNotice] = useState("");
-  const [dialog, setDialog] = useState<"payment" | "refund" | "">("");
+  const [dialog, setDialog] = useState<"payment" | "refund" | "stripePayment" | "stripeRefund" | "">("");
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"cash" | "check" | "external">("check");
   const [paymentId, setPaymentId] = useState("");
+  const [providerRequestId, setProviderRequestId] = useState("");
   const overview = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "finance", "overview"],
     queryFn: () => financeApi.overview(organizationId),
@@ -318,6 +335,7 @@ export const FinanceWorkspace = ({
     setDialog("");
     setAmount("");
     setPaymentId("");
+    setProviderRequestId("");
   };
   const payment = useMutation({
     mutationFn: () => {
@@ -380,6 +398,23 @@ export const FinanceWorkspace = ({
       setNotice("Invoice issued as an immutable Billing checkpoint.");
       await refresh();
     },
+    onError: (error) => setNotice(errorText(error)),
+  });
+  const stripePayment = useMutation({
+    mutationFn: () => {
+      const parsed = centsFromInput(amount);
+      if (!parsed || !detail.data || !providerRequestId) throw new Error("Enter a positive amount with no more than two decimal places.");
+      return financeApi.beginStripePayment(organizationId, detail.data.invoice.invoiceId, providerRequestId, { amountCents: parsed, currency: detail.data.invoice.currency });
+    },
+    onError: (error) => setNotice(errorText(error)),
+  });
+  const stripeRefund = useMutation({
+    mutationFn: () => {
+      const parsed = centsFromInput(amount);
+      if (!parsed || !detail.data || !paymentId || !providerRequestId) throw new Error("Choose a Stripe Payment and enter a positive exact amount.");
+      return financeApi.beginStripeRefund(organizationId, detail.data.invoice.invoiceId, providerRequestId, { paymentId, amountCents: parsed, currency: detail.data.invoice.currency });
+    },
+    onSuccess: async () => { setNotice("Refund submitted to Stripe. The signed provider event will record the canonical V2 Refund."); closeDialog(); await refresh(); },
     onError: (error) => setNotice(errorText(error)),
   });
   if (!organizationId)
@@ -654,6 +689,9 @@ export const FinanceWorkspace = ({
                   Take Payment
                 </button>
               )}
+              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && settlement.balance.cents > 0 && canPaymentRecord && (
+                <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setAmount(centsForInput(settlement.balance.cents)); setProviderRequestId(newBusinessRequestId()); setDialog("stripePayment"); }}>Pay by Card</button>
+              )}
               {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && (
                 <button
                   className="v2-quiet-button"
@@ -667,6 +705,9 @@ export const FinanceWorkspace = ({
                 >
                   Record Refund
                 </button>
+              )}
+              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && detail.data?.history.some((entry) => entry.kind === "payment" && entry.source === "provider") && (
+                <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setPaymentId(""); setAmount(""); setProviderRequestId(newBusinessRequestId()); setDialog("stripeRefund"); }}>Refund to Card</button>
               )}
             </div>
           </header>
@@ -748,11 +789,11 @@ export const FinanceWorkspace = ({
           className="v2-finance-modal"
           role="dialog"
           aria-modal="true"
-          aria-label={dialog === "payment" ? "Take Payment" : "Record Refund"}
+          aria-label={dialog === "payment" ? "Take Payment" : dialog === "refund" ? "Record Refund" : dialog === "stripePayment" ? "Pay by Card" : "Refund to Card"}
         >
           <div>
             <header>
-              <h2>{dialog === "payment" ? "Take Payment" : "Record Refund"}</h2>
+              <h2>{dialog === "payment" ? "Take Payment" : dialog === "refund" ? "Record Refund" : dialog === "stripePayment" ? "Pay by Card" : "Refund to Card"}</h2>
               <button onClick={closeDialog}>Close</button>
             </header>
             <label>
@@ -780,7 +821,7 @@ export const FinanceWorkspace = ({
                   <option value="external">External</option>
                 </select>
               </label>
-            ) : (
+            ) : dialog !== "stripePayment" ? (
               <label>
                 Original Payment
                 <select
@@ -790,7 +831,7 @@ export const FinanceWorkspace = ({
                 >
                   <option value="">Select a Payment</option>
                   {detail.data?.history
-                    .filter((entry) => entry.kind === "payment")
+                    .filter((entry) => entry.kind === "payment" && (dialog !== "stripeRefund" || entry.source === "provider"))
                     .map((entry) => (
                       <option key={entry.id} value={entry.id}>
                         {money(entry.amount)} · {entry.method ?? "payment"}
@@ -798,20 +839,26 @@ export const FinanceWorkspace = ({
                     ))}
                 </select>
               </label>
-            )}
+            ) : null}
             <p className="muted">
               {dialog === "payment"
                 ? "Manual methods only. Card and ACH collection remain deferred; no raw card data is accepted."
-                : "A Refund is a new immutable fact. It does not alter the original Payment."}
+                : dialog === "refund" ? "A Refund is a new immutable fact. It does not alter the original Payment." : dialog === "stripePayment" ? "Stripe confirmation never records a V2 Payment directly. The signed webhook completes the financial fact." : "Stripe will process the refund; its signed event records the separate V2 Refund."}
             </p>
+            {dialog === "stripePayment" && !stripePayment.data && <button
+              className="v2-invoice-issue"
+              disabled={!csrfReady || stripePayment.isPending}
+              onClick={() => stripePayment.mutate()}
+            >{stripePayment.isPending ? "Preparing card payment…" : "Continue to card"}</button>}
+            {dialog === "stripePayment" && stripePayment.data && <StripePaymentElement publishableKey={stripePayment.data.publishableKey} clientSecret={stripePayment.data.clientSecret} onSubmitted={() => { setNotice("Payment submitted. Waiting for the signed Stripe confirmation before updating this Invoice."); closeDialog(); void refresh(); }} onError={(message) => setNotice(message)} />}
             <button
               className="v2-invoice-issue"
-              disabled={!csrfReady || payment.isPending || refund.isPending}
+              disabled={!csrfReady || payment.isPending || refund.isPending || stripeRefund.isPending || dialog === "stripePayment"}
               onClick={() =>
-                dialog === "payment" ? payment.mutate() : refund.mutate()
+                dialog === "payment" ? payment.mutate() : dialog === "refund" ? refund.mutate() : stripeRefund.mutate()
               }
             >
-              {dialog === "payment" ? "Record Payment" : "Record Refund"}
+              {dialog === "payment" ? "Record Payment" : dialog === "refund" ? "Record Refund" : "Submit Stripe Refund"}
             </button>
           </div>
         </div>

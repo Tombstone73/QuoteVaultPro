@@ -49,6 +49,14 @@ export class V2StripeProviderAdapter {
     return { providerTransactionId: paymentIntent.id, clientSecret: paymentIntent.client_secret };
   }
 
+  async retrievePaymentIntent(paymentIntentId: string): Promise<Readonly<{ clientSecret: string }>> {
+    const paymentIntent = await getStripeClient().paymentIntents.retrieve(paymentIntentId);
+    if (paymentIntent.status === "succeeded") throw new V2ApplicationError("CONFLICT", "Stripe accepted this payment; waiting for its signed confirmation.");
+    if (paymentIntent.status === "canceled") throw new V2ApplicationError("CONFLICT", "The prior Stripe payment attempt did not complete. Start a new payment attempt to retry.");
+    if (!paymentIntent.client_secret) throw new V2ApplicationError("RETRYABLE_FAILURE", "Stripe payment confirmation details are unavailable.");
+    return { clientSecret: paymentIntent.client_secret };
+  }
+
   async createRefund(input: Readonly<{ paymentIntentId: string; amountCents: number; organizationId: string; invoiceId: string; paymentId: string; providerOperationId: string; providerIdempotencyKey: string }>): Promise<Readonly<{ providerTransactionId: string }>> {
     if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) throw new V2ApplicationError("VALIDATION_ERROR", "Stripe refund amount must be positive exact cents.");
     const refund = await getStripeClient().refunds.create({
