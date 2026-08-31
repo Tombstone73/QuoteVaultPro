@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { showStripeReadinessError } from "./StripeSettingsWorkspace.js";
 const source=readFileSync("v2/ui/src/StripeSettingsWorkspace.tsx","utf8");
 assert.match(source,/not_connected: "Not connected"/);
 assert.match(source,/onboarding: "Onboarding incomplete"/);
 assert.match(source,/requirements_due: "Requirements due"/);
 assert.match(source,/connected \? status\(connection\?\.cardPayments/);
+assert.equal(showStripeReadinessError({ connection: { status: "not_connected" } }, new Error("stale refetch")), false, "a resolved normal state must not render an obsolete transport error");
+assert.equal(showStripeReadinessError(undefined, new Error("network")), true, "a genuine readiness request failure remains visible");
 console.log("Stripe Connect readiness presentation tests passed.");
