@@ -10,6 +10,9 @@ const ready = stripeRuntimeReadiness({ STRIPE_SECRET_KEY: "sk_test_example", VIT
 assert.equal(ready.status, "ready");
 assert.equal(ready.mode, "test");
 assert.equal(ready.publishableKey, "pk_test_example");
+const runtimeKey = stripeRuntimeReadiness({ STRIPE_SECRET_KEY: "sk_test_example", STRIPE_PUBLISHABLE_KEY: "pk_test_runtime", STRIPE_WEBHOOK_SECRET: "whsec_example" });
+assert.equal(runtimeKey.status, "ready");
+assert.equal(runtimeKey.publishableKey, "pk_test_runtime");
 const live = stripeRuntimeReadiness({ STRIPE_SECRET_KEY: "sk_live_example", VITE_STRIPE_PUBLISHABLE_KEY: "pk_live_example", STRIPE_WEBHOOK_SECRET: "whsec_example" });
 assert.equal(live.status, "action_required");
 assert.equal(live.mode, "live");

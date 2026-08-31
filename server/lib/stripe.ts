@@ -76,9 +76,13 @@ const publishableKeyMode = (value: string): StripeRuntimeReadiness["publishableK
  * It reports configuration state only; credential material never crosses this boundary. */
 export function stripeRuntimeReadiness(env: StripeEnv = process.env): StripeRuntimeReadiness {
   const config = assertStripeServerConfig({ env });
-  const publishable = publishableKeyMode(String(env.VITE_STRIPE_PUBLISHABLE_KEY || "").trim());
+  // Runtime configuration is server-owned. VITE_ is retained only as a
+  // compatibility fallback for older deployments; the V2 UI receives this
+  // browser-safe key through its authenticated readiness/initiation contract.
+  const configuredPublishableKey = String(env.STRIPE_PUBLISHABLE_KEY || env.VITE_STRIPE_PUBLISHABLE_KEY || "").trim();
+  const publishable = publishableKeyMode(configuredPublishableKey);
   const webhook = config.webhookSecretStatus === "ok" ? "ready" : config.webhookSecretStatus;
-  const safePublishable = publishable === "test" || publishable === "live" ? String(env.VITE_STRIPE_PUBLISHABLE_KEY || "").trim() : undefined;
+  const safePublishable = publishable === "test" || publishable === "live" ? configuredPublishableKey : undefined;
   const shared = safePublishable ? { publishableKey: safePublishable } : {};
   if (!config.ok) return { mode: config.mode, status: "not_configured", secretKeyConfigured: false, publishableKeyMode: publishable, webhook, configurationOwner: "platform_managed", actionRequired: "Platform-managed Stripe test credentials are not configured for this environment.", ...shared };
   if (config.mode === "live" || publishable === "live") return { mode: "live", status: "action_required", secretKeyConfigured: true, publishableKeyMode: publishable, webhook, configurationOwner: "platform_managed", actionRequired: "DEV must use Stripe test-mode credentials before provider validation can run.", ...shared };
