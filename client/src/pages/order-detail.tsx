@@ -36,7 +36,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow, useOrderCancellationEligibility } from "@/hooks/useOrders";
-import { useBillInvoice, useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
+import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import type { OrderLineItem as HookOrderLineItem, OrderWithRelations as HookOrderWithRelations } from "@/hooks/useOrders";
@@ -671,7 +671,6 @@ export default function OrderDetail() {
   // Billing / invoices
   const { data: orderInvoices = [], isLoading: isInvoicesLoading } = useInvoices(orderId ? { orderId } : undefined);
   const createOrderInvoice = useCreateOrderInvoice();
-  const billInvoice = useBillInvoice();
   const closeOrder = useCloseOrder(orderId || '');
   const completeOrder = useCompleteOrder(orderId || '');
   const orderPaymentResolution = useOrderPaymentResolution(orderId);
@@ -1869,7 +1868,7 @@ export default function OrderDetail() {
         ? 'Invoice Eligible'
         : 'Financial Review Needed';
   const paymentResolution = orderPaymentResolution.data;
-  const isPreparingInvoicePayment = createOrderInvoice.isPending || billInvoice.isPending;
+  const isPreparingInvoicePayment = createOrderInvoice.isPending;
   const billingActions = getOrderBillingActionState({
     // This is deliberately financial eligibility, not the persisted operational
     // billing-status field, which can lag behind production workflow updates.
@@ -1926,8 +1925,7 @@ export default function OrderDetail() {
         throw new Error('Invoice was created, but the response did not include an invoice id.');
       }
 
-      await billInvoice.mutateAsync(String(created.id));
-      toast({ title: 'Invoice ready', description: 'Invoice generated and finalized for payment.' });
+      toast({ title: 'Invoice ready', description: 'Invoice generated and ready for payment.' });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', { orderId }] });
       queryClient.invalidateQueries({ queryKey: ['orders', orderId, 'payment-resolution'] });
@@ -1935,7 +1933,7 @@ export default function OrderDetail() {
     } catch (error: any) {
       toast({
         title: 'Could not prepare payment',
-        description: error?.message || 'Invoice generation or finalization failed.',
+        description: error?.message || 'Invoice generation failed.',
         variant: 'destructive',
       });
     }

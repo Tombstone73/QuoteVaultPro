@@ -172,21 +172,6 @@ export async function registerMvpInvoicingRoutes(
 ) {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = deps;
 
-  async function finalizeInvoiceForOperations(input: {
-    organizationId: string;
-    invoiceId: string;
-    userId?: string | null;
-    userName?: string | null;
-  }) {
-    if (!input.userId) throw Object.assign(new Error("Missing user"), { statusCode: 401 });
-    return canonicalInvoiceOperations.finalize({
-      organizationId: input.organizationId,
-      invoiceId: input.invoiceId,
-      actorUserId: input.userId,
-      actorUserName: input.userName,
-    });
-  }
-
   async function resolveInvoiceEmailRecipientsForOperations(input: {
     organizationId: string;
     invoiceId: string;
@@ -306,14 +291,8 @@ export async function registerMvpInvoicingRoutes(
     const startingStatus = String(inv.status || "").toLowerCase();
     if (startingStatus === "void") throw Object.assign(new Error("Void invoices cannot be sent"), { statusCode: 400 });
     if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
-    if (startingStatus === "draft") {
-      await finalizeInvoiceForOperations(input);
-      const finalized = await getInvoiceWithRelations(input.invoiceId);
-      if (!finalized || finalized.invoice.organizationId !== input.organizationId) {
-        throw Object.assign(new Error("Invoice not found after finalize"), { statusCode: 404 });
-      }
-      inv = finalized.invoice as any;
-    }
+    // An Order-backed invoice is already a live receivable. Sending it is a
+    // delivery action, not an implicit financial finalization transition.
 
     const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId));
     const lineItems = await db
@@ -2168,28 +2147,23 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
-  // Finalize invoice (draft -> finalized). QuickBooks sync is explicit only.
+  // Legacy compatibility: order-backed invoices are payable on creation.
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/bill", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const userId = getUserId(req.user);
-      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
-
       const rel = await getInvoiceWithRelations(req.params.id);
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
-      const status = String(inv.status || "").toLowerCase();
-      if (status !== "draft") return res.status(400).json({ error: "Only draft invoices can be finalized" });
-
-      await finalizeInvoiceForOperations({ organizationId, invoiceId: inv.id, userId, userName });
-
-      const refreshed = await getInvoiceWithRelations(inv.id);
-      res.json({ success: true, data: refreshed });
+      if (String(inv.status || "").toLowerCase() === "void") return res.status(400).json({ error: "Void invoices cannot be activated" });
+      // Compatibility endpoint for older clients. It deliberately does not
+      // transition an Order-backed receivable: payment eligibility is already
+      // determined from the current balance and immutable ledger effects.
+      res.json({ success: true, data: rel, message: "Invoice is already live and payable." });
     } catch (error: any) {
       console.error("Error billing invoice:", error);
       res.status(500).json({ error: error.message || "Failed to bill invoice" });

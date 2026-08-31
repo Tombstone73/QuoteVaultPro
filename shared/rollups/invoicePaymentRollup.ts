@@ -1,4 +1,4 @@
-export type InvoicePaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded';
+export type InvoicePaymentStatus = 'unpaid' | 'partial' | 'paid' | 'credit' | 'refunded';
 
 export type PaymentStatus = 'pending' | 'succeeded' | 'captured' | 'failed' | 'canceled' | 'refunded' | 'voided';
 
@@ -14,7 +14,7 @@ export type InvoicePaymentRollup = {
   paymentStatus: InvoicePaymentStatus;
 };
 
-export type InvoicePaymentStatusLabel = 'Draft' | 'Voided' | 'Unpaid' | 'Partially Paid' | 'Paid';
+export type InvoicePaymentStatusLabel = 'Voided' | 'Unpaid' | 'Partially Paid' | 'Paid' | 'Credit / Refund Due';
 
 /**
  * Combine immutable invoice lifecycle protections with the current payment
@@ -24,9 +24,8 @@ export type InvoicePaymentStatusLabel = 'Draft' | 'Voided' | 'Unpaid' | 'Partial
 export function getInvoiceFinancialLifecycleStatus(params: {
   invoiceStatus: string | null | undefined;
   rollup: Pick<InvoicePaymentRollup, 'amountPaidCents' | 'amountDueCents'>;
-}): 'draft' | 'void' | 'paid' | 'partially_paid' | 'finalized' | 'billed' | 'sent' {
+}): 'void' | 'paid' | 'partially_paid' | 'finalized' | 'billed' | 'sent' {
   const currentStatus = String(params.invoiceStatus || '').trim().toLowerCase();
-  if (currentStatus === 'draft') return 'draft';
   if (currentStatus === 'void' || currentStatus === 'voided') return 'void';
 
   const paid = toSafeCents(params.rollup?.amountPaidCents);
@@ -46,8 +45,6 @@ export function getInvoicePaymentStatusLabel(params: {
 }): InvoicePaymentStatusLabel {
   const base = String(params.invoiceStatus || '').trim().toLowerCase();
   if (base === 'void' || base === 'voided') return 'Voided';
-  if (base === 'draft') return 'Draft';
-
   const paid = toSafeCents(params.rollup?.amountPaidCents);
   const due = toSafeCents(params.rollup?.amountDueCents);
 
@@ -108,13 +105,17 @@ export function computeInvoicePaymentRollup(params: {
   }
 
   if (!Number.isFinite(paid)) paid = 0;
-  paid = Math.max(0, Math.min(invoiceTotalCents, paid));
+  // Payments are immutable ledger facts. Do not clamp a legitimate
+  // overpayment to a later, lower Order total.
+  paid = Math.max(0, paid);
 
   const due = Math.max(0, invoiceTotalCents - paid);
 
   let paymentStatus: InvoicePaymentStatus = 'unpaid';
   if (paid <= 0) {
     paymentStatus = hadSucceeded && hadRefund ? 'refunded' : 'unpaid';
+  } else if (paid > invoiceTotalCents) {
+    paymentStatus = 'credit';
   } else if (due <= 0) {
     // A historical refund does not make a subsequently repaid invoice
     // financially refunded. The current net balance is authoritative.

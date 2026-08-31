@@ -56,6 +56,23 @@ describe('normalizeInvoiceAccountingDisplay', () => {
     expect(paid.isFullyPaid).toBe(true);
   });
 
+  test('a lower current Order total preserves payment history and exposes refund credit', () => {
+    const normalized = normalizeInvoiceAccountingDisplay({
+      importSource: null,
+      total: '450.00',
+      totalCents: 45000,
+      amountPaid: '500.00',
+      balanceDue: '0.00',
+      status: 'billed',
+      payments: [{ id: 'paid_before_order_change', status: 'succeeded', amountCents: 50000 }],
+    });
+
+    expect(normalized.displayPaid).toBe(500);
+    expect(normalized.displayRemaining).toBe(0);
+    expect(normalized.creditCents).toBe(5000);
+    expect(normalized.displayStatus).toBe('Credit / Refund Due');
+  });
+
   test('historical imported paid invoice derives paid from total minus zero balance', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',

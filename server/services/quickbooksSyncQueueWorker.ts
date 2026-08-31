@@ -304,6 +304,7 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
           syncStatus: "synced",
           syncError: null,
           syncedAt: new Date(),
+          lastQbSyncedVersion: sql`${invoices.invoiceVersion}`,
           updatedAt: new Date(),
         } as any)
         .where(and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)));
@@ -483,7 +484,7 @@ export async function runSelectedQuickBooksSyncForOrg(params: {
       if (String(invoice.status).toLowerCase() === 'draft' || new Date(invoice.updatedAt).getTime() > cutoff.getTime()) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice is not currently eligible.' }); continue; }
       try {
         const qb = await syncSingleInvoiceToQuickBooksForOrganization(params.organizationId, item.id);
-        await db.update(invoices).set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: 'synced', qbLastError: null, syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
+        await db.update(invoices).set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: 'synced', qbLastError: null, syncStatus: 'synced', syncError: null, syncedAt: new Date(), lastQbSyncedVersion: sql`${invoices.invoiceVersion}`, updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
         result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null });
       } catch (error: any) {
         const reason = toOneLineHumanMessage(error?.message || error);

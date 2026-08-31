@@ -28,7 +28,7 @@ import {
 import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
+import { useInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
 import { orderDetailQueryKey, useOrder } from "@/hooks/useOrders";
 import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
@@ -195,7 +195,6 @@ export default function InvoiceDetailPage() {
   const queryClient = useQueryClient();
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
-  const billInvoice = useBillInvoice();
   const queueQbSync = useQueueInvoiceQbSync();
   const sendInvoice = useSendInvoice();
   const markSent = useMarkInvoiceSent();
@@ -338,7 +337,6 @@ export default function InvoiceDetailPage() {
   const financialPaymentEligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus, remainingCents });
   const canSendInvoiceEmail = isAdminOrOwner && !isImportedFromQuickBooks;
   const canMarkInvoiceSent = isAdminOrOwner && !isImportedFromQuickBooks;
-  const canFinalizeInvoice = invoiceStatus === 'draft' && !isImportedFromQuickBooks;
   const canDeleteDraftInvoice = invoice?.status === 'draft' && payments.length === 0 && !isImportedFromQuickBooks;
   const accountingModeLabel = isImportedFromQuickBooks
     ? (isHistoricalImport ? 'Historical' : 'Active A/R')
@@ -1288,17 +1286,6 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  const handleBill = async () => {
-    if (!invoiceId) return;
-    try {
-      await billInvoice.mutateAsync(invoiceId);
-      toast({ title: 'Success', description: 'Invoice finalized' });
-      refetch();
-    } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-    }
-  };
-
   const handleMarkSent = async () => {
     if (!invoiceId) return;
     try {
@@ -2132,21 +2119,6 @@ export default function InvoiceDetailPage() {
                         Take Payment
                       </Button>
                     ) : null}
-
-                    {canFinalizeInvoice && (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button onClick={handleBill} disabled={billInvoice.isPending}>
-                              {billInvoice.isPending ? 'Finalizing…' : 'Finalize'}
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            Finalizes the invoice for sending. QuickBooks sync is a separate action.
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    )}
 
                     {canDeleteDraftInvoice && (
                       <Button variant="destructive" onClick={handleDelete}>

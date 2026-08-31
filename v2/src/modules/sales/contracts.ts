@@ -120,8 +120,8 @@ export type EditOrderCommand = Readonly<{ organizationId: OrganizationId; orderI
 export type CancelOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; reason: string }>;
 
 export type QuoteCommandResult = Readonly<{ quoteId: QuoteId; checkpointId?: QuoteCheckpointId }>;
-export type OrderCommandResult = Readonly<{ orderId: OrderId; draftInvoiceId?: InvoiceId }>;
-export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId: QuoteCheckpointId; conversionCheckpointId: QuoteCheckpointId; orderId: OrderId; draftInvoiceId: InvoiceId }>;
+export type OrderCommandResult = Readonly<{ orderId: OrderId; orderBackedInvoiceId?: InvoiceId }>;
+export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId: QuoteCheckpointId; conversionCheckpointId: QuoteCheckpointId; orderId: OrderId; orderBackedInvoiceId: InvoiceId }>;
 
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{

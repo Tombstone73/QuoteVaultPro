@@ -630,11 +630,14 @@ export async function createInvoiceFromOrderInTransaction(
       orderId: order.id,
       sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
       customerId: billingCustomer.customerId,
-      status: 'draft',
+      // An Order-backed invoice is immediately a live receivable. Its
+      // commercial facts keep projecting from the editable Order; payment is
+      // never gated on a separate document-finalization action.
+      status: 'billed',
       terms: opts.terms as any,
       customTerms: undefined,
       issueDate,
-      issuedAt: undefined,
+      issuedAt: issueDate,
       dueDate: dueDate || undefined,
       subtotal: financialSnapshot.subtotal.toFixed(2) as any,
       tax: financialSnapshot.tax.toFixed(2) as any,
@@ -657,6 +660,15 @@ export async function createInvoiceFromOrderInTransaction(
     } as any; // cast due to extended schema types differences
 
     const [invoice] = await tx.insert(invoices).values(invoiceInsert as any).returning();
+
+    // The Order is the commercial authority and its linked Invoice is live
+    // immediately.  This is an availability marker, not a payment or
+    // fulfillment gate: terms and the immutable payment ledger still decide
+    // what is due and whether any downstream work can proceed.
+    await tx.update(orders).set({
+      billingStatus: "billed",
+      updatedAt: new Date(),
+    } as any).where(and(eq(orders.id, order.id), eq(orders.organizationId, organizationId)));
 
     await writeContactAccountingPromotionAudit(tx, {
       organizationId,
@@ -692,7 +704,9 @@ export async function createInvoiceFromOrderInTransaction(
 }
 
 /**
- * The forward Order creation invariant.  The advisory lock serializes all
+ * The forward Order creation invariant. The historical function name remains
+ * for compatibility with established callers; it creates a live, order-backed
+ * receivable rather than a payment-blocking draft. The advisory lock serializes all
  * creation paths (direct, quote conversion, inbound, and assistant) without
  * imposing a new uniqueness migration on historical invoice data.
  */
@@ -738,11 +752,11 @@ export async function ensureDraftInvoiceForOrderInTransaction(
   await tx.insert(auditLogs).values({
     organizationId: input.organizationId,
     userId: input.actorUserId,
-    actionType: "invoice_draft_created_from_order",
+    actionType: "invoice_order_backed_created",
     entityType: "invoice",
     entityId: invoice.id,
     entityName: String(invoice.displayNumber || invoice.invoiceNumber),
-    description: "Created the linked draft invoice as part of Order creation.",
+    description: "Created the linked live invoice as part of Order creation.",
     newValues: { orderId: input.orderId, source: input.source ?? "order_created" } as any,
   } as any);
   return { invoice, created: true };
@@ -777,8 +791,8 @@ function invoiceSnapshotComparable(row: any) {
 }
 
 /**
- * Updates only an unambiguous, native DRAFT invoice.  Historical orders with
- * no invoice or multiple legacy invoices are deliberately left untouched.
+ * Projects the current Order into its single native linked invoice. Historical
+ * imports, voids, and ambiguous legacy links remain deliberately untouched.
  */
 export async function synchronizeDraftInvoiceFromOrderInTransaction(
   tx: any,
@@ -796,7 +810,7 @@ export async function synchronizeDraftInvoiceFromOrderInTransaction(
     eq(invoices.orderId, input.orderId),
     ne(invoices.status, "void"),
   )).orderBy(asc(invoices.createdAt), asc(invoices.id));
-  if (linkedInvoices.length !== 1 || String(linkedInvoices[0]!.status).toLowerCase() !== "draft") {
+  if (linkedInvoices.length !== 1) {
     return { status: "not_editable" as const, invoiceId: linkedInvoices[0]?.id ?? null };
   }
 
@@ -821,6 +835,16 @@ export async function synchronizeDraftInvoiceFromOrderInTransaction(
     await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
     if (desiredRows.length) await tx.insert(invoiceLineItems).values(desiredRows as any);
   }
+  const paymentRows = await tx.select().from(payments).where(and(
+    eq(payments.invoiceId, invoice.id),
+    eq(payments.organizationId, input.organizationId),
+  ));
+  const nextInvoice = {
+    ...invoice,
+    status: String(invoice.status || "").toLowerCase() === "draft" ? "billed" : invoice.status,
+    totalCents: snapshot.totalCents,
+  };
+  const financialState = computeInvoiceFinancialState(nextInvoice, paymentRows as any);
   const [updated] = await tx.update(invoices).set({
     customerId: order.customerId ?? invoice.customerId,
     subtotal: snapshot.subtotal.toFixed(2),
@@ -830,19 +854,22 @@ export async function synchronizeDraftInvoiceFromOrderInTransaction(
     taxCents: snapshot.taxCents,
     shippingCents: snapshot.shippingCents,
     totalCents: snapshot.totalCents,
-    balanceDue: (snapshot.totalCents / 100).toFixed(2),
+    amountPaid: centsToDecimalString(financialState.amountPaidCents),
+    balanceDue: centsToDecimalString(financialState.amountDueCents),
+    status: financialState.status,
     invoiceVersion: Number((invoice as any).invoiceVersion || 1) + 1,
-    modifiedAfterBilling: false,
+    modifiedAfterBilling: Boolean((invoice as any).qbInvoiceId),
+    ...((invoice as any).qbInvoiceId ? { qbSyncStatus: "pending", qbLastError: null } : {}),
     updatedAt: new Date(),
   } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
   await tx.insert(auditLogs).values({
     organizationId: input.organizationId,
     userId: input.actorUserId ?? null,
-    actionType: "invoice_draft_synchronized_from_order",
+    actionType: "invoice_order_backed_synchronized",
     entityType: "invoice",
     entityId: invoice.id,
     entityName: String(invoice.displayNumber || invoice.invoiceNumber),
-    description: "Synchronized an editable draft invoice from its Order financial snapshot.",
+    description: "Synchronized the live Order-backed invoice from its current commercial snapshot.",
     oldValues: { subtotalCents: invoice.subtotalCents, taxCents: invoice.taxCents, shippingCents: invoice.shippingCents, totalCents: invoice.totalCents } as any,
     newValues: { subtotalCents: snapshot.subtotalCents, taxCents: snapshot.taxCents, shippingCents: snapshot.shippingCents, totalCents: snapshot.totalCents, lineSnapshotsChanged } as any,
   } as any);

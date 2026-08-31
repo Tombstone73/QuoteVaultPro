@@ -25,7 +25,7 @@ describe('computeInvoicePaymentRollup', () => {
     expect(r).toEqual({ amountPaidCents: 1000, amountDueCents: 0, paymentStatus: 'paid' });
   });
 
-  test('multiple payments clamp to invoice total', () => {
+  test('multiple payments preserve an overpayment for credit/refund handling', () => {
     const r = computeInvoicePaymentRollup({
       invoiceTotalCents: 1000,
       payments: [
@@ -33,7 +33,23 @@ describe('computeInvoicePaymentRollup', () => {
         { status: 'succeeded', amountCents: 600 },
       ],
     });
-    expect(r).toEqual({ amountPaidCents: 1000, amountDueCents: 0, paymentStatus: 'paid' });
+    expect(r).toEqual({ amountPaidCents: 1200, amountDueCents: 0, paymentStatus: 'credit' });
+  });
+
+  test('an Order increase after a $500 payment leaves exactly $100 due', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 60_000,
+      payments: [{ id: 'payment-before-order-change', status: 'succeeded', amountCents: 50_000 }],
+    });
+    expect(r).toEqual({ amountPaidCents: 50_000, amountDueCents: 10_000, paymentStatus: 'partial' });
+  });
+
+  test('an Order decrease after a $500 payment preserves a $50 refund credit', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 45_000,
+      payments: [{ id: 'payment-before-order-change', status: 'succeeded', amountCents: 50_000 }],
+    });
+    expect(r).toEqual({ amountPaidCents: 50_000, amountDueCents: 0, paymentStatus: 'credit' });
   });
 
   test('succeeded then refunded (full refund)', () => {
@@ -236,7 +252,7 @@ describe('computeInvoicePaymentRollup', () => {
 
   test('status label: respects draft/void invoice base status', () => {
     const rollup = computeInvoicePaymentRollup({ invoiceTotalCents: 1000, payments: [] });
-    expect(getInvoicePaymentStatusLabel({ invoiceStatus: 'draft', rollup })).toBe('Draft');
+    expect(getInvoicePaymentStatusLabel({ invoiceStatus: 'draft', rollup })).toBe('Unpaid');
     expect(getInvoicePaymentStatusLabel({ invoiceStatus: 'void', rollup })).toBe('Voided');
   });
 
@@ -253,7 +269,7 @@ describe('computeInvoicePaymentRollup', () => {
     expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'sent', rollup: fullRefund })).toBe('sent');
   });
 
-  test('partial refunds, drafts, and voids retain the correct financial/lifecycle state', () => {
+  test('partial refunds and legacy draft records retain the correct financial/lifecycle state', () => {
     const partialRefund = computeInvoicePaymentRollup({
       invoiceTotalCents: 1_000,
       payments: [
@@ -264,7 +280,9 @@ describe('computeInvoicePaymentRollup', () => {
     const unpaid = computeInvoicePaymentRollup({ invoiceTotalCents: 1_000, payments: [] });
 
     expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'paid', rollup: partialRefund })).toBe('partially_paid');
-    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'draft', rollup: unpaid })).toBe('draft');
+    // Legacy drafts are treated as live unpaid receivables on read while the
+    // data migration promotes persisted Order-backed rows.
+    expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'draft', rollup: unpaid })).toBe('billed');
     expect(getInvoiceFinancialLifecycleStatus({ invoiceStatus: 'void', rollup: unpaid })).toBe('void');
   });
 });

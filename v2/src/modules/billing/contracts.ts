@@ -4,7 +4,8 @@ import type { PrincipalKind } from "../../authorization/principals.js";
 import type { BusinessRequestId, CurrencyCode, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrganizationId, PercentageBasisPoints, ProductId, SalesLineId } from "../shared/commercialValues.js";
 
 /** Sales supplies a projection; Billing owns any resulting Invoice row, math, and lifecycle. */
-export type DraftInvoiceSynchronizationInput = Readonly<{
+/** Live invoice projection from the editable Order; Billing owns the row and math. */
+export type OrderBackedInvoiceSynchronizationInput = Readonly<{
   organizationId: OrganizationId;
   orderId: OrderId;
   businessRequestId: BusinessRequestId;
@@ -15,8 +16,11 @@ export type DraftInvoiceSynchronizationInput = Readonly<{
   taxInput: Readonly<{ taxContextReference?: string; compatibilityCalculatorVersion?: string }>;
   sourceSalesStateToken: string;
 }>;
-export type CreateDraftInvoiceInput = DraftInvoiceSynchronizationInput;
+export type DraftInvoiceSynchronizationInput = OrderBackedInvoiceSynchronizationInput;
+export type CreateDraftInvoiceInput = OrderBackedInvoiceSynchronizationInput;
 export type DraftInvoiceSynchronizationResult = Readonly<{ invoiceId: InvoiceId; status: "created" | "synchronized" | "unchanged" | "not_editable"; reason?: "invoice_issued" | "invoice_void" | "invoice_missing" | "multiple_active_invoices"; synchronizationVersion?: string }>;
+/** Canonical name; Draft* aliases remain only for incremental adapter compatibility. */
+export type OrderBackedInvoiceSynchronizationResult = DraftInvoiceSynchronizationResult;
 export type IssueInvoiceInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; businessRequestId: BusinessRequestId }>;
 export type BillingAttributionSnapshot =
   | Readonly<{ principalKind: Exclude<PrincipalKind, "delegated_ai">; subjectId: string; staffActorUserId?: never }>

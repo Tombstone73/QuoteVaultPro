@@ -121,7 +121,7 @@ function centsToPaymentStatusLabel(params: {
   remainingCents: number;
 }): string {
   if (params.rawStatus === 'void' || params.rawStatus === 'voided') return 'Voided';
-  if (params.rawStatus === 'draft') return 'Draft';
+  if (params.rawStatus === 'draft') return 'Unpaid';
   if (params.remainingCents <= 0 && params.paidCents > 0) return 'Paid';
   if (params.paidCents > 0 && params.remainingCents > 0) return 'Partially Paid';
   return 'Unpaid';
@@ -248,9 +248,9 @@ export function normalizeInvoiceAccountingDisplay(
     ? Math.max(0, displayTotalCents - displayRemainingCents)
     : Math.max(0, localPaymentPaidCents);
 
-  const displayPaidCents = Math.max(0, Math.min(displayTotalCents, rawPaidCents));
-  const creditCents = 0;
-  const isFullyPaid = displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents + creditCents >= displayTotalCents;
+  const displayPaidCents = Math.max(0, rawPaidCents);
+  const creditCents = isImportedFromQuickBooks ? 0 : Math.max(0, displayPaidCents - displayTotalCents);
+  const isFullyPaid = displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents >= displayTotalCents;
   const paymentStatusLabel = centsToPaymentStatusLabel({
     rawStatus,
     paidCents: displayPaidCents,
@@ -262,7 +262,7 @@ export function normalizeInvoiceAccountingDisplay(
   if (rawStatus === 'void' || rawStatus === 'voided') {
     displayStatus = 'Voided';
   } else if (rawStatus === 'draft') {
-    displayStatus = 'Draft';
+    displayStatus = creditCents > 0 ? 'Credit / Refund Due' : paymentStatusLabel;
   } else if (isImportedFromQuickBooks) {
     if (isHistorical) {
       if (displayRemainingCents <= 0) displayStatus = 'Paid Historical';
@@ -277,6 +277,8 @@ export function normalizeInvoiceAccountingDisplay(
     } else {
       displayStatus = 'Partially Paid';
     }
+  } else if (creditCents > 0) {
+    displayStatus = 'Credit / Refund Due';
   } else if (!rawStatus) {
     if (isFullyPaid) displayStatus = 'Paid';
     else if (displayPaidCents > 0) displayStatus = 'Partially Paid';
