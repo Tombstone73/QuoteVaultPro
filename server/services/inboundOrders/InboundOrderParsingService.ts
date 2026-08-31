@@ -15,6 +15,7 @@ import { createConfiguredAiProvider, resolveAiProviderTimeoutMs } from "../ai/pr
 import {
   AiProviderTimeoutError,
   AiProviderUnavailableError,
+  AiProviderResponseError,
   type AiProviderAdapter,
   type AiProviderResponse,
 } from "../ai/providers/AiProviderAdapter";
@@ -146,6 +147,38 @@ function warning(code: string, message: string, severity: InboundOrderParseWarni
 
 function toError(message: string, code = "parse_failed") {
   return { code, message };
+}
+
+type InboundParseStage =
+  | "evidence_collection"
+  | "prompt_construction"
+  | "provider_resolution"
+  | "provider_request"
+  | "response_validation"
+  | "candidate_resolution";
+
+function parseStageFailureMessage(stage: InboundParseStage, error: unknown): string {
+  if (error instanceof AiProviderUnavailableError) return "AI provider is not configured for order parsing.";
+  if (error instanceof AiProviderTimeoutError) return error.message;
+  if (error instanceof AiProviderResponseError) {
+    if (error.kind === "authentication_failure") return "AI provider authentication failed for order parsing.";
+    if (error.kind === "rate_limit") return "AI provider rate limit prevented this parse. Retry later.";
+    if (error.kind === "truncated_output") return "AI provider response was truncated before the order draft could be validated.";
+    if (error.kind === "malformed_response" || error.kind === "empty_response") return "AI provider returned an unusable order-parse response.";
+    return "AI provider request failed for order parsing.";
+  }
+  if (stage === "evidence_collection") return "Inbound evidence preparation failed. Source evidence remains available for retry.";
+  if (stage === "prompt_construction") return "Inbound parse prompt preparation failed. Source evidence remains available for retry.";
+  if (stage === "candidate_resolution") return "Inbound candidate resolution failed. Source evidence remains available for retry.";
+  if (stage === "response_validation") return "AI response could not be validated as an inbound order draft.";
+  return "AI parsing failed. Source evidence remains available for retry.";
+}
+
+function parseStageFailureCode(stage: InboundParseStage, error: unknown): string {
+  if (error instanceof AiProviderTimeoutError) return "timeout";
+  if (error instanceof AiProviderUnavailableError) return "provider_unavailable";
+  if (error instanceof AiProviderResponseError) return `provider_${error.kind}`;
+  return `${stage}_failed`;
 }
 
 function uniqueIds(candidates: InboundCandidateResult[]): string[] {
@@ -326,38 +359,43 @@ export class InboundOrderParsingService {
       },
     });
 
-    const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record);
-    const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle);
-    const rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
-    const provider = this.providerFactory();
-
-    if (!provider) {
-      const attempt = await this.storeAttemptAndUpdateRecord({
-        organizationId: args.organizationId,
-        inboundRecordId: args.inboundRecordId,
-        actorUserId: args.actorUserId,
-        previousStatus: "waiting_on_customer",
-        attempt: {
-          organizationId: args.organizationId,
-          inboundOrderRecordId: args.inboundRecordId,
-          status: "failed",
-          provider: null,
-          model: null,
-          rawPromptHash,
-          rawResponse: null,
-          repairedResponse: null,
-          parsedDraft: null,
-          confidence: 0,
-          warnings: [],
-          errors: [toError("AI provider is not configured.", "provider_unavailable")],
-        },
-        finalStatus: "needs_review",
-        reviewRequiredReason: "AI provider is not configured. Source evidence remains available for retry.",
-      });
-      return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
-    }
-
+    let rawPromptHash: string | null = null;
+    let stage: InboundParseStage = "evidence_collection";
     try {
+      const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record);
+      stage = "prompt_construction";
+      const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle);
+      rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
+      stage = "provider_resolution";
+      const provider = this.providerFactory();
+
+      if (!provider) {
+        const attempt = await this.storeAttemptAndUpdateRecord({
+          organizationId: args.organizationId,
+          inboundRecordId: args.inboundRecordId,
+          actorUserId: args.actorUserId,
+          previousStatus: "waiting_on_customer",
+          attempt: {
+            organizationId: args.organizationId,
+            inboundOrderRecordId: args.inboundRecordId,
+            status: "failed",
+            provider: null,
+            model: null,
+            rawPromptHash,
+            rawResponse: null,
+            repairedResponse: null,
+            parsedDraft: null,
+            confidence: 0,
+            warnings: [],
+            errors: [toError("AI provider is not configured.", "provider_unavailable")],
+          },
+          finalStatus: "needs_review",
+          reviewRequiredReason: "AI provider is not configured. Source evidence remains available for retry.",
+        });
+        return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
+      }
+
+      stage = "provider_request";
       const response = await provider.generateJson({
         orgId: args.organizationId,
         feature: "order_parsing",
@@ -368,20 +406,28 @@ export class InboundOrderParsingService {
         timeoutUseCase: "inbound_order_parsing",
       });
 
+      stage = "response_validation";
       const rawObject = parseAiJsonObject(response.rawText);
       const validation = this.validateInboundOrderParseResult(rawObject);
       const repaired = validation.success
         ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
         : this.repairInboundOrderParseResult(rawObject, record);
       const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
+      stage = "candidate_resolution";
       const draftWithCandidates = await this.addCandidateMatches(args.organizationId, refinedDraft);
       const draftWithCustomerIntelligence = await this.attachCustomerIntelligence(args.organizationId, draftWithCandidates);
-      const score = this.scoreInboundOrderParseResult(draftWithCustomerIntelligence);
+      const draftWithPromptWarnings = prompt.warnings.length > 0
+        ? {
+          ...draftWithCustomerIntelligence,
+          globalWarnings: [...draftWithCustomerIntelligence.globalWarnings, ...prompt.warnings],
+        }
+        : draftWithCustomerIntelligence;
+      const score = this.scoreInboundOrderParseResult(draftWithPromptWarnings);
       const finalWarnings = [
-        ...draftWithCustomerIntelligence.globalWarnings,
+        ...draftWithPromptWarnings.globalWarnings,
         ...repaired.warnings,
       ];
-      const finalStatus = this.resolveParsedRecordStatus(draftWithCustomerIntelligence, score);
+      const finalStatus = this.resolveParsedRecordStatus(draftWithPromptWarnings, score);
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
@@ -398,7 +444,7 @@ export class InboundOrderParsingService {
           rawPromptHash,
           rawResponse: this.responseForStorage(response, rawObject),
           repairedResponse: repaired.repairedResponse,
-          parsedDraft: draftWithCustomerIntelligence,
+          parsedDraft: draftWithPromptWarnings,
           confidence: score,
           warnings: finalWarnings,
           errors: [],
@@ -411,11 +457,7 @@ export class InboundOrderParsingService {
 
       return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
     } catch (error: any) {
-      const providerError = error instanceof AiProviderUnavailableError
-        ? "AI provider is not configured for order parsing."
-        : error instanceof AiProviderTimeoutError
-          ? error.message
-          : error?.message ?? "AI parsing failed.";
+      const providerError = parseStageFailureMessage(stage, error);
       const attempt = await this.storeAttemptAndUpdateRecord({
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
@@ -425,22 +467,22 @@ export class InboundOrderParsingService {
           organizationId: args.organizationId,
           inboundOrderRecordId: args.inboundRecordId,
           status: "failed",
-          provider: error instanceof AiProviderTimeoutError ? error.provider : null,
-          model: error instanceof AiProviderTimeoutError ? error.model : null,
+          provider: error instanceof AiProviderTimeoutError || error instanceof AiProviderResponseError ? error.provider : null,
+          model: error instanceof AiProviderTimeoutError || error instanceof AiProviderResponseError ? error.model : null,
           rawPromptHash,
-          rawResponse: null,
+          rawResponse: error instanceof AiProviderResponseError
+            ? {
+              provider: error.provider,
+              model: error.model,
+              requestMetadata: error.responseMetadata ?? {},
+              providerRequestId: error.providerRequestId,
+            }
+            : null,
           repairedResponse: null,
           parsedDraft: null,
           confidence: 0,
           warnings: [],
-          errors: [toError(
-            providerError,
-            error instanceof AiProviderTimeoutError
-              ? "timeout"
-              : error instanceof AiProviderUnavailableError
-                ? "provider_unavailable"
-                : "provider_failed",
-          )],
+          errors: [toError(providerError, parseStageFailureCode(stage, error))],
         },
         finalStatus: "needs_review",
         reviewRequiredReason: `${providerError} Source evidence remains available for retry.`,
@@ -548,7 +590,7 @@ export class InboundOrderParsingService {
     organizationId: string,
     record: InboundOrderRecord,
     evidenceBundle?: InboundOrderEvidenceBundle,
-  ): Promise<{ system: string; user: string }> {
+  ): Promise<{ system: string; user: string; warnings: InboundOrderParseWarning[] }> {
     const evidence = getManualInboundEvidence(record);
     const bundle = evidenceBundle ?? await this.buildEvidenceBundle(organizationId, record);
     const sourceEvidence = {
@@ -596,14 +638,32 @@ export class InboundOrderParsingService {
       evidenceConflicts: bundle.conflicts,
       evidenceReconciliation: bundle.reconciliation ?? null,
     };
-    const customerIntelligence = await this.customerIntelligence.buildSummaryForSourceEvidence({
-      organizationId,
-      senderEmail: evidence.senderEmail,
-      senderName: evidence.senderName,
-      companyName: evidence.senderName,
-    });
+    let customerIntelligence = null;
+    const promptWarnings: InboundOrderParseWarning[] = [];
+    try {
+      customerIntelligence = await this.customerIntelligence.buildSummaryForSourceEvidence({
+        organizationId,
+        senderEmail: evidence.senderEmail,
+        senderName: evidence.senderName,
+        companyName: evidence.senderName,
+      });
+    } catch (error) {
+      // Customer history is advisory. A history-query failure must never block
+      // a review-first parse that can be completed from the actual email/PO.
+      console.warn("[INBOUND_ORDER_PARSE] Customer intelligence was unavailable; continuing with source evidence.", {
+        organizationId,
+        inboundRecordId: record.id,
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      promptWarnings.push(warning(
+        "customer_intelligence_unavailable",
+        "Customer history context was unavailable; parsing used the source evidence only.",
+        "info",
+      ));
+    }
 
     return {
+      warnings: promptWarnings,
       system: [
         "You parse inbound print order requests for TitanOS.",
         "Return JSON only: one parsed draft object and no explanation.",
@@ -1922,6 +1982,13 @@ export class InboundOrderParsingService {
           confidence: attempt.confidence,
           warningCount: Array.isArray(attempt.warnings) ? attempt.warnings.length : 0,
           errorCount: Array.isArray(attempt.errors) ? attempt.errors.length : 0,
+          failureCodes: Array.isArray(attempt.errors)
+            ? attempt.errors
+              .map((error) => error && typeof error === "object" && !Array.isArray(error)
+                ? stringValue((error as Record<string, unknown>).code)
+                : null)
+              .filter((code): code is string => Boolean(code))
+            : [],
           parseResultSummary: parseResultSummary(args.attempt.parsedDraft),
           reviewOnly: true,
         },

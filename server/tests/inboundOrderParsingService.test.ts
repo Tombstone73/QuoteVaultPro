@@ -815,6 +815,66 @@ describe("InboundOrderParsingService", () => {
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
   });
 
+  test("continues with source evidence when advisory customer intelligence is unavailable", async () => {
+    const { repo, attempts } = makeRepository();
+    const provider = makeProvider(JSON.stringify(parsedDraft()));
+    const evidenceService = {
+      buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })),
+    };
+    const customerIntelligence = {
+      buildSummaryForSourceEvidence: jest.fn(async () => {
+        throw new Error("historical context temporarily unavailable");
+      }),
+      buildSummaryForParsedDraft: jest.fn(async () => null),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any, customerIntelligence as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.latestAttempt.status).toBe("success");
+    expect(provider.generateJson).toHaveBeenCalledTimes(1);
+    expect(attempts[0].parsedDraft.globalWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "customer_intelligence_unavailable", severity: "info" }),
+    ]));
+  });
+
+  test("records an evidence-preparation failure and safely allows a later retry", async () => {
+    const { repo, attempts, getCurrentRecord } = makeRepository();
+    const provider = makeProvider(JSON.stringify(parsedDraft()));
+    const evidenceService = {
+      buildEvidenceBundle: jest
+        .fn()
+        .mockRejectedValueOnce(new Error("temporary evidence-store failure"))
+        .mockResolvedValue({ items: [], conflicts: [] }),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+
+    const failed = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(failed.latestAttempt.status).toBe("failed");
+    expect(failed.latestAttempt.errors[0]).toMatchObject({ code: "evidence_collection_failed" });
+    expect(getCurrentRecord().status).toBe("needs_review");
+    expect(provider.generateJson).not.toHaveBeenCalled();
+
+    const retried = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(retried.latestAttempt.status).toBe("success");
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map((attempt) => attempt.status)).toEqual(["success", "failed"]);
+  });
+
   test("stores a failed attempt when the provider is unavailable and preserves source evidence", async () => {
     const { repo, getCurrentRecord } = makeRepository();
     const provider = {
