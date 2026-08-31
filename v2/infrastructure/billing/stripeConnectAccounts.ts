@@ -19,6 +19,44 @@ export type StripeConnectReadiness = Readonly<{
 export type StripeConnectedAccountContext = Readonly<{ accountId: string; mode: "test" | "live" }>;
 type Row = Readonly<{ stripe_account_id:string|null; mode:"test"|"live"|"unknown"; state:StripeConnectState; account_display_name:string|null; card_payments_status:string|null; payouts_status:string|null; requirements_due_count:number }>;
 const safe = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
+const values = (value: unknown): readonly unknown[] => Array.isArray(value) ? value : [];
+type ProviderCapability = "active" | "pending" | "inactive" | "unknown";
+export type StripeAccountV2Readiness = Readonly<{
+  cardPayments: ProviderCapability;
+  payouts: ProviderCapability;
+  requirementsDue: number;
+  state: Extract<StripeConnectState, "onboarding" | "requirements_due" | "ready">;
+}>;
+const capability = (value: unknown): ProviderCapability => {
+  const status=safe(value);
+  return status === "active" ? "active" : status === "pending" ? "pending" : status ? "inactive" : "unknown";
+};
+/**
+ * Accounts v2 makes `configuration.merchant` and `requirements`
+ * include-dependent. Requirements belong to the retrieved Account, not an
+ * invented merchant-local branch.
+ */
+export const stripeAccountV2Readiness = (account: unknown): StripeAccountV2Readiness => {
+  const root=(account && typeof account === "object" ? account : {}) as Record<string, unknown>;
+  const configuration=(root.configuration && typeof root.configuration === "object" ? root.configuration : {}) as Record<string, unknown>;
+  const merchant=(configuration.merchant && typeof configuration.merchant === "object" ? configuration.merchant : {}) as Record<string, unknown>;
+  const capabilities=(merchant.capabilities && typeof merchant.capabilities === "object" ? merchant.capabilities : {}) as Record<string, unknown>;
+  const stripeBalance=(capabilities.stripe_balance && typeof capabilities.stripe_balance === "object" ? capabilities.stripe_balance : {}) as Record<string, unknown>;
+  const cardCapability=(capabilities.card_payments && typeof capabilities.card_payments === "object" ? capabilities.card_payments : {}) as Record<string, unknown>;
+  const payoutCapability=(stripeBalance.payouts && typeof stripeBalance.payouts === "object" ? stripeBalance.payouts : {}) as Record<string, unknown>;
+  const requirements=(root.requirements && typeof root.requirements === "object" ? root.requirements : {}) as Record<string, unknown>;
+  const currentlyDue=values(requirements.currently_due);
+  const pastDue=values(requirements.past_due);
+  const pendingVerification=values(requirements.pending_verification);
+  const pending=values(requirements.pending);
+  const requirementsDue=currentlyDue.length+pastDue.length+pendingVerification.length+pending.length;
+  const cardPayments=capability(cardCapability.status);
+  const payouts=capability(payoutCapability.status);
+  const state=cardPayments === "active" && payouts === "active" && requirementsDue === 0
+    ? "ready"
+    : currentlyDue.length+pastDue.length > 0 ? "requirements_due" : "onboarding";
+  return { cardPayments, payouts, requirementsDue, state };
+};
 /** Company Settings stores operator-friendly country text; Stripe Accounts v2
  * requires ISO 3166-1 alpha-2 at this provider boundary. */
 export const stripeIdentityCountry = (value: unknown): string | null => {
@@ -32,8 +70,13 @@ const publicState = (row: Row | undefined, platformReady: boolean): StripeConnec
   if (!row || !row.stripe_account_id || row.state === "not_connected" || row.state === "disconnected") return { mode:mode(), status:"not_connected", connected:false, connectedAccountName:null, cardPayments:"unknown", payouts:"unknown", requirementsDue:0, connectionModel:"accounts_v2_direct", actionRequired:"Connect this print shop’s Stripe account to accept card payments." };
   const card = row.card_payments_status === "active" ? "active" : row.card_payments_status ? "pending" : "unknown";
   const payouts = row.payouts_status === "active" ? "active" : row.payouts_status ? "pending" : "unknown";
-  const ready = row.state === "ready" && card === "active";
-  return { mode:row.mode, status: ready ? "ready" : row.state, connected:true, connectedAccountName:row.account_display_name, cardPayments:card, payouts, requirementsDue:row.requirements_due_count, connectionModel:"accounts_v2_direct", actionRequired:ready ? null : row.state === "reconnect_required" ? "Reconnect this print shop’s Stripe account." : "Complete Stripe onboarding before accepting card payments." };
+  const ready = row.state === "ready" && card === "active" && payouts === "active" && row.requirements_due_count === 0;
+  const actionRequired = ready ? null
+    : row.state === "reconnect_required" ? "Reconnect this print shop’s Stripe account."
+    : row.state === "error" ? "Stripe provider readiness is temporarily unavailable. Retry."
+    : row.state === "requirements_due" ? "Resolve Stripe account requirements before accepting card payments."
+    : "Complete Stripe onboarding before accepting card payments.";
+  return { mode:row.mode, status: ready ? "ready" : row.state, connected:true, connectedAccountName:row.account_display_name, cardPayments:card, payouts, requirementsDue:row.requirements_due_count, connectionModel:"accounts_v2_direct", actionRequired };
 };
 
 /** Tenant-owned Stripe Accounts v2 connection and direct-charge authority.
@@ -78,7 +121,13 @@ export class PostgresStripeConnectAccounts {
   }
   async refresh(organizationId: string): Promise<StripeConnectReadiness> {
     const row=await this.row(organizationId); if (!row?.stripe_account_id) return this.readiness(organizationId);
-    try { const account:any=await (getStripeClient() as any).v2.core.accounts.retrieve(row.stripe_account_id); const merchant=account.configuration?.merchant ?? {}; const card=safe(merchant.capabilities?.card_payments?.status) ?? "inactive"; const payouts=safe(merchant.capabilities?.stripe_balance?.payouts?.status) ?? "inactive"; const due=[...(merchant.requirements?.currently_due ?? []),...(merchant.requirements?.eventually_due ?? [])].length; const state:StripeConnectState=card==="active"?"ready":due?"requirements_due":"onboarding"; await this.pool.query("UPDATE v2_stripe_connect_accounts SET state=$2,card_payments_status=$3,payouts_status=$4,requirements_due_count=$5,updated_at=now() WHERE organization_id=$1",[organizationId,state,card,payouts,due]); } catch { await this.pool.query("UPDATE v2_stripe_connect_accounts SET state='reconnect_required',updated_at=now() WHERE organization_id=$1",[organizationId]); }
+    try {
+      const account=await (getStripeClient() as any).v2.core.accounts.retrieve(row.stripe_account_id,{ include:["configuration.merchant","requirements"] });
+      const readiness=stripeAccountV2Readiness(account);
+      await this.pool.query("UPDATE v2_stripe_connect_accounts SET state=$2,card_payments_status=$3,payouts_status=$4,requirements_due_count=$5,updated_at=now() WHERE organization_id=$1",[organizationId,readiness.state,readiness.cardPayments,readiness.payouts,readiness.requirementsDue]);
+    } catch {
+      await this.pool.query("UPDATE v2_stripe_connect_accounts SET state='error',updated_at=now() WHERE organization_id=$1",[organizationId]);
+    }
     return this.readiness(organizationId);
   }
   async disconnect(organizationId: string, principal: Principal): Promise<StripeConnectReadiness> { const row=await this.row(organizationId); await this.pool.query("UPDATE v2_stripe_connect_accounts SET state='disconnected',disconnected_at=now(),updated_at=now() WHERE organization_id=$1",[organizationId]); await this.audit(organizationId,row?.stripe_account_id??null,"disconnected",principal); return this.readiness(organizationId); }

@@ -7,7 +7,7 @@ const status = (value: string) => ({
   disconnected: "Disconnected", platform_not_ready: "Platform configuration required",
   not_configured: "Not configured", webhook_not_ready: "Webhook not ready",
   active: "Active", pending: "Pending activation", inactive: "Inactive", unknown: "Not connected",
-  error: "Action required", action_required: "Action required",
+  error: "Provider unavailable", action_required: "Action required",
 } as Record<string,string>)[value] ?? "Action required";
 /** React Query can retain a failed refetch error beside a previously resolved
  * payload. A resolved tenant readiness projection remains authoritative. */
