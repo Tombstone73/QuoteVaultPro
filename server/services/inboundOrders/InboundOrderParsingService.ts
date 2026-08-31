@@ -242,6 +242,16 @@ function normalizeMissingDecisions(value: unknown): InboundOrderParsedDraft["mis
   }).filter((item): item is InboundOrderParsedDraft["missingDecisions"][number] => Boolean(item));
 }
 
+function parseWarningsForStorage(draft: InboundOrderParsedDraft): InboundOrderParseWarning[] {
+  return [
+    ...draft.globalWarnings,
+    ...draft.customer.warnings,
+    ...draft.order.warnings,
+    ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
+    ...draft.artwork.flatMap((artwork) => artwork.warnings),
+  ];
+}
+
 function combinedLineItemText(lineItem: InboundOrderParsedDraft["lineItems"][number]): string {
   return [
     lineItem.sourceText,
@@ -424,7 +434,7 @@ export class InboundOrderParsingService {
         : draftWithCustomerIntelligence;
       const score = this.scoreInboundOrderParseResult(draftWithPromptWarnings);
       const finalWarnings = [
-        ...draftWithPromptWarnings.globalWarnings,
+        ...parseWarningsForStorage(draftWithPromptWarnings),
         ...repaired.warnings,
       ];
       const finalStatus = this.resolveParsedRecordStatus(draftWithPromptWarnings, score);
@@ -1849,39 +1859,101 @@ export class InboundOrderParsingService {
   async matchInboundCustomerCandidates(organizationId: string, result: InboundOrderParsedDraft): Promise<{
     customerCandidates: InboundCandidateResult[];
     contactCandidates: InboundCandidateResult[];
+    warnings: InboundOrderParseWarning[];
   }> {
-    const customerCandidates = await this.repository.searchCustomerCandidates({
-      organizationId,
-      email: result.customer.sourceEmail,
-      name: result.customer.companyName ?? result.customer.sourceName,
-      limit: 5,
-    });
-    const contactCandidates = await this.repository.searchContactCandidates({
-      organizationId,
-      email: result.customer.sourceEmail,
-      name: result.customer.sourceName,
-      limit: 5,
-    });
-    return { customerCandidates, contactCandidates };
+    const warnings: InboundOrderParseWarning[] = [];
+    let customerCandidates: InboundCandidateResult[] = [];
+    let contactCandidates: InboundCandidateResult[] = [];
+
+    try {
+      const candidates = await this.repository.searchCustomerCandidates({
+        organizationId,
+        email: result.customer.sourceEmail,
+        name: result.customer.companyName ?? result.customer.sourceName,
+        limit: 5,
+      });
+      if (!Array.isArray(candidates)) throw new Error("Customer candidate lookup returned an invalid result.");
+      customerCandidates = candidates.filter((candidate): candidate is InboundCandidateResult => Boolean(candidate) && typeof candidate === "object");
+    } catch (error) {
+      console.warn("[INBOUND_ORDER_PARSE] Customer candidate lookup unavailable.", {
+        organizationId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      warnings.push(warning(
+        "customer_candidates_unavailable",
+        "Customer suggestions are temporarily unavailable. Confirm the customer during review.",
+        "warning",
+        "customer",
+      ));
+    }
+
+    try {
+      const candidates = await this.repository.searchContactCandidates({
+        organizationId,
+        email: result.customer.sourceEmail,
+        name: result.customer.sourceName,
+        limit: 5,
+      });
+      if (!Array.isArray(candidates)) throw new Error("Contact candidate lookup returned an invalid result.");
+      contactCandidates = candidates.filter((candidate): candidate is InboundCandidateResult => Boolean(candidate) && typeof candidate === "object");
+    } catch (error) {
+      console.warn("[INBOUND_ORDER_PARSE] Contact candidate lookup unavailable.", {
+        organizationId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      warnings.push(warning(
+        "contact_candidates_unavailable",
+        "Contact suggestions are temporarily unavailable. Confirm the contact during review.",
+        "warning",
+        "customer",
+      ));
+    }
+
+    return { customerCandidates, contactCandidates, warnings };
   }
 
   async matchInboundProductCandidates(organizationId: string, result: InboundOrderParsedDraft): Promise<InboundOrderParsedDraft["lineItems"]> {
     const lineItems = [];
-    for (const lineItem of result.lineItems) {
-      const candidates = await this.repository.searchProductCandidates({
-        organizationId,
-        sourceText: lineItem.sourceText,
-        productName: lineItem.productName,
-        materialText: lineItem.materialText,
-        optionTexts: lineItem.optionTexts,
-        finishingTexts: lineItem.finishingTexts,
-        limit: 5,
-      });
-      lineItems.push({
-        ...lineItem,
-        productCandidates: candidates.map(candidateDto),
-        candidateProductIds: uniqueIds(candidates),
-      });
+    for (let index = 0; index < result.lineItems.length; index += 1) {
+      const lineItem = result.lineItems[index];
+      try {
+        const candidates = await this.repository.searchProductCandidates({
+          organizationId,
+          sourceText: lineItem.sourceText,
+          productName: lineItem.productName,
+          materialText: lineItem.materialText,
+          optionTexts: lineItem.optionTexts,
+          finishingTexts: lineItem.finishingTexts,
+          limit: 5,
+        });
+        if (!Array.isArray(candidates)) throw new Error("Product candidate lookup returned an invalid result.");
+        const validCandidates = candidates.filter((candidate): candidate is InboundCandidateResult => Boolean(candidate) && typeof candidate === "object");
+        lineItems.push({
+          ...lineItem,
+          productCandidates: validCandidates.map(candidateDto),
+          candidateProductIds: uniqueIds(validCandidates),
+        });
+      } catch (error) {
+        console.warn("[INBOUND_ORDER_PARSE] Product candidate lookup unavailable.", {
+          organizationId,
+          lineItemIndex: index,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+        lineItems.push({
+          ...lineItem,
+          productCandidates: [],
+          candidateProductIds: [],
+          warnings: [
+            ...lineItem.warnings,
+            warning(
+              "product_candidates_unavailable",
+              "Product suggestions are temporarily unavailable. Select a product during review.",
+              "warning",
+              `lineItems.${index}.product`,
+            ),
+          ],
+        });
+      }
     }
     return lineItems;
   }
@@ -1896,8 +1968,31 @@ export class InboundOrderParsingService {
   }
 
   private async addCandidateMatches(organizationId: string, draft: InboundOrderParsedDraft): Promise<InboundOrderParsedDraft> {
-    const { customerCandidates, contactCandidates } = await this.matchInboundCustomerCandidates(organizationId, draft);
+    const { customerCandidates, contactCandidates, warnings } = await this.matchInboundCustomerCandidates(organizationId, draft);
     const lineItems = await this.matchInboundProductCandidates(organizationId, draft);
+    const missingDecisions = [...draft.missingDecisions];
+    const existingFields = new Set(missingDecisions.map((decision) => decision.field));
+    if (warnings.length > 0 && !existingFields.has("customer")) {
+      missingDecisions.push(missingDecision(
+        "customer",
+        "Confirm the customer and contact before creating a quote or order.",
+        "Candidate lookup was unavailable, so the source sender details must be reviewed.",
+        "warning",
+      ));
+      existingFields.add("customer");
+    }
+    lineItems.forEach((lineItem, index) => {
+      const field = `lineItems.${index}.product`;
+      if (lineItem.candidateProductIds.length === 0 && !existingFields.has(field)) {
+        missingDecisions.push(missingDecision(
+          field,
+          "Select the product for this line item.",
+          "No product candidate was resolved from the source evidence.",
+          "warning",
+        ));
+        existingFields.add(field);
+      }
+    });
     return {
       ...draft,
       customer: {
@@ -1906,15 +2001,35 @@ export class InboundOrderParsingService {
         contactCandidates: contactCandidates.map(candidateDto),
         candidateCustomerIds: uniqueIds(customerCandidates),
         candidateContactIds: uniqueIds(contactCandidates),
+        warnings: [...draft.customer.warnings, ...warnings],
       },
       lineItems,
+      missingDecisions,
     };
   }
 
   private async attachCustomerIntelligence(organizationId: string, draft: InboundOrderParsedDraft): Promise<InboundOrderParsedDraft> {
     if (draft.customerIntelligence) return draft;
-    const summary = await this.customerIntelligence.buildSummaryForParsedDraft({ organizationId, draft });
-    return summary ? { ...draft, customerIntelligence: summary } : draft;
+    try {
+      const summary = await this.customerIntelligence.buildSummaryForParsedDraft({ organizationId, draft });
+      return summary ? { ...draft, customerIntelligence: summary } : draft;
+    } catch (error) {
+      console.warn("[INBOUND_ORDER_PARSE] Customer intelligence unavailable after candidate resolution.", {
+        organizationId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      return {
+        ...draft,
+        globalWarnings: [
+          ...draft.globalWarnings,
+          warning(
+            "customer_intelligence_unavailable",
+            "Customer history suggestions are temporarily unavailable. Source evidence remains available for review.",
+            "info",
+          ),
+        ],
+      };
+    }
   }
 
   private resolveParsedRecordStatus(draft: InboundOrderParsedDraft, score: number): InboundOrderRecordStatus {
@@ -1986,6 +2101,13 @@ export class InboundOrderParsingService {
             ? attempt.errors
               .map((error) => error && typeof error === "object" && !Array.isArray(error)
                 ? stringValue((error as Record<string, unknown>).code)
+                : null)
+              .filter((code): code is string => Boolean(code))
+            : [],
+          warningCodes: Array.isArray(attempt.warnings)
+            ? attempt.warnings
+              .map((item) => item && typeof item === "object" && !Array.isArray(item)
+                ? stringValue((item as Record<string, unknown>).code)
                 : null)
               .filter((code): code is string => Boolean(code))
             : [],

@@ -842,6 +842,121 @@ describe("InboundOrderParsingService", () => {
     ]));
   });
 
+  test("keeps a validated semantic draft reviewable when each candidate subsystem is unavailable", async () => {
+    const { repo, attempts, getCurrentRecord } = makeRepository(inboundRecord({
+      rawPayloadJson: {
+        intakeMode: "TEMP_INBOUND",
+        reference: "BANNER-REVIEW-ONLY",
+        sender: { name: "Rick Clark", email: "graphic.solutions@sbcglobal.net" },
+        subject: "Baner Needed",
+        bodyText: "Banner with hems and grommets.",
+      },
+    }));
+    repo.searchCustomerCandidates.mockRejectedValue(new Error("customer query unavailable"));
+    repo.searchContactCandidates.mockRejectedValue(new Error("contact query unavailable"));
+    repo.searchProductCandidates.mockRejectedValue(new Error("product query unavailable"));
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      customer: { ...parsedDraft().customer, sourceName: "Rick Clark", sourceEmail: "graphic.solutions@sbcglobal.net" },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "Banner with hems and grommets.",
+        productName: "Banner",
+        quantity: null,
+        optionTexts: ["hems", "grommets"],
+        finishingTexts: ["hems", "grommets"],
+      }],
+    })));
+    const customerIntelligence = {
+      buildSummaryForSourceEvidence: jest.fn(async () => null),
+      buildSummaryForParsedDraft: jest.fn(async () => {
+        throw new Error("customer history unavailable");
+      }),
+    };
+    const service = new InboundOrderParsingService(repo as any, () => provider, undefined, customerIntelligence as any);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.latestAttempt.status).toBe("success");
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Banner",
+      optionTexts: expect.arrayContaining(["hems", "grommets"]),
+      finishingTexts: expect.arrayContaining(["hems", "grommets"]),
+      candidateProductIds: [],
+    });
+    expect(result.draft?.customer).toMatchObject({
+      sourceName: "Rick Clark",
+      sourceEmail: "graphic.solutions@sbcglobal.net",
+      customerCandidates: [],
+      contactCandidates: [],
+    });
+    expect(result.draft?.customer.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "customer_candidates_unavailable" }),
+      expect.objectContaining({ code: "contact_candidates_unavailable" }),
+    ]));
+    expect(result.draft?.lineItems[0].warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "product_candidates_unavailable" }),
+    ]));
+    expect(result.draft?.globalWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "customer_intelligence_unavailable", severity: "info" }),
+    ]));
+    expect(result.draft?.missingDecisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "customer" }),
+      expect.objectContaining({ field: "lineItems.0.product" }),
+      expect.objectContaining({ field: "lineItems.0.dimensions", severity: "blocking" }),
+    ]));
+    expect(attempts[0].warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "customer_candidates_unavailable" }),
+      expect.objectContaining({ code: "product_candidates_unavailable" }),
+      expect.objectContaining({ code: "customer_intelligence_unavailable" }),
+    ]));
+    expect(getCurrentRecord().status).toBe("needs_review");
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
+  test("keeps unmatched products as an explicit review decision without changing their semantic interpretation", async () => {
+    const { repo, getCurrentRecord } = makeRepository();
+    repo.searchProductCandidates.mockResolvedValue([]);
+    const provider = makeProvider(JSON.stringify(parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "Two 24 x 36 banners with hems and grommets",
+        productName: "Banner",
+        quantity: 2,
+        width: 24,
+        height: 36,
+        dimensionsUnit: "in",
+        optionTexts: ["hems", "grommets"],
+        finishingTexts: ["hems", "grommets"],
+      }],
+    })));
+    const service = new InboundOrderParsingService(repo as any, () => provider);
+
+    const result = await service.parseInboundOrderRecord({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(result.latestAttempt.status).toBe("success");
+    expect(result.draft?.lineItems[0]).toMatchObject({
+      productName: "Banner",
+      quantity: 2,
+      width: 24,
+      height: 36,
+      optionTexts: expect.arrayContaining(["hems", "grommets"]),
+      productCandidates: [],
+    });
+    expect(result.draft?.missingDecisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.product", severity: "warning" }),
+    ]));
+    expect(getCurrentRecord().status).toBe("needs_review");
+    expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
+  });
+
   test("records an evidence-preparation failure and safely allows a later retry", async () => {
     const { repo, attempts, getCurrentRecord } = makeRepository();
     const provider = makeProvider(JSON.stringify(parsedDraft()));
