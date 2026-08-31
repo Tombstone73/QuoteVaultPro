@@ -8,4 +8,6 @@ assert.match(source,/requirements_due: "Requirements due"/);
 assert.match(source,/connected \? status\(connection\?\.cardPayments/);
 assert.equal(showStripeReadinessError({ connection: { status: "not_connected" } }, new Error("stale refetch")), false, "a resolved normal state must not render an obsolete transport error");
 assert.equal(showStripeReadinessError(undefined, new Error("network")), true, "a genuine readiness request failure remains visible");
+assert.match(source,/const readinessError=query\.error/,"readiness errors must remain separate from Connect action errors");
+assert.match(source,/\{actionError && <p className="notice error">/,"a Connect command failure must be surfaced even while readiness data is available");
 console.log("Stripe Connect readiness presentation tests passed.");

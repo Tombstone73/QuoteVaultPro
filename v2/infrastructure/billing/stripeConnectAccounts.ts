@@ -53,11 +53,19 @@ export class PostgresStripeConnectAccounts {
     const prior=await this.row(organizationId); const stripe:any=getStripeClient();
     let accountId=prior?.stripe_account_id ?? null;
     if (!accountId) {
-      const account=await stripe.v2.core.accounts.create({ contact_email:identity.email, display_name:identity.name, dashboard:"full", defaults:{responsibilities:{fees_collector:"stripe",losses_collector:"stripe"}}, configuration:{merchant:{capabilities:{card_payments:{requested:true}}}}, metadata:{v2OrganizationId:organizationId} });
-      accountId=String(account.id);
+      try {
+        // A DB interruption after Stripe accepts creation must return the same
+        // provider account on retry rather than orphan another merchant.
+        const account=await stripe.v2.core.accounts.create({ contact_email:identity.email, display_name:identity.name, dashboard:"full", defaults:{responsibilities:{fees_collector:"stripe",losses_collector:"stripe"}}, configuration:{merchant:{capabilities:{card_payments:{requested:true}}}}, metadata:{v2OrganizationId:organizationId} },{idempotencyKey:`v2:stripe-connect-account:${organizationId}`});
+        accountId=String(account.id);
+      } catch (cause) { throw this.providerFailure("account_creation",cause); }
     }
-    const link=await stripe.v2.core.accountLinks.create({account:accountId,use_case:{type:"account_onboarding",account_onboarding:{configurations:["merchant"],collection_options:{fields:"eventually_due",future_requirements:"include"},refresh_url:`${origin}/settings?stripe=refresh`,return_url:`${origin}/settings?stripe=returned`}}});
+    // Persist before issuing the short-lived Account Link. A retry after link
+    // failure then resumes this exact tenant account rather than creating one.
     await this.pool.query(`INSERT INTO v2_stripe_connect_accounts(organization_id,stripe_account_id,mode,state,account_display_name,connected_at,updated_at) VALUES($1,$2,$3,'onboarding',$4,now(),now()) ON CONFLICT(organization_id) DO UPDATE SET stripe_account_id=EXCLUDED.stripe_account_id,mode=EXCLUDED.mode,state='onboarding',account_display_name=EXCLUDED.account_display_name,disconnected_at=NULL,updated_at=now()`,[organizationId,accountId,mode(),identity.name]);
+    let link:any;
+    try { link=await stripe.v2.core.accountLinks.create({account:accountId,use_case:{type:"account_onboarding",account_onboarding:{configurations:["merchant"],collection_options:{fields:"eventually_due",future_requirements:"include"},refresh_url:`${origin}/settings?stripe=refresh`,return_url:`${origin}/settings?stripe=returned`}}}); }
+    catch (cause) { throw this.providerFailure("account_link",cause); }
     await this.audit(organizationId,accountId,"onboarding_started",principal); return { onboardingUrl:String(link.url) };
   }
   async refresh(organizationId: string): Promise<StripeConnectReadiness> {
@@ -67,4 +75,10 @@ export class PostgresStripeConnectAccounts {
   }
   async disconnect(organizationId: string, principal: Principal): Promise<StripeConnectReadiness> { const row=await this.row(organizationId); await this.pool.query("UPDATE v2_stripe_connect_accounts SET state='disconnected',disconnected_at=now(),updated_at=now() WHERE organization_id=$1",[organizationId]); await this.audit(organizationId,row?.stripe_account_id??null,"disconnected",principal); return this.readiness(organizationId); }
   private async audit(organizationId:string, accountId:string|null, event:string, principal:Principal) { await this.pool.query("INSERT INTO v2_stripe_connect_audit_events(id,organization_id,stripe_account_id,event_type,principal_kind,principal_subject) VALUES($1,$2,$3,$4,$5,$6)",[randomUUID(),organizationId,accountId,event,principal.kind,principal.kind === "staff" ? principal.userId : principal.kind]); }
+  private providerFailure(stage:"account_creation"|"account_link", cause:unknown): V2ApplicationError {
+    const provider=cause as { code?:unknown; type?:unknown; requestId?:unknown };
+    // Safe operational telemetry: no token, payload, or customer data enters logs.
+    console.error("v2.stripe_connect.provider_failure",{stage,code:typeof provider.code==="string"?provider.code:undefined,type:typeof provider.type==="string"?provider.type:undefined,requestId:typeof provider.requestId==="string"?provider.requestId:undefined});
+    return new V2ApplicationError("RETRYABLE_FAILURE",stage==="account_creation"?"Stripe could not create this shop’s connected account. Retry Connect Stripe or contact support.":"Stripe account was created, but its onboarding link could not be opened. Retry Connect Stripe.");
+  }
 }
