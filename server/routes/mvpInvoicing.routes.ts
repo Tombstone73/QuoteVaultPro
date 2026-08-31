@@ -342,7 +342,7 @@ export async function registerMvpInvoicingRoutes(
 
     const canInvoiceBePaidOnline = getInvoiceFinancialPaymentEligibility({
       invoiceStatus: (inv as any).status,
-      remainingCents: rollup.amountDueCents,
+      remainingCents: paymentSummary.amountDueCents,
     }).payable;
     const portalUrl = await prepareSingleContactPortalAccessForInvoice({
       organizationId: input.organizationId,
