@@ -83,7 +83,12 @@ export const productBasicsProjection = (
     workflowIntent: general.workflowIntent,
     requiresProofApproval: general.requiresProofApproval,
     requiresProductionJob: general.requiresProductionJob,
-    isActive: general.storefrontVisible,
+    // Catalog activation and storefront visibility are independent operator
+    // decisions.  A staff user can publish an active internal Product that is
+    // intentionally hidden from the storefront; the explicit publisher
+    // activation request must therefore never be overwritten by this display
+    // preference.
+    isActive: activateLegacyProduct ? true : general.storefrontVisible,
   };
 };
 const productBasicsProjectionFindings = (treeJson: Record<string, unknown>, product: ProductRecord): Finding[] => {

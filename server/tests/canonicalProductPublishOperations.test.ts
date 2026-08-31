@@ -125,6 +125,19 @@ describe("CanonicalProductPublishOperations", () => {
     expect(productBasicsProjection({ schemaVersion: 2 }, current as any)).toMatchObject({ name: "Styrene", measurementMode: "dimensions_required", isActive: false });
   });
 
+  it("keeps an explicitly activated internal Product active when it is hidden from the storefront", () => {
+    const current = target().product;
+    const internalOnlyDraft = {
+      schemaVersion: 2,
+      meta: { general: { displayName: "Internal Banner", category: "Banners", description: "Internal only", storefrontVisible: false, measurementMode: "dimensions_required", workflowIntent: "standard_production", requiresProofApproval: false, requiresProductionJob: true } },
+    };
+    expect(productBasicsProjection(internalOnlyDraft, current as any, true)).toMatchObject({
+      name: "Internal Banner",
+      isActive: true,
+    });
+    expect(productBasicsProjection(internalOnlyDraft, current as any)).toMatchObject({ isActive: false });
+  });
+
   it("fails publish validation instead of partially projecting malformed Draft Basics", () => {
     const invalid = target();
     invalid.tree.treeJson = { schemaVersion: 2, meta: { general: { displayName: "", storefrontVisible: "yes", measurementMode: "wrong" } } };
