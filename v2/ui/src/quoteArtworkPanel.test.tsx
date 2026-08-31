@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { quoteApi, type QuoteRead } from "./api";
 import { QuoteArtworkPanel } from "./QuoteArtworkPanel";
+import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
+import { isArtworkPdf } from "./ArtworkAutoUploadDropzone";
 
 const quote = (deliveryState: "not_sent" | "sent" = "not_sent"): QuoteRead => ({
   quote: {
@@ -30,10 +33,11 @@ const render = (deliveryState: "not_sent" | "sent") => renderToStaticMarkup(
 
 assert.match(render("not_sent"), /Canonical files are associated with this Quote line/);
 assert.match(render("not_sent"), /aria-label="Quote artwork line"/);
-assert.match(render("not_sent"), /aria-label="Quote artwork PDF"/);
-assert.match(render("not_sent"), /Upload Artwork/);
+assert.match(render("not_sent"), /Drag a PDF here or click to select/);
+assert.match(render("not_sent"), /aria-label="Quote artwork side"/);
+assert.doesNotMatch(render("not_sent"), />Upload Artwork<\/button>/);
 assert.match(render("sent"), /Quote artwork is read only/);
-assert.doesNotMatch(render("sent"), /aria-label="Quote artwork PDF"/);
+assert.doesNotMatch(render("sent"), /Drag a PDF here or click to select/);
 
 const originalFetch = globalThis.fetch;
 const seen: { url?: string; init?: RequestInit } = {};
@@ -56,4 +60,15 @@ assert.equal(body.get("quoteLineId"), "line-a");
 assert.equal(body.get("expectedRevision"), "3");
 assert.equal(body.get("purpose"), "customer_supplied");
 assert.equal(body.get("side"), "front");
+
+const orderMarkup = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ArtworkUploadPanel organizationId="org-a" target={{ orderId: "order-a", orderLineId: "line-a", orderNumber: "ORD-1", lineDescription: "Banner" }} onUploaded={() => undefined} /></QueryClientProvider>);
+assert.match(orderMarkup, /Drag a PDF here or click to select/);
+assert.match(orderMarkup, /aria-label="Artwork side"/);
+assert.doesNotMatch(orderMarkup, />Upload Artwork<\/button>/);
+assert.equal(isArtworkPdf(new File(["%PDF"], "proof.pdf", { type: "application/pdf" })), true);
+assert.equal(isArtworkPdf(new File(["png"], "proof.png", { type: "image/png" })), false);
+const dropzoneSource = await readFile(new URL("./ArtworkAutoUploadDropzone.tsx", import.meta.url), "utf8");
+assert.match(dropzoneSource, /onDrop=/);
+assert.match(dropzoneSource, /onFileSelected\(file\)/);
+assert.match(dropzoneSource, /Retry upload/);
 console.log("Quote artwork panel visual and multipart contracts passed.");

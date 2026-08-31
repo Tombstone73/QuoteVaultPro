@@ -16,11 +16,10 @@ const markup = renderToStaticMarkup(<QueryClientProvider client={new QueryClient
 assert.match(markup, /Upload Artwork/);
 assert.match(markup, /#ORD-1007/);
 assert.match(markup, /Reflective Vinyl - Nikkalite/);
-assert.match(markup, /Choose PDF/);
-assert.match(markup, /No PDF selected/);
+assert.match(markup, /Drag a PDF here or click to select/);
 assert.match(markup, /accept="application\/pdf,.pdf"/);
-assert.match(markup, /Upload Artwork<\/button>/);
-assert.match(markup, /disabled=""/);
+assert.match(markup, /aria-label="Artwork side"/);
+assert.doesNotMatch(markup, />Upload Artwork<\/button>/);
 assert.doesNotMatch(markup, /Artwork Order ID|Artwork Order line ID/);
 
 const originalFetch = globalThis.fetch;

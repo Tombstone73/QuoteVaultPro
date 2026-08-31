@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import React, { useEffect, useState } from "react";
 import { newBusinessRequestId, quoteApi, type QuoteArtworkProjection, type QuoteRead } from "./api";
+import { ArtworkAutoUploadDropzone } from "./ArtworkAutoUploadDropzone";
 
 const metadata = (item: QuoteArtworkProjection): string => {
   const values = [
@@ -54,11 +55,11 @@ export const QuoteArtworkPanel = ({
   }, [lineId, quote.quote.lines]);
 
   const upload = useMutation({
-    mutationFn: () => quoteApi.uploadArtwork(
+    mutationFn: (selected: File) => quoteApi.uploadArtwork(
       organizationId,
       quoteId,
       newBusinessRequestId(),
-      { quoteLineId: lineId, expectedRevision: quote.revision, side, file: file! },
+      { quoteLineId: lineId, expectedRevision: quote.revision, side, file: selected },
     ),
     onSuccess: (result) => {
       setFile(undefined);
@@ -101,13 +102,10 @@ export const QuoteArtworkPanel = ({
       </li>;
     })}</ol> : null}
     {mutable && <div className="v2-sales-quote-artwork-upload">
-      <label>Quote line<select aria-label="Quote artwork line" value={lineId} onChange={(event) => setLineId(event.target.value)}>{quote.quote.lines.map((line) => <option key={line.lineId} value={line.lineId}>Line {line.position} · {line.description || "Product"}</option>)}</select></label>
-      <label className="v2-artwork-file-picker"><span>Artwork PDF</span><input aria-label="Quote artwork PDF" type="file" accept="application/pdf,.pdf" onChange={(event) => setFile(event.currentTarget.files?.[0])} /><b>{file ? "Change PDF" : "Choose PDF"}</b></label>
-      <label>Side<select aria-label="Quote artwork side" value={side} onChange={(event) => setSide(event.target.value as "front" | "back")}><option value="front">Front</option><option value="back">Back</option></select></label>
-      <p className="v2-artwork-selected-file" aria-live="polite">{file ? `Selected: ${file.name}` : "No PDF selected."}</p>
-      <button className="button" type="button" disabled={!lineId || !file || upload.isPending} onClick={() => upload.mutate()}>{upload.isPending ? "Uploading…" : "Upload Artwork"}</button>
+      <label>Quote line<select aria-label="Quote artwork line" disabled={upload.isPending} value={lineId} onChange={(event) => setLineId(event.target.value)}>{quote.quote.lines.map((line) => <option key={line.lineId} value={line.lineId}>Line {line.position} · {line.description || "Product"}</option>)}</select></label>
+      <label>Side<select aria-label="Quote artwork side" disabled={upload.isPending} value={side} onChange={(event) => setSide(event.target.value as "front" | "back")}><option value="front">Front</option><option value="back">Back</option></select></label>
+      <ArtworkAutoUploadDropzone label="Quote artwork PDF" disabled={!lineId} fileName={file?.name} isUploading={upload.isPending} isSuccess={upload.isSuccess} error={upload.error} onFileSelected={(selected) => { setFile(selected); upload.mutate(selected); }} onRetry={file ? () => upload.mutate(file) : undefined} />
     </div>}
-    {upload.isError && <p className="v2-product-version-message" role="alert">{(upload.error as Error).message}</p>}
     {remove.isError && <p className="v2-product-version-message" role="alert">{(remove.error as Error).message}</p>}
   </section>;
 };
