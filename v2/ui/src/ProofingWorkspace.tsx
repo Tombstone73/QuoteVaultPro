@@ -13,6 +13,12 @@ const versionStatus = (entry: ProofWorkProjection["versions"][number]) => entry.
 const errorText = (error: unknown) => (error as ApiError | undefined)?.message ?? "The Proofing operation could not be completed.";
 const usage = (assignment: Readonly<{ purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number }>) => [assignment.purpose.replaceAll("_", " "), assignment.side, assignment.sourcePageIndex === undefined ? undefined : `page ${assignment.sourcePageIndex + 1}`, assignment.layerKey ? assignment.layerOrder === undefined ? assignment.layerKey : `${assignment.layerKey} ${assignment.layerOrder + 1}` : undefined].filter(Boolean).join(" · ");
 
+export const proofWorkSelectionForScope = (queue: readonly ProofQueueItem[], proofWorkId?: string, orderId?: string, lineId?: string): string => {
+  if (proofWorkId) return proofWorkId;
+  if (orderId && lineId) return queue.find((item) => item.work.orderId === orderId && item.work.orderLineId === lineId)?.work.proofWorkId ?? "";
+  return queue[0]?.work.proofWorkId ?? "";
+};
+
 export type ProofingOrderLineContext = Readonly<{ order: OrderRead; line: OrderRead["order"]["lines"][number]; sourceArtwork: readonly ArtworkOrderProjection[] }>;
 type ProofingWorkspaceProps = Readonly<{ organizationId: string; sessionScope: string; canView: boolean; canPrepare?: boolean; canIssue?: boolean; canRespond?: boolean; proofWorkId?: string; orderId?: string; lineId?: string; openOrder?: (orderId: string) => void; openCustomer?: (customerId: string) => void; openArtwork?: (artworkFileId: string) => void }>;
 
@@ -23,10 +29,15 @@ export const ProofingWorkspace = ({ organizationId, sessionScope, canView, canPr
   const [search, setSearch] = useState("");
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const queue = useQuery({ queryKey: keys.queue(sessionScope, organizationId), queryFn: () => proofingApi.list(organizationId), enabled: Boolean(canView && organizationId && sessionScope) });
-  useEffect(() => { if (proofWorkId) setSelectedId(proofWorkId); }, [proofWorkId]);
-  useEffect(() => { if (!proofWorkId && !selectedId && queue.data?.[0]) setSelectedId(queue.data[0].work.proofWorkId); }, [proofWorkId, queue.data, selectedId]);
   const scopedWork = useMemo(() => orderId && lineId ? queue.data?.find((item) => item.work.orderId === orderId && item.work.orderLineId === lineId) : undefined, [lineId, orderId, queue.data]);
-  useEffect(() => { if (!proofWorkId && scopedWork) setSelectedId(scopedWork.work.proofWorkId); }, [proofWorkId, scopedWork]);
+  const scopedSelection = useMemo(() => proofWorkSelectionForScope(queue.data ?? [], proofWorkId, orderId, lineId), [lineId, orderId, proofWorkId, queue.data]);
+  useEffect(() => {
+    if (proofWorkId || (orderId && lineId)) {
+      setSelectedId(scopedSelection);
+      return;
+    }
+    if (!selectedId && scopedSelection) setSelectedId(scopedSelection);
+  }, [lineId, orderId, proofWorkId, scopedSelection, selectedId]);
   const work = useQuery({ queryKey: keys.work(sessionScope, organizationId, selectedId), queryFn: () => proofingApi.get(organizationId, selectedId), enabled: Boolean(selectedId && canView) });
   useEffect(() => { if (work.data?.versions[0]) setSelectedVersionId(work.data.versions[0].version.proofVersionId); }, [work.data?.work.proofWorkId, work.data?.versions.length]);
   const contextOrderId = orderId ?? work.data?.work.orderId ?? "";

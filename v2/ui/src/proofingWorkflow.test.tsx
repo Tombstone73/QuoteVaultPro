@@ -3,9 +3,13 @@ import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { proofingApi, type ProofWorkProjection } from "./api";
-import { ProofWorkflowActions, type ProofingOrderLineContext } from "./ProofingWorkspace";
+import { ProofWorkflowActions, proofWorkSelectionForScope, type ProofingOrderLineContext } from "./ProofingWorkspace";
 
 const context = { order: { number: { display: "ORD-1007", core: "1007" }, order: { orderId: "order-a", customerContact: { organizationId: "org-a", customerId: "customer-a" }, commercialState: "open", currency: "USD", terms: {}, lines: [{ lineId: "line-a", description: "Sign Vinyl", position: 0, quantity: 1 }] }, revision: "r1", totals: { calculated: { cents: 600, currency: "USD" }, selling: { cents: 600, currency: "USD" } }, routes: [] }, line: { lineId: "line-a", description: "Sign Vinyl", position: 0, quantity: 1 }, sourceArtwork: [{ file: { id: "file-a", displayFilename: "proof.pdf" }, assignment: { id: "art-a", orderLineId: "line-a", purpose: "customer_supplied" } }] } as unknown as ProofingOrderLineContext;
+const proofQueue = [{ work: { proofWorkId: "foreign-work", orderId: "foreign-order", orderLineId: "foreign-line" } }, { work: { proofWorkId: "scoped-work", orderId: "order-a", orderLineId: "line-a" } }] as never[];
+assert.equal(proofWorkSelectionForScope(proofQueue, undefined, "order-a", "line-a"), "scoped-work");
+assert.equal(proofWorkSelectionForScope(proofQueue, undefined, "order-a", "missing-line"), "");
+assert.equal(proofWorkSelectionForScope(proofQueue), "foreign-work");
 const render = (projection?: ProofWorkProjection) => renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ProofWorkflowActions organizationId="org-a" context={context} projection={projection} canPrepare canIssue canRespond onRefresh={async () => undefined} /></QueryClientProvider>);
 assert.match(render(), /Start Proofing/); assert.doesNotMatch(render(), /OrderLine ID|Artwork Assignment ID/);
 const draft = { work: { proofWorkId: "work-a", orderId: "order-a", orderLineId: "line-a", createdAt: "2026-08-20T00:00:00.000Z" }, versions: [{ version: { proofVersionId: "version-a", proofWorkId: "work-a", sequence: 1, artwork: [], createdAt: "2026-08-20T00:00:00.000Z" } }] } as unknown as ProofWorkProjection;
