@@ -124,5 +124,7 @@ const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
 assert.doesNotMatch(workspaceSource, /QuickBooks sync/);
 assert.doesNotMatch(workspaceSource, /Retry Payment Sync/);
 assert.match(apiSource, /settings\/accounting\/sync-selected/);
+assert.match(workspaceSource, /selectInvoice\(row\.invoiceId, row\.source\)/, "the Invoice grid opens with the canonical V2 Invoice ID");
+assert.match(workspaceSource, /if \(invoiceId\) \{ setSelected\(invoiceId\); setSelectedSource\("v2"\); \}/, "a direct Invoice route preserves its canonical selection through workspace initialization");
 assert.match(workspaceSource, /loadStripe\(publishableKey,\{stripeAccount:stripeAccountId\}\)/, "Payment Element must bind the server-selected connected account for direct charges");
 console.log("FinanceWorkspace invoice PDF action tests passed.");

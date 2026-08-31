@@ -165,7 +165,9 @@ export const App = ({
   const [productBuilderId, setProductBuilderId] = useState("");
   const [newProductBuilder, setNewProductBuilder] = useState(false);
   const [formulaAuthoringContext, setFormulaAuthoringContext] = useState<FormulaAuthoringContext | null>(null);
-  const [invoiceId, setInvoiceId] = useState("");
+  const [invoiceId, setInvoiceId] = useState(
+    () => initialLocation?.page === "invoices" ? initialLocation.invoiceId ?? "" : "",
+  );
   const [fulfillmentOrderId, setFulfillmentOrderId] = useState("");
   const [productionStation, setProductionStation] = useState<
     "flatbed" | "roll" | undefined

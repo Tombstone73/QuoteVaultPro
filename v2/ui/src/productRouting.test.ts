@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { artworkFilePath, artworkPath, contactPath, customerPath, formulaAuthoringPath, fulfillmentPath, invoicePath, legacyProductEditorRedirect, newProductBuilderPath, newQuotePath, orderPath, prepressPath, prepressUnitPath, productBuilderPath, productPath, productionPath, productionWorkPath, proofingPath, quotePath, readArtworkLocation, readContactLocation, readCustomerLocation, readFormulaAuthoringContext, readFulfillmentLocation, readInvoiceLocation, readOrderLocation, readPrepressLocation, readProductBuilderLocation, readProductLocation, readProductionLocation, readProofingLocation, readQuoteLocation, readWorkspaceLocation, workspacePath } from "./productRouting";
 
 assert.deepEqual(readProductLocation("/products"), {});
@@ -78,6 +79,8 @@ assert.equal(orderPath("order a"), "/orders/order%20a");
 assert.deepEqual(readInvoiceLocation("/invoices/invoice-a"), { invoiceId: "invoice-a" });
 assert.deepEqual(readWorkspaceLocation("/invoices"), { page: "invoices" });
 assert.deepEqual(readWorkspaceLocation("/invoices/invoice-a"), { page: "invoices", invoiceId: "invoice-a" });
+const appSource=readFileSync("v2/ui/src/App.tsx","utf8");
+assert.match(appSource,/initialLocation\?\.page === "invoices" \? initialLocation\.invoiceId \?\? "" : ""/,"a direct native Invoice URL initializes the canonical Invoice selection before the Finance workspace mounts");
 assert.equal(invoicePath("invoice a"), "/invoices/invoice%20a");
 assert.deepEqual(readFulfillmentLocation("/fulfillment/orders/order-a"), { orderId: "order-a" });
 assert.deepEqual(readWorkspaceLocation("/fulfillment"), { page: "fulfillment" });

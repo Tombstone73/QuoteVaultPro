@@ -295,7 +295,9 @@ export const FinanceWorkspace = ({
     queryFn: () => financeApi.overview(organizationId),
     enabled: Boolean(organizationId && sessionScope && canPaymentView),
   });
-  useEffect(() => { setSelected(invoiceId); setSelectedSource("v2"); }, [invoiceId]);
+  // A deep Invoice URL is canonical V2 selection context. Do not let the
+  // initial empty parent prop race and clear a just-clicked V2 row.
+  useEffect(() => { if (invoiceId) { setSelected(invoiceId); setSelectedSource("v2"); } }, [invoiceId]);
   useEffect(() => {
     if (!selected && overview.data?.items[0] && !invoiceId)
       { setSelected(overview.data.items[0].invoiceId); setSelectedSource(overview.data.items[0].source); }
@@ -304,6 +306,11 @@ export const FinanceWorkspace = ({
     setSelected(id);
     setSelectedSource(source);
     if (source === "v2") onSelectInvoice(id);
+  };
+  const returnToInvoices = () => {
+    setSelected("");
+    setSelectedSource("v2");
+    backToInvoices();
   };
   const detail = useQuery({
     queryKey: [
@@ -634,7 +641,7 @@ export const FinanceWorkspace = ({
         <article className="v2-finance-detail">
           <header>
             <div>
-              <button className="v2-finance-link" onClick={backToInvoices}>← All invoices</button>
+               <button className="v2-finance-link" onClick={returnToInvoices}>← All invoices</button>
               <span className={`v2-invoice-state ${invoice.lifecycle}`}>
                 {invoice.lifecycle}
               </span>
