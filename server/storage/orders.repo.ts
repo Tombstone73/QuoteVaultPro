@@ -77,7 +77,7 @@ import {
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
-import { ensureDraftInvoiceForOrderInTransaction } from "../invoicesService";
+import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
@@ -1814,7 +1814,7 @@ export class OrdersRepository {
             }
         }));
 
-        await ensureDraftInvoiceForOrderInTransaction(this.dbInstance, {
+        await ensureOrderBackedInvoiceForOrderInTransaction(this.dbInstance, {
             organizationId,
             orderId: created.order.id,
             actorUserId: data.createdByUserId,

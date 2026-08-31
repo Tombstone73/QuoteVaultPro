@@ -9,7 +9,7 @@ export class CanonicalInvoiceOperationError extends Error {
 
 /** Shared application boundary for reviewed Invoice operations. Financial math remains in invoicesService. */
 export class CanonicalInvoiceOperations {
-  async createDraftsFromOrders(input: { organizationId: string; actorUserId: string; orderIds: string[]; terms?: string; customDueDate?: Date | null; auditSource: "ui" | "assistant" | "automation" }) {
+  async createOrderBackedInvoicesFromOrders(input: { organizationId: string; actorUserId: string; orderIds: string[]; terms?: string; customDueDate?: Date | null; auditSource: "ui" | "assistant" | "automation" }) {
     const orderIds = Array.from(new Set(input.orderIds.map((id) => id.trim()).filter(Boolean))).sort();
     if (!orderIds.length) throw new CanonicalInvoiceOperationError("ORDER_REQUIRED", "At least one order is required.", 400);
     return db.transaction(async (tx) => {
@@ -28,6 +28,5 @@ export class CanonicalInvoiceOperations {
   updateSafeDraft(input: { organizationId: string; actorUserId: string; invoiceId: string; patch: CanonicalSafeInvoiceDraftPatch }) { return updateInvoiceSafeDraftCanonical({ organizationId: input.organizationId, invoiceId: input.invoiceId, userId: input.actorUserId, patch: input.patch }); }
   markSent(input: { organizationId: string; actorUserId: string; invoiceId: string; via?: "email" | "manual" | "portal" }) { return markInvoiceSentCanonical({ organizationId: input.organizationId, invoiceId: input.invoiceId, userId: input.actorUserId, via: input.via }); }
   addInternalNote(input: { organizationId: string; actorUserId: string; invoiceId: string; note: string }) { return appendInvoiceInternalNoteCanonical({ organizationId: input.organizationId, invoiceId: input.invoiceId, userId: input.actorUserId, note: input.note }); }
-
 }
 export const canonicalInvoiceOperations = new CanonicalInvoiceOperations();

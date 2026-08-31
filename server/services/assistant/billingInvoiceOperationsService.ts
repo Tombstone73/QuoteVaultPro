@@ -183,7 +183,7 @@ export class BillingInvoiceOperationsService {
       const proposal = validation.proposal;
       const orderLinks = proposal.sourceLinks.filter((link) => link.href.startsWith("/orders/"));
       const orderIds = orderLinks.map((link) => link.href.split("/").pop()!).sort();
-      const created = await canonicalInvoiceOperations.createDraftsFromOrders({ organizationId: input.organizationId, actorUserId: input.actorUserId, orderIds, terms: "due_on_receipt", customDueDate: null, auditSource: "assistant" });
+      const created = await canonicalInvoiceOperations.createOrderBackedInvoicesFromOrders({ organizationId: input.organizationId, actorUserId: input.actorUserId, orderIds, terms: "due_on_receipt", customDueDate: null, auditSource: "assistant" });
       const createdLinks = created.flatMap((invoice: any) => [sourceLinkForInvoice(invoice.id), sourceLinkForOrder(String(invoice.orderId))]);
       sourceLinks.push(...createdLinks);
     } else if (intake.command === "billing.update_invoice_draft") {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { assertPricingCalculationRequest, assertPricingResultEvidence, type PricingResult, type ResolvedProductConfiguration } from "../../src/modules/pricing/contracts";
-import type { DraftInvoiceSynchronizationInput } from "../../src/modules/billing/contracts";
+import type { OrderBackedInvoiceSynchronizationInput } from "../../src/modules/billing/contracts";
 import { assertSalesLineSnapshot, assertSellingPriceDecision, type ConvertQuoteCommand, type SellingPriceDecision } from "../../src/modules/sales/contracts";
 import { brandedId, currencyCode, decimalText, freezeCheckpoint, money, type OrganizationId } from "../../src/modules/shared/commercialValues";
 
@@ -73,8 +73,8 @@ describe("M1.1 commercial contracts", () => {
     expect("pricingRequest" in command).toBe(false);
   });
 
-  test("draft synchronization is an input projection and does not make Sales own invoice rows", () => {
-    const input: DraftInvoiceSynchronizationInput = {
+  test("Order-backed synchronization is an input projection and does not make Sales own invoice rows", () => {
+    const input: OrderBackedInvoiceSynchronizationInput = {
       organizationId: org, orderId: brandedId<"OrderId">("order-a"), businessRequestId: brandedId<"BusinessRequestId">("request-a"),
       customerContact: { organizationId: org, contactId: brandedId<"ContactId">("contact-a") }, currency: usd,
       salesLines: [], taxInput: {}, sourceSalesStateToken: "sales-state-1",

@@ -5,6 +5,7 @@ export type OrderInvoiceStateKey =
   | "invoice_finalized"
   | "invoice_sent"
   | "partially_paid"
+  | "credit"
   | "paid"
   | "overdue";
 
@@ -31,6 +32,7 @@ const LABELS: Record<OrderInvoiceStateKey, string> = {
   invoice_finalized: "Invoice finalized",
   invoice_sent: "Invoice sent",
   partially_paid: "Partially paid",
+  credit: "Credit / Refund Due",
   paid: "Paid",
   overdue: "Overdue",
 };
@@ -71,8 +73,9 @@ export function deriveOrderInvoiceState(input: {
     total: dollars(invoice.total),
   }));
 
+  if (financial.some(({ status, paid, total }) => status === "credit" || paid > total)) return result("credit");
   if (financial.every(({ status, paid, remaining, total }) => (
-    status === "paid" || (status !== "draft" && remaining <= 0 && (total > 0 || paid > 0))
+    status === "paid" || (status !== "draft" && remaining <= 0 && paid <= total && (total > 0 || paid > 0))
   ))) return result("paid");
   if (financial.some(({ invoice, status, remaining }) => {
     if (status === "overdue" && remaining > 0) return true;

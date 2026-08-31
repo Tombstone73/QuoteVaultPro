@@ -126,7 +126,7 @@ export class BillingInvoiceAutomationService {
     return resolveBillingInvoiceTriggerPolicyFromOrgPreferences(preferences);
   }
 
-  async ensureDraftInvoiceForOrderTrigger(
+  async ensureOrderBackedInvoiceForOrderTrigger(
     input: EnsureDraftInvoiceForOrderTriggerInput,
   ): Promise<BillingInvoiceAutomationResult> {
     try {
@@ -187,7 +187,7 @@ export class BillingInvoiceAutomationService {
           };
         }
 
-        // Normal Order creation now owns the forward linked-draft invariant.
+        // Normal Order creation now owns the forward linked-invoice invariant.
         // A later fulfillment trigger must never create a competing invoice.
         const [existingInvoice] = await tx
           .select()
@@ -218,7 +218,7 @@ export class BillingInvoiceAutomationService {
             policy,
             trigger: input.trigger,
             invoice: toInvoiceSummary(existingInvoice),
-            message: "Automated draft invoice already exists",
+            message: "Automated Order-backed invoice already exists",
           };
         }
 
@@ -246,16 +246,6 @@ export class BillingInvoiceAutomationService {
           billingMilestone: input.trigger === "manual_only" ? null : input.trigger,
         });
 
-        await tx
-          .update(invoices)
-          .set({
-            status: "draft",
-            syncStatus: "skipped",
-            qbSyncStatus: "not_synced",
-            updatedAt: new Date(),
-          } as any)
-          .where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.id, invoice.id)));
-
         const [lineItemCount] = await tx
           .select({ count: sql<number>`count(*)::int` })
           .from(invoiceLineItems)
@@ -263,17 +253,17 @@ export class BillingInvoiceAutomationService {
 
         const createdInvoice = {
           ...invoice,
-          status: "draft",
-          syncStatus: "skipped",
-          qbSyncStatus: "not_synced",
+          status: invoice.status,
+          syncStatus: invoice.syncStatus,
+          qbSyncStatus: invoice.qbSyncStatus,
         };
 
         await insertBillingAuditEvent(tx, input.organizationId, {
           actorUserId: input.actorUserId,
           orderId: input.orderId,
           invoice: createdInvoice,
-          actionType: "INVOICE_DRAFT_AUTO_CREATED",
-          description: "Draft invoice auto-created from fulfillment billing trigger",
+          actionType: "INVOICE_ORDER_BACKED_AUTO_CREATED",
+          description: "Live Order-backed invoice auto-created from fulfillment billing trigger",
           values: {
             trigger: input.trigger,
             policy,
@@ -281,7 +271,7 @@ export class BillingInvoiceAutomationService {
             invoiceLineItemCount: Number(lineItemCount?.count || 0),
             autoSend: false,
             autoPaid: false,
-            quickBooksSyncDeferredUntilBilling: true,
+            quickBooksSyncDeferredUntilExplicitQueue: true,
           },
         });
 
@@ -290,7 +280,7 @@ export class BillingInvoiceAutomationService {
           policy,
           trigger: input.trigger,
           invoice: toInvoiceSummary(createdInvoice),
-          message: "Draft invoice created",
+          message: "Order-backed invoice created",
         };
       });
     } catch (error: any) {

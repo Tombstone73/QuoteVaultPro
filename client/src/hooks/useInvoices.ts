@@ -329,28 +329,6 @@ export function useUpdateInvoice() {
   });
 }
 
-// Bill invoice (draft -> billed)
-export function useBillInvoice() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`/api/invoices/${id}/bill`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as any).error || (err as any).message || 'Failed to bill invoice');
-      }
-      return res.json();
-    },
-    onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
-    },
-  });
-}
-
 // Retry QuickBooks sync for invoice
 export function useRetryInvoiceQbSync() {
   const queryClient = useQueryClient();

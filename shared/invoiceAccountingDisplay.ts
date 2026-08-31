@@ -1,3 +1,5 @@
+import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from './rollups/invoicePaymentRollup';
+
 export type InvoiceAccountingDisplayInput = {
   status?: string | null;
   total?: string | number | null;
@@ -62,6 +64,7 @@ export type InvoicePdfFinancialSummary = {
   totalCents: number;
   amountPaidCents: number;
   amountDueCents: number;
+  creditCents: number;
   statusLabel: string;
 };
 
@@ -87,6 +90,7 @@ export type QuickBooksLineItemsDisplay = {
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft',
   finalized: 'Finalized',
+  credit: 'Credit / Refund Due',
   sent: 'Sent',
   partially_paid: 'Partially Paid',
   paid: 'Paid',
@@ -119,9 +123,12 @@ function centsToPaymentStatusLabel(params: {
   rawStatus: string;
   paidCents: number;
   remainingCents: number;
+  creditCents: number;
 }): string {
   if (params.rawStatus === 'void' || params.rawStatus === 'voided') return 'Voided';
   if (params.rawStatus === 'draft') return 'Unpaid';
+  if (params.creditCents > 0) return 'Credit / Refund Due';
+  if (params.creditCents > 0) return 'Credit / Refund Due';
   if (params.remainingCents <= 0 && params.paidCents > 0) return 'Paid';
   if (params.paidCents > 0 && params.remainingCents > 0) return 'Partially Paid';
   return 'Unpaid';
@@ -226,35 +233,37 @@ export function normalizeInvoiceAccountingDisplay(
       ? moneyToCents(invoice.balanceDue)
       : Math.max(0, displayTotalCents - moneyToCents(invoice.amountPaid));
 
-  const localPaymentPaidCents = hasPaymentRows
-    ? (invoice.payments || []).reduce((sum, payment) => {
-        const paymentStatus = normalizePaymentStatus(payment?.status);
-        const amountCents = toSafeCents(payment?.amountCents);
-        if (paymentStatus === 'succeeded' || paymentStatus === 'captured') return sum + amountCents;
-        if (paymentStatus === 'refunded') return sum - amountCents;
-        return sum;
-      }, 0)
-    : moneyToCents(invoice.amountPaid);
+  const nativePaymentRollup = computeInvoicePaymentRollup({
+    invoiceTotalCents: displayTotalCents,
+    payments: hasPaymentRows
+      ? (invoice.payments || []).map((payment) => ({
+          id: payment.id,
+          status: payment.status,
+          amountCents: payment.amountCents,
+        }))
+      : [],
+  });
 
   const rawRemainingCents = isImportedFromQuickBooks
     ? (!isHistorical && hasPaymentRows
         ? Math.max(0, qbBalanceSnapshotCents - importedQuickBooksPaymentSummary.unreconciledCents)
         : qbBalanceSnapshotCents)
-    : Math.max(0, displayTotalCents - Math.max(0, localPaymentPaidCents));
+    : nativePaymentRollup.amountDueCents;
 
   const displayRemainingCents = Math.max(0, Math.min(displayTotalCents, rawRemainingCents));
 
   const rawPaidCents = isImportedFromQuickBooks
     ? Math.max(0, displayTotalCents - displayRemainingCents)
-    : Math.max(0, localPaymentPaidCents);
+    : nativePaymentRollup.amountPaidCents;
 
   const displayPaidCents = Math.max(0, rawPaidCents);
   const creditCents = isImportedFromQuickBooks ? 0 : Math.max(0, displayPaidCents - displayTotalCents);
-  const isFullyPaid = displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents >= displayTotalCents;
+  const isFullyPaid = creditCents === 0 && displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents >= displayTotalCents;
   const paymentStatusLabel = centsToPaymentStatusLabel({
     rawStatus,
     paidCents: displayPaidCents,
     remainingCents: displayRemainingCents,
+    creditCents,
   });
   const invoiceWorkflowStatus = rawStatus || 'unpaid';
 
@@ -286,7 +295,9 @@ export function normalizeInvoiceAccountingDisplay(
   } else if (rawStatus === 'paid' || rawStatus === 'partially_paid') {
     displayStatus = paymentStatusLabel;
   } else {
-    displayStatus = displayPaidCents > 0 ? paymentStatusLabel : getPreservedStatusLabel(rawStatus);
+    // Native order-backed invoices use settlement as their customer-facing
+    // state. Document send/billing metadata must not mask a current balance.
+    displayStatus = getInvoicePaymentStatusLabel({ invoiceStatus: rawStatus, rollup: nativePaymentRollup });
   }
 
   return {
@@ -332,6 +343,7 @@ export function resolveInvoicePdfFinancialSummary(
     totalCents: display.displayTotalCents,
     amountPaidCents: display.displayPaidCents,
     amountDueCents: display.displayRemainingCents,
+    creditCents: display.creditCents,
     // Keep accounting provenance (for example, "Paid Historical") internal.
     statusLabel: display.paymentStatusLabel,
   };

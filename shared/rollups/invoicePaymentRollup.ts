@@ -14,7 +14,7 @@ export type InvoicePaymentRollup = {
   paymentStatus: InvoicePaymentStatus;
 };
 
-export type InvoicePaymentStatusLabel = 'Voided' | 'Unpaid' | 'Partially Paid' | 'Paid' | 'Credit / Refund Due';
+export type InvoicePaymentStatusLabel = 'Draft' | 'Voided' | 'Unpaid' | 'Partially Paid' | 'Paid' | 'Credit / Refund Due';
 
 /**
  * Combine immutable invoice lifecycle protections with the current payment
@@ -23,13 +23,14 @@ export type InvoicePaymentStatusLabel = 'Voided' | 'Unpaid' | 'Partially Paid' |
  */
 export function getInvoiceFinancialLifecycleStatus(params: {
   invoiceStatus: string | null | undefined;
-  rollup: Pick<InvoicePaymentRollup, 'amountPaidCents' | 'amountDueCents'>;
-}): 'void' | 'paid' | 'partially_paid' | 'finalized' | 'billed' | 'sent' {
+  rollup: Pick<InvoicePaymentRollup, 'amountPaidCents' | 'amountDueCents' | 'paymentStatus'>;
+}): 'void' | 'paid' | 'partially_paid' | 'credit' | 'finalized' | 'billed' | 'sent' {
   const currentStatus = String(params.invoiceStatus || '').trim().toLowerCase();
   if (currentStatus === 'void' || currentStatus === 'voided') return 'void';
 
   const paid = toSafeCents(params.rollup?.amountPaidCents);
   const due = toSafeCents(params.rollup?.amountDueCents);
+  if (params.rollup?.paymentStatus === 'credit') return 'credit';
   if (due <= 0) return 'paid';
   if (paid > 0) return 'partially_paid';
 
@@ -48,6 +49,7 @@ export function getInvoicePaymentStatusLabel(params: {
   const paid = toSafeCents(params.rollup?.amountPaidCents);
   const due = toSafeCents(params.rollup?.amountDueCents);
 
+  if (params.rollup.paymentStatus === 'credit') return 'Credit / Refund Due';
   if (paid <= 0) return 'Unpaid';
   if (due <= 0) return 'Paid';
   return 'Partially Paid';
@@ -105,8 +107,9 @@ export function computeInvoicePaymentRollup(params: {
   }
 
   if (!Number.isFinite(paid)) paid = 0;
-  // Payments are immutable ledger facts. Do not clamp a legitimate
-  // overpayment to a later, lower Order total.
+  // Keep the net ledger amount intact. An Order total can legitimately be
+  // reduced after payment; clipping paid to the revised total would conceal
+  // the resulting credit/refund obligation and rewrite financial truth.
   paid = Math.max(0, paid);
 
   const due = Math.max(0, invoiceTotalCents - paid);

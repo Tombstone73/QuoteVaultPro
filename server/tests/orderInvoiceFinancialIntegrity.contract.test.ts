@@ -69,7 +69,7 @@ describe("forward Order to Invoice financial integrity", () => {
     });
   });
 
-  it("puts required draft creation, duplicate prevention, and draft-only synchronization at shared boundaries", async () => {
+  it("puts live Order-backed creation, duplicate prevention, and ledger-safe synchronization at shared boundaries", async () => {
     const [ordersRepository, invoiceService, automation, canonicalOrderOperations, customerRoutes, creditPolicy, exposureService, schema] = await Promise.all([
       source("server/storage/orders.repo.ts"),
       source("server/invoicesService.ts"),
@@ -81,13 +81,15 @@ describe("forward Order to Invoice financial integrity", () => {
       source("shared/schema.ts"),
     ]);
 
-    expect(ordersRepository).toContain("ensureDraftInvoiceForOrderInTransaction(this.dbInstance");
+    expect(ordersRepository).toContain("ensureOrderBackedInvoiceForOrderInTransaction(this.dbInstance");
     expect(ordersRepository).toContain("this.withExecutor(tx, true).createOrder");
     expect(invoiceService).toContain("INVOICE_ALREADY_EXISTS");
-    expect(invoiceService).toContain("synchronizeDraftInvoiceFromOrderInTransaction");
-    expect(invoiceService).toContain("String(linkedInvoices[0]!.status).toLowerCase() !== \"draft\"");
+    expect(invoiceService).toContain("synchronizeOrderBackedInvoiceFromOrderInTransaction");
+    expect(invoiceService).not.toContain("String(linkedInvoices[0]!.status).toLowerCase() !== \"draft\"");
+    expect(invoiceService).toContain("amountPaid: centsToDecimalString(financialState.amountPaidCents)");
+    expect(invoiceService).toContain('qbSyncStatus: "needs_resync"');
     expect(automation).toContain("ne(invoices.status, \"void\")");
-    expect(canonicalOrderOperations).toContain("synchronizeDraftInvoiceFromOrderInTransaction");
+    expect(canonicalOrderOperations).toContain("synchronizeOrderBackedInvoiceFromOrderInTransaction");
     expect(customerRoutes).toContain("getCustomerCreditExposures");
     expect(customerRoutes).toContain("canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)");
     expect(customerRoutes).toContain("customer_credit_limit_updated");

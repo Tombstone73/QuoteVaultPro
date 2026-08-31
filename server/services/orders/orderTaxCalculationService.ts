@@ -3,7 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { customers, orderLineItems, orders, organizations, products } from "@shared/schema";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "../../quoteOrderPricing";
 import { db } from "../../db";
-import { synchronizeDraftInvoiceFromOrderInTransaction } from "../../invoicesService";
+import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../../invoicesService";
 import { getBillableBundleRoots } from "../lineItemBundles";
 
 type TaxableOrderLine = {
@@ -103,7 +103,7 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
       total: total.toFixed(2),
       updatedAt: new Date(),
     } as any).where(and(eq(orders.id, input.orderId), eq(orders.organizationId, input.organizationId))).returning();
-    await synchronizeDraftInvoiceFromOrderInTransaction(executor, input);
+    await synchronizeOrderBackedInvoiceFromOrderInTransaction(executor, input);
     return updated ?? null;
 }
 

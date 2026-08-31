@@ -5,8 +5,8 @@ import { db } from "../../db";
 import { storage } from "../../storage";
 import { OrdersRepository } from "../../storage/orders.repo";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
-import { synchronizeDraftInvoiceFromOrderInTransaction } from "../../invoicesService";
-import { orderChangesRequireDraftInvoiceSynchronization } from "./orderHeaderUpdatePolicy";
+import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../../invoicesService";
+import { orderChangesRequireOrderBackedInvoiceSynchronization } from "./orderHeaderUpdatePolicy";
 import { assertCustomerCreditForOrder, orderPayloadTotalCents } from "../customerCreditPolicyService";
 import { parseMoneyToCents } from "@shared/customerCreditExposure";
 
@@ -58,8 +58,8 @@ class CanonicalOrderOperations {
         ...input.changes,
         ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}),
       });
-      if (orderChangesRequireDraftInvoiceSynchronization(input.changes)) {
-        await synchronizeDraftInvoiceFromOrderInTransaction(tx, {
+      if (orderChangesRequireOrderBackedInvoiceSynchronization(input.changes)) {
+        await synchronizeOrderBackedInvoiceFromOrderInTransaction(tx, {
           organizationId: input.organizationId,
           orderId: order.id,
           actorUserId: input.actorUserId,

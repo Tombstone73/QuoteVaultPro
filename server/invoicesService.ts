@@ -460,7 +460,11 @@ function computeInvoiceFinancialState(
 
     const status = getInvoiceFinancialLifecycleStatus({
       invoiceStatus: invoice.status,
-      rollup: { amountPaidCents, amountDueCents },
+      rollup: {
+        amountPaidCents,
+        amountDueCents,
+        paymentStatus: amountDueCents <= 0 ? "paid" : amountPaidCents > 0 ? "partial" : "unpaid",
+      },
     });
 
     return { amountPaidCents, amountDueCents, status };
@@ -630,9 +634,9 @@ export async function createInvoiceFromOrderInTransaction(
       orderId: order.id,
       sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
       customerId: billingCustomer.customerId,
-      // An Order-backed invoice is immediately a live receivable. Its
-      // commercial facts keep projecting from the editable Order; payment is
-      // never gated on a separate document-finalization action.
+      // An Order-backed invoice is live as soon as the Order exists. The
+      // Order remains its commercial source; payment eligibility is derived
+      // from the current balance, not a manual document-finalization step.
       status: 'billed',
       terms: opts.terms as any,
       customTerms: undefined,
@@ -710,7 +714,7 @@ export async function createInvoiceFromOrderInTransaction(
  * creation paths (direct, quote conversion, inbound, and assistant) without
  * imposing a new uniqueness migration on historical invoice data.
  */
-export async function ensureDraftInvoiceForOrderInTransaction(
+export async function ensureOrderBackedInvoiceForOrderInTransaction(
   tx: any,
   input: {
     organizationId: string;
@@ -791,10 +795,11 @@ function invoiceSnapshotComparable(row: any) {
 }
 
 /**
- * Projects the current Order into its single native linked invoice. Historical
- * imports, voids, and ambiguous legacy links remain deliberately untouched.
+ * Synchronizes the unambiguous native invoice that is commercially backed by
+ * an editable Order. Historical imports and multiple legacy invoices remain
+ * deliberately untouched.
  */
-export async function synchronizeDraftInvoiceFromOrderInTransaction(
+export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   tx: any,
   input: { organizationId: string; orderId: string; actorUserId?: string | null },
 ) {
@@ -845,6 +850,8 @@ export async function synchronizeDraftInvoiceFromOrderInTransaction(
     totalCents: snapshot.totalCents,
   };
   const financialState = computeInvoiceFinancialState(nextInvoice, paymentRows as any);
+  const hasQuickBooksLink = Boolean(String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || "").trim());
+  const nextInvoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;
   const [updated] = await tx.update(invoices).set({
     customerId: order.customerId ?? invoice.customerId,
     subtotal: snapshot.subtotal.toFixed(2),
@@ -856,10 +863,12 @@ export async function synchronizeDraftInvoiceFromOrderInTransaction(
     totalCents: snapshot.totalCents,
     amountPaid: centsToDecimalString(financialState.amountPaidCents),
     balanceDue: centsToDecimalString(financialState.amountDueCents),
-    status: financialState.status,
-    invoiceVersion: Number((invoice as any).invoiceVersion || 1) + 1,
-    modifiedAfterBilling: Boolean((invoice as any).qbInvoiceId),
-    ...((invoice as any).qbInvoiceId ? { qbSyncStatus: "pending", qbLastError: null } : {}),
+    status: financialState.status as any,
+    invoiceVersion: nextInvoiceVersion,
+    // Local Order truth remains current, but an already-synced QuickBooks
+    // invoice must never be silently mutated outside the explicit accounting
+    // workflow.
+    ...(hasQuickBooksLink ? { qbSyncStatus: "needs_resync", qbLastError: null, modifiedAfterBilling: true } : {}),
     updatedAt: new Date(),
   } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
   await tx.insert(auditLogs).values({
@@ -869,15 +878,15 @@ export async function synchronizeDraftInvoiceFromOrderInTransaction(
     entityType: "invoice",
     entityId: invoice.id,
     entityName: String(invoice.displayNumber || invoice.invoiceNumber),
-    description: "Synchronized the live Order-backed invoice from its current commercial snapshot.",
+    description: "Synchronized a live Order-backed invoice from its canonical commercial snapshot.",
     oldValues: { subtotalCents: invoice.subtotalCents, taxCents: invoice.taxCents, shippingCents: invoice.shippingCents, totalCents: invoice.totalCents } as any,
-    newValues: { subtotalCents: snapshot.subtotalCents, taxCents: snapshot.taxCents, shippingCents: snapshot.shippingCents, totalCents: snapshot.totalCents, lineSnapshotsChanged } as any,
+    newValues: { subtotalCents: snapshot.subtotalCents, taxCents: snapshot.taxCents, shippingCents: snapshot.shippingCents, totalCents: snapshot.totalCents, amountPaidCents: financialState.amountPaidCents, amountDueCents: financialState.amountDueCents, status: financialState.status, lineSnapshotsChanged, quickBooksNeedsResync: hasQuickBooksLink } as any,
   } as any);
   return { status: "updated" as const, invoice: updated };
 }
 
-export async function synchronizeDraftInvoiceFromOrder(input: { organizationId: string; orderId: string; actorUserId?: string | null }) {
-  return db.transaction((tx) => synchronizeDraftInvoiceFromOrderInTransaction(tx, input));
+export async function synchronizeOrderBackedInvoiceFromOrder(input: { organizationId: string; orderId: string; actorUserId?: string | null }) {
+  return db.transaction((tx) => synchronizeOrderBackedInvoiceFromOrderInTransaction(tx, input));
 }
 
 async function createInvoiceFromOrderImpl(
@@ -969,7 +978,7 @@ export async function markInvoiceSentCanonical(input: { organizationId: string; 
     if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
     const now = new Date();
     const via = input.via ?? "manual";
-    const nextStatus = ["void", "paid", "partially_paid"].includes(status) ? status : "sent";
+    const nextStatus = ["void", "paid", "partially_paid", "credit"].includes(status) ? status : "sent";
     const [updated] = await tx.update(invoices).set({ status: nextStatus as any, lastSentAt: now, lastSentVersion: Number((invoice as any).invoiceVersion || 1), lastSentVia: via, updatedAt: now } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
     await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_marked_sent", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Marked invoice as sent through the canonical Invoice operation.", newValues: { via, invoiceVersion: Number((invoice as any).invoiceVersion || 1) } as any } as any);
     return updated;

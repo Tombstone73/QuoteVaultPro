@@ -4985,7 +4985,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   lastQbSyncedVersion: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
-  status: z.enum(['draft','finalized','billed','paid','void','sent','partially_paid','overdue']).default('draft'),
+  status: z.enum(['draft','finalized','billed','paid','void','sent','partially_paid','credit','overdue']).default('draft'),
   terms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   customTerms: z.string().max(255).optional().nullable(),
   issueDate: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),

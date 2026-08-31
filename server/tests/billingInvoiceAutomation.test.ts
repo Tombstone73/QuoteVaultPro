@@ -123,7 +123,7 @@ describe("billing invoice automation", () => {
   test("manual_only policy does not auto-create an invoice", async () => {
     const { org, user, order } = await createFixture("manual_only");
 
-    const result = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const result = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -140,7 +140,7 @@ describe("billing invoice automation", () => {
   test("ready_for_pickup policy creates one draft invoice and no duplicate on repeat", async () => {
     const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
 
-    const first = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const first = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -151,7 +151,7 @@ describe("billing invoice automation", () => {
     expect(first.status).toBe("created");
     expect(first.invoice?.status).toBe("draft");
 
-    const second = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const second = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -182,7 +182,7 @@ describe("billing invoice automation", () => {
   test("existing sent invoice prevents duplicate creation", async () => {
     const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
 
-    const first = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const first = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -196,7 +196,7 @@ describe("billing invoice automation", () => {
       .set({ status: "sent", updatedAt: new Date() } as any)
       .where(and(eq(invoices.organizationId, org.id), eq(invoices.id, first.invoice!.id)));
 
-    const second = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const second = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -214,7 +214,7 @@ describe("billing invoice automation", () => {
   test("an existing invoice rejects a duplicate manual creation", async () => {
     const { org, user, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
 
-    const automated = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const automated = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -233,7 +233,7 @@ describe("billing invoice automation", () => {
       .from(invoices)
       .where(eq(invoices.orderId, order.id));
 
-    const later = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const later = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -254,7 +254,7 @@ describe("billing invoice automation", () => {
     });
     expect(manual.invoiceCreationSource).toBe("manual");
 
-    const automated = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const automated = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",
@@ -272,7 +272,7 @@ describe("billing invoice automation", () => {
   test("database unique index prevents duplicate automated milestone invoices", async () => {
     const { org, user, customer, order } = await createFixture("ready_for_pickup_or_ready_to_ship");
 
-    const first = await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
+    const first = await billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger({
       organizationId: org.id,
       orderId: order.id,
       trigger: "ready_for_pickup_or_ready_to_ship",

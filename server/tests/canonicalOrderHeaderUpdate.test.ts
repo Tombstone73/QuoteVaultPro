@@ -14,7 +14,7 @@ const existingOrder = {
 
 const assertCustomerCreditForOrder = jest.fn<(...args: any[]) => Promise<any>>();
 const resolveOrderCustomerContactIds = jest.fn<(...args: any[]) => Promise<any>>();
-const synchronizeDraftInvoiceFromOrder = jest.fn<(...args: any[]) => Promise<any>>();
+const synchronizeOrderBackedInvoiceFromOrderInTransaction = jest.fn<(...args: any[]) => Promise<any>>();
 const updateOrder = jest.fn<(...args: any[]) => Promise<any>>();
 const auditValues = jest.fn<(...args: any[]) => Promise<any>>();
 
@@ -32,7 +32,7 @@ jest.unstable_mockModule("../services/customerCreditPolicyService", () => ({
   assertCustomerCreditForOrder,
   orderPayloadTotalCents: jest.fn(),
 }));
-jest.unstable_mockModule("../invoicesService", () => ({ synchronizeDraftInvoiceFromOrder }));
+jest.unstable_mockModule("../invoicesService", () => ({ synchronizeOrderBackedInvoiceFromOrderInTransaction }));
 jest.unstable_mockModule("@shared/customerCreditExposure", () => ({
   parseMoneyToCents: (value: unknown) => Math.round(Number(value) * 100),
 }));
@@ -70,7 +70,7 @@ describe("canonical editable Order header updates", () => {
       existingOrderTotalCents: 12_550,
     }));
     expect(updateOrder).toHaveBeenCalledWith("org-1", "order-1", changes);
-    expect(synchronizeDraftInvoiceFromOrder).not.toHaveBeenCalled();
+    expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).not.toHaveBeenCalled();
   });
 
   test("checks credit before writing and preserves the write boundary when credit rejects", async () => {
@@ -102,6 +102,6 @@ describe("canonical editable Order header updates", () => {
       proposedOrderTotalCents: 24_000,
       existingOrderTotalCents: 0,
     }));
-    expect(synchronizeDraftInvoiceFromOrder).toHaveBeenCalledWith(expect.objectContaining({ orderId: "order-1" }));
+    expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orderId: "order-1" }));
   });
 });

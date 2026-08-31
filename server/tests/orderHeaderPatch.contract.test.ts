@@ -1,5 +1,5 @@
 import { updateOrderSchema } from "@shared/schema";
-import { normalizeOrderPatchShipping, orderChangesRequireDraftInvoiceSynchronization } from "../services/orders/orderHeaderUpdatePolicy";
+import { normalizeOrderPatchShipping, orderChangesRequireOrderBackedInvoiceSynchronization } from "../services/orders/orderHeaderUpdatePolicy";
 
 describe("V1 Order header PATCH contract", () => {
   const orderId = "8ed91da0-5d50-4c82-b6f0-5c65a9d50a13";
@@ -18,13 +18,13 @@ describe("V1 Order header PATCH contract", () => {
 
     expect(parsed).toMatchObject(expected);
     expect(Object.keys(parsed).sort()).toEqual(["id", ...Object.keys(expected)].sort());
-    expect(orderChangesRequireDraftInvoiceSynchronization(parsed)).toBe(false);
+    expect(orderChangesRequireOrderBackedInvoiceSynchronization(parsed)).toBe(false);
   });
 
   test("keeps draft-invoice synchronization for financial and identity changes", () => {
-    expect(orderChangesRequireDraftInvoiceSynchronization({ customerId: "customer-1" } as any)).toBe(true);
-    expect(orderChangesRequireDraftInvoiceSynchronization({ shippingCents: 1_250 } as any)).toBe(true);
-    expect(orderChangesRequireDraftInvoiceSynchronization({ tax: 12.5 } as any)).toBe(true);
+    expect(orderChangesRequireOrderBackedInvoiceSynchronization({ customerId: "customer-1" } as any)).toBe(true);
+    expect(orderChangesRequireOrderBackedInvoiceSynchronization({ shippingCents: 1_250 } as any)).toBe(true);
+    expect(orderChangesRequireOrderBackedInvoiceSynchronization({ tax: 12.5 } as any)).toBe(true);
   });
 
   test("does not inject shipping cents into a header-only pickup-order patch", () => {

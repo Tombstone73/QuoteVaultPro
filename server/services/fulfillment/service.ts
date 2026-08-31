@@ -47,8 +47,8 @@ export class FulfillmentService {
   /** Billing runs after the irreversible physical transaction.  A failed run is
    * recorded durably so an operator can replay the canonical, idempotent
    * invoice operation without recreating fulfillment. */
-  private async ensureTerminalBilling(input: Parameters<typeof billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger>[0]) {
-    const result = await this.billingAutomationService.ensureDraftInvoiceForOrderTrigger(input);
+  private async ensureTerminalBilling(input: Parameters<typeof billingInvoiceAutomationService.ensureOrderBackedInvoiceForOrderTrigger>[0]) {
+    const result = await this.billingAutomationService.ensureOrderBackedInvoiceForOrderTrigger(input);
     if (result.status === 'failed_controlled_error') {
       await this.dbInstance.insert(auditLogs).values({
         organizationId: input.organizationId,

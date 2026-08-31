@@ -39,6 +39,7 @@ const statusLabels: Record<string, string> = {
   finalized: "Finalized",
   sent: "Sent",
   partially_paid: "Partially Paid",
+  credit: "Credit / Refund Due",
   paid: "Paid",
   overdue: "Overdue",
   billed: "Billed",
@@ -241,6 +242,7 @@ export default function InvoicesListPage() {
                 <SelectItem value="finalized">Finalized</SelectItem>
                 <SelectItem value="sent">Sent</SelectItem>
                 <SelectItem value="partially_paid">Partially Paid</SelectItem>
+                <SelectItem value="credit">Credit / Refund Due</SelectItem>
                 <SelectItem value="paid">Paid</SelectItem>
                 <SelectItem value="overdue">Overdue</SelectItem>
                 <SelectItem value="billed">Billed</SelectItem>

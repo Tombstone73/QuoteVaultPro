@@ -681,7 +681,7 @@ type PortalProofRow = {
   decision: string | null;
 };
 
-const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "overdue", "paid", "void", "open"];
+const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "credit", "overdue", "paid", "void", "open"];
 
 class PortalAccessError extends Error {
   statusCode: number;

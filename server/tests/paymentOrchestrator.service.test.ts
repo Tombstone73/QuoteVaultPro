@@ -69,10 +69,9 @@ describe("payment orchestrator order resolution", () => {
     expect(result.redirectTarget).toBe("/invoices/invoice_1");
   });
 
-  test.each([
-    ["draft", "Draft invoices must be finalized before payment can be collected."],
-    ["void", "Void invoices cannot accept payment."],
-  ])("%s invoice blocks payment", (status, reason) => {
+  test("void invoice blocks payment", () => {
+    const status = "void";
+    const reason = "Void invoices cannot accept payment.";
     const result = buildOrderPaymentResolutionFromCandidates({
       orderId: "order_1",
       provider: provider("stripe"),
@@ -135,8 +134,8 @@ describe("invoice payment eligibility", () => {
     expect(result.remainingBalanceCents).toBe(10_000);
   });
 
-  test("draft, void, and zero-balance invoices are blocked", () => {
-    expect(getInvoicePaymentEligibility({ invoice: { status: "draft", totalCents: 10_000 }, payments: [] }).payable).toBe(false);
+  test("a live order-backed draft, void, and zero-balance invoices follow current balance rules", () => {
+    expect(getInvoicePaymentEligibility({ invoice: { status: "draft", totalCents: 10_000 }, payments: [] }).payable).toBe(true);
     expect(getInvoicePaymentEligibility({ invoice: { status: "void", totalCents: 10_000 }, payments: [] }).payable).toBe(false);
     expect(getInvoicePaymentEligibility({ invoice: { status: "paid", totalCents: 10_000 }, payments: [{ status: "succeeded", amountCents: 10_000 }] }).payable).toBe(false);
   });

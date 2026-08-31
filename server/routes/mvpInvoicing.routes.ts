@@ -293,7 +293,6 @@ export async function registerMvpInvoicingRoutes(
     if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
     // An Order-backed invoice is already a live receivable. Sending it is a
     // delivery action, not an implicit financial finalization transition.
-
     const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId));
     const lineItems = await db
       .select()
@@ -444,7 +443,7 @@ export async function registerMvpInvoicingRoutes(
 
     const invoiceVersion = Number(inv.invoiceVersion || 1);
     const currentStatus = String(inv.status || "").toLowerCase();
-    const nextStatus = ["paid", "partially_paid", "void"].includes(currentStatus) ? currentStatus : "sent";
+    const nextStatus = ["paid", "partially_paid", "credit", "void"].includes(currentStatus) ? currentStatus : "sent";
     await db
       .update(invoices)
       .set({
@@ -2133,7 +2132,7 @@ export async function registerMvpInvoicingRoutes(
         });
       }
 
-      const [invoice] = await canonicalInvoiceOperations.createDraftsFromOrders({ organizationId, actorUserId: userId, orderIds: [orderId], terms: terms || "due_on_receipt", customDueDate: customDueDate ? new Date(customDueDate) : null, auditSource: "ui" });
+      const [invoice] = await canonicalInvoiceOperations.createOrderBackedInvoicesFromOrders({ organizationId, actorUserId: userId, orderIds: [orderId], terms: terms || "due_on_receipt", customDueDate: customDueDate ? new Date(customDueDate) : null, auditSource: "ui" });
 
       res.json({ success: true, data: invoice });
     } catch (error: any) {
@@ -2143,30 +2142,6 @@ export async function registerMvpInvoicingRoutes(
         error: error.message || "Failed to create invoice",
         code: error.code,
       });
-    }
-  });
-
-  // ------------------------------------------------------------
-  // Legacy compatibility: order-backed invoices are payable on creation.
-  // ------------------------------------------------------------
-  app.post("/api/invoices/:id/bill", isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
-
-      const rel = await getInvoiceWithRelations(req.params.id);
-      if (!rel) return res.status(404).json({ error: "Invoice not found" });
-      const inv: any = rel.invoice;
-      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
-
-      if (String(inv.status || "").toLowerCase() === "void") return res.status(400).json({ error: "Void invoices cannot be activated" });
-      // Compatibility endpoint for older clients. It deliberately does not
-      // transition an Order-backed receivable: payment eligibility is already
-      // determined from the current balance and immutable ledger effects.
-      res.json({ success: true, data: rel, message: "Invoice is already live and payable." });
-    } catch (error: any) {
-      console.error("Error billing invoice:", error);
-      res.status(500).json({ error: error.message || "Failed to bill invoice" });
     }
   });
 
@@ -2254,8 +2229,8 @@ export async function registerMvpInvoicingRoutes(
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
       const status = String(inv.status || "").toLowerCase();
-      if (status === "draft" || status === "void") {
-        return res.status(400).json({ success: false, error: "Only finalized or sent invoices can be queued for QuickBooks" });
+      if (status === "void") {
+        return res.status(400).json({ success: false, error: "Void invoices cannot be queued for QuickBooks" });
       }
 
       await db

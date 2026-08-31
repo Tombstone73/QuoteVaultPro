@@ -13,6 +13,7 @@ describe("order invoice state", () => {
     expect(deriveOrderInvoiceState({ invoices: [{ status: "sent", total: 25, balanceDue: 25 }], now }).key).toBe("invoice_sent");
     expect(deriveOrderInvoiceState({ invoices: [{ status: "partially_paid", total: 25, amountPaid: 10, balanceDue: 15 }], now }).key).toBe("partially_paid");
     expect(deriveOrderInvoiceState({ invoices: [{ status: "paid", total: 25, balanceDue: 0 }], now }).key).toBe("paid");
+    expect(deriveOrderInvoiceState({ invoices: [{ status: "credit", total: 25, amountPaid: 30, balanceDue: 0 }], now }).key).toBe("credit");
     expect(deriveOrderInvoiceState({ invoices: [{ status: "sent", dueDate: "2026-07-18T12:00:00.000Z", balanceDue: 25 }], now }).key).toBe("overdue");
   });
 

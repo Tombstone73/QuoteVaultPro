@@ -4,7 +4,7 @@ import type { PrincipalKind } from "../../authorization/principals.js";
 import type { BusinessRequestId, CurrencyCode, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrganizationId, PercentageBasisPoints, ProductId, SalesLineId } from "../shared/commercialValues.js";
 
 /** Sales supplies a projection; Billing owns any resulting Invoice row, math, and lifecycle. */
-/** Live invoice projection from the editable Order; Billing owns the row and math. */
+/** A live Invoice mirrors its editable Order commercial state. */
 export type OrderBackedInvoiceSynchronizationInput = Readonly<{
   organizationId: OrganizationId;
   orderId: OrderId;
@@ -16,12 +16,8 @@ export type OrderBackedInvoiceSynchronizationInput = Readonly<{
   taxInput: Readonly<{ taxContextReference?: string; compatibilityCalculatorVersion?: string }>;
   sourceSalesStateToken: string;
 }>;
-export type DraftInvoiceSynchronizationInput = OrderBackedInvoiceSynchronizationInput;
-export type CreateDraftInvoiceInput = OrderBackedInvoiceSynchronizationInput;
-export type DraftInvoiceSynchronizationResult = Readonly<{ invoiceId: InvoiceId; status: "created" | "synchronized" | "unchanged" | "not_editable"; reason?: "invoice_issued" | "invoice_void" | "invoice_missing" | "multiple_active_invoices"; synchronizationVersion?: string }>;
-/** Canonical name; Draft* aliases remain only for incremental adapter compatibility. */
-export type OrderBackedInvoiceSynchronizationResult = DraftInvoiceSynchronizationResult;
-export type IssueInvoiceInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; businessRequestId: BusinessRequestId }>;
+export type CreateOrderBackedInvoiceInput = OrderBackedInvoiceSynchronizationInput;
+export type OrderBackedInvoiceSynchronizationResult = Readonly<{ invoiceId: InvoiceId; status: "created" | "synchronized" | "unchanged" | "not_editable"; reason?: "invoice_void" | "invoice_missing" | "multiple_active_invoices" | "external_accounting_resync_required"; synchronizationVersion?: string }>;
 export type BillingAttributionSnapshot =
   | Readonly<{ principalKind: Exclude<PrincipalKind, "delegated_ai">; subjectId: string; staffActorUserId?: never }>
   | Readonly<{ principalKind: "delegated_ai"; subjectId: string; staffActorUserId: string }>;
@@ -42,6 +38,6 @@ export type IssuedInvoiceCheckpoint = Readonly<{
 export type IssuedInvoiceBoundary = Readonly<{ invoiceId: InvoiceId; status: "issued"; checkpointId: InvoiceCheckpointId; silentOrderSynchronization: false }>;
 
 export interface BillingPort {
-  createDraftInvoice(input: CreateDraftInvoiceInput): Promise<DraftInvoiceSynchronizationResult>;
-  synchronizeDraftInvoice(input: DraftInvoiceSynchronizationInput): Promise<DraftInvoiceSynchronizationResult>;
+  createOrderBackedInvoice(input: CreateOrderBackedInvoiceInput): Promise<OrderBackedInvoiceSynchronizationResult>;
+  synchronizeOrderBackedInvoice(input: OrderBackedInvoiceSynchronizationInput): Promise<OrderBackedInvoiceSynchronizationResult>;
 }

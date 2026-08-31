@@ -32,6 +32,16 @@ test('historical QuickBooks imports cannot become outbound queue candidates', ()
   expect(worker).toContain("Invoice is no longer pending sync.");
 });
 
+test('an Order revision keeps local truth while requiring an explicit accounting resync decision', () => {
+  const invoicesService = read('server/invoicesService.ts');
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+
+  expect(invoicesService).toContain('qbSyncStatus: "needs_resync"');
+  expect(invoicesService).toContain('modifiedAfterBilling: true');
+  expect(worker).toContain("inArray(invoices.qbSyncStatus, invoiceStatuses as any)");
+  expect(worker).not.toContain("needs_resync', 'pending'");
+});
+
 test('queue list uses canonical ids, supports a single-row sync, and is reachable from the Push settings section', () => {
   const page = read('client/src/pages/settings/quickbooks-sync-queue.tsx');
   const settings = read('client/src/pages/settings/integrations.tsx');

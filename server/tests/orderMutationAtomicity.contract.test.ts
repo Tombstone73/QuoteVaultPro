@@ -12,7 +12,7 @@ describe("Order mutation atomicity", () => {
 
     expect(sourceText).toContain("return db.transaction(async (tx) => {");
     expect(sourceText).toContain("new OrdersRepository(tx).updateOrder");
-    expect(sourceText).toContain("synchronizeDraftInvoiceFromOrderInTransaction(tx");
+    expect(sourceText).toContain("synchronizeOrderBackedInvoiceFromOrderInTransaction(tx");
     expect(sourceText).toContain("await tx.insert(auditLogs)");
   });
 
@@ -28,7 +28,7 @@ describe("Order mutation atomicity", () => {
     expect(routes).toContain("recalculateEditableOrderFinancialsInTransaction(tx");
     expect(routes).toContain("recomputeOrderBillingStatus({ organizationId, orderId: String(ownedLineItem.orderId), executor: tx })");
     expect(taxService).toContain("export async function recalculateEditableOrderFinancialsInTransaction");
-    expect(taxService).toContain("synchronizeDraftInvoiceFromOrderInTransaction(executor, input)");
+    expect(taxService).toContain("synchronizeOrderBackedInvoiceFromOrderInTransaction(executor, input)");
     expect(billingService).toContain("executor?: any;");
   });
 });

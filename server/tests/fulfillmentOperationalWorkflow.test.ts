@@ -230,7 +230,7 @@ describe("fulfillment operational workflow helpers", () => {
       })),
     };
     const billingAutomationService = {
-      ensureDraftInvoiceForOrderTrigger: jest.fn(async () => {
+      ensureOrderBackedInvoiceForOrderTrigger: jest.fn(async () => {
         throw new Error("invoice service unavailable");
       }),
     };
@@ -246,7 +246,7 @@ describe("fulfillment operational workflow helpers", () => {
 
     expect(fakeDashboardRepo.markOrderReady).toHaveBeenCalledWith("org-1", "order-1", "user-1");
     expect(result.status).toBe("READY");
-    expect(billingAutomationService.ensureDraftInvoiceForOrderTrigger).not.toHaveBeenCalled();
+    expect(billingAutomationService.ensureOrderBackedInvoiceForOrderTrigger).not.toHaveBeenCalled();
     expect(result.billingAutomation).toBeUndefined();
   });
 
@@ -257,7 +257,7 @@ describe("fulfillment operational workflow helpers", () => {
       insert: jest.fn(() => ({ values: async (entry: any) => { auditEntries.push(entry); } })),
     };
     const billingAutomationService = {
-      ensureDraftInvoiceForOrderTrigger: jest
+      ensureOrderBackedInvoiceForOrderTrigger: jest
         .fn()
         .mockResolvedValueOnce({ status: "failed_controlled_error", code: "TRANSIENT", message: "temporary failure" })
         .mockResolvedValueOnce({ status: "succeeded", invoiceId: "invoice-1" }),
@@ -277,7 +277,7 @@ describe("fulfillment operational workflow helpers", () => {
     expect(auditEntries[0]).toMatchObject({ actionType: "FULFILLMENT_BILLING_RECONCILIATION_REQUIRED", entityId: "order-1" });
 
     await expect(service.reconcileTerminalBilling("org-1", "order-1", "user-1")).resolves.toMatchObject({ status: "succeeded" });
-    expect(billingAutomationService.ensureDraftInvoiceForOrderTrigger).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(billingAutomationService.ensureOrderBackedInvoiceForOrderTrigger).toHaveBeenLastCalledWith(expect.objectContaining({
       organizationId: "org-1", orderId: "order-1", trigger: "picked_up_or_shipped",
     }));
   });
@@ -323,7 +323,7 @@ describe("fulfillment operational workflow helpers", () => {
       shipmentRepo: fakeShipmentRepo as any,
       pickupRepo: {} as any,
       dbInstance: { select } as any,
-      billingAutomationService: { ensureDraftInvoiceForOrderTrigger: jest.fn(async () => ({ status: "skipped" })) } as any,
+      billingAutomationService: { ensureOrderBackedInvoiceForOrderTrigger: jest.fn(async () => ({ status: "skipped" })) } as any,
     });
     await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).resolves.toMatchObject({ id: "shipment-1" });
     expect(fakeShipmentRepo.markShipped).toHaveBeenCalled();

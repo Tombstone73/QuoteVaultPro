@@ -169,6 +169,7 @@ const statusColors: Record<string, string> = {
   billed: "bg-blue-600",
   sent: "bg-blue-500",
   partially_paid: "bg-yellow-500",
+  credit: "bg-amber-600",
   paid: "bg-green-500",
   overdue: "bg-red-500",
   void: "bg-zinc-500",
@@ -180,6 +181,7 @@ const statusLabels: Record<string, string> = {
   billed: "Billed",
   sent: "Sent",
   partially_paid: "Partially Paid",
+  credit: "Credit / Refund Due",
   paid: "Paid",
   overdue: "Overdue",
   void: "Void",
@@ -315,6 +317,7 @@ export default function InvoiceDetailPage() {
   const displayPaidCents = Number((invoice as any)?.displayPaidCents ?? paymentRollup.amountPaidCents ?? 0);
   const remainingCents = Number((invoice as any)?.displayRemainingCents ?? paymentRollup.amountDueCents ?? 0);
   const displayTotalCents = Number((invoice as any)?.displayTotalCents ?? (invoice as any)?.totalCents ?? 0);
+  const creditCents = Number((invoice as any)?.creditCents ?? Math.max(0, displayPaidCents - displayTotalCents));
   const balanceDue = remainingCents / 100;
   const fallbackPaymentStatusLabel = getInvoicePaymentStatusLabel({
     invoiceStatus: invoice?.status,
@@ -1610,7 +1613,7 @@ export default function InvoiceDetailPage() {
                   <div>
                     <div className="text-xs font-medium text-muted-foreground">Balance</div>
                     <div className="font-medium">
-                      Total {formatCurrencyFromCents(displayTotalCents)} / Paid {formatCurrencyFromCents(displayPaidCents)} / Remaining {formatCurrencyFromCents(remainingCents)}
+                      Total {formatCurrencyFromCents(displayTotalCents)} / Paid {formatCurrencyFromCents(displayPaidCents)} / Remaining {formatCurrencyFromCents(remainingCents)}{creditCents > 0 ? ` / Credit due ${formatCurrencyFromCents(creditCents)}` : ''}
                     </div>
                   </div>
                 </div>
@@ -2178,6 +2181,13 @@ export default function InvoiceDetailPage() {
                 <div className="mt-1 text-xl font-semibold">{formatCurrency((invoice as any).displayTotal ?? invoice.total)}</div>
               </div>
 
+              {creditCents > 0 ? (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Credit / Refund Due</div>
+                  <div className="mt-1 text-xl font-semibold text-amber-700">{formatCurrencyFromCents(creditCents)}</div>
+                </div>
+              ) : null}
+
               <div className="rounded-md border bg-card/50 p-3">
                 <div className="text-xs font-medium text-muted-foreground">Paid</div>
                 <div className={displayPaidCents > 0 ? "mt-1 text-xl font-semibold text-green-600" : "mt-1 text-xl font-semibold"}>
@@ -2235,6 +2245,13 @@ export default function InvoiceDetailPage() {
                 : "mt-1 text-base font-semibold"
             }
           />
+          {creditCents > 0 ? (
+            <StatusTile
+              label="Credit / Refund Due"
+              value={formatCurrencyFromCents(creditCents)}
+              valueClassName="mt-1 text-base font-semibold text-amber-700"
+            />
+          ) : null}
           <StatusTile
             label="Status"
             value={<Badge variant="secondary">{paymentStatusLabel}</Badge>}
