@@ -64,6 +64,16 @@ const run = async () => {
   events.set("missing-metadata", { id: "evt_missing", type: "payment_intent.succeeded", data: { object: { id: "pi_missing", metadata: {} } } });
   assert.deepEqual(await ingress.receive(Buffer.from("missing-metadata"), "sig_test"), { disposition: "ignored", eventId: "evt_missing" }, "an event cannot mutate V2 finance without V2-owned operation metadata");
   await assert.rejects(() => ingress.receive(Buffer.from("partial-payment"), "wrong-signature"), /signature/i, "signature verification fails before finance mutation");
+
+  const directEvents = new Map<string, VerifiedStripeEvent>();
+  const directIngress = new StripeProviderIngress({ constructEvent: (payload) => directEvents.get(payload.toString())! }, {
+    async confirmProviderPayment() { return success({ paymentId:"payment-direct" as any,invoiceId:"invoice-a" as any,amount:{cents:1,currency:"USD" as any},method:"card",source:"provider",occurredAt:new Date().toISOString() }); },
+    async confirmProviderRefund() { return failure(new V2ApplicationError("INTERNAL_ERROR","not used")); },
+  } as any, { async assertOperationAccount(organizationId, operationId, accountId) { assert.equal(organizationId,"org-a"); assert.equal(operationId,"direct-op"); assert.equal(accountId,"acct_direct"); } });
+  directEvents.set("direct", { ...paymentEvent("evt_direct","direct-op"), account:"acct_direct", data:{object:{id:"pi_direct",metadata:{v2ProviderOperationId:"direct-op",v2OrganizationId:"org-a",v2InvoiceId:"invoice-a",v2StripeAccountId:"acct_direct"}}} });
+  await directIngress.receive(Buffer.from("direct"), "sig");
+  directEvents.set("wrong-account", { ...directEvents.get("direct")!, id:"evt_wrong", account:"acct_other" });
+  await assert.rejects(() => directIngress.receive(Buffer.from("wrong-account"), "sig"), /conflicts/i, "a connected-account event cannot cross a tenant operation boundary");
 };
 
 void run().then(() => console.log("[stripe-provider-ingress] pure verification passed"));

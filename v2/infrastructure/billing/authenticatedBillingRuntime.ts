@@ -14,19 +14,22 @@ import { PostgresFinancialReadRunner } from "./postgresFinancialRead.js";
 import { PostgresInvoiceDocumentService } from "./postgresInvoiceDocuments.js";
 import { StripeProviderIngress, productionStripeWebhookVerifier } from "./stripeProviderIngress.js";
 import { StripePaymentInitiation } from "./stripePaymentInitiation.js";
+import { PostgresStripeConnectAccounts } from "./stripeConnectAccounts.js";
 
-export type AuthenticatedBillingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler }>;
-export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRuntimeDependencies): Readonly<{ dependencies: InvoiceHttpDependencies & import("../../src/interfaces/http/financeRoutes.js").FinanceHttpDependencies & Readonly<{ stripeIngress: StripeProviderIngress }>; trustedHostMiddleware: RequestHandler }> => {
+export type AuthenticatedBillingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; publicWebOrigin?:string }>;
+export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRuntimeDependencies): Readonly<{ dependencies: InvoiceHttpDependencies & import("../../src/interfaces/http/financeRoutes.js").FinanceHttpDependencies & Readonly<{ stripeIngress: StripeProviderIngress; stripeConnect:PostgresStripeConnectAccounts }>; trustedHostMiddleware: RequestHandler }> => {
   const payments = new BillingPaymentsApplicationService(new PostgresBillingPaymentsTransactionRunner(input.pool));
+  const stripeConnect=new PostgresStripeConnectAccounts(input.pool,input.publicWebOrigin);
   return {
     dependencies: {
       service: new BillingApplicationService(new PostgresBillingReadRunner(input.pool), undefined, new PostgresBillingInvoiceTransactionRunner(input.pool)),
       payments,
-      stripePayments: new StripePaymentInitiation(input.pool, payments),
+      stripePayments: new StripePaymentInitiation(input.pool, payments, stripeConnect),
       financialRead: new FinancialReadApplicationService(new PostgresFinancialReadRunner(input.pool)),
       documents: new PostgresInvoiceDocumentService(input.pool),
       principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool))),
-      stripeIngress: new StripeProviderIngress(productionStripeWebhookVerifier(), payments),
+      stripeIngress: new StripeProviderIngress(productionStripeWebhookVerifier(), payments, stripeConnect),
+      stripeConnect,
     },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };

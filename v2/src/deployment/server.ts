@@ -45,7 +45,7 @@ export const createV2DeploymentApp = (
     trustedHostMiddleware,
     service: new OrderApplicationService(new PostgresOrderTransactionRunner(pool)),
   });
-  const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, publicWebOrigin: authentication.publicWebOrigin });
   const artwork = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const proofing = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const prepress = composeAuthenticatedPrepressRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
@@ -82,7 +82,7 @@ export const createV2DeploymentApp = (
     formulas,
     emailIntegration,
     quickBooksIntegration,
-    { principals: billing.dependencies.principals },
+    { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
   );
 };
 

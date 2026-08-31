@@ -124,4 +124,5 @@ const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
 assert.doesNotMatch(workspaceSource, /QuickBooks sync/);
 assert.doesNotMatch(workspaceSource, /Retry Payment Sync/);
 assert.match(apiSource, /settings\/accounting\/sync-selected/);
+assert.match(workspaceSource, /loadStripe\(publishableKey,\{stripeAccount:stripeAccountId\}\)/, "Payment Element must bind the server-selected connected account for direct charges");
 console.log("FinanceWorkspace invoice PDF action tests passed.");

@@ -306,6 +306,7 @@ export const createV2HttpApp = (
       "/v2/organizations/:organizationId/settings/payments/stripe",
       quote.trustedHostMiddleware,
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS" ? next() : requireV2CsrfToken(request,response,next),
       createStripeSettingsRouter(stripeSettings),
     );
   if (order)

@@ -1716,6 +1716,13 @@
       "when": 1788048000096,
       "tag": "0249_v2_quickbooks_refund_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 251,
+      "version": "7",
+      "when": 1788048000097,
+      "tag": "0250_v2_stripe_connect_direct_accounts",
+      "breakpoints": true
     }
   ]
 }

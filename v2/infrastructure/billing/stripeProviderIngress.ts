@@ -13,6 +13,8 @@ import { brandedId } from "../../src/modules/shared/commercialValues.js";
 export type VerifiedStripeEvent = Readonly<{
   id: string;
   type: string;
+  /** Connect sends the connected-account identity at the event envelope. */
+  account?: string;
   created?: number;
   data: Readonly<{ object: Record<string, unknown> }>;
 }>;
@@ -32,7 +34,7 @@ export const productionStripeWebhookVerifier = (): StripeWebhookVerifier => ({
  * operation; it never names a legacy invoice or payment record.
  */
 export class V2StripeProviderAdapter {
-  async createPaymentIntent(input: Readonly<{ amountCents: number; currency: string; organizationId: string; invoiceId: string; providerOperationId: string; providerIdempotencyKey: string; description?: string }>): Promise<Readonly<{ providerTransactionId: string; clientSecret: string }>> {
+  async createPaymentIntent(input: Readonly<{ amountCents: number; currency: string; organizationId: string; invoiceId: string; providerOperationId: string; providerIdempotencyKey: string; stripeAccountId: string; description?: string }>): Promise<Readonly<{ providerTransactionId: string; clientSecret: string }>> {
     if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) throw new V2ApplicationError("VALIDATION_ERROR", "Stripe payment amount must be positive exact cents.");
     const paymentIntent = await getStripeClient().paymentIntents.create({
       amount: input.amountCents,
@@ -43,21 +45,22 @@ export class V2StripeProviderAdapter {
         v2ProviderOperationId: input.providerOperationId,
         v2OrganizationId: input.organizationId,
         v2InvoiceId: input.invoiceId,
+        v2StripeAccountId: input.stripeAccountId,
       },
-    }, { idempotencyKey: input.providerIdempotencyKey });
+    }, { idempotencyKey: input.providerIdempotencyKey, stripeAccount: input.stripeAccountId });
     if (!paymentIntent.client_secret) throw new V2ApplicationError("RETRYABLE_FAILURE", "Stripe did not return a client payment secret.");
     return { providerTransactionId: paymentIntent.id, clientSecret: paymentIntent.client_secret };
   }
 
-  async retrievePaymentIntent(paymentIntentId: string): Promise<Readonly<{ clientSecret: string }>> {
-    const paymentIntent = await getStripeClient().paymentIntents.retrieve(paymentIntentId);
+  async retrievePaymentIntent(paymentIntentId: string, stripeAccountId: string): Promise<Readonly<{ clientSecret: string }>> {
+    const paymentIntent = await getStripeClient().paymentIntents.retrieve(paymentIntentId, { stripeAccount: stripeAccountId });
     if (paymentIntent.status === "succeeded") throw new V2ApplicationError("CONFLICT", "Stripe accepted this payment; waiting for its signed confirmation.");
     if (paymentIntent.status === "canceled") throw new V2ApplicationError("CONFLICT", "The prior Stripe payment attempt did not complete. Start a new payment attempt to retry.");
     if (!paymentIntent.client_secret) throw new V2ApplicationError("RETRYABLE_FAILURE", "Stripe payment confirmation details are unavailable.");
     return { clientSecret: paymentIntent.client_secret };
   }
 
-  async createRefund(input: Readonly<{ paymentIntentId: string; amountCents: number; organizationId: string; invoiceId: string; paymentId: string; providerOperationId: string; providerIdempotencyKey: string }>): Promise<Readonly<{ providerTransactionId: string }>> {
+  async createRefund(input: Readonly<{ paymentIntentId: string; amountCents: number; currency?:string; organizationId: string; invoiceId: string; paymentId: string; providerOperationId: string; providerIdempotencyKey: string; stripeAccountId:string }>): Promise<Readonly<{ providerTransactionId: string }>> {
     if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) throw new V2ApplicationError("VALIDATION_ERROR", "Stripe refund amount must be positive exact cents.");
     const refund = await getStripeClient().refunds.create({
       payment_intent: input.paymentIntentId,
@@ -67,8 +70,9 @@ export class V2StripeProviderAdapter {
         v2OrganizationId: input.organizationId,
         v2InvoiceId: input.invoiceId,
         v2PaymentId: input.paymentId,
+        v2StripeAccountId: input.stripeAccountId,
       },
-    }, { idempotencyKey: input.providerIdempotencyKey });
+    }, { idempotencyKey: input.providerIdempotencyKey, stripeAccount: input.stripeAccountId });
     return { providerTransactionId: refund.id };
   }
 }
@@ -117,7 +121,7 @@ const serviceContext = (organizationId: string, eventId: string, operation: stri
  * has no import of the legacy `payments`, `invoices`, or webhook-event stores.
  */
 export class StripeProviderIngress {
-  constructor(private readonly verifier: StripeWebhookVerifier, private readonly payments: ProviderPayments) {}
+  constructor(private readonly verifier: StripeWebhookVerifier, private readonly payments: ProviderPayments, private readonly accounts?: Readonly<{ assertOperationAccount(organizationId:string,operationId:string,accountId:string):Promise<void> }>) {}
 
   async receive(payload: Buffer, signature: string | undefined): Promise<StripeIngressResult> {
     if (!signature) throw new V2ApplicationError("VALIDATION_ERROR", "Stripe signature is required.");
@@ -131,7 +135,11 @@ export class StripeProviderIngress {
   private async applyPayment(event: VerifiedStripeEvent): Promise<StripeIngressResult> {
     const paymentIntentId = stringValue(event.data.object.id);
     const contextMetadata = v2StripeMetadata(event.data.object.metadata);
-    if (!paymentIntentId || !contextMetadata) return { disposition: "ignored", eventId: event.id };
+    const accountId=stringValue(event.account);
+    if (!paymentIntentId || !contextMetadata || (this.accounts && !accountId)) return { disposition: "ignored", eventId: event.id };
+    const declaredAccount=stringValue(metadata(event.data.object.metadata).v2StripeAccountId);
+    if (declaredAccount && declaredAccount!==accountId) throw new V2ApplicationError("FORBIDDEN","Stripe event account conflicts with payment metadata.");
+    if (accountId) await this.accounts?.assertOperationAccount(contextMetadata.organizationId,contextMetadata.operationId,accountId);
     const result = await this.payments.confirmProviderPayment(
       serviceContext(contextMetadata.organizationId, event.id, "payment"),
       {
@@ -153,7 +161,11 @@ export class StripeProviderIngress {
   private async applyRefund(event: VerifiedStripeEvent): Promise<StripeIngressResult> {
     const refundId = stringValue(event.data.object.id);
     const contextMetadata = v2StripeMetadata(event.data.object.metadata, true);
-    if (!refundId || !contextMetadata?.paymentId) return { disposition: "ignored", eventId: event.id };
+    const accountId=stringValue(event.account);
+    if (!refundId || !contextMetadata?.paymentId || (this.accounts && !accountId)) return { disposition: "ignored", eventId: event.id };
+    const declaredAccount=stringValue(metadata(event.data.object.metadata).v2StripeAccountId);
+    if (declaredAccount && declaredAccount!==accountId) throw new V2ApplicationError("FORBIDDEN","Stripe event account conflicts with refund metadata.");
+    if (accountId) await this.accounts?.assertOperationAccount(contextMetadata.organizationId,contextMetadata.operationId,accountId);
     const result = await this.payments.confirmProviderRefund(
       serviceContext(contextMetadata.organizationId, event.id, "refund"),
       {

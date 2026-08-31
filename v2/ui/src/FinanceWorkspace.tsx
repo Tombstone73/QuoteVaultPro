@@ -53,8 +53,8 @@ const StripeCardConfirmation = ({ onSubmitted, onError }: Readonly<{ onSubmitted
     <button className="v2-invoice-issue" disabled={!stripe || submitting}>{submitting ? "Confirming…" : "Confirm card payment"}</button>
   </form>;
 };
-const StripePaymentElement = ({ publishableKey, clientSecret, onSubmitted, onError }: Readonly<{ publishableKey:string; clientSecret:string; onSubmitted:()=>void; onError:(message:string)=>void }>) => {
-  const stripePromise = useMemo(() => loadStripe(publishableKey), [publishableKey]);
+const StripePaymentElement = ({ publishableKey, stripeAccountId, clientSecret, onSubmitted, onError }: Readonly<{ publishableKey:string; stripeAccountId:string; clientSecret:string; onSubmitted:()=>void; onError:(message:string)=>void }>) => {
+  const stripePromise = useMemo(() => loadStripe(publishableKey,{stripeAccount:stripeAccountId}), [publishableKey,stripeAccountId]);
   return <Elements stripe={stripePromise} options={{ clientSecret }}><StripeCardConfirmation onSubmitted={onSubmitted} onError={onError} /></Elements>;
 };
 export const invoiceDocumentPath = (organizationId: string, invoiceId: string) =>
@@ -850,7 +850,7 @@ export const FinanceWorkspace = ({
               disabled={!csrfReady || stripePayment.isPending}
               onClick={() => stripePayment.mutate()}
             >{stripePayment.isPending ? "Preparing card payment…" : "Continue to card"}</button>}
-            {dialog === "stripePayment" && stripePayment.data && <StripePaymentElement publishableKey={stripePayment.data.publishableKey} clientSecret={stripePayment.data.clientSecret} onSubmitted={() => { setNotice("Payment submitted. Waiting for the signed Stripe confirmation before updating this Invoice."); closeDialog(); void refresh(); }} onError={(message) => setNotice(message)} />}
+            {dialog === "stripePayment" && stripePayment.data && <StripePaymentElement publishableKey={stripePayment.data.publishableKey} stripeAccountId={stripePayment.data.stripeAccountId} clientSecret={stripePayment.data.clientSecret} onSubmitted={() => { setNotice("Payment submitted. Waiting for the signed Stripe confirmation before updating this Invoice."); closeDialog(); void refresh(); }} onError={(message) => setNotice(message)} />}
             <button
               className="v2-invoice-issue"
               disabled={!csrfReady || payment.isPending || refund.isPending || stripeRefund.isPending || dialog === "stripePayment"}
