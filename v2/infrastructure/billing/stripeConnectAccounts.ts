@@ -19,6 +19,13 @@ export type StripeConnectReadiness = Readonly<{
 export type StripeConnectedAccountContext = Readonly<{ accountId: string; mode: "test" | "live" }>;
 type Row = Readonly<{ stripe_account_id:string|null; mode:"test"|"live"|"unknown"; state:StripeConnectState; account_display_name:string|null; card_payments_status:string|null; payouts_status:string|null; requirements_due_count:number }>;
 const safe = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
+/** Company Settings stores operator-friendly country text; Stripe Accounts v2
+ * requires ISO 3166-1 alpha-2 at this provider boundary. */
+export const stripeIdentityCountry = (value: unknown): string | null => {
+  const country=safe(value)?.toUpperCase();
+  if (country === "US" || country === "USA" || country === "UNITED STATES" || country === "UNITED STATES OF AMERICA") return "US";
+  return country && /^[A-Z]{2}$/.test(country) ? country : null;
+};
 const mode = (): "test" | "live" | "unknown" => assertStripeServerConfig().mode;
 const publicState = (row: Row | undefined, platformReady: boolean): StripeConnectReadiness => {
   if (!platformReady) return { mode: mode(), status:"platform_not_ready", connected:false, connectedAccountName:null, cardPayments:"unknown", payouts:"unknown", requirementsDue:0, connectionModel:"accounts_v2_direct", actionRequired:"Platform Stripe credentials are not ready." };
@@ -48,15 +55,16 @@ export class PostgresStripeConnectAccounts {
   async beginOnboarding(organizationId: string, principal: Principal): Promise<Readonly<{ onboardingUrl:string }>> {
     const origin=this.publicWebOrigin?.replace(/\/$/u,""); if (!origin) throw new V2ApplicationError("RETRYABLE_FAILURE","Stripe onboarding return URL is unavailable.");
     if (stripeRuntimeReadiness().status !== "ready") throw new V2ApplicationError("CONFLICT","Platform Stripe configuration is not ready.");
-    const company=await this.pool.query<{name:string;email:string|null}>("SELECT COALESCE(NULLIF(btrim(cs.company_display_name),''),NULLIF(btrim(cs.company_name),''),o.name) name,cs.email FROM organizations o LEFT JOIN company_settings cs ON cs.organization_id=o.id WHERE o.id=$1",[organizationId]);
+    const company=await this.pool.query<{name:string;email:string|null;physical_address:unknown}>("SELECT COALESCE(NULLIF(btrim(cs.company_display_name),''),NULLIF(btrim(cs.company_name),''),o.name) name,cs.email,cs.physical_address FROM organizations o LEFT JOIN company_settings cs ON cs.organization_id=o.id WHERE o.id=$1",[organizationId]);
     const identity=company.rows[0]; if (!identity?.email || !safe(identity.email)) throw new V2ApplicationError("CONFLICT","Add this organization’s company email before connecting Stripe.");
+    const country=stripeIdentityCountry((identity?.physical_address as Record<string,unknown> | null)?.country); if (!country) throw new V2ApplicationError("CONFLICT","Add a valid two-letter business country before connecting Stripe.");
     const prior=await this.row(organizationId); const stripe:any=getStripeClient();
     let accountId=prior?.stripe_account_id ?? null;
     if (!accountId) {
       try {
         // A DB interruption after Stripe accepts creation must return the same
         // provider account on retry rather than orphan another merchant.
-        const account=await stripe.v2.core.accounts.create({ contact_email:identity.email, display_name:identity.name, dashboard:"full", defaults:{responsibilities:{fees_collector:"stripe",losses_collector:"stripe"}}, configuration:{merchant:{capabilities:{card_payments:{requested:true}}}}, metadata:{v2OrganizationId:organizationId} },{idempotencyKey:`v2:stripe-connect-account:${organizationId}`});
+        const account=await stripe.v2.core.accounts.create({ contact_email:identity.email, display_name:identity.name, identity:{country}, dashboard:"full", defaults:{responsibilities:{fees_collector:"stripe",losses_collector:"stripe"}}, configuration:{merchant:{capabilities:{card_payments:{requested:true}}}}, metadata:{v2OrganizationId:organizationId} },{idempotencyKey:`v2:stripe-connect-account:${organizationId}`});
         accountId=String(account.id);
       } catch (cause) { throw this.providerFailure("account_creation",cause); }
     }
