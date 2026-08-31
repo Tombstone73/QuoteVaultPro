@@ -9,11 +9,14 @@
     "check": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@stripe/react-stripe-js": "^5.4.1",
+    "@stripe/stripe-js": "^8.6.1",
     "@tanstack/react-query": "^5.60.5",
     "lucide-react": "^0.453.0",
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "rest-express": "file:../..",
     "zod": "^3.24.2"
   },
   "devDependencies": {
