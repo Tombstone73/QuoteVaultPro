@@ -1498,7 +1498,7 @@ export function registerInboundOrderRoutes(
         });
         return res.status(500).json({
           success: false,
-          message: `Parse completed, but review draft persistence failed: ${message}`,
+          message: "Parse could not save the review draft. Please retry.",
           data: result,
         });
       }

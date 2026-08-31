@@ -761,6 +761,15 @@ function parseAttemptNoDraftMessage(attempt: ClientInboundOrderParseAttempt | nu
     : "Parse completed, but no review draft was produced. Reparse this record or use Debug View to inspect the latest parse attempt.";
 }
 
+export function operatorSafeParseErrorMessage(error: Error | null | undefined): string {
+  const message = error?.message?.trim();
+  if (!message) return "Parse could not save the review draft. Please retry.";
+  if (/review draft persistence failed|zod|validation error|must contain at most/i.test(message)) {
+    return "Parse could not save the review draft. Please retry.";
+  }
+  return message;
+}
+
 function trimToNull(value: string) {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
@@ -4596,8 +4605,9 @@ function SourceEvidencePanel({
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>Parse unavailable</AlertTitle>
               <AlertDescription>
-                {parseError?.message
-                  || (Array.isArray(latestAttempt?.errors) && latestAttempt.errors.length > 0
+                {parseError
+                  ? operatorSafeParseErrorMessage(parseError)
+                  : (Array.isArray(latestAttempt?.errors) && latestAttempt.errors.length > 0
                     ? latestAttempt.errors.map((error: any) => error?.message).filter(Boolean).join(" ")
                     : "AI parsing failed. Source evidence remains available for retry.")}
               </AlertDescription>
@@ -4909,8 +4919,9 @@ function OperationalEmailPanel({
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>Parse unavailable</AlertTitle>
               <AlertDescription>
-                {parseError?.message
-                  || (Array.isArray(latestAttempt?.errors) && latestAttempt.errors.length > 0
+                {parseError
+                  ? operatorSafeParseErrorMessage(parseError)
+                  : (Array.isArray(latestAttempt?.errors) && latestAttempt.errors.length > 0
                     ? latestAttempt.errors.map((error: any) => error?.message).filter(Boolean).join(" ")
                     : "AI parsing failed. Original email evidence remains available.")}
               </AlertDescription>
@@ -5610,7 +5621,7 @@ function CleanSourceDocuments({
                 </div>
               </div>
             </article>
-            {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{parseError.message}</div>}
+            {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{operatorSafeParseErrorMessage(parseError)}</div>}
             {parseCompletedWithoutDraft && (
               <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
                 {parseCompletedWithoutDraftMessage ?? "Parse completed, but no review draft was produced. Reparse this record or use Debug View to inspect the latest parse attempt."}
@@ -10374,7 +10385,7 @@ export default function InboundOrdersPage() {
   };
 
   const handleParseFailure = (error: Error) => {
-    toast({ title: "Parse failed", description: error.message, variant: "destructive" });
+    toast({ title: "Parse failed", description: operatorSafeParseErrorMessage(error), variant: "destructive" });
   };
 
   const parseMutation = useMutation({

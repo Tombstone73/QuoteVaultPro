@@ -31,6 +31,24 @@ type CountedValue = {
 const DEFAULT_SCOPE_MONTHS = 24;
 const DEFAULT_MAX_RECORDS = 50;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const SUMMARY_ELLIPSIS = "…";
+
+/**
+ * Customer intelligence is advisory display data. Keep it compact at the
+ * boundary without changing the historical source values it was derived from.
+ */
+function summaryText(value: unknown, maximumLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (normalized.length <= maximumLength) return normalized;
+  if (maximumLength <= SUMMARY_ELLIPSIS.length) return normalized.slice(0, maximumLength);
+  return `${normalized.slice(0, maximumLength - SUMMARY_ELLIPSIS.length).trimEnd()}${SUMMARY_ELLIPSIS}`;
+}
+
+function requiredSummaryText(value: unknown, maximumLength: number): string {
+  return summaryText(value, maximumLength) ?? "Unknown";
+}
 
 function configuredPositiveInteger(value: string | undefined, fallback: number): number {
   const numeric = Number(value);
@@ -76,9 +94,15 @@ function displayDimension(width: unknown, height: unknown): { label: string; wid
   };
 }
 
-function increment(map: Map<string, CountedValue>, label: string | null | undefined, seenAt: string | null, extras: Partial<CountedValue> = {}) {
-  if (!label?.trim()) return;
-  const clean = label.trim();
+function increment(
+  map: Map<string, CountedValue>,
+  label: string | null | undefined,
+  seenAt: string | null,
+  extras: Partial<CountedValue> = {},
+  maximumLength = 255,
+) {
+  const clean = summaryText(label, maximumLength);
+  if (!clean) return;
   const key = normalizeKey(clean);
   if (!key) return;
   const existing = map.get(key);
@@ -305,7 +329,7 @@ export class CustomerIntelligenceService {
 
     for (const row of args.rows) {
       const seenAt = dateString(row.createdAt);
-      const productLabel = text(row.productName) ?? text(row.description);
+      const productLabel = summaryText(text(row.productName) ?? text(row.description), 255);
       const productKey = row.productId ?? normalizeKey(productLabel ?? "");
       if (productLabel) {
         increment(products, productLabel, seenAt, { productId: row.productId });
@@ -325,14 +349,14 @@ export class CustomerIntelligenceService {
           width: dimension.width,
           height: dimension.height,
           unit: dimension.unit,
-        });
+        }, 120);
       }
 
-      for (const material of collectMaterialLabels(row)) increment(materials, material, seenAt);
-      for (const finish of collectFinishingLabels(row)) increment(finishing, finish, seenAt);
-      for (const term of collectTerms(row)) increment(terminology, term, seenAt);
+      for (const material of collectMaterialLabels(row)) increment(materials, material, seenAt, {}, 255);
+      for (const finish of collectFinishingLabels(row)) increment(finishing, finish, seenAt, {}, 255);
+      for (const term of collectTerms(row)) increment(terminology, term, seenAt, {}, 120);
 
-      const reference = text(row.reference) ?? row.sourceId.slice(0, 8);
+      const reference = requiredSummaryText(text(row.reference) ?? row.sourceId.slice(0, 8), 120);
       const referenceKey = `${row.sourceType}:${row.sourceId}`;
       if (!recentReferences.has(referenceKey)) {
         recentReferences.set(referenceKey, {
@@ -346,7 +370,11 @@ export class CustomerIntelligenceService {
     }
 
     return inboundCustomerIntelligenceSummarySchema.parse({
-      customer: args.customer,
+      customer: {
+        id: args.customer.id,
+        companyName: summaryText(args.customer.companyName, 255) ?? args.customer.companyName,
+        email: summaryText(args.customer.email, 255),
+      },
       scopeMonths: args.scopeMonths,
       maxRecords: args.maxRecords,
       recordCount: args.rows.length,

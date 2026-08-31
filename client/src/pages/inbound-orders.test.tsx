@@ -30,12 +30,19 @@ jest.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: mockPdfGetDocument,
 }));
 
-import InboundOrdersPage from "./inbound-orders";
+import InboundOrdersPage, { operatorSafeParseErrorMessage } from "./inbound-orders";
 import { apiFetch } from "@/lib/queryClient";
 
 jest.mock("@/lib/queryClient", () => ({
   apiFetch: jest.fn(),
 }));
+
+describe("operatorSafeParseErrorMessage", () => {
+  test("hides raw review-draft schema details from the operator", () => {
+    expect(operatorSafeParseErrorMessage(new Error("Parse completed, but review draft persistence failed: recentProducts[1].label: String must contain at most 255 characters")))
+      .toBe("Parse could not save the review draft. Please retry.");
+  });
+});
 
 jest.mock("@/components/ui/alert", () => ({
   Alert: ({ children, ...props }: any) => <div role="alert" {...props}>{children}</div>,

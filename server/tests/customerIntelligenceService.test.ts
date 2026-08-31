@@ -90,6 +90,50 @@ describe("CustomerIntelligenceService", () => {
     ]));
   });
 
+  test("bounds long historical display summaries without changing the source rows", async () => {
+    const longProduct = `  Premium Display ${"x".repeat(300)}  `;
+    const longMaterial = `  Material ${"m".repeat(300)}  `;
+    const longFinish = `  Finish ${"f".repeat(300)}  `;
+    const longReference = `REF-${"r".repeat(200)}`;
+    const row = {
+      sourceType: "order",
+      sourceId: "order_long",
+      reference: longReference,
+      createdAt: "2026-05-11T12:00:00.000Z",
+      productId: null,
+      productName: null,
+      description: longProduct,
+      width: null,
+      height: null,
+      quantity: 1,
+      specsJson: { material: longMaterial },
+      optionSelectionsJson: null,
+      selectedOptions: [{ optionName: "Finishing", value: longFinish }],
+      materialUsages: [],
+      materialUsageJson: null,
+    };
+    const repo = makeRepository({ listCustomerHistoricalContext: jest.fn(async () => [row]) });
+    const service = new CustomerIntelligenceService(repo as any, { scopeMonths: 24, maxRecords: 25 });
+
+    const summary = await service.buildSummary({ organizationId: "org_1", customerId: "customer_1" });
+
+    expect(summary?.recentProducts[0].label).toHaveLength(255);
+    expect(summary?.recentProducts[0].label.endsWith("…")).toBe(true);
+    expect(summary?.frequentProducts[0].label).toHaveLength(255);
+    expect(summary?.frequentMaterials[0].label).toHaveLength(255);
+    expect(summary?.frequentFinishing[0].label).toHaveLength(255);
+    expect(summary?.commonTerminology[0].term.length).toBeLessThanOrEqual(120);
+    expect(summary?.recentOrderReferences[0]).toMatchObject({
+      reference: expect.any(String),
+      productSummary: expect.any(String),
+    });
+    expect(summary?.recentOrderReferences[0].reference.length).toBeLessThanOrEqual(120);
+    expect(summary?.recentOrderReferences[0].productSummary?.length).toBeLessThanOrEqual(255);
+    expect(row.description).toBe(longProduct);
+    expect(row.reference).toBe(longReference);
+    expect(row.specsJson.material).toBe(longMaterial);
+  });
+
   test("resolves one strong customer from inbound source evidence before generating context", async () => {
     const repo = makeRepository();
     const service = new CustomerIntelligenceService(repo as any, { scopeMonths: 24, maxRecords: 25 });

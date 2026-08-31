@@ -18,6 +18,7 @@ import {
   type OrderWithRelations,
 } from "@shared/schema";
 import {
+  inboundCustomerIntelligenceSummarySchema,
   inboundOrderParsedDraftSchema,
   inboundOrderReviewedLineItemSchema,
   inboundOrderReviewDraftPayloadSchema,
@@ -32,6 +33,7 @@ import {
   type InboundOrderRecordWithTrust,
   type InboundOrderReviewValueSource,
   type InboundOrderReviewDraftStatus,
+  type InboundCustomerIntelligenceSummary,
   type InboundSenderTrustStatus,
   type InboundSenderTrustSummary,
   type InboundOrderProductOptionsResponse,
@@ -4389,13 +4391,15 @@ export class InboundOrderService {
     const hasArtwork = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
     const reconciledRush = draft.evidence.reconciliation?.rushStatus.value === "rush";
     const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
-    const customerIntelligenceJson = draft.customerIntelligence
-      ?? (customerInterpretation.customerId
-        ? await this.customerIntelligence.buildSummary({
-          organizationId: args.organizationId,
-          customerId: customerInterpretation.customerId,
-        })
-        : null);
+    const customerIntelligence = await this.resolveCustomerIntelligence({
+      organizationId: args.organizationId,
+      draft,
+      customerId: customerInterpretation.customerId,
+    });
+    if (customerIntelligence.warning && !warnings.some((item) => item.code === customerIntelligence.warning?.code)) {
+      warnings.push(customerIntelligence.warning);
+    }
+    const customerIntelligenceJson = customerIntelligence.summary;
     const reviewedLineItemsJson: InboundOrderReviewDraftPayload["reviewedLineItemsJson"] = [];
     const unsupportedRequestsJson: InboundUnsupportedRequestFinding[] = [];
     for (const lineItem of draft.lineItems) {
@@ -4977,13 +4981,13 @@ export class InboundOrderService {
 
     const interpreted = await this.interpretCustomerAndContact(args.organizationId, parsedDraft);
     const customer = { ...payload.reviewedCustomerJson };
-    const customerIntelligenceJson = payload.customerIntelligenceJson
-      ?? (customer.selectedCustomerId || interpreted.customerId
-        ? await this.customerIntelligence.buildSummary({
-          organizationId: args.organizationId,
-          customerId: customer.selectedCustomerId ?? interpreted.customerId!,
-        })
-        : null);
+    const customerIntelligence = await this.resolveCustomerIntelligence({
+      organizationId: args.organizationId,
+      draft: parsedDraft,
+      customerId: customer.selectedCustomerId ?? interpreted.customerId,
+      existingSummary: payload.customerIntelligenceJson,
+    });
+    const customerIntelligenceJson = customerIntelligence.summary;
     let changed = false;
 
     if (!customer.selectedCustomerId && !customer.unresolvedCustomer && interpreted.customerId) {
@@ -5031,12 +5035,61 @@ export class InboundOrderService {
         ...payload,
         reviewedCustomerJson: customer,
         customerIntelligenceJson,
+        warningsJson: customerIntelligence.warning
+          && !payload.warningsJson.some((item) => item.code === customerIntelligence.warning?.code)
+          ? [...payload.warningsJson, { ...customerIntelligence.warning, acknowledged: false, acknowledgementNote: null }]
+          : payload.warningsJson,
       },
       status: payload.status,
       eventType: "review_draft.interpreted_customer_contact_backfilled",
       message: "Interpreted customer/contact selections backfilled into editable review draft.",
       initializedFromParse: false,
     });
+  }
+
+  private async resolveCustomerIntelligence(args: {
+    organizationId: string;
+    draft: InboundOrderParsedDraft;
+    customerId: string | null;
+    existingSummary?: InboundCustomerIntelligenceSummary | null;
+  }): Promise<{
+    summary: InboundCustomerIntelligenceSummary | null;
+    warning: InboundOrderParsedDraft["globalWarnings"][number] | null;
+  }> {
+    try {
+      const candidate = args.existingSummary
+        ?? args.draft.customerIntelligence
+        ?? (args.customerId
+          ? await this.customerIntelligence.buildSummary({
+            organizationId: args.organizationId,
+            customerId: args.customerId,
+          })
+          : null);
+      if (!candidate) return { summary: null, warning: null };
+
+      const validated = inboundCustomerIntelligenceSummarySchema.safeParse(candidate);
+      if (validated.success) return { summary: validated.data, warning: null };
+
+      console.warn("[INBOUND_ORDER_REVIEW_DRAFT] Customer intelligence summary was invalid; omitting advisory context.", {
+        organizationId: args.organizationId,
+        issueCount: validated.error.issues.length,
+      });
+    } catch (error) {
+      console.warn("[INBOUND_ORDER_REVIEW_DRAFT] Customer intelligence was unavailable; continuing without advisory context.", {
+        organizationId: args.organizationId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+    }
+
+    return {
+      summary: null,
+      warning: {
+        code: "customer_intelligence_unavailable",
+        message: "Customer history suggestions were partially unavailable.",
+        severity: "info",
+        fieldPath: null,
+      },
+    };
   }
 
   private async interpretCustomerAndContact(

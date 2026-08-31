@@ -1812,7 +1812,7 @@ describe("inbound order routes", () => {
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
   });
 
-  test("returns a clear error when parse succeeds but review draft persistence fails", async () => {
+  test("returns a safe operator error when parse succeeds but review draft persistence fails", async () => {
     const draft = parsedDraft();
     const attempt = parseAttempt({ parsedDraft: draft });
     parsingService.parseInboundOrderRecord.mockResolvedValueOnce({
@@ -1827,8 +1827,8 @@ describe("inbound order routes", () => {
       .send({});
 
     expect(response.status).toBe(500);
-    expect(response.body.message).toContain("review draft persistence failed");
-    expect(response.body.message).toContain("snapshot insert failed");
+    expect(response.body.message).toBe("Parse could not save the review draft. Please retry.");
+    expect(response.body.message).not.toContain("snapshot insert failed");
     expect(defaultInboundOrdersRepository.createEvent).toHaveBeenCalledWith(expect.objectContaining({
       eventType: "parse.review_draft_persistence_failed",
       metadataJson: expect.objectContaining({

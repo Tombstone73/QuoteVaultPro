@@ -686,6 +686,29 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
   });
 
+  test("persists the semantic review draft when optional customer intelligence is unavailable", async () => {
+    const { repo, snapshots } = makeRepository();
+    repo.listCustomerHistoricalContext.mockRejectedValueOnce(new Error("historical context unavailable"));
+    const service = new InboundOrderService(repo as any);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.status).toBe("draft");
+    expect(draft.customerIntelligenceJson).toBeNull();
+    expect(draft.warningsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "customer_intelligence_unavailable",
+        message: "Customer history suggestions were partially unavailable.",
+        severity: "info",
+      }),
+    ]));
+    expect(snapshots).toHaveLength(1);
+  });
+
   test("leaves customer intelligence empty when no customer is resolved", async () => {
     const attempt = parseAttempt({
       parsedDraft: parsedDraft({
