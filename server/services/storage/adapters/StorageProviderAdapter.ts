@@ -44,6 +44,7 @@ export interface StorageProviderAdapter {
   }): Promise<{
     storageTarget: TitanManagedStorageTarget;
     maxCloudBytes: number;
+    maxUploadBytes?: number | null;
     method: "PUT" | "ATOMIC";
     url?: string;
     path?: string;

@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, FileText, Image, File } from "lucide-react";
 import { isValidHttpUrl } from "@/lib/utils";
-import { SUPABASE_MAX_UPLOAD_BYTES, formatBytes } from "@/lib/config/storage";
+import { CHUNKED_UPLOAD_THRESHOLD_BYTES, formatBytes } from "@/lib/config/storage";
 import { fileToBase64 } from "@/lib/uploads/fileToBase64";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 
@@ -105,6 +105,7 @@ export function AttachmentsPanel({
     setIsUploading(true);
     let successCount = 0;
     let errorCount = 0;
+    let firstErrorMessage: string | null = null;
 
     try {
       for (const file of filesToUpload) {
@@ -118,7 +119,7 @@ export function AttachmentsPanel({
           continue;
         }
 
-        if (file.size > SUPABASE_MAX_UPLOAD_BYTES) {
+        if (file.size > CHUNKED_UPLOAD_THRESHOLD_BYTES) {
           try {
             await uploadAttachmentViaChunked({
               file,
@@ -133,12 +134,15 @@ export function AttachmentsPanel({
             continue;
           } catch (fileError: any) {
             console.error(`Error uploading ${file.name}:`, fileError);
+            firstErrorMessage ??= fileError?.message || null;
             errorCount++;
             continue;
           }
         }
 
-        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
+        // Large files take the resumable path above. This direct-upload path
+        // stays durable and never requests local development storage by size.
+        const requestedStorageTarget: StorageTarget = "supabase";
 
         try {
           const urlResponse = await fetch("/api/objects/upload", {
@@ -240,6 +244,7 @@ export function AttachmentsPanel({
           successCount++;
         } catch (fileError: any) {
           console.error(`Error uploading ${file.name}:`, fileError);
+          firstErrorMessage ??= fileError?.message || null;
           errorCount++;
         }
       }
@@ -256,7 +261,7 @@ export function AttachmentsPanel({
       if (errorCount > 0) {
         toast({
           title: "Some Uploads Failed",
-          description: `${errorCount} file${errorCount !== 1 ? "s" : ""} failed to upload.`,
+          description: firstErrorMessage || `${errorCount} file${errorCount !== 1 ? "s" : ""} failed to upload.`,
           variant: "destructive",
         });
       }

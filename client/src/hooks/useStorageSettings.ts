@@ -94,6 +94,7 @@ export type OrganizationStorageSettingsView = {
     config: {
       routingMode: TitanManagedRoutingMode;
       maxCloudUploadBytesOverride?: number | null;
+      maxDurableUploadBytesOverride?: number | null;
     };
     lastValidatedAt: string | null;
     validationError: string | null;

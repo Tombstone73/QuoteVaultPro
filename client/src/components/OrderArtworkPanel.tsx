@@ -107,6 +107,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
     setIsUploading(true);
     let successCount = 0;
     let errorCount = 0;
+    let firstErrorMessage: string | null = null;
 
     try {
       for (const file of filesToUpload) {
@@ -121,6 +122,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
           successCount++;
         } catch (fileError: any) {
           console.error(`[OrderArtworkPanel] Error uploading ${file.name}:`, fileError);
+          firstErrorMessage ??= fileError?.message || null;
           errorCount++;
         }
       }
@@ -140,7 +142,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
       if (errorCount > 0) {
         toast({
           title: "Some Uploads Failed",
-          description: `${errorCount} file${errorCount !== 1 ? "s" : ""} failed to upload.`,
+          description: firstErrorMessage || `${errorCount} file${errorCount !== 1 ? "s" : ""} failed to upload.`,
           variant: "destructive",
         });
       }

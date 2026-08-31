@@ -46,6 +46,7 @@ type OrchestrationFormState = {
   displayName: string;
   routingMode: TitanManagedRoutingMode;
   maxCloudUploadBytesOverrideInput: string;
+  maxDurableUploadBytesOverrideInput: string;
 };
 
 type ProviderFormState = {
@@ -143,6 +144,10 @@ function buildOrchestrationFormState(settings?: OrganizationStorageSettingsView 
       settings?.orchestration.config.maxCloudUploadBytesOverride == null
         ? ""
         : String(settings.orchestration.config.maxCloudUploadBytesOverride),
+    maxDurableUploadBytesOverrideInput:
+      settings?.orchestration.config.maxDurableUploadBytesOverride == null
+        ? ""
+        : String(settings.orchestration.config.maxDurableUploadBytesOverride),
   };
 }
 
@@ -215,6 +220,7 @@ function normalizeOrchestrationFormState(state: OrchestrationFormState) {
     ...state,
     displayName: state.displayName.trim(),
     maxCloudUploadBytesOverrideInput: state.maxCloudUploadBytesOverrideInput.trim(),
+    maxDurableUploadBytesOverrideInput: state.maxDurableUploadBytesOverrideInput.trim(),
   };
 }
 
@@ -236,6 +242,7 @@ function normalizeProviderFormState(state: ProviderFormState) {
 function buildOrchestrationRequest(state: OrchestrationFormState): StorageSettingsSaveRequest {
   const normalized = normalizeOrchestrationFormState(state);
   let maxCloudUploadBytesOverride: number | null = null;
+  let maxDurableUploadBytesOverride: number | null = null;
 
   if (normalized.maxCloudUploadBytesOverrideInput) {
     const parsed = Number(normalized.maxCloudUploadBytesOverrideInput);
@@ -243,6 +250,14 @@ function buildOrchestrationRequest(state: OrchestrationFormState): StorageSettin
       throw new Error("Max cloud upload bytes override must be a positive whole number or blank.");
     }
     maxCloudUploadBytesOverride = parsed;
+  }
+
+  if (normalized.maxDurableUploadBytesOverrideInput) {
+    const parsed = Number(normalized.maxDurableUploadBytesOverrideInput);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error("Durable artwork storage limit must be a positive whole number or blank.");
+    }
+    maxDurableUploadBytesOverride = parsed;
   }
 
   if (!normalized.displayName) {
@@ -259,6 +274,7 @@ function buildOrchestrationRequest(state: OrchestrationFormState): StorageSettin
       config: {
         routingMode: normalized.routingMode,
         maxCloudUploadBytesOverride,
+        maxDurableUploadBytesOverride,
       },
     },
   };
@@ -752,7 +768,7 @@ export default function StorageSettingsPage() {
                 </Alert>
               ) : null}
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-3">
                 <div className="space-y-2">
                   <Label htmlFor="storage-mode">Storage mode</Label>
                   <Select value={orchestrationForm.mode} onValueChange={(value) => setOrchestrationForm((current) => ({ ...current, mode: value as StorageSettingsMode }))}>
@@ -782,8 +798,12 @@ export default function StorageSettingsPage() {
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="max-cloud-upload">Titan-managed cloud upload threshold</Label>
-                  <Input id="max-cloud-upload" inputMode="numeric" value={orchestrationForm.maxCloudUploadBytesOverrideInput} onChange={(event) => setOrchestrationForm((current) => ({ ...current, maxCloudUploadBytesOverrideInput: event.target.value }))} placeholder="Leave blank to use default when Titan-managed routing is active" disabled={orchestrationForm.mode === "disabled"} />
+                  <Label htmlFor="max-cloud-upload">Development cloud-routing threshold</Label>
+                  <Input id="max-cloud-upload" inputMode="numeric" value={orchestrationForm.maxCloudUploadBytesOverrideInput} onChange={(event) => setOrchestrationForm((current) => ({ ...current, maxCloudUploadBytesOverrideInput: event.target.value }))} placeholder="Development only; blank uses the default" disabled={orchestrationForm.mode === "disabled"} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="max-durable-upload">Durable artwork storage limit</Label>
+                  <Input id="max-durable-upload" inputMode="numeric" value={orchestrationForm.maxDurableUploadBytesOverrideInput} onChange={(event) => setOrchestrationForm((current) => ({ ...current, maxDurableUploadBytesOverrideInput: event.target.value }))} placeholder="Blank means no application limit" disabled={orchestrationForm.mode === "disabled"} />
                 </div>
               </div>
 

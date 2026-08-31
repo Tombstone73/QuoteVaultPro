@@ -79,6 +79,36 @@ export function getEffectiveMaxCloudUploadBytes(providerConfigJson?: unknown): n
   return getMaxCloudUploadBytes();
 }
 
+/**
+ * A durable-provider capacity limit is deliberately separate from the old
+ * cloud-routing threshold. Leave it unset when the provider has no configured
+ * application-level ceiling; it must never make production fall back to disk.
+ */
+export function getEffectiveDurableUploadMaxBytes(providerConfigJson?: unknown): number | null {
+  const normalized = normalizeTitanManagedStorageConfig(providerConfigJson);
+  if (typeof normalized.maxDurableUploadBytesOverride === "number"
+    && Number.isFinite(normalized.maxDurableUploadBytesOverride)
+    && normalized.maxDurableUploadBytesOverride > 0) {
+    return Math.floor(normalized.maxDurableUploadBytesOverride);
+  }
+
+  return parseBytes(process.env.DURABLE_STORAGE_MAX_UPLOAD_BYTES);
+}
+
+export function assertDurableUploadWithinLimit(args: {
+  fileSizeBytes: number;
+  providerConfigJson?: unknown;
+}): void {
+  const maxBytes = getEffectiveDurableUploadMaxBytes(args.providerConfigJson);
+  const fileSizeBytes = Math.max(0, Number(args.fileSizeBytes) || 0);
+  if (maxBytes == null || fileSizeBytes <= maxBytes) return;
+
+  throw Object.assign(
+    new Error(`This file is ${fileSizeBytes} bytes. Your configured durable artwork storage limit is ${maxBytes} bytes.`),
+    { code: "DURABLE_UPLOAD_LIMIT_EXCEEDED", statusCode: 413, maxUploadBytes: maxBytes },
+  );
+}
+
 function shouldDebugStorage(): boolean {
   const raw = (process.env.DEBUG_STORAGE ?? "").toString().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
@@ -91,6 +121,7 @@ export function decideStorageTarget(args: {
   organizationId?: string | null;
   context?: string;
   providerConfigJson?: unknown;
+  environment?: Pick<NodeJS.ProcessEnv, "NODE_ENV">;
 }): StorageTarget {
   const fileSizeBytes = Number.isFinite(args.fileSizeBytes) && args.fileSizeBytes > 0 ? args.fileSizeBytes : 0;
   const requestedTarget = (args.requestedTarget ?? "").toString() || null;
@@ -133,6 +164,12 @@ export function decideStorageTarget(args: {
   } else if (normalizedRequestedTarget === "supabase") {
     decidedTarget = "supabase";
     reason = "request_prefers_supabase";
+  } else if ((args.environment ?? process.env).NODE_ENV === "production") {
+    // The former size threshold was only a development routing optimization.
+    // Railway disk is non-durable, so production automatic mode always chooses
+    // the configured durable provider regardless of ordinary artwork size.
+    decidedTarget = "supabase";
+    reason = "production_durable_default";
   } else {
     decidedTarget = fileSizeBytes <= maxCloudBytes ? "supabase" : "local_dev";
     reason = fileSizeBytes <= maxCloudBytes ? "under_or_equal_limit" : "over_limit";

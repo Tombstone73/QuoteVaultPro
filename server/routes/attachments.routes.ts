@@ -1528,9 +1528,13 @@ export async function registerAttachmentRoutes(
       });
 
       res.json(initiated);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error getting upload URL:", error);
-      res.status(500).json({ message: "Failed to get upload URL" });
+      res.status(error?.statusCode ?? 500).json({
+        message: error?.message || "Failed to get upload URL",
+        code: error?.code ?? null,
+        maxUploadBytes: error?.maxUploadBytes ?? null,
+      });
     }
   });
 
@@ -1921,6 +1925,14 @@ export async function registerAttachmentRoutes(
         }
       }
 
+      // Chunk staging is temporary, but this checks the eventual canonical
+      // destination before accepting potentially large data onto Railway disk.
+      const intake = await storageApplicationService.preflightCanonicalUpload({
+        organizationId,
+        fileName: filename,
+        fileSizeBytes: Number(size),
+      });
+
       const { createUploadSession } = await import("../services/chunkedUploads");
       const session = await createUploadSession({
         organizationId,
@@ -1940,11 +1952,17 @@ export async function registerAttachmentRoutes(
           chunkSizeBytes: session.chunkSizeBytes,
           totalChunks: session.totalChunks,
           expiresAt: session.expiresAt,
+          storageTarget: intake.storageTarget,
+          maxUploadBytes: intake.maxUploadBytes ?? null,
         },
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("[Uploads:Init] Error:", error);
-      return res.status(500).json({ error: "Failed to initialize upload" });
+      return res.status(error?.statusCode ?? 500).json({
+        error: error?.message || "Failed to initialize upload",
+        code: error?.code ?? null,
+        maxUploadBytes: error?.maxUploadBytes ?? null,
+      });
     }
   });
 

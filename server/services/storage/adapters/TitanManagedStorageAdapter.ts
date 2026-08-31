@@ -11,7 +11,13 @@ import {
 } from "../../../utils/fileStorage";
 import { resolveLocalStoragePath } from "../../localStoragePath";
 import { SupabaseStorageService, isSupabaseConfigured } from "../../../supabaseStorage";
-import { assertDurableCanonicalStorageTarget, getEffectiveMaxCloudUploadBytes, decideStorageTarget } from "../../storageTarget";
+import {
+  assertDurableCanonicalStorageTarget,
+  assertDurableUploadWithinLimit,
+  getEffectiveDurableUploadMaxBytes,
+  getEffectiveMaxCloudUploadBytes,
+  decideStorageTarget,
+} from "../../storageTarget";
 import { normalizeObjectKeyForDb } from "../../../lib/supabaseObjectHelpers";
 import type { StorageProviderConfig } from "@shared/schema";
 import { normalizeTitanManagedStorageConfig } from "@shared/storageSettings";
@@ -73,6 +79,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
   }): Promise<{
     storageTarget: "supabase" | "local_dev";
     maxCloudBytes: number;
+    maxUploadBytes?: number | null;
     method: "PUT" | "ATOMIC";
     url?: string;
     path?: string;
@@ -80,6 +87,11 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     message?: string;
   }> {
     const maxCloudBytes = getEffectiveMaxCloudUploadBytes(input.providerConfig.configJson);
+    const maxUploadBytes = getEffectiveDurableUploadMaxBytes(input.providerConfig.configJson);
+    assertDurableUploadWithinLimit({
+      fileSizeBytes: input.fileSizeBytes,
+      providerConfigJson: input.providerConfig.configJson,
+    });
     const storageTarget = decideStorageTarget({
       fileName: input.fileName,
       fileSizeBytes: input.fileSizeBytes,
@@ -96,6 +108,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
       return {
         storageTarget,
         maxCloudBytes,
+        maxUploadBytes,
         method: "PUT",
         url: signed.url,
         path: signed.path,
@@ -106,6 +119,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     return {
       storageTarget: "local_dev",
       maxCloudBytes,
+      maxUploadBytes,
       method: "ATOMIC",
       message: "File exceeds cloud upload limit; use atomic upload.",
     };
@@ -119,6 +133,10 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     providerConfig: StorageProviderConfig;
     resource: StorageResourceContext;
   }): Promise<StoredObjectDescriptor> {
+    assertDurableUploadWithinLimit({
+      fileSizeBytes: input.buffer.length,
+      providerConfigJson: input.providerConfig.configJson,
+    });
     const storageTarget = decideStorageTarget({
       fileName: input.originalFilename,
       fileSizeBytes: input.buffer.length,
@@ -290,6 +308,10 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     providerConfig: StorageProviderConfig;
     resource: StorageResourceContext;
   }): Promise<StoredObjectDescriptor> {
+    assertDurableUploadWithinLimit({
+      fileSizeBytes: input.sizeBytes,
+      providerConfigJson: input.providerConfig.configJson,
+    });
     const storageTarget = decideStorageTarget({
       fileName: input.originalFilename,
       fileSizeBytes: input.sizeBytes,

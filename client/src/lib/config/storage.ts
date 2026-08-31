@@ -1,8 +1,12 @@
-export const SUPABASE_MAX_UPLOAD_BYTES: number = (() => {
+/**
+ * Switches the browser to the resumable/chunked transport. It is not an
+ * artwork-size limit and must not be used to select non-durable storage.
+ */
+export const CHUNKED_UPLOAD_THRESHOLD_BYTES: number = (() => {
   const raw = (import.meta as any)?.env?.VITE_SUPABASE_MAX_UPLOAD_BYTES;
   const parsed = Number(raw);
 
-  // Default: 50MB (matches current Supabase constraints used throughout the app)
+  // Default: 50MB keeps direct browser uploads modest; larger files use chunks.
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 50 * 1024 * 1024;
 })();
 

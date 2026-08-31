@@ -10,6 +10,7 @@ import { storagePolicyResolver } from "./StoragePolicyResolver";
 import { storageRegistry } from "./StorageRegistry";
 import type { StorageResourceContext, StoredObjectDescriptor } from "./adapters/StorageProviderAdapter";
 import { deleteFile } from "../../utils/fileStorage";
+import { assertDurableCanonicalStorageTarget } from "../storageTarget";
 
 function lifecycleStateForStorageTarget(storageTarget: StoredObjectDescriptor["storageTarget"]): FileRecord["lifecycleState"] {
   switch (storageTarget) {
@@ -61,6 +62,31 @@ export class StorageApplicationService {
       requestedTarget: input.requestedTarget,
       providerConfig,
     });
+  }
+
+  /**
+   * Validate the provider that will receive the final canonical file before a
+   * chunked upload reserves temporary application disk. The returned signed
+   * URL, when a cloud adapter uses one, is intentionally not consumed here.
+   */
+  async preflightCanonicalUpload(input: {
+    organizationId: string;
+    fileName?: string | null;
+    fileSizeBytes: number;
+  }) {
+    const policy = await storagePolicyResolver.resolve(input.organizationId);
+    const providerConfig = storagePolicyResolver.resolveCanonicalStorageBehavior(policy);
+    const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+    const initiated = await adapter.initiateUpload({
+      organizationId: input.organizationId,
+      fileName: input.fileName,
+      fileSizeBytes: input.fileSizeBytes,
+      providerConfig,
+    });
+    if (initiated.storageTarget === "local_dev") {
+      assertDurableCanonicalStorageTarget("local_dev");
+    }
+    return initiated;
   }
 
   async finalizeUpload<TLinked>(input: {
@@ -386,6 +412,10 @@ export class StorageApplicationService {
 
       if (!storedObject) {
         throw new Error("No stored object was produced during storage finalization");
+      }
+
+      if (storedObject.storageTarget === "local_dev") {
+        assertDurableCanonicalStorageTarget("local_dev");
       }
 
       stage = "verify_object";

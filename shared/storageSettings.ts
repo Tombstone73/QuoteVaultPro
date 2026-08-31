@@ -7,7 +7,12 @@ export const configurableStorageProviderTypeSchema = z.enum(["supabase", "local_
 
 export const titanManagedStorageConfigSchema = z.object({
   routingMode: titanManagedRoutingModeSchema.default("auto"),
+  // Legacy development routing threshold. This is not a production storage
+  // capacity limit: production canonical files must remain durable at any size.
   maxCloudUploadBytesOverride: z.number().int().positive().nullable().optional(),
+  // An explicit organization limit, used only when the configured durable
+  // provider has a known operational ceiling.
+  maxDurableUploadBytesOverride: z.number().int().positive().nullable().optional(),
 });
 
 export const supabaseStorageProviderConfigSchema = z.object({
@@ -99,12 +104,14 @@ export function normalizeTitanManagedStorageConfig(raw: unknown): TitanManagedSt
     return {
       routingMode: "auto",
       maxCloudUploadBytesOverride: null,
+      maxDurableUploadBytesOverride: null,
     };
   }
 
   return {
     routingMode: parsed.data.routingMode ?? "auto",
     maxCloudUploadBytesOverride: parsed.data.maxCloudUploadBytesOverride ?? null,
+    maxDurableUploadBytesOverride: parsed.data.maxDurableUploadBytesOverride ?? null,
   };
 }
 
