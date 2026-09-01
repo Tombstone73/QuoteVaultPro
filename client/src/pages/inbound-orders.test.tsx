@@ -3074,6 +3074,81 @@ describe("InboundOrdersPage", () => {
     expect((container.querySelector("input[aria-label='Height']") as HTMLInputElement).value).toBe("3.5");
   });
 
+  test("does not flag an entered feet size when an assigned PDF is physically equivalent after rotation", async () => {
+    const baseParsed = parsedDraft();
+    const pdfArtwork = {
+      id: "file_equivalent_pdf",
+      fileRecordId: "canonical_equivalent_pdf",
+      sourceFilename: "banner.pdf",
+      role: "artwork",
+      mimeType: "application/pdf",
+      sizeBytes: 2200,
+      status: "available",
+      metadataJson: {
+        pdfSizeAnalysis: {
+          status: "succeeded",
+          analyzedAt: "2026-07-27T12:00:00.000Z",
+          fileIdentity: "canonical_equivalent_pdf:checksum:2200",
+          pageCount: 1,
+          pages: [{ pageNumber: 1, widthInches: 96, heightInches: 36, rotation: 0, sourceBox: "MediaBox" }],
+          uniformPageSize: true,
+          effectiveWidthInches: 96,
+          effectiveHeightInches: 36,
+          units: "in",
+          errorCode: null,
+        },
+      },
+    };
+    const cleanParsed = parsedDraft({
+      lineItems: [{ ...baseParsed.lineItems[0], width: 3, height: 8, dimensionsUnit: "ft", artworkLinks: [{ fileId: pdfArtwork.id, fileRecordId: pdfArtwork.fileRecordId, filename: pdfArtwork.sourceFilename, mimeType: pdfArtwork.mimeType, role: "artwork", source: "staff_selected", assignmentSide: "unassigned" }] }],
+      globalWarnings: [],
+    });
+    setupParsedInboundReview({ parsed: cleanParsed, review: reviewDraft(cleanParsed), detailOverrides: { files: [pdfArtwork] } });
+
+    renderPage();
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
+    await waitForText("Detected size: 96 × 36 in");
+    expect(container.textContent).not.toContain("Entered size differs; not changed.");
+  });
+
+  test("continues to flag a genuinely different entered size from an assigned PDF", async () => {
+    const baseParsed = parsedDraft();
+    const pdfArtwork = {
+      id: "file_mismatched_pdf",
+      fileRecordId: "canonical_mismatched_pdf",
+      sourceFilename: "banner.pdf",
+      role: "artwork",
+      mimeType: "application/pdf",
+      sizeBytes: 2200,
+      status: "available",
+      metadataJson: {
+        pdfSizeAnalysis: {
+          status: "succeeded",
+          analyzedAt: "2026-07-27T12:00:00.000Z",
+          fileIdentity: "canonical_mismatched_pdf:checksum:2200",
+          pageCount: 1,
+          pages: [{ pageNumber: 1, widthInches: 96, heightInches: 36, rotation: 0, sourceBox: "MediaBox" }],
+          uniformPageSize: true,
+          effectiveWidthInches: 96,
+          effectiveHeightInches: 36,
+          units: "in",
+          errorCode: null,
+        },
+      },
+    };
+    const cleanParsed = parsedDraft({
+      lineItems: [{ ...baseParsed.lineItems[0], width: 4, height: 8, dimensionsUnit: "ft", artworkLinks: [{ fileId: pdfArtwork.id, fileRecordId: pdfArtwork.fileRecordId, filename: pdfArtwork.sourceFilename, mimeType: pdfArtwork.mimeType, role: "artwork", source: "staff_selected", assignmentSide: "unassigned" }] }],
+      globalWarnings: [],
+    });
+    setupParsedInboundReview({ parsed: cleanParsed, review: reviewDraft(cleanParsed), detailOverrides: { files: [pdfArtwork] } });
+
+    renderPage();
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
+    await waitForText("Entered size differs; not changed.");
+  });
+
   test("collapses a completed Clean View line item into a compact summary", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({

@@ -87,6 +87,7 @@ import {
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { inboundDimensionsMatchPdf } from "@shared/inboundOrderDimensions";
 import {
   inboundAttachmentClassificationToRole,
   inboundAttachmentRoleToClassification,
@@ -6190,7 +6191,13 @@ function CleanLineItemCard({
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span>{assignedPdfSizes.length > 1 ? "Shared detected size" : "Detected size"}: {formatPdfInches(sharedAssignedSize.effectiveWidthInches!)} × {formatPdfInches(sharedAssignedSize.effectiveHeightInches!)} in</span>
                       {!hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
-                      {hasDimensions && (lineItem.width !== sharedAssignedSize.effectiveWidthInches || lineItem.height !== sharedAssignedSize.effectiveHeightInches) && <span className="text-amber-200">Entered size differs; not changed.</span>}
+                      {hasDimensions && !inboundDimensionsMatchPdf({
+                        enteredWidth: lineItem.width,
+                        enteredHeight: lineItem.height,
+                        enteredUnit: lineItem.dimensionsUnit,
+                        pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
+                        pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
+                      }) && <span className="text-amber-200">Entered size differs; not changed.</span>}
                     </div>
                   ) : <div className="mt-2 text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
                 </div>

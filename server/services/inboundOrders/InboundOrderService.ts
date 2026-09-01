@@ -66,6 +66,7 @@ import {
 } from "@shared/inboundOrderPricing";
 import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
+import { normalizeInboundDimensionsToInches, wholeFootBillableDimensions } from "@shared/inboundOrderDimensions";
 import {
   inboundOrdersRepository,
   type InboundOrdersRepository,
@@ -3621,6 +3622,7 @@ export class InboundOrderService {
         quantity: lineItem.quantity,
         width: lineItem.width,
         height: lineItem.height,
+        dimensionsUnit: lineItem.dimensionsUnit,
         optionSelections: lineItem.optionSelectionsJson,
         pbv2TreeVersionId: lineItem.pbv2TreeVersionId,
       });
@@ -4206,6 +4208,7 @@ export class InboundOrderService {
           quantity: lineItem.quantity,
           width: lineItem.width,
           height: lineItem.height,
+          dimensionsUnit: lineItem.dimensionsUnit,
           optionSelections,
           pbv2TreeVersionId,
         });
@@ -4841,6 +4844,7 @@ export class InboundOrderService {
             quantity: lineItem.quantity,
             width: lineItem.width,
             height: lineItem.height,
+            dimensionsUnit: lineItem.dimensionsUnit,
             optionSelections: lineItem.optionSelectionsJson,
             pbv2TreeVersionId: lineItem.pbv2TreeVersionId,
           });
@@ -5740,6 +5744,7 @@ export class InboundOrderService {
           quantity: lineItem.quantity ?? 1,
           width: lineItem.width,
           height: lineItem.height,
+          dimensionsUnit: lineItem.dimensionsUnit,
           optionSelections: selections,
           pbv2TreeVersionId: lineItem.pbv2TreeVersionId,
         });
@@ -6104,6 +6109,7 @@ export class InboundOrderService {
     quantity: number;
     width: number | null | undefined;
     height: number | null | undefined;
+    dimensionsUnit: string | null | undefined;
     optionSelections: LineItemOptionSelectionsV2 | Record<string, unknown> | null | undefined;
     pbv2TreeVersionId: string | null | undefined;
   }): Promise<Awaited<ReturnType<typeof priceLineItem>>> {
@@ -6113,7 +6119,12 @@ export class InboundOrderService {
     }
 
     const selections = this.normalizePbv2Selections(args.optionSelections);
-    let { widthIn, heightIn } = dimensionsForProductPricing(product, args.width, args.height);
+    const actualDimensions = normalizeInboundDimensionsToInches({
+      width: args.width,
+      height: args.height,
+      unit: args.dimensionsUnit,
+    });
+    let { widthIn, heightIn } = dimensionsForProductPricing(product, actualDimensions.actualWidthIn, actualDimensions.actualHeightIn);
     const activeTree = await this.repository.getProductActivePbv2Tree(args.organizationId, args.productId);
     const activeTreeVersionId = activeTree?.activeTree?.id ?? null;
 
@@ -6133,6 +6144,12 @@ export class InboundOrderService {
       }));
     }
 
+    if (this.usesSquareFootPricing(product, activeTree?.activeTree?.treeJson ?? null)) {
+      const billable = wholeFootBillableDimensions({ actualWidthIn: widthIn, actualHeightIn: heightIn });
+      widthIn = billable.billableWidthIn;
+      heightIn = billable.billableHeightIn;
+    }
+
     return this.priceLineItemFn({
       organizationId: args.organizationId,
       productId: args.productId,
@@ -6142,6 +6159,17 @@ export class InboundOrderService {
       pbv2ExplicitSelections: selections.selected,
       pbv2TreeVersionIdOverride: args.pbv2TreeVersionId ?? undefined,
     });
+  }
+
+  private usesSquareFootPricing(product: { pricingProfileKey?: string | null }, treeJson: OptionTreeV2 | null): boolean {
+    // The default profile is explicitly the square-foot formula profile. PBV2
+    // products can state the same basis in their active pricing configuration.
+    if (product.pricingProfileKey === "default") return true;
+    const pricingV2 = treeJson?.meta?.pricingV2;
+    if (!pricingV2) return false;
+    if (pricingV2.optionMatrixPricingUnit === "per_square_foot") return true;
+    if (pricingV2.base && Object.prototype.hasOwnProperty.call(pricingV2.base, "perSqftCents")) return true;
+    return Boolean(pricingV2.sqftTiers?.some((tier) => Object.prototype.hasOwnProperty.call(tier, "perSqftCents")));
   }
 
   private normalizePbv2Selections(input: LineItemOptionSelectionsV2 | Record<string, unknown> | null | undefined): LineItemOptionSelectionsV2 {

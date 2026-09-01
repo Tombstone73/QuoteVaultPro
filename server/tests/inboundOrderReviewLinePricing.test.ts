@@ -128,6 +128,53 @@ describe("InboundOrderService review line pricing", () => {
     });
   });
 
+  test("normalizes feet and applies whole-foot square-foot billing before canonical pricing", async () => {
+    const repo = makeRepository();
+    repo.getProduct.mockResolvedValue({
+      id: "product_banner",
+      name: "Banner",
+      measurementMode: "dimensions_required",
+      pricingProfileKey: "default",
+    });
+    mockPriceLineItem.mockImplementation(async (input) => ({
+      lineTotalCents: ((input.widthIn * input.heightIn) / 144) * input.quantity * 100,
+      breakdown: { totalCents: ((input.widthIn * input.heightIn) / 144) * input.quantity * 100 },
+    }));
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+
+    const review = await service.priceReviewLine({
+      organizationId: "org_1",
+      lineItem: {
+        sourceLineItemId: "line_1",
+        sourceText: "2 banners 3 x 8 ft",
+        productName: "Banner",
+        selectedProductId: "product_banner",
+        selectedProductSource: "staff_selected",
+        quantity: 2,
+        quantitySource: "staff_selected",
+        width: 3,
+        height: 8,
+        dimensionsUnit: "ft",
+        dimensionsSource: "staff_selected",
+        printSpecs: [],
+        optionTexts: [],
+        finishingTexts: [],
+        optionSelectionsJson: null,
+        pbv2TreeVersionId: null,
+        pricingReviewJson: null,
+        artworkLinks: [],
+      },
+    });
+
+    expect(mockPriceLineItem).toHaveBeenCalledWith(expect.objectContaining({
+      quantity: 2,
+      widthIn: 36,
+      heightIn: 96,
+    }));
+    // 3 ft × 8 ft = 24 billable sq ft, multiplied by two items at $1/sq ft.
+    expect(review).toMatchObject({ systemPriceCents: 4800, systemUnitPriceCents: 2400 });
+  });
+
   test("single-line pricing fails closed when product selection is missing", async () => {
     const repo = makeRepository();
     const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
