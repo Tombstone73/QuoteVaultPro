@@ -24,9 +24,10 @@ import { getPaymentSettings } from "../services/payments/paymentProvider.service
 import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.service";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
-import { buildCustomerPortalUrl, buildInvoiceEmailHtml, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+import { buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalInvoiceUrl } from "../services/invoiceEmailContent";
 import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
 import { resolveInvoiceEmailPortalDestination } from "../services/customerPortalAccessService";
+import { hydrateInvoicePdfLineItemsWithArtwork } from "../services/invoicePdfArtwork";
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
@@ -65,7 +66,7 @@ function getInvoiceEmailPublicWebOrigin(): string | null {
   if (!configured) return null;
   try {
     const parsed = new URL(configured);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.origin : null;
+    return parsed.protocol === "https:" ? parsed.origin : null;
   } catch {
     return null;
   }
@@ -378,12 +379,16 @@ export async function registerMvpInvoicingRoutes(
 
     const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
 
+    const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
+      organizationId: input.organizationId,
+      lineItems: lineItems as any,
+    });
     const pdfBytes = await generateInvoicePdfBytes({
       invoice: inv as any,
       customer: (cust as any) || null,
       companySettings: (orgCompany as any) || null,
       paymentSummary,
-      lineItems: lineItems as any,
+      lineItems: pdfLineItems as any,
       job,
     });
 
@@ -405,54 +410,24 @@ export async function registerMvpInvoicingRoutes(
       invoiceStatus: (inv as any).status,
       remainingCents: paymentSummary.amountDueCents,
     }).payable;
+    const publicWebOrigin = getInvoiceEmailPublicWebOrigin();
+    if (!publicWebOrigin) {
+      throw Object.assign(new Error("A valid HTTPS public web origin is required for invoice portal delivery."), {
+        status: 503,
+        code: "INVOICE_PORTAL_ORIGIN_UNAVAILABLE",
+      });
+    }
     const portalDestination = await resolveInvoiceEmailPortalDestination({
       organizationId: input.organizationId,
       customerId: inv.customerId,
       recipientEmail,
       actorUserId: input.userId,
+      returnTo: `/portal/invoices/${encodeURIComponent(inv.id)}`,
     });
-    const publicWebOrigin = getInvoiceEmailPublicWebOrigin();
-    const portalMode = portalDestination?.kind || "login";
-    const portalUrl = portalDestination?.kind === "active"
-      ? buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id })
-      : portalDestination?.url || buildCustomerPortalUrl(publicWebOrigin);
-    let paymentUrl: string | null = null;
-    if (canInvoiceBePaidOnline) {
-      const [portalAccessRows, paymentSettings, stripeReadiness] = await Promise.all([
-        db
-          .select({ email: customerPortalAccess.email })
-          .from(customerPortalAccess)
-          .where(and(
-            eq(customerPortalAccess.organizationId, input.organizationId),
-            eq(customerPortalAccess.customerId, inv.customerId),
-            eq(customerPortalAccess.status, "ACTIVE"),
-          )),
-        getPaymentSettings(input.organizationId),
-        resolveStripeReadiness(input.organizationId),
-      ]);
-
-      const recipientHasPortalAccess = portalAccessRows.some(
-        (access) => String(access.email || "").trim().toLowerCase() === String(recipientEmail).trim().toLowerCase(),
-      );
-      const stripeConnected = paymentSettings.stripeEnabled && stripeReadiness.readyForPayments;
-      const availableProviders = [
-        stripeConnected ? "stripe" : null,
-        paymentSettings.epsReady ? "eps" : null,
-      ].filter((provider): provider is HostedPaymentProvider => provider === "stripe" || provider === "eps");
-      const hostedPaymentResolution = resolveHostedPaymentProvider({
-        configuredDefaultProvider: paymentSettings.provider,
-        availableProviders,
-      });
-
-      // The portal payment screen currently supports Stripe. Do not create an
-      // EPS session while merely composing an email, and never include a link
-      // that the recipient cannot use through their existing portal access.
-      paymentUrl = buildInvoicePortalPaymentUrl({
-        publicWebOrigin,
-        invoiceId: inv.id,
-        canPayOnline: recipientHasPortalAccess && hostedPaymentResolution.provider === "stripe",
-      });
-    }
+    const directInvoiceUrl = buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id });
+    const portalUrl = portalDestination?.kind === "setup"
+      ? portalDestination.url
+      : directInvoiceUrl;
 
     const companyName = orgCompany?.companyName || "QuoteVaultPro";
     const customerName = cust.companyName || cust.email || "Valued Customer";
@@ -466,9 +441,17 @@ export async function registerMvpInvoicingRoutes(
       dueDate,
       poNumber: orderContext?.poNumber,
       jobLabel: orderContext?.jobLabel,
-      paymentUrl,
       portalUrl,
-      portalMode,
+      hasBalanceDue: canInvoiceBePaidOnline,
+    });
+    const emailText = buildInvoiceEmailPlainText({
+      invoiceNumber,
+      companyName,
+      customerName,
+      totalFormatted,
+      dueDate,
+      portalUrl,
+      canPayOnline: canInvoiceBePaidOnline,
     });
 
     const now = new Date();
@@ -478,6 +461,7 @@ export async function registerMvpInvoicingRoutes(
         to: recipientEmail,
         subject: `Invoice #${invoiceNumber} from ${companyName}`,
         html: emailHtml,
+        text: emailText,
         attachments: [
           pdfAttachment,
         ] as any,
@@ -1230,12 +1214,16 @@ export async function registerMvpInvoicingRoutes(
 
       const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
 
+      const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
+        organizationId,
+        lineItems: lineItems as any,
+      });
       const pdfBytes = await generateInvoicePdfBytes({
         invoice: inv as any,
         customer: (cust as any) || null,
         companySettings: (orgCompany as any) || null,
         paymentSummary,
-        lineItems: lineItems as any,
+        lineItems: pdfLineItems as any,
         job,
       });
 

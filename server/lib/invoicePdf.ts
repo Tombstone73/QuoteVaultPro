@@ -801,17 +801,6 @@ export async function generateInvoicePdfBytes(
       const boxX = xThumb;
       const boxY = rowTopY - rowH + 8;
       const boxSize = Math.min(thumbW, thumbH);
-
-      page.drawRectangle({
-        x: boxX,
-        y: boxY + (rowH - boxSize) / 2,
-        width: boxSize,
-        height: boxSize,
-        color: toRgb(theme.colors.thumbPlaceholderBg),
-        borderColor: toRgb(theme.colors.thumbPlaceholderBorder),
-        borderWidth: 1,
-      });
-
       const dataUrl = (li as any)?.thumbnailDataUrl ? String((li as any).thumbnailDataUrl) : '';
       const decoded = dataUrl ? tryDecodeDataUrl(dataUrl) : null;
       if (decoded) {
@@ -823,6 +812,15 @@ export async function generateInvoicePdfBytes(
           const scale = Math.min(boxSize / img.width, boxSize / img.height);
           const drawW = img.width * scale;
           const drawH = img.height * scale;
+          page.drawRectangle({
+            x: boxX,
+            y: boxY + (rowH - boxSize) / 2,
+            width: boxSize,
+            height: boxSize,
+            color: toRgb(theme.colors.thumbPlaceholderBg),
+            borderColor: toRgb(theme.colors.thumbPlaceholderBorder),
+            borderWidth: 1,
+          });
           page.drawImage(img, {
             x: boxX + (boxSize - drawW) / 2,
             y: boxY + (rowH - boxSize) / 2 + (boxSize - drawH) / 2,
@@ -830,7 +828,8 @@ export async function generateInvoicePdfBytes(
             height: drawH,
           });
         } catch {
-          // If embedding fails, keep the gray box.
+          // An invalid derivative is treated like no artwork rather than a
+          // misleading empty image box.
         }
       }
     }

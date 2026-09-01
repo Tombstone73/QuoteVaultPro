@@ -14,7 +14,9 @@ export function buildInvoicePortalInvoiceUrl(input: {
   if (!input.publicWebOrigin) return null;
 
   try {
-    const origin = new URL(input.publicWebOrigin).origin;
+    const parsed = new URL(input.publicWebOrigin);
+    if (parsed.protocol !== "https:") return null;
+    const origin = parsed.origin;
     return `${origin}/portal/invoices/${encodeURIComponent(input.invoiceId)}`;
   } catch {
     return null;
@@ -24,7 +26,8 @@ export function buildInvoicePortalInvoiceUrl(input: {
 export function buildCustomerPortalUrl(publicWebOrigin: string | null): string | null {
   if (!publicWebOrigin) return null;
   try {
-    return `${new URL(publicWebOrigin).origin}/portal`;
+    const parsed = new URL(publicWebOrigin);
+    return parsed.protocol === "https:" ? `${parsed.origin}/portal` : null;
   } catch {
     return null;
   }
@@ -50,6 +53,7 @@ export function buildInvoiceEmailHtml(input: {
   paymentUrl?: string | null;
   portalUrl?: string | null;
   portalMode?: "active" | "setup" | "login";
+  hasBalanceDue?: boolean;
 }): string {
   const invoiceNumber = escapeHtml(input.invoiceNumber);
   const companyName = escapeHtml(input.companyName);
@@ -61,22 +65,16 @@ export function buildInvoiceEmailHtml(input: {
   const orderContextSection = poNumber || jobLabel
     ? `<p style="margin: 12px 0; color: #444;">${poNumber ? `<strong>PO #:</strong> ${escapeHtml(poNumber)}<br>` : ""}${jobLabel ? `<strong>Job:</strong> ${escapeHtml(jobLabel)}` : ""}</p>`
     : "";
-  const paymentUrl = input.paymentUrl ? escapeHtml(input.paymentUrl) : null;
-  const paymentSection = paymentUrl
-    ? `
-    <p style="margin: 24px 0 12px 0;">
-      <a href="${paymentUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">View &amp; Pay Invoice</a>
-    </p>
-    <p style="font-size: 13px; color: #666; word-break: break-all;">Sign in to the secure customer portal to view this invoice and pay its current balance. If the button does not work, copy and paste this link into your browser:<br><a href="${paymentUrl}">${paymentUrl}</a></p>`
-    : "";
-  const portalUrl = input.portalUrl ? escapeHtml(input.portalUrl) : null;
-  const portalSection = !paymentUrl && portalUrl
-    ? `<p style="margin: 24px 0 12px 0;">${input.portalMode === "setup"
-      ? "Set up secure customer portal access to view this invoice."
-      : input.portalMode === "login"
-        ? "Sign in to the secure customer portal to view your invoices and current balances. Contact the shop if you need portal access."
-        : "View this invoice in the secure customer portal."}</p>
-      <p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #475569; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">${input.portalMode === "setup" ? "Set Up Customer Portal" : input.portalMode === "login" ? "Open Customer Portal" : "View Invoice"}</a></p>`
+  const rawPortalUrl = input.paymentUrl || input.portalUrl || null;
+  const portalUrl = rawPortalUrl ? escapeHtml(rawPortalUrl) : null;
+  const canPay = input.hasBalanceDue ?? Boolean(input.paymentUrl);
+  const ctaLabel = canPay ? "View &amp; Pay Invoice" : "View Invoice";
+  const portalSection = portalUrl
+    ? `<p style="margin: 24px 0 12px 0;">${canPay
+      ? "Use the secure customer portal to review this invoice and pay its current balance."
+      : "Use the secure customer portal to review this invoice."}</p>
+      <p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">${ctaLabel}</a></p>
+      <p style="font-size: 13px; color: #666; word-break: break-all;">If the button does not work, copy and paste this secure link into your browser:<br><a href="${portalUrl}">${portalUrl}</a></p>`
     : "";
 
   return `
@@ -99,7 +97,7 @@ export function buildInvoiceEmailHtml(input: {
   <div style="padding: 20px 0;">
     <p>Dear ${customerName},</p>
     <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
-    <p>Payment is due ${dueDate}.</p>${orderContextSection}${paymentSection}${portalSection}
+    <p>Payment is due ${dueDate}.</p>${orderContextSection}${portalSection}
     <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
   </div>
 
@@ -110,4 +108,20 @@ export function buildInvoiceEmailHtml(input: {
 </body>
 </html>
   `.trim();
+}
+
+export function buildInvoiceEmailPlainText(input: {
+  invoiceNumber: string;
+  companyName: string;
+  customerName: string;
+  totalFormatted: string;
+  dueDate: string;
+  portalUrl?: string | null;
+  canPayOnline?: boolean;
+}): string {
+  const cta = input.canPayOnline ? "View & Pay Invoice" : "View Invoice";
+  const portalLine = input.portalUrl
+    ? `\n${cta}:\n${input.portalUrl}\n`
+    : "";
+  return `Invoice #${input.invoiceNumber}\n\nDear ${input.customerName},\n\nPlease find attached Invoice #${input.invoiceNumber} from ${input.companyName} for $${input.totalFormatted}. Payment is due ${input.dueDate}.${portalLine}\nIf you have questions about this invoice, please contact ${input.companyName}.`;
 }

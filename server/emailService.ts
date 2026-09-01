@@ -1,6 +1,8 @@
 import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
+import { buildRawMessage, normalizeEmailAttachments, type EmailAttachment } from "./lib/emailMime";
+export { buildRawMessage, normalizeEmailAttachments } from "./lib/emailMime";
 
 /**
  * Returns true for Google OAuth auth failures that indicate the refresh token
@@ -33,71 +35,6 @@ function withTimeout<T>(label: string, ms: number, promise: Promise<T>): Promise
   ]);
 }
 
-/**
- * Build raw RFC 2822 email message for Gmail API
- */
-function buildRawMessage(options: {
-  from: string;
-  to: string;
-  subject: string;
-  html: string;
-  replyTo?: string;
-  attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
-}): string {
-  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-  const { from, to, subject, html, replyTo, attachments } = options;
-
-  let message = [
-    `From: ${from}`,
-    `To: ${to}`,
-    `Subject: ${subject}`,
-  ];
-
-  // Add Reply-To header if provided
-  if (replyTo) {
-    message.push(`Reply-To: ${replyTo}`);
-  }
-
-  message.push('MIME-Version: 1.0');
-
-  if (attachments && attachments.length > 0) {
-    // Multipart message with attachments
-    message.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
-    message.push('');
-    message.push(`--${boundary}`);
-    message.push('Content-Type: text/html; charset=UTF-8');
-    message.push('Content-Transfer-Encoding: quoted-printable');
-    message.push('');
-    message.push(html);
-    message.push('');
-
-    // Add each attachment
-    for (const attachment of attachments) {
-      message.push(`--${boundary}`);
-      message.push(`Content-Type: ${attachment.contentType}`);
-      message.push('Content-Transfer-Encoding: base64');
-      message.push(`Content-Disposition: attachment; filename="${attachment.filename}"`);
-      message.push('');
-      message.push(attachment.content.toString('base64'));
-      message.push('');
-    }
-
-    message.push(`--${boundary}--`);
-  } else {
-    // Simple HTML message
-    message.push('Content-Type: text/html; charset=UTF-8');
-    message.push('');
-    message.push(html);
-  }
-
-  // Base64url encode the entire message
-  const rawMessage = message.join('\r\n');
-  return Buffer.from(rawMessage)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-}
 
 interface EmailConfig {
   provider: string;
@@ -149,34 +86,6 @@ export function quoteEmailPlainTextToHtml(bodyText: string): string {
     .replace(/\r?\n/g, "<br>");
 }
 
-export type EmailAttachment = {
-  filename: string;
-  content: Buffer;
-  contentType: string;
-};
-
-/**
- * Normalize legacy base64 attachments before Gmail builds the MIME part. Gmail
- * base64-encodes the resulting bytes itself, so encoding a base64 string a
- * second time would create a corrupt file attachment.
- */
-export function normalizeEmailAttachments(attachments: any[] | undefined): EmailAttachment[] | undefined {
-  if (!attachments?.length) return undefined;
-
-  return attachments.map((att: any) => {
-    const content = Buffer.isBuffer(att.content)
-      ? att.content
-      : att.encoding === "base64" && typeof att.content === "string"
-        ? Buffer.from(att.content, "base64")
-        : Buffer.from(att.content);
-
-    return {
-      filename: att.filename || "attachment",
-      content,
-      contentType: att.contentType || "application/octet-stream",
-    };
-  });
-}
 
 class EmailService {
   /**
@@ -316,6 +225,7 @@ class EmailService {
     to: string;
     subject: string;
     html: string;
+    text?: string;
     replyTo?: string;
     attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
   }): Promise<string> {
@@ -332,6 +242,7 @@ class EmailService {
       to: options.to,
       subject: options.subject,
       html: options.html,
+      text: options.text,
       replyTo: options.replyTo,
       attachments: options.attachments,
     });
@@ -551,7 +462,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; replyTo?: string; attachments?: any[] }): Promise<string> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[] }): Promise<string> {
     console.log(`[EmailService] [STAGE: load-config] sendEmail called:`, {
       organizationId,
       to: options.to,
@@ -588,6 +499,7 @@ class EmailService {
       to: options.to,
       subject: options.subject,
       html: options.html,
+      text: options.text,
       replyTo,
       attachments: gmailAttachments,
     });
@@ -605,6 +517,7 @@ class EmailService {
       to: string;
       subject: string;
       html: string;
+      text?: string;
       replyTo?: string;
       attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
     },

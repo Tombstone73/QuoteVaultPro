@@ -41,6 +41,7 @@ import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestrat
 import { getStripeClient } from "../lib/stripe";
 import { captureAndApply as captureAndApplyStripeObservation } from "./stripePaymentReconciliationService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
+import { hydrateInvoicePdfLineItemsWithArtwork } from "./invoicePdfArtwork";
 import { getBillableBundleRoots, getCustomerVisibleBundleLines } from "./lineItemBundles";
 import { getInvoiceOrderContext } from "./invoiceOrderContext";
 import { storage } from "../storage";
@@ -2198,12 +2199,16 @@ export async function getPortalInvoicePdf(req: Request, invoiceId: string): Prom
 
   const paymentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
   const paymentSummary = resolveInvoicePdfFinancialSummary(invoice as any, paymentRows as any);
+  const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
+    organizationId: scope.organizationId,
+    lineItems: lineItems as any,
+  });
   const pdfBytes = await generateInvoicePdfBytes({
     invoice: invoice as any,
     customer: (customer as any) || null,
     companySettings: (orgCompany as any) || null,
     paymentSummary,
-    lineItems: lineItems as any,
+    lineItems: pdfLineItems as any,
     job,
   });
 

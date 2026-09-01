@@ -157,4 +157,25 @@ describe('Invoice PDF v1 layout system', () => {
 
     expect(readPdfContentStream(bytes)).toContain('INVOICE #15970');
   });
+
+  test('renders a valid artwork thumbnail but omits the misleading box when no derivative is available', async () => {
+    const params = {
+      invoice: { invoiceNumber: 20100, status: 'sent', currency: 'USD', totalCents: 1000 },
+      customer: null,
+      companySettings: null,
+      paymentSummary: { totalCents: 1000, amountPaidCents: 0, amountDueCents: 1000, statusLabel: 'Open' },
+      lineItems: [{ description: 'Artwork item', quantity: 1, lineTotalCents: 1000 }],
+    };
+    const withoutArtwork = await generateInvoicePdfBytes(params as any);
+    const withArtwork = await generateInvoicePdfBytes({
+      ...params,
+      lineItems: [{
+        ...params.lineItems[0],
+        thumbnailDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      }],
+    } as any);
+
+    expect(Buffer.from(withoutArtwork).toString('latin1')).not.toContain('/Subtype /Image');
+    expect(Buffer.from(withArtwork).toString('latin1')).toContain('/Subtype /Image');
+  });
 });

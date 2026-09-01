@@ -464,9 +464,10 @@ export async function acceptInvite(
 
 export async function acceptPortalInvite(
   token: string,
-  password: string
+  password: string,
+  returnTo?: string
 ): Promise<{ httpStatus: number; body: AcceptInviteResult }> {
-  const res = await postJson("/api/customer-portal/invites/accept", { token, password });
+  const res = await postJson("/api/customer-portal/invites/accept", { token, password, returnTo });
   const body: AcceptInviteResult = await res.json();
   return { httpStatus: res.status, body };
 }

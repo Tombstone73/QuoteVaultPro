@@ -44,6 +44,7 @@ import {
 } from '../shared/schema';
 import { desc } from 'drizzle-orm';
 import { getInvoiceOrderContext } from './services/invoiceOrderContext';
+import { hydrateInvoicePdfLineItemsWithArtwork } from './services/invoicePdfArtwork';
 
 // ---------------------------------------------------------------------------
 // In-process singleton guard — prevents overlapping job runs.
@@ -209,6 +210,10 @@ async function sendReminderForInvoice(opts: {
 
   let pdfBytes: Uint8Array;
   try {
+    const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
+      organizationId,
+      lineItems: lineItems as any,
+    });
     pdfBytes = await deps.generatePdf({
       invoice: fullInv as any,
       customer: null,
@@ -218,7 +223,7 @@ async function sendReminderForInvoice(opts: {
         amountDueCents: rollup.amountDueCents,
         statusLabel,
       },
-      lineItems: lineItems as any,
+      lineItems: pdfLineItems as any,
       job,
     });
   } catch (pdfErr: any) {

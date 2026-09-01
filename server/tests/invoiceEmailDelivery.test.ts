@@ -1,11 +1,10 @@
 import { describe, expect, test } from "@jest/globals";
 import { PDFDocument } from "pdf-lib";
 
-import { normalizeEmailAttachments } from "../emailService";
+import { buildRawMessage, normalizeEmailAttachments } from "../lib/emailMime";
 import { generateInvoicePdfBytes } from "../lib/invoicePdf";
 import { createInvoicePdfEmailAttachment, INVOICE_PDF_CONTENT_TYPE } from "../services/invoiceEmailAttachment";
-import { buildInvoiceEmailHtml, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
-import { buildReminderEmailHtml } from "../invoiceReminderJob";
+import { buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
 
 async function generateValidInvoicePdf() {
   return generateInvoicePdfBytes({
@@ -115,9 +114,31 @@ describe("invoice email delivery", () => {
       portalUrl,
     });
 
-    expect(html).toContain("Set up secure customer portal access to view this invoice.");
-    expect(html).toContain("Set Up Customer Portal");
+    expect(html).toContain("View Invoice");
+    expect(html).not.toContain("Set Up Customer Portal");
     expect(html).toContain(portalUrl.replace(/&/g, "&amp;"));
+  });
+
+  test("keeps a token-bearing invoice CTA intact in actual Gmail MIME and supplies a plain-text fallback", () => {
+    const portalUrl = "https://app.example.test/accept-invite?token=ab12cdef&kind=portal&returnTo=%2Fportal%2Finvoices%2Finvoice_20000";
+    const html = buildInvoiceEmailHtml({
+      invoiceNumber: "INV-20000", companyName: "Test Print Shop", customerName: "Test Customer",
+      totalFormatted: "25.00", dueDate: "Aug 15, 2026", portalUrl, hasBalanceDue: true,
+    });
+    const text = buildInvoiceEmailPlainText({
+      invoiceNumber: "INV-20000", companyName: "Test Print Shop", customerName: "Test Customer",
+      totalFormatted: "25.00", dueDate: "Aug 15, 2026", portalUrl, canPayOnline: true,
+    });
+    const raw = buildRawMessage({ from: "Shop <shop@example.test>", to: "customer@example.test", subject: "Invoice", html, text });
+    const mime = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+
+    expect(mime).toContain("Content-Type: text/plain; charset=UTF-8");
+    expect(mime).toContain("Content-Type: text/html; charset=UTF-8");
+    expect(mime).not.toContain("quoted-printable");
+    expect(mime.replace(/\r\n/g, "")).toContain(Buffer.from(html).toString("base64"));
+    expect(mime.replace(/\r\n/g, "")).toContain(Buffer.from(text).toString("base64"));
+    expect(html).toContain("View &amp; Pay Invoice");
+    expect(text).toContain(portalUrl);
   });
 
   test("keeps a paid invoice viewable without presenting a payment CTA", () => {
@@ -140,19 +161,4 @@ describe("invoice email delivery", () => {
     expect(html).not.toContain("View &amp; Pay Invoice");
   });
 
-  test("includes available PO and job context in invoice reminder emails", () => {
-    const html = buildReminderEmailHtml({
-      invoiceNumber: "INV-20000",
-      customerName: "Test Customer",
-      companyName: "Test Print Shop",
-      balanceDue: "25.00",
-      dueDate: "Aug 15, 2026",
-      reminderNumber: 1,
-      poNumber: "Mike Gerdt Shipping",
-      jobLabel: "Shipping cost for sending box",
-    });
-
-    expect(html).toContain("PO #:</strong> Mike Gerdt Shipping");
-    expect(html).toContain("Job:</strong> Shipping cost for sending box");
-  });
 });

@@ -33,6 +33,7 @@ import {
   previewPortalInvite,
   type InvitePreviewResult,
 } from "@/lib/api/platform";
+import { sanitizePortalReturnTarget } from "@shared/portalReturnTarget";
 
 // ─── Password form schema ─────────────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ export default function AcceptInvitePage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token") ?? "";
   const requestedKind = searchParams.get("kind");
+  const returnTo = sanitizePortalReturnTarget(searchParams.get("returnTo"));
   const { toast } = useToast();
 
   const [state, setState] = useState<PageState>({ phase: "loading" });
@@ -152,7 +154,7 @@ export default function AcceptInvitePage() {
     try {
       const isPortalInvite = currentPreview?.kind === "portal";
       const { httpStatus, body } = isPortalInvite
-        ? await acceptPortalInvite(token, password || "")
+        ? await acceptPortalInvite(token, password || "", returnTo)
         : await acceptInvite(token, password);
 
       if (body.success) {

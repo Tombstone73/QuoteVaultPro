@@ -6,6 +6,7 @@ import { db } from "../db";
 import { emailService } from "../emailService";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { sha256Hex } from "../lib/tokenHash";
+import { sanitizePortalReturnTarget } from "../../shared/portalReturnTarget";
 import {
   auditLogs,
   authIdentities,
@@ -67,9 +68,17 @@ function makeInviteToken(): string {
   return crypto.randomBytes(32).toString("hex");
 }
 
-export function getPortalInviteUrl(rawToken: string): string {
-  const baseUrl = getPublicWebOrigin() || "https://www.printershero.com";
-  return `${baseUrl.replace(/\/$/, "")}/accept-invite?token=${encodeURIComponent(rawToken)}&kind=portal`;
+export function getPortalInviteUrl(rawToken: string, returnTo?: string): string {
+  const configuredBaseUrl = getPublicWebOrigin();
+  let baseUrl = "https://www.printershero.com";
+  try {
+    if (configuredBaseUrl && new URL(configuredBaseUrl).protocol === "https:") baseUrl = configuredBaseUrl;
+  } catch {
+    // Fall back to the known HTTPS production entry point instead of sending
+    // a token over a non-secure or malformed configured origin.
+  }
+  const target = sanitizePortalReturnTarget(returnTo);
+  return `${baseUrl.replace(/\/$/, "")}/accept-invite?token=${encodeURIComponent(rawToken)}&kind=portal&returnTo=${encodeURIComponent(target)}`;
 }
 
 function getResetUrl(rawToken: string): string {
@@ -226,6 +235,7 @@ export async function createCustomerPortalAccess(input: {
   actorUserId?: string | null;
   accessRole?: "COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER";
   sendEmail?: boolean;
+  returnTo?: string;
   req?: Request;
 }) {
   const [contact] = await db
@@ -353,7 +363,7 @@ export async function createCustomerPortalAccess(input: {
     });
   }
 
-  return input.sendEmail === false ? { ...access, portalSetupUrl: getPortalInviteUrl(rawToken) } : access;
+  return input.sendEmail === false ? { ...access, portalSetupUrl: getPortalInviteUrl(rawToken, input.returnTo) } : access;
 }
 
 /**
@@ -370,6 +380,7 @@ export async function resolveInvoiceEmailPortalDestination(input: {
   customerId: string;
   recipientEmail: string;
   actorUserId?: string | null;
+  returnTo?: string;
   req?: Request;
 }): Promise<InvoiceEmailPortalDestination | null> {
   const recipientEmail = input.recipientEmail.trim().toLowerCase();
@@ -433,6 +444,7 @@ export async function resolveInvoiceEmailPortalDestination(input: {
     actorUserId: input.actorUserId,
     accessRole: matchingContacts[0].isPrimary ? "COMPANY_ADMIN" : "VIEWER",
     sendEmail: false,
+    returnTo: input.returnTo,
     req: input.req,
   });
   const portalSetupUrl = "portalSetupUrl" in access ? access.portalSetupUrl : null;

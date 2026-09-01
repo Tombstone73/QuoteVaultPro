@@ -1,5 +1,5 @@
 import { useState, FormEvent, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { apiFetch } from "@/lib/queryClient";
 import { HERO_LOGO_SRC, SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
+import { sanitizePortalReturnTarget } from "@shared/portalReturnTarget";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -18,15 +19,17 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const { isAuthenticated, isLoading: authLoading, user, isPortalCustomer } = useAuth();
+  const returnTo = sanitizePortalReturnTarget(new URLSearchParams(location.search).get("returnTo"));
 
   // Redirect if already authenticated
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      navigate(isPortalCustomer ? "/portal" : "/dashboard", { replace: true });
+      navigate(isPortalCustomer ? returnTo : "/dashboard", { replace: true });
     }
-  }, [isAuthenticated, authLoading, navigate, isPortalCustomer]);
+  }, [isAuthenticated, authLoading, navigate, isPortalCustomer, returnTo]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -71,7 +74,7 @@ export default function Login() {
         // This bypasses React Router and guarantees we enter the app
         const loginUser = data.user || user;
         const portalLogin = loginUser?.accountType === "PORTAL_CUSTOMER" || loginUser?.role === "customer";
-        window.location.assign(portalLogin ? "/portal" : "/dashboard");
+        window.location.assign(portalLogin ? returnTo : "/dashboard");
       } else {
         throw new Error("Login failed");
       }

@@ -121,6 +121,12 @@ import SupportPage from "@/pages/support";
 import Landing from "@/pages/landing";
 import ByosPage from "@/pages/byos";
 
+function PortalInvoiceLoginRedirect() {
+  const location = useLocation();
+  const returnTo = `${location.pathname}`;
+  return <Navigate to={`/login?returnTo=${encodeURIComponent(returnTo)}`} replace />;
+}
+
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword, isPortalCustomer } = useAuth();
 
@@ -143,6 +149,7 @@ function Router() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
+        <Route path="/portal/invoices/:id" element={<PortalInvoiceLoginRedirect />} />
         {/* Token-based proof review — no account required; the token IS the auth */}
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
         <Route path="/shared/reports/:token" element={<SharedReportPage />} />

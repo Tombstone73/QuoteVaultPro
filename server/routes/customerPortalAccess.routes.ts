@@ -19,6 +19,7 @@ import {
   resetCustomerPortalPassword,
   suspendCustomerPortalAccess,
 } from "../services/customerPortalAccessService";
+import { sanitizePortalReturnTarget } from "../../shared/portalReturnTarget";
 import {
   listPortalOnboardingBatches,
   listPortalOnboardingCompanies,
@@ -84,6 +85,7 @@ export function registerCustomerPortalInvitePublicRoutes(app: Express): void {
       .object({
         token: z.string().min(1, "Token is required."),
         password: z.string().min(8, "Password must be at least 8 characters."),
+        returnTo: z.string().optional(),
       })
       .safeParse(req.body);
 
@@ -107,7 +109,7 @@ export function registerCustomerPortalInvitePublicRoutes(app: Express): void {
       return res.json({
         success: true,
         kind: "portal",
-        redirectTo: "/portal",
+        redirectTo: sanitizePortalReturnTarget(parse.data.returnTo),
         user: result.user,
       });
     } catch (err) {
