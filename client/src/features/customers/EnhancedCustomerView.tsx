@@ -96,6 +96,7 @@ import {
   normalizeContactPickerResult,
   type NormalizedContactPickerResult,
 } from "./contactLinkingUi";
+import { InvoiceRecipientContactControl } from "./InvoiceRecipientContactControl";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -667,6 +668,46 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     },
   });
 
+  const updateInvoiceRecipientMutation = useMutation({
+    mutationFn: async ({ contactId, isBilling }: { contactId: string; isBilling: boolean }) => {
+      const response = await fetch(`/api/customer-contacts/${contactId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          relationshipCustomerId: customer.id,
+          isBilling,
+        }),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Failed to update invoice recipient");
+      }
+      return response.json();
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.setQueryData<CustomerWithRelations>(
+        [`/api/customers/${customer.id}`],
+        (current) => current ? {
+          ...current,
+          contacts: current.contacts.map((contact) => contact.id === variables.contactId
+            ? { ...contact, isBilling: variables.isBilling }
+            : contact),
+        } : current,
+      );
+      refreshCustomerContactData();
+      toast({
+        title: "Invoice recipients updated",
+        description: variables.isBilling
+          ? "This contact will receive invoices."
+          : "This contact will no longer automatically receive invoices.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Unable to update invoice recipient", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Unlink contact mutation (removes from company, doesn't delete)
   const unlinkContactMutation = useMutation({
     mutationFn: async (contactId: string) => {
@@ -876,8 +917,20 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                   </div>
                 </div>
 
-                {/* Actions */}
-                <DropdownMenu>
+                {/* Invoice recipient and row actions */}
+                <div className="flex items-center gap-1">
+                  <InvoiceRecipientContactControl
+                    contactId={contact.id}
+                    contactName={`${contact.firstName || ""} ${contact.lastName || ""}`.trim() || "contact"}
+                    email={contact.email}
+                    checked={contact.isBilling === true}
+                    pending={updateInvoiceRecipientMutation.isPending}
+                    onCheckedChange={(isBilling) => updateInvoiceRecipientMutation.mutate({
+                      contactId: contact.id,
+                      isBilling,
+                    })}
+                  />
+                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
                       variant="ghost"
@@ -916,7 +969,8 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                       Remove from Company
                     </DropdownMenuItem>
                   </DropdownMenuContent>
-                </DropdownMenu>
+                  </DropdownMenu>
+                </div>
               </div>
             ))}
           </div>

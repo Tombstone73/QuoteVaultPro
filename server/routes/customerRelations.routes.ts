@@ -69,6 +69,15 @@ const linkExistingContactSchema = z.object({
   confirmMove: z.boolean().optional().default(false),
 });
 
+const createCustomerContactRequestSchema = insertCustomerContactSchema.extend({
+  isBilling: z.boolean().optional(),
+});
+
+const updateCustomerContactRequestSchema = updateCustomerContactSchema.extend({
+  relationshipCustomerId: z.string().trim().min(1).optional(),
+  isBilling: z.boolean().optional(),
+});
+
 function customerLinkContext(customer: { id: string; companyName?: string | null } | null | undefined) {
   if (!customer) return null;
   return {
@@ -192,12 +201,12 @@ export function registerCustomerRelationsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return jsonError(res, 500, "Missing organization context");
-      const contactData = insertCustomerContactSchema.parse({
+      const contactData = createCustomerContactRequestSchema.parse({
         ...req.body,
         organizationId,
         customerId: req.params.customerId,
       });
-      const { organizationId: _ignoredOrganizationId, customerId, ...contactFields } = contactData;
+      const { organizationId: _ignoredOrganizationId, customerId, isBilling, ...contactFields } = contactData;
       if (!customerId) return jsonError(res, 400, "Customer is required");
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
@@ -206,6 +215,7 @@ export function registerCustomerRelationsRoutes(
         actorUserId,
         customerId,
         contact: contactFields,
+        isBilling,
       });
       res.json(contact);
     } catch (error) {
@@ -388,14 +398,17 @@ export function registerCustomerRelationsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return jsonError(res, 500, "Missing organization context");
-      const contactData = updateCustomerContactSchema.parse(req.body);
+      const contactData = updateCustomerContactRequestSchema.parse(req.body);
+      const { relationshipCustomerId, isBilling, ...contactPatch } = contactData;
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
       const contact = await canonicalCustomerContactOperations.updateContact({
         organizationId,
         actorUserId,
         contactId: req.params.id,
-        patch: contactData,
+        patch: contactPatch,
+        customerId: relationshipCustomerId,
+        isBilling,
       });
       res.json(contact);
     } catch (error) {

@@ -2,6 +2,7 @@ import { and, eq, ilike, sql } from "drizzle-orm";
 import { auditLogs, customerContactLinks, customers, insertCustomerContactSchema, insertCustomerSchema, updateCustomerContactSchema, updateCustomerSchema } from "@shared/schema";
 import { db } from "../../db";
 import { CustomersRepository } from "../../storage/customers.repo";
+import { hasUsableInvoiceRecipientEmail } from "@shared/invoiceRecipientContact";
 
 export class CanonicalCustomerContactError extends Error {
   constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); }
@@ -40,37 +41,45 @@ export class CanonicalCustomerContactOperations {
     });
   }
 
-  async createContact(input: { organizationId: string; actorUserId: string; customerId?: string | null; contact: Record<string, unknown>; role?: string | null; auditReference?: string }) {
+  async createContact(input: { organizationId: string; actorUserId: string; customerId?: string | null; contact: Record<string, unknown>; role?: string | null; isBilling?: boolean; auditReference?: string }) {
     const parsed = insertCustomerContactSchema.parse({ ...input.contact, organizationId: input.organizationId, customerId: input.customerId ?? null }) as any;
     const { organizationId: _org, customerId: _customer, ...fields } = parsed;
+    if (input.isBilling === true && !hasUsableInvoiceRecipientEmail(fields.email)) {
+      throw new CanonicalCustomerContactError("CONTACT_EMAIL_REQUIRED", "Add a valid email address before enabling Receives Invoices.", 400);
+    }
     return db.transaction(async (tx) => {
       const repository = new CustomersRepository(tx as any);
       const created = input.customerId ? await repository.createCustomerContactForOrganization(input.organizationId, input.customerId, fields) : await repository.createContactForOrganization(input.organizationId, fields);
       if (input.customerId && input.role !== undefined) await tx.update(customerContactLinks).set({ role: input.role, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, input.customerId), eq(customerContactLinks.contactId, created.id), eq(customerContactLinks.status, "active")));
-      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_contact_created", entityType: "customer_contact", entityId: created.id, entityName: `${created.firstName} ${created.lastName}`.trim(), description: "Created contact through canonical Contact operation.", newValues: { customerId: input.customerId ?? null, role: input.role ?? null, auditReference: input.auditReference ?? null } as any } as any);
+      if (input.customerId && input.isBilling !== undefined) await tx.update(customerContactLinks).set({ isBilling: input.isBilling, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, input.customerId), eq(customerContactLinks.contactId, created.id), eq(customerContactLinks.status, "active")));
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_contact_created", entityType: "customer_contact", entityId: created.id, entityName: `${created.firstName} ${created.lastName}`.trim(), description: "Created contact through canonical Contact operation.", newValues: { customerId: input.customerId ?? null, role: input.role ?? null, isBilling: input.isBilling, auditReference: input.auditReference ?? null } as any } as any);
       return created;
     });
   }
 
-  async updateContact(input: { organizationId: string; actorUserId: string; contactId: string; patch: Record<string, unknown>; customerId?: string | null; role?: string | null; auditReference?: string }) {
+  async updateContact(input: { organizationId: string; actorUserId: string; contactId: string; patch: Record<string, unknown>; customerId?: string | null; role?: string | null; isBilling?: boolean; auditReference?: string }) {
     const parsedPatch = updateCustomerContactSchema.parse(input.patch) as any;
     const { isPrimary, customerId: _legacyCustomerId, organizationId: _organizationId, ...patch } = parsedPatch;
-    if (!Object.keys(patch).length && input.role === undefined && isPrimary === undefined) throw new CanonicalCustomerContactError("CONTACT_PATCH_EMPTY", "Provide at least one contact field to update.", 400);
+    if (!Object.keys(patch).length && input.role === undefined && input.isBilling === undefined && isPrimary === undefined) throw new CanonicalCustomerContactError("CONTACT_PATCH_EMPTY", "Provide at least one contact field to update.", 400);
     return db.transaction(async (tx) => {
       const repository = new CustomersRepository(tx as any);
       const previous = await repository.getContactWithRelations(input.contactId, input.organizationId);
       if (!previous) throw new CanonicalCustomerContactError("CONTACT_NOT_FOUND", "Contact not found.", 404);
+      const effectiveEmail = patch.email === undefined ? previous.email : patch.email;
+      if (input.isBilling === true && !hasUsableInvoiceRecipientEmail(effectiveEmail)) {
+        throw new CanonicalCustomerContactError("CONTACT_EMAIL_REQUIRED", "Add a valid email address before enabling Receives Invoices.", 400);
+      }
       const updated = Object.keys(patch).length ? await repository.updateCustomerContactForOrganization(input.organizationId, input.contactId, patch) : previous;
       const links = await tx.select().from(customerContactLinks).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.contactId, input.contactId), eq(customerContactLinks.status, "active")));
       const relationshipCustomerId = input.customerId ?? (links.length === 1 ? links[0].customerId : null);
-      if ((input.role !== undefined || isPrimary !== undefined) && !relationshipCustomerId) throw new CanonicalCustomerContactError("CONTACT_RELATIONSHIP_AMBIGUOUS", "Select the customer relationship to update.", 409);
-      if (relationshipCustomerId && (input.role !== undefined || isPrimary !== undefined)) {
+      if ((input.role !== undefined || input.isBilling !== undefined || isPrimary !== undefined) && !relationshipCustomerId) throw new CanonicalCustomerContactError("CONTACT_RELATIONSHIP_AMBIGUOUS", "Select the customer relationship to update.", 409);
+      if (relationshipCustomerId && (input.role !== undefined || input.isBilling !== undefined || isPrimary !== undefined)) {
         const relationship = links.find((link) => link.customerId === relationshipCustomerId);
         if (!relationship) throw new CanonicalCustomerContactError("CONTACT_RELATIONSHIP_NOT_FOUND", "Contact relationship not found.", 404);
         if (isPrimary === true) await tx.update(customerContactLinks).set({ isPrimary: false, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, relationshipCustomerId), eq(customerContactLinks.status, "active")));
-        await tx.update(customerContactLinks).set({ ...(input.role === undefined ? {} : { role: input.role }), ...(isPrimary === undefined ? {} : { isPrimary }), updatedAt: new Date() }).where(eq(customerContactLinks.id, relationship.id));
+        await tx.update(customerContactLinks).set({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.isBilling === undefined ? {} : { isBilling: input.isBilling }), ...(isPrimary === undefined ? {} : { isPrimary }), updatedAt: new Date() }).where(eq(customerContactLinks.id, relationship.id));
       }
-      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_contact_updated", entityType: "customer_contact", entityId: input.contactId, entityName: `${updated.firstName} ${updated.lastName}`.trim(), description: "Updated contact through canonical Contact operation.", oldValues: previous as any, newValues: { patch, role: input.role, auditReference: input.auditReference ?? null } as any } as any);
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_contact_updated", entityType: "customer_contact", entityId: input.contactId, entityName: `${updated.firstName} ${updated.lastName}`.trim(), description: "Updated contact through canonical Contact operation.", oldValues: previous as any, newValues: { patch, role: input.role, isBilling: input.isBilling, auditReference: input.auditReference ?? null } as any } as any);
       return updated;
     });
   }

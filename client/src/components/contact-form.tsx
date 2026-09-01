@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
+import { hasUsableInvoiceRecipientEmail } from "@shared/invoiceRecipientContact";
 
 const contactSchema = z.object({
   firstName: z.string().min(1, "First name is required"),
@@ -19,6 +20,14 @@ const contactSchema = z.object({
   isPrimary: z.boolean().default(false),
   isBilling: z.boolean().default(false),
   isShipping: z.boolean().default(false),
+}).superRefine((contact, context) => {
+  if (contact.isBilling && !hasUsableInvoiceRecipientEmail(contact.email)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["email"],
+      message: "Email is required for an invoice recipient",
+    });
+  }
 });
 
 type ContactFormData = z.infer<typeof contactSchema>;
@@ -96,7 +105,7 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
       const response = await fetch(`/api/customer-contacts/${contact?.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, relationshipCustomerId: customerId }),
         credentials: "include",
       });
       if (!response.ok) {
@@ -131,6 +140,7 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
 
   const isPrimary = watch("isPrimary");
   const isBilling = watch("isBilling");
+  const email = watch("email");
   const isShipping = watch("isShipping");
 
   // Reset form when contact changes or dialog opens
@@ -255,11 +265,15 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
                 <Checkbox
                   id="isBilling"
                   checked={isBilling}
+                  disabled={!hasUsableInvoiceRecipientEmail(email) && !isBilling}
                   onCheckedChange={(checked) => setValue("isBilling", checked as boolean)}
                 />
                 <Label htmlFor="isBilling" className="font-normal cursor-pointer">
                   Invoice Recipient - Receives invoices and payment communications
                 </Label>
+                {!hasUsableInvoiceRecipientEmail(email) && (
+                  <span className="text-xs text-muted-foreground">Email required</span>
+                )}
               </div>
 
               <div className="flex items-center space-x-2">
