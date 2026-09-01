@@ -7,6 +7,8 @@ import {
   loadV2StandaloneAuthConfig,
   safePortalReturnTo,
   type V2AuthenticatedStaff,
+  type V2PortalCredentialLifecycle,
+  type V2PortalCredentialVerifier,
   type V2StaffCredentialVerifier,
 } from "../../infrastructure/authentication/standaloneStaffAuth";
 import { requireV2CsrfToken } from "../../infrastructure/authentication/sessionCsrf";
@@ -89,5 +91,35 @@ describe("standalone V2 Staff authentication", () => {
     const { app } = appFor(createVerifier(), config);
     await request(app).post("/v2/auth/login").set("origin", "https://attacker.invalid").send({ email: staff.email, password: "correct-password" }).expect(403);
     expect(() => loadV2StandaloneAuthConfig({ NODE_ENV: "production", SESSION_SECRET: "short" })).toThrow(/SESSION_SECRET/);
+  });
+});
+
+describe("standalone V2 Customer Portal authentication", () => {
+  const portal = { id: "portal-user", email: "customer@example.test", displayName: "Customer", organizationId: "org-a", customerId: "customer-a" };
+  const portalVerifier: V2PortalCredentialVerifier = {
+    authenticatePortal: async (email, password) => email === portal.email && password === "correct-password" ? portal : null,
+    currentPortal: async (userId, organizationId) => userId === portal.id && organizationId === portal.organizationId ? portal : null,
+  };
+  const lifecycle: V2PortalCredentialLifecycle & { setup: string[]; reset: string[]; requested: string[] } = {
+    setup: [], reset: [], requested: [],
+    async establishCredentials(token, password) { if (token !== "setup-token" || password.length < 12) throw new Error("This setup link is invalid or expired."); this.setup.push(token); },
+    async requestPasswordReset(email) { this.requested.push(email); },
+    async resetPassword(token, password) { if (token !== "reset-token" || password.length < 12) throw new Error("This password reset link is invalid or expired."); this.reset.push(token); },
+  };
+  const app = () => {
+    const value = express(); value.use(express.json());
+    createStandaloneStaffAuthentication({ verifier: createVerifier(), portalVerifier, portalLifecycle: lifecycle, config: loadV2StandaloneAuthConfig({ SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" }), sessionMiddleware: session({ name: "v2.sid", secret: "x".repeat(32), resave: false, saveUninitialized: false }) }).install(value);
+    return value;
+  };
+  test("uses one-time lifecycle endpoints without account enumeration and preserves safe deep links", async () => {
+    await request(app()).post("/v2/portal/auth/setup").send({ token: "setup-token", password: "correct-password" }).expect(200);
+    await request(app()).post("/v2/portal/auth/setup").send({ token: "bad", password: "correct-password" }).expect(400);
+    const unknown = await request(app()).post("/v2/portal/auth/forgot-password").send({ email: "unknown@example.test" }).expect(202);
+    expect(unknown.body.data).toEqual({ accepted: true });
+    await request(app()).post("/v2/portal/auth/reset-password").send({ token: "reset-token", password: "correct-password" }).expect(200);
+    const agent = request.agent(app());
+    const login = await agent.post("/v2/portal/auth/login").send({ email: portal.email, password: "correct-password", returnTo: "//attacker.invalid" }).expect(200);
+    expect(login.body.data.returnTo).toBe("/portal/invoices");
+    await agent.get("/v2/portal/auth/session").expect(200);
   });
 });

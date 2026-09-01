@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { createHash, randomBytes } from "node:crypto";
 import connectPg from "connect-pg-simple";
 import express, { type Express, type Request, type RequestHandler, type Response } from "express";
 import session from "express-session";
@@ -8,6 +9,7 @@ import { PermissionSetPrincipalIssuer } from "../../src/authorization/permission
 import type { AuthenticatedIdentity } from "../../src/authorization/principalIssuer.js";
 import type { Principal } from "../../src/authorization/principals.js";
 import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
+import { PostgresEmailIntegrationService } from "../communications/postgresEmailIntegration.js";
 import type { TrustedHostIdentitySource } from "./trustedHostPrincipalProvider.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "./sessionCsrf.js";
 
@@ -23,6 +25,11 @@ export interface V2StaffCredentialVerifier {
 export interface V2PortalCredentialVerifier {
   authenticatePortal(email: string, password: string): Promise<V2AuthenticatedPortal | null>;
   currentPortal(userId: string, organizationId: string): Promise<V2AuthenticatedPortal | null>;
+}
+export interface V2PortalCredentialLifecycle {
+  establishCredentials(token: string, password: string): Promise<void>;
+  requestPasswordReset(email: string): Promise<void>;
+  resetPassword(token: string, password: string): Promise<void>;
 }
 
 export type V2Session = session.Session & {
@@ -51,6 +58,16 @@ const readBodyCredentials = (body: unknown): { email: string; password: string }
   const password = typeof value.password === "string" ? value.password : "";
   return email && password && email.length <= 320 && password.length <= 1024 ? { email, password } : null;
 };
+const readTokenPassword = (body: unknown): { token: string; password: string } | null => {
+  if (!body || typeof body !== "object") return null;
+  const value = body as Record<string, unknown>;
+  const token = typeof value.token === "string" ? value.token.trim() : "";
+  const password = typeof value.password === "string" ? value.password : "";
+  return token && password && token.length <= 512 && password.length <= 1024 ? { token, password } : null;
+};
+const passwordIsAcceptable = (password: string) => password.length >= 12 && password.length <= 1024;
+const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
+const portalCredentialError = (error: unknown, fallback: string) => error instanceof Error && error.message === "Choose a password with at least 12 characters." ? error.message : fallback;
 
 export const safePortalReturnTo = (value: unknown): string => {
   if (typeof value !== "string") return "/portal/invoices";
@@ -150,7 +167,12 @@ export class PostgresStandalonePortalCredentialVerifier implements V2PortalCrede
       `SELECT u.id,u.email,u.first_name,u.last_name,ai.password_hash,cpa.organization_id,cpa.customer_id,cpa.display_name
        FROM users u JOIN customer_portal_access cpa ON cpa.user_id=u.id AND cpa.status='ACTIVE'
        JOIN auth_identities ai ON ai.user_id=u.id AND ai.provider='password'
-       WHERE u.account_type='PORTAL_CUSTOMER' AND COALESCE(u.must_set_password,false)=false AND ${where}`,
+       JOIN customers c ON c.id=cpa.customer_id AND c.organization_id=cpa.organization_id
+       LEFT JOIN customer_contacts cc ON cc.id=cpa.contact_id AND cc.organization_id=cpa.organization_id
+       LEFT JOIN customer_contact_links l ON l.organization_id=cpa.organization_id AND l.customer_id=cpa.customer_id AND l.contact_id=cpa.contact_id
+       WHERE u.account_type='PORTAL_CUSTOMER' AND COALESCE(u.must_set_password,false)=false
+         AND c.is_active IS DISTINCT FROM false AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
+         AND (cpa.contact_id IS NULL OR (cc.status='active' AND l.status='active')) AND ${where}`,
       [...values],
     );
     const row=result.rows[0]; if(!row?.email) return null;
@@ -158,6 +180,114 @@ export class PostgresStandalonePortalCredentialVerifier implements V2PortalCrede
   }
   async authenticatePortal(email:string,password:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("lower(u.email)=lower($1)",[email]); if(!portal?.passwordHash || !(await bcrypt.compare(password,portal.passwordHash))) return null; return {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId}; }
   async currentPortal(userId:string,organizationId:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("u.id=$1 AND cpa.organization_id=$2",[userId,organizationId]); return portal && {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId}; }
+}
+
+/** Owns only the one-time credential handoff for a canonical portal-access
+ * record. Customer/contact authority, invitation delivery, and portal
+ * session issuance deliberately stay in their existing V2 owners. */
+export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLifecycle {
+  private readonly communications: PostgresEmailIntegrationService;
+  constructor(private readonly pool: Pool, private readonly publicWebOrigin: string | undefined) {
+    this.communications = new PostgresEmailIntegrationService(pool);
+  }
+
+  private setupUrl(token: string, path: "/portal/setup" | "/portal/reset-password") {
+    const origin = this.publicWebOrigin?.replace(/\/$/u, "");
+    if (!origin) throw new Error("The public portal origin is unavailable.");
+    return `${origin}${path}?token=${encodeURIComponent(token)}`;
+  }
+
+  private validPassword(password: string) {
+    if (!passwordIsAcceptable(password)) throw new Error("Choose a password with at least 12 characters.");
+  }
+
+  async establishCredentials(token: string, password: string): Promise<void> {
+    this.validPassword(password);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const invite = await client.query<{ id:string; access_id:string; organization_id:string; email:string; user_id:string|null; status:string }>(
+        `SELECT t.id,t.access_id,t.organization_id,a.email,a.user_id,a.status::text
+         FROM customer_portal_invite_tokens t
+         JOIN customer_portal_access a ON a.id=t.access_id AND a.organization_id=t.organization_id
+         JOIN customers c ON c.id=a.customer_id AND c.organization_id=a.organization_id
+         LEFT JOIN customer_contacts cc ON cc.id=a.contact_id AND cc.organization_id=a.organization_id
+         LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
+         WHERE t.token_hash=$1 AND t.used_at IS NULL AND t.revoked_at IS NULL AND t.expires_at>now()
+           AND a.status='PENDING_INVITE' AND c.is_active IS DISTINCT FROM false
+           AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`,
+        [tokenHash(token)],
+      );
+      const access = invite.rows[0];
+      if (!access) throw new Error("This setup link is invalid or expired.");
+      const email = access.email.trim().toLowerCase();
+      const existing = await client.query<{ id:string; account_type:string; email:string }>("SELECT id,account_type::text,email FROM users WHERE lower(email)=lower($1) FOR UPDATE", [email]);
+      let userId = access.user_id;
+      if (existing.rows[0]) {
+        if (existing.rows[0].account_type !== "PORTAL_CUSTOMER" || (userId && existing.rows[0].id !== userId)) throw new Error("This setup link is unavailable.");
+        userId = existing.rows[0].id;
+      }
+      if (!userId) {
+        userId = randomBytes(18).toString("base64url");
+        await client.query("INSERT INTO users(id,email,account_type,role,must_set_password) VALUES($1,$2,'PORTAL_CUSTOMER','customer',false)", [userId, email]);
+      }
+      const passwordHash = await bcrypt.hash(password, 12);
+      await client.query("INSERT INTO auth_identities(id,user_id,provider,password_hash,password_set_at) VALUES($1,$2,'password',$3,now()) ON CONFLICT(user_id,provider) DO UPDATE SET password_hash=EXCLUDED.password_hash,password_set_at=now(),updated_at=now()", [randomBytes(18).toString("base64url"), userId, passwordHash]);
+      await client.query("UPDATE customer_portal_invite_tokens SET used_at=now() WHERE id=$1", [access.id]);
+      await client.query("UPDATE customer_portal_invite_tokens SET revoked_at=now() WHERE access_id=$1 AND id<>$2 AND used_at IS NULL AND revoked_at IS NULL", [access.access_id, access.id]);
+      await client.query("UPDATE customer_portal_access SET user_id=$3,status='ACTIVE',invite_accepted_at=now(),password_set_at=now(),updated_at=now() WHERE organization_id=$1 AND id=$2", [access.organization_id, access.access_id, userId]);
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  async requestPasswordReset(emailInput: string): Promise<void> {
+    const email = emailInput.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) return;
+    const client = await this.pool.connect(); let recipient = ""; let token = ""; let organizationId = "";
+    try {
+      await client.query("BEGIN");
+      const access = await client.query<{ id:string; organization_id:string; email:string }>(
+        `SELECT a.id,a.organization_id,a.email FROM customer_portal_access a
+         JOIN users u ON u.id=a.user_id AND u.account_type='PORTAL_CUSTOMER'
+         JOIN customers c ON c.id=a.customer_id AND c.organization_id=a.organization_id
+         LEFT JOIN customer_contacts cc ON cc.id=a.contact_id AND cc.organization_id=a.organization_id
+         LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
+         WHERE a.status='ACTIVE' AND lower(a.email)=lower($1) AND c.is_active IS DISTINCT FROM false
+           AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`, [email]);
+      const row = access.rows[0];
+      if (!row) { await client.query("COMMIT"); return; }
+      token = randomBytes(32).toString("hex"); recipient = row.email; organizationId = row.organization_id;
+      await client.query("UPDATE v2_portal_password_reset_tokens SET revoked_at=now() WHERE access_id=$1 AND used_at IS NULL AND revoked_at IS NULL", [row.id]);
+      await client.query("INSERT INTO v2_portal_password_reset_tokens(access_id,organization_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '2 hours')", [row.id, organizationId, tokenHash(token)]);
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+    await this.communications.sendPortalPasswordReset(organizationId, recipient, this.setupUrl(token, "/portal/reset-password"));
+  }
+
+  async resetPassword(token: string, password: string): Promise<void> {
+    this.validPassword(password);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reset = await client.query<{ id:string; access_id:string; user_id:string|null }>(
+        `SELECT t.id,t.access_id,a.user_id FROM v2_portal_password_reset_tokens t
+         JOIN customer_portal_access a ON a.id=t.access_id AND a.organization_id=t.organization_id
+         JOIN customers c ON c.id=a.customer_id AND c.organization_id=a.organization_id
+         LEFT JOIN customer_contacts cc ON cc.id=a.contact_id AND cc.organization_id=a.organization_id
+         LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
+         WHERE t.token_hash=$1 AND t.used_at IS NULL AND t.revoked_at IS NULL AND t.expires_at>now() AND a.status='ACTIVE'
+           AND c.is_active IS DISTINCT FROM false AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`, [tokenHash(token)]);
+      const row = reset.rows[0];
+      if (!row?.user_id) throw new Error("This password reset link is invalid or expired.");
+      const passwordHash = await bcrypt.hash(password, 12);
+      await client.query("UPDATE auth_identities SET password_hash=$2,password_set_at=now(),updated_at=now() WHERE user_id=$1 AND provider='password'", [row.user_id, passwordHash]);
+      await client.query("UPDATE v2_portal_password_reset_tokens SET used_at=now() WHERE id=$1", [row.id]);
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
 }
 
 export type StandaloneStaffAuthentication = Readonly<{
@@ -172,6 +302,7 @@ export type StandaloneStaffAuthentication = Readonly<{
 export const createStandaloneStaffAuthentication = (input: Readonly<{
   verifier: V2StaffCredentialVerifier;
   portalVerifier?: V2PortalCredentialVerifier;
+  portalLifecycle?: V2PortalCredentialLifecycle;
   portalIssuer?: PermissionSetPrincipalIssuer;
   config: V2StandaloneAuthConfig;
   sessionMiddleware: RequestHandler;
@@ -265,15 +396,36 @@ export const createStandaloneStaffAuthentication = (input: Readonly<{
         response.status(200).json({ ok: true, data: { loggedOut: true } });
       });
     });
-    app.post("/v2/portal/auth/login", requireOrigin, rateLimit({windowMs:15*60*1000,max:10,standardHeaders:true,legacyHeaders:false}), async (request,response) => {
-      const credentials=readBodyCredentials(request.body); const portal=credentials && input.portalVerifier ? await input.portalVerifier.authenticatePortal(credentials.email,credentials.password).catch(()=>null) : null;
-      if(!portal) return invalidCredentials(response);
+    const establishPortalSession = async (request: Request, response: Response, portal: V2AuthenticatedPortal, returnToInput: unknown) => {
       const sessionRequest=request as V2SessionRequest;
       await new Promise<void>((resolve,reject)=>sessionRequest.session.regenerate((error)=>error?reject(error):resolve()));
-      const returnTo=safePortalReturnTo(request.body?.returnTo);
+      const returnTo=safePortalReturnTo(returnToInput);
       sessionRequest.session.v2PortalAuth={subjectId:portal.id,organizationId:portal.organizationId,returnTo};
       await new Promise<void>((resolve,reject)=>sessionRequest.session.save((error)=>error?reject(error):resolve()));
       response.status(200).json({ok:true,data:{portal:{displayName:portal.displayName,customerId:portal.customerId},returnTo,csrfToken:issueV2CsrfToken(sessionRequest),sessionScope:issueV2SessionScope(sessionRequest)}});
+    };
+    app.post("/v2/portal/auth/login", requireOrigin, rateLimit({windowMs:15*60*1000,max:10,standardHeaders:true,legacyHeaders:false}), async (request,response) => {
+      const credentials=readBodyCredentials(request.body); const portal=credentials && input.portalVerifier ? await input.portalVerifier.authenticatePortal(credentials.email,credentials.password).catch(()=>null) : null;
+      if(!portal) return invalidCredentials(response);
+      await establishPortalSession(request,response,portal,request.body?.returnTo);
+    });
+    app.post("/v2/portal/auth/setup", requireOrigin, rateLimit({windowMs:15*60*1000,max:10,standardHeaders:true,legacyHeaders:false}), async (request,response) => {
+      const credentials=readTokenPassword(request.body);
+      if (!credentials || !input.portalLifecycle) return response.status(400).json({ok:false,error:{code:"INVALID_SETUP",message:"This setup link is invalid or expired."}});
+      try { await input.portalLifecycle.establishCredentials(credentials.token,credentials.password); }
+      catch (error) { return response.status(400).json({ok:false,error:{code:"INVALID_SETUP",message:portalCredentialError(error,"This setup link is invalid or expired.")}}); }
+      response.status(200).json({ok:true,data:{setupComplete:true}});
+    });
+    app.post("/v2/portal/auth/forgot-password", requireOrigin, rateLimit({windowMs:15*60*1000,max:5,standardHeaders:true,legacyHeaders:false}), async (request,response) => {
+      const email=typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "";
+      try { if (email && input.portalLifecycle) await input.portalLifecycle.requestPasswordReset(email); } catch { /* Never disclose reset eligibility or provider state. */ }
+      response.status(202).json({ok:true,data:{accepted:true}});
+    });
+    app.post("/v2/portal/auth/reset-password", requireOrigin, rateLimit({windowMs:15*60*1000,max:10,standardHeaders:true,legacyHeaders:false}), async (request,response) => {
+      const credentials=readTokenPassword(request.body);
+      if (!credentials || !input.portalLifecycle) return response.status(400).json({ok:false,error:{code:"INVALID_RESET",message:"This password reset link is invalid or expired."}});
+      try { await input.portalLifecycle.resetPassword(credentials.token,credentials.password); response.status(200).json({ok:true,data:{passwordReset:true}}); }
+      catch (error) { response.status(400).json({ok:false,error:{code:"INVALID_RESET",message:portalCredentialError(error,"This password reset link is invalid or expired.")}}); }
     });
     app.get("/v2/portal/auth/session", async (request,response) => {
       try { const principal=await portalPrincipal.principal(request); if(principal.kind!=="portal") throw new Error("Portal unavailable"); const sessionRequest=request as V2SessionRequest; response.status(200).json({ok:true,data:{portal:{displayName:principal.subjectId,customerId:principal.customerId},returnTo:safePortalReturnTo(sessionRequest.session.v2PortalAuth?.returnTo),csrfToken:issueV2CsrfToken(sessionRequest),sessionScope:issueV2SessionScope(sessionRequest)}}); }

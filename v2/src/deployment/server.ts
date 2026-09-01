@@ -11,6 +11,7 @@ import {
   createStandaloneStaffAuthentication,
   createV2SessionMiddleware,
   loadV2StandaloneAuthConfig,
+  PostgresPortalCredentialLifecycle,
   PostgresStandalonePortalCredentialVerifier,
   PostgresStandaloneStaffCredentialVerifier,
   type StandaloneStaffAuthentication,
@@ -104,6 +105,7 @@ export const startV2DeploymentServer = async (
   const authentication = createStandaloneStaffAuthentication({
     verifier: new PostgresStandaloneStaffCredentialVerifier(pool),
     portalVerifier: new PostgresStandalonePortalCredentialVerifier(pool),
+    portalLifecycle: new PostgresPortalCredentialLifecycle(pool, authConfig.publicWebOrigin),
     portalIssuer: new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(pool)),
     config: authConfig,
     sessionMiddleware: createV2SessionMiddleware(databaseUrl, authConfig),

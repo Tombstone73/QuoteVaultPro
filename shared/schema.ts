@@ -3352,6 +3352,22 @@ export const insertCustomerPortalAccessSchema = createInsertSchema(customerPorta
   updatedAt: true,
 });
 
+export const v2PortalPasswordResetTokens = pgTable("v2_portal_password_reset_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  accessId: varchar("access_id").notNull().references(() => customerPortalAccess.id, { onDelete: "cascade" }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("v2_portal_password_reset_tokens_hash_uidx").on(table.tokenHash),
+  index("v2_portal_password_reset_tokens_access_idx").on(table.accessId),
+  index("v2_portal_password_reset_tokens_org_expiry_idx").on(table.organizationId, table.expiresAt),
+  uniqueIndex("v2_portal_password_reset_tokens_active_access_uidx").on(table.accessId).where(sql`used_at IS NULL AND revoked_at IS NULL`),
+]);
+
 export const insertCustomerPortalInviteTokenSchema = createInsertSchema(customerPortalInviteTokens).omit({
   id: true,
   createdAt: true,

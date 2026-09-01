@@ -79,6 +79,19 @@ export class PostgresEmailIntegrationService {
     if(!response.data.id)throw new V2ApplicationError("RETRYABLE_FAILURE","The email provider did not confirm portal invitation delivery.");
     return response.data.id;
   }
+  /** Password reset uses the same tenant-owned Gmail authorization as portal
+   * onboarding. The one-time URL is intentionally passed only to Gmail and is
+   * never returned to staff, audit projections, or browser state. */
+  async sendPortalPasswordReset(organizationId:string, recipient:string, resetUrl:string): Promise<string> {
+    const integration=await this.requireReady(organizationId);
+    const clientId=process.env.GOOGLE_CLIENT_ID,clientSecret=process.env.GOOGLE_CLIENT_SECRET;
+    if(!clientId||!clientSecret)throw new V2ApplicationError("RETRYABLE_FAILURE","The platform Gmail delivery connection is unavailable.");
+    const oauth=new google.auth.OAuth2(clientId,clientSecret);oauth.setCredentials({refresh_token:integration.refreshToken});
+    const raw=Buffer.from([`From: \"${integration.displayName}\" <${integration.sendingAddress}>`,`To: ${recipient}`,"Subject: Reset your PrintersHero customer portal password","MIME-Version: 1.0","Content-Type: text/plain; charset=utf-8","",`Reset your PrintersHero customer portal password: ${resetUrl}`].join("\r\n")).toString("base64url");
+    const response=await google.gmail({version:"v1",auth:oauth}).users.messages.send({userId:"me",requestBody:{raw}});
+    if(!response.data.id)throw new V2ApplicationError("RETRYABLE_FAILURE","The email provider did not confirm password reset delivery.");
+    return response.data.id;
+  }
   async adoptLegacy(organizationId:string, principal:Principal): Promise<EmailReadiness> {
     if (!emailCredentialEncryptionConfigured()) throw new V2ApplicationError("RETRYABLE_FAILURE","Provider credential encryption is unavailable.");
     const client=await this.pool.connect(); try { await client.query("BEGIN");
