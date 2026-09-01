@@ -3,9 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDown, ArrowUp, ArrowUpDown, Plus, FileText, DollarSign, Mail } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Plus, FileText, DollarSign, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useBatchSendInvoices, useInvoices, type InvoiceEmailStatus } from "@/hooks/useInvoices";
+import { useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -60,13 +60,17 @@ export default function InvoicesListPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<InvoiceSortKey>("issueDate");
   const [sortDir, setSortDir] = useState<InvoiceSortDir>("desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
 
-  const { data: invoices, isLoading } = useInvoices({
+  const { data: invoiceResponse, isLoading } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
     search: search.trim() || undefined,
     sortBy: sortKey,
     sortDir,
+    page,
+    pageSize,
   });
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
@@ -88,7 +92,12 @@ export default function InvoicesListPage() {
     }
   };
 
-  const filteredInvoices = invoices || [];
+  const filteredInvoices = invoiceResponse?.items || [];
+  const pagination = invoiceResponse?.pagination;
+  const summary = invoiceResponse?.summary;
+  const totalCount = pagination?.totalCount ?? 0;
+  const totalPages = pagination?.totalPages ?? 1;
+  const currentPage = pagination?.page ?? page;
   const sendableInvoices = filteredInvoices.filter((invoice) => !["paid", "void"].includes(String(invoice.status || "").toLowerCase()));
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleSendableSelected = sendableInvoices.length > 0 && sendableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
@@ -97,6 +106,7 @@ export default function InvoicesListPage() {
     const next = getNextInvoiceSortState({ sortKey, sortDir }, key);
     setSortKey(next.sortKey);
     setSortDir(next.sortDir);
+    setPage(1);
   };
 
   const renderSortIcon = (key: InvoiceSortKey) => {
@@ -173,17 +183,6 @@ export default function InvoicesListPage() {
     }
   };
 
-  // Calculate stats
-  const totalOutstanding = filteredInvoices
-    .filter(inv => Number(inv.displayRemaining ?? 0) > 0)
-    .reduce((sum, inv) => sum + Number(inv.displayRemaining ?? 0), 0);
-  
-  const overdueCount = filteredInvoices.filter(inv => (inv.displayStatus || '').toLowerCase() === 'overdue' || inv.status === 'overdue').length;
-  
-  const paidThisMonth = filteredInvoices
-    .filter(inv => Boolean(inv.isFullyPaid))
-    .reduce((sum, inv) => sum + Number(inv.displayTotal ?? inv.total), 0);
-
   return (
     <Page maxWidth="full">
       <PageHeader
@@ -212,22 +211,22 @@ export default function InvoicesListPage() {
         <div className="grid gap-4 md:grid-cols-4">
           <TitanStatCard
             label="Total Outstanding"
-            value={formatCurrency(totalOutstanding)}
+            value={formatCurrency((summary?.totalOutstandingCents ?? 0) / 100)}
             icon={DollarSign}
           />
           <TitanStatCard
             label="Overdue"
-            value={overdueCount}
+            value={summary?.overdueCount ?? 0}
             icon={FileText}
           />
           <TitanStatCard
             label="Paid This Month"
-            value={formatCurrency(paidThisMonth)}
+            value={formatCurrency((summary?.paidThisMonthCents ?? 0) / 100)}
             icon={DollarSign}
           />
           <TitanStatCard
             label="Total Invoices"
-            value={filteredInvoices.length}
+            value={summary?.totalInvoices ?? 0}
             icon={FileText}
           />
         </div>
@@ -238,10 +237,16 @@ export default function InvoicesListPage() {
             <TitanSearchInput
               placeholder="Search invoice, customer, contact, order, PO, or job..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
               containerClassName="flex-1"
             />
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <Select value={statusFilter} onValueChange={(nextStatus) => {
+              setStatusFilter(nextStatus);
+              setPage(1);
+            }}>
               <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="Filter by status" />
               </SelectTrigger>
@@ -404,6 +409,52 @@ export default function InvoicesListPage() {
             </TitanTableBody>
           </TitanTable>
         </TitanTableContainer>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-muted-foreground" aria-live="polite">
+            {totalCount === 0
+              ? "0 invoices"
+              : `${(currentPage - 1) * (pagination?.pageSize ?? pageSize) + 1}–${Math.min(currentPage * (pagination?.pageSize ?? pageSize), totalCount)} of ${totalCount} invoices`}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={String(pageSize)} onValueChange={(value) => {
+              setPageSize(Number(value));
+              setPage(1);
+            }}>
+              <SelectTrigger className="w-[132px]" aria-label="Invoices per page">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="25">25 per page</SelectItem>
+                <SelectItem value="50">50 per page</SelectItem>
+                <SelectItem value="100">100 per page</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={isLoading || currentPage <= 1}
+              aria-label="Previous invoice page"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="min-w-[92px] text-center text-sm text-muted-foreground">
+              Page {currentPage} of {totalPages}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              disabled={isLoading || currentPage >= totalPages}
+              aria-label="Next invoice page"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
       </ContentLayout>
     </Page>
   );

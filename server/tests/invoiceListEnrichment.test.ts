@@ -22,7 +22,7 @@ import {
   organizations,
   users,
 } from '../../shared/schema';
-import { getInvoiceEmailStatuses, listInvoicesForOrganization } from '../invoicesService';
+import { getInvoiceDashboardSummary, getInvoiceEmailStatuses, listInvoicesForOrganization, listInvoicesPageForOrganization } from '../invoicesService';
 import {
   getInvoiceListReminderInfo,
   upsertInvoiceReminderSettingsForOrg,
@@ -260,6 +260,104 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe('listInvoicesForOrganization — review queue enrichment/search/sort', () => {
+  test('returns real pagination metadata across a tenant-wide 263-invoice result', async () => {
+    const org = await createTestOrg('pagination');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'pagination');
+    const customer = await createTestCustomer(org.id);
+    const dueDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = Array.from({ length: 263 }, (_, index) => {
+      const invoiceNumber = 810000 + index;
+      return {
+        organizationId: org.id,
+        customerId: customer.id,
+        invoiceNumber,
+        displayNumber: `INV-DASH-${invoiceNumber}`,
+        numberCore: invoiceNumber,
+        status: index === 200 ? 'paid' : 'billed',
+        terms: 'net_30',
+        dueDate,
+        totalCents: 10000,
+        balanceDue: index === 200 ? '0.00' : '100.00',
+        subtotalCents: 10000,
+        taxCents: 0,
+        shippingCents: 0,
+        total: '100.00',
+        subtotal: '100.00',
+        tax: '0',
+        amountPaid: index === 200 ? '100.00' : '0.00',
+        createdByUserId: user.id,
+      };
+    });
+    await db.insert(invoices).values(rows as any);
+
+    const first = await listInvoicesPageForOrganization({ organizationId: org.id, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 50, offset: 0 });
+    const second = await listInvoicesPageForOrganization({ organizationId: org.id, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 50, offset: 50 });
+    const finalPage = await listInvoicesPageForOrganization({ organizationId: org.id, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 50, offset: 250 });
+
+    expect(first).toMatchObject({ page: 1, pageSize: 50, totalCount: 263, totalPages: 6 });
+    expect(first.items).toHaveLength(50);
+    expect(second).toMatchObject({ page: 2, totalCount: 263, totalPages: 6 });
+    expect(second.items).toHaveLength(50);
+    expect(second.items[0]?.invoiceNumber).toBe(810050);
+    expect(finalPage).toMatchObject({ page: 6, totalCount: 263, totalPages: 6 });
+    expect(finalPage.items).toHaveLength(13);
+
+    await expect(listInvoicesPageForOrganization({ organizationId: org.id, search: 'INV-DASH-810262', limit: 50 }))
+      .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ invoiceNumber: 810262 })] });
+    await expect(listInvoicesPageForOrganization({ organizationId: org.id, status: 'paid', limit: 50 }))
+      .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ invoiceNumber: 810200 })] });
+  });
+
+  test('derives tenant-wide dashboard facts from canonical payment and QuickBooks balance rules', async () => {
+    const org = await createTestOrg('dashboard-summary');
+    cleanupOrgIds.push(org.id);
+    await db.update(organizations).set({ settings: { timezone: 'America/New_York' } }).where(eq(organizations.id, org.id));
+    const user = await createTestUser(org.id, 'dashboard-summary');
+    const customer = await createTestCustomer(org.id);
+    const dueDate = new Date('2026-08-10T12:00:00.000Z');
+    const now = new Date('2026-08-20T12:00:00.000Z');
+    const makeInvoice = async (overrides: Record<string, unknown>) => {
+      const [invoice] = await db.insert(invoices).values({
+        organizationId: org.id,
+        customerId: customer.id,
+        invoiceNumber: 820000 + Math.floor(Math.random() * 100000),
+        status: 'billed', terms: 'net_30', dueDate,
+        totalCents: 10000, subtotalCents: 10000, taxCents: 0, shippingCents: 0,
+        total: '100.00', subtotal: '100.00', tax: '0', amountPaid: '0', balanceDue: '100.00',
+        createdByUserId: user.id,
+        ...overrides,
+      } as any).returning();
+      return invoice;
+    };
+
+    const unpaid = await makeInvoice({ invoiceNumber: 820001 });
+    const partial = await makeInvoice({ invoiceNumber: 820002 });
+    const paid = await makeInvoice({ invoiceNumber: 820003 });
+    const reopened = await makeInvoice({ invoiceNumber: 820004 });
+    await makeInvoice({ invoiceNumber: 820005, status: 'void' });
+    await makeInvoice({ invoiceNumber: 820006, importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '0.00', status: 'paid', balanceDue: '0.00', amountPaid: '100.00' });
+    await makeInvoice({ invoiceNumber: 820007, importSource: 'quickbooks', qbImportBalanceDue: '40.00', balanceDue: '40.00' });
+
+    const monthPaymentAt = new Date('2026-08-12T12:00:00.000Z');
+    await db.insert(payments).values([
+      { organizationId: org.id, invoiceId: partial.id, provider: 'manual', method: 'check', status: 'succeeded', amount: '30.00', amountCents: 3000, paidAt: monthPaymentAt, createdByUserId: user.id },
+      { organizationId: org.id, invoiceId: paid.id, provider: 'manual', method: 'check', status: 'succeeded', amount: '100.00', amountCents: 10000, paidAt: monthPaymentAt, createdByUserId: user.id },
+      { organizationId: org.id, invoiceId: reopened.id, provider: 'stripe', method: 'credit_card', status: 'refunded', amount: '20.00', amountCents: 2000, refundedAt: monthPaymentAt, createdByUserId: user.id },
+    ] as any);
+
+    const summary = await getInvoiceDashboardSummary(org.id, { now });
+
+    expect(summary).toEqual({
+      totalInvoices: 7,
+      totalOutstandingCents: 31000,
+      overdueCount: 4,
+      paidThisMonthCents: 13000,
+    });
+    // Keep the variables referenced so the fixture names document their roles.
+    expect(unpaid.id).toBeTruthy();
+  });
+
   test('returns linked customer, contact, order name, PO, and order number fields', async () => {
     const org = await createTestOrg('list-fields');
     cleanupOrgIds.push(org.id);

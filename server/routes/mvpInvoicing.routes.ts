@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
-import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus, voidManualPaymentCanonical } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -1911,10 +1911,16 @@ export async function registerMvpInvoicingRoutes(
       const search = req.query.search as string | undefined;
       const sortBy = req.query.sortBy as string | undefined;
       const sortDir = req.query.sortDir as string | undefined;
-      const limit = Math.min(parseInt((req.query.limit as string) || "50", 10), 200);
-      const offset = parseInt((req.query.offset as string) || "0", 10);
+      const includeSummary = String(req.query.includeSummary || '') === '1';
+      const requestedPageSize = Number.parseInt(String(req.query.pageSize ?? req.query.limit ?? "50"), 10);
+      const limit = Math.min(Math.max(Number.isFinite(requestedPageSize) ? requestedPageSize : 50, 1), 200);
+      const requestedPage = Number.parseInt(String(req.query.page ?? ""), 10);
+      const requestedOffset = Number.parseInt(String(req.query.offset ?? ""), 10);
+      const offset = Number.isFinite(requestedOffset) && requestedOffset >= 0
+        ? requestedOffset
+        : (Math.max(Number.isFinite(requestedPage) ? requestedPage : 1, 1) - 1) * limit;
 
-      const rows = await listInvoicesForOrganization({
+      const [invoicePage, summary] = await Promise.all([listInvoicesPageForOrganization({
         organizationId,
         status,
         customerId,
@@ -1924,7 +1930,8 @@ export async function registerMvpInvoicingRoutes(
         sortDir,
         limit,
         offset,
-      });
+      }), includeSummary ? getInvoiceDashboardSummary(organizationId) : Promise.resolve(null)]);
+      const rows = invoicePage.items;
 
       const emailStatuses = await getInvoiceEmailStatuses(
         rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
@@ -1986,6 +1993,15 @@ export async function registerMvpInvoicingRoutes(
           },
           paymentsByInvoiceId.get(row.id) ?? [],
         )),
+        pagination: {
+          page: invoicePage.page,
+          pageSize: invoicePage.pageSize,
+          totalCount: invoicePage.totalCount,
+          totalPages: invoicePage.totalPages,
+        },
+        // Dashboard facts are tenant-wide by design. They intentionally do
+        // not fluctuate with the current search/filter/page result.
+        ...(summary ? { summary } : {}),
       });
     } catch (error: any) {
       console.error("Error fetching invoices:", error);

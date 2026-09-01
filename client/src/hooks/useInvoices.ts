@@ -35,6 +35,26 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAcc
   nextReminderDueAt: string | null;
 }
 
+export interface InvoiceListPagination {
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+}
+
+export interface InvoiceDashboardSummary {
+  totalInvoices: number;
+  totalOutstandingCents: number;
+  overdueCount: number;
+  paidThisMonthCents: number;
+}
+
+export interface InvoiceListResponse {
+  items: InvoiceListItem[];
+  pagination: InvoiceListPagination;
+  summary: InvoiceDashboardSummary;
+}
+
 export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
   lastSentAt?: string | null;
   emailStatus?: InvoiceEmailStatus;
@@ -84,6 +104,42 @@ export function useInvoices(filters?: {
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
       return data.data as InvoiceListItem[];
+    },
+  });
+}
+
+/** Bounded list read for the Invoice dashboard. Legacy consumers retain useInvoices(). */
+export function useInvoicesPage(filters: {
+  status?: string;
+  customerId?: string;
+  orderId?: string;
+  search?: string;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+  page?: number;
+  pageSize?: number;
+}) {
+  return useQuery<InvoiceListResponse>({
+    queryKey: ['invoices', filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.append('status', filters.status);
+      if (filters?.customerId) params.append('customerId', filters.customerId);
+      if (filters?.orderId) params.append('orderId', filters.orderId);
+      if (filters?.search) params.append('search', filters.search);
+      if (filters?.sortBy) params.append('sortBy', filters.sortBy);
+      if (filters?.sortDir) params.append('sortDir', filters.sortDir);
+      if (filters?.page) params.append('page', String(filters.page));
+      if (filters?.pageSize) params.append('pageSize', String(filters.pageSize));
+      params.append('includeSummary', '1');
+      const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch invoices');
+      const data = await res.json();
+      return {
+        items: (data.data || []) as InvoiceListItem[],
+        pagination: data.pagination as InvoiceListPagination,
+        summary: data.summary as InvoiceDashboardSummary,
+      };
     },
   });
 }

@@ -33,6 +33,23 @@ const invoice = (overrides: Partial<InvoiceListItem> = {}): InvoiceListItem => (
 } as InvoiceListItem);
 
 describe("Invoices List payment entry point", () => {
+  it("uses server paging metadata and tenant-wide summary facts instead of the visible rows", () => {
+    expect(invoicesPageSource).toContain("page,");
+    expect(invoicesPageSource).toContain("pageSize,");
+    expect(invoicesPageSource).toContain("summary?.totalOutstandingCents");
+    expect(invoicesPageSource).toContain("summary?.paidThisMonthCents");
+    expect(invoicesPageSource).toContain("summary?.totalInvoices");
+    expect(invoicesPageSource).toContain("of ${totalCount} invoices");
+    expect(invoicesPageSource).not.toContain("value={filteredInvoices.length}");
+  });
+
+  it("keeps bulk selection explicit across page navigation", () => {
+    expect(invoicesPageSource).toContain("selectedInvoiceIds");
+    expect(invoicesPageSource).toContain("Select all visible sendable invoices");
+    expect(invoicesPageSource).toContain("setPage((current) => Math.min(totalPages, current + 1))");
+    expect(invoicesPageSource).not.toContain("setSelectedInvoiceIds(new Set())\n              setPage");
+  });
+
   it("shows the Take Payment action for an eligible invoice", () => {
     expect(canTakePaymentFromInvoiceList(invoice())).toBe(true);
     expect(invoicesPageSource).toContain("Take Payment");

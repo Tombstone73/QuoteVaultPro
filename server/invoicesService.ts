@@ -1,6 +1,6 @@
 import { db } from './db';
-import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
-import { asc, desc, eq, and, ilike, inArray, or, sql, ne } from 'drizzle-orm';
+import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems } from '../shared/schema';
+import { asc, count, desc, eq, and, ilike, inArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
@@ -214,6 +214,21 @@ export type EnrichedInvoiceListItem = Invoice & {
   purchaseOrderNumber: string | null;
 };
 
+export type InvoiceListPage = {
+  items: EnrichedInvoiceListItem[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+};
+
+export type InvoiceDashboardSummary = {
+  totalInvoices: number;
+  totalOutstandingCents: number;
+  overdueCount: number;
+  paidThisMonthCents: number;
+};
+
 function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
   const raw = String(sortBy || '').trim();
   switch (raw) {
@@ -236,6 +251,38 @@ function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
 
 function normalizeInvoiceListSortDir(sortDir: unknown): InvoiceListSortDir {
   return String(sortDir || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
+}
+
+/** Database equivalent of the shared invoice accounting display's remaining-balance rule. */
+function canonicalInvoiceRemainingCentsExpression(organizationId: string) {
+  // These are correlated per-invoice aggregates, deliberately avoiding a raw
+  // payment join that would multiply invoice rows in a count or sum.
+  const paymentNetCents = sql`coalesce((
+    select sum(case
+      when lower(${payments.status}) in ('succeeded', 'captured') then ${payments.amountCents}
+      when lower(${payments.status}) = 'refunded' then -${payments.amountCents}
+      else 0
+    end)
+    from ${payments}
+    where ${payments.invoiceId} = ${invoices.id}
+      and ${payments.organizationId} = ${organizationId}
+  ), 0)`;
+  const quickBooksUnreconciledCents = sql`coalesce((
+    select sum(${payments.amountCents})
+    from ${payments}
+    where ${payments.invoiceId} = ${invoices.id}
+      and ${payments.organizationId} = ${organizationId}
+      and lower(${payments.status}) in ('succeeded', 'captured')
+      and ${payments.qbReconciledAt} is null
+  ), 0)`;
+  return sql`case
+    when lower(coalesce(${invoices.importSource}, '')) = 'quickbooks' then least(
+      greatest(coalesce(${invoices.totalCents}, 0), 0),
+      greatest(0, round(coalesce(${invoices.qbImportBalanceDue}, ${invoices.balanceDue}, '0')::numeric * 100) -
+        case when coalesce(${invoices.isHistorical}, false) then 0 else ${quickBooksUnreconciledCents} end)
+    )
+    else greatest(0, coalesce(${invoices.totalCents}, 0) - greatest(0, ${paymentNetCents}))
+  end`;
 }
 
 function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: string) {
@@ -271,24 +318,7 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
     case 'total':
       return sql`coalesce(${invoices.totalCents}, 0)`;
     case 'balance':
-      return sql`case
-        when lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
-          then coalesce(${invoices.balanceDue}, '0')::numeric * 100
-        else greatest(
-          coalesce(${invoices.totalCents}, 0) -
-          coalesce((
-            select sum(case
-              when ${payments.status} in ('succeeded', 'captured') then ${payments.amountCents}
-              when ${payments.status} = 'refunded' then -${payments.amountCents}
-              else 0
-            end)
-            from ${payments}
-            where ${payments.invoiceId} = ${invoices.id}
-              and ${payments.organizationId} = ${organizationId}
-          ), round(coalesce(${invoices.amountPaid}, '0')::numeric * 100), 0),
-          0
-        )
-      end`;
+      return canonicalInvoiceRemainingCentsExpression(organizationId);
     case 'issueDate':
     default:
       return sql`coalesce(${invoices.issueDate}, '9999-12-31'::timestamptz)`;
@@ -298,6 +328,18 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
 export async function listInvoicesForOrganization(
   opts: ListInvoicesForOrganizationOptions,
 ): Promise<EnrichedInvoiceListItem[]> {
+  const page = await listInvoicesPageForOrganization(opts);
+  return page.items;
+}
+
+/**
+ * Bounded invoice-list read with a count taken from the same tenant-scoped
+ * predicates.  Keep this separate from the dashboard aggregate: pagination
+ * must never change the financial facts shown above the list.
+ */
+export async function listInvoicesPageForOrganization(
+  opts: ListInvoicesForOrganizationOptions,
+): Promise<InvoiceListPage> {
   const limit = Math.min(Math.max(Number(opts.limit || 50), 1), 201);
   const offset = Math.max(Number(opts.offset || 0), 0);
   const sortBy = normalizeInvoiceListSortBy(opts.sortBy);
@@ -338,7 +380,7 @@ export async function listInvoicesForOrganization(
   const sortExpression = invoiceListSortExpression(sortBy, opts.organizationId);
   const sortDirection = sortDir === 'asc' ? asc : desc;
 
-  const rows = await db
+  const rowsQuery = db
     .select({
       invoice: invoices,
       customerName: customers.companyName,
@@ -368,7 +410,30 @@ export async function listInvoicesForOrganization(
     .limit(limit)
     .offset(offset);
 
-  return rows.map((row) => ({
+  // The joins above are all single-record enrichment joins.  Count the same
+  // scoped query rather than inferring a total from the bounded result set.
+  const countQuery = db
+    .select({ totalCount: count() })
+    .from(invoices)
+    .leftJoin(customers, and(
+      eq(customers.id, invoices.customerId),
+      eq(customers.organizationId, opts.organizationId),
+    ))
+    .leftJoin(orders, and(
+      eq(orders.id, invoices.orderId),
+      eq(orders.organizationId, opts.organizationId),
+    ))
+    .leftJoin(customerContacts, and(
+      eq(customerContacts.id, orders.contactId),
+      eq(customerContacts.customerId, customers.id),
+    ))
+    .where(and(...whereClauses));
+
+  const [rows, countRows] = await Promise.all([rowsQuery, countQuery]);
+  const totalCount = Math.max(0, Number(countRows[0]?.totalCount ?? 0));
+
+  return {
+    items: rows.map((row) => ({
     ...row.invoice,
     customerName: row.customerName ?? null,
     companyName: row.companyName ?? null,
@@ -378,7 +443,104 @@ export async function listInvoicesForOrganization(
     orderName: row.orderName ?? null,
     jobName: row.jobName ?? null,
     purchaseOrderNumber: row.purchaseOrderNumber ?? null,
-  }));
+    })),
+    page: Math.floor(offset / limit) + 1,
+    pageSize: limit,
+    totalCount,
+    totalPages: Math.max(1, Math.ceil(totalCount / limit)),
+  };
+}
+
+function validTimezone(value: unknown): string {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  try {
+    if (candidate) new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+function timezoneParts(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date);
+  const number = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return { year: number('year'), month: number('month'), day: number('day'), hour: number('hour'), minute: number('minute'), second: number('second') };
+}
+
+function localMidnightToUtc(year: number, month: number, day: number, timezone: string): Date {
+  const candidate = Date.UTC(year, month - 1, day);
+  const initial = timezoneParts(new Date(candidate), timezone);
+  const observed = Date.UTC(initial.year, initial.month - 1, initial.day, initial.hour, initial.minute, initial.second);
+  const adjusted = candidate - (observed - candidate);
+  const final = timezoneParts(new Date(adjusted), timezone);
+  const finalObserved = Date.UTC(final.year, final.month - 1, final.day, final.hour, final.minute, final.second);
+  return new Date(adjusted - (finalObserved - candidate));
+}
+
+export function invoiceDashboardMonthWindow(now: Date, timezone: string): { start: Date; endExclusive: Date } {
+  const resolvedTimezone = validTimezone(timezone);
+  const local = timezoneParts(now, resolvedTimezone);
+  const start = localMidnightToUtc(local.year, local.month, 1, resolvedTimezone);
+  const nextMonth = local.month === 12 ? { year: local.year + 1, month: 1 } : { year: local.year, month: local.month + 1 };
+  return { start, endExclusive: localMidnightToUtc(nextMonth.year, nextMonth.month, 1, resolvedTimezone) };
+}
+
+/**
+ * Tenant-wide invoice dashboard facts.  Monetary calculations remain in
+ * integer cents in Postgres and use the same payment/refund and QuickBooks
+ * balance rules as the shared invoice accounting display projection.
+ */
+export async function getInvoiceDashboardSummary(
+  organizationId: string,
+  opts: { now?: Date } = {},
+): Promise<InvoiceDashboardSummary> {
+  const now = opts.now ?? new Date();
+  const [organization] = await db
+    .select({ settings: organizations.settings })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  const settings = organization?.settings as Record<string, unknown> | null | undefined;
+  const preferences = settings?.preferences as Record<string, unknown> | undefined;
+  const timezone = validTimezone(settings?.timezone ?? preferences?.timezone);
+  const month = invoiceDashboardMonthWindow(now, timezone);
+
+  const canonicalRemainingCents = canonicalInvoiceRemainingCentsExpression(organizationId);
+  const isReceivable = sql`lower(coalesce(${invoices.status}, '')) not in ('draft', 'void', 'voided')`;
+
+  const [invoiceAggregate, paymentAggregate] = await Promise.all([
+    db.select({
+      totalInvoices: count(),
+      totalOutstandingCents: sql<string>`coalesce(sum(case when ${isReceivable} then ${canonicalRemainingCents} else 0 end), 0)`,
+      overdueCount: sql<string>`count(*) filter (where ${isReceivable} and ${invoices.dueDate} is not null and ${invoices.dueDate} < ${now} and ${canonicalRemainingCents} > 0)`,
+    })
+      .from(invoices)
+      .where(eq(invoices.organizationId, organizationId)),
+    db.select({
+      paidThisMonthCents: sql<string>`coalesce(sum(${payments.amountCents}), 0)`,
+    })
+      .from(payments)
+      .where(and(
+        eq(payments.organizationId, organizationId),
+        sql`lower(${payments.status}) in ('succeeded', 'captured')`,
+        sql`coalesce(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) >= ${month.start}`,
+        sql`coalesce(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) < ${month.endExclusive}`,
+      )),
+  ]);
+
+  return {
+    totalInvoices: Math.max(0, Number(invoiceAggregate?.totalInvoices ?? 0)),
+    totalOutstandingCents: Math.max(0, Math.round(Number(invoiceAggregate?.totalOutstandingCents ?? 0))),
+    overdueCount: Math.max(0, Number(invoiceAggregate?.overdueCount ?? 0)),
+    // This card represents successful/captured receipts in the tenant's
+    // current calendar month. Refunded, failed, pending, and canceled rows do
+    // not count as payments received.
+    paidThisMonthCents: Math.max(0, Math.round(Number(paymentAggregate?.paidThisMonthCents ?? 0))),
+  };
 }
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {
