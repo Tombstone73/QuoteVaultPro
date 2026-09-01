@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Filter, Plus, FileText, DollarSign, Mail, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Filter, Plus, FileText, Mail, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
@@ -13,12 +13,12 @@ import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
 import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import { getNextInvoiceSortState, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
+import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import {
   Page,
   PageHeader,
   ContentLayout,
   DataCard,
-  TitanStatCard,
   TitanSearchInput,
   TitanTableContainer,
   TitanTable,
@@ -88,6 +88,7 @@ export default function InvoicesListPage() {
   const [pageSize, setPageSize] = useState(50);
   const [columnFilters, setColumnFilters] = useState<InvoiceListColumnFilterQuery>(EMPTY_COLUMN_FILTERS);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
+  const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -137,6 +138,14 @@ export default function InvoicesListPage() {
   const clearColumnFilters = () => {
     setColumnFilters(EMPTY_COLUMN_FILTERS);
     setPage(1);
+  };
+
+  const toggleTotals = () => {
+    setShowTotals((visible) => {
+      const next = !visible;
+      setInvoiceTotalsVisible(next);
+      return next;
+    });
   };
 
   const handleSort = (key: InvoiceSortKey) => {
@@ -220,8 +229,8 @@ export default function InvoicesListPage() {
     }
   };
 
-  const renderPagination = (position: "top" | "bottom") => (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid={`invoice-pagination-${position}`}>
+  const renderPaginationControls = (position: "top" | "bottom") => (
+    <>
       <div className="text-sm text-muted-foreground" aria-live="polite">
         {totalCount === 0 ? "0 invoices" : `${(currentPage - 1) * (pagination?.pageSize ?? pageSize) + 1}–${Math.min(currentPage * (pagination?.pageSize ?? pageSize), totalCount)} of ${totalCount} invoices`}
       </div>
@@ -234,6 +243,12 @@ export default function InvoicesListPage() {
         <span className="min-w-[92px] text-center text-sm text-muted-foreground">Page {currentPage} of {totalPages}</span>
         <Button type="button" variant="outline" size="sm" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={isLoading || currentPage >= totalPages} aria-label={`Next invoice page (${position})`}><ChevronRight className="h-4 w-4" /></Button>
       </div>
+    </>
+  );
+
+  const renderPagination = (position: "top" | "bottom") => (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid={`invoice-pagination-${position}`}>
+      {renderPaginationControls(position)}
     </div>
   );
 
@@ -261,38 +276,22 @@ export default function InvoicesListPage() {
       />
 
       <ContentLayout>
-        {/* Stats Cards */}
-        <div className="grid gap-4 md:grid-cols-4">
-          <TitanStatCard
-            label="Total Outstanding"
-            value={summary ? formatCurrency(summary.totalOutstandingCents / 100) : EMPTY_VALUE}
-            icon={DollarSign}
-          />
-          <TitanStatCard
-            label="Overdue"
-            value={summary?.overdueCount ?? EMPTY_VALUE}
-            icon={FileText}
-          />
-          <TitanStatCard
-            label="Paid This Month"
-            value={summary ? formatCurrency(summary.paidThisMonthCents / 100) : EMPTY_VALUE}
-            icon={DollarSign}
-          />
-          <TitanStatCard
-            label="Total Invoices"
-            value={summary?.totalInvoices ?? EMPTY_VALUE}
-            icon={FileText}
-          />
-        </div>
+        {showTotals && (
+          <div className="grid divide-y rounded-titan-lg border border-titan-border-subtle bg-titan-bg-card shadow-titan-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4" data-testid="invoice-summary-strip">
+            <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Total Outstanding</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary ? formatCurrency(summary.totalOutstandingCents / 100) : EMPTY_VALUE}</div></div>
+            <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Overdue</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary?.overdueCount ?? EMPTY_VALUE}</div></div>
+            <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Paid This Month</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary ? formatCurrency(summary.paidThisMonthCents / 100) : EMPTY_VALUE}</div></div>
+            <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Total Invoices</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary?.totalInvoices ?? EMPTY_VALUE}</div></div>
+          </div>
+        )}
         {isError && (
           <DataCard className="border-destructive/40 text-sm text-destructive" role="alert">
             {error instanceof Error ? error.message : "Invoice dashboard data could not be loaded."}
           </DataCard>
         )}
 
-        {/* Filters */}
-        <DataCard>
-          <div className="flex flex-wrap gap-4">
+        <DataCard noPadding>
+          <div className="flex flex-wrap items-center gap-2 p-3" data-testid="invoice-toolbar">
             <TitanSearchInput
               placeholder="Search invoice, customer, contact, order, PO, or job..."
               value={search}
@@ -300,13 +299,13 @@ export default function InvoicesListPage() {
                 setSearch(e.target.value);
                 setPage(1);
               }}
-              containerClassName="flex-1"
+              containerClassName="min-w-[16rem] max-w-xl flex-1 basis-[22rem]"
             />
             <Select value={statusFilter} onValueChange={(nextStatus) => {
               setStatusFilter(nextStatus);
               setPage(1);
             }}>
-              <SelectTrigger className="w-[200px]">
+              <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="Filter by status" />
               </SelectTrigger>
               <SelectContent>
@@ -365,9 +364,21 @@ export default function InvoicesListPage() {
                 </div>
               </PopoverContent>
             </Popover>
+            <Button
+              type="button"
+              variant={showTotals ? "secondary" : "outline"}
+              size="sm"
+              aria-pressed={showTotals}
+              onClick={toggleTotals}
+            >
+              Totals
+            </Button>
+            <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
+              {renderPaginationControls("top")}
+            </div>
           </div>
           {activeColumnFilters.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2" aria-label="Active invoice column filters">
+            <div className="flex flex-wrap gap-2 border-t border-titan-border-subtle px-3 pb-3 pt-2" aria-label="Active invoice column filters">
               {activeColumnFilters.map(([key, value]) => (
                 <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => setColumnFilter(key, "")}>
                   {columnFilterLabels[key]}: {value} <X className="h-3 w-3" />
@@ -376,8 +387,6 @@ export default function InvoicesListPage() {
             </div>
           )}
         </DataCard>
-
-        {renderPagination("top")}
 
         {/* Invoices Table */}
         <TitanTableContainer>

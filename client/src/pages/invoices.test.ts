@@ -3,6 +3,7 @@ import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/
 import type { InvoiceListItem } from "@/hooks/useInvoices";
 
 const invoicesPageSource = readFileSync("client/src/pages/invoices.tsx", "utf8");
+const invoiceHooksSource = readFileSync("client/src/hooks/useInvoices.ts", "utf8");
 
 const invoice = (overrides: Partial<InvoiceListItem> = {}): InvoiceListItem => ({
   id: "invoice-1",
@@ -42,8 +43,10 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("of ${totalCount} invoices");
     expect(invoicesPageSource).not.toContain("value={filteredInvoices.length}");
     expect(invoicesPageSource).toContain('invoice-pagination-${position}');
-    expect(invoicesPageSource).toContain('renderPagination("top")');
+    expect(invoicesPageSource).toContain('renderPaginationControls("top")');
     expect(invoicesPageSource).toContain('renderPagination("bottom")');
+    expect(invoicesPageSource).toContain('data-testid="invoice-toolbar"');
+    expect(invoicesPageSource).toContain('data-testid="invoice-pagination-top"');
   });
 
   it("keeps compact column filters server-driven and individually clearable", () => {
@@ -52,6 +55,22 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("setColumnFilter");
     expect(invoicesPageSource).toContain("clearColumnFilters");
     expect(invoicesPageSource).toContain("...columnFilters");
+  });
+
+  it("keeps the hardened summary and pagination contract instead of rendering fallback zero totals", () => {
+    expect(invoiceHooksSource).toContain("if (!data.summary || !data.pagination)");
+    expect(invoiceHooksSource).toContain("Invoice dashboard data is unavailable");
+    expect(invoicesPageSource).not.toContain("summary ||");
+    expect(invoicesPageSource).not.toContain("value={filteredInvoices.length}");
+  });
+
+  it("uses a compact, responsive totals strip and toolbar", () => {
+    expect(invoicesPageSource).toContain("showTotals &&");
+    expect(invoicesPageSource).toContain('data-testid="invoice-summary-strip"');
+    expect(invoicesPageSource).toContain("getInvoiceTotalsVisible");
+    expect(invoicesPageSource).toContain("setInvoiceTotalsVisible");
+    expect(invoicesPageSource).toContain("flex flex-wrap items-center gap-2 p-3");
+    expect(invoicesPageSource).toContain("min-w-[16rem] max-w-xl flex-1 basis-[22rem]");
   });
 
   it("keeps bulk selection explicit across page navigation", () => {
