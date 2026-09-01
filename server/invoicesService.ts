@@ -255,6 +255,7 @@ export type InvoiceDashboardSummary = {
 // owner/admin-gated Invoice debug route parameter and contains aggregate
 // numeric values only.
 export type InvoiceDashboardSummaryDiagnostics = {
+  rawAggregateKeys: string[];
   rawAggregate: Record<keyof InvoiceDashboardSummary, string | null>;
   normalizedSummary: InvoiceDashboardSummary;
 };
@@ -634,6 +635,7 @@ async function readInvoiceDashboardSummary(
   return {
     summary,
     diagnostics: {
+      rawAggregateKeys: Object.keys(invoiceAggregate ?? {}).sort(),
       rawAggregate: {
         totalInvoices: raw(invoiceAggregate?.totalInvoices),
         totalOutstandingCents: raw(invoiceAggregate?.totalOutstandingCents),

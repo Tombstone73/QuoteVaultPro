@@ -55,6 +55,7 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
   invoiceSummaryDebug?: {
     service: {
+      rawAggregateKeys: string[];
       rawAggregate: Record<keyof InvoiceDashboardSummary, string | null>;
       normalizedSummary: InvoiceDashboardSummary;
     } | null;
