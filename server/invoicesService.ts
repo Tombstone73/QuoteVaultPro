@@ -251,6 +251,14 @@ export type InvoiceDashboardSummary = {
   paidThisMonthCents: number;
 };
 
+// Temporary production-safe trace shape. This is only returned from the
+// owner/admin-gated Invoice debug route parameter and contains aggregate
+// numeric values only.
+export type InvoiceDashboardSummaryDiagnostics = {
+  rawAggregate: Record<keyof InvoiceDashboardSummary, string | null>;
+  normalizedSummary: InvoiceDashboardSummary;
+};
+
 function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
   const raw = String(sortBy || '').trim();
   switch (raw) {
@@ -574,10 +582,10 @@ export function invoiceDashboardMonthWindow(now: Date, timezone: string): { star
  * integer cents in Postgres and use the same payment/refund and QuickBooks
  * balance rules as the shared invoice accounting display projection.
  */
-export async function getInvoiceDashboardSummary(
+async function readInvoiceDashboardSummary(
   organizationId: string,
   opts: { now?: Date } = {},
-): Promise<InvoiceDashboardSummary> {
+): Promise<{ summary: InvoiceDashboardSummary; diagnostics: InvoiceDashboardSummaryDiagnostics }> {
   const now = opts.now ?? new Date();
   const [organization] = await db
     .select({ settings: organizations.settings })
@@ -612,7 +620,7 @@ export async function getInvoiceDashboardSummary(
       )),
   ]);
 
-  return {
+  const summary = {
     totalInvoices: Math.max(0, Number(invoiceAggregate?.totalInvoices ?? 0)),
     totalOutstandingCents: Math.max(0, Math.round(Number(invoiceAggregate?.totalOutstandingCents ?? 0))),
     overdueCount: Math.max(0, Number(invoiceAggregate?.overdueCount ?? 0)),
@@ -621,6 +629,35 @@ export async function getInvoiceDashboardSummary(
     // not count as payments received.
     paidThisMonthCents: Math.max(0, Math.round(Number(paymentAggregate?.paidThisMonthCents ?? 0))),
   };
+
+  const raw = (value: unknown): string | null => value == null ? null : String(value);
+  return {
+    summary,
+    diagnostics: {
+      rawAggregate: {
+        totalInvoices: raw(invoiceAggregate?.totalInvoices),
+        totalOutstandingCents: raw(invoiceAggregate?.totalOutstandingCents),
+        overdueCount: raw(invoiceAggregate?.overdueCount),
+        paidThisMonthCents: raw(paymentAggregate?.paidThisMonthCents),
+      },
+      normalizedSummary: summary,
+    },
+  };
+}
+
+export async function getInvoiceDashboardSummary(
+  organizationId: string,
+  opts: { now?: Date } = {},
+): Promise<InvoiceDashboardSummary> {
+  return (await readInvoiceDashboardSummary(organizationId, opts)).summary;
+}
+
+/** Temporary owner/admin debug companion for the production zero-summary investigation. */
+export async function getInvoiceDashboardSummaryWithDiagnostics(
+  organizationId: string,
+  opts: { now?: Date } = {},
+): Promise<{ summary: InvoiceDashboardSummary; diagnostics: InvoiceDashboardSummaryDiagnostics }> {
+  return readInvoiceDashboardSummary(organizationId, opts);
 }
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {

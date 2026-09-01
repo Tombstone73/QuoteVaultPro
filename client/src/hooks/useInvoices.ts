@@ -53,6 +53,16 @@ export interface InvoiceListResponse {
   items: InvoiceListItem[];
   pagination: InvoiceListPagination;
   summary: InvoiceDashboardSummary;
+  invoiceSummaryDebug?: {
+    service: {
+      rawAggregate: Record<keyof InvoiceDashboardSummary, string | null>;
+      normalizedSummary: InvoiceDashboardSummary;
+    } | null;
+    route: {
+      list: { itemCount: number; totalCount: number; page: number; pageSize: number };
+      responseSummary: InvoiceDashboardSummary | null;
+    };
+  };
 }
 
 export type InvoiceListColumnFilterQuery = {
@@ -143,6 +153,8 @@ export function useInvoicesPage(filters: {
     queryKey: ['invoices', filters],
     queryFn: async () => {
       const params = new URLSearchParams();
+      const invoiceSummaryDebug = typeof window !== 'undefined'
+        && new URLSearchParams(window.location.search).get('invoiceSummaryDebug') === '1';
       if (filters?.status) params.append('status', filters.status);
       if (filters?.customerId) params.append('customerId', filters.customerId);
       if (filters?.orderId) params.append('orderId', filters.orderId);
@@ -161,6 +173,7 @@ export function useInvoicesPage(filters: {
         if (value) params.append(key, value);
       }
       params.append('includeSummary', '1');
+      if (invoiceSummaryDebug) params.append('invoiceSummaryDebug', '1');
       const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
@@ -171,6 +184,7 @@ export function useInvoicesPage(filters: {
         items: (data.data || []) as InvoiceListItem[],
         pagination: data.pagination as InvoiceListPagination,
         summary: data.summary as InvoiceDashboardSummary,
+        ...(invoiceSummaryDebug ? { invoiceSummaryDebug: data.invoiceSummaryDebug } : {}),
       };
     },
   });

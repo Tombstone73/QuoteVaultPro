@@ -89,6 +89,7 @@ export default function InvoicesListPage() {
   const [columnFilters, setColumnFilters] = useState<InvoiceListColumnFilterQuery>(EMPTY_COLUMN_FILTERS);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
+  const invoiceSummaryDebug = new URLSearchParams(window.location.search).get("invoiceSummaryDebug") === "1";
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -122,6 +123,7 @@ export default function InvoicesListPage() {
   const filteredInvoices = invoiceResponse?.items || [];
   const pagination = invoiceResponse?.pagination;
   const summary = invoiceResponse?.summary;
+  const summaryDebug = invoiceResponse?.invoiceSummaryDebug;
   const totalCount = pagination?.totalCount ?? 0;
   const totalPages = pagination?.totalPages ?? 1;
   const currentPage = pagination?.page ?? page;
@@ -283,6 +285,22 @@ export default function InvoicesListPage() {
             <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Paid This Month</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary ? formatCurrency(summary.paidThisMonthCents / 100) : EMPTY_VALUE}</div></div>
             <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Total Invoices</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary?.totalInvoices ?? EMPTY_VALUE}</div></div>
           </div>
+        )}
+        {invoiceSummaryDebug && summaryDebug && (
+          <DataCard className="border-amber-500/40 text-xs" data-testid="invoice-summary-debug">
+            <div className="mb-2 font-medium">Temporary invoice summary diagnostics</div>
+            <pre className="overflow-x-auto whitespace-pre-wrap">{JSON.stringify({
+              service: summaryDebug.service,
+              route: summaryDebug.route,
+              clientReceivedSummary: summary,
+              renderedSummary: summary ? {
+                totalInvoices: summary.totalInvoices,
+                totalOutstandingCents: summary.totalOutstandingCents,
+                overdueCount: summary.overdueCount,
+                paidThisMonthCents: summary.paidThisMonthCents,
+              } : null,
+            }, null, 2)}</pre>
+          </DataCard>
         )}
         {isError && (
           <DataCard className="border-destructive/40 text-sm text-destructive" role="alert">
