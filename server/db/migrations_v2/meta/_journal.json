@@ -1310,6 +1310,13 @@
       "when": 1788048000038,
       "tag": "0191_bulk_invoice_email_delivery_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1788048000039,
+      "tag": "0192_customer_portal_default_on_guest_invoice_payment",
+      "breakpoints": true
     }
   ]
 }

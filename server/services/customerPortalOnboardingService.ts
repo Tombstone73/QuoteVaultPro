@@ -269,7 +269,7 @@ export function buildPortalOnboardingRows(input: {
           const incompatiblePortalIdentity = Boolean(email && (activeAccessByEmail.get(email) ?? []).some((candidate) => candidate.customerId !== company.id && candidate.contactId !== contact.id));
           const eligibility = baseEligibility({
             company,
-            companyPortalState: settingsByCustomer.get(company.id) ?? "disabled",
+            companyPortalState: settingsByCustomer.get(company.id) ?? "enabled",
             contact,
             relationship,
             duplicateEmail,
@@ -334,7 +334,7 @@ export function buildPortalOnboardingRows(input: {
       return {
         customerId: company.id,
         companyName: company.companyName,
-        companyPortalState: settingsByCustomer.get(company.id) ?? "disabled",
+        companyPortalState: settingsByCustomer.get(company.id) ?? "enabled",
         primaryContactName: primary?.name ?? null,
         primaryContactEmail: primary?.email ?? null,
         eligibleContactsCount: mappedContacts.filter((contact) => contact.eligible).length,
@@ -583,7 +583,6 @@ export async function runPortalOnboardingAction(input: {
         completedItems.push({ id: item.id, status: "skipped", accessId: target.accessId, failureCode: "ACTIVE_INVITE_EXISTS", failureMessage: "An active invitation already exists." });
         continue;
       }
-      await enablePortalForCompanies({ organizationId: input.organizationId, customerIds: [target.customerId], actorUserId: input.actorUserId, req: input.req });
       const role = (item.accessRole as PortalAccessRole | null) ?? "VIEWER";
       const access = target.contactPortalState === "invitation_expired" && target.accessId
         ? await resendCustomerPortalInvite({ organizationId: input.organizationId, accessId: target.accessId, actorUserId: input.actorUserId, req: input.req })

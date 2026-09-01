@@ -120,6 +120,7 @@ import TermsPage from "@/pages/terms";
 import SupportPage from "@/pages/support";
 import Landing from "@/pages/landing";
 import ByosPage from "@/pages/byos";
+import GuestInvoicePaymentPage from "@/pages/guest-invoice-payment";
 
 function PortalInvoiceLoginRedirect() {
   const location = useLocation();
@@ -149,6 +150,7 @@ function Router() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
+        <Route path="/pay/invoice/:token" element={<GuestInvoicePaymentPage />} />
         <Route path="/portal/invoices/:id" element={<PortalInvoiceLoginRedirect />} />
         {/* Token-based proof review — no account required; the token IS the auth */}
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
@@ -166,6 +168,7 @@ function Router() {
   if (mustChangePassword) {
     return (
       <Routes>
+        <Route path="/pay/invoice/:token" element={<GuestInvoicePaymentPage />} />
         <Route path="/force-password-change" element={<ForcePasswordChange />} />
         <Route path="/shared/reports/:token" element={<SharedReportPage />} />
         <Route path="/byos" element={<ByosPage />} />
@@ -224,6 +227,7 @@ function Router() {
 
   return (
     <Routes>
+      <Route path="/pay/invoice/:token" element={<GuestInvoicePaymentPage />} />
       {/* Public marketing landing page. Authenticated users keep /dashboard as the app home. */}
       <Route path="/" element={<Landing />} />
       <Route path="/byos" element={<ByosPage />} />

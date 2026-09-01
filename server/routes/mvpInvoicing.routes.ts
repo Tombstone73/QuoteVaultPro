@@ -28,6 +28,7 @@ import { buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalIn
 import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
 import { resolveInvoiceEmailPortalDestination } from "../services/customerPortalAccessService";
 import { hydrateInvoicePdfLineItemsWithArtwork } from "../services/invoicePdfArtwork";
+import { issueGuestInvoicePaymentToken } from "../services/guestInvoicePayment.service";
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
@@ -281,6 +282,7 @@ export async function registerMvpInvoicingRoutes(
         lastName: customerContacts.lastName,
         email: customerContacts.email,
         isPrimary: customerContactLinks.isPrimary,
+        isBilling: customerContactLinks.isBilling,
       })
       .from(customerContactLinks)
       .innerJoin(customerContacts, and(
@@ -299,20 +301,15 @@ export async function registerMvpInvoicingRoutes(
       `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || "Contact";
     const primaryContacts = linkedContacts.filter((contact) => contact.isPrimary);
     const otherContacts = linkedContacts.filter((contact) => !contact.isPrimary);
-    const recipients = buildInvoiceEmailRecipients([
-      ...(orderContact ? [{ email: orderContact.email, name: contactName(orderContact), source: "order_contact" as const }] : []),
-      ...primaryContacts.map((contact) => ({
-        email: contact.email,
-        name: contactName(contact),
-        source: "customer_primary_contact" as const,
-      })),
-      { email: customer.email, name: customer.companyName || "Customer account", source: "customer_account" as const },
-      ...otherContacts.map((contact) => ({
-        email: contact.email,
-        name: contactName(contact),
-        source: "customer_contact" as const,
-      })),
-    ]);
+    const billingContacts = linkedContacts.filter((contact) => contact.isBilling);
+    const recipients = buildInvoiceEmailRecipients(billingContacts.length > 0
+      ? billingContacts.map((contact) => ({ email: contact.email, name: contactName(contact), source: "billing_contact" as const }))
+      : [
+          ...(orderContact ? [{ email: orderContact.email, name: contactName(orderContact), source: "order_contact" as const }] : []),
+          ...primaryContacts.map((contact) => ({ email: contact.email, name: contactName(contact), source: "customer_primary_contact" as const })),
+          { email: customer.email, name: customer.companyName || "Customer account", source: "customer_account" as const },
+          ...otherContacts.map((contact) => ({ email: contact.email, name: contactName(contact), source: "customer_contact" as const })),
+        ]);
 
     return { invoice, customer, recipients, defaultRecipient: recipients[0] ?? null };
   }
@@ -346,6 +343,17 @@ export async function registerMvpInvoicingRoutes(
     });
     let inv: any = recipientResolution.invoice;
     const cust: any = recipientResolution.customer;
+    if (!requestedRecipient && recipientResolution.recipients.length > 1) {
+      const deliveries = [];
+      for (const recipient of recipientResolution.recipients) {
+        deliveries.push(await sendInvoiceEmailForOperations({ ...input, toEmail: recipient.email }));
+      }
+      return {
+        recipientEmail: recipientResolution.recipients[0]?.email ?? null,
+        recipientEmails: recipientResolution.recipients.map((recipient) => recipient.email),
+        deliveries,
+      };
+    }
     const recipientEmail = requestedRecipient || recipientResolution.defaultRecipient?.email || null;
     if (!recipientEmail) {
       throw Object.assign(new Error("No recipient email is available. Enter another email address before sending."), { statusCode: 400 });
@@ -428,6 +436,9 @@ export async function registerMvpInvoicingRoutes(
     const portalUrl = portalDestination?.kind === "setup"
       ? portalDestination.url
       : directInvoiceUrl;
+    const guestPaymentUrl = canInvoiceBePaidOnline
+      ? `${publicWebOrigin}/pay/invoice/${encodeURIComponent(await issueGuestInvoicePaymentToken({ organizationId: input.organizationId, invoiceId: inv.id, createdByUserId: input.userId }))}`
+      : null;
 
     const companyName = orgCompany?.companyName || "QuoteVaultPro";
     const customerName = cust.companyName || cust.email || "Valued Customer";
@@ -443,6 +454,7 @@ export async function registerMvpInvoicingRoutes(
       jobLabel: orderContext?.jobLabel,
       portalUrl,
       hasBalanceDue: canInvoiceBePaidOnline,
+      guestPaymentUrl,
     });
     const emailText = buildInvoiceEmailPlainText({
       invoiceNumber,
@@ -452,6 +464,7 @@ export async function registerMvpInvoicingRoutes(
       dueDate,
       portalUrl,
       canPayOnline: canInvoiceBePaidOnline,
+      guestPaymentUrl,
     });
 
     const now = new Date();
@@ -2948,19 +2961,21 @@ export async function registerMvpInvoicingRoutes(
             invoiceId,
           });
           const status = String(resolution.invoice.status || "").toLowerCase();
-          const recipientEmail = resolution.defaultRecipient?.email || null;
+          const recipientEmails = resolution.recipients.map((recipient) => recipient.email);
           if (status === "void") {
             skipped.push({ invoiceId, reason: "Void invoices cannot be sent" });
           } else if (status === "paid") {
             skipped.push({ invoiceId, reason: "Paid invoices do not need to be sent" });
-          } else if (!recipientEmail) {
+          } else if (recipientEmails.length === 0) {
             skipped.push({ invoiceId, reason: "No recipient email is available" });
           } else {
-            candidates.push({
-              invoiceId,
-              invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
-              recipientEmail,
-            });
+            for (const recipientEmail of recipientEmails) {
+              candidates.push({
+                invoiceId,
+                invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
+                recipientEmail,
+              });
+            }
           }
         } catch (error: any) {
           // Do not disclose cross-tenant existence through a bulk operation.

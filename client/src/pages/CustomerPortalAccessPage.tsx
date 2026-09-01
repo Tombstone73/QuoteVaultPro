@@ -257,14 +257,14 @@ export default function CustomerPortalAccessPage() {
     <Page>
       <PageHeader
         title="Customer Portal"
-        subtitle="Single-contact customers receive secure setup through invoice email. Review multi-contact companies before inviting a portal contact."
+        subtitle="Portal access is available by default to eligible customer contacts. Invitations are optional setup convenience; suspend access only when needed."
       />
       <ContentLayout>
         <div className="grid gap-3 md:grid-cols-6">
           {[
             ["Companies", summary?.companies ?? 0],
-            ["Auto eligible", summary?.autoEligible ?? 0],
-            ["Needs review", summary?.needsContactReview ?? 0],
+            ["Eligible contacts", summary?.autoEligible ?? 0],
+            ["Contact review", summary?.needsContactReview ?? 0],
             ["Missing email", summary?.missingEmail ?? 0],
             ["Invited", summary?.invited ?? 0],
             ["Active", summary?.active ?? 0],
@@ -299,10 +299,6 @@ export default function CustomerPortalAccessPage() {
               Export CSV
             </Button>
             <div className="ml-auto flex flex-wrap gap-2">
-              <Button variant="outline" onClick={enableSelectedCompanies} disabled={selectedCompanies.size === 0 || actionMutation.isPending}>
-                <ShieldCheck className="mr-2 h-4 w-4" />
-                Enable Companies
-              </Button>
               <Button variant="outline" onClick={selectRecommended} disabled={selectedCompanies.size === 0}>
                 <UserCheck className="mr-2 h-4 w-4" />
                 Select Recommended

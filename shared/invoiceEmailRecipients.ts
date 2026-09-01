@@ -1,6 +1,7 @@
 export type InvoiceEmailRecipientSource =
   | "order_contact"
   | "customer_primary_contact"
+  | "billing_contact"
   | "customer_account"
   | "customer_contact";
 
@@ -23,7 +24,7 @@ export function isValidInvoiceRecipientEmail(value: unknown): value is string {
 
 /**
  * Keeps the first valid candidate for an address. Callers supply candidates in
- * business-priority order, so the result's first entry is the actual default.
+ * business-priority order, so the first entry remains a compatibility default.
  */
 export function buildInvoiceEmailRecipients(
   candidates: InvoiceEmailRecipientCandidate[],

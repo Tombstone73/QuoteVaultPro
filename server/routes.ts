@@ -36,6 +36,7 @@ import { registerProofingRoutes } from "./routes/proofing.routes";
 import { registerArtworkAccessRoutes } from "./routes/artworkAccess.routes";
 import { registerLocalBridgeRoutes } from "./routes/localBridge.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
+import { registerGuestInvoicePaymentRoutes } from "./routes/guestInvoicePayment.routes";
 import { registerProductionConfigRoutes } from "./routes/productionConfig.routes";
 import { registerProductionJobsRoutes } from "./routes/productionJobs.routes";
 import { registerProductionRunRoutes } from "./routes/productionRuns.routes";
@@ -309,6 +310,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Public invite routes (no auth required — new-user accept-invite flow)
   registerInviteRoutes(app);
   registerCustomerPortalInvitePublicRoutes(app);
+  registerGuestInvoicePaymentRoutes(app);
 
   // Staff-only temporary portal preview context. Does not create portal access/users.
   registerStaffPortalPreviewRoutes(app, { isAuthenticated, tenantContext });

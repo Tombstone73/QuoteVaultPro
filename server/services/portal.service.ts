@@ -416,7 +416,7 @@ export type PortalQuoteDebugDto = {
 };
 
 type PortalScope = {
-  userId: string;
+  userId: string | null;
   organizationId: string;
   customerId: string;
   contactId: string | null;
@@ -1160,6 +1160,8 @@ function mapPayment(payment: PaymentPortalRow): PortalInvoicePaymentDto {
 }
 
 export function getPortalScope(req: Request): PortalScope {
+  const guestScope = (req as any).guestPaymentScope as PortalScope | undefined;
+  if (guestScope) return guestScope;
   const userId = getUserId((req as any).user);
   const organizationId = req.organizationId;
   const customerId = (req as any).portalCustomerId;
@@ -1797,6 +1799,10 @@ export async function getPortalStripeRuntimeConfig(req: Request, invoiceId: stri
 
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {
   const scope = getPortalScope(req);
+  // Guest links deliberately use this exact payment/reconciliation path.  The
+  // source marker is audit-only; it does not create a separate ledger or
+  // change the hosted-payment semantics.
+  const isGuestPayment = Boolean((req as any).guestPaymentScope);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice) return null;
 
@@ -1896,12 +1902,12 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
   const reservation = await reserveStripePaymentAttempt({
     organizationId: scope.organizationId,
     invoiceId: invoice.id,
-    channel: "portal",
+    channel: isGuestPayment ? "guest" : "portal",
     amountCents: amountDueCents,
     currency,
     stripeAccountId,
     createdByUserId: scope.userId,
-    metadata: { customerId: scope.customerId },
+    metadata: { customerId: scope.customerId, guestPayment: isGuestPayment },
   });
   const attempt = reservation.attempt;
   if (Number(attempt.amountCents) !== amountDueCents || String(attempt.stripeAccountId) !== stripeAccountId) {
@@ -1986,7 +1992,8 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
       currency,
       stripePaymentIntentId: paymentIntentId,
       metadata: {
-        portal: true,
+        portal: !isGuestPayment,
+        guestPayment: isGuestPayment,
         invoiceId: invoice.id,
         customerId: scope.customerId,
         stripeAccountId,
@@ -2044,8 +2051,8 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
       entityType: "invoice",
       entityId: invoice.id,
       entityName: String(invoice.invoiceNumber),
-      description: "Portal Stripe PaymentIntent created",
-      newValues: { paymentId, stripePaymentAttemptId: attempt.id, amountCents: amountDueCents } as any,
+      description: `${isGuestPayment ? "Guest invoice" : "Portal"} Stripe PaymentIntent created`,
+      newValues: { paymentId, stripePaymentAttemptId: attempt.id, amountCents: amountDueCents, guestPayment: isGuestPayment } as any,
       createdAt: now,
     } as any);
   } catch {}

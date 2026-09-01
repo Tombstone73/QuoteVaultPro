@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 187,
+  "entryCount": 188,
   "immutableThrough": {
-    "idx": 192,
-    "when": 1788048000038,
-    "tag": "0191_bulk_invoice_email_delivery_queue"
+    "idx": 193,
+    "when": 1788048000039,
+    "tag": "0192_customer_portal_default_on_guest_invoice_payment"
   },
-  "canonicalSha256": "fea07a1e22224c8f446e458f4c16584011154a41f5ad27dc35105c2a39932838"
+  "canonicalSha256": "a890ff08ece5910a44c49c7b194869476d2eb39bbe627c38a97a13a409118e6c"
 }

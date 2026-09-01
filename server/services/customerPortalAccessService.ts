@@ -1,7 +1,7 @@
 import type { Request } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { emailService } from "../emailService";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
@@ -286,7 +286,10 @@ export async function createCustomerPortalAccess(input: {
   if (access) {
     // Invoice emails may safely refresh an unaccepted setup token. This keeps
     // the same access record and revokes the older one-time token.
-    if (!(input.sendEmail === false && access.status === "PENDING_INVITE")) {
+    // A first-time password request may safely resend an unaccepted setup
+    // invite. The durable access identity remains the same and the prior
+    // single-use token is revoked by createInviteToken below.
+    if (access.status !== "PENDING_INVITE") {
       assertCustomerPortalTransition(access.status as CustomerPortalAccessStatus, "PENDING_INVITE");
     }
     [access] = await db
@@ -421,22 +424,11 @@ export async function resolveInvoiceEmailPortalDestination(input: {
     eq(customerPortalAccess.contactId, matchingContacts[0].contactId),
   )).limit(1);
   if (existing?.status === "ACTIVE") return { kind: "active", url: getPortalLoginUrl() };
-  if (existing?.status === "SUSPENDED") return null;
+  if (existing?.status === "SUSPENDED" || existing?.status === "DISABLED") return null;
 
-  if (contacts.length !== 1) return null;
-
-  const now = new Date();
-  await db.insert(customerPortalCompanySettings).values({
-    organizationId: input.organizationId,
-    customerId: input.customerId,
-    state: "enabled",
-    enabledAt: now,
-    updatedByUserId: input.actorUserId ?? null,
-  }).onConflictDoUpdate({
-    target: [customerPortalCompanySettings.organizationId, customerPortalCompanySettings.customerId],
-    set: { state: "enabled", enabledAt: now, suspendedAt: null, updatedAt: now, updatedByUserId: input.actorUserId ?? null },
-  });
-
+  // Default-on access permits every valid canonical contact. The recipient
+  // still must map to exactly one contact above; a multi-contact company is
+  // not itself an authorization failure.
   const access = await createCustomerPortalAccess({
     organizationId: input.organizationId,
     customerId: input.customerId,
@@ -461,6 +453,31 @@ export async function resolveInvoiceEmailPortalDestination(input: {
     req: input.req,
   });
   return { kind: "setup", url: portalSetupUrl };
+}
+
+export async function startDefaultPortalPasswordSetup(input: { email: string; req?: Request }): Promise<boolean> {
+  const email = input.email.trim().toLowerCase();
+  if (!email) return false;
+  const matches = await db.select({
+    organizationId: customerContactLinks.organizationId,
+    customerId: customerContactLinks.customerId,
+    contactId: customerContactLinks.contactId,
+    contactStatus: customerContacts.status,
+    customerStatus: customers.status,
+  }).from(customerContactLinks)
+    .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+    .innerJoin(customers, and(eq(customerContactLinks.customerId, customers.id), eq(customerContactLinks.organizationId, customers.organizationId)))
+    .where(and(eq(customerContactLinks.status, "active"), sql`lower(${customerContacts.email}) = ${email}`));
+  if (matches.length !== 1 || String(matches[0].contactStatus || "active") !== "active" || String(matches[0].customerStatus || "active") === "archived") return false;
+  const match = matches[0];
+  const [company] = await db.select({ state: customerPortalCompanySettings.state }).from(customerPortalCompanySettings)
+    .where(and(eq(customerPortalCompanySettings.organizationId, match.organizationId), eq(customerPortalCompanySettings.customerId, match.customerId))).limit(1);
+  if (company?.state === "suspended") return false;
+  const [existing] = await db.select().from(customerPortalAccess).where(and(eq(customerPortalAccess.organizationId, match.organizationId), eq(customerPortalAccess.contactId, match.contactId))).limit(1);
+  if (existing?.status === "DISABLED" || existing?.status === "SUSPENDED") return false;
+  if (existing?.status === "ACTIVE" || existing?.userId) return false;
+  await createCustomerPortalAccess({ organizationId: match.organizationId, customerId: match.customerId, contactId: match.contactId, accessRole: "VIEWER", sendEmail: true, req: input.req });
+  return true;
 }
 
 /**

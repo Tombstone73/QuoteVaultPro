@@ -258,7 +258,7 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
                   onCheckedChange={(checked) => setValue("isBilling", checked as boolean)}
                 />
                 <Label htmlFor="isBilling" className="font-normal cursor-pointer">
-                  Billing Contact - Receives invoices and payment communications
+                  Invoice Recipient - Receives invoices and payment communications
                 </Label>
               </div>
 

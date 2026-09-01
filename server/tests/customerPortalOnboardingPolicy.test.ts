@@ -109,11 +109,11 @@ describe("customer portal bulk onboarding policy", () => {
     expect(adapt.contacts.find((contact: any) => contact.contactId === "contact_primary").contactPortalState).toBe("active");
   });
 
-  test("bulk enable can change company state without selecting or inviting contacts", () => {
+  test("company portal access defaults to enabled without selecting or inviting contacts", () => {
     const rows = buildRows({ companySettings: [{ customerId: "cust_1", state: "enabled" }] });
 
     expect(rows.find((row: any) => row.customerId === "cust_1").companyPortalState).toBe("enabled");
-    expect(rows.find((row: any) => row.customerId === "cust_2").companyPortalState).toBe("disabled");
+    expect(rows.find((row: any) => row.customerId === "cust_2").companyPortalState).toBe("enabled");
   });
 
   test("active pending invitation is idempotently shown as invited", () => {
@@ -202,7 +202,7 @@ describe("customer portal bulk onboarding policy", () => {
     expect(filterPortalOnboardingRows(rows, "auto_eligible", "")).toHaveLength(1);
   });
 
-  test("no-contact and no-email companies are not auto enabled", () => {
+  test("no-contact and no-email companies remain ineligible even though company access defaults on", () => {
     const rows = buildPortalOnboardingRows({
       now,
       customers: [{ id: "missing", companyName: "Missing Email", status: "active" }],
@@ -214,6 +214,6 @@ describe("customer portal bulk onboarding policy", () => {
     });
 
     expect(rows[0].rolloutStatus).toBe("missing_email");
-    expect(rows[0].companyPortalState).toBe("disabled");
+    expect(rows[0].companyPortalState).toBe("enabled");
   });
 });

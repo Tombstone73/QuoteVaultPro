@@ -3229,7 +3229,7 @@ export const customerPortalCompanySettings = pgTable("customer_portal_company_se
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "cascade" }),
-  state: varchar("state", { length: 30 }).notNull().default("disabled").$type<"disabled" | "enabled" | "suspended">(),
+  state: varchar("state", { length: 30 }).notNull().default("enabled").$type<"disabled" | "enabled" | "suspended">(),
   enabledAt: timestamp("enabled_at", { withTimezone: true }),
   suspendedAt: timestamp("suspended_at", { withTimezone: true }),
   updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
@@ -3305,6 +3305,23 @@ export type CustomerPortalInviteToken = typeof customerPortalInviteTokens.$infer
 export type CustomerPortalCompanySetting = typeof customerPortalCompanySettings.$inferSelect;
 export type CustomerPortalOnboardingBatch = typeof customerPortalOnboardingBatches.$inferSelect;
 export type CustomerPortalOnboardingBatchItem = typeof customerPortalOnboardingBatchItems.$inferSelect;
+
+/** A revocable, hashed capability that grants only one invoice's payment view. */
+export const invoiceGuestPaymentTokens = pgTable("invoice_guest_payment_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("invoice_guest_payment_tokens_hash_uidx").on(table.tokenHash),
+  index("invoice_guest_payment_tokens_invoice_idx").on(table.organizationId, table.invoiceId),
+  index("invoice_guest_payment_tokens_expires_idx").on(table.expiresAt),
+]);
 
 // Customer Notes table
 export const customerNotes = pgTable("customer_notes", {

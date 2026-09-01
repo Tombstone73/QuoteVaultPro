@@ -1228,6 +1228,9 @@ export default function InvoiceDetailPage() {
   const resolvedRecipientName = trimmedManualRecipientEmail
     ? "One-time recipient"
     : (selectedRecipient?.name || null);
+  const usingConfiguredRecipients = !trimmedManualRecipientEmail
+    && Boolean(defaultRecipient?.email)
+    && selectedRecipientEmail === defaultRecipient?.email;
 
   useEffect(() => {
     if (!emailDialogOpen || selectedRecipientEmail || !defaultRecipient?.email) return;
@@ -1254,7 +1257,9 @@ export default function InvoiceDetailPage() {
       return;
     }
     try {
-      await sendInvoice.mutateAsync({ id: invoiceId, toEmail: resolvedRecipientEmail });
+      await sendInvoice.mutateAsync(usingConfiguredRecipients
+        ? { id: invoiceId }
+        : { id: invoiceId, toEmail: resolvedRecipientEmail });
       toast({ title: "Success", description: "Invoice sent successfully" });
       setEmailDialogOpen(false);
       setSelectedRecipientEmail("");
@@ -2042,6 +2047,8 @@ export default function InvoiceDetailPage() {
                               <div className="text-xs font-medium text-muted-foreground">Sending to</div>
                               {invoiceEmailRecipients.isLoading ? (
                                 <div className="mt-1 text-sm text-muted-foreground">Resolving recipient…</div>
+                              ) : usingConfiguredRecipients && recipientOptions.length > 1 ? (
+                                <div className="mt-1 text-sm font-medium">{recipientOptions.length} configured invoice recipients</div>
                               ) : resolvedRecipientEmail ? (
                                 <div className="mt-1 min-w-0">
                                   <div className="truncate text-sm font-medium">{resolvedRecipientName || resolvedRecipientEmail}</div>

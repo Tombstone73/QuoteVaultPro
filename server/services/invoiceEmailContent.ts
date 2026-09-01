@@ -33,7 +33,7 @@ export function buildCustomerPortalUrl(publicWebOrigin: string | null): string |
   }
 }
 
-/** The secure portal invoice route is also the existing hosted-payment route. */
+/** Compatibility helper for callers that use an authenticated portal payment route. */
 export function buildInvoicePortalPaymentUrl(input: {
   publicWebOrigin: string | null;
   invoiceId: string;
@@ -54,6 +54,7 @@ export function buildInvoiceEmailHtml(input: {
   portalUrl?: string | null;
   portalMode?: "active" | "setup" | "login";
   hasBalanceDue?: boolean;
+  guestPaymentUrl?: string | null;
 }): string {
   const invoiceNumber = escapeHtml(input.invoiceNumber);
   const companyName = escapeHtml(input.companyName);
@@ -65,16 +66,17 @@ export function buildInvoiceEmailHtml(input: {
   const orderContextSection = poNumber || jobLabel
     ? `<p style="margin: 12px 0; color: #444;">${poNumber ? `<strong>PO #:</strong> ${escapeHtml(poNumber)}<br>` : ""}${jobLabel ? `<strong>Job:</strong> ${escapeHtml(jobLabel)}` : ""}</p>`
     : "";
-  const rawPortalUrl = input.paymentUrl || input.portalUrl || null;
-  const portalUrl = rawPortalUrl ? escapeHtml(rawPortalUrl) : null;
+  const portalUrl = input.portalUrl ? escapeHtml(input.portalUrl) : null;
+  const guestPaymentUrl = input.guestPaymentUrl ? escapeHtml(input.guestPaymentUrl) : null;
   const canPay = input.hasBalanceDue ?? Boolean(input.paymentUrl);
   const ctaLabel = canPay ? "View &amp; Pay Invoice" : "View Invoice";
-  const portalSection = portalUrl
+  const portalSection = (guestPaymentUrl || portalUrl)
     ? `<p style="margin: 24px 0 12px 0;">${canPay
       ? "Use the secure customer portal to review this invoice and pay its current balance."
       : "Use the secure customer portal to review this invoice."}</p>
-      <p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">${ctaLabel}</a></p>
-      <p style="font-size: 13px; color: #666; word-break: break-all;">If the button does not work, copy and paste this secure link into your browser:<br><a href="${portalUrl}">${portalUrl}</a></p>`
+      ${guestPaymentUrl && canPay ? `<p style="margin: 12px 0;"><a href="${guestPaymentUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">Pay Invoice</a></p>` : ""}
+      ${portalUrl ? `<p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #475569; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">${ctaLabel === "View &amp; Pay Invoice" ? "Customer Portal" : "View Invoice"}</a></p>` : ""}
+      <p style="font-size: 13px; color: #666; word-break: break-all;">If a button does not work, copy and paste the secure link into your browser:${guestPaymentUrl ? `<br><a href="${guestPaymentUrl}">${guestPaymentUrl}</a>` : ""}${portalUrl ? `<br><a href="${portalUrl}">${portalUrl}</a>` : ""}</p>`
     : "";
 
   return `
@@ -117,11 +119,10 @@ export function buildInvoiceEmailPlainText(input: {
   totalFormatted: string;
   dueDate: string;
   portalUrl?: string | null;
+  guestPaymentUrl?: string | null;
   canPayOnline?: boolean;
 }): string {
   const cta = input.canPayOnline ? "View & Pay Invoice" : "View Invoice";
-  const portalLine = input.portalUrl
-    ? `\n${cta}:\n${input.portalUrl}\n`
-    : "";
+  const portalLine = `${input.guestPaymentUrl && input.canPayOnline ? `\nPay Invoice:\n${input.guestPaymentUrl}\n` : ""}${input.portalUrl ? `\n${cta === "View & Pay Invoice" ? "Customer Portal" : cta}:\n${input.portalUrl}\n` : ""}`;
   return `Invoice #${input.invoiceNumber}\n\nDear ${input.customerName},\n\nPlease find attached Invoice #${input.invoiceNumber} from ${input.companyName} for $${input.totalFormatted}. Payment is due ${input.dueDate}.${portalLine}\nIf you have questions about this invoice, please contact ${input.companyName}.`;
 }

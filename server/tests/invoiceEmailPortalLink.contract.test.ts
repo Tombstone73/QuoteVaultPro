@@ -16,19 +16,23 @@ describe("invoice email portal link contract", () => {
     expect(buildCustomerPortalUrl("https://printershero.example.test/some/path")).toBe("https://printershero.example.test/portal");
   });
 
-  test("renders a consistent invoice CTA for both active and secure setup paths", () => {
+  test("renders a guest Pay Invoice CTA plus a distinct portal CTA for positive-balance invoices", () => {
     const invoiceUrl = buildInvoicePortalInvoiceUrl({ publicWebOrigin: "https://app.example.test", invoiceId: "inv-open" });
     const payableUrl = buildInvoicePortalPaymentUrl({ publicWebOrigin: "https://app.example.test", invoiceId: "inv-open", canPayOnline: true });
     const paidUrl = buildInvoicePortalPaymentUrl({ publicWebOrigin: "https://app.example.test", invoiceId: "inv-paid", canPayOnline: false });
-    const payable = buildInvoiceEmailHtml({ invoiceNumber: "OPEN", companyName: "Shop", customerName: "Customer", totalFormatted: "10.00", dueDate: "today", paymentUrl: payableUrl, portalUrl: invoiceUrl, hasBalanceDue: true });
-    const setup = buildInvoiceEmailHtml({ invoiceNumber: "OPEN", companyName: "Shop", customerName: "Customer", totalFormatted: "10.00", dueDate: "today", portalUrl: "https://app.example.test/accept-invite?token=ab12&kind=portal", hasBalanceDue: true });
+    const guestUrl = "https://app.example.test/pay/invoice/opaque-guest-token";
+    const payable = buildInvoiceEmailHtml({ invoiceNumber: "OPEN", companyName: "Shop", customerName: "Customer", totalFormatted: "10.00", dueDate: "today", paymentUrl: payableUrl, portalUrl: invoiceUrl, guestPaymentUrl: guestUrl, hasBalanceDue: true });
+    const setup = buildInvoiceEmailHtml({ invoiceNumber: "OPEN", companyName: "Shop", customerName: "Customer", totalFormatted: "10.00", dueDate: "today", portalUrl: "https://app.example.test/accept-invite?token=ab12&kind=portal", guestPaymentUrl: guestUrl, hasBalanceDue: true });
     const paid = buildInvoiceEmailHtml({ invoiceNumber: "PAID", companyName: "Shop", customerName: "Customer", totalFormatted: "10.00", dueDate: "today", paymentUrl: paidUrl, portalUrl: buildInvoicePortalInvoiceUrl({ publicWebOrigin: "https://app.example.test", invoiceId: "inv-paid" }), portalMode: "active", hasBalanceDue: false });
 
-    expect(payable).toContain("View &amp; Pay Invoice");
-    expect(setup).toContain("View &amp; Pay Invoice");
+    expect(payable).toContain("Pay Invoice");
+    expect(payable).toContain(guestUrl);
+    expect(payable).toContain("Customer Portal");
+    expect(setup).toContain("Pay Invoice");
+    expect(setup).toContain("Customer Portal");
     expect(setup).not.toContain("Set Up Customer Portal");
     expect(paid).toContain("View Invoice");
-    expect(paid).not.toContain("View &amp; Pay Invoice");
+    expect(paid).not.toContain("Pay Invoice");
   });
 
   test("does not use a generic portal CTA when an invoice route is available", () => {
@@ -53,6 +57,8 @@ describe("invoice email portal link contract", () => {
     const app = source("client/src/App.tsx");
     const login = source("client/src/pages/login.tsx");
     const inviteRoutes = source("server/routes/customerPortalAccess.routes.ts");
+    const guestRoutes = source("server/routes/guestInvoicePayment.routes.ts");
+    const guestPayments = source("server/services/guestInvoicePayment.service.ts");
 
     expect(route).toContain("resolveInvoiceEmailPortalDestination");
     expect(route).toContain("buildInvoicePortalInvoiceUrl");
@@ -65,5 +71,8 @@ describe("invoice email portal link contract", () => {
     expect(app).toContain("PortalInvoiceLoginRedirect");
     expect(login).toContain("sanitizePortalReturnTarget");
     expect(inviteRoutes).toContain("sanitizePortalReturnTarget(parse.data.returnTo)");
+    expect(guestRoutes).toContain("/api/guest/invoices/:token/payments/stripe/create-intent");
+    expect(guestPayments).toContain("createPortalStripePaymentIntent");
+    expect(guestPayments).toContain("confirmPortalStripePayment");
   });
 });

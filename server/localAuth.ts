@@ -17,6 +17,7 @@ import {
   getPortalAccessForLogin,
   isPortalCustomerIdentity,
   recordPortalLogin,
+  startDefaultPortalPasswordSetup,
 } from "./services/customerPortalAccessService";
 
 // Helper: Check if user must change password (invited state)
@@ -359,7 +360,11 @@ export async function setupAuth(app: Express) {
           const user = await storage.getUserByEmail(email.trim().toLowerCase());
 
           if (!user) {
-            console.log('[Password Reset] No user found for email (expected behavior for security)');
+            // Default-on customer access: a legitimate, uniquely-resolved
+            // contact can receive the existing one-time setup flow. The HTTP
+            // response remains identical for unknown/ambiguous addresses.
+            await startDefaultPortalPasswordSetup({ email, req });
+            console.log('[Password Reset] No user found for email (generic response retained)');
             return;
           }
 

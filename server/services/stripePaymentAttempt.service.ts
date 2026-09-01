@@ -6,7 +6,7 @@ import { stripePaymentAttempts } from "../../shared/schema";
 
 const ACTIVE_STATUSES = ["reserved", "pending"] as const;
 
-export type StripePaymentAttemptChannel = "staff" | "portal";
+export type StripePaymentAttemptChannel = "staff" | "portal" | "guest";
 
 export type ReservedStripePaymentAttempt = {
   id: string;
