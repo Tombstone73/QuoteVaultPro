@@ -256,8 +256,9 @@ export default function Orders() {
     ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}`
     : null;
 
-  // Restore only this user's active-organization preference. Filters and page
-  // number deliberately stay out of this lightweight persistence contract.
+  // Restore only this user's active-organization preference. The status-pill
+  // filter belongs to sticky sorting; thumbnails are an independent display
+  // preference. Other filters and page number remain session-only.
   useEffect(() => {
     if (!user?.id || !ordersPreferenceScope) {
       setPreferencesLoadedScope(null);
@@ -271,6 +272,8 @@ export default function Orders() {
     setPageSize(preferences.pageSize);
     setSortKey(preferences.sortKey);
     setSortDirection(preferences.sortDirection);
+    setStatusPillSelection(preferences.statusPillSelection);
+    setIncludeThumbnails(preferences.includeThumbnails);
     setPreferencesLoadedScope(ordersPreferenceScope);
   }, [ordersPreferenceScope, user?.id, user?.lastActiveOrgId]);
 
@@ -284,8 +287,12 @@ export default function Orders() {
       sortKey: stickySorting ? sortKey : DEFAULT_ORDERS_LIST_PREFERENCES.sortKey,
       sortDirection: stickySorting ? sortDirection : DEFAULT_ORDERS_LIST_PREFERENCES.sortDirection,
       pageSize,
+      // Turning sticky sorting off clears only its filter ownership. The
+      // thumbnail setting remains a display preference in every mode.
+      statusPillSelection: stickySorting ? statusPillSelection : null,
+      includeThumbnails,
     });
-  }, [ordersPreferenceScope, pageSize, preferencesLoadedScope, sortDirection, sortKey, stickySorting, user?.id, user?.lastActiveOrgId]);
+  }, [includeThumbnails, ordersPreferenceScope, pageSize, preferencesLoadedScope, sortDirection, sortKey, statusPillSelection, stickySorting, user?.id, user?.lastActiveOrgId]);
 
   // Auto-show Payment Status column for closed/canceled views
   useEffect(() => {

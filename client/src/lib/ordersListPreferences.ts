@@ -25,6 +25,10 @@ export type OrdersListPreferences = {
   sortKey: OrdersListSortKey;
   sortDirection: OrdersListSortDirection;
   pageSize: OrdersListPageSize;
+  /** Sticky only: null means every currently active status pill is selected. */
+  statusPillSelection: string[] | null;
+  /** A display preference that is deliberately independent of sticky sorting. */
+  includeThumbnails: boolean;
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -35,6 +39,8 @@ export const DEFAULT_ORDERS_LIST_PREFERENCES: OrdersListPreferences = {
   sortKey: "date",
   sortDirection: "desc",
   pageSize: 25,
+  statusPillSelection: null,
+  includeThumbnails: false,
 };
 
 export const ORDERS_LIST_PREFERENCES_STORAGE_KEY_PREFIX = "titanos:orders:list-preferences:v1";
@@ -49,7 +55,7 @@ const PAGE_SIZES = new Set<OrdersListPageSize>([10, 25, 50, 100, 200]);
 
 export function resolveOrdersListViewPreferences(value: unknown): Pick<
   OrdersListPreferences,
-  "stickySorting" | "sortKey" | "sortDirection" | "pageSize"
+  "stickySorting" | "sortKey" | "sortDirection" | "pageSize" | "statusPillSelection" | "includeThumbnails"
 > {
   const preferences = normalizeOrdersListPreferences(value);
   return {
@@ -57,6 +63,8 @@ export function resolveOrdersListViewPreferences(value: unknown): Pick<
     sortKey: preferences.stickySorting ? preferences.sortKey : DEFAULT_ORDERS_LIST_PREFERENCES.sortKey,
     sortDirection: preferences.stickySorting ? preferences.sortDirection : DEFAULT_ORDERS_LIST_PREFERENCES.sortDirection,
     pageSize: preferences.pageSize,
+    statusPillSelection: preferences.stickySorting ? preferences.statusPillSelection : null,
+    includeThumbnails: preferences.includeThumbnails,
   };
 }
 
@@ -89,6 +97,11 @@ export function normalizeOrdersListPreferences(value: unknown): OrdersListPrefer
   const pageSize = typeof raw.pageSize === "number" && PAGE_SIZES.has(raw.pageSize as OrdersListPageSize)
     ? raw.pageSize as OrdersListPageSize
     : DEFAULT_ORDERS_LIST_PREFERENCES.pageSize;
+  const statusPillSelection = raw.statusPillSelection === null
+    ? null
+    : Array.isArray(raw.statusPillSelection)
+      ? Array.from(new Set(raw.statusPillSelection.filter((id): id is string => typeof id === "string" && id.trim().length > 0)))
+      : DEFAULT_ORDERS_LIST_PREFERENCES.statusPillSelection;
 
   return {
     version: 1,
@@ -96,6 +109,10 @@ export function normalizeOrdersListPreferences(value: unknown): OrdersListPrefer
     sortKey,
     sortDirection,
     pageSize,
+    statusPillSelection,
+    includeThumbnails: typeof raw.includeThumbnails === "boolean"
+      ? raw.includeThumbnails
+      : DEFAULT_ORDERS_LIST_PREFERENCES.includeThumbnails,
   };
 }
 

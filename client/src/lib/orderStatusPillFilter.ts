@@ -14,7 +14,12 @@ export function selectedOrderStatusPillIds(
   selection: readonly string[] | null,
   pills: readonly OrderStatusPillFilterOption[] | undefined,
 ): string[] {
-  return selection === null ? activeOrderStatusPills(pills).map((pill) => pill.id) : [...selection];
+  const activeIds = activeOrderStatusPills(pills).map((pill) => pill.id);
+  if (selection === null) return activeIds;
+  const activeIdSet = new Set(activeIds);
+  // Saved selections are scoped to the active pill catalog. A retired pill
+  // must not turn a restored filter into a permanently empty Orders list.
+  return Array.from(new Set(selection)).filter((id) => activeIdSet.has(id));
 }
 
 export function orderStatusPillIdsForQuery(
@@ -24,7 +29,7 @@ export function orderStatusPillIdsForQuery(
   if (selection === null) return undefined;
 
   const activeIds = activeOrderStatusPills(pills).map((pill) => pill.id);
-  const selected = Array.from(new Set(selection));
+  const selected = selectedOrderStatusPillIds(selection, pills);
   const activeIdSet = new Set(activeIds);
   const selectsEveryActivePill = activeIds.length > 0
     && selected.length === activeIds.length

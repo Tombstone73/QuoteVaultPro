@@ -33,6 +33,8 @@ describe("orders list preferences", () => {
       sortKey: "proof",
       sortDirection: "asc",
       pageSize: 100,
+      statusPillSelection: ["pill-awaiting-proof"],
+      includeThumbnails: true,
     }, storage);
 
     expect(readPersistedOrdersListPreferences("user-1", "org-1", storage)).toMatchObject({
@@ -40,6 +42,8 @@ describe("orders list preferences", () => {
       sortKey: "proof",
       sortDirection: "asc",
       pageSize: 100,
+      statusPillSelection: ["pill-awaiting-proof"],
+      includeThumbnails: true,
     });
   });
 
@@ -56,6 +60,54 @@ describe("orders list preferences", () => {
     });
   });
 
+  test("restores a sticky status-pill selection after a remount", () => {
+    const storage = createStorage();
+    persistOrdersListPreferences("user-1", "org-1", {
+      ...DEFAULT_ORDERS_LIST_PREFERENCES,
+      stickySorting: true,
+      statusPillSelection: ["pill-ready", "pill-proof"],
+    }, storage);
+
+    expect(resolveOrdersListViewPreferences(readPersistedOrdersListPreferences("user-1", "org-1", storage)))
+      .toMatchObject({ stickySorting: true, statusPillSelection: ["pill-ready", "pill-proof"] });
+  });
+
+  test("does not restore status pills as sticky state while sticky sorting is off", () => {
+    expect(resolveOrdersListViewPreferences({
+      ...DEFAULT_ORDERS_LIST_PREFERENCES,
+      stickySorting: false,
+      statusPillSelection: ["pill-ready"],
+    })).toMatchObject({ stickySorting: false, statusPillSelection: null });
+  });
+
+  test("persists thumbnail display preference independently in either sticky mode", () => {
+    const storage = createStorage();
+    persistOrdersListPreferences("user-1", "org-1", {
+      ...DEFAULT_ORDERS_LIST_PREFERENCES,
+      stickySorting: false,
+      includeThumbnails: true,
+    }, storage);
+    expect(resolveOrdersListViewPreferences(readPersistedOrdersListPreferences("user-1", "org-1", storage)))
+      .toMatchObject({ stickySorting: false, includeThumbnails: true });
+
+    persistOrdersListPreferences("user-1", "org-1", {
+      ...DEFAULT_ORDERS_LIST_PREFERENCES,
+      stickySorting: true,
+      includeThumbnails: false,
+    }, storage);
+    expect(resolveOrdersListViewPreferences(readPersistedOrdersListPreferences("user-1", "org-1", storage)))
+      .toMatchObject({ stickySorting: true, includeThumbnails: false });
+  });
+
+  test("changing sticky sorting does not erase thumbnails", () => {
+    expect(resolveOrdersListViewPreferences({
+      ...DEFAULT_ORDERS_LIST_PREFERENCES,
+      stickySorting: false,
+      includeThumbnails: true,
+      statusPillSelection: ["pill-ready"],
+    })).toMatchObject({ statusPillSelection: null, includeThumbnails: true });
+  });
+
   test("ignores a remembered sort when sticky sorting is off", () => {
     expect(resolveOrdersListViewPreferences({
       version: 1,
@@ -63,11 +115,15 @@ describe("orders list preferences", () => {
       sortKey: "proof",
       sortDirection: "asc",
       pageSize: 100,
+      statusPillSelection: ["pill-ready"],
+      includeThumbnails: true,
     })).toEqual({
       stickySorting: false,
       sortKey: "date",
       sortDirection: "desc",
       pageSize: 100,
+      statusPillSelection: null,
+      includeThumbnails: true,
     });
   });
 

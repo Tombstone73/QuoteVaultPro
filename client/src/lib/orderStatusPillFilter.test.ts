@@ -37,4 +37,9 @@ describe("order status pill multi-select filter", () => {
   it("toggles from the all-status default without including inactive tenant pills", () => {
     expect(toggleOrderStatusPillId(null, "progress", pills)).toEqual(["ready", "complete"]);
   });
+
+  it("ignores retired saved pill ids without changing valid filter behavior", () => {
+    expect(selectedOrderStatusPillIds(["ready", "retired"], pills)).toEqual(["ready"]);
+    expect(orderStatusPillIdsForQuery(["ready", "retired"], pills)).toEqual(["ready"]);
+  });
 });
