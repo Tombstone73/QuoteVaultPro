@@ -30,6 +30,8 @@ import {
     orderMaterialUsage,
     inventoryReservations,
     productionJobs,
+    productionRunMembers,
+    productionRuns,
     productTypes,
     insertOrderSchema,
     updateOrderSchema,
@@ -62,6 +64,13 @@ import { portalContext, tenantContext, getPortalCustomer } from "../tenantContex
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { listOrderDesignBillingVisibility } from "../services/designCostSummaryService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { completeProductionJobWorkflow, markOrderReadyForFulfillmentIfProductionComplete } from "./productionJobs.routes";
+import {
+    isOrderShortcutCompletableProductionStation,
+    missingOwnerRepairState,
+    requiresCanonicalProductionCompletion,
+} from "../services/orderProductionCompletionPolicy";
+import { ACTIVE_PRODUCTION_RUN_STATUSES } from "@shared/productionRunLifecycle";
 import { routeEligibleOrderLineItems } from "../services/orderSaveRoutingService";
 import { normalizeOrderSaveRoutingMode } from "@shared/orderSaveRouting";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
@@ -3236,79 +3245,226 @@ export async function registerOrderRoutes(
     // TitanOS State Transitions
     app.post("/api/orders/:orderId/complete-production", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            if (!assertInternalStaffUser(req, res)) return;
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
             const { orderId } = req.params;
-            const { autoMarkRemainingDone } = req.body || {};
-
-            const order = await storage.getOrderById(organizationId, orderId);
-            if (!order) return res.status(404).json({ success: false, message: "Order not found" });
-
-            if (order.state !== 'open') {
-                return res.status(400).json({ success: false, code: 'INVALID_STATE', message: `Cannot complete production from ${order.state} state.` });
-            }
-            if (order.status !== 'in_production') {
-                return res.status(409).json({
-                    success: false,
-                    code: 'PARENT_ORDER_NOT_IN_PRODUCTION',
-                    message: `Cannot complete production while order status is ${order.status}. Move the order into production first.`,
-                });
-            }
-
-            const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
-            const remainingLineItems = lineItems.filter((li: any) => li.status !== 'complete' && li.status !== 'canceled');
-            const remainingCount = remainingLineItems.length;
-            const remainingIds = remainingLineItems.map((li: any) => li.id);
-
-            const orgPreferences = await getOrgPreferences(organizationId);
-            const requireAllLineItemsDoneToComplete = orgPreferences?.orders?.requireAllLineItemsDoneToComplete ?? true;
-
-            const shouldAutoMark = requireAllLineItemsDoneToComplete ? autoMarkRemainingDone === true : true;
-
-            if (requireAllLineItemsDoneToComplete && remainingCount > 0 && !shouldAutoMark) {
-                return res.status(409).json({ success: false, code: 'LINE_ITEMS_NOT_COMPLETE', remainingCount, canOverride: true });
-            }
-
-            const { determineRoutingTarget, mapStateToLegacyStatus } = await import('../services/orderStateService');
-            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-            const nowIso = new Date().toISOString();
+            const userName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
 
             const result = await db.transaction(async (tx) => {
-                let didAutoMark = false;
-                let autoMarkedCount = 0;
+                const [order] = await tx
+                    .select()
+                    .from(orders)
+                    .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                    .for("update")
+                    .limit(1);
+                if (!order) throw Object.assign(new Error("Order not found"), { statusCode: 404, code: "ORDER_NOT_FOUND" });
 
-                if (remainingCount > 0 && shouldAutoMark) {
-                    didAutoMark = true;
-                    autoMarkedCount = remainingCount;
-                    for (const lineItemId of remainingIds) {
-                        await transitionLineItemWorkflowState(tx, {
+                // The action is idempotent once canonical Production has already
+                // handed the order to Fulfillment.
+                if (order.state === "production_complete") {
+                    return { order, completedJobIds: [] as string[], alreadyCompleted: true };
+                }
+                if (order.state !== "open") {
+                    throw Object.assign(new Error(`Cannot complete production from ${order.state} state.`), {
+                        statusCode: 400,
+                        code: "INVALID_STATE",
+                    });
+                }
+                if (order.status !== "in_production") {
+                    throw Object.assign(new Error(`Cannot complete production while order status is ${order.status}. Move the order into production first.`), {
+                        statusCode: 409,
+                        code: "PARENT_ORDER_NOT_IN_PRODUCTION",
+                    });
+                }
+
+                const lines = await tx
+                    .select({
+                        id: orderLineItems.id,
+                        workflowState: orderLineItems.workflowState,
+                        status: orderLineItems.status,
+                        lineItemRole: orderLineItems.lineItemRole,
+                        productionBypassed: orderLineItems.productionBypassed,
+                        requiresProductionJob: products.requiresProductionJob,
+                        workflowIntent: products.workflowIntent,
+                    })
+                    .from(orderLineItems)
+                    .innerJoin(products, eq(orderLineItems.productId, products.id))
+                    .where(eq(orderLineItems.orderId, orderId))
+                    .for("update");
+
+                const productionLines = lines.filter(requiresCanonicalProductionCompletion);
+                const completedJobIds: string[] = [];
+                const maxTransitionsPerLine = 16;
+
+                const activeJobsForLine = async (lineItemId: string) => tx
+                    .select({
+                        id: productionJobs.id,
+                        stationKey: productionJobs.stationKey,
+                        status: productionJobs.status,
+                    })
+                    .from(productionJobs)
+                    .where(and(
+                        eq(productionJobs.organizationId, organizationId),
+                        eq(productionJobs.lineItemId, lineItemId),
+                        sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+                    ))
+                    .for("update");
+
+                const assertNoActiveRunOwnsJobs = async (jobIds: string[]) => {
+                    if (jobIds.length === 0) return;
+                    const [runMember] = await tx
+                        .select({ runId: productionRuns.id, runNumber: productionRuns.runNumber })
+                        .from(productionRunMembers)
+                        .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+                        .where(and(
+                            eq(productionRunMembers.organizationId, organizationId),
+                            inArray(productionRunMembers.productionJobId, jobIds),
+                            inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+                            sql`coalesce(${productionRunMembers.remainingQuantity}, 0) > 0`,
+                        ))
+                        .limit(1);
+                    if (runMember) {
+                        throw Object.assign(new Error("This production work is owned by an active Combined Run. Record its outcome from Production instead."), {
+                            statusCode: 409,
+                            code: "PRODUCTION_RUN_OUTCOME_REQUIRED",
+                            details: { runId: runMember.runId, runNumber: runMember.runNumber },
+                        });
+                    }
+                };
+
+                for (const line of productionLines) {
+                    const lineIsComplete = ["completed", "canceled"].includes(String(line.workflowState || "").toLowerCase())
+                        || ["complete", "completed", "canceled", "cancelled"].includes(String(line.status || "").toLowerCase());
+                    if (lineIsComplete) continue;
+
+                    for (let transitionCount = 0; transitionCount < maxTransitionsPerLine; transitionCount++) {
+                        let activeJobs = await activeJobsForLine(line.id);
+                        const activeProductionJobs = activeJobs.filter((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
+
+                        if (activeProductionJobs.length === 0) {
+                            if (activeJobs.length > 0) break; // Fulfillment owns the physical handoff; never complete it here.
+
+                            const repairState = missingOwnerRepairState(line.workflowState);
+                            if (!repairState) {
+                                throw Object.assign(new Error("This line has not completed its required Design, Proofing, or Prepress prerequisite."), {
+                                    statusCode: 409,
+                                    code: "PRODUCTION_PREREQUISITE_NOT_READY",
+                                    details: { lineItemId: line.id, workflowState: line.workflowState, status: line.status },
+                                });
+                            }
+
+                            // Reapplying the existing production-ready state uses the
+                            // line-item workflow owner repair to create exactly one
+                            // routed job, instead of fabricating a record here.
+                            await transitionLineItemWorkflowState(tx, {
+                                organizationId,
+                                lineItemId: line.id,
+                                toState: repairState,
+                                actorUserId: userId,
+                                metadata: { source: "order_complete_production_owner_repair", orderId },
+                            });
+                            activeJobs = await activeJobsForLine(line.id);
+                            const repairedProductionJobs = activeJobs.filter((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
+                            if (repairedProductionJobs.length === 0) {
+                                throw Object.assign(new Error("Production ownership could not be established for this line."), {
+                                    statusCode: 409,
+                                    code: "PRODUCTION_OWNER_REPAIR_FAILED",
+                                    details: { lineItemId: line.id },
+                                });
+                            }
+                            activeProductionJobs.splice(0, activeProductionJobs.length, ...repairedProductionJobs);
+                        }
+
+                        if (activeProductionJobs.length !== 1) {
+                            throw Object.assign(new Error("This line has multiple active production owners and must be repaired before it can be completed."), {
+                                statusCode: 409,
+                                code: "PRODUCTION_OWNERSHIP_CONFLICT",
+                                details: { lineItemId: line.id, productionJobIds: activeProductionJobs.map((job) => job.id) },
+                            });
+                        }
+
+                        const activeJob = activeProductionJobs[0];
+                        if (!isOrderShortcutCompletableProductionStation(activeJob.stationKey)) {
+                            throw Object.assign(new Error(`Production prerequisite at ${activeJob.stationKey} must be completed from its own workspace.`), {
+                                statusCode: 409,
+                                code: "PRODUCTION_PREREQUISITE_NOT_READY",
+                                details: { lineItemId: line.id, productionJobId: activeJob.id, stationKey: activeJob.stationKey },
+                            });
+                        }
+
+                        await assertNoActiveRunOwnsJobs([activeJob.id]);
+                        await completeProductionJobWorkflow(tx, {
                             organizationId,
-                            lineItemId,
-                            toState: 'completed',
-                            actorUserId: userId,
-                            metadata: {
-                                source: 'order_complete_production_auto_mark',
-                                orderId,
-                            },
+                            userId,
+                            jobId: activeJob.id,
+                            // A queued job has not been manually started. The
+                            // canonical completion operation records this as its
+                            // supported skip-production completion, while started
+                            // jobs retain their normal timer/audit handling.
+                            skipProduction: "auto",
+                            auditUserName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
+                            ipAddress: req.ip || null,
+                            userAgent: req.headers["user-agent"] || null,
+                        });
+                        completedJobIds.push(activeJob.id);
+                    }
+
+                    const remainingJobs = await activeJobsForLine(line.id);
+                    if (remainingJobs.some((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment")) {
+                        throw Object.assign(new Error("Production completion did not reach the fulfillment handoff for this line."), {
+                            statusCode: 409,
+                            code: "PRODUCTION_COMPLETION_INCOMPLETE",
+                            details: { lineItemId: line.id },
                         });
                     }
                 }
 
-                const routingTarget = determineRoutingTarget(order as any);
-                const legacyStatus = mapStateToLegacyStatus('production_complete' as any);
+                // A prior canonical job completion may already have created a
+                // queued Fulfillment handoff while leaving an older Order
+                // projection stale. Reconcile only that projection here; this
+                // never completes the Fulfillment job or changes shipment state.
+                const activeOrderJobs = await tx
+                    .select({ id: productionJobs.id, stationKey: productionJobs.stationKey })
+                    .from(productionJobs)
+                    .where(and(
+                        eq(productionJobs.organizationId, organizationId),
+                        eq(productionJobs.orderId, orderId),
+                        sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+                    ))
+                    .for("update");
+                const activeNonFulfillmentJob = activeOrderJobs.find((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
+                const fulfillmentHandoffJob = activeOrderJobs.find((job) => String(job.stationKey || "").toLowerCase() === "fulfillment");
+                const [projectionBeforeRepair] = await tx
+                    .select({ state: orders.state })
+                    .from(orders)
+                    .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                    .limit(1);
+                if (projectionBeforeRepair?.state !== "production_complete" && !activeNonFulfillmentJob && fulfillmentHandoffJob) {
+                    await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+                        organizationId,
+                        orderId,
+                        actorUserId: userId,
+                        productionJobId: fulfillmentHandoffJob.id,
+                    });
+                }
 
-                const [updatedOrder] = await tx.update(orders).set({
-                    state: 'production_complete' as any,
-                    status: legacyStatus as any,
-                    productionCompletedAt: nowIso,
-                    routingTarget,
-                    updatedAt: sql`now()` as any,
-                }).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId))).returning();
+                const [updatedOrder] = await tx
+                    .select()
+                    .from(orders)
+                    .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                    .limit(1);
+                if (!updatedOrder || updatedOrder.state !== "production_complete") {
+                    throw Object.assign(new Error("Production work completed but the order did not reach the fulfillment handoff."), {
+                        statusCode: 409,
+                        code: "ORDER_PRODUCTION_HANDOFF_INCOMPLETE",
+                    });
+                }
 
-                return { updatedOrder, didAutoMark, autoMarkedCount };
+                return { order: updatedOrder, completedJobIds, alreadyCompleted: false };
             });
 
             // Billing readiness recompute (fail-soft)
@@ -3332,10 +3488,21 @@ export async function registerOrderRoutes(
                 console.warn('[BillingReady] Recompute failed:', e);
             }
 
-            return res.json({ success: true, data: result.updatedOrder, didAutoMark: result.didAutoMark, autoMarkedCount: result.autoMarkedCount, message: 'Order production completed' });
+            return res.json({
+                success: true,
+                data: result.order,
+                completedJobCount: result.completedJobIds.length,
+                alreadyCompleted: result.alreadyCompleted,
+                message: result.alreadyCompleted ? "Order production was already completed" : "Order production completed",
+            });
         } catch (error: any) {
             console.error('[CompleteProduction] Error:', error);
-            return res.status(500).json({ success: false, message: 'Failed to complete production', error: error?.message });
+            return res.status(error?.statusCode || 500).json({
+                success: false,
+                code: error?.code || "COMPLETE_PRODUCTION_FAILED",
+                message: error?.message || "Failed to complete production",
+                details: error?.details,
+            });
         }
     });
 

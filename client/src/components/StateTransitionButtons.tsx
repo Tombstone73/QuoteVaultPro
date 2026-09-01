@@ -18,9 +18,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { OrderStateApiError, useCloseOrder, useCompleteOrder, useReopenOrder, useTransitionOrderState } from '@/hooks/useOrderState';
 import type { OrderState } from '@/hooks/useOrderState';
-import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { useQueryClient } from '@tanstack/react-query';
+import { orderDetailQueryKey, orderTimelineQueryKey } from '@/hooks/useOrders';
 import { AlertCircle, CheckCircle2, XCircle, RotateCcw } from 'lucide-react';
 
 interface CompleteProductionButtonProps {
@@ -29,9 +29,6 @@ interface CompleteProductionButtonProps {
 }
 
 export function CompleteProductionButton({ orderId, disabled }: CompleteProductionButtonProps) {
-  const [showOverrideDialog, setShowOverrideDialog] = useState(false);
-  const [remainingCount, setRemainingCount] = useState<number>(0);
-  const [overrideChecked, setOverrideChecked] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -49,9 +46,11 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
   };
 
   const invalidateAfterSuccess = () => {
-    queryClient.invalidateQueries({ queryKey: ['/api', 'orders', orderId] });
-    queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
-    queryClient.invalidateQueries({ queryKey: ['/api', 'timeline'] });
+    queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+    queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+    queryClient.invalidateQueries({ queryKey: ['orders', 'list'] });
+    queryClient.invalidateQueries({ queryKey: ['/api/fulfillment/queue'] });
+    queryClient.invalidateQueries({ queryKey: ['/api/production/jobs'] });
   };
 
   const attemptComplete = async (payload: Record<string, any>) => {
@@ -70,14 +69,6 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
         return;
       }
 
-      // Strict-mode override flow: remaining items, needs checkbox-confirmed second request
-      if (result.status === 409) {
-        setRemainingCount(result.data?.remainingCount ?? 0);
-        setOverrideChecked(false);
-        setShowOverrideDialog(true);
-        return;
-      }
-
       throw new Error(result.data?.message || result.data?.error || 'Failed to complete production');
     } catch (err: any) {
       toast({
@@ -91,71 +82,19 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
   };
 
   const handleClick = async () => {
-    // Small shop: backend auto-marks by default (no modal).
-    // Big shop: backend returns 409 when remaining items exist, which triggers the override modal.
     await attemptComplete({});
   };
 
-  const handleOverrideConfirm = async () => {
-    if (!overrideChecked) {
-      setShowOverrideDialog(false);
-      return;
-    }
-    await attemptComplete({ autoMarkRemainingDone: true });
-    setShowOverrideDialog(false);
-  };
-
   return (
-    <>
-      <Button
-        onClick={handleClick}
-        disabled={disabled}
-        variant="default"
-        className="bg-purple-600 hover:bg-purple-700"
-      >
-        <CheckCircle2 className="mr-2 h-4 w-4" />
-        Complete Production
-      </Button>
-
-      <Dialog
-        open={showOverrideDialog}
-        onOpenChange={setShowOverrideDialog}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Complete Production</DialogTitle>
-            <DialogDescription>{remainingCount} items not done.</DialogDescription>
-          </DialogHeader>
-
-          <div className="py-4">
-            <div className="flex items-center gap-3">
-              <Checkbox
-                id="override-auto-mark"
-                checked={overrideChecked}
-                onCheckedChange={(checked) => setOverrideChecked(checked === true)}
-                disabled={isProcessing}
-              />
-              <Label htmlFor="override-auto-mark" className="text-sm cursor-pointer">
-                Mark remaining as Done and complete production
-              </Label>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setShowOverrideDialog(false)}
-              disabled={isProcessing}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleOverrideConfirm} disabled={isProcessing}>
-              {isProcessing ? 'Processing...' : 'Confirm'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <Button
+      onClick={handleClick}
+      disabled={disabled || isProcessing}
+      variant="default"
+      className="bg-purple-600 hover:bg-purple-700"
+    >
+      <CheckCircle2 className="mr-2 h-4 w-4" />
+      {isProcessing ? 'Completing...' : 'Complete Production'}
+    </Button>
   );
 }
 

@@ -151,7 +151,10 @@ function userDisplayName(row: { firstName?: string | null; lastName?: string | n
   return name || row.email || null;
 }
 
-async function markOrderReadyForFulfillmentIfProductionComplete(
+// Shared with the Order-level shortcut to repair the Order projection from
+// existing canonical Production/Fulfillment handoff records without completing
+// a fulfillment job.
+export async function markOrderReadyForFulfillmentIfProductionComplete(
   tx: any,
   args: {
     organizationId: string;
@@ -275,7 +278,10 @@ async function restoreOrderProductionStateAfterUndo(
   return { changed: true, reason: "order_restored_to_production" as const };
 }
 
-async function completeProductionJobWorkflow(
+// Exported for the Order-level production shortcut.  The shortcut must use this
+// exact operation so station completion, material consumption, audit events,
+// and fulfillment handoff remain owned by Production.
+export async function completeProductionJobWorkflow(
   tx: any,
   args: {
     organizationId: string;
