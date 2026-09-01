@@ -94,9 +94,9 @@ describe("Invoices List payment entry point", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 100, balanceDue: "100.00" }))).toBe(true);
   });
 
-  it("does not show Take Payment for void, draft, or zero-balance invoices", () => {
+  it("shows Take Payment for a live draft balance, but not void or zero-balance invoices", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "void" }))).toBe(false);
-    expect(canTakePaymentFromInvoiceList(invoice({ status: "draft" }))).toBe(false);
+    expect(canTakePaymentFromInvoiceList(invoice({ status: "draft" }))).toBe(true);
     expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 0, balanceDue: "0.00" }))).toBe(false);
   });
 

@@ -25,7 +25,9 @@ export type PaymentRecommendedAction = (typeof paymentRecommendedActions)[number
 // `draft` remains a legacy persisted value during the migration window, but
 // it is not a financial gate for an Order-backed receivable.
 export const payableInvoiceStatuses = ["draft", "finalized", "billed", "sent", "open", "partially_paid", "overdue", "paid"] as const;
-export const blockedInvoiceStatuses = ["void", "voided"] as const;
+// The current write contract uses `void`, but canceled spellings can exist in
+// legacy invoice data. Treat every terminal cancellation alias as non-payable.
+export const blockedInvoiceStatuses = ["void", "voided", "canceled", "cancelled"] as const;
 
 export type PayableInvoiceStatus = (typeof payableInvoiceStatuses)[number];
 export type BlockedInvoiceStatus = (typeof blockedInvoiceStatuses)[number];
@@ -91,8 +93,13 @@ export function getInvoiceFinancialPaymentEligibility(input: {
   const parsedRemainingCents = Math.round(Number(input.remainingCents || 0));
   const remainingCents = Number.isFinite(parsedRemainingCents) ? Math.max(0, parsedRemainingCents) : 0;
 
-  if (status === "void" || status === "voided") {
-    return { payable: false, blockedReason: "Void invoices cannot accept payment." };
+  if (isBlockedInvoiceStatus(status)) {
+    return {
+      payable: false,
+      blockedReason: status === "void" || status === "voided"
+        ? "Void invoices cannot accept payment."
+        : "Canceled invoices cannot accept payment.",
+    };
   }
   if (remainingCents <= 0) {
     return { payable: false, blockedReason: "Invoice is already paid." };
