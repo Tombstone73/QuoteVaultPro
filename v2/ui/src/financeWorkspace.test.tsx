@@ -72,6 +72,7 @@ const renderInvoice = (
         onSelectInvoice={() => {}}
         backToInvoices={() => {}}
         canInvoiceView={canInvoiceView}
+        canInvoiceSend
         canPaymentView
         canPaymentRecord
         canRefundIssue
@@ -119,6 +120,7 @@ const noSelection = renderToStaticMarkup(
       onSelectInvoice={() => {}}
       backToInvoices={() => {}}
       canInvoiceView
+      canInvoiceSend
       canPaymentView={false}
       canPaymentRecord
       canRefundIssue

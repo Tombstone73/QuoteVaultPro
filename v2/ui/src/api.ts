@@ -119,6 +119,7 @@ export type UiBootstrap = Readonly<{
     orderOverridePrice?: boolean;
     invoiceView?: boolean;
     invoiceIssue?: boolean;
+    invoiceSend?: boolean;
     paymentView?: boolean;
     paymentRecord?: boolean;
     refundIssue?: boolean;
@@ -1777,7 +1778,16 @@ export const invoiceApi = {
         },
         body: JSON.stringify({ businessRequestId }),
       },
+  ),
+  emailSelected: (organizationId:string,businessRequestId:string,invoiceIds:readonly string[]) =>
+    request<Readonly<{batchId:string;selected:number;queuedInvoices:number;queuedMessages:number;skipped:number;replayed:boolean}>>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/email-delivery/batch`,
+      { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({businessRequestId,invoiceIds}) },
     ),
+  emailPreview: (organizationId:string,invoiceIds:readonly string[]) => request<Readonly<{selected:number;deliverableInvoices:number;recipientCount:number;skipped:number}>>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/email-delivery/preview`,
+    {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({invoiceIds})},
+  ),
 };
 const financeEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/finance${suffix}`;

@@ -89,6 +89,7 @@
     "v2:sales-tax:pure": "tsx v2/tests/modules/salesTaxComposition.pure.ts",
     "v2:quote-tax-refresh:pure": "tsx v2/tests/infrastructure/quoteMutableTaxProjection.pure.ts",
     "v2:email-integration:pure": "tsx v2/tests/infrastructure/emailIntegrationContracts.pure.ts && tsx v2/tests/interfaces/emailIntegrationCallbackRoutes.pure.ts && tsx v2/ui/src/emailIntegrationCallbackNotice.test.ts",
+    "v2:invoice-email:pure": "tsx v2/tests/infrastructure/invoiceEmailDeliveryQueue.pure.ts",
     "v2:quickbooks-oauth:pure": "tsx v2/tests/infrastructure/quickBooksConnectionReadiness.pure.ts && tsx v2/ui/src/quickBooksIntegrationCallbackNotice.test.ts",
     "v2:sales-tax-settings:pure": "tsx v2/tests/modules/taxSettings.pure.ts",
     "v2:sales-tax-settings:http": "tsx v2/tests/interfaces/taxSettingsRoutes.pure.ts",

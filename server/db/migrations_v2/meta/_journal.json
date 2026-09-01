@@ -1730,6 +1730,13 @@
       "when": 1788048000098,
       "tag": "0251_v2_quickbooks_live_invoice_revisions",
       "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "7",
+      "when": 1788048000099,
+      "tag": "0252_v2_invoice_email_delivery_queue",
+      "breakpoints": true
     }
   ]
 }

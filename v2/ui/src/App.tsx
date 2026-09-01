@@ -741,6 +741,7 @@ export const App = ({
             setInvoiceId("");
           }}
           canInvoiceView={bootstrap.data?.capabilities.invoiceView === true}
+          canInvoiceSend={bootstrap.data?.capabilities.invoiceSend === true}
           canPaymentView={bootstrap.data?.capabilities.paymentView === true}
           canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true}
           canRefundIssue={bootstrap.data?.capabilities.refundIssue === true}

@@ -10,6 +10,7 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe } from "@stripe/stripe-js";
 import {
   financeApi,
+  invoiceApi,
   money,
   newBusinessRequestId,
   type ApiError,
@@ -82,12 +83,18 @@ const FinanceGrid = <T,>({
   organizationId,
   rows,
   columns,
+  selectable,
+  selectedIds,
+  onSelectedIdsChange,
 }: Readonly<{
   grid: string;
   scope: string;
   organizationId: string;
   rows: readonly T[];
   columns: readonly GridColumn<T>[];
+  selectable?: (row: T) => string | undefined;
+  selectedIds?: ReadonlySet<string>;
+  onSelectedIdsChange?: (ids: ReadonlySet<string>) => void;
 }>) => {
   const key = preferenceKey(scope, organizationId, grid);
   const [preference, setPreference] = useState<GridPreference>(() => {
@@ -142,6 +149,9 @@ const FinanceGrid = <T,>({
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", end);
   };
+  const selectableRows = selectable ? sorted.map(selectable).filter((id): id is string => Boolean(id)) : [];
+  const allVisibleSelected = selectableRows.length > 0 && selectableRows.every((id) => selectedIds?.has(id));
+  const toggle = (id: string, checked: boolean) => { const next = new Set(selectedIds); if (checked) next.add(id); else next.delete(id); onSelectedIdsChange?.(next); };
   return (
     <div className="v2-finance-grid-wrap">
       <p className="v2-finance-grid-help">
@@ -151,6 +161,7 @@ const FinanceGrid = <T,>({
       <table className="v2-finance-grid">
         <thead>
           <tr>
+            {selectable && <th className="v2-finance-select"><input aria-label="Select visible invoices" type="checkbox" checked={allVisibleSelected} onChange={(event) => { const next = new Set(selectedIds); for (const id of selectableRows) { if (event.currentTarget.checked) next.add(id); else next.delete(id); } onSelectedIdsChange?.(next); }} /></th>}
             {visible.map((column) => (
               <th
                 key={column.id}
@@ -208,6 +219,7 @@ const FinanceGrid = <T,>({
         <tbody>
           {sorted.map((row, rowIndex) => (
             <tr key={String((row as { id?: string }).id ?? rowIndex)}>
+              {selectable && <td className="v2-finance-select">{selectable(row) ? <input aria-label="Select invoice" type="checkbox" checked={selectedIds?.has(selectable(row)!) === true} onChange={(event) => toggle(selectable(row)!, event.currentTarget.checked)} /> : null}</td>}
               {visible.map((column) => (
                 <td key={column.id}>{column.render(row)}</td>
               ))}
@@ -257,6 +269,7 @@ export const FinanceWorkspace = ({
   onSelectInvoice,
   backToInvoices,
   canInvoiceView,
+  canInvoiceSend,
   canPaymentView,
   canPaymentRecord,
   canRefundIssue,
@@ -271,6 +284,7 @@ export const FinanceWorkspace = ({
   onSelectInvoice: (invoiceId: string) => void;
   backToInvoices: () => void;
   canInvoiceView: boolean;
+  canInvoiceSend: boolean;
   canPaymentView: boolean;
   canPaymentRecord: boolean;
   canRefundIssue: boolean;
@@ -282,11 +296,13 @@ export const FinanceWorkspace = ({
   const [selected, setSelected] = useState(invoiceId);
   const [selectedSource, setSelectedSource] = useState<"v2" | "legacy">("v2");
   const [notice, setNotice] = useState("");
-  const [dialog, setDialog] = useState<"payment" | "refund" | "stripePayment" | "stripeRefund" | "">("");
+  const [dialog, setDialog] = useState<"payment" | "refund" | "stripePayment" | "stripeRefund" | "invoiceEmail" | "">("");
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"cash" | "check" | "external">("check");
   const [paymentId, setPaymentId] = useState("");
   const [providerRequestId, setProviderRequestId] = useState("");
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<ReadonlySet<string>>(new Set());
+  const [emailRequestId, setEmailRequestId] = useState("");
   const overview = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "finance", "overview"],
     queryFn: () => financeApi.overview(organizationId),
@@ -412,6 +428,12 @@ export const FinanceWorkspace = ({
     onSuccess: async () => { setNotice("Refund submitted to Stripe. The signed provider event will record the canonical V2 Refund."); closeDialog(); await refresh(); },
     onError: (error) => setNotice(errorText(error)),
   });
+  const emailSelected = useMutation({
+    mutationFn: () => invoiceApi.emailSelected(organizationId, emailRequestId, [...selectedInvoiceIds]),
+    onSuccess: (result) => { setNotice(`${result.queuedInvoices} invoices queued in ${result.queuedMessages} customer email${result.queuedMessages === 1 ? "" : "s"}; ${result.skipped} skipped.`); setSelectedInvoiceIds(new Set()); setDialog(""); },
+    onError: (error) => setNotice(errorText(error)),
+  });
+  const emailPreview = useMutation({ mutationFn: () => invoiceApi.emailPreview(organizationId, [...selectedInvoiceIds]) });
   if (!organizationId)
     return (
       <section className="v2-finance-workspace">
@@ -621,6 +643,7 @@ export const FinanceWorkspace = ({
             Refunds never rewrite immutable financial history.
           </p>
         </div>
+        {canInvoiceSend && selectedInvoiceIds.size > 0 && <div className="v2-finance-actions"><span>{selectedInvoiceIds.size} selected</span><button className="v2-invoice-issue" onClick={() => { setEmailRequestId(newBusinessRequestId()); setDialog("invoiceEmail"); emailPreview.mutate(); }}>Send selected</button><button className="v2-quiet-button" onClick={() => setSelectedInvoiceIds(new Set())}>Clear selection</button></div>}
       </header>
       <div className="v2-finance-overview">
         <FinanceGrid
@@ -629,6 +652,9 @@ export const FinanceWorkspace = ({
           organizationId={organizationId}
           rows={overview.data?.items ?? []}
           columns={invoiceColumns}
+          selectable={canInvoiceSend ? (row) => row.source === "v2" && row.lifecycle !== "void" ? row.invoiceId : undefined : undefined}
+          selectedIds={selectedInvoiceIds}
+          onSelectedIdsChange={setSelectedInvoiceIds}
         />
       </div>
       {invoice && settlement && (
@@ -852,6 +878,9 @@ export const FinanceWorkspace = ({
             </button>
           </div>
         </div>
+      )}
+      {dialog === "invoiceEmail" && (
+        <div className="v2-finance-modal" role="dialog" aria-modal="true" aria-label="Send selected invoices"><div><header><h2>Send selected invoices</h2><button onClick={() => setDialog("")}>Close</button></header>{emailPreview.isPending ? <p>Resolving canonical billing recipients…</p> : emailPreview.data ? <p>{emailPreview.data.selected} invoices selected · {emailPreview.data.recipientCount} recipients · {emailPreview.data.skipped} skipped for missing or invalid billing email.</p> : <p>Recipient preview is unavailable. Retry before queuing delivery.</p>}<p>Customer messages are admitted to the throttled delivery worker. They are not sent from this page.</p><button className="v2-invoice-issue" disabled={!csrfReady || emailSelected.isPending || emailPreview.isPending || !emailPreview.data} onClick={() => emailSelected.mutate()}>{emailSelected.isPending ? "Queuing…" : "Queue email delivery"}</button></div></div>
       )}
     </section>
   );

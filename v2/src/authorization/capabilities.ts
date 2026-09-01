@@ -7,7 +7,7 @@ export const capabilityIds = [
   "numbering.configure",
   "communications.configure",
   "pricing.preview", "pricing.configure", "pricing.publish",
-  "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue",
+  "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue", "invoice.send",
   "payment.view", "payment.record", "refund.issue",
   "permissions.view", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal",
   "route.view", "route.advance", "route.reroute", "route.skipStep", "route.manageTemplates",

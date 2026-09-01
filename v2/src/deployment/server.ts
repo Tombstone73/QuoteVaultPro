@@ -30,6 +30,7 @@ import { composeAuthenticatedFormulaRuntime } from "../../infrastructure/pricing
 import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructure/communications/authenticatedEmailIntegrationRuntime.js";
 import { composeAuthenticatedQuickBooksIntegrationRuntime } from "../../infrastructure/accounting/authenticatedQuickBooksIntegrationRuntime.js";
 import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
+import { startV2InvoiceEmailDeliveryWorker } from "../../infrastructure/communications/invoiceEmailDeliveryQueue.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -103,6 +104,7 @@ export const startV2DeploymentServer = async (
   });
   const app = createV2DeploymentApp(config, pool, logger, authentication);
   let stopQuickBooksWorker: (() => void) | null = null;
+  let stopInvoiceEmailWorker: (() => void) | null = null;
   let server: Server | undefined;
   try {
     server = await new Promise<Server>((resolve, reject) => {
@@ -110,7 +112,9 @@ export const startV2DeploymentServer = async (
       instance.once("error", reject);
     });
     stopQuickBooksWorker = startV2QuickBooksBillingWorker(pool, (event, data) => logger.log("info", event, data));
+    stopInvoiceEmailWorker = startV2InvoiceEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
   } catch (error) {
+    stopInvoiceEmailWorker?.();
     stopQuickBooksWorker?.();
     await pool.end();
     throw error;
@@ -124,6 +128,7 @@ export const startV2DeploymentServer = async (
       server!.close((error) => (error ? reject(error) : resolve())),
     );
     stopQuickBooksWorker?.();
+    stopInvoiceEmailWorker?.();
     await pool.end();
     logger.log("info", "v2.deployment.stopped");
   };

@@ -15,6 +15,7 @@ export type InvoiceHttpDependencies = Readonly<{
   service: BillingApplicationService;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
   documents?: Readonly<{ pdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, invoiceId: import("../../modules/shared/commercialValues.js").InvoiceId): Promise<Uint8Array>; filename(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, invoiceId: import("../../modules/shared/commercialValues.js").InvoiceId): Promise<string> }>;
+  emailDelivery?: Readonly<{ admit(input: Readonly<{ organizationId:string; principal:Principal; businessRequestId:string; invoiceIds:readonly string[] }>): Promise<Readonly<{ batchId:string; selected:number; queuedInvoices:number; queuedMessages:number; skipped:number; replayed:boolean }>>; preview(input:Readonly<{organizationId:string;principal:Principal;invoiceIds:readonly string[]}>):Promise<Readonly<{selected:number;deliverableInvoices:number;recipientCount:number;skipped:number}>>; retry(input:Readonly<{organizationId:string;principal:Principal;jobId:string}>):Promise<Readonly<{state:"queued";attemptCount:number}>> }>;
 }>;
 export const createInvoiceRouter = (dependencies: InvoiceHttpDependencies): Router => {
   const router = expressRouter({ mergeParams: true });
@@ -80,6 +81,36 @@ export const createInvoiceRouter = (dependencies: InvoiceHttpDependencies): Rout
     } catch {
       return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated access is required."));
     }
+  });
+  /** Admission only: provider delivery is deliberately performed by the
+   * durable V2 worker, never on the operator HTTP request. */
+  router.post("/email-delivery/batch", async (request, response) => {
+    try {
+      if (!dependencies.emailDelivery) throw new V2ApplicationError("INTERNAL_ERROR", "Invoice email delivery runtime is unavailable.");
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const businessRequestId = typeof request.body?.businessRequestId === "string" ? request.body.businessRequestId.trim() : "";
+      const invoiceIds = Array.isArray(request.body?.invoiceIds) ? request.body.invoiceIds.filter((value: unknown): value is string => typeof value === "string") : [];
+      const result = await dependencies.emailDelivery.admit({ organizationId, principal, businessRequestId, invoiceIds });
+      return response.status(202).json({ ok: true, data: result });
+    } catch (cause) { return fail(response, cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Invoice email delivery could not be queued.")); }
+  });
+  router.post("/email-delivery/preview", async (request, response) => {
+    try {
+      if (!dependencies.emailDelivery) throw new V2ApplicationError("INTERNAL_ERROR", "Invoice email delivery runtime is unavailable.");
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      const invoiceIds = Array.isArray(request.body?.invoiceIds) ? request.body.invoiceIds.filter((value: unknown): value is string => typeof value === "string") : [];
+      return response.status(200).json({ ok: true, data: await dependencies.emailDelivery.preview({ organizationId, principal, invoiceIds }) });
+    } catch (cause) { return fail(response, cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Invoice email recipients could not be previewed.")); }
+  });
+  router.post("/email-delivery/jobs/:jobId/retry", async (request, response) => {
+    try {
+      if (!dependencies.emailDelivery) throw new V2ApplicationError("INTERNAL_ERROR", "Invoice email delivery runtime is unavailable.");
+      const organizationId = (request.params as Record<string, string>).organizationId!;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      return response.status(202).json({ ok: true, data: await dependencies.emailDelivery.retry({ organizationId, principal, jobId: request.params.jobId }) });
+    } catch (cause) { return fail(response, cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Invoice email delivery could not be retried.")); }
   });
   return router;
 };
