@@ -15,6 +15,7 @@ import { getBillableBundleRoots } from './services/lineItemBundles';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
 import { getInvoiceFinancialPaymentEligibility } from '../shared/paymentOrchestration';
+import { normalizeInvoiceDashboardSummaryAggregates, type InvoiceDashboardSummary } from './lib/invoiceDashboardSummary';
 import {
   resolveBillingCustomerForOrder,
   writeContactAccountingPromotionAudit,
@@ -244,21 +245,7 @@ export type InvoiceListPage = {
   totalPages: number;
 };
 
-export type InvoiceDashboardSummary = {
-  totalInvoices: number;
-  totalOutstandingCents: number;
-  overdueCount: number;
-  paidThisMonthCents: number;
-};
-
-// Temporary production-safe trace shape. This is only returned from the
-// owner/admin-gated Invoice debug route parameter and contains aggregate
-// numeric values only.
-export type InvoiceDashboardSummaryDiagnostics = {
-  rawAggregateKeys: string[];
-  rawAggregate: Record<keyof InvoiceDashboardSummary, string | null>;
-  normalizedSummary: InvoiceDashboardSummary;
-};
+export type { InvoiceDashboardSummary } from './lib/invoiceDashboardSummary';
 
 function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
   const raw = String(sortBy || '').trim();
@@ -583,10 +570,10 @@ export function invoiceDashboardMonthWindow(now: Date, timezone: string): { star
  * integer cents in Postgres and use the same payment/refund and QuickBooks
  * balance rules as the shared invoice accounting display projection.
  */
-async function readInvoiceDashboardSummary(
+export async function getInvoiceDashboardSummary(
   organizationId: string,
   opts: { now?: Date } = {},
-): Promise<{ summary: InvoiceDashboardSummary; diagnostics: InvoiceDashboardSummaryDiagnostics }> {
+): Promise<InvoiceDashboardSummary> {
   const now = opts.now ?? new Date();
   const [organization] = await db
     .select({ settings: organizations.settings })
@@ -601,7 +588,7 @@ async function readInvoiceDashboardSummary(
   const canonicalRemainingCents = canonicalInvoiceRemainingCentsExpression(organizationId);
   const isReceivable = sql`lower(coalesce(${invoices.status}, '')) not in ('draft', 'void', 'voided')`;
 
-  const [invoiceAggregate, paymentAggregate] = await Promise.all([
+  const [invoiceAggregateRows, paymentAggregateRows] = await Promise.all([
     db.select({
       totalInvoices: count(),
       totalOutstandingCents: sql<string>`coalesce(sum(case when ${isReceivable} then ${canonicalRemainingCents} else 0 end), 0)`,
@@ -621,45 +608,7 @@ async function readInvoiceDashboardSummary(
       )),
   ]);
 
-  const summary = {
-    totalInvoices: Math.max(0, Number(invoiceAggregate?.totalInvoices ?? 0)),
-    totalOutstandingCents: Math.max(0, Math.round(Number(invoiceAggregate?.totalOutstandingCents ?? 0))),
-    overdueCount: Math.max(0, Number(invoiceAggregate?.overdueCount ?? 0)),
-    // This card represents successful/captured receipts in the tenant's
-    // current calendar month. Refunded, failed, pending, and canceled rows do
-    // not count as payments received.
-    paidThisMonthCents: Math.max(0, Math.round(Number(paymentAggregate?.paidThisMonthCents ?? 0))),
-  };
-
-  const raw = (value: unknown): string | null => value == null ? null : String(value);
-  return {
-    summary,
-    diagnostics: {
-      rawAggregateKeys: Object.keys(invoiceAggregate ?? {}).sort(),
-      rawAggregate: {
-        totalInvoices: raw(invoiceAggregate?.totalInvoices),
-        totalOutstandingCents: raw(invoiceAggregate?.totalOutstandingCents),
-        overdueCount: raw(invoiceAggregate?.overdueCount),
-        paidThisMonthCents: raw(paymentAggregate?.paidThisMonthCents),
-      },
-      normalizedSummary: summary,
-    },
-  };
-}
-
-export async function getInvoiceDashboardSummary(
-  organizationId: string,
-  opts: { now?: Date } = {},
-): Promise<InvoiceDashboardSummary> {
-  return (await readInvoiceDashboardSummary(organizationId, opts)).summary;
-}
-
-/** Temporary owner/admin debug companion for the production zero-summary investigation. */
-export async function getInvoiceDashboardSummaryWithDiagnostics(
-  organizationId: string,
-  opts: { now?: Date } = {},
-): Promise<{ summary: InvoiceDashboardSummary; diagnostics: InvoiceDashboardSummaryDiagnostics }> {
-  return readInvoiceDashboardSummary(organizationId, opts);
+  return normalizeInvoiceDashboardSummaryAggregates(invoiceAggregateRows, paymentAggregateRows);
 }
 
 export async function generateNextInvoiceNumber(organizationId: string, tx?: any): Promise<number> {

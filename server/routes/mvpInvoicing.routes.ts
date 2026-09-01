@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
-import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceDashboardSummaryWithDiagnostics, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -233,14 +233,6 @@ export async function registerMvpInvoicingRoutes(
   }
 ) {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = deps;
-
-  // Temporary, numeric-only diagnostic access for the live invoice-summary
-  // investigation. It remains tenant-scoped and only accepts owner/admin users.
-  const requireInvoiceSummaryDebugAccess = (req: any, res: any, next: any) => {
-    if (String(req.query?.invoiceSummaryDebug || '') !== '1') return next();
-    if (!requireOrgOwnerAdmin) return res.status(403).json({ error: 'Invoice summary diagnostics require owner/admin access.' });
-    return requireOrgOwnerAdmin(req, res, next);
-  };
 
   async function resolveInvoiceEmailRecipientsForOperations(input: {
     organizationId: string;
@@ -1962,7 +1954,7 @@ export async function registerMvpInvoicingRoutes(
   // ------------------------------------------------------------
   // Invoices: list/detail (tenant-scoped)
   // ------------------------------------------------------------
-  app.get("/api/invoices", isAuthenticated, tenantContext, requireInvoiceSummaryDebugAccess, async (req: any, res) => {
+  app.get("/api/invoices", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
@@ -1975,7 +1967,6 @@ export async function registerMvpInvoicingRoutes(
       const sortDir = req.query.sortDir as string | undefined;
       const columnFilters = invoiceListColumnFilters(req.query);
       const includeSummary = String(req.query.includeSummary || '') === '1';
-      const invoiceSummaryDebug = String(req.query.invoiceSummaryDebug || '') === '1';
       const requestedPageSize = Number.parseInt(String(req.query.pageSize ?? req.query.limit ?? "50"), 10);
       const limit = Math.min(Math.max(Number.isFinite(requestedPageSize) ? requestedPageSize : 50, 1), 200);
       const requestedPage = Number.parseInt(String(req.query.page ?? ""), 10);
@@ -1984,7 +1975,7 @@ export async function registerMvpInvoicingRoutes(
         ? requestedOffset
         : (Math.max(Number.isFinite(requestedPage) ? requestedPage : 1, 1) - 1) * limit;
 
-      const [invoicePage, summaryResult] = await Promise.all([listInvoicesPageForOrganization({
+      const [invoicePage, summary] = await Promise.all([listInvoicesPageForOrganization({
         organizationId,
         status,
         customerId,
@@ -1995,17 +1986,7 @@ export async function registerMvpInvoicingRoutes(
         columnFilters,
         limit,
         offset,
-      }), includeSummary
-        ? invoiceSummaryDebug
-          ? getInvoiceDashboardSummaryWithDiagnostics(organizationId)
-          : getInvoiceDashboardSummary(organizationId)
-        : Promise.resolve(null)]);
-      const summary = invoiceSummaryDebug && summaryResult
-        ? (summaryResult as Awaited<ReturnType<typeof getInvoiceDashboardSummaryWithDiagnostics>>).summary
-        : summaryResult as Awaited<ReturnType<typeof getInvoiceDashboardSummary>> | null;
-      const summaryDiagnostics = invoiceSummaryDebug && summaryResult
-        ? (summaryResult as Awaited<ReturnType<typeof getInvoiceDashboardSummaryWithDiagnostics>>).diagnostics
-        : null;
+      }), includeSummary ? getInvoiceDashboardSummary(organizationId) : Promise.resolve(null)]);
       const rows = invoicePage.items;
 
       const emailStatuses = await getInvoiceEmailStatuses(
@@ -2077,15 +2058,6 @@ export async function registerMvpInvoicingRoutes(
         // Dashboard facts are tenant-wide by design. They intentionally do
         // not fluctuate with the current search/filter/page result.
         ...(summary ? { summary } : {}),
-        ...(invoiceSummaryDebug ? {
-          invoiceSummaryDebug: {
-            service: summaryDiagnostics,
-            route: {
-              list: { itemCount: rows.length, totalCount: invoicePage.totalCount, page: invoicePage.page, pageSize: invoicePage.pageSize },
-              responseSummary: summary,
-            },
-          },
-        } : {}),
       });
     } catch (error: any) {
       console.error("Error fetching invoices:", error);
