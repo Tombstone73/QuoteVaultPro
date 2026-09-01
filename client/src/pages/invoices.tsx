@@ -151,16 +151,25 @@ export default function InvoicesListPage() {
     if (invoiceIds.length === 0) return;
 
     try {
-      const result = await batchSendInvoices.mutateAsync({ invoiceIds });
+      const idempotencyKey = crypto.randomUUID();
+      const preview = (await batchSendInvoices.mutateAsync({ invoiceIds, dryRun: true, idempotencyKey })).data;
+      const confirmation = [
+        `${preview.selected} selected; ${preview.eligible} eligible for delivery.`,
+        preview.recipientGroups ? `${preview.recipientGroups} recipient group${preview.recipientGroups === 1 ? '' : 's'} resolved.` : 'No recipient email is available for the selected invoices.',
+        preview.skipped.length ? `${preview.skipped.length} will be skipped by the normal invoice email rules.` : '',
+        'Emails will be queued and sent in a throttled background worker.',
+      ].filter(Boolean).join('\n\n');
+      if (!window.confirm(confirmation)) return;
+
+      const result = await batchSendInvoices.mutateAsync({ invoiceIds, idempotencyKey });
       const summary = result.data;
       toast({
-        title: summary.failed > 0 ? "Batch send completed with failures" : "Batch send complete",
-        description: `${summary.sent} sent${summary.failed ? `, ${summary.failed} failed` : ""}.`,
-        variant: summary.failed > 0 ? "destructive" : "default",
+        title: "Invoice delivery queued",
+        description: `${summary.queued || 0} queued${summary.alreadyQueued ? `, ${summary.alreadyQueued} already queued` : ''}${summary.skipped.length ? `, ${summary.skipped.length} skipped` : ''}.`,
       });
       setSelectedInvoiceIds(new Set());
     } catch (error: any) {
-      toast({ title: "Batch send failed", description: error.message, variant: "destructive" });
+      toast({ title: "Batch queue failed", description: error.message, variant: "destructive" });
     }
   };
 
@@ -185,7 +194,7 @@ export default function InvoicesListPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" onClick={handleBatchSend} disabled={selectedCount === 0 || batchSendInvoices.isPending}>
                 <Mail className="mr-2 h-4 w-4" />
-                {batchSendInvoices.isPending ? "Sending..." : `Send Selected${selectedCount ? ` (${selectedCount})` : ""}`}
+                {batchSendInvoices.isPending ? "Preparing..." : `Send Selected${selectedCount ? ` (${selectedCount})` : ""}`}
               </Button>
               <Button asChild>
                 <Link to={ROUTES.orders.list}>

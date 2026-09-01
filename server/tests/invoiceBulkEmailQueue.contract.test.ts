@@ -1,0 +1,56 @@
+import { describe, expect, test } from "@jest/globals";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+const source = (file: string) => readFileSync(path.join(process.cwd(), file), "utf8");
+
+describe("bulk invoice email delivery queue contract", () => {
+  const route = source("server/routes/mvpInvoicing.routes.ts");
+  const queue = source("server/services/invoiceBulkEmailQueue.service.ts");
+  const migration = source("server/db/migrations_v2/0191_bulk_invoice_email_delivery_queue.sql");
+  const client = source("client/src/pages/invoices.tsx");
+  const v2Contracts = source("v2/src/modules/billing/contracts.ts");
+
+  test("uses canonical recipient resolution for a bounded, tenant-scoped queue request", () => {
+    const batchRoute = route.slice(route.indexOf('app.post("/api/invoices/batch-send"'));
+    expect(batchRoute).toContain("requireOrgOwnerAdmin");
+    expect(batchRoute).toContain("resolveInvoiceEmailRecipientsForOperations");
+    expect(batchRoute).toContain("getBulkInvoiceEmailQueueConfig");
+    expect(batchRoute).toContain("enqueueBulkInvoiceEmailCampaign");
+    expect(batchRoute).toContain("dryRun");
+    expect(batchRoute).not.toContain("await sendInvoiceEmailForOperations(");
+  });
+
+  test("keeps PDF, provider delivery, logs, and audit writes on the one canonical sender", () => {
+    expect(route).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
+    expect(queue).toContain("canonicalInvoiceEmailSender");
+    expect(queue).toContain("await canonicalInvoiceEmailSender");
+    expect(route).toContain("generateInvoicePdfBytes");
+    expect(route).toContain("createInvoicePdfEmailAttachment");
+    expect(route).toContain("buildInvoiceEmailSentAudit");
+  });
+
+  test("persists exactly one job per invoice-recipient-version and claims it safely", () => {
+    expect(migration).toContain("invoice_id varchar NOT NULL REFERENCES invoices(id)");
+    expect(migration).toContain("invoice_version integer NOT NULL");
+    expect(migration).toContain("invoice_email_delivery_jobs_invoice_recipient_version_uidx");
+    expect(queue).toContain("FOR UPDATE SKIP LOCKED");
+    expect(queue).toContain("pg_advisory_xact_lock");
+    expect(queue).toContain("claim_expires_at");
+    expect(queue).toContain("BULK_INVOICE_EMAIL_RATE_LIMIT");
+  });
+
+  test("does not retry an ambiguous provider result automatically", () => {
+    expect(queue).toContain("Outcome requires review before retry to avoid a duplicate email");
+    expect(queue).toContain("isAmbiguousProviderFailure");
+    expect(queue).toContain("maxAttempts");
+  });
+
+  test("gives the V1 operator a preflight confirmation and models the V2 shared boundary", () => {
+    expect(client).toContain("dryRun: true");
+    expect(client).toContain("window.confirm(confirmation)");
+    expect(client).toContain("Emails will be queued and sent in a throttled background worker.");
+    expect(v2Contracts).toContain("BulkInvoiceDeliveryPort");
+    expect(v2Contracts).toContain("queueBulkInvoiceDelivery");
+  });
+});

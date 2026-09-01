@@ -38,6 +38,14 @@ import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
 import type { StripePaymentConfirmSuccessResponse } from "../../shared/stripePaymentConfirm";
 import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
+import {
+  buildBulkInvoiceEmailRequestKey,
+  enqueueBulkInvoiceEmailCampaign,
+  getBulkInvoiceEmailQueueConfig,
+  registerCanonicalInvoiceEmailSender,
+  type BulkInvoiceEmailCandidate,
+  type BulkInvoiceEmailSkip,
+} from "../services/invoiceBulkEmailQueue.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -493,6 +501,11 @@ export async function registerMvpInvoicingRoutes(
       status: nextStatus,
     };
   }
+
+  // The durable bulk worker delegates to this same canonical path. It never
+  // duplicates recipient resolution, PDF generation, Gmail delivery, logging,
+  // or invoice/audit mutations.
+  registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations);
 
   // The browser configuration is scoped to an authorized invoice, rather than
   // trusting an account/org supplied by a client. It must be fetched before a
@@ -2836,13 +2849,12 @@ export async function registerMvpInvoicingRoutes(
     }
   });
 
-  app.post("/api/invoices/batch-send", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/invoices/batch-send", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
       const userId = getUserId(req.user);
-      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
       const invoiceIds: string[] = Array.isArray(req.body?.invoiceIds)
         ? Array.from(new Set(req.body.invoiceIds.map((id: unknown) => String(id || "").trim()).filter(Boolean)))
         : [];
@@ -2850,38 +2862,74 @@ export async function registerMvpInvoicingRoutes(
       if (invoiceIds.length === 0) {
         return res.status(400).json({ success: false, error: "Select at least one invoice to send" });
       }
+      const { maxBatchSize } = getBulkInvoiceEmailQueueConfig();
+      if (invoiceIds.length > maxBatchSize) {
+        return res.status(400).json({ success: false, error: `Select no more than ${maxBatchSize} invoices at a time` });
+      }
 
-      const results: Array<{
-        invoiceId: string;
-        success: boolean;
-        message: string;
-        data?: unknown;
-      }> = [];
+      const emailConfig = await storage.getDefaultEmailSettings(organizationId);
+      if (!emailConfig) {
+        return res.status(400).json({ success: false, error: "Email is not configured. Please configure email settings in the admin panel before sending invoices." });
+      }
+
+      const candidates: BulkInvoiceEmailCandidate[] = [];
+      const skipped: BulkInvoiceEmailSkip[] = [];
 
       for (const invoiceId of invoiceIds) {
         try {
-          const data = await sendInvoiceEmailForOperations({
+          const resolution = await resolveInvoiceEmailRecipientsForOperations({
             organizationId,
             invoiceId,
-            userId,
-            userName,
           });
-          results.push({ invoiceId, success: true, message: "Sent", data });
+          const status = String(resolution.invoice.status || "").toLowerCase();
+          const recipientEmail = resolution.defaultRecipient?.email || null;
+          if (status === "void") {
+            skipped.push({ invoiceId, reason: "Void invoices cannot be sent" });
+          } else if (status === "paid") {
+            skipped.push({ invoiceId, reason: "Paid invoices do not need to be sent" });
+          } else if (!recipientEmail) {
+            skipped.push({ invoiceId, reason: "No recipient email is available" });
+          } else {
+            candidates.push({
+              invoiceId,
+              invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
+              recipientEmail,
+            });
+          }
         } catch (error: any) {
-          results.push({
-            invoiceId,
-            success: false,
-            message: error?.message || "Failed to send invoice",
-          });
+          // Do not disclose cross-tenant existence through a bulk operation.
+          skipped.push({ invoiceId, reason: Number(error?.statusCode || error?.status) === 404 ? "Invoice is unavailable" : (error?.message || "Invoice cannot be queued") });
         }
       }
 
-      const sent = results.filter((row) => row.success).length;
-      const failed = results.length - sent;
+      const preview = {
+        selected: invoiceIds.length,
+        eligible: candidates.length,
+        recipientGroups: new Set(candidates.map((candidate) => candidate.recipientEmail.trim().toLowerCase())).size,
+        skipped,
+        deliveryMode: "individual_invoice_messages",
+      };
+      if (req.body?.dryRun === true) {
+        return res.json({ success: true, data: preview, message: `${preview.eligible} invoice emails are ready to queue` });
+      }
+
+      const idempotencyKey = buildBulkInvoiceEmailRequestKey({
+        organizationId,
+        invoiceIds,
+        suppliedKey: req.get("Idempotency-Key"),
+      });
+      const queued = await enqueueBulkInvoiceEmailCampaign({
+        organizationId,
+        createdByUserId: userId || null,
+        invoiceIds,
+        candidates,
+        skipped,
+        idempotencyKey,
+      });
       return res.json({
-        success: failed === 0,
-        data: { sent, failed, results },
-        message: `${sent} sent${failed ? `, ${failed} failed` : ""}`,
+        success: true,
+        data: { ...preview, ...queued },
+        message: `${queued.queued} invoice email${queued.queued === 1 ? "" : "s"} queued${queued.alreadyQueued ? `, ${queued.alreadyQueued} already queued` : ""}`,
       });
     } catch (error: any) {
       console.error("[Invoice Batch Send] failed:", error);

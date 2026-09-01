@@ -41,3 +41,25 @@ export interface BillingPort {
   createOrderBackedInvoice(input: CreateOrderBackedInvoiceInput): Promise<OrderBackedInvoiceSynchronizationResult>;
   synchronizeOrderBackedInvoice(input: OrderBackedInvoiceSynchronizationInput): Promise<OrderBackedInvoiceSynchronizationResult>;
 }
+
+/**
+ * Shared billing delivery boundary. V2 does not yet expose an invoice-list UI;
+ * when it does, that UI must call the same tenant-scoped durable delivery queue
+ * rather than implementing browser-side email loops.
+ */
+export type BulkInvoiceDeliveryRequest = Readonly<{
+  organizationId: OrganizationId;
+  invoiceIds: readonly InvoiceId[];
+  idempotencyKey: BusinessRequestId;
+}>;
+
+export type BulkInvoiceDeliveryResult = Readonly<{
+  selected: number;
+  queued: number;
+  alreadyQueued: number;
+  skipped: readonly Readonly<{ invoiceId: InvoiceId; reason: string }>[];
+}>;
+
+export interface BulkInvoiceDeliveryPort {
+  queueBulkInvoiceDelivery(input: BulkInvoiceDeliveryRequest): Promise<BulkInvoiceDeliveryResult>;
+}

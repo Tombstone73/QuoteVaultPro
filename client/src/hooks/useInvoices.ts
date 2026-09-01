@@ -490,11 +490,14 @@ export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
 export function useBatchSendInvoices() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ invoiceIds }: { invoiceIds: string[] }) => {
+    mutationFn: async ({ invoiceIds, dryRun = false, idempotencyKey }: { invoiceIds: string[]; dryRun?: boolean; idempotencyKey?: string }) => {
       const res = await fetch('/api/invoices/batch-send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ invoiceIds }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+        },
+        body: JSON.stringify({ invoiceIds, dryRun }),
         credentials: 'include',
       });
       const payload = await res.json().catch(() => ({}));
@@ -504,9 +507,14 @@ export function useBatchSendInvoices() {
       return payload as {
         success: boolean;
         data: {
-          sent: number;
-          failed: number;
-          results: Array<{ invoiceId: string; success: boolean; message?: string }>;
+          selected: number;
+          eligible: number;
+          queued?: number;
+          alreadyQueued?: number;
+          recipientGroups: number;
+          skipped: Array<{ invoiceId: string; reason: string }>;
+          deliveryMode: 'individual_invoice_messages';
+          campaignId?: string | null;
         };
       };
     },

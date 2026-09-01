@@ -5050,6 +5050,94 @@ export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type UpdateInvoice = z.infer<typeof updateInvoiceSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 
+export const invoiceEmailCampaigns = pgTable("invoice_email_campaigns", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+  status: varchar("status", { length: 32 }).notNull().default('queued'),
+  requestedInvoiceIds: jsonb("requested_invoice_ids").$type<string[]>().notNull(),
+  selectedInvoiceCount: integer("selected_invoice_count").notNull(),
+  queuedInvoiceCount: integer("queued_invoice_count").notNull().default(0),
+  skippedInvoiceCount: integer("skipped_invoice_count").notNull().default(0),
+  recipientGroupCount: integer("recipient_group_count").notNull().default(0),
+  resultSummary: jsonb("result_summary").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("invoice_email_campaigns_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
+  index("invoice_email_campaigns_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
+]);
+
+export const insertInvoiceEmailCampaignSchema = createInsertSchema(invoiceEmailCampaigns).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
+  queuedInvoiceCount: true,
+  skippedInvoiceCount: true,
+  recipientGroupCount: true,
+  resultSummary: true,
+}).extend({
+  status: z.enum(['queued', 'processing', 'completed', 'completed_with_errors', 'failed', 'canceled']).default('queued'),
+  requestedInvoiceIds: z.array(z.string().min(1)).min(1),
+  selectedInvoiceCount: z.number().int().nonnegative(),
+});
+
+export type InsertInvoiceEmailCampaign = z.infer<typeof insertInvoiceEmailCampaignSchema>;
+export type InvoiceEmailCampaign = typeof invoiceEmailCampaigns.$inferSelect;
+
+export const invoiceEmailDeliveryJobs = pgTable("invoice_email_delivery_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  campaignId: varchar("campaign_id").notNull().references(() => invoiceEmailCampaigns.id, { onDelete: 'cascade' }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  invoiceVersion: integer("invoice_version").notNull(),
+  recipientEmail: text("recipient_email").notNull(),
+  recipientKey: text("recipient_key").notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+  status: varchar("status", { length: 32 }).notNull().default('queued'),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(5),
+  availableAt: timestamp("available_at", { withTimezone: true }).defaultNow().notNull(),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  claimedByWorkerId: varchar("claimed_by_worker_id", { length: 128 }),
+  providerMessageId: text("provider_message_id"),
+  failureReason: text("failure_reason"),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("invoice_email_delivery_jobs_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
+  uniqueIndex("invoice_email_delivery_jobs_invoice_recipient_version_uidx").on(table.organizationId, table.invoiceId, table.recipientKey, table.invoiceVersion),
+  index("invoice_email_delivery_jobs_org_campaign_idx").on(table.organizationId, table.campaignId),
+]);
+
+export const insertInvoiceEmailDeliveryJobSchema = createInsertSchema(invoiceEmailDeliveryJobs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  claimedAt: true,
+  claimExpiresAt: true,
+  claimedByWorkerId: true,
+  providerMessageId: true,
+  failureReason: true,
+  sentAt: true,
+}).extend({
+  status: z.enum(['queued', 'processing', 'retrying', 'sent', 'failed', 'canceled']).default('queued'),
+  invoiceId: z.string().min(1),
+  invoiceVersion: z.number().int().positive(),
+  attemptCount: z.number().int().nonnegative().default(0),
+  maxAttempts: z.number().int().positive().default(5),
+});
+
+export type InsertInvoiceEmailDeliveryJob = z.infer<typeof insertInvoiceEmailDeliveryJobSchema>;
+export type InvoiceEmailDeliveryJob = typeof invoiceEmailDeliveryJobs.$inferSelect;
+
 export const invoiceEmailLogs = pgTable("invoice_email_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -6989,9 +7077,38 @@ export const invoicesRelations = relations(invoices, ({ one, many }) => ({
     references: [users.id],
   }),
   emailLogs: many(invoiceEmailLogs),
+  emailCampaigns: many(invoiceEmailCampaigns),
+  emailDeliveryJobs: many(invoiceEmailDeliveryJobs),
   reminderLogs: many(invoiceReminderLogs),
   lineItems: many(invoiceLineItems),
   payments: many(payments),
+}));
+
+export const invoiceEmailCampaignsRelations = relations(invoiceEmailCampaigns, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [invoiceEmailCampaigns.organizationId],
+    references: [organizations.id],
+  }),
+  createdByUser: one(users, {
+    fields: [invoiceEmailCampaigns.createdByUserId],
+    references: [users.id],
+  }),
+  deliveryJobs: many(invoiceEmailDeliveryJobs),
+}));
+
+export const invoiceEmailDeliveryJobsRelations = relations(invoiceEmailDeliveryJobs, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [invoiceEmailDeliveryJobs.organizationId],
+    references: [organizations.id],
+  }),
+  campaign: one(invoiceEmailCampaigns, {
+    fields: [invoiceEmailDeliveryJobs.campaignId],
+    references: [invoiceEmailCampaigns.id],
+  }),
+  invoice: one(invoices, {
+    fields: [invoiceEmailDeliveryJobs.invoiceId],
+    references: [invoices.id],
+  }),
 }));
 
 export const invoiceEmailLogsRelations = relations(invoiceEmailLogs, ({ one }) => ({

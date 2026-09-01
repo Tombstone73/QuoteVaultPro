@@ -11,6 +11,7 @@ import { assertStripeServerConfig } from "./lib/stripe";
 import { getQuickBooksSyncStabilityWindowMs, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 import { runInvoiceReminderJob } from "./invoiceReminderJob";
+import { runBulkInvoiceEmailQueueWorker } from "./services/invoiceBulkEmailQueue.service";
 import { reconcilePendingStripeObservations } from "./services/stripePaymentReconciliationService";
 import { runMigrations } from "./runMigrations";
 import { getAllowedCorsOrigins, getRuntimeConfigLogLine } from "./lib/appRuntimeConfig";
@@ -368,6 +369,37 @@ process.on('uncaughtException', (error) => {
         }, invoiceReminderInterval);
       } else {
         console.log('[Server] Invoice reminder automation DISABLED. No reminder emails will be sent automatically. Enable with WORKER_INVOICE_REMINDERS_ENABLED=true.');
+      }
+
+      // Bulk invoice email delivery is durable and asynchronous. It is enabled
+      // in production by default, but remains off in non-production unless an
+      // operator explicitly enables WORKER_BULK_INVOICE_EMAILS_ENABLED.
+      const bulkInvoiceEmailEnabled = isWorkerEnabled('BULK_INVOICE_EMAILS', true);
+      const bulkInvoiceEmailInterval = getWorkerIntervalOverride(
+        'BULK_INVOICE_EMAILS',
+        15_000,
+        60_000,
+      );
+      logWorkerStatus(
+        'Bulk Invoice Email',
+        bulkInvoiceEmailEnabled,
+        bulkInvoiceEmailEnabled ? bulkInvoiceEmailInterval : undefined,
+      );
+      if (bulkInvoiceEmailEnabled) {
+        const runBulkInvoiceEmailTick = async () => {
+          const tickStart = Date.now();
+          try {
+            const summary = await runBulkInvoiceEmailQueueWorker();
+            if (summary.processed > 0) {
+              console.log(`[BulkInvoiceEmailTick] processed=${summary.processed} sent=${summary.sent} failed=${summary.failed}`);
+            }
+            logWorkerTick('bulk_invoice_emails', Date.now() - tickStart, summary.processed);
+          } catch (error) {
+            console.error('[BulkInvoiceEmailTick] Unexpected error:', error);
+          }
+        };
+        const bulkInvoiceEmailTimer = setInterval(runBulkInvoiceEmailTick, bulkInvoiceEmailInterval);
+        bulkInvoiceEmailTimer.unref?.();
       }
 
       const paymentReconciliationEnabled = isWorkerEnabled('PAYMENT_RECONCILIATION', true);

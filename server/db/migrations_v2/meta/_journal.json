@@ -1303,6 +1303,13 @@
       "when": 1788048000037,
       "tag": "0190_live_order_backed_invoices",
       "breakpoints": true
+    },
+    {
+      "idx": 192,
+      "version": "7",
+      "when": 1788048000038,
+      "tag": "0191_bulk_invoice_email_delivery_queue",
+      "breakpoints": true
     }
   ]
 }
