@@ -5,6 +5,7 @@ import request from "supertest";
 import {
   createStandaloneStaffAuthentication,
   loadV2StandaloneAuthConfig,
+  safePortalReturnTo,
   type V2AuthenticatedStaff,
   type V2StaffCredentialVerifier,
 } from "../../infrastructure/authentication/standaloneStaffAuth";
@@ -38,6 +39,11 @@ const appFor = (verifier = createVerifier(), config = loadV2StandaloneAuthConfig
 };
 
 describe("standalone V2 Staff authentication", () => {
+  test("only preserves internal V2 portal invoice destinations", () => {
+    expect(safePortalReturnTo("/portal/invoices")).toBe("/portal/invoices");
+    expect(safePortalReturnTo("/portal/invoices/invoice_1")).toBe("/portal/invoices/invoice_1");
+    for (const unsafe of ["https://attacker.invalid", "//attacker.invalid", "/\\attacker", "/staff", "/portal/orders/1"]) expect(safePortalReturnTo(unsafe)).toBe("/portal/invoices");
+  });
   test("rejects bad, unknown, inactive, and no-membership login without account enumeration", async () => {
     const { app, verifier } = appFor();
     for (const body of [{ email: staff.email, password: "wrong" }, { email: "unknown@example.test", password: "wrong" }]) {

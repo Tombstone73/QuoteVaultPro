@@ -6,25 +6,32 @@ import rateLimit from "express-rate-limit";
 import type { Pool } from "pg";
 import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets.js";
 import type { AuthenticatedIdentity } from "../../src/authorization/principalIssuer.js";
+import type { Principal } from "../../src/authorization/principals.js";
 import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
 import type { TrustedHostIdentitySource } from "./trustedHostPrincipalProvider.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "./sessionCsrf.js";
 
 export type V2StaffOrganization = Readonly<{ id: string; name: string }>;
 export type V2AuthenticatedStaff = Readonly<{ id: string; email: string; displayName: string }>;
+export type V2AuthenticatedPortal = Readonly<{ id: string; email: string; displayName: string; organizationId: string; customerId: string }>;
 
 export interface V2StaffCredentialVerifier {
   authenticate(email: string, password: string): Promise<V2AuthenticatedStaff | null>;
   currentStaff(userId: string): Promise<V2AuthenticatedStaff | null>;
   eligibleOrganizations(userId: string): Promise<readonly V2StaffOrganization[]>;
 }
+export interface V2PortalCredentialVerifier {
+  authenticatePortal(email: string, password: string): Promise<V2AuthenticatedPortal | null>;
+  currentPortal(userId: string, organizationId: string): Promise<V2AuthenticatedPortal | null>;
+}
 
-type V2Session = session.Session & {
+export type V2Session = session.Session & {
   v2Auth?: { subjectId: string; activeOrganizationId?: string };
+  v2PortalAuth?: { subjectId: string; organizationId: string; returnTo: string };
   v2CsrfToken?: string;
   v2SessionScope?: string;
 };
-type V2SessionRequest = Request & { session: V2Session };
+export type V2SessionRequest = Request & { session: V2Session };
 
 const invalidCredentials = (response: Response) =>
   response.status(401).json({ ok: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid credentials." } });
@@ -43,6 +50,13 @@ const readBodyCredentials = (body: unknown): { email: string; password: string }
   const email = typeof value.email === "string" ? value.email.trim().toLowerCase() : "";
   const password = typeof value.password === "string" ? value.password : "";
   return email && password && email.length <= 320 && password.length <= 1024 ? { email, password } : null;
+};
+
+export const safePortalReturnTo = (value: unknown): string => {
+  if (typeof value !== "string") return "/portal/invoices";
+  const destination = value.trim();
+  if (!destination.startsWith("/") || destination.startsWith("//") || destination.includes("\\")) return "/portal/invoices";
+  return /^\/portal\/invoices(?:\/[A-Za-z0-9_-]+)?$/.test(destination) ? destination : "/portal/invoices";
 };
 
 export type V2StandaloneAuthConfig = Readonly<{
@@ -127,15 +141,38 @@ export class PostgresStandaloneStaffCredentialVerifier implements V2StaffCredent
   }
 }
 
+/** Password identity is shared, but a portal user can only establish a V2
+ * portal session through one active tenant/customer access record. */
+export class PostgresStandalonePortalCredentialVerifier implements V2PortalCredentialVerifier {
+  constructor(private readonly pool: Pool) {}
+  private async find(where: string, values: readonly string[]): Promise<(V2AuthenticatedPortal & { passwordHash?: string }) | null> {
+    const result = await this.pool.query<{ id:string; email:string; first_name:string|null; last_name:string|null; password_hash:string|null; organization_id:string; customer_id:string; display_name:string|null }>(
+      `SELECT u.id,u.email,u.first_name,u.last_name,ai.password_hash,cpa.organization_id,cpa.customer_id,cpa.display_name
+       FROM users u JOIN customer_portal_access cpa ON cpa.user_id=u.id AND cpa.status='ACTIVE'
+       JOIN auth_identities ai ON ai.user_id=u.id AND ai.provider='password'
+       WHERE u.account_type='PORTAL_CUSTOMER' AND COALESCE(u.must_set_password,false)=false AND ${where}`,
+      [...values],
+    );
+    const row=result.rows[0]; if(!row?.email) return null;
+    return { id:row.id,email:row.email,displayName:row.display_name?.trim() || [row.first_name,row.last_name].filter(Boolean).join(" ") || row.email,organizationId:row.organization_id,customerId:row.customer_id,...(row.password_hash?{passwordHash:row.password_hash}:{}) };
+  }
+  async authenticatePortal(email:string,password:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("lower(u.email)=lower($1)",[email]); if(!portal?.passwordHash || !(await bcrypt.compare(password,portal.passwordHash))) return null; return {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId}; }
+  async currentPortal(userId:string,organizationId:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("u.id=$1 AND cpa.organization_id=$2",[userId,organizationId]); return portal && {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId}; }
+}
+
 export type StandaloneStaffAuthentication = Readonly<{
   install: (app: Express) => void;
   trustedHostIdentity: TrustedHostIdentitySource;
   trustedHostMiddleware: RequestHandler;
   publicWebOrigin?: string;
+  portalMiddleware: RequestHandler;
+  portalPrincipal: Readonly<{ principal(request: Request): Promise<Principal> }>;
 }>;
 
 export const createStandaloneStaffAuthentication = (input: Readonly<{
   verifier: V2StaffCredentialVerifier;
+  portalVerifier?: V2PortalCredentialVerifier;
+  portalIssuer?: PermissionSetPrincipalIssuer;
   config: V2StandaloneAuthConfig;
   sessionMiddleware: RequestHandler;
 }>): StandaloneStaffAuthentication => {
@@ -167,6 +204,19 @@ export const createStandaloneStaffAuthentication = (input: Readonly<{
       return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "The requested organization is not active for this session." } });
     }
     next();
+  };
+  const portalPrincipal = {
+    async principal(request: Request): Promise<Principal> {
+      const auth=(request as V2SessionRequest).session?.v2PortalAuth;
+      if(!auth || !input.portalVerifier || !input.portalIssuer) throw new Error("Portal authentication is required.");
+      const portal=await input.portalVerifier.currentPortal(auth.subjectId,auth.organizationId);
+      if(!portal) throw new Error("Portal access is unavailable.");
+      return input.portalIssuer.issue({subjectId:portal.id,authenticatedAt:new Date(),authenticationMethod:"portal_session"},{organizationId:portal.organizationId});
+    },
+  };
+  const requirePortal: RequestHandler = async (request,response,next) => {
+    try { await portalPrincipal.principal(request); next(); }
+    catch { response.status(401).json({ok:false,error:{code:"UNAUTHENTICATED",message:"Portal authentication is required."}}); }
   };
   const install = (app: Express): void => {
     app.set("trust proxy", 1);
@@ -215,6 +265,23 @@ export const createStandaloneStaffAuthentication = (input: Readonly<{
         response.status(200).json({ ok: true, data: { loggedOut: true } });
       });
     });
+    app.post("/v2/portal/auth/login", requireOrigin, rateLimit({windowMs:15*60*1000,max:10,standardHeaders:true,legacyHeaders:false}), async (request,response) => {
+      const credentials=readBodyCredentials(request.body); const portal=credentials && input.portalVerifier ? await input.portalVerifier.authenticatePortal(credentials.email,credentials.password).catch(()=>null) : null;
+      if(!portal) return invalidCredentials(response);
+      const sessionRequest=request as V2SessionRequest;
+      await new Promise<void>((resolve,reject)=>sessionRequest.session.regenerate((error)=>error?reject(error):resolve()));
+      const returnTo=safePortalReturnTo(request.body?.returnTo);
+      sessionRequest.session.v2PortalAuth={subjectId:portal.id,organizationId:portal.organizationId,returnTo};
+      await new Promise<void>((resolve,reject)=>sessionRequest.session.save((error)=>error?reject(error):resolve()));
+      response.status(200).json({ok:true,data:{portal:{displayName:portal.displayName,customerId:portal.customerId},returnTo,csrfToken:issueV2CsrfToken(sessionRequest),sessionScope:issueV2SessionScope(sessionRequest)}});
+    });
+    app.get("/v2/portal/auth/session", async (request,response) => {
+      try { const principal=await portalPrincipal.principal(request); if(principal.kind!=="portal") throw new Error("Portal unavailable"); const sessionRequest=request as V2SessionRequest; response.status(200).json({ok:true,data:{portal:{displayName:principal.subjectId,customerId:principal.customerId},returnTo:safePortalReturnTo(sessionRequest.session.v2PortalAuth?.returnTo),csrfToken:issueV2CsrfToken(sessionRequest),sessionScope:issueV2SessionScope(sessionRequest)}}); }
+      catch { response.status(401).json({ok:false,error:{code:"UNAUTHENTICATED",message:"Portal authentication is required."}}); }
+    });
+    app.post("/v2/portal/auth/logout", requireOrigin, requirePortal, requireV2CsrfToken, (request,response) => {
+      const sessionRequest=request as V2SessionRequest; sessionRequest.session.destroy(()=>{response.clearCookie("v2.sid",{path:"/",httpOnly:true,secure:input.config.secureCookies,sameSite:"lax"});response.status(200).json({ok:true,data:{loggedOut:true}});});
+    });
   };
-  return { install, trustedHostIdentity: identity, trustedHostMiddleware: requireStaff, publicWebOrigin: input.config.publicWebOrigin };
+  return { install, trustedHostIdentity: identity, trustedHostMiddleware: requireStaff, publicWebOrigin: input.config.publicWebOrigin, portalMiddleware:requirePortal, portalPrincipal };
 };

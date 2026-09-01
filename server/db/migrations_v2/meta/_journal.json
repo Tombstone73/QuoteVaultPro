@@ -1737,6 +1737,13 @@
       "when": 1788048000099,
       "tag": "0252_v2_invoice_email_delivery_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "7",
+      "when": 1788048000100,
+      "tag": "0253_v2_portal_invoice_payment_access",
+      "breakpoints": true
     }
   ]
 }

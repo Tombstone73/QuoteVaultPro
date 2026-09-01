@@ -11,6 +11,7 @@ import {
   createStandaloneStaffAuthentication,
   createV2SessionMiddleware,
   loadV2StandaloneAuthConfig,
+  PostgresStandalonePortalCredentialVerifier,
   PostgresStandaloneStaffCredentialVerifier,
   type StandaloneStaffAuthentication,
 } from "../../infrastructure/authentication/standaloneStaffAuth.js";
@@ -31,6 +32,8 @@ import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructur
 import { composeAuthenticatedQuickBooksIntegrationRuntime } from "../../infrastructure/accounting/authenticatedQuickBooksIntegrationRuntime.js";
 import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
 import { startV2InvoiceEmailDeliveryWorker } from "../../infrastructure/communications/invoiceEmailDeliveryQueue.js";
+import { PermissionSetPrincipalIssuer } from "../authorization/permissionSets.js";
+import { PostgresPermissionAuthorityReader } from "../../infrastructure/authorization/postgresPermissionAuthorityRead.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -84,6 +87,7 @@ export const createV2DeploymentApp = (
     emailIntegration,
     quickBooksIntegration,
     { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
+    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal },
   );
 };
 
@@ -99,6 +103,8 @@ export const startV2DeploymentServer = async (
   const pool = new Pool({ connectionString: databaseUrl });
   const authentication = createStandaloneStaffAuthentication({
     verifier: new PostgresStandaloneStaffCredentialVerifier(pool),
+    portalVerifier: new PostgresStandalonePortalCredentialVerifier(pool),
+    portalIssuer: new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(pool)),
     config: authConfig,
     sessionMiddleware: createV2SessionMiddleware(databaseUrl, authConfig),
   });

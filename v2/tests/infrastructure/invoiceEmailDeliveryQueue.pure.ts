@@ -35,7 +35,8 @@ assert.doesNotMatch(queue, /state='ambiguous'.*available_at/isu);
 assert.match(finance, /Select visible invoices/u);
 assert.match(finance, /Send selected/u);
 assert.match(finance, /Queue email delivery/u);
-assert.match(queue, /\$\{origin\(\)\}\/portal/u);
+assert.match(queue, /\/portal\/invoices\/\$\{encodeURIComponent/u);
+assert.match(queue, /"\/portal\/invoices"/u);
 assert.doesNotMatch(queue, /[?&](token|secret)=/iu);
 
 console.log("V2 invoice email queue contract tests passed.");

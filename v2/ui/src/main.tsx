@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { useEffect, useMemo, useState } from "react";
 import { App } from "./App";
+import { PortalApp } from "./PortalApp";
 import { AuthGate } from "./AuthGate";
 import {
   applyVisualAppearance,
@@ -60,6 +61,7 @@ const Root = () => {
       `${resolved.tokens.destructive}20`,
     );
   }, [resolved]);
+  if (window.location.pathname === "/portal" || window.location.pathname.startsWith("/portal/")) return <PortalApp />;
   return (
     <AuthGate><App
       appearance={appearance}

@@ -1,0 +1,37 @@
+import { Router, type Request, type Response } from "express";
+import { brandedId } from "../../modules/shared/commercialValues.js";
+import type { Principal } from "../../authorization/principals.js";
+import { V2ApplicationError } from "../../errors/applicationError.js";
+import type { InvoiceHttpDependencies } from "./invoiceRoutes.js";
+import type { FinanceHttpDependencies } from "./financeRoutes.js";
+import { stripeRuntimeReadiness } from "../../../../server/lib/stripe.js";
+import { requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
+
+type Dependencies = InvoiceHttpDependencies & FinanceHttpDependencies & Readonly<{ portalPrincipal: Readonly<{principal(request:Request):Promise<Principal>}> }>;
+const fail=(response:Response,error:V2ApplicationError)=>response.status(error.code==="FORBIDDEN"?403:error.code==="NOT_FOUND"||error.code==="WRONG_TENANT"?404:error.code==="CONFLICT"||error.code==="STALE_STATE"?409:error.code==="VALIDATION_ERROR"?400:500).json({ok:false,error:{code:error.code,message:error.publicMessage}});
+const operation=(principal:Principal,organizationId:string,id:string,businessRequestId?:string)=>({principal,organizationId,operationId:id,...(businessRequestId?{businessRequest:{id:businessRequestId,payloadFingerprint:"portal-http-boundary"}}:{})});
+const requestId=(value:unknown)=>typeof value==="string"&&value.trim()?value.trim():"";
+
+/** Customer-facing V2 projection. Organization and customer scope are only
+ * obtained from the authenticated portal principal; neither is URL input. */
+export const createPortalInvoiceRouter=(dependencies:Dependencies)=>{
+  const router=Router();
+  const principal=async(request:Request)=>{const value=await dependencies.portalPrincipal.principal(request);if(value.kind!=="portal")throw new V2ApplicationError("FORBIDDEN","Portal access is required.");return value;};
+  router.get("/invoices",async(request,response)=>{
+    try { const actor=await principal(request); const result=await dependencies.financialRead.listInvoices(operation(actor,actor.organizationId,`portal:GET:${request.path}`)); if(!result.ok)return fail(response,result.error); return response.json({ok:true,data:{items:result.value.filter((item)=>item.source==="v2").sort((a,b)=>Number(b.balance.cents>0)-Number(a.balance.cents>0)||b.updatedAt.localeCompare(a.updatedAt))}}); }
+    catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("FORBIDDEN","Portal invoice access is unavailable."));}
+  });
+  router.get("/invoices/:invoiceId",async(request,response)=>{
+    try { const actor=await principal(request); const result=await dependencies.financialRead.readInvoice(operation(actor,actor.organizationId,`portal:GET:${request.path}`),brandedId<"InvoiceId">(request.params.invoiceId)); if(!result.ok)return fail(response,result.error); return response.json({ok:true,data:result.value}); }
+    catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("FORBIDDEN","Portal invoice access is unavailable."));}
+  });
+  router.get("/invoices/:invoiceId/document.pdf",async(request,response)=>{
+    try { if(!dependencies.documents)throw new V2ApplicationError("INTERNAL_ERROR","Invoice document runtime is unavailable."); const actor=await principal(request),invoiceId=brandedId<"InvoiceId">(request.params.invoiceId); const read=await dependencies.service.readInvoice(operation(actor,actor.organizationId,`portal:GET:${request.path}`),invoiceId); if(!read.ok)return fail(response,read.error); const [bytes,filename]=await Promise.all([dependencies.documents.pdf(brandedId<"OrganizationId">(actor.organizationId),invoiceId),dependencies.documents.filename(brandedId<"OrganizationId">(actor.organizationId),invoiceId)]); response.status(200).setHeader("content-type","application/pdf");response.setHeader("content-disposition",`inline; filename="${filename}"`);response.setHeader("cache-control","private, no-store");return response.send(Buffer.from(bytes)); }
+    catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("INTERNAL_ERROR","Invoice document is unavailable."));}
+  });
+  router.post("/invoices/:invoiceId/stripe/payment-intents",requireV2CsrfToken,async(request,response)=>{
+    try { const actor=await principal(request),invoiceId=brandedId<"InvoiceId">(request.params.invoiceId),businessRequestId=requestId(request.body?.businessRequestId); if(!businessRequestId)throw new V2ApplicationError("VALIDATION_ERROR","A payment request identity is required."); const read=await dependencies.financialRead.readInvoice(operation(actor,actor.organizationId,`portal:GET:${request.path}`),invoiceId); if(!read.ok)return fail(response,read.error); const balance=read.value.settlement.balance; if(balance.cents<=0)throw new V2ApplicationError("CONFLICT",balance.cents<0?"This Invoice has a credit due and cannot accept another payment.":"This Invoice is paid."); if(read.value.invoice.lifecycle==="void")throw new V2ApplicationError("CONFLICT","A void Invoice cannot accept payment."); const readiness=stripeRuntimeReadiness();if(readiness.status!=="ready"||!readiness.publishableKey)throw new V2ApplicationError("CONFLICT","Card payment is not ready for this account."); const result=await dependencies.stripePayments.beginPayment(operation(actor,actor.organizationId,`portal:POST:${request.path}`,businessRequestId),{organizationId:actor.organizationId,invoiceId,amountCents:balance.cents,currency:balance.currency,businessRequestId});if(!result.ok)return fail(response,result.error);return response.status(200).json({ok:true,data:{...result.value,publishableKey:readiness.publishableKey}}); }
+    catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("RETRYABLE_FAILURE","Card payment could not be prepared."));}
+  });
+  return router;
+};

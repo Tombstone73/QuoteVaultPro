@@ -22,7 +22,10 @@ const hash=(value:string)=>`sha256:${createHash("sha256").update(value).digest("
 const concise=(cause:unknown)=>String((cause as {message?:unknown})?.message ?? cause ?? "Invoice email delivery failed").replace(/\s+/gu," ").replace(/\0/gu,"").trim().slice(0,900)||"Invoice email delivery failed";
 const money=(currency:string,cents:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency}).format(cents/100);
 const origin=()=>((process.env.APP_PUBLIC_WEB_ORIGIN ?? process.env.APP_URL ?? "").trim().replace(/\/$/u,""));
-export const customerPortalUrl=()=>origin()?`${origin()}/portal`:"/portal";
+export const customerPortalUrl=(invoiceIds:readonly string[])=>{
+  const path=invoiceIds.length===1?`/portal/invoices/${encodeURIComponent(invoiceIds[0]!)}`:"/portal/invoices";
+  return origin()?`${origin()}${path}`:path;
+};
 
 /** A grouped message has one recipient and one immutable admission identity.
  * Invoice content remains deliberately live: the worker reads canonical V2
@@ -101,7 +104,7 @@ export class PostgresInvoiceEmailDeliveryQueue {
   }
   private async deliver(integration:ReadyGmailIntegration,recipient:string,invoices:readonly MailInvoice[]):Promise<string>{
     const clientId=process.env.GOOGLE_CLIENT_ID,clientSecret=process.env.GOOGLE_CLIENT_SECRET;if(!clientId||!clientSecret)throw new V2ApplicationError("RETRYABLE_FAILURE","The platform Gmail delivery connection is unavailable.");
-    const oauth=new google.auth.OAuth2(clientId,clientSecret);oauth.setCredentials({refresh_token:integration.refreshToken});const portal=customerPortalUrl();
+    const oauth=new google.auth.OAuth2(clientId,clientSecret);oauth.setCredentials({refresh_token:integration.refreshToken});const portal=customerPortalUrl(invoices.map((invoice)=>invoice.invoiceId));
     const summary=invoices.map((invoice)=>`<li><strong>${html(invoice.number)}</strong> · balance ${html(money(invoice.currency,invoice.balanceCents))}</li>`).join("");
     const single=invoices.length===1;const subject=single?`Invoice ${invoices[0]!.number} from ${integration.displayName}`:`${invoices.length} Invoices from ${integration.displayName}`;
     const label=single?"View & Pay Invoice":"View & Pay Invoices";
