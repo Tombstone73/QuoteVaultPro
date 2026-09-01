@@ -187,7 +187,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     return rows.rows.map((row) => {
       const currency = currencyCode(row.currency);
       return {
-        invoiceId: brandedId<"InvoiceId">(row.id), sourceOrderId: brandedId<"OrderId">(row.sales_order_document_id), sourceOrderNumber: row.display_number, ...(row.invoice_display_number ? { invoiceNumber: row.invoice_display_number } : {}), ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}),
+        invoiceId: brandedId<"InvoiceId">(row.id), sourceOrderId: brandedId<"OrderId">(row.sales_order_document_id), sourceOrderNumber: row.display_number, invoiceNumber: row.invoice_display_number ?? row.display_number, ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}),
         lifecycle: row.invoice_state, currency, total: money(currency, Number(row.total_cents)), updatedAt: row.updated_at.toISOString(),
         ...(row.customer_display_name ? { customerPresentation: { customerDisplayName: row.customer_display_name } } : {}),
         ...(row.issued_at ? { issuedAt: row.issued_at.toISOString() } : {}),
@@ -213,7 +213,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     const issuedCheckpoint = checkpoint?.rows[0]?.checkpoint_json;
     return {
       invoiceId: brandedId<"InvoiceId">(invoice.id), organizationId,
-      sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), sourceOrderNumber: invoice.display_number, ...(invoice.invoice_display_number ? { invoiceNumber: invoice.invoice_display_number } : {}), lifecycle: invoice.invoice_state,
+      sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), sourceOrderNumber: invoice.display_number, invoiceNumber: invoice.invoice_display_number ?? invoice.display_number, lifecycle: invoice.invoice_state,
       ...(invoice.customer_id ? { customerId: brandedId<"CustomerId">(invoice.customer_id) } : {}),
       ...(issuedCheckpoint ? { customerPresentation: issuedCheckpoint.customerPresentation, issuedCheckpoint } : currentPresentation ? { customerPresentation: currentPresentation } : {}),
       currency, synchronizationVersion: invoice.synchronization_version,

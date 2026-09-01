@@ -30,6 +30,8 @@ class FinancialFixture implements BillingFinancialTransaction {
   readonly providerOperations = new Map<string, ProviderFinancialOperation>();
   readonly auditEvents: string[] = [];
   readonly outboxEvents: string[] = [];
+  totalCents = 100_000;
+  lifecycle: "draft" | "issued" | "void" = "issued";
   private readonly reservations = new Map<string, { requestId: string; result: unknown | null }>();
   private requestSequence = 0;
 
@@ -44,11 +46,11 @@ class FinancialFixture implements BillingFinancialTransaction {
 
   async lockInvoice(org: OrganizationId, id: InvoiceId) {
     if (org !== organizationId || id !== invoiceId) return null;
-    return { invoiceId, customerId: "customer-acme", currency: usd, totalCents: 100_000, lifecycle: "issued" as const };
+    return { invoiceId, customerId: "customer-acme", currency: usd, totalCents: this.totalCents, lifecycle: this.lifecycle };
   }
 
   async settlement(org: OrganizationId, id: InvoiceId, currency: string, grossCents: number): Promise<InvoiceSettlement> {
-    if (org !== organizationId || id !== invoiceId || currency !== usd || grossCents !== 100_000) throw new Error("Unexpected financial fixture scope.");
+    if (org !== organizationId || id !== invoiceId || currency !== usd || grossCents !== this.totalCents) throw new Error("Unexpected financial fixture scope.");
     const successfulPayments = this.payments.reduce((total, payment) => total + payment.amount.cents, 0);
     const successfulRefunds = this.refunds.reduce((total, refund) => total + refund.amount.cents, 0);
     return { invoiceId, gross: money(usd, grossCents), successfulPayments: money(usd, successfulPayments), successfulRefunds: money(usd, successfulRefunds), collectibleBalance: money(usd, grossCents - successfulPayments + successfulRefunds) };
@@ -172,6 +174,36 @@ describe("M5 financial spine parity baseline", () => {
     expect(parity.classification).toBe("SEMANTICALLY_EQUIVALENT");
     expect(fixture.auditEvents).toContain("payment_recorded");
     expect(fixture.auditEvents).toContain("refund_recorded");
+  });
+
+  test("keeps an Order-backed Invoice payable without issuance while totals change around immutable facts", async () => {
+    const { fixture, service } = createRuntime();
+    fixture.lifecycle = "draft";
+    fixture.totalCents = 50_000;
+
+    const first = resultValue(await service.recordManualPayment(context("live-payment-1"), { organizationId, invoiceId, amount: money(usd, 20_000), method: "check", occurredAt: "2026-08-18T10:00:00.000Z", businessRequestId: brandedId<"BusinessRequestId">("live-payment-1") }));
+    expect(first.settlement.collectibleBalance.cents).toBe(30_000);
+    const second = resultValue(await service.recordManualPayment(context("live-payment-2"), { organizationId, invoiceId, amount: money(usd, 30_000), method: "check", occurredAt: "2026-08-18T10:01:00.000Z", businessRequestId: brandedId<"BusinessRequestId">("live-payment-2") }));
+    expect(second.settlement.collectibleBalance.cents).toBe(0);
+    const originalFacts = fixture.payments.map((payment) => ({ ...payment }));
+
+    fixture.totalCents = 60_000;
+    const provider = resultValue(await service.beginProviderOperation(context("live-provider-payment"), { organizationId, invoiceId, kind: "payment", amount: money(usd, 10_000), provider: "stripe", providerIdempotencyKey: "live-balance", businessRequestId: brandedId<"BusinessRequestId">("live-provider-payment") }));
+    expect(provider.kind).toBe("payment");
+    expect((await fixture.settlement(organizationId, invoiceId, usd, fixture.totalCents)).collectibleBalance.cents).toBe(10_000);
+    expect(fixture.payments).toEqual(originalFacts);
+
+    fixture.totalCents = 45_000;
+    const creditDue = await fixture.settlement(organizationId, invoiceId, usd, fixture.totalCents);
+    expect(creditDue.collectibleBalance.cents).toBe(-5_000);
+    const blocked = await service.recordManualPayment(context("live-credit-payment"), { organizationId, invoiceId, amount: money(usd, 1), method: "cash", occurredAt: "2026-08-18T10:02:00.000Z", businessRequestId: brandedId<"BusinessRequestId">("live-credit-payment") });
+    expect(blocked).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(fixture.payments).toEqual(originalFacts);
+
+    const refund = resultValue(await service.recordRefund(context("live-credit-refund"), { organizationId, invoiceId, paymentId: first.payment.paymentId, amount: money(usd, 5_000), occurredAt: "2026-08-18T10:03:00.000Z", businessRequestId: brandedId<"BusinessRequestId">("live-credit-refund") }));
+    expect(refund.settlement.collectibleBalance.cents).toBe(0);
+    expect(fixture.payments).toEqual(originalFacts);
+    expect(fixture.refunds).toHaveLength(1);
   });
 
   test("preserves provider uncertainty and reconciles one immutable provider payment exactly once", async () => {

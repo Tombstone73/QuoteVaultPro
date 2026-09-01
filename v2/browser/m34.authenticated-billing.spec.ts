@@ -76,7 +76,7 @@ const createOrder = async (page: Page, f: Fixture) => {
   return (await (await accepted).json()).data.orderId as string;
 };
 
-test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints", async ({
+test("M3.4 clone-backed Order-backed Invoice is payable without manual issuance", async ({
   page,
   browser,
 }) => {
@@ -136,32 +136,16 @@ test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints",
     page.getByText("Financial History", { exact: true }),
   ).toBeVisible();
   await page.screenshot({
-    path: "C:\\tmp\\m34-visual\\v2-invoice-draft-1440x900.png",
+    path: "C:\\tmp\\m34-visual\\v2-order-backed-invoice-1440x900.png",
     fullPage: true,
   });
-  const issuedResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().endsWith(`/invoices/${invoiceId}/issue`) &&
-      response.status() === 200,
-  );
-  await page.getByRole("button", { name: "Issue Invoice" }).click();
-  const issued = await issuedResponse;
-  const issuedPayload = await issued.json();
-  const requestPayload = JSON.parse(issued.request().postData() ?? "{}");
-  expect(requestPayload.businessRequestId).toBeTruthy();
-  expect(issuedPayload.data.invoice).toMatchObject({
-    invoiceId,
-    lifecycle: "issued",
-  });
-  await expect(
-    page.getByText("Invoice issued as an immutable Billing checkpoint."),
-  ).toBeVisible();
+  await expect(page.getByText("Order-backed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Issue Invoice" })).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Take Payment" }),
   ).toBeVisible();
   await page.screenshot({
-    path: "C:\\tmp\\m34-visual\\v2-invoice-issued-1440x900.png",
+    path: "C:\\tmp\\m34-visual\\v2-order-backed-payable-1440x900.png",
     fullPage: true,
   });
   const noCsrfPayment = await api.post(
@@ -264,45 +248,27 @@ test("M3.4 clone-backed Invoice UI and API issue immutable Billing checkpoints",
   await expect(page.getByRole("button", { name: "Back to Orders", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Invoices", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Invoices" })).toBeVisible();
-  const replay = await api.post(
-    invoices(f.organizationA, `/${encodeURIComponent(invoiceId)}/issue`),
-    { headers: { "x-v2-csrf-token": access.csrfToken }, data: requestPayload },
+  const continuedSalesEdit = await api.patch(
+    `/v2/organizations/${encodeURIComponent(f.organizationA)}/orders/${encodeURIComponent(orderId)}`,
+    {
+      headers: { "x-v2-csrf-token": access.csrfToken },
+      data: {
+        businessRequestId: `m34-sales-order-backed-${orderId}`,
+        expectedRevision: before.document.revision,
+        patch: { purchaseOrderNumber: "current-order-backed" },
+      },
+    },
   );
-  expect(replay.ok()).toBeTruthy();
-  expect((await replay.json()).data.invoice.lifecycle).toBe("issued");
+  expect(continuedSalesEdit.ok()).toBeTruthy();
   const persistedResponse = await api.get(
     `/_v2-browser-test/invoice-readback/${encodeURIComponent(invoiceId)}`,
   );
   expect(persistedResponse.ok()).toBeTruthy();
   const persisted = (await persistedResponse.json()).data;
-  expect(persisted.invoice).toMatchObject({
-    id: invoiceId,
-    invoice_state: "issued",
-  });
+  expect(persisted.invoice).toMatchObject({ id: invoiceId, invoice_state: "draft", source_sales_state_token: "2" });
   expect(persisted.lines).toHaveLength(1);
-  expect(persisted.checkpoints).toHaveLength(1);
-  expect(persisted.audit).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        event_type: "invoice_issued",
-        staffActorVerified: true,
-      }),
-    ]),
-  );
-  expect(persisted.operations).toHaveLength(1);
+  expect(persisted.checkpoints).toHaveLength(0);
   expect(persisted.fulfillmentHandoffCount).toBe(0);
-  const blockedSalesEdit = await api.patch(
-    `/v2/organizations/${encodeURIComponent(f.organizationA)}/orders/${encodeURIComponent(orderId)}`,
-    {
-      headers: { "x-v2-csrf-token": access.csrfToken },
-      data: {
-        businessRequestId: `m34-sales-after-issue-${orderId}`,
-        expectedRevision: before.document.revision,
-        patch: { purchaseOrderNumber: "blocked-after-issued" },
-      },
-    },
-  );
-  expect(blockedSalesEdit.status()).toBe(409);
   const afterOrder = await api.get(
     `/_v2-browser-test/order-readback/${encodeURIComponent(orderId)}`,
   );

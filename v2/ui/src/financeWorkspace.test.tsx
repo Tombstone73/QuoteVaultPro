@@ -7,7 +7,7 @@ import type { FinancialInvoiceRead } from "./api";
 import { FinanceWorkspace, invoiceDocumentPath } from "./FinanceWorkspace";
 
 const money = (cents: number) => ({ cents, currency: "USD" });
-const read = (lifecycle: "draft" | "issued"): FinancialInvoiceRead => ({
+const read = (lifecycle: "draft" | "issued", balanceCents = 600, paidCents = 0): FinancialInvoiceRead => ({
   invoice: {
     source: "v2",
     invoiceId: `invoice-${lifecycle}`,
@@ -35,9 +35,9 @@ const read = (lifecycle: "draft" | "issued"): FinancialInvoiceRead => ({
   },
   settlement: {
     gross: money(600),
-    paid: money(0),
+    paid: money(paidCents),
     refunded: money(0),
-    balance: money(600),
+    balance: money(balanceCents),
   },
   history: [],
 });
@@ -45,9 +45,11 @@ const read = (lifecycle: "draft" | "issued"): FinancialInvoiceRead => ({
 const renderInvoice = (
   lifecycle: "draft" | "issued",
   canInvoiceView = true,
+  balanceCents = 600,
+  paidCents = 0,
 ) => {
   const client = new QueryClient();
-  const value = read(lifecycle);
+  const value = read(lifecycle, balanceCents, paidCents);
   client.setQueryData(
     [
       "v2",
@@ -69,7 +71,6 @@ const renderInvoice = (
         invoiceId={value.invoice.invoiceId}
         onSelectInvoice={() => {}}
         backToInvoices={() => {}}
-        canIssue
         canInvoiceView={canInvoiceView}
         canPaymentView
         canPaymentRecord
@@ -88,7 +89,10 @@ assert.equal(
 );
 const draft = renderInvoice("draft");
 assert.match(draft, />Preview PDF</);
-assert.match(draft, />Issue Invoice</);
+assert.match(draft, /Order-backed/);
+assert.match(draft, />Take Payment</);
+assert.match(draft, />Pay by Card</);
+assert.doesNotMatch(draft, />Issue Invoice</);
 assert.match(draft, /Order ORD-1010/);
 assert.doesNotMatch(draft, /Order invoice-draft/);
 const issued = renderInvoice("issued");
@@ -97,6 +101,13 @@ assert.match(issued, /Issued Billing checkpoint; commercial content is immutable
 assert.match(issued, />Take Payment</);
 assert.doesNotMatch(issued, />Sync to QuickBooks</);
 assert.doesNotMatch(issued, />Issue Invoice</);
+const paid = renderInvoice("draft", true, 0, 600);
+assert.doesNotMatch(paid, />Take Payment</);
+assert.doesNotMatch(paid, />Pay by Card</);
+const creditDue = renderInvoice("draft", true, -50, 650);
+assert.match(creditDue, /Credit \/ refund due/);
+assert.doesNotMatch(creditDue, />Take Payment</);
+assert.doesNotMatch(creditDue, />Pay by Card</);
 assert.doesNotMatch(renderInvoice("draft", false), />Preview PDF</);
 const noSelection = renderToStaticMarkup(
   <QueryClientProvider client={new QueryClient()}>
@@ -107,7 +118,6 @@ const noSelection = renderToStaticMarkup(
       invoiceId=""
       onSelectInvoice={() => {}}
       backToInvoices={() => {}}
-      canIssue
       canInvoiceView
       canPaymentView={false}
       canPaymentRecord
@@ -123,6 +133,8 @@ const workspaceSource = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
 assert.doesNotMatch(workspaceSource, /QuickBooks sync/);
 assert.doesNotMatch(workspaceSource, /Retry Payment Sync/);
+assert.doesNotMatch(workspaceSource, /invoiceApi\.issue/);
+assert.match(workspaceSource, /settlement\?\.balance\.cents \?\? 0\) > 0/);
 assert.match(apiSource, /settings\/accounting\/sync-selected/);
 assert.match(workspaceSource, /selectInvoice\(row\.invoiceId, row\.source\)/, "the Invoice grid opens with the canonical V2 Invoice ID");
 assert.match(workspaceSource, /if \(invoiceId\) \{ setSelected\(invoiceId\); setSelectedSource\("v2"\); \}/, "a direct Invoice route preserves its canonical selection through workspace initialization");

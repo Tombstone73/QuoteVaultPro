@@ -980,7 +980,7 @@ const OrderLifecycle = ({
     )}
     {order.draftInvoice && (
       <span data-state="neutral">
-        Invoice <b>{stateLabel(order.draftInvoice.lifecycle)}</b>
+        Invoice <b>{order.draftInvoice.lifecycle === "draft" ? "Order-backed" : stateLabel(order.draftInvoice.lifecycle)}</b>
       </span>
     )}
   </div>
@@ -1240,7 +1240,7 @@ const OrderBilling = ({
       <header>
         <div>
           <h2>Billing</h2>
-          <p>{canView ? "Draft invoice" : "Invoice access is unavailable."}</p>
+          <p>{canView ? "Current order-backed invoice" : "Invoice access is unavailable."}</p>
         </div>
         {canView && (
           <button className="button secondary" type="button" onClick={onOpen}>
@@ -1251,7 +1251,7 @@ const OrderBilling = ({
       <dl>
         <div>
           <dt>Status</dt>
-          <dd>{stateLabel(invoice?.lifecycle ?? draft.lifecycle)}</dd>
+          <dd>{(invoice?.lifecycle ?? draft.lifecycle) === "draft" ? "Order-backed" : stateLabel(invoice?.lifecycle ?? draft.lifecycle)}</dd>
         </div>
         <div>
           <dt>Lines</dt>
@@ -1670,7 +1670,7 @@ export const OrderBillingSummary = ({
       >
         <strong>Invoice {invoice.sourceOrderNumber ?? "record"}</strong>
         <span>
-          {stateLabel(invoice.lifecycle)} · {money(invoice.total)}
+          {invoice.lifecycle === "draft" ? "Order-backed" : stateLabel(invoice.lifecycle)} · {money(invoice.total)}
         </span>
         <small>
           Paid{" "}

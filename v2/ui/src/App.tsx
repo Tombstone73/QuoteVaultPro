@@ -740,7 +740,6 @@ export const App = ({
             pushInvoiceLocation();
             setInvoiceId("");
           }}
-          canIssue={bootstrap.data?.capabilities.invoiceIssue === true}
           canInvoiceView={bootstrap.data?.capabilities.invoiceView === true}
           canPaymentView={bootstrap.data?.capabilities.paymentView === true}
           canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true}

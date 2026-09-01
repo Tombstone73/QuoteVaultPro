@@ -66,6 +66,19 @@ const history = (rows: readonly FactRow[], grossCents: number) => {
   });
 };
 
+const settlementStatus = (
+  lifecycle: "draft" | "issued" | "void",
+  gross: number,
+  paid: number,
+  refunded: number,
+): FinancialInvoiceListItem["settlement"] => {
+  if (lifecycle === "void") return undefined;
+  const balance = gross - paid + refunded;
+  if (balance < 0) return "credit_due";
+  if (balance === 0) return "paid";
+  return paid === 0 && refunded === 0 ? "unpaid" : "partially_paid";
+};
+
 export class PostgresFinancialRead implements FinancialReadPort {
   constructor(private readonly client: PoolClient) {}
   async readFinancialInvoice(
@@ -136,14 +149,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
         paid = cents(row.paid),
         refunded = cents(row.refunded),
         balance = gross - paid + refunded,
-        settlement =
-          row.invoice_state !== "issued"
-            ? undefined
-            : balance === gross
-              ? ("unpaid" as const)
-              : balance === 0
-                ? ("paid" as const)
-                : ("partially_paid" as const);
+        settlement = settlementStatus(row.invoice_state, gross, paid, refunded);
       return {
         source: "v2",
         recordId: row.id,
@@ -170,7 +176,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
     }>(`SELECT i.id,i.order_id,COALESCE(o.display_number,o.order_number,'Order unavailable') order_number,i.customer_id,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.status,i.currency,COALESCE(NULLIF(i.total_cents,0),ROUND(i.total*100)::int)::text total_cents,ROUND(COALESCE(i.amount_paid,0)*100)::int::text amount_paid_cents,ROUND(COALESCE(i.balance_due,0)*100)::int::text balance_due_cents,i.issued_at,i.updated_at FROM invoices i LEFT JOIN orders o ON o.organization_id=i.organization_id AND o.id=i.order_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 ORDER BY i.updated_at DESC,i.id DESC LIMIT 50`, [organizationId]);
     const legacyItems: FinancialInvoiceListItem[] = legacy.rows.map((row) => {
       const gross = cents(row.total_cents), paid = cents(row.amount_paid_cents), balance = cents(row.balance_due_cents), code = currencyCode(row.currency || "USD");
-      const settlement = balance <= 0 ? "paid" as const : paid > 0 ? "partially_paid" as const : "unpaid" as const;
+      const settlement = balance < 0 ? "credit_due" as const : balance === 0 ? "paid" as const : paid > 0 ? "partially_paid" as const : "unpaid" as const;
       return { source: "legacy", recordId: row.id, invoiceId: brandedId<"InvoiceId">(row.id), sourceOrderId: row.order_id ?? "", sourceOrderNumber: row.order_number ?? "Order unavailable", ...(row.customer_id ? { customerId: row.customer_id } : {}), ...(row.customer_name ? { customerName: row.customer_name } : {}), lifecycle: row.status === "void" ? "void" : row.status === "draft" ? "draft" : "issued", currency: row.currency || "USD", gross: money(code, gross), paid: money(code, paid), refunded: money(code, 0), balance: money(code, balance), settlement, ...(row.issued_at ? { issuedAt: row.issued_at.toISOString() } : {}), updatedAt: row.updated_at.toISOString() };
     });
     return [...native, ...legacyItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.source.localeCompare(a.source) || b.recordId.localeCompare(a.recordId)).slice(0, 50);

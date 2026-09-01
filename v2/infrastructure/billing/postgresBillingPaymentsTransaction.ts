@@ -33,9 +33,11 @@ export class PostgresBillingPaymentsTransaction implements BillingFinancialTrans
     }
     const event=await this.client.query("INSERT INTO v2_billing_provider_events(id,organization_id,provider,provider_event_id,provider_operation_id,event_kind,occurred_at) VALUES($1,$2,$3,$4,$5,'payment_succeeded',$6::timestamptz) ON CONFLICT(organization_id,provider,provider_event_id) DO NOTHING RETURNING id",[randomUUID(),input.organizationId,op.provider,input.providerEventId,input.providerOperationId,input.occurredAt]);
     if(!event.rows[0])throw Error("Duplicate provider event lacks its canonical Payment.");
-    const invoice=await this.client.query<{total_cents:string}>("SELECT total_cents FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2",[input.organizationId,input.invoiceId]);
-    const settlement=await this.settlement(input.organizationId,input.invoiceId,op.currency,Number(invoice.rows[0]!.total_cents));
-    if(Number(op.amount_cents)>settlement.collectibleBalance.cents)throw Error("Provider payment exceeds collectible Invoice balance.");
+    // The PaymentIntent was capped against the canonical balance when it was
+    // created. If the Order legitimately changes before Stripe confirms it,
+    // preserve the provider-settled Payment and let the derived settlement
+    // surface any resulting credit/refund due; never lose a real payment by
+    // re-applying a stale mutable-total cap at webhook time.
     const id=randomUUID();
     await this.client.query("INSERT INTO v2_billing_payments(id,organization_id,invoice_id,source,method,amount_cents,currency,provider_operation_id,provider_transaction_id,stripe_account_id,occurred_at,principal_kind,principal_subject,staff_actor_user_id,operation_request_id) VALUES($1,$2,$3,'provider','card',$4,$5,$6,$7,$8,$9::timestamptz,$10,$11,$12,$13)",[id,input.organizationId,input.invoiceId,op.amount_cents,op.currency,input.providerOperationId,input.providerTransactionId,op.stripe_account_id,input.occurredAt,input.principalKind,input.principalSubject,input.staffActorUserId??null,input.operationRequestId]);
     await this.hooks?.afterProviderPaymentMaterialized?.();

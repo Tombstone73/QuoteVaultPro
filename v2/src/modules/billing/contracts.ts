@@ -84,7 +84,8 @@ export type DraftInvoiceReadModel = Readonly<{
   sourceOrderId: OrderId;
   /** The Sales-owned Order number is context, never an invented Invoice number. */
   sourceOrderNumber?: string;
-  /** Absent for Drafts; assigned once at immutable issuance from the Order / Job number. */
+  /** Live Order-backed Invoices use the Order / Job display identity. Historical
+   * issued Invoices retain their immutable allocation. */
   invoiceNumber?: string;
   customerId?: CustomerId;
   customerPresentation?: CustomerPresentationIdentity;

@@ -54,7 +54,7 @@ export type FinancialInvoiceListItem = Readonly<{
   refunded: Money;
   balance: Money;
   /** Settlement is derived from immutable allocations; it is never an Invoice lifecycle. */
-  settlement?: "unpaid" | "partially_paid" | "paid";
+  settlement?: "unpaid" | "partially_paid" | "paid" | "credit_due";
   issuedAt?: string;
   updatedAt: string;
 }>;

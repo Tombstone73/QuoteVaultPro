@@ -941,7 +941,7 @@ export type FinancialInvoiceListItem = Readonly<{
   customerId?: string;
   customerName?: string;
   lifecycle: InvoiceRead["lifecycle"];
-  settlement?: "unpaid" | "partially_paid" | "paid";
+  settlement?: "unpaid" | "partially_paid" | "paid" | "credit_due";
   currency: string;
   gross: InvoiceRead["total"];
   paid: InvoiceRead["total"];

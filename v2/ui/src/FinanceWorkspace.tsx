@@ -10,7 +10,6 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe } from "@stripe/stripe-js";
 import {
   financeApi,
-  invoiceApi,
   money,
   newBusinessRequestId,
   type ApiError,
@@ -257,7 +256,6 @@ export const FinanceWorkspace = ({
   invoiceId,
   onSelectInvoice,
   backToInvoices,
-  canIssue,
   canInvoiceView,
   canPaymentView,
   canPaymentRecord,
@@ -272,7 +270,6 @@ export const FinanceWorkspace = ({
   invoiceId: string;
   onSelectInvoice: (invoiceId: string) => void;
   backToInvoices: () => void;
-  canIssue: boolean;
   canInvoiceView: boolean;
   canPaymentView: boolean;
   canPaymentRecord: boolean;
@@ -398,15 +395,6 @@ export const FinanceWorkspace = ({
     },
     onError: (error) => setNotice(errorText(error)),
   });
-  const issue = useMutation({
-    mutationFn: () =>
-      invoiceApi.issue(organizationId, selected, newBusinessRequestId()),
-    onSuccess: async () => {
-      setNotice("Invoice issued as an immutable Billing checkpoint.");
-      await refresh();
-    },
-    onError: (error) => setNotice(errorText(error)),
-  });
   const stripePayment = useMutation({
     mutationFn: () => {
       const parsed = centsFromInput(amount);
@@ -450,6 +438,12 @@ export const FinanceWorkspace = ({
     );
   const invoice = detail.data?.invoice,
     settlement = detail.data?.settlement;
+  const refundablePayments = (detail.data?.history ?? []).filter((payment) =>
+    payment.kind === "payment" && payment.amount.cents > (detail.data?.history ?? [])
+      .filter((refund) => refund.kind === "refund" && refund.paymentId === payment.id)
+      .reduce((total, refund) => total + refund.amount.cents, 0),
+  );
+  const paymentEligible = invoice?.source !== "legacy" && invoice?.lifecycle !== "void" && (settlement?.balance.cents ?? 0) > 0;
   const invoiceColumns: readonly GridColumn<FinancialInvoiceListItem>[] = [
     {
       id: "source",
@@ -493,7 +487,7 @@ export const FinanceWorkspace = ({
       id: "status",
       label: "Invoice status",
       value: (row) => row.lifecycle,
-      render: (row) => row.lifecycle,
+      render: (row) => row.source === "v2" && row.lifecycle === "draft" ? "order-backed" : row.lifecycle,
     },
     {
       id: "settlement",
@@ -623,8 +617,8 @@ export const FinanceWorkspace = ({
           <span>Finance</span>
           <h1>Invoices</h1>
           <p>
-            Billing documents with derived settlement. Payments and Refunds
-            never rewrite the issued Invoice.
+            Current Order-backed invoices with derived settlement. Payments and
+            Refunds never rewrite immutable financial history.
           </p>
         </div>
       </header>
@@ -643,7 +637,7 @@ export const FinanceWorkspace = ({
             <div>
                <button className="v2-finance-link" onClick={returnToInvoices}>← All invoices</button>
               <span className={`v2-invoice-state ${invoice.lifecycle}`}>
-                {invoice.lifecycle}
+                {invoice.lifecycle === "draft" ? "Order-backed" : invoice.lifecycle}
               </span>
               <h2>Order {invoice.sourceOrderNumber ?? "Invoice"}</h2>
               <p>
@@ -675,16 +669,7 @@ export const FinanceWorkspace = ({
                   Preview PDF
                 </button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "draft" && canIssue && (
-                <button
-                  className="v2-invoice-issue"
-                  disabled={!csrfReady || issue.isPending}
-                  onClick={() => issue.mutate()}
-                >
-                  Issue Invoice
-                </button>
-              )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canPaymentRecord && (
+              {paymentEligible && canPaymentRecord && (
                 <button
                   className="v2-invoice-issue"
                   disabled={!csrfReady}
@@ -696,24 +681,22 @@ export const FinanceWorkspace = ({
                   Take Payment
                 </button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && settlement.balance.cents > 0 && canPaymentRecord && (
+              {paymentEligible && canPaymentRecord && (
                 <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setAmount(centsForInput(settlement.balance.cents)); setProviderRequestId(newBusinessRequestId()); setDialog("stripePayment"); }}>Pay by Card</button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && (
+              {invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.length > 0 && (
                 <button
                   className="v2-quiet-button"
                   disabled={
                     !csrfReady ||
-                    !detail.data?.history.some(
-                      (entry) => entry.kind === "payment",
-                    )
+                    !refundablePayments.length
                   }
                   onClick={() => setDialog("refund")}
                 >
                   Record Refund
                 </button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "issued" && canRefundIssue && detail.data?.history.some((entry) => entry.kind === "payment" && entry.source === "provider") && (
+              {invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.some((entry) => entry.source === "provider") && (
                 <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setPaymentId(""); setAmount(""); setProviderRequestId(newBusinessRequestId()); setDialog("stripeRefund"); }}>Refund to Card</button>
               )}
             </div>
@@ -724,7 +707,7 @@ export const FinanceWorkspace = ({
               <p>
                 {invoice.source === "legacy" ? "Legacy financial record; read-only in V2." : invoice.lifecycle === "issued"
                   ? "Issued Billing checkpoint; commercial content is immutable."
-                  : "Draft Billing projection from the source Order."}
+                  : "Current payable Billing projection from the source Order. Payments and Refunds remain immutable."}
               </p>
             </div>
             <table>
@@ -776,8 +759,8 @@ export const FinanceWorkspace = ({
               <strong>{money(settlement.refunded)}</strong>
             </div>
             <div>
-              <small>Balance</small>
-              <strong>{money(settlement.balance)}</strong>
+              <small>{settlement.balance.cents < 0 ? "Credit / refund due" : "Balance"}</small>
+              <strong>{money(settlement.balance.cents < 0 ? { ...settlement.balance, cents: Math.abs(settlement.balance.cents) } : settlement.balance)}</strong>
             </div>
           </div>
           <section>
@@ -837,8 +820,8 @@ export const FinanceWorkspace = ({
                   onChange={(event) => setPaymentId(event.target.value)}
                 >
                   <option value="">Select a Payment</option>
-                  {detail.data?.history
-                    .filter((entry) => entry.kind === "payment" && (dialog !== "stripeRefund" || entry.source === "provider"))
+                  {refundablePayments
+                    .filter((entry) => dialog !== "stripeRefund" || entry.source === "provider")
                     .map((entry) => (
                       <option key={entry.id} value={entry.id}>
                         {money(entry.amount)} · {entry.method ?? "payment"}
