@@ -309,6 +309,50 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
       .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ invoiceNumber: 810200 })] });
   });
 
+  test('composes customer, contact, order, date, sent-state, and money filters across the full tenant', async () => {
+    const org = await createTestOrg('column-filters');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'column-filters');
+    const customer = await createTestCustomer(org.id);
+    await db.update(customers).set({ companyName: 'Acme Column Filter Co' }).where(eq(customers.id, customer.id));
+    const contact = await createTestContact(org.id, customer.id, 'columnfilters');
+    await db.update(customerContacts).set({ firstName: 'Martha', lastName: 'Filter', email: 'martha.filter@example.test' }).where(eq(customerContacts.id, contact.id));
+    const order = await createTestOrder({
+      orgId: org.id, customerId: customer.id, userId: user.id, contactId: contact.id,
+      orderNumber: 'ORD-FILTER-101', poNumber: 'PO-FILTER-202', label: 'Filterable Banner Install',
+    });
+    const target = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: order.id,
+      invoiceNumber: 830001, displayNumber: 'INV-FILTER-303', numberCore: 830001,
+      totalCents: 10000, balanceDue: '100.00', amountPaid: '0.00', status: 'billed',
+    });
+    const otherCustomer = await createTestCustomer(org.id);
+    await createTestInvoice({ orgId: org.id, customerId: otherCustomer.id, userId: user.id, invoiceNumber: 830002, status: 'paid' });
+    await db.update(invoices).set({ issueDate: new Date('2026-08-15T12:00:00.000Z'), dueDate: new Date('2026-08-20T12:00:00.000Z') }).where(eq(invoices.id, target.id));
+    await db.insert(payments).values({
+      organizationId: org.id, invoiceId: target.id, provider: 'manual', method: 'check', status: 'succeeded',
+      amount: '40.00', amountCents: 4000, createdByUserId: user.id,
+    } as any);
+    await writeEmailLog({ orgId: org.id, invoiceId: target.id, status: 'sent', type: 'invoice_send', sentAt: new Date('2026-08-16T12:00:00.000Z') });
+
+    const page = await listInvoicesPageForOrganization({
+      organizationId: org.id,
+      status: 'billed',
+      search: 'Acme Column Filter Co',
+      limit: 50,
+      columnFilters: {
+        customer: 'Acme', contact: 'Martha Filter', jobName: 'Banner Install',
+        purchaseOrderNumber: 'PO-FILTER', orderNumber: 'ORD-FILTER', invoiceNumber: 'INV-FILTER',
+        issueDateFrom: new Date('2026-08-15T00:00:00.000Z'), issueDateToExclusive: new Date('2026-08-16T00:00:00.000Z'),
+        dueDateFrom: new Date('2026-08-20T00:00:00.000Z'), dueDateToExclusive: new Date('2026-08-21T00:00:00.000Z'),
+        lastSent: 'sent', totalMinCents: 10000, totalMaxCents: 10000,
+        paidMinCents: 4000, paidMaxCents: 4000, balanceMinCents: 6000, balanceMaxCents: 6000,
+      },
+    });
+
+    expect(page).toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: target.id })] });
+  });
+
   test('derives tenant-wide dashboard facts from canonical payment and QuickBooks balance rules', async () => {
     const org = await createTestOrg('dashboard-summary');
     cleanupOrgIds.push(org.id);

@@ -184,6 +184,26 @@ export type InvoiceListSortBy =
 
 export type InvoiceListSortDir = 'asc' | 'desc';
 
+export type InvoiceListColumnFilters = {
+  customer?: string;
+  contact?: string;
+  jobName?: string;
+  purchaseOrderNumber?: string;
+  orderNumber?: string;
+  invoiceNumber?: string;
+  issueDateFrom?: Date;
+  issueDateToExclusive?: Date;
+  dueDateFrom?: Date;
+  dueDateToExclusive?: Date;
+  lastSent?: 'sent' | 'not_sent';
+  totalMinCents?: number;
+  totalMaxCents?: number;
+  paidMinCents?: number;
+  paidMaxCents?: number;
+  balanceMinCents?: number;
+  balanceMaxCents?: number;
+};
+
 export interface ListInvoicesForOrganizationOptions {
   organizationId: string;
   status?: string;
@@ -193,6 +213,8 @@ export interface ListInvoicesForOrganizationOptions {
   customerId?: string;
   orderId?: string;
   search?: string;
+  /** Allowlisted, server-composed column predicates for the Invoice workspace. */
+  columnFilters?: InvoiceListColumnFilters;
   /** Inclusive/exclusive window over the canonical posted-or-issued timestamp.
    * These values are server-created Dates, never a model-authored query. */
   issuedAtStart?: Date;
@@ -353,6 +375,64 @@ export async function listInvoicesPageForOrganization(
   const postedOrIssuedAt = sql<Date>`coalesce(${invoices.issuedAt}, ${invoices.issueDate})`;
   if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
+
+  const columnFilters = opts.columnFilters ?? {};
+  const contains = (value: string | undefined) => {
+    const trimmed = String(value || '').trim();
+    return trimmed ? `%${trimmed}%` : null;
+  };
+  const customerPattern = contains(columnFilters.customer);
+  if (customerPattern) whereClauses.push(or(ilike(customers.companyName, customerPattern), ilike(customers.email, customerPattern)));
+  const contactPattern = contains(columnFilters.contact);
+  if (contactPattern) whereClauses.push(or(
+    ilike(customerContacts.firstName, contactPattern),
+    ilike(customerContacts.lastName, contactPattern),
+    ilike(customerContacts.email, contactPattern),
+    sql`trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')) ILIKE ${contactPattern}`,
+  ));
+  const jobPattern = contains(columnFilters.jobName);
+  if (jobPattern) whereClauses.push(ilike(orders.label, jobPattern));
+  const poPattern = contains(columnFilters.purchaseOrderNumber);
+  if (poPattern) whereClauses.push(or(ilike(orders.poNumber, poPattern), ilike(invoices.customerPoNumber, poPattern)));
+  const orderPattern = contains(columnFilters.orderNumber);
+  if (orderPattern) whereClauses.push(or(
+    ilike(orders.displayNumber, orderPattern),
+    ilike(orders.orderNumber, orderPattern),
+    sql`${invoices.sourceOrderNumber}::text ILIKE ${orderPattern}`,
+  ));
+  const invoicePattern = contains(columnFilters.invoiceNumber);
+  if (invoicePattern) whereClauses.push(or(
+    ilike(invoices.displayNumber, invoicePattern),
+    ilike(invoices.qbDocNumber, invoicePattern),
+    sql`${invoices.numberCore}::text ILIKE ${invoicePattern}`,
+    sql`${invoices.invoiceNumber}::text ILIKE ${invoicePattern}`,
+  ));
+  if (columnFilters.issueDateFrom) whereClauses.push(sql`${invoices.issueDate} >= ${columnFilters.issueDateFrom}`);
+  if (columnFilters.issueDateToExclusive) whereClauses.push(sql`${invoices.issueDate} < ${columnFilters.issueDateToExclusive}`);
+  if (columnFilters.dueDateFrom) whereClauses.push(sql`${invoices.dueDate} >= ${columnFilters.dueDateFrom}`);
+  if (columnFilters.dueDateToExclusive) whereClauses.push(sql`${invoices.dueDate} < ${columnFilters.dueDateToExclusive}`);
+  if (columnFilters.lastSent === 'sent') whereClauses.push(sql`exists (
+    select 1 from ${invoiceEmailLogs}
+    where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+      and ${invoiceEmailLogs.organizationId} = ${opts.organizationId}
+      and ${invoiceEmailLogs.type} = 'invoice_send'
+      and ${invoiceEmailLogs.status} = 'sent'
+  )`);
+  if (columnFilters.lastSent === 'not_sent') whereClauses.push(sql`not exists (
+    select 1 from ${invoiceEmailLogs}
+    where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+      and ${invoiceEmailLogs.organizationId} = ${opts.organizationId}
+      and ${invoiceEmailLogs.type} = 'invoice_send'
+      and ${invoiceEmailLogs.status} = 'sent'
+  )`);
+  const balanceCents = canonicalInvoiceRemainingCentsExpression(opts.organizationId);
+  const paidCents = sql`greatest(0, coalesce(${invoices.totalCents}, 0) - ${balanceCents})`;
+  if (columnFilters.totalMinCents != null) whereClauses.push(sql`${invoices.totalCents} >= ${columnFilters.totalMinCents}`);
+  if (columnFilters.totalMaxCents != null) whereClauses.push(sql`${invoices.totalCents} <= ${columnFilters.totalMaxCents}`);
+  if (columnFilters.paidMinCents != null) whereClauses.push(sql`${paidCents} >= ${columnFilters.paidMinCents}`);
+  if (columnFilters.paidMaxCents != null) whereClauses.push(sql`${paidCents} <= ${columnFilters.paidMaxCents}`);
+  if (columnFilters.balanceMinCents != null) whereClauses.push(sql`${balanceCents} >= ${columnFilters.balanceMinCents}`);
+  if (columnFilters.balanceMaxCents != null) whereClauses.push(sql`${balanceCents} <= ${columnFilters.balanceMaxCents}`);
 
   const search = String(opts.search || '').trim();
   if (search) {

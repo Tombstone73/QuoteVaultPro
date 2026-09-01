@@ -36,11 +36,22 @@ describe("Invoices List payment entry point", () => {
   it("uses server paging metadata and tenant-wide summary facts instead of the visible rows", () => {
     expect(invoicesPageSource).toContain("page,");
     expect(invoicesPageSource).toContain("pageSize,");
-    expect(invoicesPageSource).toContain("summary?.totalOutstandingCents");
-    expect(invoicesPageSource).toContain("summary?.paidThisMonthCents");
+    expect(invoicesPageSource).toContain("summary.totalOutstandingCents");
+    expect(invoicesPageSource).toContain("summary.paidThisMonthCents");
     expect(invoicesPageSource).toContain("summary?.totalInvoices");
     expect(invoicesPageSource).toContain("of ${totalCount} invoices");
     expect(invoicesPageSource).not.toContain("value={filteredInvoices.length}");
+    expect(invoicesPageSource).toContain('invoice-pagination-${position}');
+    expect(invoicesPageSource).toContain('renderPagination("top")');
+    expect(invoicesPageSource).toContain('renderPagination("bottom")');
+  });
+
+  it("keeps compact column filters server-driven and individually clearable", () => {
+    expect(invoicesPageSource).toContain("Column filters");
+    expect(invoicesPageSource).toContain("Customer / Company");
+    expect(invoicesPageSource).toContain("setColumnFilter");
+    expect(invoicesPageSource).toContain("clearColumnFilters");
+    expect(invoicesPageSource).toContain("...columnFilters");
   });
 
   it("keeps bulk selection explicit across page navigation", () => {

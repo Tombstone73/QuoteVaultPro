@@ -2,10 +2,12 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Plus, FileText, DollarSign, Mail } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Filter, Plus, FileText, DollarSign, Mail, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus } from "@/hooks/useInvoices";
+import { useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -52,6 +54,28 @@ const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "mut
   sent_outdated: { label: "Updated After Sent", variant: "warning" },
 };
 
+const EMPTY_COLUMN_FILTERS: InvoiceListColumnFilterQuery = {};
+
+const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
+  customer: "Customer",
+  contact: "Contact",
+  jobName: "Job / Order",
+  purchaseOrderNumber: "PO #",
+  columnOrderNumber: "Order #",
+  invoiceNumber: "Invoice #",
+  issueDateFrom: "Issue from",
+  issueDateTo: "Issue to",
+  dueDateFrom: "Due from",
+  dueDateTo: "Due to",
+  lastSent: "Last sent",
+  totalMin: "Total min",
+  totalMax: "Total max",
+  paidMin: "Paid min",
+  paidMax: "Paid max",
+  balanceMin: "Balance min",
+  balanceMax: "Balance max",
+};
+
 export default function InvoicesListPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -62,15 +86,17 @@ export default function InvoicesListPage() {
   const [sortDir, setSortDir] = useState<InvoiceSortDir>("desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [columnFilters, setColumnFilters] = useState<InvoiceListColumnFilterQuery>(EMPTY_COLUMN_FILTERS);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
 
-  const { data: invoiceResponse, isLoading } = useInvoicesPage({
+  const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
     search: search.trim() || undefined,
     sortBy: sortKey,
     sortDir,
     page,
     pageSize,
+    ...columnFilters,
   });
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
@@ -101,6 +127,17 @@ export default function InvoicesListPage() {
   const sendableInvoices = filteredInvoices.filter((invoice) => !["paid", "void"].includes(String(invoice.status || "").toLowerCase()));
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleSendableSelected = sendableInvoices.length > 0 && sendableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
+  const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>).filter(([, value]) => Boolean(value));
+
+  const setColumnFilter = (key: keyof InvoiceListColumnFilterQuery, value: string) => {
+    setColumnFilters((current) => ({ ...current, [key]: value || undefined }));
+    setPage(1);
+  };
+
+  const clearColumnFilters = () => {
+    setColumnFilters(EMPTY_COLUMN_FILTERS);
+    setPage(1);
+  };
 
   const handleSort = (key: InvoiceSortKey) => {
     const next = getNextInvoiceSortState({ sortKey, sortDir }, key);
@@ -183,6 +220,23 @@ export default function InvoicesListPage() {
     }
   };
 
+  const renderPagination = (position: "top" | "bottom") => (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid={`invoice-pagination-${position}`}>
+      <div className="text-sm text-muted-foreground" aria-live="polite">
+        {totalCount === 0 ? "0 invoices" : `${(currentPage - 1) * (pagination?.pageSize ?? pageSize) + 1}–${Math.min(currentPage * (pagination?.pageSize ?? pageSize), totalCount)} of ${totalCount} invoices`}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
+          <SelectTrigger className="w-[132px]" aria-label={`Invoices per page (${position})`}><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="25">25 per page</SelectItem><SelectItem value="50">50 per page</SelectItem><SelectItem value="100">100 per page</SelectItem></SelectContent>
+        </Select>
+        <Button type="button" variant="outline" size="sm" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={isLoading || currentPage <= 1} aria-label={`Previous invoice page (${position})`}><ChevronLeft className="h-4 w-4" /></Button>
+        <span className="min-w-[92px] text-center text-sm text-muted-foreground">Page {currentPage} of {totalPages}</span>
+        <Button type="button" variant="outline" size="sm" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={isLoading || currentPage >= totalPages} aria-label={`Next invoice page (${position})`}><ChevronRight className="h-4 w-4" /></Button>
+      </div>
+    </div>
+  );
+
   return (
     <Page maxWidth="full">
       <PageHeader
@@ -211,29 +265,34 @@ export default function InvoicesListPage() {
         <div className="grid gap-4 md:grid-cols-4">
           <TitanStatCard
             label="Total Outstanding"
-            value={formatCurrency((summary?.totalOutstandingCents ?? 0) / 100)}
+            value={summary ? formatCurrency(summary.totalOutstandingCents / 100) : EMPTY_VALUE}
             icon={DollarSign}
           />
           <TitanStatCard
             label="Overdue"
-            value={summary?.overdueCount ?? 0}
+            value={summary?.overdueCount ?? EMPTY_VALUE}
             icon={FileText}
           />
           <TitanStatCard
             label="Paid This Month"
-            value={formatCurrency((summary?.paidThisMonthCents ?? 0) / 100)}
+            value={summary ? formatCurrency(summary.paidThisMonthCents / 100) : EMPTY_VALUE}
             icon={DollarSign}
           />
           <TitanStatCard
             label="Total Invoices"
-            value={summary?.totalInvoices ?? 0}
+            value={summary?.totalInvoices ?? EMPTY_VALUE}
             icon={FileText}
           />
         </div>
+        {isError && (
+          <DataCard className="border-destructive/40 text-sm text-destructive" role="alert">
+            {error instanceof Error ? error.message : "Invoice dashboard data could not be loaded."}
+          </DataCard>
+        )}
 
         {/* Filters */}
         <DataCard>
-          <div className="flex gap-4">
+          <div className="flex flex-wrap gap-4">
             <TitanSearchInput
               placeholder="Search invoice, customer, contact, order, PO, or job..."
               value={search}
@@ -263,8 +322,62 @@ export default function InvoicesListPage() {
                 <SelectItem value="void">Void</SelectItem>
               </SelectContent>
             </Select>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="outline" className="gap-2">
+                  <Filter className="h-4 w-4" />
+                  Filters{activeColumnFilters.length ? ` (${activeColumnFilters.length})` : ""}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[min(680px,calc(100vw-2rem))] max-h-[calc(100vh-8rem)] overflow-y-auto" align="end">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="font-medium">Column filters</div>
+                    <p className="text-xs text-muted-foreground">Filters compose with global search and apply across every invoice page.</p>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" onClick={clearColumnFilters} disabled={activeColumnFilters.length === 0}>Clear all</Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-sm"><span>Customer / Company</span><Input value={columnFilters.customer || ""} onChange={(event) => setColumnFilter("customer", event.target.value)} placeholder="e.g. Acme" /></label>
+                  <label className="grid gap-1 text-sm"><span>Contact</span><Input value={columnFilters.contact || ""} onChange={(event) => setColumnFilter("contact", event.target.value)} placeholder="Name or email" /></label>
+                  <label className="grid gap-1 text-sm"><span>Job / Order Name</span><Input value={columnFilters.jobName || ""} onChange={(event) => setColumnFilter("jobName", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>PO #</span><Input value={columnFilters.purchaseOrderNumber || ""} onChange={(event) => setColumnFilter("purchaseOrderNumber", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Order #</span><Input value={columnFilters.columnOrderNumber || ""} onChange={(event) => setColumnFilter("columnOrderNumber", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Invoice #</span><Input value={columnFilters.invoiceNumber || ""} onChange={(event) => setColumnFilter("invoiceNumber", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Issue date from</span><Input type="date" value={columnFilters.issueDateFrom || ""} onChange={(event) => setColumnFilter("issueDateFrom", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Issue date to</span><Input type="date" value={columnFilters.issueDateTo || ""} onChange={(event) => setColumnFilter("issueDateTo", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Due date from</span><Input type="date" value={columnFilters.dueDateFrom || ""} onChange={(event) => setColumnFilter("dueDateFrom", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Due date to</span><Input type="date" value={columnFilters.dueDateTo || ""} onChange={(event) => setColumnFilter("dueDateTo", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Last sent</span><Select value={columnFilters.lastSent || "all"} onValueChange={(value) => setColumnFilter("lastSent", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Any</SelectItem><SelectItem value="sent">Sent</SelectItem><SelectItem value="not_sent">Not sent</SelectItem></SelectContent></Select></label>
+                </div>
+                <div className="mt-4 border-t pt-4">
+                  <div className="mb-2 text-sm font-medium">Amount ranges</div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="grid gap-1 text-sm"><span>Total min</span><Input inputMode="decimal" value={columnFilters.totalMin || ""} onChange={(event) => setColumnFilter("totalMin", event.target.value)} placeholder="$0.00" /></label>
+                    <label className="grid gap-1 text-sm"><span>Total max</span><Input inputMode="decimal" value={columnFilters.totalMax || ""} onChange={(event) => setColumnFilter("totalMax", event.target.value)} placeholder="$0.00" /></label>
+                    <div className="hidden sm:block" />
+                    <label className="grid gap-1 text-sm"><span>Paid min</span><Input inputMode="decimal" value={columnFilters.paidMin || ""} onChange={(event) => setColumnFilter("paidMin", event.target.value)} placeholder="$0.00" /></label>
+                    <label className="grid gap-1 text-sm"><span>Paid max</span><Input inputMode="decimal" value={columnFilters.paidMax || ""} onChange={(event) => setColumnFilter("paidMax", event.target.value)} placeholder="$0.00" /></label>
+                    <div className="hidden sm:block" />
+                    <label className="grid gap-1 text-sm"><span>Balance min</span><Input inputMode="decimal" value={columnFilters.balanceMin || ""} onChange={(event) => setColumnFilter("balanceMin", event.target.value)} placeholder="$0.00" /></label>
+                    <label className="grid gap-1 text-sm"><span>Balance max</span><Input inputMode="decimal" value={columnFilters.balanceMax || ""} onChange={(event) => setColumnFilter("balanceMax", event.target.value)} placeholder="$0.00" /></label>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
+          {activeColumnFilters.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2" aria-label="Active invoice column filters">
+              {activeColumnFilters.map(([key, value]) => (
+                <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => setColumnFilter(key, "")}>
+                  {columnFilterLabels[key]}: {value} <X className="h-3 w-3" />
+                </Button>
+              ))}
+            </div>
+          )}
         </DataCard>
+
+        {renderPagination("top")}
 
         {/* Invoices Table */}
         <TitanTableContainer>
@@ -410,51 +523,7 @@ export default function InvoicesListPage() {
           </TitanTable>
         </TitanTableContainer>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm text-muted-foreground" aria-live="polite">
-            {totalCount === 0
-              ? "0 invoices"
-              : `${(currentPage - 1) * (pagination?.pageSize ?? pageSize) + 1}–${Math.min(currentPage * (pagination?.pageSize ?? pageSize), totalCount)} of ${totalCount} invoices`}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select value={String(pageSize)} onValueChange={(value) => {
-              setPageSize(Number(value));
-              setPage(1);
-            }}>
-              <SelectTrigger className="w-[132px]" aria-label="Invoices per page">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="25">25 per page</SelectItem>
-                <SelectItem value="50">50 per page</SelectItem>
-                <SelectItem value="100">100 per page</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={isLoading || currentPage <= 1}
-              aria-label="Previous invoice page"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <span className="min-w-[92px] text-center text-sm text-muted-foreground">
-              Page {currentPage} of {totalPages}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-              disabled={isLoading || currentPage >= totalPages}
-              aria-label="Next invoice page"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
+        {renderPagination("bottom")}
       </ContentLayout>
     </Page>
   );

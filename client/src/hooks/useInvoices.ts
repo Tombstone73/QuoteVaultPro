@@ -55,6 +55,26 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
 }
 
+export type InvoiceListColumnFilterQuery = {
+  customer?: string;
+  contact?: string;
+  jobName?: string;
+  purchaseOrderNumber?: string;
+  columnOrderNumber?: string;
+  invoiceNumber?: string;
+  issueDateFrom?: string;
+  issueDateTo?: string;
+  dueDateFrom?: string;
+  dueDateTo?: string;
+  lastSent?: 'sent' | 'not_sent';
+  totalMin?: string;
+  totalMax?: string;
+  paidMin?: string;
+  paidMax?: string;
+  balanceMin?: string;
+  balanceMax?: string;
+};
+
 export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
   lastSentAt?: string | null;
   emailStatus?: InvoiceEmailStatus;
@@ -118,7 +138,7 @@ export function useInvoicesPage(filters: {
   sortDir?: 'asc' | 'desc';
   page?: number;
   pageSize?: number;
-}) {
+} & InvoiceListColumnFilterQuery) {
   return useQuery<InvoiceListResponse>({
     queryKey: ['invoices', filters],
     queryFn: async () => {
@@ -131,10 +151,22 @@ export function useInvoicesPage(filters: {
       if (filters?.sortDir) params.append('sortDir', filters.sortDir);
       if (filters?.page) params.append('page', String(filters.page));
       if (filters?.pageSize) params.append('pageSize', String(filters.pageSize));
+      const columnKeys: Array<keyof InvoiceListColumnFilterQuery> = [
+        'customer', 'contact', 'jobName', 'purchaseOrderNumber', 'columnOrderNumber', 'invoiceNumber',
+        'issueDateFrom', 'issueDateTo', 'dueDateFrom', 'dueDateTo', 'lastSent',
+        'totalMin', 'totalMax', 'paidMin', 'paidMax', 'balanceMin', 'balanceMax',
+      ];
+      for (const key of columnKeys) {
+        const value = filters[key];
+        if (value) params.append(key, value);
+      }
       params.append('includeSummary', '1');
       const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
+      if (!data.summary || !data.pagination) {
+        throw new Error('Invoice dashboard data is unavailable. Refresh after the current backend deployment completes.');
+      }
       return {
         items: (data.data || []) as InvoiceListItem[],
         pagination: data.pagination as InvoiceListPagination,

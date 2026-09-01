@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
-import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, voidManualPaymentCanonical } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -168,6 +168,60 @@ function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
   if (!text) return 'QuickBooks sync failed';
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+function invoiceListQueryText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 200) : undefined;
+}
+
+function invoiceListQueryDate(value: unknown, boundary: 'start' | 'endExclusive'): Date | undefined {
+  const raw = invoiceListQueryText(value);
+  if (!raw) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw Object.assign(new Error('Invoice date filters must use YYYY-MM-DD'), { statusCode: 400 });
+  const [year, month, day] = raw.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  if (start.getUTCFullYear() !== year || start.getUTCMonth() !== month - 1 || start.getUTCDate() !== day) {
+    throw Object.assign(new Error('Invalid invoice date filter'), { statusCode: 400 });
+  }
+  return boundary === 'endExclusive' ? new Date(Date.UTC(year, month - 1, day + 1)) : start;
+}
+
+function invoiceListQueryCents(value: unknown): number | undefined {
+  const raw = invoiceListQueryText(value);
+  if (!raw) return undefined;
+  const match = raw.match(/^(\d{1,12})(?:\.(\d{1,2}))?$/);
+  if (!match) throw Object.assign(new Error('Invoice amount filters must be non-negative currency values'), { statusCode: 400 });
+  const cents = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0') || 0);
+  if (!Number.isSafeInteger(cents)) throw Object.assign(new Error('Invoice amount filter is too large'), { statusCode: 400 });
+  return cents;
+}
+
+function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListColumnFilters {
+  const lastSent = invoiceListQueryText(query.lastSent);
+  if (lastSent && lastSent !== 'sent' && lastSent !== 'not_sent') {
+    throw Object.assign(new Error('Invalid Last Sent filter'), { statusCode: 400 });
+  }
+  return {
+    customer: invoiceListQueryText(query.customer),
+    contact: invoiceListQueryText(query.contact),
+    jobName: invoiceListQueryText(query.jobName),
+    purchaseOrderNumber: invoiceListQueryText(query.purchaseOrderNumber),
+    orderNumber: invoiceListQueryText(query.columnOrderNumber),
+    invoiceNumber: invoiceListQueryText(query.invoiceNumber),
+    issueDateFrom: invoiceListQueryDate(query.issueDateFrom, 'start'),
+    issueDateToExclusive: invoiceListQueryDate(query.issueDateTo, 'endExclusive'),
+    dueDateFrom: invoiceListQueryDate(query.dueDateFrom, 'start'),
+    dueDateToExclusive: invoiceListQueryDate(query.dueDateTo, 'endExclusive'),
+    lastSent: lastSent as InvoiceListColumnFilters['lastSent'],
+    totalMinCents: invoiceListQueryCents(query.totalMin),
+    totalMaxCents: invoiceListQueryCents(query.totalMax),
+    paidMinCents: invoiceListQueryCents(query.paidMin),
+    paidMaxCents: invoiceListQueryCents(query.paidMax),
+    balanceMinCents: invoiceListQueryCents(query.balanceMin),
+    balanceMaxCents: invoiceListQueryCents(query.balanceMax),
+  };
 }
 
 export async function registerMvpInvoicingRoutes(
@@ -1911,6 +1965,7 @@ export async function registerMvpInvoicingRoutes(
       const search = req.query.search as string | undefined;
       const sortBy = req.query.sortBy as string | undefined;
       const sortDir = req.query.sortDir as string | undefined;
+      const columnFilters = invoiceListColumnFilters(req.query);
       const includeSummary = String(req.query.includeSummary || '') === '1';
       const requestedPageSize = Number.parseInt(String(req.query.pageSize ?? req.query.limit ?? "50"), 10);
       const limit = Math.min(Math.max(Number.isFinite(requestedPageSize) ? requestedPageSize : 50, 1), 200);
@@ -1928,6 +1983,7 @@ export async function registerMvpInvoicingRoutes(
         search,
         sortBy,
         sortDir,
+        columnFilters,
         limit,
         offset,
       }), includeSummary ? getInvoiceDashboardSummary(organizationId) : Promise.resolve(null)]);
@@ -2005,7 +2061,7 @@ export async function registerMvpInvoicingRoutes(
       });
     } catch (error: any) {
       console.error("Error fetching invoices:", error);
-      res.status(500).json({ error: error.message || "Failed to fetch invoices" });
+      res.status(error?.statusCode || 500).json({ error: error.message || "Failed to fetch invoices" });
     }
   });
 
