@@ -145,7 +145,7 @@ export type OrderLineItem = {
   overridePriceCents?: number | null;
   status: string;
   workflowState?: string;
-  designStatus?: "needs_design" | "in_design" | "design_complete" | null;
+  designStatus?: "needs_design" | "in_design" | "design_complete" | "bypassed" | null;
   requiresDesign?: boolean;
   requiresPrepress?: boolean;
   requiresProofApproval?: boolean;

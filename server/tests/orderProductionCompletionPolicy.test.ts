@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   isOrderShortcutCompletableProductionStation,
+  listOrderProductionPrerequisitesToBypass,
   missingOwnerRepairState,
   requiresCanonicalProductionCompletion,
 } from "../services/orderProductionCompletionPolicy";
@@ -24,7 +25,37 @@ describe("Order production completion shortcut policy", () => {
     expect(missingOwnerRepairState("completed")).toBeNull();
   });
 
-  test("does not use the production shortcut to bypass Design, Prepress, or Fulfillment", () => {
+  test("identifies incomplete Design, Proof, and Prepress for explicit override confirmation", () => {
+    expect(listOrderProductionPrerequisitesToBypass({
+      workflowState: "needs_design",
+      designStatus: "needs_design",
+      requiresDesign: true,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      approvedProofVersionId: null,
+      activeStationKey: "design",
+    })).toEqual(["Design", "Proof"]);
+
+    expect(listOrderProductionPrerequisitesToBypass({
+      workflowState: "ready_for_prepress",
+      requiresPrepress: true,
+      activeStationKey: "prepress",
+    })).toEqual(["Prepress"]);
+  });
+
+  test("does not request an override for a real production owner", () => {
+    expect(listOrderProductionPrerequisitesToBypass({
+      workflowState: "in_production",
+      designStatus: "design_complete",
+      requiresDesign: true,
+      requiresProofApproval: true,
+      requiresPrepress: true,
+      approvedProofVersionId: "proof-1",
+      activeStationKey: "flatbed",
+    })).toEqual([]);
+  });
+
+  test("keeps Fulfillment outside the Order-level completion action", () => {
     expect(isOrderShortcutCompletableProductionStation("roll")).toBe(true);
     expect(isOrderShortcutCompletableProductionStation("finishing")).toBe(true);
     expect(isOrderShortcutCompletableProductionStation("design")).toBe(false);

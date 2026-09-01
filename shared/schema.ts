@@ -116,6 +116,7 @@ export const lineItemDesignStatusValues = [
   "needs_design",
   "in_design",
   "design_complete",
+  "bypassed",
 ] as const;
 
 export const lineItemDesignStatusSchema = z.enum(lineItemDesignStatusValues);

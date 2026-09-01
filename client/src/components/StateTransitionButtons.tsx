@@ -30,6 +30,7 @@ interface CompleteProductionButtonProps {
 
 export function CompleteProductionButton({ orderId, disabled }: CompleteProductionButtonProps) {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [bypassConfirmation, setBypassConfirmation] = useState<Array<{ lineItemId: string; lineLabel: string; stages: string[] }> | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -61,11 +62,17 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
 
       if (result.ok && result.data?.success) {
         invalidateAfterSuccess();
+        setBypassConfirmation(null);
 
         toast({
           title: 'Production Completed',
           description: result.data?.message || 'Order moved to Production Complete',
         });
+        return;
+      }
+
+      if (result.data?.code === 'PRODUCTION_BYPASS_CONFIRMATION_REQUIRED' && Array.isArray(result.data?.details?.bypasses)) {
+        setBypassConfirmation(result.data.details.bypasses);
         return;
       }
 
@@ -86,15 +93,47 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
   };
 
   return (
-    <Button
-      onClick={handleClick}
-      disabled={disabled || isProcessing}
-      variant="default"
-      className="bg-purple-600 hover:bg-purple-700"
-    >
-      <CheckCircle2 className="mr-2 h-4 w-4" />
-      {isProcessing ? 'Completing...' : 'Complete Production'}
-    </Button>
+    <>
+      <Button
+        onClick={handleClick}
+        disabled={disabled || isProcessing}
+        variant="default"
+        className="bg-purple-600 hover:bg-purple-700"
+      >
+        <CheckCircle2 className="mr-2 h-4 w-4" />
+        {isProcessing ? 'Completing...' : 'Complete Production'}
+      </Button>
+      <Dialog open={bypassConfirmation !== null} onOpenChange={(open) => { if (!open && !isProcessing) setBypassConfirmation(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Production steps are incomplete</DialogTitle>
+            <DialogDescription>
+              Completing production from this Order will bypass the remaining production stages and mark the production work complete.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 text-sm text-muted-foreground">
+            <p>The following stages have not been completed:</p>
+            <ul className="list-disc space-y-1 pl-5 text-foreground">
+              {bypassConfirmation?.flatMap((bypass) => bypass.stages.map((stage) => (
+                <li key={`${bypass.lineItemId}-${stage}`}>
+                  {bypassConfirmation.length > 1 ? `${bypass.lineLabel}: ${stage}` : stage}
+                </li>
+              )))}
+            </ul>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBypassConfirmation(null)} disabled={isProcessing}>Cancel</Button>
+            <Button
+              onClick={() => attemptComplete({ confirmBypass: true })}
+              disabled={isProcessing}
+              className="bg-purple-600 hover:bg-purple-700"
+            >
+              {isProcessing ? 'Completing...' : 'Bypass & Complete Production'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

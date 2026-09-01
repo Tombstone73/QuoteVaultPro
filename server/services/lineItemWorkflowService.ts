@@ -135,7 +135,7 @@ function isTerminalWorkflowState(state: LineItemWorkflowState): boolean {
 function normalizeDesignStatus(value: unknown): LineItemDesignStatus | null {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (!normalized) return null;
-  return (["needs_design", "in_design", "design_complete"] as const).includes(normalized as LineItemDesignStatus)
+  return (["needs_design", "in_design", "design_complete", "bypassed"] as const).includes(normalized as LineItemDesignStatus)
     ? (normalized as LineItemDesignStatus)
     : null;
 }

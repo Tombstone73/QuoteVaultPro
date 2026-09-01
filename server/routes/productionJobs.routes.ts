@@ -288,6 +288,12 @@ export async function completeProductionJobWorkflow(
     userId: string;
     jobId: string;
     skipProduction: boolean | "auto";
+    /** Order-level supervisory completion of never-started work. This records
+     * explicit bypass provenance and must not consume materials that were not used. */
+    manualOverride?: {
+      source: "order_complete_production_override";
+      bypassedPrerequisites: string[];
+    } | null;
     auditUserName?: string | null;
     ipAddress?: string | null;
     userAgent?: string | null;
@@ -315,6 +321,7 @@ export async function completeProductionJobWorkflow(
   }
 
   const effectiveSkipProduction = args.skipProduction === "auto" ? job.status === "queued" : args.skipProduction;
+  const manualOverride = args.manualOverride ?? null;
 
   const [stepDefinition] = await tx
     .select({ triggers: productionStationSteps.triggers })
@@ -396,13 +403,15 @@ export async function completeProductionJobWorkflow(
     .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
 
   if (job.lineItemId && job.orderId) {
-    await consumeReservedMaterialsForLineItem(tx, {
-      organizationId: args.organizationId,
-      orderId: job.orderId,
-      lineItemId: job.lineItemId,
-      productionJobId: args.jobId,
-      userId: args.userId,
-    });
+    if (!manualOverride) {
+      await consumeReservedMaterialsForLineItem(tx, {
+        organizationId: args.organizationId,
+        orderId: job.orderId,
+        lineItemId: job.lineItemId,
+        productionJobId: args.jobId,
+        userId: args.userId,
+      });
+    }
 
     const [lineItem] = await tx
       .select({
@@ -532,9 +541,17 @@ export async function completeProductionJobWorkflow(
     entityType: "production_job",
     entityId: args.jobId,
     entityName: args.jobId,
-    description: effectiveSkipProduction ? "Production job completed (skip production)" : "Production job completed",
+    description: manualOverride
+      ? "Production job completed by Order-level override"
+      : effectiveSkipProduction ? "Production job completed (skip production)" : "Production job completed",
     oldValues: { status: job.status, stationKey: job.stationKey },
-    newValues: { status: "done", completedAt: now.toISOString(), restoreUntil: restoreUntil.toISOString() },
+    newValues: {
+      status: "done",
+      completedAt: now.toISOString(),
+      restoreUntil: restoreUntil.toISOString(),
+      manualOverride,
+      materialsConsumed: !manualOverride,
+    },
     ipAddress: args.ipAddress || null,
     userAgent: args.userAgent || null,
   } as any);
@@ -552,6 +569,8 @@ export async function completeProductionJobWorkflow(
       completedAt: now.toISOString(),
       restoreUntil: restoreUntil.toISOString(),
       skipProduction: effectiveSkipProduction,
+      manualOverride,
+      materialsConsumed: !manualOverride,
     },
   });
 

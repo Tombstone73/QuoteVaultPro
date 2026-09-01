@@ -22,4 +22,15 @@ describe("Complete Production button contract", () => {
     expect(button).not.toContain("LINE_ITEMS_NOT_COMPLETE");
     expect(button).not.toContain("autoMarkRemainingDone");
   });
+
+  it("shows actual prerequisite stages and requires explicit bypass confirmation", async () => {
+    const button = await source();
+
+    expect(button).toContain("PRODUCTION_BYPASS_CONFIRMATION_REQUIRED");
+    expect(button).toContain("Production steps are incomplete");
+    expect(button).toContain("bypass.stages.map");
+    expect(button).toContain("Bypass & Complete Production");
+    expect(button).toContain("attemptComplete({ confirmBypass: true })");
+    expect(button).toContain("Cancel");
+  });
 });

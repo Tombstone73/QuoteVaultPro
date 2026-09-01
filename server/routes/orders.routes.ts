@@ -30,6 +30,7 @@ import {
     orderMaterialUsage,
     inventoryReservations,
     productionJobs,
+    productionEvents,
     productionRunMembers,
     productionRuns,
     productTypes,
@@ -67,10 +68,14 @@ import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../ser
 import { completeProductionJobWorkflow, markOrderReadyForFulfillmentIfProductionComplete } from "./productionJobs.routes";
 import {
     isOrderShortcutCompletableProductionStation,
+    listOrderProductionPrerequisitesToBypass,
     missingOwnerRepairState,
     requiresCanonicalProductionCompletion,
 } from "../services/orderProductionCompletionPolicy";
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from "@shared/productionRunLifecycle";
+import { appendEvent } from "../productionHelpers";
+import { routeLineItemToProduction } from "../services/productionRoutingService";
+import { resolvePostPrepressProductionRoute } from "../services/productionRoutingResolver";
 import { routeEligibleOrderLineItems } from "../services/orderSaveRoutingService";
 import { normalizeOrderSaveRoutingMode } from "@shared/orderSaveRouting";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
@@ -273,6 +278,10 @@ const customerUploadPrimaryArtworkCandidateSchema = z.object({
     confirmPrimaryArtworkCandidate: z.literal(true),
 });
 
+const completeProductionRequestSchema = z.object({
+    confirmBypass: z.literal(true).optional(),
+}).strict();
+
 const stage18PDevUploadFixturesSchema = z.object({
     confirmDevFixtureCreation: z.literal(true),
 });
@@ -304,6 +313,166 @@ function assertInternalStaffUser(req: any, res: any): boolean {
         return false;
     }
     return true;
+}
+
+/**
+ * Creates the final Production owner for an authorized Order-level override.
+ * Prerequisite jobs are voided (never marked normally complete) and both the
+ * event stream and audit log retain the exact stages that were bypassed.
+ */
+async function bypassOrderProductionPrerequisites(tx: any, args: {
+    organizationId: string;
+    orderId: string;
+    line: any;
+    activePrerequisiteJob: any | null;
+    bypassedStages: string[];
+    actorUserId: string;
+    actorUserName: string | null;
+}) {
+    const now = new Date();
+    const source = "order_complete_production_override" as const;
+    const activeJob = args.activePrerequisiteJob;
+
+    if (activeJob) {
+        const [lastTimer] = await tx
+            .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
+            .from(productionEvents)
+            .where(and(
+                eq(productionEvents.organizationId, args.organizationId),
+                eq(productionEvents.productionJobId, activeJob.id),
+                inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+            ))
+            .orderBy(desc(productionEvents.createdAt))
+            .limit(1);
+
+        let totalSeconds = Number(activeJob.totalSeconds) || 0;
+        if (lastTimer?.type === "timer_started") {
+            const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - new Date(lastTimer.createdAt as any).getTime()) / 1000));
+            totalSeconds += elapsedSeconds;
+            await appendEvent({
+                tx,
+                organizationId: args.organizationId,
+                productionJobId: activeJob.id,
+                type: "timer_stopped",
+                actorUserId: args.actorUserId,
+                payload: {
+                    seconds: elapsedSeconds,
+                    source,
+                    reason: "production_prerequisite_bypassed",
+                },
+            });
+        }
+
+        await tx
+            .update(productionJobs)
+            .set({
+                status: "void",
+                completedAt: now,
+                completedByUserId: args.actorUserId,
+                previousStatus: activeJob.status,
+                previousStation: activeJob.stationKey,
+                totalSeconds,
+                updatedAt: now,
+            })
+            .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, activeJob.id)));
+
+        await appendEvent({
+            tx,
+            organizationId: args.organizationId,
+            productionJobId: activeJob.id,
+            type: "note",
+            actorUserId: args.actorUserId,
+            payload: {
+                eventType: "production_prerequisites_bypassed",
+                source,
+                orderId: args.orderId,
+                lineItemId: args.line.id,
+                bypassedStages: args.bypassedStages,
+                previousStationKey: activeJob.stationKey,
+                previousStepKey: activeJob.stepKey,
+                previousStatus: activeJob.status,
+                actorUserId: args.actorUserId,
+                bypassedAt: now.toISOString(),
+            },
+        });
+    }
+
+    await tx
+        .update(orderLineItems)
+        .set({
+            workflowState: "ready_for_production",
+            status: "in_production",
+            designStatus: args.bypassedStages.includes("Design") ? "bypassed" : args.line.designStatus,
+            requiresDesign: args.bypassedStages.includes("Design") ? false : args.line.requiresDesign,
+            requiresProofApproval: args.bypassedStages.includes("Proof") ? false : args.line.requiresProofApproval,
+            requiresPrepress: args.bypassedStages.includes("Prepress") ? false : args.line.requiresPrepress,
+            updatedAt: now,
+        } as any)
+        .where(eq(orderLineItems.id, args.line.id));
+
+    const route = await resolvePostPrepressProductionRoute({
+        organizationId: args.organizationId,
+        productTypeId: args.line.productTypeId,
+        productTypeNameSnapshot: args.line.productType,
+    });
+    const productionOwner = await routeLineItemToProduction({
+        tx,
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        lineItemId: args.line.id,
+        stationKey: route.stationKey,
+        stepKey: route.stepKey,
+        trigger: "line_item_status",
+        actorUserId: args.actorUserId,
+        extraEventPayload: {
+            source,
+            bypassedStages: args.bypassedStages,
+            routingReason: "order_complete_production_override",
+        },
+    });
+
+    await appendEvent({
+        tx,
+        organizationId: args.organizationId,
+        productionJobId: productionOwner.jobId,
+        type: "note",
+        actorUserId: args.actorUserId,
+        payload: {
+            eventType: "production_prerequisites_bypassed",
+            source,
+            orderId: args.orderId,
+            lineItemId: args.line.id,
+            bypassedStages: args.bypassedStages,
+            actorUserId: args.actorUserId,
+            bypassedAt: now.toISOString(),
+        },
+    });
+
+    await tx.insert(auditLogs).values({
+        organizationId: args.organizationId,
+        userId: args.actorUserId,
+        userName: args.actorUserName,
+        actionType: "ORDER_PRODUCTION_PREREQUISITES_BYPASSED",
+        entityType: "order_line_item",
+        entityId: args.line.id,
+        entityName: args.line.description || null,
+        description: `Production prerequisites bypassed by Order-level override: ${args.bypassedStages.join(", ")}.`,
+        oldValues: {
+            workflowState: args.line.workflowState,
+            designStatus: args.line.designStatus,
+            requiresDesign: args.line.requiresDesign,
+            requiresProofApproval: args.line.requiresProofApproval,
+            requiresPrepress: args.line.requiresPrepress,
+        },
+        newValues: {
+            source,
+            bypassedStages: args.bypassedStages,
+            productionJobId: productionOwner.jobId,
+            prerequisiteJobId: activeJob?.id ?? null,
+        },
+    } as any);
+
+    return productionOwner;
 }
 
 function normalizePortalVisibilityPatch(input: z.infer<typeof portalAttachmentVisibilitySchema>) {
@@ -3253,6 +3422,18 @@ export async function registerOrderRoutes(
 
             const { orderId } = req.params;
             const userName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
+            const request = completeProductionRequestSchema.safeParse(req.body ?? {});
+            if (!request.success) {
+                return res.status(400).json({ success: false, message: request.error.issues[0]?.message || "Invalid Complete Production request" });
+            }
+            const confirmBypass = request.data.confirmBypass === true;
+            if (confirmBypass && !hasAdminOrOwnerOperationalRole(req)) {
+                return res.status(403).json({
+                    success: false,
+                    code: "PRODUCTION_BYPASS_OVERRIDE_FORBIDDEN",
+                    message: "Only an owner or administrator may bypass production prerequisites.",
+                });
+            }
 
             const result = await db.transaction(async (tx) => {
                 const [order] = await tx
@@ -3286,8 +3467,16 @@ export async function registerOrderRoutes(
                         id: orderLineItems.id,
                         workflowState: orderLineItems.workflowState,
                         status: orderLineItems.status,
+                        description: orderLineItems.description,
                         lineItemRole: orderLineItems.lineItemRole,
                         productionBypassed: orderLineItems.productionBypassed,
+                        designStatus: orderLineItems.designStatus,
+                        requiresDesign: orderLineItems.requiresDesign,
+                        requiresProofApproval: orderLineItems.requiresProofApproval,
+                        requiresPrepress: orderLineItems.requiresPrepress,
+                        approvedProofVersionId: orderLineItems.approvedProofVersionId,
+                        productType: orderLineItems.productType,
+                        productTypeId: products.productTypeId,
                         requiresProductionJob: products.requiresProductionJob,
                         workflowIntent: products.workflowIntent,
                     })
@@ -3305,6 +3494,8 @@ export async function registerOrderRoutes(
                         id: productionJobs.id,
                         stationKey: productionJobs.stationKey,
                         status: productionJobs.status,
+                        stepKey: productionJobs.stepKey,
+                        totalSeconds: productionJobs.totalSeconds,
                     })
                     .from(productionJobs)
                     .where(and(
@@ -3336,6 +3527,57 @@ export async function registerOrderRoutes(
                     }
                 };
 
+                const bypassesByLineId = new Map<string, string[]>();
+                const bypasses: Array<{ lineItemId: string; lineLabel: string; stages: string[] }> = [];
+                for (const line of productionLines) {
+                    const lineIsComplete = ["completed", "canceled"].includes(String(line.workflowState || "").toLowerCase())
+                        || ["complete", "completed", "canceled", "cancelled"].includes(String(line.status || "").toLowerCase());
+                    if (lineIsComplete) continue;
+
+                    const activeJobs = await activeJobsForLine(line.id);
+                    const activeProductionJobs = activeJobs.filter((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
+                    await assertNoActiveRunOwnsJobs(activeProductionJobs.map((job) => job.id));
+                    if (activeProductionJobs.length > 1) {
+                        throw Object.assign(new Error("This line has multiple active production owners and must be repaired before it can be completed."), {
+                            statusCode: 409,
+                            code: "PRODUCTION_OWNERSHIP_CONFLICT",
+                            details: { lineItemId: line.id, productionJobIds: activeProductionJobs.map((job) => job.id) },
+                        });
+                    }
+
+                    const activeJob = activeProductionJobs[0] ?? null;
+                    const stages = listOrderProductionPrerequisitesToBypass({
+                        workflowState: line.workflowState,
+                        designStatus: line.designStatus,
+                        requiresDesign: line.requiresDesign,
+                        requiresProofApproval: line.requiresProofApproval,
+                        requiresPrepress: line.requiresPrepress,
+                        approvedProofVersionId: line.approvedProofVersionId,
+                        activeStationKey: activeJob?.stationKey,
+                        activeStepKey: activeJob?.stepKey,
+                    });
+                    if (stages.length > 0) {
+                        bypassesByLineId.set(line.id, stages);
+                        bypasses.push({
+                            lineItemId: line.id,
+                            lineLabel: line.description || `Line ${line.id}`,
+                            stages,
+                        });
+                    }
+                }
+
+                if (bypasses.length > 0 && !confirmBypass) {
+                    return {
+                        requiresConfirmation: true,
+                        bypasses,
+                        order,
+                        completedJobIds: [] as string[],
+                        alreadyCompleted: false,
+                    };
+                }
+
+                const manuallyCompletedLineIds = new Set<string>();
+
                 for (const line of productionLines) {
                     const lineIsComplete = ["completed", "canceled"].includes(String(line.workflowState || "").toLowerCase())
                         || ["complete", "completed", "canceled", "cancelled"].includes(String(line.status || "").toLowerCase());
@@ -3347,6 +3589,21 @@ export async function registerOrderRoutes(
 
                         if (activeProductionJobs.length === 0) {
                             if (activeJobs.length > 0) break; // Fulfillment owns the physical handoff; never complete it here.
+
+                            const bypassedStages = bypassesByLineId.get(line.id);
+                            if (bypassedStages && confirmBypass) {
+                                await bypassOrderProductionPrerequisites(tx, {
+                                    organizationId,
+                                    orderId,
+                                    line,
+                                    activePrerequisiteJob: null,
+                                    bypassedStages,
+                                    actorUserId: userId,
+                                    actorUserName: userName || null,
+                                });
+                                manuallyCompletedLineIds.add(line.id);
+                                continue;
+                            }
 
                             const repairState = missingOwnerRepairState(line.workflowState);
                             if (!repairState) {
@@ -3389,6 +3646,20 @@ export async function registerOrderRoutes(
 
                         const activeJob = activeProductionJobs[0];
                         if (!isOrderShortcutCompletableProductionStation(activeJob.stationKey)) {
+                            const bypassedStages = bypassesByLineId.get(line.id);
+                            if (bypassedStages && confirmBypass) {
+                                await bypassOrderProductionPrerequisites(tx, {
+                                    organizationId,
+                                    orderId,
+                                    line,
+                                    activePrerequisiteJob: activeJob,
+                                    bypassedStages,
+                                    actorUserId: userId,
+                                    actorUserName: userName || null,
+                                });
+                                manuallyCompletedLineIds.add(line.id);
+                                continue;
+                            }
                             throw Object.assign(new Error(`Production prerequisite at ${activeJob.stationKey} must be completed from its own workspace.`), {
                                 statusCode: 409,
                                 code: "PRODUCTION_PREREQUISITE_NOT_READY",
@@ -3406,6 +3677,12 @@ export async function registerOrderRoutes(
                             // supported skip-production completion, while started
                             // jobs retain their normal timer/audit handling.
                             skipProduction: "auto",
+                            manualOverride: manuallyCompletedLineIds.has(line.id)
+                                ? {
+                                    source: "order_complete_production_override" as const,
+                                    bypassedPrerequisites: bypassesByLineId.get(line.id) ?? [],
+                                }
+                                : null,
                             auditUserName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
                             ipAddress: req.ip || null,
                             userAgent: req.headers["user-agent"] || null,
@@ -3466,6 +3743,15 @@ export async function registerOrderRoutes(
 
                 return { order: updatedOrder, completedJobIds, alreadyCompleted: false };
             });
+
+            if ((result as any).requiresConfirmation) {
+                return res.status(409).json({
+                    success: false,
+                    code: "PRODUCTION_BYPASS_CONFIRMATION_REQUIRED",
+                    message: "Production steps are incomplete. Confirm the bypass to complete production.",
+                    details: { bypasses: (result as any).bypasses },
+                });
+            }
 
             // Billing readiness recompute (fail-soft)
             try {
