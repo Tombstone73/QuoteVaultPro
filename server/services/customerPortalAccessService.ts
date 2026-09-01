@@ -360,13 +360,18 @@ export async function createCustomerPortalAccess(input: {
  * Prepares a secure setup link for the sole emailed contact of a customer.
  * It deliberately returns null for any ambiguous contact list.
  */
-export async function prepareSingleContactPortalAccessForInvoice(input: {
+export type InvoiceEmailPortalDestination = {
+  kind: "active" | "setup";
+  url: string;
+};
+
+export async function resolveInvoiceEmailPortalDestination(input: {
   organizationId: string;
   customerId: string;
   recipientEmail: string;
   actorUserId?: string | null;
   req?: Request;
-}): Promise<string | null> {
+}): Promise<InvoiceEmailPortalDestination | null> {
   const recipientEmail = input.recipientEmail.trim().toLowerCase();
   if (!recipientEmail) return null;
 
@@ -385,7 +390,11 @@ export async function prepareSingleContactPortalAccessForInvoice(input: {
       ne(customerContactLinks.status, "removed"),
     ))).filter((contact) => Boolean(contact.email?.trim()));
 
-  if (contacts.length !== 1 || contacts[0].email!.trim().toLowerCase() !== recipientEmail) return null;
+  const matchingContacts = contacts.filter((contact) => contact.email!.trim().toLowerCase() === recipientEmail);
+  // An already-active portal contact can safely receive a portal link even
+  // when the customer has multiple contacts. Automatic provisioning remains
+  // deliberately limited to the one unambiguous contact case below.
+  if (matchingContacts.length !== 1) return null;
 
   const [companySetting] = await db.select({ state: customerPortalCompanySettings.state })
     .from(customerPortalCompanySettings)
@@ -398,10 +407,12 @@ export async function prepareSingleContactPortalAccessForInvoice(input: {
 
   const [existing] = await db.select().from(customerPortalAccess).where(and(
     eq(customerPortalAccess.organizationId, input.organizationId),
-    eq(customerPortalAccess.contactId, contacts[0].contactId),
+    eq(customerPortalAccess.contactId, matchingContacts[0].contactId),
   )).limit(1);
-  if (existing?.status === "ACTIVE") return getPortalLoginUrl();
+  if (existing?.status === "ACTIVE") return { kind: "active", url: getPortalLoginUrl() };
   if (existing?.status === "SUSPENDED") return null;
+
+  if (contacts.length !== 1) return null;
 
   const now = new Date();
   await db.insert(customerPortalCompanySettings).values({
@@ -418,9 +429,9 @@ export async function prepareSingleContactPortalAccessForInvoice(input: {
   const access = await createCustomerPortalAccess({
     organizationId: input.organizationId,
     customerId: input.customerId,
-    contactId: contacts[0].contactId,
+    contactId: matchingContacts[0].contactId,
     actorUserId: input.actorUserId,
-    accessRole: contacts[0].isPrimary ? "COMPANY_ADMIN" : "VIEWER",
+    accessRole: matchingContacts[0].isPrimary ? "COMPANY_ADMIN" : "VIEWER",
     sendEmail: false,
     req: input.req,
   });
@@ -434,10 +445,24 @@ export async function prepareSingleContactPortalAccessForInvoice(input: {
     description: `Portal setup link prepared for invoice recipient ${access.email}`,
     accessId: access.id,
     customerId: input.customerId,
-    contactId: contacts[0].contactId,
+    contactId: matchingContacts[0].contactId,
     req: input.req,
   });
-  return portalSetupUrl;
+  return { kind: "setup", url: portalSetupUrl };
+}
+
+/**
+ * Backward-compatible URL-only form for callers that do not need to choose a
+ * customer-facing CTA label. New invoice email delivery uses the typed result.
+ */
+export async function prepareSingleContactPortalAccessForInvoice(input: {
+  organizationId: string;
+  customerId: string;
+  recipientEmail: string;
+  actorUserId?: string | null;
+  req?: Request;
+}): Promise<string | null> {
+  return (await resolveInvoiceEmailPortalDestination(input))?.url ?? null;
 }
 
 async function getAccessForAdmin(organizationId: string, accessId: string) {

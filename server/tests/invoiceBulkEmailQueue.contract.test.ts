@@ -40,6 +40,13 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("BULK_INVOICE_EMAIL_RATE_LIMIT");
   });
 
+  test("keeps same-recipient invoices as independently durable messages", () => {
+    expect(queue).toContain('deliveryMode: "individual_invoice_messages"');
+    expect(queue).toContain('deliveryMode: "individual_invoice_message"');
+    expect(migration).toContain("(organization_id, invoice_id, recipient_key, invoice_version)");
+    expect(migration).not.toContain("  invoice_ids jsonb");
+  });
+
   test("does not retry an ambiguous provider result automatically", () => {
     expect(queue).toContain("Outcome requires review before retry to avoid a duplicate email");
     expect(queue).toContain("isAmbiguousProviderFailure");

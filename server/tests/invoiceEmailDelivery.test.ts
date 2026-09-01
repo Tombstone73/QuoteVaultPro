@@ -4,7 +4,7 @@ import { PDFDocument } from "pdf-lib";
 import { normalizeEmailAttachments } from "../emailService";
 import { generateInvoicePdfBytes } from "../lib/invoicePdf";
 import { createInvoicePdfEmailAttachment, INVOICE_PDF_CONTENT_TYPE } from "../services/invoiceEmailAttachment";
-import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+import { buildInvoiceEmailHtml, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
 import { buildReminderEmailHtml } from "../invoiceReminderJob";
 
 async function generateValidInvoicePdf() {
@@ -95,11 +95,11 @@ describe("invoice email delivery", () => {
     });
 
     expect(paymentUrl).toBe("https://app.example.test/portal/invoices/invoice_20000");
-    expect(payableHtml).toContain("Pay Invoice Online");
+    expect(payableHtml).toContain("View &amp; Pay Invoice");
     expect(payableHtml).toContain(paymentUrl as string);
     expect(payableHtml).toContain("PO #:</strong> Mike Gerdt Shipping");
     expect(payableHtml).toContain("Job:</strong> Shipping cost for sending box");
-    expect(unavailableHtml).not.toContain("Pay Invoice Online");
+    expect(unavailableHtml).not.toContain("View &amp; Pay Invoice");
     expect(unavailableHtml).not.toContain("PO #:</strong>");
     expect(unavailableHtml).not.toContain("Job:</strong>");
   });
@@ -115,9 +115,29 @@ describe("invoice email delivery", () => {
       portalUrl,
     });
 
-    expect(html).toContain("View and manage your account, invoices, orders, and payments in the customer portal.");
-    expect(html).toContain("Open Customer Portal");
+    expect(html).toContain("Set up secure customer portal access to view this invoice.");
+    expect(html).toContain("Set Up Customer Portal");
     expect(html).toContain(portalUrl.replace(/&/g, "&amp;"));
+  });
+
+  test("keeps a paid invoice viewable without presenting a payment CTA", () => {
+    const portalUrl = buildInvoicePortalInvoiceUrl({
+      publicWebOrigin: "https://app.example.test/ignored-path",
+      invoiceId: "invoice_paid",
+    });
+    const html = buildInvoiceEmailHtml({
+      invoiceNumber: "INV-PAID",
+      companyName: "Test Print Shop",
+      customerName: "Test Customer",
+      totalFormatted: "25.00",
+      dueDate: "Aug 15, 2026",
+      portalUrl,
+      portalMode: "setup",
+    });
+
+    expect(portalUrl).toBe("https://app.example.test/portal/invoices/invoice_paid");
+    expect(html).toContain("View Invoice");
+    expect(html).not.toContain("View &amp; Pay Invoice");
   });
 
   test("includes available PO and job context in invoice reminder emails", () => {

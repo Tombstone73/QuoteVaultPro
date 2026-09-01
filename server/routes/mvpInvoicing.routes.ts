@@ -24,9 +24,9 @@ import { getPaymentSettings } from "../services/payments/paymentProvider.service
 import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.service";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
-import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+import { buildCustomerPortalUrl, buildInvoiceEmailHtml, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
 import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
-import { prepareSingleContactPortalAccessForInvoice } from "../services/customerPortalAccessService";
+import { resolveInvoiceEmailPortalDestination } from "../services/customerPortalAccessService";
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
@@ -351,12 +351,17 @@ export async function registerMvpInvoicingRoutes(
       invoiceStatus: (inv as any).status,
       remainingCents: paymentSummary.amountDueCents,
     }).payable;
-    const portalUrl = await prepareSingleContactPortalAccessForInvoice({
+    const portalDestination = await resolveInvoiceEmailPortalDestination({
       organizationId: input.organizationId,
       customerId: inv.customerId,
       recipientEmail,
       actorUserId: input.userId,
     });
+    const publicWebOrigin = getInvoiceEmailPublicWebOrigin();
+    const portalMode = portalDestination?.kind || "login";
+    const portalUrl = portalDestination?.kind === "active"
+      ? buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id })
+      : portalDestination?.url || buildCustomerPortalUrl(publicWebOrigin);
     let paymentUrl: string | null = null;
     if (canInvoiceBePaidOnline) {
       const [portalAccessRows, paymentSettings, stripeReadiness] = await Promise.all([
@@ -389,7 +394,7 @@ export async function registerMvpInvoicingRoutes(
       // EPS session while merely composing an email, and never include a link
       // that the recipient cannot use through their existing portal access.
       paymentUrl = buildInvoicePortalPaymentUrl({
-        publicWebOrigin: getInvoiceEmailPublicWebOrigin(),
+        publicWebOrigin,
         invoiceId: inv.id,
         canPayOnline: recipientHasPortalAccess && hostedPaymentResolution.provider === "stripe",
       });
@@ -409,6 +414,7 @@ export async function registerMvpInvoicingRoutes(
       jobLabel: orderContext?.jobLabel,
       paymentUrl,
       portalUrl,
+      portalMode,
     });
 
     const now = new Date();

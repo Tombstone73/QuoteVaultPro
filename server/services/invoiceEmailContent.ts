@@ -7,12 +7,11 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#039;");
 }
 
-export function buildInvoicePortalPaymentUrl(input: {
+export function buildInvoicePortalInvoiceUrl(input: {
   publicWebOrigin: string | null;
   invoiceId: string;
-  canPayOnline: boolean;
 }): string | null {
-  if (!input.canPayOnline || !input.publicWebOrigin) return null;
+  if (!input.publicWebOrigin) return null;
 
   try {
     const origin = new URL(input.publicWebOrigin).origin;
@@ -20,6 +19,24 @@ export function buildInvoicePortalPaymentUrl(input: {
   } catch {
     return null;
   }
+}
+
+export function buildCustomerPortalUrl(publicWebOrigin: string | null): string | null {
+  if (!publicWebOrigin) return null;
+  try {
+    return `${new URL(publicWebOrigin).origin}/portal`;
+  } catch {
+    return null;
+  }
+}
+
+/** The secure portal invoice route is also the existing hosted-payment route. */
+export function buildInvoicePortalPaymentUrl(input: {
+  publicWebOrigin: string | null;
+  invoiceId: string;
+  canPayOnline: boolean;
+}): string | null {
+  return input.canPayOnline ? buildInvoicePortalInvoiceUrl(input) : null;
 }
 
 export function buildInvoiceEmailHtml(input: {
@@ -32,6 +49,7 @@ export function buildInvoiceEmailHtml(input: {
   jobLabel?: string | null;
   paymentUrl?: string | null;
   portalUrl?: string | null;
+  portalMode?: "active" | "setup" | "login";
 }): string {
   const invoiceNumber = escapeHtml(input.invoiceNumber);
   const companyName = escapeHtml(input.companyName);
@@ -47,14 +65,18 @@ export function buildInvoiceEmailHtml(input: {
   const paymentSection = paymentUrl
     ? `
     <p style="margin: 24px 0 12px 0;">
-      <a href="${paymentUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">Pay Invoice Online</a>
+      <a href="${paymentUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">View &amp; Pay Invoice</a>
     </p>
-    <p style="font-size: 13px; color: #666; word-break: break-all;">If the button does not work, copy and paste this secure payment link into your browser:<br><a href="${paymentUrl}">${paymentUrl}</a></p>`
+    <p style="font-size: 13px; color: #666; word-break: break-all;">Sign in to the secure customer portal to view this invoice and pay its current balance. If the button does not work, copy and paste this link into your browser:<br><a href="${paymentUrl}">${paymentUrl}</a></p>`
     : "";
   const portalUrl = input.portalUrl ? escapeHtml(input.portalUrl) : null;
-  const portalSection = portalUrl
-    ? `<p style="margin: 24px 0 12px 0;">View and manage your account, invoices, orders, and payments in the customer portal.</p>
-      <p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #475569; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">Open Customer Portal</a></p>`
+  const portalSection = !paymentUrl && portalUrl
+    ? `<p style="margin: 24px 0 12px 0;">${input.portalMode === "setup"
+      ? "Set up secure customer portal access to view this invoice."
+      : input.portalMode === "login"
+        ? "Sign in to the secure customer portal to view your invoices and current balances. Contact the shop if you need portal access."
+        : "View this invoice in the secure customer portal."}</p>
+      <p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #475569; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">${input.portalMode === "setup" ? "Set Up Customer Portal" : input.portalMode === "login" ? "Open Customer Portal" : "View Invoice"}</a></p>`
     : "";
 
   return `
