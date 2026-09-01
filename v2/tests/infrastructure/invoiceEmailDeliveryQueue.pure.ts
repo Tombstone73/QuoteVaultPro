@@ -25,6 +25,7 @@ assert.match(migration, /v2_invoice_email_delivery_items/u);
 assert.match(queue, /FOR UPDATE SKIP LOCKED/u);
 assert.match(queue, /lease_expires_at<=now\(\)/u);
 assert.match(queue, /v2_invoice_email_delivery_rate_limits/u);
+assert.match(queue, /V2_INVOICE_EMAIL_DELIVERY_MAX_ATTEMPTS/u);
 assert.match(queue, /providerAttempted\?this\.providerState/u);
 assert.match(queue, /return "ambiguous"/u);
 assert.doesNotMatch(queue, /state='ambiguous'.*available_at/isu);
