@@ -1313,18 +1313,36 @@ async function ensureQBCustomerForV2(organizationId: string, customer: V2QuickBo
   return String(created.Customer.Id);
 }
 
-export async function syncV2InvoiceToQuickBooks(input: Readonly<{ organizationId: string; invoiceId: string; displayNumber: string; currency: string; issuedAt: string; customer: V2QuickBooksCustomer; customerQuickBooksId?: string; quickBooksInvoiceId?: string; lines: readonly V2QuickBooksInvoiceLine[] }>): Promise<{ qbInvoiceId: string; qbCustomerId: string }> {
+export async function syncV2InvoiceToQuickBooks(input: Readonly<{ organizationId: string; invoiceId: string; displayNumber: string; currency: string; postedAt: string; customer: V2QuickBooksCustomer; customerQuickBooksId?: string; quickBooksInvoiceId?: string; lines: readonly V2QuickBooksInvoiceLine[] }>): Promise<{ qbInvoiceId: string; qbCustomerId: string }> {
   const qbCustomerId = await ensureQBCustomerForV2(input.organizationId, input.customer, input.customerQuickBooksId);
-  const payload: any = { CustomerRef: { value: qbCustomerId }, DocNumber: input.displayNumber, TxnDate: new Date(input.issuedAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, Line: input.lines.map((line, index) => ({ LineNum: index + 1, Amount: Number((line.lineAmountCents / 100).toFixed(2)), DetailType: "SalesItemLineDetail", SalesItemLineDetail: { Qty: line.quantity, UnitPrice: Number((line.unitAmountCents / 100).toFixed(2)) }, Description: line.description })) };
-  if (input.quickBooksInvoiceId) {
-    const existing = await makeQBRequest("GET", `/invoice/${input.quickBooksInvoiceId}`, undefined, input.organizationId);
-    if (!existing?.Invoice?.Id) throw new Error("QuickBooks Invoice link could not be resolved.");
-    return { qbInvoiceId: String(existing.Invoice.Id), qbCustomerId };
-  }
+  const payload: any = { CustomerRef: { value: qbCustomerId }, DocNumber: input.displayNumber, TxnDate: new Date(input.postedAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, Line: input.lines.map((line, index) => ({ LineNum: index + 1, Amount: Number((line.lineAmountCents / 100).toFixed(2)), DetailType: "SalesItemLineDetail", SalesItemLineDetail: { Qty: line.quantity, UnitPrice: Number((line.unitAmountCents / 100).toFixed(2)) }, Description: line.description })) };
+  const update = async (quickBooksInvoiceId: string): Promise<string> => {
+    const post = async (existing: any): Promise<string> => {
+      if (!existing?.Invoice?.Id || existing.Invoice.SyncToken == null) throw new Error("QuickBooks Invoice link could not be resolved with its current version.");
+      const response = await makeQBRequest("POST", "/invoice", { ...payload, Id: String(existing.Invoice.Id), SyncToken: String(existing.Invoice.SyncToken) }, input.organizationId);
+      if (!response?.Invoice?.Id) throw new Error("QuickBooks invoice update returned no Id");
+      return String(response.Invoice.Id);
+    };
+    const existing = await makeQBRequest("GET", `/invoice/${quickBooksInvoiceId}`, undefined, input.organizationId);
+    try { return await post(existing); }
+    catch (error) {
+      // QuickBooks enforces optimistic concurrency with SyncToken.  Refetching
+      // once reconciles a deterministic remote edit; a second failure remains
+      // actionable instead of overwriting accounting data blindly.
+      const refreshed = await makeQBRequest("GET", `/invoice/${quickBooksInvoiceId}`, undefined, input.organizationId);
+      try { return await post(refreshed); }
+      catch (retryError) {
+        const actionable: any = new Error(`QUICKBOOKS_INVOICE_UPDATE_CONFLICT: ${String((retryError as any)?.message ?? retryError)}`);
+        actionable.statusCode = (retryError as any)?.statusCode ?? (error as any)?.statusCode ?? 409;
+        throw actionable;
+      }
+    }
+  };
+  if (input.quickBooksInvoiceId) return { qbInvoiceId: await update(input.quickBooksInvoiceId), qbCustomerId };
   const query = `SELECT Id, CustomerRef FROM Invoice WHERE DocNumber = '${escapeQBQueryString(input.displayNumber)}' MAXRESULTS 20`;
   const candidates = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Invoice ?? [];
   const found = candidates.find((item: any) => String(item?.CustomerRef?.value || "") === qbCustomerId);
-  if (found?.Id) return { qbInvoiceId: String(found.Id), qbCustomerId };
+  if (found?.Id) return { qbInvoiceId: await update(String(found.Id)), qbCustomerId };
   if (candidates.length) {
     const error: any = new Error("QUICKBOOKS_INVOICE_REVIEW_REQUIRED: A QuickBooks Invoice already uses this V2 DocNumber for a different Customer.");
     error.statusCode = 409;

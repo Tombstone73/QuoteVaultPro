@@ -40,7 +40,8 @@ const billing = renderToStaticMarkup(
 );
 assert.match(billing, /<h3>Billing<\/h3>/);
 assert.match(billing, /<strong>Invoice ORD-1010<\/strong>/);
-assert.match(billing, /Draft/);
+assert.match(billing, /Order-backed/);
+assert.doesNotMatch(billing, /Draft/);
 assert.match(billing, /Paid/);
 assert.doesNotMatch(billing, /BillingInvoice/);
 

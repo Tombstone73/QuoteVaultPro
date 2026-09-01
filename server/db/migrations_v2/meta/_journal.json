@@ -1723,6 +1723,13 @@
       "when": 1788048000097,
       "tag": "0250_v2_stripe_connect_direct_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1788048000098,
+      "tag": "0251_v2_quickbooks_live_invoice_revisions",
+      "breakpoints": true
     }
   ]
 }

@@ -21,6 +21,7 @@ import {
 } from "../../src/modules/shared/commercialValues.js";
 import type { TransactionalClient } from "../persistence/types.js";
 import type { SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
+import { enqueueV2QuickBooksAutoSync } from "../accounting/quickBooksBillingQueue.js";
 
 type InvoiceState = "draft" | "issued" | "void";
 
@@ -145,6 +146,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       return this.applyExisting(input, await this.readInvoicesForOrder(input, true));
     }
     await this.writeLines(input, brandedId<"InvoiceId">(row.id));
+    await enqueueV2QuickBooksAutoSync(this.client, input.organizationId, "invoice", row.id);
     return {
       invoiceId: brandedId<"InvoiceId">(row.id),
       status: "created",
@@ -303,6 +305,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       };
     }
     await this.writeLines(input, brandedId<"InvoiceId">(draft.id));
+    await enqueueV2QuickBooksAutoSync(this.client, input.organizationId, "invoice", draft.id);
     return {
       invoiceId: brandedId<"InvoiceId">(draft.id),
       status: "synchronized",

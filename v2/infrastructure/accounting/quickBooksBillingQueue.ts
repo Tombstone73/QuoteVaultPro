@@ -13,42 +13,57 @@ import {
   type V2QuickBooksCustomer,
 } from "../../../server/quickbooksService.js";
 import { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
+import {
+  quickBooksInvoiceProjectionFingerprint,
+  quickBooksProjectionLines as projectionLines,
+  storedQuickBooksProjectionLines as storedProjectionLines,
+  type QuickBooksInvoiceProjection as InvoiceProjection,
+} from "./quickBooksLiveInvoiceProjection.js";
 export { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
 
 export type QuickBooksSyncSubject = "invoice" | "payment" | "refund";
 type QuickBooksLinkKind = "customer" | "invoice" | "payment" | "refund_credit_memo" | "refund_disbursement";
 type JobState = "queued" | "processing" | "retry" | "succeeded" | "uncertain" | "blocked";
+type QuickBooksQueueClient = Pick<PoolClient, "query">;
 type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; attemptCount: number }>;
 export type QuickBooksQueueRunResult = Readonly<{ claimed: number; succeeded: number; retry: number; uncertain: number; blocked: number }>;
 export type QuickBooksOperationsRead = Readonly<{
   eligibleInvoiceCount: number;
   queueSummary: Readonly<{ queued: number; processing: number; succeeded: number; actionRequired: number }>;
 }>;
-export type QuickBooksEligibleInvoice = Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string; issuedAt: string | null; syncStatus: "eligible" }>;
+export type QuickBooksEligibleInvoice = Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string; issuedAt: string | null; syncStatus: "never_synced" | "out_of_sync" }>;
 export type QuickBooksEligibleFinancialFact = Readonly<{ subjectKind: "payment" | "refund"; subjectId: string; displayNumber: string; customerName: string; amountCents: number; currency: string; occurredAt: string }>;
 export type QuickBooksQueueActivity = Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; customerName: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean; recoveryEligible: boolean }>;
 export type QuickBooksQueuePage = Readonly<{ items: readonly QuickBooksQueueActivity[]; total: number; page: number; pageSize: number; hasNextPage: boolean }>;
 
 const retryDelayMs = (attempt: number) => Math.min(30 * 60_000, 15_000 * 2 ** Math.min(Math.max(0, attempt - 1), 7));
 const concise = (cause: unknown) => String((cause as { message?: unknown })?.message ?? cause ?? "QuickBooks sync failed").replace(/\s+/g, " ").replace(/\0/g, "").trim().slice(0, 500) || "QuickBooks sync failed";
+type InvoiceLink = Readonly<{ providerId: string; projectionFingerprint: string | null; projectionVersion: string | null; projectionJson: unknown }>;
 /** A token lookup fails before makeQBRequest can send a provider mutation. */
 export const quickBooksCredentialInterruptedRecoveryEligible = (state: JobState, lastError: string | null): boolean => state === "uncertain" && /failed to get valid access token/i.test(lastError ?? "");
 
 /** Enqueue is idempotent by V2 entity identity and intentionally carries no financial payload. */
-export const enqueueV2QuickBooksSync = async (client: PoolClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
+export const enqueueV2QuickBooksSync = async (client: QuickBooksQueueClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
   await client.query(
     `INSERT INTO v2_quickbooks_sync_jobs(organization_id,subject_kind,subject_id,state,available_at)
      VALUES($1,$2,$3,'queued',now())
      ON CONFLICT(organization_id,subject_kind,subject_id) DO UPDATE
-       SET state=CASE WHEN v2_quickbooks_sync_jobs.state IN ('succeeded','uncertain','blocked') THEN v2_quickbooks_sync_jobs.state ELSE 'queued' END,
-           available_at=CASE WHEN v2_quickbooks_sync_jobs.state IN ('succeeded','uncertain','blocked') THEN v2_quickbooks_sync_jobs.available_at ELSE LEAST(v2_quickbooks_sync_jobs.available_at,now()) END,
+       SET state=CASE
+             WHEN v2_quickbooks_sync_jobs.state IN ('uncertain','blocked') THEN v2_quickbooks_sync_jobs.state
+             WHEN v2_quickbooks_sync_jobs.state='processing' THEN 'processing'
+             ELSE 'queued'
+           END,
+           available_at=CASE
+             WHEN v2_quickbooks_sync_jobs.state IN ('uncertain','blocked','processing') THEN v2_quickbooks_sync_jobs.available_at
+             ELSE LEAST(v2_quickbooks_sync_jobs.available_at,now())
+           END,
            updated_at=now()`,
     [organizationId, subjectKind, subjectId],
   );
 };
 /** Auto Sync governs only creation of new queue work.  It never stops the
  * worker, replays a historical backlog, or changes the manual queue path. */
-export const enqueueV2QuickBooksAutoSync = async (client: PoolClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
+export const enqueueV2QuickBooksAutoSync = async (client: QuickBooksQueueClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
   const policy = await client.query<{ enabled:boolean }>("SELECT COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled FROM organizations WHERE id=$1", [organizationId]);
   if (policy.rows[0]?.enabled) await enqueueV2QuickBooksSync(client, organizationId, subjectKind, subjectId);
 };
@@ -63,15 +78,15 @@ export class PostgresQuickBooksSyncNow {
   /** Explicit operator selection uses the same durable queue as Sync Now. */
   async enqueueInvoices(organizationId: string, invoiceIds: readonly string[]): Promise<string[]> {
     const unique = [...new Set(invoiceIds.map((value) => String(value).trim()).filter(Boolean))];
-    if (!unique.length || unique.length > 100) throw new Error("Select between 1 and 100 issued V2 Invoices.");
+    if (!unique.length || unique.length > 100) throw new Error("Select between 1 and 100 eligible V2 Order-backed Invoices.");
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       // V2 Billing IDs are durable varchar identities (even when their current
       // generated values happen to look like UUIDs).  Keep the queue boundary
       // typed to the canonical schema rather than coercing them to uuid[].
-      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id = ANY($2::varchar[]) AND invoice_state='issued'", [organizationId, unique]);
-      if (invoice.rows.length !== unique.length) throw new Error("Only issued V2 Invoices may be synchronized to QuickBooks.");
+      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id = ANY($2::varchar[]) AND invoice_state <> 'void'", [organizationId, unique]);
+      if (invoice.rows.length !== unique.length) throw new Error("Only payable V2 Order-backed Invoices may be synchronized to QuickBooks.");
       for (const item of unique) await enqueueV2QuickBooksSync(client, organizationId, "invoice", item);
       await client.query("COMMIT");
       return unique;
@@ -87,8 +102,8 @@ export class PostgresQuickBooksSyncNow {
       await client.query("BEGIN");
       for (const fact of unique) {
         const valid = await client.query<{ id:string }>(fact.subjectKind === "payment"
-          ? `SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state='issued' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id)`
-          : `SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state='issued' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=a.organization_id AND l.entity_kind='payment' AND l.entity_id=a.payment_id)`, [organizationId, fact.subjectId]);
+          ? `SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id AND l.projection_version=i.synchronization_version WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state <> 'void'`
+          : `SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id AND l.projection_version=i.synchronization_version WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links payment_link WHERE payment_link.organization_id=a.organization_id AND payment_link.entity_kind='payment' AND payment_link.entity_id=a.payment_id)`, [organizationId, fact.subjectId]);
         if (!valid.rows[0]) throw new Error(`The V2 ${fact.subjectKind} is not eligible for manual QuickBooks sync.`);
         await enqueueV2QuickBooksSync(client, organizationId, fact.subjectKind, fact.subjectId);
       }
@@ -101,7 +116,7 @@ export class PostgresQuickBooksSyncNow {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const payment = await client.query<{ id: string }>("SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND p.invoice_id=$3 AND i.invoice_state='issued'", [organizationId, paymentId, invoiceId]);
+      const payment = await client.query<{ id: string }>("SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND p.invoice_id=$3 AND i.invoice_state <> 'void'", [organizationId, paymentId, invoiceId]);
       if (!payment.rows[0]) throw new Error("The V2 Payment is unavailable for QuickBooks recovery.");
       const recovered = await client.query<{ attempt_count: number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId, paymentId]);
       if (recovered.rows[0]) { await client.query("COMMIT"); return { state: "queued", attemptCount: recovered.rows[0].attempt_count }; }
@@ -117,7 +132,7 @@ export class PostgresQuickBooksSyncNow {
    * plus durable integration metadata; no legacy financial table is consulted. */
   async operations(organizationId: string): Promise<QuickBooksOperationsRead> {
     const [eligible, queue] = await Promise.all([
-      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i WHERE i.organization_id=$1 AND i.invoice_state='issued' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id)`, [organizationId]),
+      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version)`, [organizationId]),
       this.pool.query<{ queued:string; processing:string; succeeded:string; action_required:string }>(`SELECT count(*) FILTER (WHERE state IN ('queued','retry'))::text queued,count(*) FILTER (WHERE state='processing')::text processing,count(*) FILTER (WHERE state='succeeded')::text succeeded,count(*) FILTER (WHERE state IN ('blocked','retry','uncertain'))::text action_required FROM v2_quickbooks_sync_jobs WHERE organization_id=$1`, [organizationId]),
     ]);
     const counts=queue.rows[0];
@@ -129,13 +144,13 @@ export class PostgresQuickBooksSyncNow {
   async unsyncedInvoices(organizationId:string,input:Readonly<{page:number;pageSize:number;search:string}>):Promise<{items:readonly QuickBooksEligibleInvoice[];total:number;page:number;pageSize:number;hasNextPage:boolean}> {
     const page=Math.max(1,Math.floor(input.page)),pageSize=Math.min(100,Math.max(10,Math.floor(input.pageSize))),search=input.search.trim(); const offset=(page-1)*pageSize;
     const [rows,count]=await Promise.all([
-      this.pool.query<{ id:string; invoice_display_number:string; customer_name:string; total_cents:string; currency:string; issued_at:Date|null }>(`SELECT i.id,i.invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency,i.issued_at FROM v2_billing_invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND i.invoice_state='issued' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND ($2='' OR i.invoice_display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') ORDER BY i.issued_at DESC NULLS LAST LIMIT $3 OFFSET $4`,[organizationId,search,pageSize,offset]),
-      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND i.invoice_state='issued' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND ($2='' OR i.invoice_display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%')`,[organizationId,search]),
-    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({invoiceId:row.id,displayNumber:row.invoice_display_number,customerName:row.customer_name,totalCents:Number(row.total_cents),currency:row.currency,issuedAt:row.issued_at?.toISOString()??null,syncStatus:"eligible" as const})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
+      this.pool.query<{ id:string; display_number:string; customer_name:string; total_cents:string; currency:string; posted_at:Date; provider_id:string|null; projection_version:string|null; synchronization_version:string }>(`SELECT i.id,COALESCE(i.invoice_display_number,d.display_number) display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,l.provider_id,l.projection_version,i.synchronization_version FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version) AND ($2='' OR COALESCE(i.invoice_display_number,d.display_number) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') ORDER BY i.updated_at DESC,i.id DESC LIMIT $3 OFFSET $4`,[organizationId,search,pageSize,offset]),
+      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version) AND ($2='' OR COALESCE(i.invoice_display_number,d.display_number) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%')`,[organizationId,search]),
+    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({invoiceId:row.id,displayNumber:row.display_number,customerName:row.customer_name,totalCents:Number(row.total_cents),currency:row.currency,issuedAt:row.posted_at?.toISOString()??null,syncStatus:(row.provider_id ? "out_of_sync" : "never_synced") as "never_synced" | "out_of_sync"})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
   }
   async unsyncedFinancialFacts(organizationId:string,input:Readonly<{page:number;pageSize:number;search:string}>):Promise<{items:readonly QuickBooksEligibleFinancialFact[];total:number;page:number;pageSize:number;hasNextPage:boolean}> {
     const page=Math.max(1,Math.floor(input.page)),pageSize=Math.min(100,Math.max(10,Math.floor(input.pageSize))),search=input.search.trim(),offset=(page-1)*pageSize;
-    const candidates=`SELECT 'payment'::varchar subject_kind,p.id subject_id,i.invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,p.amount_cents::text amount_cents,p.currency,p.occurred_at FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE p.organization_id=$1 AND i.invoice_state='issued' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=p.organization_id AND l.entity_kind='payment' AND l.entity_id=p.id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_jobs j WHERE j.organization_id=p.organization_id AND j.subject_kind='payment' AND j.subject_id=p.id) UNION ALL SELECT 'refund'::varchar subject_kind,r.id subject_id,i.invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,r.amount_cents::text amount_cents,r.currency,r.occurred_at FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE r.organization_id=$1 AND i.invoice_state='issued' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id) AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=a.organization_id AND l.entity_kind='payment' AND l.entity_id=a.payment_id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=r.organization_id AND l.entity_kind='refund_disbursement' AND l.entity_id=r.id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_jobs j WHERE j.organization_id=r.organization_id AND j.subject_kind='refund' AND j.subject_id=r.id)`;
+    const candidates=`SELECT 'payment'::varchar subject_kind,p.id subject_id,COALESCE(i.invoice_display_number,d.display_number) invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,p.amount_cents::text amount_cents,p.currency,p.occurred_at FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id JOIN v2_quickbooks_sync_links invoice_link ON invoice_link.organization_id=i.organization_id AND invoice_link.entity_kind='invoice' AND invoice_link.entity_id=i.id AND invoice_link.projection_version=i.synchronization_version LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE p.organization_id=$1 AND i.invoice_state <> 'void' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=p.organization_id AND l.entity_kind='payment' AND l.entity_id=p.id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_jobs j WHERE j.organization_id=p.organization_id AND j.subject_kind='payment' AND j.subject_id=p.id) UNION ALL SELECT 'refund'::varchar subject_kind,r.id subject_id,COALESCE(i.invoice_display_number,d.display_number) invoice_display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,r.amount_cents::text amount_cents,r.currency,r.occurred_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id JOIN v2_quickbooks_sync_links invoice_link ON invoice_link.organization_id=i.organization_id AND invoice_link.entity_kind='invoice' AND invoice_link.entity_id=i.id AND invoice_link.projection_version=i.synchronization_version LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE r.organization_id=$1 AND i.invoice_state <> 'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=a.organization_id AND l.entity_kind='payment' AND l.entity_id=a.payment_id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links l WHERE l.organization_id=r.organization_id AND l.entity_kind='refund_disbursement' AND l.entity_id=r.id) AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_jobs j WHERE j.organization_id=r.organization_id AND j.subject_kind='refund' AND j.subject_id=r.id)`;
     const [rows,count]=await Promise.all([
       this.pool.query<{subject_kind:"payment"|"refund";subject_id:string;invoice_display_number:string;customer_name:string;amount_cents:string;currency:string;occurred_at:Date}>(`SELECT * FROM (${candidates}) candidates WHERE ($2='' OR invoice_display_number ILIKE '%'||$2||'%' OR customer_name ILIKE '%'||$2||'%' OR subject_kind ILIKE '%'||$2||'%') ORDER BY occurred_at DESC LIMIT $3 OFFSET $4`,[organizationId,search,pageSize,offset]),
       this.pool.query<{count:string}>(`SELECT count(*)::text count FROM (${candidates}) candidates WHERE ($2='' OR invoice_display_number ILIKE '%'||$2||'%' OR customer_name ILIKE '%'||$2||'%' OR subject_kind ILIKE '%'||$2||'%')`,[organizationId,search]),
@@ -156,10 +171,10 @@ export class PostgresQuickBooksSyncNow {
     try {
       await client.query("BEGIN");
       const valid = await client.query<{ id:string }>(subjectKind === "invoice"
-        ? "SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND invoice_state='issued'"
+        ? "SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND invoice_state <> 'void'"
         : subjectKind === "payment"
-          ? "SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state='issued'"
-          : "SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state='issued'", [organizationId, subjectId]);
+          ? "SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state <> 'void'"
+          : "SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void'", [organizationId, subjectId]);
       if (!valid.rows[0]) throw new Error(`The V2 ${subjectKind} is unavailable for QuickBooks recovery.`);
       const recovered = await client.query<{ attempt_count:number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId,subjectKind,subjectId]);
       if (recovered.rows[0]) { await client.query("COMMIT"); return { state:"queued",attemptCount:recovered.rows[0].attempt_count }; }
@@ -251,42 +266,52 @@ export class V2QuickBooksBillingWorker {
   private async processInvoice(job: Job): Promise<void> {
     const client = await this.pool.connect();
     try {
-      const invoice = await client.query<{ customer_id:string|null; invoice_display_number:string; currency:string; issued_at:Date; checkpoint_json:unknown }>(
-        `SELECT i.customer_id,i.invoice_display_number,i.currency,i.issued_at,c.checkpoint_json
-         FROM v2_billing_invoices i JOIN v2_billing_invoice_checkpoints c ON c.organization_id=i.organization_id AND c.invoice_id=i.id
-         WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state='issued'`, [job.organizationId, job.subjectId]);
+      const invoice = await client.query<{ customer_id:string|null; display_number:string; currency:string; posted_at:Date; synchronization_version:string }>(
+        `SELECT i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,i.synchronization_version
+         FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
+         WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void'`, [job.organizationId, job.subjectId]);
       const row = invoice.rows[0];
-      if (!row?.customer_id || !row.invoice_display_number || !row.issued_at) throw new Error("V2 issued Invoice lacks required QuickBooks projection facts.");
+      if (!row?.customer_id || !row.display_number) throw new Error("V2 Order-backed Invoice lacks required QuickBooks projection facts.");
       const customer = await client.query<{ id:string; display_name:string|null; company_name:string|null; email:string|null; phone:string|null; customer_type:string|null }>(
         "SELECT id,display_name,company_name,email,phone,customer_type FROM customers WHERE organization_id=$1 AND id=$2", [job.organizationId, row.customer_id]);
       const customerRow = customer.rows[0];
       if (!customerRow) throw new Error("V2 Invoice customer is unavailable for QuickBooks sync.");
-      const lines = checkpointLines(row.checkpoint_json);
-      if (!lines.length) throw new Error("V2 issued Invoice checkpoint has no billable lines.");
+      const lineRows = await client.query<{ description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string }>("SELECT description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 ORDER BY position", [job.organizationId, job.subjectId]);
+      const lines = projectionLines(lineRows.rows);
+      if (!lines.length) throw new Error("V2 Order-backed Invoice has no billable lines for QuickBooks sync.");
       const customerProjection: V2QuickBooksCustomer = { id: customerRow.id, displayName: customerRow.display_name || customerRow.company_name || "", companyName: customerRow.company_name || undefined, email: customerRow.email || undefined, phone: customerRow.phone || undefined, kind: customerRow.customer_type === "individual" ? "individual" : "business" };
-      const existingInvoice = await this.link(job.organizationId, "invoice", job.subjectId);
+      const projection: InvoiceProjection = { displayNumber: row.display_number, currency: row.currency, postedAt: row.posted_at.toISOString(), customerId: customerRow.id, lines };
+      const fingerprint = quickBooksInvoiceProjectionFingerprint(projection);
+      const existingInvoice = await this.invoiceLink(job.organizationId, job.subjectId);
       const existingCustomer = await this.link(job.organizationId, "customer", customerRow.id);
-      const provider = await syncV2InvoiceToQuickBooks({ organizationId: job.organizationId, invoiceId: job.subjectId, displayNumber: row.invoice_display_number, currency: row.currency, issuedAt: row.issued_at.toISOString(), customer: customerProjection, customerQuickBooksId: existingCustomer ?? undefined, quickBooksInvoiceId: existingInvoice ?? undefined, lines });
+      // A stale queue job intentionally reads the newest live V2 projection.
+      // If nothing accounting-relevant changed, it only advances local export
+      // evidence and never makes a redundant provider write.
+      if (existingInvoice?.projectionFingerprint === fingerprint) {
+        await this.upsertInvoiceLink(job.organizationId, job.subjectId, existingInvoice.providerId, projection, fingerprint, row.synchronization_version);
+        return;
+      }
+      const provider = await syncV2InvoiceToQuickBooks({ organizationId: job.organizationId, invoiceId: job.subjectId, displayNumber: row.display_number, currency: row.currency, postedAt: row.posted_at.toISOString(), customer: customerProjection, customerQuickBooksId: existingCustomer ?? undefined, quickBooksInvoiceId: existingInvoice?.providerId, lines });
       await this.upsertLink(job.organizationId, "customer", customerRow.id, provider.qbCustomerId);
-      await this.upsertLink(job.organizationId, "invoice", job.subjectId, provider.qbInvoiceId);
+      await this.upsertInvoiceLink(job.organizationId, job.subjectId, provider.qbInvoiceId, projection, fingerprint, row.synchronization_version);
     } finally { client.release(); }
   }
 
   private async processPayment(job: Job): Promise<void> {
     const client = await this.pool.connect();
     try {
-      const payment = await client.query<{ invoice_id:string; amount_cents:string; currency:string; occurred_at:Date; customer_id:string|null }>(
-        `SELECT p.invoice_id,p.amount_cents,p.currency,p.occurred_at,i.customer_id
+      const payment = await client.query<{ invoice_id:string; amount_cents:string; currency:string; occurred_at:Date; customer_id:string|null; synchronization_version:string }>(
+        `SELECT p.invoice_id,p.amount_cents,p.currency,p.occurred_at,i.customer_id,i.synchronization_version
          FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id
-         WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state='issued'`, [job.organizationId, job.subjectId]);
+         WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state <> 'void'`, [job.organizationId, job.subjectId]);
       const row = payment.rows[0];
-      if (!row?.customer_id) throw new Error("V2 Payment lacks an issued Invoice customer for QuickBooks sync.");
-      const invoiceQuickBooksId = await this.link(job.organizationId, "invoice", row.invoice_id);
-      if (!invoiceQuickBooksId) throw new Error("V2 Payment waits for its Invoice QuickBooks projection.");
+      if (!row?.customer_id) throw new Error("V2 Payment lacks an Order-backed Invoice customer for QuickBooks sync.");
+      const invoiceLink = await this.invoiceLink(job.organizationId, row.invoice_id);
+      if (!invoiceLink || invoiceLink.projectionVersion !== row.synchronization_version) throw new Error("V2 Payment waits for the current Invoice QuickBooks projection.");
       const customerQuickBooksId = await this.link(job.organizationId, "customer", row.customer_id);
       if (!customerQuickBooksId) throw new Error("V2 Payment waits for its Customer QuickBooks projection.");
       const existingPayment = await this.link(job.organizationId, "payment", job.subjectId);
-      const provider = await syncV2PaymentToQuickBooks({ organizationId: job.organizationId, paymentId: job.subjectId, quickBooksPaymentId: existingPayment ?? undefined, quickBooksInvoiceId: invoiceQuickBooksId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString() });
+      const provider = await syncV2PaymentToQuickBooks({ organizationId: job.organizationId, paymentId: job.subjectId, quickBooksPaymentId: existingPayment ?? undefined, quickBooksInvoiceId: invoiceLink.providerId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString() });
       await this.upsertLink(job.organizationId, "payment", job.subjectId, provider.qbPaymentId);
     } finally { client.release(); }
   }
@@ -300,34 +325,40 @@ export class V2QuickBooksBillingWorker {
   private async processRefund(job: Job): Promise<void> {
     const client = await this.pool.connect();
     try {
-      const refund = await client.query<{ invoice_id:string; payment_id:string; amount_cents:string; currency:string; occurred_at:Date; customer_id:string|null; invoice_display_number:string; checkpoint_json:unknown }>(
-        `SELECT r.invoice_id,a.payment_id,r.amount_cents,r.currency,r.occurred_at,i.customer_id,i.invoice_display_number,c.checkpoint_json
+      const refund = await client.query<{ invoice_id:string; payment_id:string; amount_cents:string; currency:string; occurred_at:Date; customer_id:string|null; display_number:string; synchronization_version:string }>(
+        `SELECT r.invoice_id,a.payment_id,r.amount_cents,r.currency,r.occurred_at,i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.synchronization_version
            FROM v2_billing_refunds r
            JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id
            JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id
-           JOIN v2_billing_invoice_checkpoints c ON c.organization_id=i.organization_id AND c.invoice_id=i.id
-          WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state='issued'`, [job.organizationId, job.subjectId]);
+           JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
+          WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void'`, [job.organizationId, job.subjectId]);
       const row = refund.rows[0];
-      if (!row?.customer_id || !row.payment_id) throw new Error("V2 Refund lacks its issued Invoice or original Payment projection facts.");
+      if (!row?.customer_id || !row.payment_id) throw new Error("V2 Refund lacks its Order-backed Invoice or original Payment projection facts.");
       const customerQuickBooksId = await this.link(job.organizationId, "customer", row.customer_id);
-      const invoiceQuickBooksId = await this.link(job.organizationId, "invoice", row.invoice_id);
+      const invoiceLink = await this.invoiceLink(job.organizationId, row.invoice_id);
       const paymentQuickBooksId = await this.link(job.organizationId, "payment", row.payment_id);
-      if (!customerQuickBooksId || !invoiceQuickBooksId || !paymentQuickBooksId) throw new Error("V2 Refund waits for its Customer, Invoice, and original Payment QuickBooks projections.");
-      const lines = checkpointLines(row.checkpoint_json);
-      if (!lines.length) throw new Error("V2 Refund cannot project an issued Invoice with no immutable billable lines.");
+      if (!customerQuickBooksId || !invoiceLink || invoiceLink.projectionVersion !== row.synchronization_version || !paymentQuickBooksId) throw new Error("V2 Refund waits for the current Customer, Invoice, and original Payment QuickBooks projections.");
+      const snapshotLines = storedProjectionLines(invoiceLink.projectionJson);
+      // Links created before live-revision metadata existed can still represent
+      // an immutable historical issued invoice. Its persisted V2 lines are a
+      // safe compatibility fallback; new live postings always use the export
+      // snapshot above.
+      const fallbackLines = snapshotLines.length ? [] : projectionLines((await client.query<{ description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string }>("SELECT description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 ORDER BY position", [job.organizationId, row.invoice_id])).rows);
+      const lines = snapshotLines.length ? snapshotLines : fallbackLines;
+      if (!lines.length) throw new Error("V2 Refund cannot project an Invoice without its exported accounting lines.");
       await this.startRefundWorkflow(job.organizationId, job.subjectId);
       const existingCreditMemo = await this.link(job.organizationId, "refund_credit_memo", job.subjectId);
       const credit = await syncV2RefundCreditMemoToQuickBooks({
         organizationId: job.organizationId, refundId: job.subjectId, quickBooksCreditMemoId: existingCreditMemo ?? undefined,
-        quickBooksInvoiceId: invoiceQuickBooksId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency,
-        occurredAt: row.occurred_at.toISOString(), invoiceDisplayNumber: row.invoice_display_number, originalInvoiceLines: lines,
+        quickBooksInvoiceId: invoiceLink.providerId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency,
+        occurredAt: row.occurred_at.toISOString(), invoiceDisplayNumber: row.display_number, originalInvoiceLines: lines,
       });
       await this.upsertLink(job.organizationId, "refund_credit_memo", job.subjectId, credit.qbCreditMemoId);
       await this.workflow(job.organizationId, job.subjectId, "credit_created");
       const existingDisbursement = await this.link(job.organizationId, "refund_disbursement", job.subjectId);
       const disbursement = await syncV2RefundDisbursementToQuickBooks({
         organizationId: job.organizationId, refundId: job.subjectId, quickBooksDisbursementId: existingDisbursement ?? undefined,
-        quickBooksCreditMemoId: credit.qbCreditMemoId, quickBooksInvoiceId: invoiceQuickBooksId, quickBooksPaymentId: paymentQuickBooksId,
+        quickBooksCreditMemoId: credit.qbCreditMemoId, quickBooksInvoiceId: invoiceLink.providerId, quickBooksPaymentId: paymentQuickBooksId,
         quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString(),
       });
       await this.upsertLink(job.organizationId, "refund_disbursement", job.subjectId, disbursement.qbDisbursementId);
@@ -337,16 +368,14 @@ export class V2QuickBooksBillingWorker {
   }
 
   private async link(organizationId: string, kind: QuickBooksLinkKind, entityId: string): Promise<string | null> { const result = await this.pool.query<{provider_id:string}>("SELECT provider_id FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3", [organizationId, kind, entityId]); return result.rows[0]?.provider_id ?? null; }
+  private async invoiceLink(organizationId: string, invoiceId: string): Promise<InvoiceLink | null> { const result = await this.pool.query<{provider_id:string;projection_fingerprint:string|null;projection_version:string|null;projection_json:unknown}>("SELECT provider_id,projection_fingerprint,projection_version,projection_json FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind='invoice' AND entity_id=$2", [organizationId, invoiceId]); const row=result.rows[0]; return row ? {providerId:row.provider_id,projectionFingerprint:row.projection_fingerprint,projectionVersion:row.projection_version,projectionJson:row.projection_json} : null; }
   private async upsertLink(organizationId: string, kind: QuickBooksLinkKind, entityId: string, providerId: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,entity_kind,entity_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,updated_at=now()", [organizationId, kind, entityId, providerId]); }
+  private async upsertInvoiceLink(organizationId: string, invoiceId: string, providerId: string, projection: InvoiceProjection, fingerprint: string, version: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id,projection_fingerprint,projection_version,projection_json,projection_synced_at) VALUES($1,'invoice',$2,$3,$4,$5,$6::jsonb,now()) ON CONFLICT(organization_id,entity_kind,entity_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,projection_fingerprint=EXCLUDED.projection_fingerprint,projection_version=EXCLUDED.projection_version,projection_json=EXCLUDED.projection_json,projection_synced_at=EXCLUDED.projection_synced_at,updated_at=now()", [organizationId, invoiceId, providerId, fingerprint, version, JSON.stringify(projection)]); }
   private async startRefundWorkflow(organizationId: string, refundId: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_refund_sync_workflows(organization_id,refund_id,state) VALUES($1,$2,'queued') ON CONFLICT(organization_id,refund_id) DO NOTHING", [organizationId, refundId]); }
   private async workflow(organizationId: string, refundId: string, state: "queued" | "credit_created" | "disbursement_created" | "linked" | "succeeded" | "uncertain" | "retry" | "blocked", error?: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_refund_sync_workflows(organization_id,refund_id,state,last_error,completed_at) VALUES($1,$2,$3::varchar,$4::varchar,CASE WHEN $5::boolean THEN now() ELSE NULL END) ON CONFLICT(organization_id,refund_id) DO UPDATE SET state=EXCLUDED.state,last_error=EXCLUDED.last_error,completed_at=EXCLUDED.completed_at,updated_at=now()", [organizationId, refundId, state, error ?? null, state === "succeeded"]); }
   private async finish(job: Job, state: JobState, error?: string): Promise<void> { const delay = state === "retry" || (state === "uncertain" && job.subjectKind === "refund") ? retryDelayMs(job.attemptCount) : 0; await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2::varchar,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2::varchar='retry' OR ($2::varchar='uncertain' AND subject_kind='refund') THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,completed_at=CASE WHEN $2::varchar='succeeded' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1 AND state='processing' AND claimed_by=$5", [job.id,state,error ?? null,delay,this.workerId]); }
 }
 
-const checkpointLines = (checkpoint: unknown): Array<{ description: string; quantity: number; unitAmountCents: number; lineAmountCents: number }> => {
-  const lines = checkpoint && typeof checkpoint === "object" && Array.isArray((checkpoint as { lines?: unknown }).lines) ? (checkpoint as { lines: unknown[] }).lines : [];
-  return lines.map((line) => { const value = line as { description?:unknown; quantity?:unknown; unitAmount?:{cents?:unknown}; lineAmount?:{cents?:unknown} }; return { description: String(value.description ?? ""), quantity: Number(value.quantity ?? 0), unitAmountCents: Number(value.unitAmount?.cents ?? 0), lineAmountCents: Number(value.lineAmount?.cents ?? 0) }; }).filter((line) => line.description.trim().length > 0 && Number.isSafeInteger(line.quantity) && line.quantity > 0 && Number.isSafeInteger(line.lineAmountCents));
-};
 
 export const startV2QuickBooksBillingWorker = (pool: Pool, log: (event: string, data?: Record<string, unknown>) => void): (() => void) | null => {
   if (!v2QuickBooksQueueWorkerEnabled()) { log("v2.quickbooks.worker.disabled", { reason: "owner_not_queue" }); return null; }
