@@ -173,7 +173,7 @@ function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
   };
   
   return (
-    <TitanCard className="p-3 h-fit sticky top-6">
+    <TitanCard className="h-fit p-3 lg:sticky lg:top-6">
       <div className="space-y-2">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-titan-text-muted" />
@@ -274,7 +274,10 @@ export function SettingsLayout() {
   return (
     <Guard>
       {(activeOrgRole) => (
-        <div className="min-h-screen bg-titan-bg-app p-6">
+        <div
+          data-testid="settings-page-scroll-content"
+          className="min-h-full bg-titan-bg-app p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))]"
+        >
           <PageHeader
             title="Settings"
             subtitle="Configure Printers Hero, your account, and integrations"
