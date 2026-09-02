@@ -140,7 +140,7 @@ export class PostgresTeamAccess {
          LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
          WHERE a.organization_id=$1 AND a.id=$2 AND c.is_active IS DISTINCT FROM false
            AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
-           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`, [organizationId, portalAccessId]);
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE OF a`, [organizationId, portalAccessId]);
       const row=access.rows[0];
       if(!row) throw new V2ApplicationError("NOT_FOUND","Customer Portal access was not found.");
       if(row.status === "ACTIVE") throw new V2ApplicationError("CONFLICT","This contact has already completed setup. Use password reset instead.");
@@ -201,7 +201,7 @@ export class PostgresTeamAccess {
     await this.mutate(actor, organizationId, "permissions.assignStaff", "staff_permission_sets_replaced", { userId, permissionSetIds }, context, async (client) => {
       const member = await client.query("SELECT 1 FROM user_organizations WHERE organization_id=$1 AND user_id=$2 AND is_active=true FOR UPDATE", [organizationId, userId]); if (!member.rowCount) throw new V2ApplicationError("NOT_FOUND", "Active Staff membership was not found.");
       const ids = [...new Set(permissionSetIds)]; if (!ids.length) throw new V2ApplicationError("VALIDATION_ERROR", "At least one Staff permission set is required.");
-      const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE", [organizationId, ids]);
+      const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
       const setIds = [...new Set(found.rows.map((row) => row.id))]; if (setIds.length !== ids.length || found.rows.some((row) => !row.active || row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Choose active Staff permission sets in this organization.");
       this.ceiling(actor, found.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []));
       await client.query("UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=$1 AND user_id=$2 AND active=true", [organizationId, userId]);
@@ -214,7 +214,7 @@ export class PostgresTeamAccess {
     await this.mutate(actor, organizationId, "permissions.assignPortal", "portal_permission_sets_replaced", { portalAccessId, permissionSetIds }, context, async (client) => {
       const access = await client.query("SELECT 1 FROM customer_portal_access WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, portalAccessId]); if (!access.rowCount) throw new V2ApplicationError("NOT_FOUND", "Customer Portal access was not found.");
       const ids = [...new Set(permissionSetIds)]; if (!ids.length) throw new V2ApplicationError("VALIDATION_ERROR", "At least one Portal permission set is required.");
-      const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE", [organizationId, ids]);
+      const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
       const setIds = [...new Set(found.rows.map((row) => row.id))]; if (setIds.length !== ids.length || found.rows.some((row) => !row.active || row.principal_kind !== "portal")) throw new V2ApplicationError("VALIDATION_ERROR", "Choose active Portal permission sets in this organization.");
       // Portal capabilities describe customer authority. A staff member who
       // has permissions.assignPortal may assign an active tenant portal set;

@@ -26,7 +26,12 @@ const bootstrap = teamAccess.slice(teamAccess.indexOf("async bootstrapPortalAcce
 assert.match(bootstrap,/permissions\.assignPortal/u);
 assert.doesNotMatch(bootstrap,/this\.ceiling\(actor,set\.rows/u, "staff authority to grant portal access must not require portal-user capabilities");
 assert.match(bootstrap,/LEFT JOIN v2_permission_set_capabilities[\s\S]*FOR UPDATE OF s/u, "portal permission-set lookup must lock only the non-nullable set row");
+const resend = teamAccess.slice(teamAccess.indexOf("async resendPortalSetup"), teamAccess.indexOf("async setPortalAccessStatus"));
+assert.match(resend,/LEFT JOIN customer_contacts[\s\S]*FOR UPDATE OF a/u, "portal setup resend must lock only the Portal access row, not nullable contact joins");
+const replaceStaff = teamAccess.slice(teamAccess.indexOf("async replaceStaffAssignments"), teamAccess.indexOf("async replacePortalAssignments"));
+assert.match(replaceStaff,/LEFT JOIN v2_permission_set_capabilities[\s\S]*FOR UPDATE OF s/u, "staff assignment must lock only the permission-set row");
 const replacePortal = teamAccess.slice(teamAccess.indexOf("async replacePortalAssignments"), teamAccess.indexOf("private async sets"));
 assert.doesNotMatch(replacePortal,/this\.ceiling\(actor, found\.rows/u, "portal-role assignment must not require portal-user capabilities on Staff");
+assert.match(replacePortal,/LEFT JOIN v2_permission_set_capabilities[\s\S]*FOR UPDATE OF s/u, "portal assignment must lock only the permission-set row");
 assert.doesNotMatch(teamAccess,/dev-stage18p-portal-setup/u);
 console.log("team access contracts passed");
