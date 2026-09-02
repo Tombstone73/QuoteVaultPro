@@ -5,6 +5,7 @@ import type { BillingPaymentsApplicationService } from "../../src/modules/billin
 import { brandedId, currencyCode, money, type InvoiceId, type OrganizationId, type PaymentId } from "../../src/modules/shared/commercialValues.js";
 import { V2StripeProviderAdapter } from "./stripeProviderIngress.js";
 import type { PostgresStripeConnectAccounts } from "./stripeConnectAccounts.js";
+import { assertStripeCardPaymentMinimum, stripeRejectedBeforeCreation } from "../../src/modules/billing/stripePaymentPolicy.js";
 
 type OperationRow = Readonly<{ provider_transaction_id: string | null; stripe_account_id:string|null; amount_cents: string; currency: string }>;
 
@@ -17,6 +18,7 @@ export class StripePaymentInitiation {
   constructor(private readonly pool: Pool, private readonly payments: BillingPaymentsApplicationService, private readonly accounts: PostgresStripeConnectAccounts) {}
 
   async beginPayment(context: OperationContext, input: Readonly<{ organizationId: string; invoiceId: string; amountCents: number; currency: string; businessRequestId: string }>) {
+    assertStripeCardPaymentMinimum(input.amountCents, input.currency);
     const account=await this.accounts.requireReadyAccount(input.organizationId);
     const operation = await this.payments.beginProviderOperation(context, {
       organizationId: brandedId<"OrganizationId">(input.organizationId), invoiceId: brandedId<"InvoiceId">(input.invoiceId),
@@ -32,7 +34,16 @@ export class StripePaymentInitiation {
       const paymentIntent = await this.provider.retrievePaymentIntent(existing.provider_transaction_id, existing.stripe_account_id);
       return { ok: true as const, value: { providerOperationId: operation.value.providerOperationId, paymentIntentId: existing.provider_transaction_id, clientSecret: paymentIntent.clientSecret, stripeAccountId:existing.stripe_account_id, amountCents: Number(existing.amount_cents), currency: existing.currency } };
     }
-    const created = await this.provider.createPaymentIntent({ amountCents: input.amountCents, currency: input.currency, organizationId: input.organizationId, invoiceId: input.invoiceId, providerOperationId: operation.value.providerOperationId, providerIdempotencyKey: operation.value.providerIdempotencyKey, stripeAccountId:account.accountId });
+    let created: Readonly<{ providerTransactionId: string; clientSecret: string }>;
+    try {
+      created = await this.provider.createPaymentIntent({ amountCents: input.amountCents, currency: input.currency, organizationId: input.organizationId, invoiceId: input.invoiceId, providerOperationId: operation.value.providerOperationId, providerIdempotencyKey: operation.value.providerIdempotencyKey, stripeAccountId:account.accountId });
+    } catch (cause) {
+      if (stripeRejectedBeforeCreation(cause)) {
+        await this.markRejectedBeforeCreation(input.organizationId, operation.value.providerOperationId);
+        throw new V2ApplicationError("VALIDATION_ERROR", "Stripe rejected this card payment before it was created. The Invoice remains unpaid; correct the issue and try again.");
+      }
+      throw cause;
+    }
     const paymentIntentId = await this.persist(input.organizationId, operation.value.providerOperationId, created.providerTransactionId);
     if (paymentIntentId !== created.providerTransactionId) {
       const paymentIntent = await this.provider.retrievePaymentIntent(paymentIntentId, account.accountId);
@@ -62,4 +73,7 @@ export class StripePaymentInitiation {
 
   private async operation(organizationId: string, providerOperationId: string): Promise<OperationRow | null> { const result = await this.pool.query<OperationRow>("SELECT provider_transaction_id,stripe_account_id,amount_cents,currency FROM v2_billing_provider_financial_operations WHERE organization_id=$1 AND id=$2", [organizationId, providerOperationId]); return result.rows[0] ?? null; }
   private async persist(organizationId: string, providerOperationId: string, providerTransactionId: string): Promise<string> { const result = await this.pool.query<{ provider_transaction_id: string }>("UPDATE v2_billing_provider_financial_operations SET provider_transaction_id=COALESCE(provider_transaction_id,$3),reconciliation_state='pending',updated_at=now() WHERE organization_id=$1 AND id=$2 RETURNING provider_transaction_id", [organizationId, providerOperationId, providerTransactionId]); const value = result.rows[0]?.provider_transaction_id; if (!value) throw new V2ApplicationError("RETRYABLE_FAILURE", "Stripe initiation state could not be persisted."); return value; }
+  private async markRejectedBeforeCreation(organizationId: string, providerOperationId: string): Promise<void> {
+    await this.pool.query("UPDATE v2_billing_provider_financial_operations SET reconciliation_state='failed',updated_at=now() WHERE organization_id=$1 AND id=$2 AND operation_kind='payment' AND reconciliation_state='uncertain' AND provider_transaction_id IS NULL", [organizationId, providerOperationId]);
+  }
 }
