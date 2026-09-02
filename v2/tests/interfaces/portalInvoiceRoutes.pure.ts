@@ -17,6 +17,8 @@ assert.doesNotMatch(routes,/request\.body.*customer/iu);
 assert.match(ui,/stripe\.confirmPayment/u);
 assert.match(ui,/signed confirmation/u);
 assert.match(ui,/\/portal\/invoices\//u);
+assert.match(ui,/Back to your invoices/u);
+assert.match(ui,/error \? <><p className="notice error">\{error\}<\/p>/u);
 assert.match(auth,/safePortalReturnTo/u);
 assert.match(auth,/authenticationMethod:"portal_session"/u);
 console.log("V2 portal invoice boundary contracts passed.");
