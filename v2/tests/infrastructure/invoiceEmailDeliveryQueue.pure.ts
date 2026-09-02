@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const queue = readFileSync("v2/infrastructure/communications/invoiceEmailDeliveryQueue.ts", "utf8");
 const migration = readFileSync("server/db/migrations_v2/0252_v2_invoice_email_delivery_queue.sql", "utf8");
+const providerSafetyMigration = readFileSync("server/db/migrations_v2/0255_v2_invoice_email_provider_attempt_safety.sql", "utf8");
 const routes = readFileSync("v2/src/interfaces/http/invoiceRoutes.ts", "utf8");
 const finance = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 
@@ -29,7 +30,14 @@ assert.match(queue, /v2_invoice_email_delivery_rate_limits/u);
 assert.match(queue, /V2_INVOICE_EMAIL_DELIVERY_MAX_ATTEMPTS/u);
 assert.match(queue, /providerAttempted\?this\.providerState/u);
 assert.match(queue, /return "ambiguous"/u);
-assert.doesNotMatch(queue, /state='ambiguous'.*available_at/isu);
+assert.match(queue, /state IN \('queued','retry_wait'\)/u);
+assert.doesNotMatch(queue, /state IN \('queued','retry_wait','ambiguous'\)/u, "ambiguous delivery is never automatically claimed for a new send");
+assert.match(queue, /provider_attempted_at=now\(\)/u, "the provider boundary is durable before Gmail is called");
+assert.match(queue, /lease_expires_at<=now\(\) AND provider_attempted_at IS NOT NULL/u, "expired provider attempts become ambiguous instead of being sent again");
+assert.match(queue, /timeout:invoiceEmailProviderTimeoutMs/u, "a hung provider call resolves to the existing ambiguous outcome");
+assert.match(queue, /provider_attempted_at=NULL/u, "an operator retry starts a new intentional provider attempt");
+assert.match(providerSafetyMigration, /ADD COLUMN provider_attempted_at/u);
+assert.match(providerSafetyMigration, /WHERE state='processing'/u, "pre-marker in-flight jobs are conservatively held for reconciliation");
 
 // Operators get a bounded selection and admission confirmation rather than a
 // browser-side send loop. Customer links retain normal portal authentication.

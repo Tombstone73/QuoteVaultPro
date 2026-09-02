@@ -10,6 +10,7 @@ import { PostgresEmailIntegrationService, type ReadyGmailIntegration } from "./p
 
 export const invoiceEmailSelectionLimit = 100;
 export const invoiceEmailMessageInvoiceLimit = 20;
+export const invoiceEmailProviderTimeoutMs = 30_000;
 export type InvoiceEmailState = "queued" | "processing" | "retry_wait" | "sent" | "failed" | "ambiguous";
 export type InvoiceEmailAdmission = Readonly<{ batchId:string; selected:number; queuedInvoices:number; queuedMessages:number; skipped:number; replayed:boolean }>;
 type RecipientInvoice = Readonly<{ invoiceId:string; customerId:string|null; email:string|null }>;
@@ -76,7 +77,7 @@ export class PostgresInvoiceEmailDeliveryQueue {
   async retry(input:Readonly<{organizationId:string;principal:Principal;jobId:string}>):Promise<Readonly<{state:"queued";attemptCount:number}>>{
     if(input.principal.kind!=="staff"&&input.principal.kind!=="delegated_ai")throw new V2ApplicationError("FORBIDDEN","Only an authorized Invoice operator may retry customer email.");
     if(!this.authority.decide(input.principal,{capability:"invoice.send",resource:{organizationId:input.organizationId}}).allowed)throw new V2ApplicationError("FORBIDDEN","The principal cannot send Invoice email.");
-    const result=await this.pool.query<{attempt_count:number}>("UPDATE v2_invoice_email_delivery_jobs SET state='queued',available_at=now(),claimed_by=NULL,lease_expires_at=NULL,completed_at=NULL,last_error=NULL,updated_at=now() WHERE organization_id=$1 AND id=$2 AND state IN ('failed','ambiguous') RETURNING attempt_count",[input.organizationId,input.jobId]);
+    const result=await this.pool.query<{attempt_count:number}>("UPDATE v2_invoice_email_delivery_jobs SET state='queued',available_at=now(),claimed_by=NULL,lease_expires_at=NULL,completed_at=NULL,last_error=NULL,provider_attempted_at=NULL,updated_at=now() WHERE organization_id=$1 AND id=$2 AND state IN ('failed','ambiguous') RETURNING attempt_count",[input.organizationId,input.jobId]);
     if(!result.rows[0])throw new V2ApplicationError("CONFLICT","This Invoice email is not eligible for intentional retry.");
     return {state:"queued",attemptCount:result.rows[0].attempt_count};
   }
@@ -88,19 +89,24 @@ export class PostgresInvoiceEmailDeliveryQueue {
 
   async claim(workerId:string,leaseSeconds:number,spacingMs:number):Promise<Job|null>{
     const client=await this.pool.connect();try{await client.query("BEGIN");const result=await client.query<{id:string;organization_id:string;recipient_email:string;attempt_count:number}>(`
-      WITH candidate AS (SELECT id,organization_id FROM v2_invoice_email_delivery_jobs WHERE (state IN ('queued','retry_wait') AND available_at<=now()) OR (state='processing' AND lease_expires_at<=now()) ORDER BY available_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1),
+      WITH uncertain AS (UPDATE v2_invoice_email_delivery_jobs SET state='ambiguous',last_error=COALESCE(last_error,'Provider outcome is uncertain after an interrupted delivery attempt. Verify delivery before intentional retry.'),claimed_by=NULL,lease_expires_at=NULL,completed_at=now(),updated_at=now() WHERE state='processing' AND lease_expires_at<=now() AND provider_attempted_at IS NOT NULL),
+      candidate AS (SELECT id,organization_id FROM v2_invoice_email_delivery_jobs WHERE (state IN ('queued','retry_wait') AND available_at<=now()) OR (state='processing' AND lease_expires_at<=now() AND provider_attempted_at IS NULL) ORDER BY available_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1),
       pace AS (INSERT INTO v2_invoice_email_delivery_rate_limits(organization_id,next_available_at) SELECT organization_id,now()+($2::text||' milliseconds')::interval FROM candidate ON CONFLICT(organization_id) DO UPDATE SET next_available_at=now()+($2::text||' milliseconds')::interval WHERE v2_invoice_email_delivery_rate_limits.next_available_at<=now() RETURNING organization_id)
       UPDATE v2_invoice_email_delivery_jobs j SET state='processing',claimed_by=$1,lease_expires_at=now()+($3::text||' seconds')::interval,attempt_count=j.attempt_count+1,updated_at=now() FROM candidate,pace WHERE j.id=candidate.id AND j.organization_id=pace.organization_id RETURNING j.id,j.organization_id,j.recipient_email,j.attempt_count`,[workerId,Math.max(0,spacingMs),leaseSeconds]);await client.query("COMMIT");const row=result.rows[0];return row?{id:row.id,organizationId:row.organization_id,recipient:row.recipient_email,attemptCount:row.attempt_count}:null;}catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}}
 
   async process(job:Job,workerId:string,maxAttempts:number):Promise<InvoiceEmailState>{
     let providerAttempted=false;
-    try{const integration=await this.email.requireReady(job.organizationId);const invoices=await this.invoices(job);if(!invoices.length)throw new V2ApplicationError("VALIDATION_ERROR","No deliverable Invoice remains in this email job.");providerAttempted=true;const providerMessageId=await this.deliver(integration,job.recipient,invoices);await this.finish(job,workerId,"sent",undefined,providerMessageId);await this.auditSent(job,providerMessageId);return "sent";}
+    try{const integration=await this.email.requireReady(job.organizationId);const invoices=await this.invoices(job);if(!invoices.length)throw new V2ApplicationError("VALIDATION_ERROR","No deliverable Invoice remains in this email job.");await this.markProviderAttempt(job,workerId);providerAttempted=true;const providerMessageId=await this.deliver(integration,job.recipient,invoices);await this.finish(job,workerId,"sent",undefined,providerMessageId);await this.auditSent(job,providerMessageId);return "sent";}
     catch(error){const message=concise(error);const requested=providerAttempted?this.providerState(error):this.preProviderState(error);const state=requested==='retry_wait'&&job.attemptCount>=maxAttempts?'failed':requested;await this.finish(job,workerId,state,message);return state;}
   }
   private async invoices(job:Job):Promise<MailInvoice[]>{
     const rows=await this.pool.query<{invoice_id:string;display_number:string;currency:string;total_cents:string;paid:string;refunded:string}>(`SELECT item.invoice_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.currency,i.total_cents::text,COALESCE((SELECT sum(amount_cents) FROM v2_billing_payment_allocations p WHERE p.organization_id=i.organization_id AND p.invoice_id=i.id),0)::text paid,COALESCE((SELECT sum(amount_cents) FROM v2_billing_refunds r WHERE r.organization_id=i.organization_id AND r.invoice_id=i.id),0)::text refunded FROM v2_invoice_email_delivery_items item JOIN v2_billing_invoices i ON i.organization_id=item.organization_id AND i.id=item.invoice_id AND i.invoice_state<>'void' JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id WHERE item.organization_id=$1 AND item.job_id=$2 ORDER BY item.created_at,item.invoice_id`,[job.organizationId,job.id]);
     if(!rows.rows.length) return [];
     return Promise.all(rows.rows.map(async(row)=>({invoiceId:row.invoice_id,number:row.display_number,currency:row.currency,totalCents:Number(row.total_cents),balanceCents:Number(row.total_cents)-Number(row.paid)+Number(row.refunded),pdf:await this.documents.pdf(job.organizationId as never,row.invoice_id as never),filename:await this.documents.filename(job.organizationId as never,row.invoice_id as never)})));
+  }
+  private async markProviderAttempt(job:Job,workerId:string):Promise<void>{
+    const marked=await this.pool.query<{id:string}>("UPDATE v2_invoice_email_delivery_jobs SET provider_attempted_at=now(),updated_at=now() WHERE organization_id=$1 AND id=$2 AND state='processing' AND claimed_by=$3 AND provider_attempted_at IS NULL RETURNING id",[job.organizationId,job.id,workerId]);
+    if(!marked.rows[0])throw new V2ApplicationError("CONFLICT","Invoice email delivery ownership changed before the provider attempt.");
   }
   private async deliver(integration:ReadyGmailIntegration,recipient:string,invoices:readonly MailInvoice[]):Promise<string>{
     const clientId=process.env.GOOGLE_CLIENT_ID,clientSecret=process.env.GOOGLE_CLIENT_SECRET;if(!clientId||!clientSecret)throw new V2ApplicationError("RETRYABLE_FAILURE","The platform Gmail delivery connection is unavailable.");
@@ -109,7 +115,7 @@ export class PostgresInvoiceEmailDeliveryQueue {
     const single=invoices.length===1;const subject=single?`Invoice ${invoices[0]!.number} from ${integration.displayName}`:`${invoices.length} Invoices from ${integration.displayName}`;
     const label=single?"View & Pay Invoice":"View & Pay Invoices";
     const raw=rawMime({from:`\"${integration.displayName}\" <${integration.sendingAddress}>`,to:recipient,subject,html:`<p>Please find your ${single?"Invoice":"Invoices"} attached.</p><ul>${summary}</ul><p><a href="${html(portal)}">${label}</a></p><p>The customer portal requires normal sign-in and always displays current Invoice balances.</p>`,attachments:invoices.map((invoice)=>({filename:invoice.filename,content:invoice.pdf}))});
-    const response=await google.gmail({version:"v1",auth:oauth}).users.messages.send({userId:"me",requestBody:{raw}});if(!response.data.id)throw new Error("Provider did not return a message identity.");return response.data.id;
+    const response=await google.gmail({version:"v1",auth:oauth}).users.messages.send({userId:"me",requestBody:{raw}},{timeout:invoiceEmailProviderTimeoutMs});if(!response.data.id)throw new Error("Provider did not return a message identity.");return response.data.id;
   }
   private providerState(error:unknown):InvoiceEmailState{const status=Number((error as {code?:unknown;response?:{status?:unknown}})?.code??(error as {response?:{status?:unknown}})?.response?.status);if(Number.isFinite(status)){if(status===429||status>=500)return "retry_wait";if(status>=400&&status<500)return "failed";}return "ambiguous";}
   private preProviderState(error:unknown):InvoiceEmailState{return error instanceof V2ApplicationError&&error.code==="VALIDATION_ERROR"?"failed":"retry_wait";}

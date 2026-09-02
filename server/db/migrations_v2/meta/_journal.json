@@ -1751,6 +1751,13 @@
       "when": 1788048000101,
       "tag": "0254_v2_portal_credential_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 256,
+      "version": "7",
+      "when": 1788048000102,
+      "tag": "0255_v2_invoice_email_provider_attempt_safety",
+      "breakpoints": true
     }
   ]
 }
