@@ -216,7 +216,7 @@ export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLife
          WHERE t.token_hash=$1 AND t.used_at IS NULL AND t.revoked_at IS NULL AND t.expires_at>now()
            AND a.status='PENDING_INVITE' AND c.is_active IS DISTINCT FROM false
            AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
-           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`,
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE OF t, a`,
         [tokenHash(token)],
       );
       const access = invite.rows[0];
@@ -255,7 +255,7 @@ export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLife
          LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
          WHERE a.status='ACTIVE' AND lower(a.email)=lower($1) AND c.is_active IS DISTINCT FROM false
            AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
-           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`, [email]);
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE OF a`, [email]);
       const row = access.rows[0];
       if (!row) { await client.query("COMMIT"); return; }
       token = randomBytes(32).toString("hex"); recipient = row.email; organizationId = row.organization_id;
@@ -279,7 +279,7 @@ export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLife
          LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
          WHERE t.token_hash=$1 AND t.used_at IS NULL AND t.revoked_at IS NULL AND t.expires_at>now() AND a.status='ACTIVE'
            AND c.is_active IS DISTINCT FROM false AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
-           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE`, [tokenHash(token)]);
+           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE OF t, a`, [tokenHash(token)]);
       const row = reset.rows[0];
       if (!row?.user_id) throw new Error("This password reset link is invalid or expired.");
       const passwordHash = await bcrypt.hash(password, 12);
