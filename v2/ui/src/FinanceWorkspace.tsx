@@ -15,6 +15,7 @@ import {
   newBusinessRequestId,
   type ApiError,
   type FinancialHistoryEntry,
+  type FinancialInvoiceQuery,
   type FinancialInvoiceListItem,
   type FinancialLedgerEntry,
 } from "./api";
@@ -22,6 +23,7 @@ import {
 type GridColumn<T> = Readonly<{
   id: string;
   label: string;
+  serverSort?: FinancialInvoiceQuery["sort"];
   value: (row: T) => string | number;
   render: (row: T) => ReactNode;
 }>;
@@ -43,6 +45,8 @@ const centsFromInput = (text: string): number | null => {
 };
 const centsForInput = (cents: number) =>
   `${Math.trunc(cents / 100)}.${String(Math.abs(cents % 100)).padStart(2, "0")}`;
+const amounts = (value: readonly Readonly<{ currency: string; cents: number }>[]) =>
+  value.length ? value.map((amount) => money(amount)).join(" · ") : "—";
 
 const StripeCardConfirmation = ({ onSubmitted, onError }: Readonly<{ onSubmitted:()=>void; onError:(message:string)=>void }>) => {
   const stripe = useStripe();
@@ -86,6 +90,8 @@ const FinanceGrid = <T,>({
   selectable,
   selectedIds,
   onSelectedIdsChange,
+  serverSorting,
+  onServerSortingChange,
 }: Readonly<{
   grid: string;
   scope: string;
@@ -95,6 +101,8 @@ const FinanceGrid = <T,>({
   selectable?: (row: T) => string | undefined;
   selectedIds?: ReadonlySet<string>;
   onSelectedIdsChange?: (ids: ReadonlySet<string>) => void;
+  serverSorting?: Readonly<{ id: NonNullable<FinancialInvoiceQuery["sort"]>; direction: "asc" | "desc" }>;
+  onServerSortingChange?: (next: Readonly<{ id: NonNullable<FinancialInvoiceQuery["sort"]>; direction: "asc" | "desc" }>) => void;
 }>) => {
   const key = preferenceKey(scope, organizationId, grid);
   const [preference, setPreference] = useState<GridPreference>(() => {
@@ -124,10 +132,11 @@ const FinanceGrid = <T,>({
       ),
     [columns, preference.order],
   );
-  const sorted = sortRows(
+  const activeSorting = serverSorting ?? sorting;
+  const sorted = serverSorting ? rows : sortRows(
     rows,
-    visible.find((column) => column.id === sorting.id),
-    sorting.direction,
+    visible.find((column) => column.id === activeSorting.id),
+    activeSorting.direction,
   );
   const beginResize = (event: MouseEvent, columnId: string) => {
     event.preventDefault();
@@ -184,26 +193,23 @@ const FinanceGrid = <T,>({
               >
                 <button
                   type="button"
-                  onClick={() =>
+                  disabled={Boolean(serverSorting && !column.serverSort)}
+                  onClick={() => {
+                    if (serverSorting) {
+                      if (!column.serverSort) return;
+                      onServerSortingChange?.({ id: column.serverSort, direction: serverSorting.id === column.serverSort && serverSorting.direction === "asc" ? "desc" : "asc" });
+                      return;
+                    }
                     setSorting((current) => {
-                      const next =
-                        current.id === column.id
-                          ? {
-                              id: column.id,
-                              direction:
-                                current.direction === "asc"
-                                  ? ("desc" as const)
-                                  : ("asc" as const),
-                            }
-                          : { id: column.id, direction: "asc" as const };
+                      const next = current.id === column.id ? { id: column.id, direction: current.direction === "asc" ? ("desc" as const) : ("asc" as const) } : { id: column.id, direction: "asc" as const };
                       setPreference((saved) => ({ ...saved, sorting: next }));
                       return next;
-                    })
-                  }
+                    });
+                  }}
                 >
                   {column.label}
-                  {sorting.id === column.id
-                    ? sorting.direction === "asc"
+                  {activeSorting.id === (column.serverSort ?? column.id)
+                    ? activeSorting.direction === "asc"
                       ? " ↑"
                       : " ↓"
                     : ""}
@@ -302,13 +308,23 @@ export const FinanceWorkspace = ({
   const [paymentId, setPaymentId] = useState("");
   const [providerRequestId, setProviderRequestId] = useState("");
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<ReadonlySet<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [search, setSearch] = useState("");
+  const [lifecycleFilter, setLifecycleFilter] = useState<"" | FinancialInvoiceListItem["lifecycle"]>("");
+  const [settlementFilter, setSettlementFilter] = useState<"" | NonNullable<FinancialInvoiceListItem["settlement"]>>("");
+  const [invoiceSort, setInvoiceSort] = useState<NonNullable<FinancialInvoiceQuery["sort"]>>("updated");
+  const [invoiceSortDirection, setInvoiceSortDirection] = useState<"asc" | "desc">("desc");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerPageSize, setLedgerPageSize] = useState(25);
   const [emailRequestId, setEmailRequestId] = useState("");
   const [emailInvoiceIds, setEmailInvoiceIds] = useState<readonly string[]>([]);
   const [emailAdmission, setEmailAdmission] = useState<Awaited<ReturnType<typeof invoiceApi.emailSelected>> | null>(null);
   const [emailAdmissionError, setEmailAdmissionError] = useState("");
+  const invoiceQuery: FinancialInvoiceQuery = { page, pageSize, ...(search ? { q: search } : {}), ...(lifecycleFilter ? { lifecycle: lifecycleFilter } : {}), ...(settlementFilter ? { settlement: settlementFilter } : {}), sort: invoiceSort, direction: invoiceSortDirection };
   const overview = useQuery({
-    queryKey: ["v2", sessionScope, organizationId, "finance", "overview"],
-    queryFn: () => financeApi.overview(organizationId),
+    queryKey: ["v2", sessionScope, organizationId, "finance", "overview", invoiceQuery],
+    queryFn: () => financeApi.overview(organizationId, invoiceQuery),
     enabled: Boolean(organizationId && sessionScope && canPaymentView),
   });
   // A deep Invoice URL is canonical V2 selection context. Do not let the
@@ -342,8 +358,8 @@ export const FinanceWorkspace = ({
     enabled: Boolean(selected && canPaymentView),
   });
   const ledger = useQuery({
-    queryKey: ["v2", sessionScope, organizationId, "finance", "ledger"],
-    queryFn: () => financeApi.ledger(organizationId),
+    queryKey: ["v2", sessionScope, organizationId, "finance", "ledger", ledgerPage, ledgerPageSize],
+    queryFn: () => financeApi.ledger(organizationId, { page: ledgerPage, pageSize: ledgerPageSize }),
     enabled: Boolean(mode === "ledger" && canPaymentView),
   });
   const refresh = async () => {
@@ -464,6 +480,13 @@ export const FinanceWorkspace = ({
     setDialog("");
     setEmailAdmissionError("");
   };
+  const resetInvoicePage = (message = "Selection cleared because the invoice search or filters changed.") => {
+    setPage(1);
+    if (selectedInvoiceIds.size) {
+      setSelectedInvoiceIds(new Set());
+      setNotice(message);
+    }
+  };
   if (!organizationId)
     return (
       <section className="v2-finance-workspace">
@@ -506,6 +529,7 @@ export const FinanceWorkspace = ({
     {
       id: "invoice",
       label: "Invoice",
+      serverSort: "invoice_number",
       value: (row) => row.sourceOrderNumber,
       render: (row) => (
         <button
@@ -519,15 +543,24 @@ export const FinanceWorkspace = ({
     {
       id: "customer",
       label: "Customer",
+      serverSort: "customer",
       value: (row) => row.customerName ?? "",
       render: (row) => row.customerId ? <button className="v2-finance-link" onClick={() => openCustomer(row.customerId!)}>{row.customerName ?? "Customer"}</button> : row.customerName ?? "Customer unavailable",
     },
     {
       id: "issued",
       label: "Issued",
+      serverSort: "issued_at",
       value: (row) => row.issuedAt ?? "",
       render: (row) =>
         row.issuedAt ? new Date(row.issuedAt).toLocaleDateString() : "—",
+    },
+    {
+      id: "updated",
+      label: "Updated",
+      serverSort: "updated",
+      value: (row) => row.updatedAt,
+      render: (row) => new Date(row.updatedAt).toLocaleDateString(),
     },
     {
       id: "due",
@@ -550,6 +583,7 @@ export const FinanceWorkspace = ({
     {
       id: "total",
       label: "Total",
+      serverSort: "total",
       value: (row) => row.gross.cents,
       render: (row) => money(row.gross),
     },
@@ -568,6 +602,7 @@ export const FinanceWorkspace = ({
     {
       id: "balance",
       label: "Balance",
+      serverSort: "balance",
       value: (row) => row.balance.cents,
       render: (row) => money(row.balance),
     },
@@ -653,6 +688,7 @@ export const FinanceWorkspace = ({
             </p>
           </div>
         </header>
+        <div className="v2-finance-actions" aria-label="Ledger page controls"><label>Rows <select value={ledgerPageSize} onChange={(event) => { setLedgerPageSize(Number(event.target.value)); setLedgerPage(1); }}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label></div>
         <FinanceGrid
           grid="ledger"
           scope={sessionScope}
@@ -660,6 +696,7 @@ export const FinanceWorkspace = ({
           rows={ledger.data?.items ?? []}
           columns={ledgerColumns}
         />
+        <div className="v2-finance-actions"><span>{ledger.data ? `${ledger.data.totalMatching} transactions · page ${ledger.data.page}` : "Loading transactions…"}</span><button className="v2-quiet-button" disabled={ledgerPage <= 1 || ledger.isFetching} onClick={() => setLedgerPage((value) => value - 1)}>Previous</button><button className="v2-quiet-button" disabled={!ledger.data?.hasNextPage || ledger.isFetching} onClick={() => setLedgerPage((value) => value + 1)}>Next</button></div>
       </section>
     );
   return (
@@ -675,6 +712,14 @@ export const FinanceWorkspace = ({
         </div>
         {canInvoiceSend && selectedInvoiceIds.size > 0 && <div className="v2-finance-actions"><span>{selectedInvoiceIds.size} selected</span><button className="v2-invoice-issue" onClick={beginInvoiceEmail}>Send selected</button><button className="v2-quiet-button" onClick={() => setSelectedInvoiceIds(new Set())}>Clear selection</button></div>}
       </header>
+      <div className="v2-finance-actions" aria-label="Invoice list controls">
+        <label>Search <input value={search} onChange={(event) => { setSearch(event.target.value); resetInvoicePage(); }} placeholder="Invoice, Order, customer, PO…" /></label>
+        <label>Lifecycle <select value={lifecycleFilter} onChange={(event) => { setLifecycleFilter(event.target.value as typeof lifecycleFilter); resetInvoicePage(); }}><option value="">All</option><option value="draft">Order-backed</option><option value="issued">Issued</option><option value="void">Void</option></select></label>
+        <label>Settlement <select value={settlementFilter} onChange={(event) => { setSettlementFilter(event.target.value as typeof settlementFilter); resetInvoicePage(); }}><option value="">All</option><option value="unpaid">Unpaid</option><option value="partially_paid">Partially paid</option><option value="paid">Paid</option><option value="credit_due">Credit due</option></select></label>
+        <label>Rows <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); resetInvoicePage(); }}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label>
+      </div>
+      {overview.data?.summary && <div className="v2-finance-metrics"><div><small>Outstanding A/R</small><strong>{amounts(overview.data.summary.outstanding)}</strong></div><div><small>Open invoices</small><strong>{overview.data.summary.openInvoiceCount}</strong></div><div><small>Unpaid</small><strong>{overview.data.summary.unpaid.count}</strong></div><div><small>Partially paid</small><strong>{overview.data.summary.partiallyPaid.count}</strong></div><div><small>Credit due</small><strong>{overview.data.summary.creditDue.count}</strong></div></div>}
+      {overview.error && <p className="notice error">{errorText(overview.error)}</p>}
       <div className="v2-finance-overview">
         <FinanceGrid
           grid="invoices"
@@ -685,8 +730,11 @@ export const FinanceWorkspace = ({
           selectable={canInvoiceSend ? (row) => row.source === "v2" && row.lifecycle !== "void" ? row.invoiceId : undefined : undefined}
           selectedIds={selectedInvoiceIds}
           onSelectedIdsChange={setSelectedInvoiceIds}
+          serverSorting={{ id: invoiceSort, direction: invoiceSortDirection }}
+          onServerSortingChange={(next) => { setInvoiceSort(next.id); setInvoiceSortDirection(next.direction); resetInvoicePage("Selection cleared because invoice sorting changed."); }}
         />
       </div>
+      <div className="v2-finance-actions"><span>{overview.data ? `${overview.data.totalMatching} matching invoices · page ${overview.data.page}` : "Loading invoices…"}</span><button className="v2-quiet-button" disabled={page <= 1 || overview.isFetching} onClick={() => setPage((value) => value - 1)}>Previous</button><button className="v2-quiet-button" disabled={!overview.data?.hasNextPage || overview.isFetching} onClick={() => setPage((value) => value + 1)}>Next</button></div>
       {invoice && settlement && (
         <article className="v2-finance-detail">
           <header>

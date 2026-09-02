@@ -5,6 +5,7 @@ import type { Principal } from "../../authorization/principals.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { BillingPaymentsApplicationService } from "../../modules/billing/paymentApplication.js";
 import type { FinancialReadApplicationService } from "../../modules/billing/financialReadApplication.js";
+import type { FinancialInvoicePageRequest, FinancialSettlement } from "../../modules/billing/financialReadApplication.js";
 import { brandedId, currencyCode, money } from "../../modules/shared/commercialValues.js";
 import type { StripePaymentInitiation } from "../../../infrastructure/billing/stripePaymentInitiation.js";
 import { stripeRuntimeReadiness } from "../../../../server/lib/stripe.js";
@@ -16,6 +17,14 @@ const occurredAt = (value: unknown) => typeof value === "string" && Number.isFin
 const currency = (value: unknown) => typeof value === "string" && /^[A-Z]{3}$/.test(value) ? value : null;
 const context = (principal: Principal, organizationId: string, operationId: string, businessRequestId?: string): OperationContext => ({ principal, organizationId, operationId, ...(businessRequestId ? { businessRequest: { id: businessRequestId, payloadFingerprint: "http-boundary" } } : {}) });
 const organization = (request: Request) => (request.params as Record<string, string>).organizationId!;
+const positiveInt = (value: unknown, fallback: number) => typeof value === "string" && /^\d+$/.test(value) ? Math.max(1, Number(value)) : fallback;
+const pageRequest = (request: Request): FinancialInvoicePageRequest => {
+  const lifecycle = typeof request.query.lifecycle === "string" && ["draft", "issued", "void"].includes(request.query.lifecycle) ? request.query.lifecycle as "draft" | "issued" | "void" : undefined;
+  const settlement = typeof request.query.settlement === "string" && ["unpaid", "partially_paid", "paid", "credit_due"].includes(request.query.settlement) ? request.query.settlement as FinancialSettlement : undefined;
+  const sort = typeof request.query.sort === "string" && ["updated", "invoice_number", "customer", "issued_at", "total", "balance"].includes(request.query.sort) ? request.query.sort as FinancialInvoicePageRequest["sort"] : undefined;
+  const direction = request.query.direction === "asc" || request.query.direction === "desc" ? request.query.direction : undefined;
+  return { page: positiveInt(request.query.page, 1), pageSize: Math.min(100, positiveInt(request.query.pageSize, 25)), ...(typeof request.query.q === "string" ? { search: request.query.q } : {}), ...(lifecycle ? { lifecycle } : {}), ...(settlement ? { settlement } : {}), ...(sort ? { sort } : {}), ...(direction ? { direction } : {}) };
+};
 
 export type FinanceHttpDependencies = Readonly<{
   financialRead: FinancialReadApplicationService;
@@ -26,11 +35,15 @@ export type FinanceHttpDependencies = Readonly<{
 export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
   const router = Router({ mergeParams: true });
   router.get("/overview", async (request, response) => {
-    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.listInvoices(context(principal, organizationId, `http:GET:${request.path}`)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: { items: result.value } }); }
+    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.pageInvoices(context(principal, organizationId, `http:GET:${request.path}`), pageRequest(request)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
+    catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
+  });
+  router.get("/summary", async (request, response) => {
+    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const { page: _page, pageSize: _pageSize, sort: _sort, direction: _direction, ...query } = pageRequest(request); const result = await dependencies.financialRead.summarizeInvoices(context(principal, organizationId, `http:GET:${request.path}`), query); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
     catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
   });
   router.get("/ledger", async (request, response) => {
-    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.ledger(context(principal, organizationId, `http:GET:${request.path}`)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: { items: result.value } }); }
+    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const { page, pageSize } = pageRequest(request); const result = await dependencies.financialRead.pageLedger(context(principal, organizationId, `http:GET:${request.path}`), { page, pageSize }); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
     catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
   });
   router.get("/invoices/:invoiceId", async (request, response) => {

@@ -951,6 +951,36 @@ export type FinancialInvoiceListItem = Readonly<{
   issuedAt?: string;
   updatedAt: string;
 }>;
+export type FinancialSettlement = NonNullable<FinancialInvoiceListItem["settlement"]>;
+export type FinancialInvoiceSort = "updated" | "invoice_number" | "customer" | "issued_at" | "total" | "balance";
+export type FinancialInvoiceQuery = Readonly<{
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  lifecycle?: FinancialInvoiceListItem["lifecycle"];
+  settlement?: FinancialSettlement;
+  sort?: FinancialInvoiceSort;
+  direction?: "asc" | "desc";
+}>;
+export type FinancialCurrencyAmount = Readonly<{ currency: string; cents: number }>;
+export type FinancialSettlementAggregate = Readonly<{ count: number; balance: readonly FinancialCurrencyAmount[] }>;
+export type FinancialArSummary = Readonly<{
+  totalMatching: number;
+  outstanding: readonly FinancialCurrencyAmount[];
+  openInvoiceCount: number;
+  unpaid: FinancialSettlementAggregate;
+  partiallyPaid: FinancialSettlementAggregate;
+  paid: FinancialSettlementAggregate;
+  creditDue: FinancialSettlementAggregate;
+}>;
+export type FinancialInvoicePage = Readonly<{
+  items: readonly FinancialInvoiceListItem[];
+  page: number;
+  pageSize: number;
+  totalMatching: number;
+  hasNextPage: boolean;
+  summary: FinancialArSummary;
+}>;
 export type FinancialLedgerEntry = FinancialHistoryEntry &
   Readonly<{
     recordSource: "v2" | "legacy";
@@ -961,6 +991,13 @@ export type FinancialLedgerEntry = FinancialHistoryEntry &
     customerId?: string;
     customerName?: string;
   }>;
+export type FinancialLedgerPage = Readonly<{
+  items: readonly FinancialLedgerEntry[];
+  page: number;
+  pageSize: number;
+  totalMatching: number;
+  hasNextPage: boolean;
+}>;
 export type ArtworkOrderProjection = Readonly<{
   assignment: Readonly<{
     id: string;
@@ -2296,14 +2333,26 @@ export const formulaApi = {
     request<FormulaDomainListEntry>(`/v2/organizations/${encodeURIComponent(organizationId)}/formulas/${encodeURIComponent(formulaId)}/status`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, ...input }) }),
 };
 export const financeApi = {
-  overview: (organizationId: string) =>
-    request<{ items: readonly FinancialInvoiceListItem[] }>(
-      financeEndpoint(organizationId, "/overview"),
-    ),
-  ledger: (organizationId: string) =>
-    request<{ items: readonly FinancialLedgerEntry[] }>(
-      financeEndpoint(organizationId, "/ledger"),
-    ),
+  overview: (organizationId: string, query: FinancialInvoiceQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.page) params.set("page", String(query.page));
+    if (query.pageSize) params.set("pageSize", String(query.pageSize));
+    if (query.q) params.set("q", query.q);
+    if (query.lifecycle) params.set("lifecycle", query.lifecycle);
+    if (query.settlement) params.set("settlement", query.settlement);
+    if (query.sort) params.set("sort", query.sort);
+    if (query.direction) params.set("direction", query.direction);
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return request<FinancialInvoicePage>(financeEndpoint(organizationId, `/overview${suffix}`));
+  },
+  summary: (organizationId: string) => request<FinancialArSummary>(financeEndpoint(organizationId, "/summary")),
+  ledger: (organizationId: string, query: Pick<FinancialInvoiceQuery, "page" | "pageSize"> = {}) => {
+    const params = new URLSearchParams();
+    if (query.page) params.set("page", String(query.page));
+    if (query.pageSize) params.set("pageSize", String(query.pageSize));
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return request<FinancialLedgerPage>(financeEndpoint(organizationId, `/ledger${suffix}`));
+  },
   invoice: (organizationId: string, invoiceId: string) =>
     request<FinancialInvoiceRead>(
       financeEndpoint(

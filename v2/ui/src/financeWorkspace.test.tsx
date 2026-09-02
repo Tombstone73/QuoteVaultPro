@@ -147,4 +147,10 @@ assert.match(workspaceSource, /emailAdmissionError && <p className="notice error
 assert.match(workspaceSource, /<p role="status">\{emailAdmission\.queuedInvoices\}/, "email admission success reports queued work in the dialog");
 assert.match(workspaceSource, /disabled=\{!csrfReady \|\| !emailRequestId \|\| !emailInvoiceIds\.length \|\| emailSelected\.isPending/, "email admission prevents duplicate submission while pending");
 assert.match(apiSource, /Invoice email admission returned an invalid response\. No email was queued\./, "an invalid admission response is surfaced as an actionable failure");
+assert.match(workspaceSource, /"finance", "overview", invoiceQuery/, "Finance pages cache by the complete server query");
+assert.match(workspaceSource, /Select visible invoices/, "select-visible is explicitly page scoped");
+assert.match(workspaceSource, /Selection cleared because the invoice search or filters changed\./, "filter changes cannot leave ambiguous hidden selections");
+assert.match(workspaceSource, /serverSorting=\{\{ id: invoiceSort, direction: invoiceSortDirection \}\}/, "invoice sorting is delegated to the server query");
+assert.match(workspaceSource, /overview\.data\.totalMatching/, "Finance renders the authoritative matching count");
+assert.match(apiSource, /financeEndpoint\(organizationId, `\/overview\$\{suffix\}`\)/, "the API carries query parameters to the paged overview route");
 console.log("FinanceWorkspace invoice PDF action tests passed.");

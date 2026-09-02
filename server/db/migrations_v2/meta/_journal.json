@@ -1758,6 +1758,20 @@
       "when": 1788048000102,
       "tag": "0255_v2_invoice_email_provider_attempt_safety",
       "breakpoints": true
+    },
+    {
+      "idx": 257,
+      "version": "7",
+      "when": 1788048000103,
+      "tag": "0256_v2_finance_paged_invoice_read_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 258,
+      "version": "7",
+      "when": 1788048000104,
+      "tag": "0257_v2_finance_paged_ledger_read_model",
+      "breakpoints": true
     }
   ]
 }

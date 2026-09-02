@@ -58,6 +58,43 @@ export type FinancialInvoiceListItem = Readonly<{
   issuedAt?: string;
   updatedAt: string;
 }>;
+export type FinancialSettlement = NonNullable<FinancialInvoiceListItem["settlement"]>;
+export type FinancialInvoiceSort = "updated" | "invoice_number" | "customer" | "issued_at" | "total" | "balance";
+export type FinancialSortDirection = "asc" | "desc";
+/** All filters apply to the normalized compatibility population before the page is selected. */
+export type FinancialInvoicePageRequest = Readonly<{
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  lifecycle?: FinancialInvoiceListItem["lifecycle"];
+  settlement?: FinancialSettlement;
+  sort?: FinancialInvoiceSort;
+  direction?: FinancialSortDirection;
+}>;
+export type FinancialCurrencyAmount = Readonly<{ currency: string; cents: number }>;
+export type FinancialSettlementAggregate = Readonly<{
+  count: number;
+  balance: readonly FinancialCurrencyAmount[];
+}>;
+/** Aggregates are derived from the complete filtered tenant projection, never a UI page. */
+export type FinancialArSummary = Readonly<{
+  totalMatching: number;
+  outstanding: readonly FinancialCurrencyAmount[];
+  openInvoiceCount: number;
+  unpaid: FinancialSettlementAggregate;
+  partiallyPaid: FinancialSettlementAggregate;
+  paid: FinancialSettlementAggregate;
+  creditDue: FinancialSettlementAggregate;
+}>;
+export type FinancialInvoicePage = Readonly<{
+  items: readonly FinancialInvoiceListItem[];
+  page: number;
+  pageSize: number;
+  totalMatching: number;
+  hasNextPage: boolean;
+  summary: FinancialArSummary;
+}>;
+export type FinancialLedgerPageRequest = Readonly<{ page?: number; pageSize?: number }>;
 export type FinancialLedgerEntry = FinancialHistoryEntry &
   Readonly<{
     recordSource: "v2" | "legacy";
@@ -68,6 +105,13 @@ export type FinancialLedgerEntry = FinancialHistoryEntry &
     customerId?: string;
     customerName?: string;
   }>;
+export type FinancialLedgerPage = Readonly<{
+  items: readonly FinancialLedgerEntry[];
+  page: number;
+  pageSize: number;
+  totalMatching: number;
+  hasNextPage: boolean;
+}>;
 
 export interface FinancialReadPort {
   readFinancialInvoice(
@@ -81,9 +125,21 @@ export interface FinancialReadPort {
   listFinancialInvoices(
     organizationId: OrganizationId,
   ): Promise<readonly FinancialInvoiceListItem[]>;
+  pageFinancialInvoices(
+    organizationId: OrganizationId,
+    request: FinancialInvoicePageRequest,
+  ): Promise<FinancialInvoicePage>;
+  summarizeFinancialInvoices(
+    organizationId: OrganizationId,
+    request: Omit<FinancialInvoicePageRequest, "page" | "pageSize" | "sort" | "direction">,
+  ): Promise<FinancialArSummary>;
   listLedger(
     organizationId: OrganizationId,
   ): Promise<readonly FinancialLedgerEntry[]>;
+  pageFinancialLedger(
+    organizationId: OrganizationId,
+    request: FinancialLedgerPageRequest,
+  ): Promise<FinancialLedgerPage>;
 }
 export interface FinancialReadRunner {
   read<T>(action: (port: FinancialReadPort) => Promise<T>): Promise<T>;
@@ -177,6 +233,40 @@ export class FinancialReadApplicationService {
     }
   }
 
+  async pageInvoices(
+    context: OperationContext,
+    request: FinancialInvoicePageRequest,
+  ): Promise<ApplicationResult<FinancialInvoicePage>> {
+    try {
+      requireOperationPrincipalScope(context);
+      this.assertFinancialView(context);
+      return success(await this.runner.read((port) => port.pageFinancialInvoices(
+        brandedId<"OrganizationId">(context.organizationId), request,
+      )));
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError(
+        "INTERNAL_ERROR", "Financial invoice summaries could not be read.",
+      ));
+    }
+  }
+
+  async summarizeInvoices(
+    context: OperationContext,
+    request: Omit<FinancialInvoicePageRequest, "page" | "pageSize" | "sort" | "direction">,
+  ): Promise<ApplicationResult<FinancialArSummary>> {
+    try {
+      requireOperationPrincipalScope(context);
+      this.assertFinancialView(context);
+      return success(await this.runner.read((port) => port.summarizeFinancialInvoices(
+        brandedId<"OrganizationId">(context.organizationId), request,
+      )));
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError(
+        "INTERNAL_ERROR", "Financial A/R totals could not be read.",
+      ));
+    }
+  }
+
   async ledger(
     context: OperationContext,
   ): Promise<ApplicationResult<readonly FinancialLedgerEntry[]>> {
@@ -212,6 +302,23 @@ export class FinancialReadApplicationService {
               "Financial ledger could not be read.",
             ),
       );
+    }
+  }
+
+  async pageLedger(
+    context: OperationContext,
+    request: FinancialLedgerPageRequest,
+  ): Promise<ApplicationResult<FinancialLedgerPage>> {
+    try {
+      requireOperationPrincipalScope(context);
+      this.assertFinancialView(context);
+      return success(await this.runner.read((port) => port.pageFinancialLedger(
+        brandedId<"OrganizationId">(context.organizationId), request,
+      )));
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError(
+        "INTERNAL_ERROR", "Financial ledger could not be read.",
+      ));
     }
   }
 
