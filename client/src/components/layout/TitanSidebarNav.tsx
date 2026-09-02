@@ -233,9 +233,11 @@ function buildBadgeCounts(
 interface TitanSidebarNavProps {
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
+  /** The mobile drawer reuses this canonical sidebar rather than duplicating navigation data. */
+  mobile?: boolean;
 }
 
-export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: TitanSidebarNavProps) {
+export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse, mobile = false }: TitanSidebarNavProps) {
   const { user } = useAuth();
   const { role, isApprover } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { preferences } = useOrgPreferences();
@@ -327,15 +329,18 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
 
   return (
     <aside
+      data-testid={mobile ? "mobile-sidebar-navigation" : "desktop-sidebar-navigation"}
+      data-navigation-variant={mobile ? "mobile" : "desktop"}
       className={cn(
-        "hidden h-screen shrink-0 flex-col border-r border-titan-border-subtle bg-titan-bg-card md:flex",
+        "h-full min-h-0 shrink-0 flex-col border-r border-titan-border-subtle bg-titan-bg-card",
+        mobile ? "flex" : "hidden md:flex",
         "transition-all duration-200 ease-in-out",
         isCollapsed ? "w-16" : "w-64"
       )}
     >
       {/* Logo / Brand - ALWAYS rendered with consistent toggle location */}
       <div className={cn(
-        "flex items-center border-b border-titan-border-subtle px-3 py-3",
+        "flex shrink-0 items-center border-b border-titan-border-subtle px-3 py-3",
         isCollapsed ? "justify-center" : "justify-between"
       )}>
         {/* Logo + App Name (clickable to toggle) */}
@@ -380,7 +385,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       </div>
 
       {/* New Order Button */}
-      <div className={cn("px-3 py-2", isCollapsed && "px-2")}>
+      <div className={cn("shrink-0 px-3 py-2", isCollapsed && "px-2")}>
         <Button
           onClick={() => guardedNavigate(ROUTES.orders.new)}
           className={cn(
@@ -396,7 +401,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       </div>
 
       {/* Navigation Sections */}
-      <nav className="flex-1 overflow-y-auto py-1">
+      <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-1" aria-label="Application navigation">
         {filteredSections.map((section) => (
           <NavSection
             key={section.section}
@@ -411,8 +416,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
 
       {/* Footer */}
       <div className={cn(
-        "border-t border-titan-border-subtle px-3 py-2",
-        "flex items-center",
+        "flex shrink-0 items-center border-t border-titan-border-subtle px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]",
         isCollapsed ? "justify-center" : "justify-between"
       )}>
         {!isCollapsed && (

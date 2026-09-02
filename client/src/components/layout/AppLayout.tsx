@@ -103,18 +103,19 @@ function InternalAppLayout() {
             onClick={toggleMobileMenu}
           />
           {/* Mobile Sidebar */}
-          <div className="fixed inset-y-0 left-0 z-50 w-64 md:hidden">
-            <div className="relative h-full bg-sidebar border-r border-sidebar-border">
+          <div className="fixed left-0 top-0 z-50 h-dvh w-64 md:hidden" data-testid="mobile-navigation-drawer">
+            <div className="relative flex h-full min-h-0 flex-col bg-sidebar border-r border-sidebar-border">
               {/* Close button */}
               <Button
                 variant="ghost"
                 size="icon"
-                className="absolute right-2 top-3 h-8 w-8 text-muted-foreground hover:text-foreground"
+                className="absolute right-2 top-[calc(0.75rem+env(safe-area-inset-top))] z-10 h-8 w-8 text-muted-foreground hover:text-foreground"
                 onClick={toggleMobileMenu}
+                aria-label="Close navigation"
               >
                 <X className="h-5 w-5" />
               </Button>
-              <TitanSidebarNav isCollapsed={false} />
+              <TitanSidebarNav isCollapsed={false} mobile />
             </div>
           </div>
         </>
