@@ -1238,6 +1238,28 @@ let sessionScope: string | undefined;
 const csrfKey = (organizationId: string) =>
   `${sessionScope ?? "unscoped"}:${organizationId}`;
 export const newBusinessRequestId = () => crypto.randomUUID();
+export type InvoiceEmailAdmission = Readonly<{
+  batchId: string;
+  selected: number;
+  queuedInvoices: number;
+  queuedMessages: number;
+  skipped: number;
+  replayed: boolean;
+}>;
+const invoiceEmailAdmission = (value: unknown): InvoiceEmailAdmission => {
+  const candidate = value as Partial<InvoiceEmailAdmission> | null;
+  if (
+    !candidate ||
+    typeof candidate.batchId !== "string" ||
+    !Number.isInteger(candidate.selected) ||
+    !Number.isInteger(candidate.queuedInvoices) ||
+    !Number.isInteger(candidate.queuedMessages) ||
+    !Number.isInteger(candidate.skipped) ||
+    typeof candidate.replayed !== "boolean"
+  )
+    throw new Error("Invoice email admission returned an invalid response. No email was queued.");
+  return candidate as InvoiceEmailAdmission;
+};
 const endpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/quotes${suffix}`;
 const orderEndpoint = (org: string, suffix = "") =>
@@ -1781,11 +1803,11 @@ export const invoiceApi = {
         body: JSON.stringify({ businessRequestId }),
       },
   ),
-  emailSelected: (organizationId:string,businessRequestId:string,invoiceIds:readonly string[]) =>
-    request<Readonly<{batchId:string;selected:number;queuedInvoices:number;queuedMessages:number;skipped:number;replayed:boolean}>>(
+  emailSelected: async (organizationId:string,businessRequestId:string,invoiceIds:readonly string[]): Promise<InvoiceEmailAdmission> =>
+    invoiceEmailAdmission(await request<unknown>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/email-delivery/batch`,
       { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({businessRequestId,invoiceIds}) },
-    ),
+    )),
   emailPreview: (organizationId:string,invoiceIds:readonly string[]) => request<Readonly<{selected:number;deliverableInvoices:number;recipientCount:number;skipped:number}>>(
     `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/email-delivery/preview`,
     {method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({invoiceIds})},

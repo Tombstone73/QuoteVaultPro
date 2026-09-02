@@ -303,6 +303,9 @@ export const FinanceWorkspace = ({
   const [providerRequestId, setProviderRequestId] = useState("");
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<ReadonlySet<string>>(new Set());
   const [emailRequestId, setEmailRequestId] = useState("");
+  const [emailInvoiceIds, setEmailInvoiceIds] = useState<readonly string[]>([]);
+  const [emailAdmission, setEmailAdmission] = useState<Awaited<ReturnType<typeof invoiceApi.emailSelected>> | null>(null);
+  const [emailAdmissionError, setEmailAdmissionError] = useState("");
   const overview = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "finance", "overview"],
     queryFn: () => financeApi.overview(organizationId),
@@ -429,11 +432,38 @@ export const FinanceWorkspace = ({
     onError: (error) => setNotice(errorText(error)),
   });
   const emailSelected = useMutation({
-    mutationFn: () => invoiceApi.emailSelected(organizationId, emailRequestId, [...selectedInvoiceIds]),
-    onSuccess: (result) => { setNotice(`${result.queuedInvoices} invoices queued in ${result.queuedMessages} customer email${result.queuedMessages === 1 ? "" : "s"}; ${result.skipped} skipped.`); setSelectedInvoiceIds(new Set()); setDialog(""); },
-    onError: (error) => setNotice(errorText(error)),
+    mutationFn: () => {
+      if (!emailRequestId || !emailInvoiceIds.length)
+        throw new Error("Invoice email selection is unavailable. Close this dialog and preview the selection again.");
+      return invoiceApi.emailSelected(organizationId, emailRequestId, emailInvoiceIds);
+    },
+    onSuccess: (result) => {
+      setEmailAdmission(result);
+      setEmailAdmissionError("");
+      setNotice(`${result.queuedInvoices} invoices queued in ${result.queuedMessages} customer email${result.queuedMessages === 1 ? "" : "s"}; ${result.skipped} skipped.`);
+      setSelectedInvoiceIds(new Set());
+    },
+    onError: (error) => {
+      const message = errorText(error);
+      setEmailAdmissionError(message);
+      setNotice(message);
+    },
   });
-  const emailPreview = useMutation({ mutationFn: () => invoiceApi.emailPreview(organizationId, [...selectedInvoiceIds]) });
+  const emailPreview = useMutation({ mutationFn: (invoiceIds: readonly string[]) => invoiceApi.emailPreview(organizationId, invoiceIds) });
+  const beginInvoiceEmail = () => {
+    const invoiceIds = [...selectedInvoiceIds];
+    setEmailRequestId(newBusinessRequestId());
+    setEmailInvoiceIds(invoiceIds);
+    setEmailAdmission(null);
+    setEmailAdmissionError("");
+    setDialog("invoiceEmail");
+    emailPreview.mutate(invoiceIds);
+  };
+  const closeEmailDialog = () => {
+    if (emailSelected.isPending) return;
+    setDialog("");
+    setEmailAdmissionError("");
+  };
   if (!organizationId)
     return (
       <section className="v2-finance-workspace">
@@ -643,7 +673,7 @@ export const FinanceWorkspace = ({
             Refunds never rewrite immutable financial history.
           </p>
         </div>
-        {canInvoiceSend && selectedInvoiceIds.size > 0 && <div className="v2-finance-actions"><span>{selectedInvoiceIds.size} selected</span><button className="v2-invoice-issue" onClick={() => { setEmailRequestId(newBusinessRequestId()); setDialog("invoiceEmail"); emailPreview.mutate(); }}>Send selected</button><button className="v2-quiet-button" onClick={() => setSelectedInvoiceIds(new Set())}>Clear selection</button></div>}
+        {canInvoiceSend && selectedInvoiceIds.size > 0 && <div className="v2-finance-actions"><span>{selectedInvoiceIds.size} selected</span><button className="v2-invoice-issue" onClick={beginInvoiceEmail}>Send selected</button><button className="v2-quiet-button" onClick={() => setSelectedInvoiceIds(new Set())}>Clear selection</button></div>}
       </header>
       <div className="v2-finance-overview">
         <FinanceGrid
@@ -880,7 +910,7 @@ export const FinanceWorkspace = ({
         </div>
       )}
       {dialog === "invoiceEmail" && (
-        <div className="v2-finance-modal" role="dialog" aria-modal="true" aria-label="Send selected invoices"><div><header><h2>Send selected invoices</h2><button onClick={() => setDialog("")}>Close</button></header>{emailPreview.isPending ? <p>Resolving canonical billing recipients…</p> : emailPreview.data ? <p>{emailPreview.data.selected} invoices selected · {emailPreview.data.recipientCount} recipients · {emailPreview.data.skipped} skipped for missing or invalid billing email.</p> : <p>Recipient preview is unavailable. Retry before queuing delivery.</p>}<p>Customer messages are admitted to the throttled delivery worker. They are not sent from this page.</p><button className="v2-invoice-issue" disabled={!csrfReady || emailSelected.isPending || emailPreview.isPending || !emailPreview.data} onClick={() => emailSelected.mutate()}>{emailSelected.isPending ? "Queuing…" : "Queue email delivery"}</button></div></div>
+        <div className="v2-finance-modal" role="dialog" aria-modal="true" aria-label="Send selected invoices"><div><header><h2>Send selected invoices</h2><button disabled={emailSelected.isPending} onClick={closeEmailDialog}>Close</button></header>{emailAdmission ? <><p role="status">{emailAdmission.queuedInvoices} invoices queued in {emailAdmission.queuedMessages} customer email{emailAdmission.queuedMessages === 1 ? "" : "s"}; {emailAdmission.skipped} skipped{emailAdmission.replayed ? ". Existing batch reused." : "."}</p><p>Delivery continues through the throttled worker. No duplicate admission was created.</p></> : <>{emailPreview.isPending ? <p>Resolving canonical billing recipients…</p> : emailPreview.data ? <p>{emailPreview.data.selected} invoices selected · {emailPreview.data.recipientCount} recipients · {emailPreview.data.skipped} skipped for missing or invalid billing email.</p> : <p>Recipient preview is unavailable. Retry before queuing delivery.</p>}<p>Customer messages are admitted to the throttled delivery worker. They are not sent from this page.</p>{emailAdmissionError && <p className="notice error" role="alert">{emailAdmissionError}</p>}<button className="v2-invoice-issue" disabled={!csrfReady || !emailRequestId || !emailInvoiceIds.length || emailSelected.isPending || emailPreview.isPending || !emailPreview.data} onClick={() => emailSelected.mutate()}>{emailSelected.isPending ? "Queuing…" : "Queue email delivery"}</button></>}</div></div>
       )}
     </section>
   );
