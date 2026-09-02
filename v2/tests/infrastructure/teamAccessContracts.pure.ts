@@ -25,6 +25,7 @@ assert.match(teamAccess,/sendPortalInvitation/u);
 const bootstrap = teamAccess.slice(teamAccess.indexOf("async bootstrapPortalAccess"), teamAccess.indexOf("async setMembershipActive"));
 assert.match(bootstrap,/permissions\.assignPortal/u);
 assert.doesNotMatch(bootstrap,/this\.ceiling\(actor,set\.rows/u, "staff authority to grant portal access must not require portal-user capabilities");
+assert.match(bootstrap,/LEFT JOIN v2_permission_set_capabilities[\s\S]*FOR UPDATE OF s/u, "portal permission-set lookup must lock only the non-nullable set row");
 const replacePortal = teamAccess.slice(teamAccess.indexOf("async replacePortalAssignments"), teamAccess.indexOf("private async sets"));
 assert.doesNotMatch(replacePortal,/this\.ceiling\(actor, found\.rows/u, "portal-role assignment must not require portal-user capabilities on Staff");
 assert.doesNotMatch(teamAccess,/dev-stage18p-portal-setup/u);
