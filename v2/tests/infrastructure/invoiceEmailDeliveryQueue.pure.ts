@@ -11,6 +11,7 @@ const finance = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 assert.match(queue, /invoiceEmailSelectionLimit = 100/u);
 assert.match(queue, /new Set\(input\.invoiceIds/u);
 assert.match(queue, /i\.organization_id=\$1 AND i\.id=ANY/u);
+assert.match(queue, /i\.id AS "invoiceId",i\.customer_id AS "customerId"/u, "recipient resolution must return the camel-case fields consumed when persisting queue items");
 assert.match(queue, /recipient=row\.email\?normalize\(row\.email\)/u);
 assert.match(queue, /grouped\.get\(recipient\)/u);
 assert.match(queue, /invoiceEmailMessageInvoiceLimit = 20/u);
