@@ -31,6 +31,9 @@ const permittedUnappliedRepairs = new Map([
     "0231_v2_fulfillment_handoff_document_snapshots",
     "0232_v2_fulfillment_handoff_snapshot_tenant_key",
   ]],
+  ["07aaf39aa4b5c3a12afc863574e981199a942e855e46a48c985b1d06bfd7970b", [
+    "0257_v2_finance_paged_ledger_read_model",
+  ]],
 ]);
 
 function sha256(value) {
@@ -94,34 +97,52 @@ function makeManifest(entries, previousManifest) {
     immutableThrough: { idx: last.idx, when: last.when, tag: last.tag },
     canonicalSha256: sha256(canonical(entries)),
   };
-  if (previousManifest?.unappliedRepair) manifest.unappliedRepair = previousManifest.unappliedRepair;
+  const repairs = recordedUnappliedRepairs(previousManifest);
+  if (repairs.length > 0) manifest.unappliedRepairs = repairs;
   return manifest;
 }
 
-function validateRecordedUnappliedRepair(manifest, entries) {
-  const repair = manifest.unappliedRepair;
-  if (repair === undefined) return;
-  if (
-    !repair ||
-    typeof repair.priorCanonicalSha256 !== "string" ||
-    !/^[a-f0-9]{64}$/.test(repair.priorCanonicalSha256) ||
-    !Array.isArray(repair.tags) ||
-    repair.tags.length === 0 ||
-    repair.tags.some((tag) => typeof tag !== "string") ||
-    typeof repair.reason !== "string" ||
-    repair.reason.length === 0
-  ) fail("invalid recorded unapplied migration repair metadata");
+function recordedUnappliedRepairs(manifest) {
+  if (!manifest) return [];
+  if (manifest.unappliedRepairs !== undefined) {
+    if (!Array.isArray(manifest.unappliedRepairs)) fail("invalid recorded unapplied migration repair metadata");
+    if (manifest.unappliedRepair !== undefined) fail("cannot mix legacy and plural unapplied migration repair metadata");
+    return manifest.unappliedRepairs;
+  }
+  return manifest.unappliedRepair === undefined ? [] : [manifest.unappliedRepair];
+}
 
-  const permittedTags = permittedUnappliedRepairs.get(repair.priorCanonicalSha256);
-  if (
-    !permittedTags ||
-    permittedTags.length !== repair.tags.length ||
-    permittedTags.some((tag, index) => tag !== repair.tags[index])
-  ) fail("recorded unapplied migration repair is not a permitted immutable-history exception");
+function validateRecordedUnappliedRepairs(manifest, entries) {
+  const repairs = recordedUnappliedRepairs(manifest);
+  const seenPriorDigests = new Set();
+  for (const repair of repairs) {
+    if (
+      !repair ||
+      typeof repair.priorCanonicalSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(repair.priorCanonicalSha256) ||
+      !Array.isArray(repair.tags) ||
+      repair.tags.length === 0 ||
+      repair.tags.some((tag) => typeof tag !== "string") ||
+      typeof repair.reason !== "string" ||
+      repair.reason.length === 0
+    ) fail("invalid recorded unapplied migration repair metadata");
 
-  const protectedTags = new Set(entries.filter((entry) => entry.idx <= manifest.immutableThrough.idx).map((entry) => entry.tag));
-  if (repair.tags.some((tag) => !protectedTags.has(tag))) {
-    fail("recorded unapplied migration repair references a tag outside protected history");
+    if (seenPriorDigests.has(repair.priorCanonicalSha256)) {
+      fail("duplicate recorded unapplied migration repair metadata");
+    }
+    seenPriorDigests.add(repair.priorCanonicalSha256);
+
+    const permittedTags = permittedUnappliedRepairs.get(repair.priorCanonicalSha256);
+    if (
+      !permittedTags ||
+      permittedTags.length !== repair.tags.length ||
+      permittedTags.some((tag, index) => tag !== repair.tags[index])
+    ) fail("recorded unapplied migration repair is not a permitted immutable-history exception");
+
+    const protectedTags = new Set(entries.filter((entry) => entry.idx <= manifest.immutableThrough.idx).map((entry) => entry.tag));
+    if (repair.tags.some((tag) => !protectedTags.has(tag))) {
+      fail("recorded unapplied migration repair references a tag outside protected history");
+    }
   }
 }
 
@@ -145,7 +166,7 @@ function verifyManifest(manifest, entries) {
     protectedLast.tag !== manifest.immutableThrough.tag
   ) fail("journal order/tag/timestamp changed inside protected migration history");
 
-  validateRecordedUnappliedRepair(manifest, entries);
+  validateRecordedUnappliedRepairs(manifest, entries);
   const protectedDigest = sha256(canonical(protectedEntries));
   if (protectedDigest !== manifest.canonicalSha256) {
     fail("historical migration SQL or journal metadata changed; create a new repair migration instead of editing applied history");

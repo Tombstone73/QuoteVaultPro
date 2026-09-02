@@ -45,6 +45,7 @@ assert.equal(ledger.totalMatching, 76);
 assert.equal(ledger.hasNextPage, true);
 assert.equal(ledger.items[0]?.balanceAfter.cents, 7500);
 assert.match(ledgerCalls[0]!.sql, /sum\(signed_cents\) OVER \(PARTITION BY invoice_id/u);
+assert.match(ledgerCalls[0]!.sql, /COALESCE\(p\.paid_at,p\.applied_at,p\.created_at AT TIME ZONE 'UTC'\) occurred_at/u);
 assert.match(ledgerCalls[0]!.sql, /LIMIT \$2 OFFSET \$3/u);
 assert.deepEqual(ledgerCalls[0]!.values, ["tenant-a", 25, 50]);
 assert.match(ledgerCalls[1]!.sql, /SELECT count\(\*\)::text total_matching FROM combined/u);
@@ -62,5 +63,9 @@ assert.match(commandCenter, /financeApi\.summary\(organizationId\)/u);
 assert.doesNotMatch(commandCenter, /invoices\.reduce\(/u);
 assert.match(invoiceUi, /financeApi\.overview\(organizationId/u);
 assert.match(invoiceUi, /hasNextPage/u);
+
+const ledgerMigration = readFileSync("server/db/migrations_v2/0257_v2_finance_paged_ledger_read_model.sql", "utf8");
+assert.match(ledgerMigration, /COALESCE\(paid_at,applied_at,created_at AT TIME ZONE 'UTC'\) DESC/u);
+assert.doesNotMatch(ledgerMigration, /COALESCE\(paid_at,applied_at,created_at\) DESC/u);
 
 console.log("V2 paged Finance projection contract tests passed.");

@@ -7,13 +7,22 @@
     "when": 1788048000104,
     "tag": "0257_v2_finance_paged_ledger_read_model"
   },
-  "canonicalSha256": "07aaf39aa4b5c3a12afc863574e981199a942e855e46a48c985b1d06bfd7970b",
-  "unappliedRepair": {
-    "priorCanonicalSha256": "af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3",
-    "tags": [
-      "0231_v2_fulfillment_handoff_document_snapshots",
-      "0232_v2_fulfillment_handoff_snapshot_tenant_key"
-    ],
-    "reason": "DEV rejected the unreleased 0231 composite FK before either migration committed; the parent key is now created before the child FK."
-  }
+  "canonicalSha256": "c8ed6af8f23b25b6c4e929ed0b23e4a81824bbf467e57d94dea56015dd6954e9",
+  "unappliedRepairs": [
+    {
+      "priorCanonicalSha256": "af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3",
+      "tags": [
+        "0231_v2_fulfillment_handoff_document_snapshots",
+        "0232_v2_fulfillment_handoff_snapshot_tenant_key"
+      ],
+      "reason": "DEV rejected the unreleased 0231 composite FK before either migration committed; the parent key is now created before the child FK."
+    },
+    {
+      "priorCanonicalSha256": "07aaf39aa4b5c3a12afc863574e981199a942e855e46a48c985b1d06bfd7970b",
+      "tags": [
+        "0257_v2_finance_paged_ledger_read_model"
+      ],
+      "reason": "DEV rejected the unreleased 0257 legacy-payment expression index before either Finance migration committed; created_at is timestamp without time zone and its implicit cast to timestamptz is session-time-zone dependent."
+    }
+  ]
 }
