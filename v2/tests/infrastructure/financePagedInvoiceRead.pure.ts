@@ -37,18 +37,20 @@ const ledgerCalls: Array<{ sql: string; values: readonly unknown[] }> = [];
 const ledgerClient = {
   query: async (sql: string, values: readonly unknown[]) => {
     ledgerCalls.push({ sql, values });
-    return { rows: sql.includes("SELECT count(*)::text total_matching FROM combined") ? [{ total_matching: "76" }] : [{ record_source: "v2", kind: "payment", id: "payment-75", payment_id: "payment-75", invoice_id: "invoice-75", amount_cents: "2500", currency: "USD", method: "check", source: "manual", occurred_at: new Date("2026-01-02T00:00:00.000Z"), recorded_at: new Date("2026-01-02T00:00:00.000Z"), source_order_id: "order-75", source_order_number: "ORD-1075", customer_id: "customer-75", customer_name: "Scale Customer", balance_after_cents: "7500" }] };
+    return { rows: sql.includes("SELECT count(*)::text total_matching FROM filtered") ? [{ total_matching: "76" }] : [{ record_source: "v2", kind: "payment", id: "payment-75", payment_id: "payment-75", invoice_id: "invoice-75", amount_cents: "2500", currency: "USD", method: "check", source: "manual", occurred_at: new Date("2026-01-02T00:00:00.000Z"), recorded_at: new Date("2026-01-02T00:00:00.000Z"), source_order_id: "order-75", source_order_number: "ORD-1075", customer_id: "customer-75", customer_name: "Scale Customer", balance_after_cents: "7500" }] };
   },
 } as unknown as PoolClient;
-const ledger = await new PostgresFinancialRead(ledgerClient).pageFinancialLedger("tenant-a" as never, { page: 3, pageSize: 25 });
+const ledger = await new PostgresFinancialRead(ledgerClient).pageFinancialLedger("tenant-a" as never, { page: 3, pageSize: 25, search: "ORD_100%", kind: "payment", recordSource: "v2", sort: "amount", direction: "asc" });
 assert.equal(ledger.totalMatching, 76);
 assert.equal(ledger.hasNextPage, true);
 assert.equal(ledger.items[0]?.balanceAfter.cents, 7500);
 assert.match(ledgerCalls[0]!.sql, /sum\(signed_cents\) OVER \(PARTITION BY invoice_id/u);
 assert.match(ledgerCalls[0]!.sql, /COALESCE\(p\.paid_at,p\.applied_at,p\.created_at AT TIME ZONE 'UTC'\) occurred_at/u);
-assert.match(ledgerCalls[0]!.sql, /LIMIT \$2 OFFSET \$3/u);
-assert.deepEqual(ledgerCalls[0]!.values, ["tenant-a", 25, 50]);
-assert.match(ledgerCalls[1]!.sql, /SELECT count\(\*\)::text total_matching FROM combined/u);
+assert.match(ledgerCalls[0]!.sql, /FROM filtered ORDER BY CASE WHEN kind='refund' THEN -amount_cents ELSE amount_cents END ASC NULLS LAST, occurred_at DESC/u);
+assert.match(ledgerCalls[0]!.sql, /source_order_number ILIKE/u);
+assert.match(ledgerCalls[0]!.sql, /LIMIT \$5 OFFSET \$6/u);
+assert.deepEqual(ledgerCalls[0]!.values, ["tenant-a", "ORD\\_100\\%", "payment", "v2", 25, 50]);
+assert.match(ledgerCalls[1]!.sql, /SELECT count\(\*\)::text total_matching FROM filtered/u);
 
 const financeUi = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 const commandCenter = readFileSync("v2/ui/src/CommandCenter.tsx", "utf8");
@@ -58,7 +60,11 @@ assert.match(financeUi, /"finance", "overview", invoiceQuery/u);
 assert.match(financeUi, /Select visible invoices/u);
 assert.match(financeUi, /Selection cleared because the invoice search or filters changed/u);
 assert.match(financeUi, /serverSorting=/u);
-assert.match(financeUi, /"finance", "ledger", ledgerPage, ledgerPageSize/u);
+assert.match(financeUi, /"finance", "ledger", ledgerQuery/u);
+assert.match(financeUi, /aria-label="Search ledger"/u);
+assert.match(financeUi, /aria-label="Ledger type"/u);
+assert.match(financeUi, /aria-label="Ledger source"/u);
+assert.match(financeUi, /serverSorting=\{\{ id: ledgerSort, direction: ledgerSortDirection \}\}/u);
 assert.match(commandCenter, /financeApi\.summary\(organizationId\)/u);
 assert.doesNotMatch(commandCenter, /invoices\.reduce\(/u);
 assert.match(invoiceUi, /financeApi\.overview\(organizationId/u);

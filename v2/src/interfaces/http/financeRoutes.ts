@@ -5,7 +5,7 @@ import type { Principal } from "../../authorization/principals.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { BillingPaymentsApplicationService } from "../../modules/billing/paymentApplication.js";
 import type { FinancialReadApplicationService } from "../../modules/billing/financialReadApplication.js";
-import type { FinancialInvoicePageRequest, FinancialSettlement } from "../../modules/billing/financialReadApplication.js";
+import type { FinancialInvoicePageRequest, FinancialLedgerPageRequest, FinancialSettlement } from "../../modules/billing/financialReadApplication.js";
 import { brandedId, currencyCode, money } from "../../modules/shared/commercialValues.js";
 import type { StripePaymentInitiation } from "../../../infrastructure/billing/stripePaymentInitiation.js";
 import { stripeRuntimeReadiness } from "../../../../server/lib/stripe.js";
@@ -25,6 +25,13 @@ const pageRequest = (request: Request): FinancialInvoicePageRequest => {
   const direction = request.query.direction === "asc" || request.query.direction === "desc" ? request.query.direction : undefined;
   return { page: positiveInt(request.query.page, 1), pageSize: Math.min(100, positiveInt(request.query.pageSize, 25)), ...(typeof request.query.q === "string" ? { search: request.query.q } : {}), ...(lifecycle ? { lifecycle } : {}), ...(settlement ? { settlement } : {}), ...(sort ? { sort } : {}), ...(direction ? { direction } : {}) };
 };
+const ledgerPageRequest = (request: Request): FinancialLedgerPageRequest => {
+  const kind = request.query.kind === "payment" || request.query.kind === "refund" ? request.query.kind : undefined;
+  const recordSource = request.query.recordSource === "v2" || request.query.recordSource === "legacy" ? request.query.recordSource : undefined;
+  const sort = typeof request.query.sort === "string" && ["occurred_at", "recorded_at", "source", "kind", "invoice_number", "customer", "method", "amount", "balance"].includes(request.query.sort) ? request.query.sort as FinancialLedgerPageRequest["sort"] : undefined;
+  const direction = request.query.direction === "asc" || request.query.direction === "desc" ? request.query.direction : undefined;
+  return { page: positiveInt(request.query.page, 1), pageSize: Math.min(100, positiveInt(request.query.pageSize, 25)), ...(typeof request.query.q === "string" ? { search: request.query.q } : {}), ...(kind ? { kind } : {}), ...(recordSource ? { recordSource } : {}), ...(sort ? { sort } : {}), ...(direction ? { direction } : {}) };
+};
 
 export type FinanceHttpDependencies = Readonly<{
   financialRead: FinancialReadApplicationService;
@@ -43,7 +50,7 @@ export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
     catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
   });
   router.get("/ledger", async (request, response) => {
-    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const { page, pageSize } = pageRequest(request); const result = await dependencies.financialRead.pageLedger(context(principal, organizationId, `http:GET:${request.path}`), { page, pageSize }); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
+    try { const organizationId = organization(request); const principal = await dependencies.principals.principal(request, organizationId); const result = await dependencies.financialRead.pageLedger(context(principal, organizationId, `http:GET:${request.path}`), ledgerPageRequest(request)); if (!result.ok) return fail(response, result.error); return response.json({ ok: true, data: result.value }); }
     catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated finance access is required.")); }
   });
   router.get("/invoices/:invoiceId", async (request, response) => {

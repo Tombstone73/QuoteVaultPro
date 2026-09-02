@@ -991,6 +991,16 @@ export type FinancialLedgerEntry = FinancialHistoryEntry &
     customerId?: string;
     customerName?: string;
   }>;
+export type FinancialLedgerSort = "occurred_at" | "recorded_at" | "source" | "kind" | "invoice_number" | "customer" | "method" | "amount" | "balance";
+export type FinancialLedgerQuery = Readonly<{
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  kind?: "payment" | "refund";
+  recordSource?: "v2" | "legacy";
+  sort?: FinancialLedgerSort;
+  direction?: "asc" | "desc";
+}>;
 export type FinancialLedgerPage = Readonly<{
   items: readonly FinancialLedgerEntry[];
   page: number;
@@ -2346,10 +2356,15 @@ export const financeApi = {
     return request<FinancialInvoicePage>(financeEndpoint(organizationId, `/overview${suffix}`));
   },
   summary: (organizationId: string) => request<FinancialArSummary>(financeEndpoint(organizationId, "/summary")),
-  ledger: (organizationId: string, query: Pick<FinancialInvoiceQuery, "page" | "pageSize"> = {}) => {
+  ledger: (organizationId: string, query: FinancialLedgerQuery = {}) => {
     const params = new URLSearchParams();
     if (query.page) params.set("page", String(query.page));
     if (query.pageSize) params.set("pageSize", String(query.pageSize));
+    if (query.q) params.set("q", query.q);
+    if (query.kind) params.set("kind", query.kind);
+    if (query.recordSource) params.set("recordSource", query.recordSource);
+    if (query.sort) params.set("sort", query.sort);
+    if (query.direction) params.set("direction", query.direction);
     const suffix = params.size ? `?${params.toString()}` : "";
     return request<FinancialLedgerPage>(financeEndpoint(organizationId, `/ledger${suffix}`));
   },

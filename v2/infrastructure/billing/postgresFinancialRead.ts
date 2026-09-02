@@ -63,6 +63,17 @@ const financeSort = (sort: FinancialInvoicePageRequest["sort"]) => ({
   balance: "balance_cents",
 }[sort ?? "updated"]!);
 const financeDirection = (direction: FinancialInvoicePageRequest["direction"]) => direction === "asc" ? "ASC" : "DESC";
+const ledgerSort = (sort: FinancialLedgerPageRequest["sort"]) => ({
+  occurred_at: "occurred_at",
+  recorded_at: "recorded_at",
+  source: "record_source",
+  kind: "kind",
+  invoice_number: "source_order_number",
+  customer: "customer_name",
+  method: "method",
+  amount: "CASE WHEN kind='refund' THEN -amount_cents ELSE amount_cents END",
+  balance: "balance_after_cents",
+}[sort ?? "occurred_at"]!);
 type PagedInvoiceRow = Readonly<{
   source: "v2" | "legacy";
   record_id: string;
@@ -282,6 +293,11 @@ const ledgerProjection = `
     SELECT record_source,kind,id,payment_id,invoice_id,amount_cents,currency,method,source,occurred_at,recorded_at,source_order_id,source_order_number,customer_id,customer_name,balance_after_cents FROM native_balances
     UNION ALL
     SELECT record_source,kind,id,payment_id,invoice_id,amount_cents,currency,method,source,occurred_at,recorded_at,source_order_id,source_order_number,customer_id,customer_name,balance_after_cents FROM legacy_facts
+  ), filtered AS (
+    SELECT * FROM combined
+    WHERE ($2::text = '' OR source_order_number ILIKE '%' || $2 || '%' ESCAPE '\\' OR COALESCE(customer_name,'') ILIKE '%' || $2 || '%' ESCAPE '\\' OR id ILIKE '%' || $2 || '%' ESCAPE '\\' OR invoice_id ILIKE '%' || $2 || '%' ESCAPE '\\')
+      AND ($3::text IS NULL OR kind=$3)
+      AND ($4::text IS NULL OR record_source=$4)
   )`;
 
 export class PostgresFinancialRead implements FinancialReadPort {
@@ -454,9 +470,12 @@ export class PostgresFinancialRead implements FinancialReadPort {
   }
   async pageFinancialLedger(organizationId: OrganizationId, request: FinancialLedgerPageRequest): Promise<FinancialLedgerPage> {
     const page = financialPage(request.page), pageSize = financialPageSize(request.pageSize), offset = (page - 1) * pageSize;
+    const search = financialSearch(request.search), kind = request.kind ?? null, recordSource = request.recordSource ?? null;
+    const order = `${ledgerSort(request.sort)} ${financeDirection(request.direction)} NULLS LAST, occurred_at DESC, recorded_at DESC, record_source ASC, id ASC`;
+    const values = [organizationId, search, kind, recordSource];
     const [result, count] = await Promise.all([
-      this.client.query<PagedLedgerRow>(`${ledgerProjection} SELECT * FROM combined ORDER BY occurred_at DESC,recorded_at DESC,record_source ASC,id ASC LIMIT $2 OFFSET $3`, [organizationId, pageSize, offset]),
-      this.client.query<{ total_matching: string }>(`${ledgerProjection} SELECT count(*)::text total_matching FROM combined`, [organizationId]),
+      this.client.query<PagedLedgerRow>(`${ledgerProjection} SELECT * FROM filtered ORDER BY ${order} LIMIT $5 OFFSET $6`, [...values, pageSize, offset]),
+      this.client.query<{ total_matching: string }>(`${ledgerProjection} SELECT count(*)::text total_matching FROM filtered`, values),
     ]);
     const totalMatching = Number(count.rows[0]?.total_matching ?? "0");
     return { items: result.rows.map(ledgerItem), page, pageSize, totalMatching, hasNextPage: offset + result.rows.length < totalMatching };

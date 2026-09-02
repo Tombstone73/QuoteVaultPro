@@ -94,7 +94,17 @@ export type FinancialInvoicePage = Readonly<{
   hasNextPage: boolean;
   summary: FinancialArSummary;
 }>;
-export type FinancialLedgerPageRequest = Readonly<{ page?: number; pageSize?: number }>;
+/** Ledger filters and sorts are applied to immutable facts before the page is selected. */
+export type FinancialLedgerSort = "occurred_at" | "recorded_at" | "source" | "kind" | "invoice_number" | "customer" | "method" | "amount" | "balance";
+export type FinancialLedgerPageRequest = Readonly<{
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  kind?: "payment" | "refund";
+  recordSource?: "v2" | "legacy";
+  sort?: FinancialLedgerSort;
+  direction?: FinancialSortDirection;
+}>;
 export type FinancialLedgerEntry = FinancialHistoryEntry &
   Readonly<{
     recordSource: "v2" | "legacy";
