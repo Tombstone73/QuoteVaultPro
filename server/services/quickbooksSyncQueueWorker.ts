@@ -7,6 +7,17 @@ import {
   syncSingleInvoiceToQuickBooksForOrganization,
   syncSinglePaymentToQuickBooksForOrganization,
 } from "../quickbooksService";
+import {
+  INVOICE_UNSYNCED_STATUSES,
+  matchesQueueView,
+  PAYMENT_FAILED_STATUSES,
+  paymentQueueState,
+  PAYMENT_UNSYNCED_STATUSES,
+  type QuickBooksSyncQueueState,
+  type QuickBooksSyncQueueView,
+  VALID_PAYMENT_STATUSES,
+  invoiceQueueState,
+} from "./quickbooksSyncQueueState";
 
 export type QuickBooksSyncQueueCounts = {
   invoices: { unsynced: number; pending: number; failed: number; synced: number };
@@ -31,7 +42,7 @@ export type QuickBooksSyncQueueItem = {
   displayNumber: string;
   status: string;
   syncStatus: string;
-  queueState: 'unsynced' | 'queued' | 'failed' | 'synced';
+  queueState: QuickBooksSyncQueueState;
   updatedAt: Date;
   eligible: boolean;
   canTransmit: boolean;
@@ -39,7 +50,7 @@ export type QuickBooksSyncQueueItem = {
   lastError: string | null;
 };
 
-export type QuickBooksSyncQueueView = 'all' | 'unsynced' | 'queued' | 'failed' | 'synced';
+export type { QuickBooksSyncQueueView } from "./quickbooksSyncQueueState";
 
 export type QuickBooksSelectedSyncResult = {
   requested: number;
@@ -64,27 +75,6 @@ const TERMINAL_INVOICE_STATUSES = ['void', 'canceled', 'cancelled'];
 
 function isQuickBooksInvoiceExportableStatus(status: unknown): boolean {
   return !TERMINAL_INVOICE_STATUSES.includes(String(status ?? '').trim().toLowerCase());
-}
-
-function invoiceQueueState(value: unknown): QuickBooksSyncQueueItem['queueState'] {
-  const status = String(value ?? '').toLowerCase();
-  if (status === 'pending') return 'queued';
-  if (status === 'failed') return 'failed';
-  if (status === 'synced') return 'synced';
-  return 'unsynced';
-}
-
-function paymentQueueState(value: unknown, externalAccountingId: unknown): QuickBooksSyncQueueItem['queueState'] {
-  if (String(externalAccountingId ?? '').trim()) return 'synced';
-  const status = String(value ?? '').toLowerCase();
-  if (status === 'failed' || status === 'error') return 'failed';
-  if (status === 'synced') return 'synced';
-  if (status === 'pending') return 'queued';
-  return 'unsynced';
-}
-
-function matchesQueueView(state: QuickBooksSyncQueueItem['queueState'], view: QuickBooksSyncQueueView): boolean {
-  return view === 'all' || state === view;
 }
 
 function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
@@ -142,13 +132,25 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
   const settleWindowMinutes = Math.round(stabilityWindowMs / 60_000);
   const now = new Date();
   const cutoff = cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow: false });
+  const invoiceUnsynced = and(
+    inArray(invoices.qbSyncStatus, INVOICE_UNSYNCED_STATUSES as any),
+    sql`lower(${invoices.status}) not in ('void', 'canceled', 'cancelled')`,
+  );
+  const paymentUnsynced = and(
+    isNull(payments.externalAccountingId),
+    inArray(payments.syncStatus, PAYMENT_UNSYNCED_STATUSES as any),
+    sql`lower(${payments.status}) in ('succeeded', 'captured')`,
+  );
+  const paymentQueued = and(isNull(payments.externalAccountingId), eq(payments.syncStatus, 'pending'));
+  const paymentFailed = and(isNull(payments.externalAccountingId), inArray(payments.syncStatus, PAYMENT_FAILED_STATUSES as any));
+  const paymentSynced = or(isNotNull(payments.externalAccountingId), eq(payments.syncStatus, 'synced'));
 
   const [invoiceCounts] = await db
     .select({
-      unsynced: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('not_synced', 'needs_resync') and ${invoices.importSource} is distinct from 'quickbooks' and ${invoices.isHistorical} = false and lower(${invoices.status}) not in ('void', 'canceled', 'cancelled') then 1 else 0 end)::int`,
-      pending: sql<number>`sum(case when ${invoices.qbSyncStatus} = 'pending' then 1 else 0 end)::int`,
-      failed: sql<number>`sum(case when ${invoices.qbSyncStatus} = 'failed' then 1 else 0 end)::int`,
-      synced: sql<number>`sum(case when ${invoices.qbSyncStatus} = 'synced' and ${invoices.importSource} is distinct from 'quickbooks' then 1 else 0 end)::int`,
+      unsynced: sql<number>`coalesce(sum(case when ${invoiceUnsynced} then 1 else 0 end), 0)::int`,
+      pending: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'pending')} then 1 else 0 end), 0)::int`,
+      failed: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'failed')} then 1 else 0 end), 0)::int`,
+      synced: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'synced')} then 1 else 0 end), 0)::int`,
       eligible: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('pending','failed') and lower(${invoices.status}) not in ('void', 'canceled', 'cancelled') and ${invoices.updatedAt} <= ${cutoff} then 1 else 0 end)::int`,
     })
     .from(invoices)
@@ -160,10 +162,10 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
 
   const [paymentCounts] = await db
     .select({
-      unsynced: sql<number>`sum(case when ${payments.externalAccountingId} is null and ${payments.syncStatus} not in ('pending', 'failed', 'error', 'synced') and lower(${payments.status}) in ('succeeded', 'captured') then 1 else 0 end)::int`,
-      pending: sql<number>`sum(case when ${payments.externalAccountingId} is null and ${payments.syncStatus} = 'pending' then 1 else 0 end)::int`,
-      failed: sql<number>`sum(case when ${payments.externalAccountingId} is null and ${payments.syncStatus} in ('failed', 'error') then 1 else 0 end)::int`,
-      synced: sql<number>`sum(case when ${payments.externalAccountingId} is not null or ${payments.syncStatus} = 'synced' then 1 else 0 end)::int`,
+      unsynced: sql<number>`coalesce(sum(case when ${paymentUnsynced} then 1 else 0 end), 0)::int`,
+      pending: sql<number>`coalesce(sum(case when ${paymentQueued} then 1 else 0 end), 0)::int`,
+      failed: sql<number>`coalesce(sum(case when ${paymentFailed} then 1 else 0 end), 0)::int`,
+      synced: sql<number>`coalesce(sum(case when ${paymentSynced} then 1 else 0 end), 0)::int`,
       eligible: sql<number>`sum(case when ${payments.syncStatus} in ('pending','failed') and ${payments.updatedAt} <= ${cutoff} and lower(${payments.status}) in ('succeeded','captured') and coalesce(${invoices.qbInvoiceId}, '') <> '' then 1 else 0 end)::int`,
     })
     .from(payments)
@@ -443,7 +445,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   pageSize: number;
   search?: string;
   view?: QuickBooksSyncQueueView;
-}): Promise<{ items: QuickBooksSyncQueueItem[]; total: number; page: number; pageSize: number }> {
+}): Promise<{ items: QuickBooksSyncQueueItem[]; total: number; totalCount: number; totalPages: number; page: number; pageSize: number }> {
   const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
   const cutoff = cutoffDate({ now: new Date(), stabilityWindowMs, ignoreStabilityWindow: false });
   const page = Math.max(1, params.page);
@@ -458,23 +460,38 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     eq(invoices.organizationId, params.organizationId),
     or(isNull(invoices.importSource), ne(invoices.importSource, 'quickbooks')),
     eq(invoices.isHistorical, false),
-    inArray(invoices.qbSyncStatus, ['not_synced', 'needs_resync', 'pending', 'failed', 'synced'] as any),
   ];
-  if (view === 'unsynced') invoiceConditions.push(inArray(invoices.qbSyncStatus, ['not_synced', 'needs_resync'] as any));
-  if (view === 'queued') invoiceConditions.push(eq(invoices.qbSyncStatus, 'pending'));
-  if (view === 'failed') invoiceConditions.push(eq(invoices.qbSyncStatus, 'failed'));
-  if (view === 'synced') invoiceConditions.push(eq(invoices.qbSyncStatus, 'synced'));
+  const invoiceUnsynced = and(
+    inArray(invoices.qbSyncStatus, INVOICE_UNSYNCED_STATUSES as any),
+    sql`lower(${invoices.status}) not in ('void', 'canceled', 'cancelled')`,
+  );
+  const invoiceQueued = eq(invoices.qbSyncStatus, 'pending');
+  const invoiceFailed = eq(invoices.qbSyncStatus, 'failed');
+  const invoiceSynced = eq(invoices.qbSyncStatus, 'synced');
+  if (view === 'unsynced') invoiceConditions.push(invoiceUnsynced);
+  else if (view === 'queued') invoiceConditions.push(invoiceQueued);
+  else if (view === 'failed') invoiceConditions.push(invoiceFailed);
+  else if (view === 'synced') invoiceConditions.push(invoiceSynced);
+  else invoiceConditions.push(or(invoiceUnsynced, invoiceQueued, invoiceFailed, invoiceSynced)!);
   if (needle) invoiceConditions.push(or(ilike(invoices.displayNumber, searchPattern), sql`cast(${invoices.invoiceNumber} as text) ilike ${searchPattern}`, ilike(invoices.jobNumber, searchPattern), ilike(customers.companyName, searchPattern))!);
   const paymentConditions = [
     eq(payments.organizationId, params.organizationId),
     or(isNull(invoices.importSource), ne(invoices.importSource, 'quickbooks')),
     eq(invoices.isHistorical, false),
-    inArray(payments.syncStatus, ['pending', 'failed', 'error', 'synced', 'skipped'] as any),
   ];
-  if (view === 'unsynced') paymentConditions.push(eq(payments.syncStatus, 'skipped'), isNull(payments.externalAccountingId));
-  if (view === 'queued') paymentConditions.push(eq(payments.syncStatus, 'pending'), isNull(payments.externalAccountingId));
-  if (view === 'failed') paymentConditions.push(inArray(payments.syncStatus, ['failed', 'error'] as any), isNull(payments.externalAccountingId));
-  if (view === 'synced') paymentConditions.push(or(eq(payments.syncStatus, 'synced'), isNotNull(payments.externalAccountingId))!);
+  const paymentUnsynced = and(
+    isNull(payments.externalAccountingId),
+    inArray(payments.syncStatus, PAYMENT_UNSYNCED_STATUSES as any),
+    sql`lower(${payments.status}) in ('succeeded', 'captured')`,
+  );
+  const paymentQueued = and(isNull(payments.externalAccountingId), eq(payments.syncStatus, 'pending'));
+  const paymentFailed = and(isNull(payments.externalAccountingId), inArray(payments.syncStatus, PAYMENT_FAILED_STATUSES as any));
+  const paymentSynced = or(isNotNull(payments.externalAccountingId), eq(payments.syncStatus, 'synced'));
+  if (view === 'unsynced') paymentConditions.push(paymentUnsynced);
+  else if (view === 'queued') paymentConditions.push(paymentQueued);
+  else if (view === 'failed') paymentConditions.push(paymentFailed);
+  else if (view === 'synced') paymentConditions.push(paymentSynced!);
+  else paymentConditions.push(or(paymentUnsynced, paymentQueued, paymentFailed, paymentSynced)!);
   if (needle) paymentConditions.push(or(ilike(invoices.displayNumber, searchPattern), sql`cast(${invoices.invoiceNumber} as text) ilike ${searchPattern}`, ilike(payments.providerTransactionId, searchPattern), ilike(customers.companyName, searchPattern))!);
 
   // Each source query is bounded and searched in PostgreSQL. The small merged
@@ -505,14 +522,22 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     }),
     ...paymentRows.map((row: any) => {
       const queueState = paymentQueueState(row.syncStatus, row.externalAccountingId);
-      const validPayment = ['succeeded', 'captured'].includes(String(row.status || '').toLowerCase());
+      const validPayment = VALID_PAYMENT_STATUSES.includes(String(row.status || '').toLowerCase() as typeof VALID_PAYMENT_STATUSES[number]);
       const eligible = validPayment && queueState !== 'synced' && Boolean(row.qbInvoiceId);
       const canTransmit = eligible && new Date(row.updatedAt).getTime() <= cutoff.getTime() && queueState !== 'unsynced';
       return { id: String(row.id), resourceType: 'payment' as const, displayNumber: `Payment for ${String(row.invoiceDisplayNumber || row.invoiceNumber)}`, status: String(row.status), syncStatus: String(row.syncStatus), queueState, updatedAt: row.updatedAt, eligible, canTransmit, ineligibleReason: eligible ? (canTransmit || queueState === 'unsynced' ? null : 'Waiting for the stability window.') : !validPayment ? 'Only captured or succeeded payments can sync.' : !row.qbInvoiceId ? 'Invoice must sync first.' : 'Already synchronized.', lastError: row.lastError ?? null };
     }),
   ].filter((item) => matchesQueueView(item.queueState, view));
   const sorted = items.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  return { items: sorted.slice((page - 1) * pageSize, page * pageSize), total: Number(invoiceTotalRows[0]?.count || 0) + Number(paymentTotalRows[0]?.count || 0), page, pageSize };
+  const totalCount = Number(invoiceTotalRows[0]?.count || 0) + Number(paymentTotalRows[0]?.count || 0);
+  return {
+    items: sorted.slice((page - 1) * pageSize, page * pageSize),
+    total: totalCount,
+    totalCount,
+    totalPages: Math.ceil(totalCount / pageSize),
+    page,
+    pageSize,
+  };
 }
 
 export async function runSelectedQuickBooksSyncForOrg(params: {

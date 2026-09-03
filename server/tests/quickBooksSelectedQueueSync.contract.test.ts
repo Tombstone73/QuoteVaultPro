@@ -9,6 +9,7 @@ test('selected QuickBooks queue sync accepts explicit bounded canonical ids', ()
   expect(routes).toContain("/api/integrations/quickbooks/queue/sync-selected");
   expect(routes).toContain("z.array(z.object({ id: z.string().min(1), resourceType: z.enum(['invoice', 'payment']) })).min(1).max(100)");
   expect(routes).toContain('runSelectedQuickBooksSyncForOrg');
+  expect(routes).not.toContain('syncWorker.runSelectedQuickBooksSyncForOrg');
 });
 
 test('selected sync is tenant-scoped, sequential, eligibility-checked, and idempotent-service backed', () => {
@@ -36,11 +37,12 @@ test('historical QuickBooks imports cannot become outbound queue candidates', ()
 test('an Order revision keeps local truth while requiring an explicit accounting resync decision', () => {
   const invoicesService = read('server/invoicesService.ts');
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const state = read('server/services/quickbooksSyncQueueState.ts');
 
   expect(invoicesService).toContain('qbSyncStatus: "needs_resync"');
   expect(invoicesService).toContain('modifiedAfterBilling: true');
   expect(worker).toContain("inArray(invoices.qbSyncStatus, invoiceStatuses as any)");
-  expect(worker).toContain("['not_synced', 'needs_resync', 'pending', 'failed', 'synced']");
+  expect(state).toContain("INVOICE_UNSYNCED_STATUSES = ['not_synced', 'needs_resync']");
 });
 
 test('queue list uses canonical ids, supports a single-row sync, and is reachable from the Push settings section', () => {
@@ -63,9 +65,10 @@ test('queue list uses canonical ids, supports a single-row sync, and is reachabl
 
 test('local discovery includes unsynced native invoices and keeps it independent of OAuth availability', () => {
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const state = read('server/services/quickbooksSyncQueueState.ts');
   const invoicesService = read('server/invoicesService.ts');
 
-  expect(worker).toContain("['not_synced', 'needs_resync', 'pending', 'failed', 'synced']");
+  expect(state).toContain("INVOICE_UNSYNCED_STATUSES = ['not_synced', 'needs_resync']");
   expect(worker).toContain("const queueState = invoiceQueueState(row.syncStatus)");
   expect(worker).toContain("deferred org=${organizationId} not-connected; retained local queue work");
   expect(invoicesService).toContain("qbSyncStatus: 'pending' as any");
@@ -85,12 +88,20 @@ test('enqueue selected is bounded, tenant scoped, idempotent, and makes no Intui
 
 test('console supports state views and server-side searchable bounded source queries', () => {
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const state = read('server/services/quickbooksSyncQueueState.ts');
   const page = read('client/src/pages/settings/quickbooks-sync-queue.tsx');
+  const routes = read('server/routes/quickbooks.routes.ts');
 
-  expect(worker).toContain("type QuickBooksSyncQueueView = 'all' | 'unsynced' | 'queued' | 'failed' | 'synced'");
+  expect(state).toContain("type QuickBooksSyncQueueView = 'all' | QuickBooksSyncQueueState");
   expect(worker).toContain('ilike(customers.companyName, searchPattern)');
   expect(worker).toContain('.limit(fetchLimit)');
+  expect(worker).toContain('totalCount');
+  expect(worker).toContain('totalPages');
   expect(page).toContain('Eligible / Unsynced');
   expect(page).toContain('QuickBooks Sync Console');
   expect(page).toContain('queue/enqueue-selected');
+  expect(page).toContain('Unable to load local accounting work.');
+  expect(page).toContain('query.data.data.totalPages');
+  expect(routes).toContain('listQuickBooksSyncQueueItemsForOrg');
+  expect(routes).not.toContain('syncWorker.listQuickBooksSyncQueueItemsForOrg');
 });

@@ -35,6 +35,8 @@ import {
   getQuickBooksSyncStabilityWindowMs,
   enqueueSelectedQuickBooksSyncForOrg,
   getQuickBooksSyncQueueCountsForOrg,
+  listQuickBooksSyncQueueItemsForOrg,
+  runSelectedQuickBooksSyncForOrg,
   type QuickBooksSyncQueueView,
   runQuickBooksSyncWorkerForOrg,
 } from "../services/quickbooksSyncQueueWorker";
@@ -117,14 +119,17 @@ export function registerQuickBooksRoutes(
     }
   });
 
-  app.get('/api/integrations/quickbooks/queue/items', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  // Discovery is read-only local accounting data, so it intentionally has the
+  // same authenticated tenant access policy as the summary counts above.
+  // Queueing and transmitting remain Admin/Owner-only mutations below.
+  app.get('/api/integrations/quickbooks/queue/items', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
       const page = Math.max(1, Number(req.query.page || 1));
       const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize || 25)));
       const view = String(req.query.view || 'all') as QuickBooksSyncQueueView;
-      const data = await syncWorker.listQuickBooksSyncQueueItemsForOrg({ organizationId, page, pageSize, search: String(req.query.search || ''), view });
+      const data = await listQuickBooksSyncQueueItemsForOrg({ organizationId, page, pageSize, search: String(req.query.search || ''), view });
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || 'Failed to list QuickBooks sync queue items' });
@@ -154,7 +159,7 @@ export function registerQuickBooksRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
-      const data = await syncWorker.runSelectedQuickBooksSyncForOrg({ organizationId, items: parsed.data.items });
+      const data = await runSelectedQuickBooksSyncForOrg({ organizationId, items: parsed.data.items });
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || 'Selected QuickBooks sync failed' });
