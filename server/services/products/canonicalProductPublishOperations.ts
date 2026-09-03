@@ -179,13 +179,15 @@ const repository: PublishRepository = {
     if (!tree) return null;
     const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, category: products.category, description: products.description, measurementMode: products.measurementMode, workflowIntent: products.workflowIntent, requiresProofApproval: products.requiresProofApproval, requiresProductionJob: products.requiresProductionJob, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId, pricingFormula: products.pricingFormula }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
     if (!product || (input.productId && product.id !== input.productId)) return null;
-    const [activeTree] = product.pbv2ActiveTreeVersionId && product.pbv2ActiveTreeVersionId !== tree.id
+    // The PBV2 version lifecycle is authoritative.  Older products can have
+    // a stale compatibility pointer even while a different version row is the
+    // canonical ACTIVE ProductVersion used by V2 reads and Order freezing.
+    const [activeTree] = tree.status !== "ACTIVE"
       ? await db.select({ treeJson: pbv2TreeVersions.treeJson }).from(pbv2TreeVersions).where(and(
         eq(pbv2TreeVersions.organizationId, input.organizationId),
         eq(pbv2TreeVersions.productId, tree.productId),
-        eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
         eq(pbv2TreeVersions.status, "ACTIVE"),
-      )).limit(1)
+      )).orderBy(desc(pbv2TreeVersions.updatedAt), desc(pbv2TreeVersions.id)).limit(1)
       : [];
     const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
