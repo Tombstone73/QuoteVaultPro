@@ -100,8 +100,13 @@ assert.match(refundMigration, /subject_kind IN \('invoice','payment','refund'\)/
 assert.match(refundMigration, /v2_quickbooks_refund_sync_workflows/);
 assert.match(liveRevisionMigration, /projection_fingerprint/);
 assert.match(liveRevisionMigration, /projection_version/);
+assert.match(liveRevisionMigration, /projection_version varchar\(80\)/);
 assert.match(liveRevisionMigration, /projection_json/);
 assert.match(liveRevisionMigration, /v2_quickbooks_sync_links_invoice_revision_idx/);
+assert.match(queue, /projection_version IS DISTINCT FROM i\.synchronization_version::varchar/);
+assert.match(queue, /projection_version=i\.synchronization_version::varchar/);
+assert.doesNotMatch(queue, /projection_version=i\.synchronization_version(?!::varchar)/);
+assert.doesNotMatch(queue, /projection_version IS DISTINCT FROM i\.synchronization_version(?!::varchar)/);
 assert.match(provider, /QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED/);
 assert.match(provider, /QUICKBOOKS_INVOICE_REVIEW_REQUIRED/);
 assert.match(routes, /\/sync-selected/);
