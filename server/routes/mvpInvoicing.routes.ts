@@ -2738,6 +2738,7 @@ export async function registerMvpInvoicingRoutes(
       const nextInvoiceVersion = financialOrCustomerVisibleChanged ? existingInvoiceVersion + 1 : existingInvoiceVersion;
       if (financialOrCustomerVisibleChanged) {
         updates.invoiceVersion = nextInvoiceVersion;
+        updates.accountingUpdatedAt = new Date();
 
         if (String(existing.qbSyncStatus || "") === "synced") {
           // Financial/customer-visible changes invalidate previous accounting sync.

@@ -12,12 +12,15 @@ test('selected QuickBooks queue sync accepts explicit bounded canonical ids', ()
   expect(routes).not.toContain('syncWorker.runSelectedQuickBooksSyncForOrg');
 });
 
-test('selected sync is tenant-scoped, sequential, eligibility-checked, and idempotent-service backed', () => {
+test('selected sync is tenant-scoped, explicit manual-force, sequential, and idempotent-service backed', () => {
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
   expect(worker).toContain('eq(invoices.organizationId, params.organizationId)');
   expect(worker).toContain('eq(payments.organizationId, params.organizationId)');
   expect(worker).toContain('Invoice is no longer pending sync.');
-  expect(worker).toContain('Payment is not currently eligible.');
+  expect(worker).toContain("syncMode: 'manual_force'");
+  expect(worker).toContain('Invoice must sync first.');
+  expect(worker).toContain('isAccountingUpdatedBeforeQuickBooksStabilityCutoff');
+  expect(worker).toContain("actionType: 'quickbooks_manual_force_sync'");
   expect(worker).toContain('syncSingleInvoiceToQuickBooksForOrganization(params.organizationId, item.id)');
   expect(worker).toContain('syncSinglePaymentToQuickBooksForOrganization(params.organizationId, item.id)');
   expect(worker).toContain('for (const item of unique)');
@@ -52,8 +55,8 @@ test('queue list uses canonical ids, supports a single-row sync, and is reachabl
   expect(page).toContain('const keyOf');
   expect(page).toContain('Select eligible on this page');
   expect(page).toContain('Queue Selected (');
-  expect(page).toContain('Sync Selected (');
-  expect(page).toContain('>Sync now</Button>');
+  expect(page).toContain('Force Sync Selected (');
+  expect(page).toContain('>Force Sync</Button>');
   expect(settings).toContain('Link as RouterLink } from "react-router-dom"');
   expect(settings).toContain('<RouterLink to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</RouterLink>');
   expect(settings).toContain('Open Sync Queue');
@@ -95,7 +98,7 @@ test('console supports state views and server-side searchable, sorted, filtered 
   expect(state).toContain("type QuickBooksSyncQueueView = 'all' | QuickBooksSyncQueueState");
   expect(worker).toContain('customer_name ilike ${searchPattern}');
   expect(worker).toContain('from accounting_work where ${where}');
-  expect(worker).toContain('order by ${sortColumn} ${sortDirection}, updated_at desc, resource_type asc, id asc');
+  expect(worker).toContain('order by ${sortColumn} ${sortDirection}, accounting_updated_at desc, resource_type asc, id asc');
   expect(worker).toContain('limit ${pageSize} offset ${offset}');
   expect(worker).toContain('totalCount');
   expect(worker).toContain('totalPages');

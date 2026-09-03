@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { db } from "../db";
 import { auditLogs, customers, invoices, oauthConnections, payments } from "../../shared/schema";
 import {
@@ -49,9 +50,10 @@ export type QuickBooksSyncQueueItem = {
   status: string;
   syncStatus: string;
   queueState: QuickBooksSyncQueueState;
-  updatedAt: Date;
+  accountingUpdatedAt: Date;
   eligible: boolean;
   canTransmit: boolean;
+  canManualForce: boolean;
   eligibility: QuickBooksSyncQueueEligibilityFilter;
   ineligibleReason: string | null;
   lastError: string | null;
@@ -106,9 +108,12 @@ export function getQuickBooksSyncStabilityWindowMs(): number {
   return DEFAULT_QB_SYNC_STABILITY_WINDOW_MS;
 }
 
-export function isUpdatedBeforeQuickBooksStabilityCutoff(updatedAt: Date, now: Date, stabilityWindowMs: number): boolean {
-  return updatedAt.getTime() <= now.getTime() - Math.max(0, stabilityWindowMs);
+export function isAccountingUpdatedBeforeQuickBooksStabilityCutoff(accountingUpdatedAt: Date, now: Date, stabilityWindowMs: number): boolean {
+  return accountingUpdatedAt.getTime() <= now.getTime() - Math.max(0, stabilityWindowMs);
 }
+
+// Compatibility export: its value is now explicitly the accounting clock.
+export const isUpdatedBeforeQuickBooksStabilityCutoff = isAccountingUpdatedBeforeQuickBooksStabilityCutoff;
 
 function cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow }: { now: Date; stabilityWindowMs: number; ignoreStabilityWindow: boolean }) {
   if (ignoreStabilityWindow) return now;
@@ -158,7 +163,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
       pending: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'pending')} then 1 else 0 end), 0)::int`,
       failed: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'failed')} then 1 else 0 end), 0)::int`,
       synced: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'synced')} then 1 else 0 end), 0)::int`,
-      eligible: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('pending','failed') and lower(${invoices.status}) not in ('void', 'canceled', 'cancelled') and ${invoices.updatedAt} <= ${cutoff} then 1 else 0 end)::int`,
+      eligible: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('pending','failed') and lower(${invoices.status}) not in ('void', 'canceled', 'cancelled') and ${invoices.accountingUpdatedAt} <= ${cutoff} then 1 else 0 end)::int`,
     })
     .from(invoices)
     .where(and(
@@ -173,7 +178,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
       pending: sql<number>`coalesce(sum(case when ${paymentQueued} then 1 else 0 end), 0)::int`,
       failed: sql<number>`coalesce(sum(case when ${paymentFailed} then 1 else 0 end), 0)::int`,
       synced: sql<number>`coalesce(sum(case when ${paymentSynced} then 1 else 0 end), 0)::int`,
-      eligible: sql<number>`sum(case when ${payments.syncStatus} in ('pending','failed') and ${payments.updatedAt} <= ${cutoff} and lower(${payments.status}) in ('succeeded','captured') and coalesce(${invoices.qbInvoiceId}, '') <> '' then 1 else 0 end)::int`,
+      eligible: sql<number>`sum(case when ${payments.syncStatus} in ('pending','failed') and ${payments.accountingUpdatedAt} <= ${cutoff} and lower(${payments.status}) in ('succeeded','captured') and coalesce(${invoices.qbInvoiceId}, '') <> '' then 1 else 0 end)::int`,
     })
     .from(payments)
     .innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId)))
@@ -218,7 +223,9 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
   const settleWindowMinutes = Math.round(stabilityWindowMs / 60_000);
 
   const now = new Date();
-  const cutoff = cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow });
+  // A worker run is always automatic.  Manual force-sync has its own bounded
+  // endpoint and may not leak into background processing.
+  const cutoff = cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow: false });
   const invoiceStatuses = includeFailed ? ["pending", "failed"] : ["pending"];
   const paymentStatuses = includeFailed ? ["pending", "failed"] : ["pending"];
 
@@ -231,10 +238,10 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
         eq(invoices.organizationId, organizationId),
         inArray(invoices.qbSyncStatus, invoiceStatuses as any),
         sql`lower(${invoices.status}) not in ('void', 'canceled', 'cancelled')`,
-        sql`${invoices.updatedAt} <= ${cutoff}`
+        sql`${invoices.accountingUpdatedAt} <= ${cutoff}`
       )
     )
-    .orderBy(asc(invoices.updatedAt))
+    .orderBy(asc(invoices.accountingUpdatedAt))
     .limit(Math.max(0, limitPerRun));
 
   const eligiblePayments = await db
@@ -245,12 +252,12 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
       and(
         eq(payments.organizationId, organizationId),
         inArray(payments.syncStatus, paymentStatuses as any),
-        sql`${payments.updatedAt} <= ${cutoff}`,
+        sql`${payments.accountingUpdatedAt} <= ${cutoff}`,
         sql`lower(${payments.status}) in ('succeeded','captured')`,
         sql`coalesce(${invoices.qbInvoiceId}, '') <> ''`
       )
     )
-    .orderBy(asc(payments.updatedAt))
+    .orderBy(asc(payments.accountingUpdatedAt))
     .limit(Math.max(0, limitPerRun));
 
   if (eligibleInvoices.length === 0 && eligiblePayments.length === 0) {
@@ -258,7 +265,7 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
       settleWindowMinutes,
       stabilityWindowMs,
       ignoreSettleWindow,
-      ignoreStabilityWindow,
+      ignoreStabilityWindow: false,
       invoices: { attempted: 0, succeeded: 0, failed: 0 },
       payments: { attempted: 0, succeeded: 0, failed: 0 },
     };
@@ -272,7 +279,7 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
     settleWindowMinutes,
     stabilityWindowMs,
     ignoreSettleWindow,
-    ignoreStabilityWindow,
+    ignoreStabilityWindow: false,
     invoices: { attempted: 0, succeeded: 0, failed: 0 },
     payments: { attempted: 0, succeeded: 0, failed: 0 },
   };
@@ -306,6 +313,8 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
   // Invoices
   for (const row of eligibleInvoices) {
     const invoiceId = String(row.id);
+    const leaseOwner = `automatic:${randomUUID()}`;
+    if (!await claimQuickBooksSyncLease({ organizationId, resourceType: 'invoice', resourceId: invoiceId, leaseOwner })) continue;
     result.invoices.attempted += 1;
 
     try {
@@ -370,12 +379,16 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
       } catch {}
 
       result.invoices.failed += 1;
+    } finally {
+      await releaseQuickBooksSyncLease({ organizationId, resourceType: 'invoice', resourceId: invoiceId, leaseOwner }).catch(() => undefined);
     }
   }
 
   // Payments
   for (const row of eligiblePayments) {
     const paymentId = String(row.id);
+    const leaseOwner = `automatic:${randomUUID()}`;
+    if (!await claimQuickBooksSyncLease({ organizationId, resourceType: 'payment', resourceId: paymentId, leaseOwner })) continue;
     result.payments.attempted += 1;
 
     try {
@@ -434,6 +447,8 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
       } catch {}
 
       result.payments.failed += 1;
+    } finally {
+      await releaseQuickBooksSyncLease({ organizationId, resourceType: 'payment', resourceId: paymentId, leaseOwner }).catch(() => undefined);
     }
   }
 
@@ -486,7 +501,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     state: 'queue_state',
     eligibility: 'eligibility_key',
     amount: 'amount_cents',
-    updatedAt: 'updated_at',
+    updatedAt: 'accounting_updated_at',
     createdAt: 'created_at',
   };
   const sortColumn = sql.raw(sortColumns[filters.sortBy]);
@@ -509,12 +524,13 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
           when i.qb_sync_status = 'synced' then 'synced'
           else 'unsynced'
         end::text as queue_state,
-        i.updated_at as updated_at,
+        i.accounting_updated_at as accounting_updated_at,
         i.created_at as created_at,
         i.qb_last_error::text as last_error,
         coalesce(i.job_number::text, i.invoice_number::text, '')::text as reference,
         (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status <> 'synced') as eligible,
-        (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status in ('pending', 'failed') and i.updated_at <= ${cutoff}) as can_transmit,
+        (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status in ('pending', 'failed') and i.accounting_updated_at <= ${cutoff}) as can_transmit,
+        (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status in ('pending', 'failed')) as can_manual_force,
         null::text as ineligible_reason
       from invoices i
       left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
@@ -545,7 +561,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
           when p.sync_status in ('failed', 'error') then 'failed'
           else 'unsynced'
         end::text as queue_state,
-        p.updated_at as updated_at,
+        p.accounting_updated_at as accounting_updated_at,
         p.created_at as created_at,
         p.sync_error::text as last_error,
         coalesce(p.provider_transaction_id, i.display_number, i.invoice_number::text, '')::text as reference,
@@ -557,7 +573,11 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
           and p.external_accounting_id is null
           and p.sync_status in ('pending', 'failed')
           and coalesce(i.qb_invoice_id, '') <> ''
-          and p.updated_at <= ${cutoff}) as can_transmit,
+          and p.accounting_updated_at <= ${cutoff}) as can_transmit,
+        (lower(p.status) in ('succeeded', 'captured')
+          and p.external_accounting_id is null
+          and p.sync_status in ('pending', 'failed')
+          and coalesce(i.qb_invoice_id, '') <> '') as can_manual_force,
         case
           when lower(p.status) not in ('succeeded', 'captured') then 'Only captured or succeeded payments can sync.'
           when coalesce(i.qb_invoice_id, '') = '' then 'Invoice must sync first.'
@@ -590,15 +610,15 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   const [rowResult, countResult] = await Promise.all([
     db.execute(sql`${accountingWorkCte}
       select id, resource_type, display_number, customer_name, amount_cents, status, sync_status,
-        queue_state, updated_at, created_at, eligible, can_transmit, eligibility_key, last_error,
+        queue_state, accounting_updated_at, created_at, eligible, can_transmit, can_manual_force, eligibility_key, last_error,
         case
-          when eligible and (can_transmit or queue_state = 'unsynced') then null
+          when eligible and (can_transmit or can_manual_force or queue_state = 'unsynced') then null
           when ineligible_reason is not null then ineligible_reason
-          when eligible then 'Waiting for the stability window.'
+          when eligible then 'Waiting for automatic sync window.'
           else 'Void, canceled, or synchronized records cannot sync.'
         end as ineligible_reason
       from accounting_work where ${where}
-      order by ${sortColumn} ${sortDirection}, updated_at desc, resource_type asc, id asc
+      order by ${sortColumn} ${sortDirection}, accounting_updated_at desc, resource_type asc, id asc
       limit ${pageSize} offset ${offset}`),
     db.execute(sql`${accountingWorkCte}
       select count(*)::int as count from accounting_work where ${where}`),
@@ -615,9 +635,10 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     status: String(row.status),
     syncStatus: String(row.sync_status),
     queueState: row.queue_state as QuickBooksSyncQueueState,
-    updatedAt: new Date(row.updated_at),
+    accountingUpdatedAt: new Date(row.accounting_updated_at),
     eligible: Boolean(row.eligible),
     canTransmit: Boolean(row.can_transmit),
+    canManualForce: Boolean(row.can_manual_force),
     eligibility: row.eligibility_key as QuickBooksSyncQueueEligibilityFilter,
     ineligibleReason: row.ineligible_reason == null ? null : String(row.ineligible_reason),
     lastError: row.last_error == null ? null : String(row.last_error),
@@ -632,56 +653,121 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   };
 }
 
+const QUICKBOOKS_SYNC_LEASE_MS = 10 * 60 * 1000;
+
+async function claimQuickBooksSyncLease(input: { organizationId: string; resourceType: 'invoice' | 'payment'; resourceId: string; leaseOwner: string }): Promise<boolean> {
+  const expiresAt = new Date(Date.now() + QUICKBOOKS_SYNC_LEASE_MS);
+  const result: any = await db.execute(sql`
+    insert into quickbooks_sync_leases (organization_id, resource_type, resource_id, lease_owner, lease_expires_at)
+    values (${input.organizationId}, ${input.resourceType}, ${input.resourceId}, ${input.leaseOwner}, ${expiresAt})
+    on conflict (organization_id, resource_type, resource_id) do update
+      set lease_owner = excluded.lease_owner, lease_expires_at = excluded.lease_expires_at, updated_at = now()
+      where quickbooks_sync_leases.lease_expires_at <= now()
+    returning resource_id
+  `);
+  return Array.isArray(result?.rows) ? result.rows.length > 0 : Array.isArray(result) && result.length > 0;
+}
+
+async function releaseQuickBooksSyncLease(input: { organizationId: string; resourceType: 'invoice' | 'payment'; resourceId: string; leaseOwner: string }): Promise<void> {
+  await db.execute(sql`delete from quickbooks_sync_leases where organization_id = ${input.organizationId} and resource_type = ${input.resourceType} and resource_id = ${input.resourceId} and lease_owner = ${input.leaseOwner}`);
+}
+
 export async function runSelectedQuickBooksSyncForOrg(params: {
   organizationId: string;
   items: Array<{ id: string; resourceType: 'invoice' | 'payment' }>;
+  syncMode: 'manual_force';
+  actor: { userId: string | null; userName: string | null };
 }): Promise<QuickBooksSelectedSyncResult> {
+  if (params.syncMode !== 'manual_force') throw new Error('Selected QuickBooks sync requires explicit manual force intent.');
   const unique = Array.from(new Map(params.items.map((item) => [`${item.resourceType}:${item.id}`, item])).values());
   const result: QuickBooksSelectedSyncResult = { requested: unique.length, synced: 0, failed: 0, skipped: 0, rejected: 0, results: [] };
   if (unique.length === 0) return result;
   const reauth = await isQuickBooksReauthRequiredForOrganization(params.organizationId);
+  const auditForce = async (item: { id: string; resourceType: 'invoice' | 'payment' }, outcome: string, reason: string | null, wasStabilityBlocked: boolean) => {
+    try {
+      await db.insert(auditLogs).values({
+        organizationId: params.organizationId,
+        userId: params.actor.userId,
+        userName: params.actor.userName || 'quickbooks_manual_force',
+        actionType: 'quickbooks_manual_force_sync',
+        entityType: item.resourceType,
+        entityId: item.id,
+        entityName: item.id,
+        description: `Manual QuickBooks force sync ${outcome}${reason ? `: ${reason}` : ''}`,
+        newValues: { source: 'manual_force', outcome, reason, wasStabilityBlocked } as any,
+        createdAt: new Date(),
+      } as any);
+    } catch {}
+  };
   if (reauth.needsReauth) {
-    for (const item of unique) result.results.push({ ...item, outcome: 'skipped', reason: 'QuickBooks authorization requires reconnection. The local queue item was retained.' });
+    for (const item of unique) {
+      const reason = 'QuickBooks authorization requires reconnection. The local queue item was retained.';
+      result.results.push({ ...item, outcome: 'skipped', reason });
+      await auditForce(item, 'skipped', reason, false);
+    }
     result.skipped = unique.length;
     return result;
   }
   const token = await getValidAccessTokenForOrganization(params.organizationId);
   if (!token) {
-    for (const item of unique) result.results.push({ ...item, outcome: 'skipped', reason: 'QuickBooks is not connected. The local queue item was retained.' });
+    for (const item of unique) {
+      const reason = 'QuickBooks is not connected. The local queue item was retained.';
+      result.results.push({ ...item, outcome: 'skipped', reason });
+      await auditForce(item, 'skipped', reason, false);
+    }
     result.skipped = unique.length;
     return result;
   }
-  const cutoff = cutoffDate({ now: new Date(), stabilityWindowMs: getQuickBooksSyncStabilityWindowMs(), ignoreStabilityWindow: false });
+  const now = new Date();
+  const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
 
   for (const item of unique) {
     if (item.resourceType === 'invoice') {
       const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId))).limit(1);
-      if (!invoice) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
-      if (!['pending', 'failed'].includes(String(invoice.qbSyncStatus))) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice is no longer pending sync.' }); continue; }
-      if (!isQuickBooksInvoiceExportableStatus(invoice.status) || new Date(invoice.updatedAt).getTime() > cutoff.getTime()) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice is not currently eligible.' }); continue; }
+      if (!invoice) { const reason = 'Record not found or not permitted.'; result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason }); await auditForce(item, 'rejected', reason, false); continue; }
+      const wasStabilityBlocked = !isAccountingUpdatedBeforeQuickBooksStabilityCutoff(new Date(invoice.accountingUpdatedAt), now, stabilityWindowMs);
+      if (!['pending', 'failed'].includes(String(invoice.qbSyncStatus))) { const reason = 'Invoice is no longer pending sync.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
+      if (!isQuickBooksInvoiceExportableStatus(invoice.status)) { const reason = 'Void or canceled invoices cannot sync.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
+      const leaseOwner = `manual_force:${params.actor.userId || 'unknown'}:${randomUUID()}`;
+      if (!await claimQuickBooksSyncLease({ organizationId: params.organizationId, resourceType: 'invoice', resourceId: item.id, leaseOwner })) {
+        const reason = 'Another QuickBooks synchronization is already in progress.';
+        result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue;
+      }
       try {
         const qb = await syncSingleInvoiceToQuickBooksForOrganization(params.organizationId, item.id);
         await db.update(invoices).set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: 'synced', qbLastError: null, syncStatus: 'synced', syncError: null, syncedAt: new Date(), lastQbSyncedVersion: sql`${invoices.invoiceVersion}`, updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
-        result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null });
+        result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null }); await auditForce(item, 'synced', null, wasStabilityBlocked);
       } catch (error: any) {
         const reason = toOneLineHumanMessage(error?.message || error);
         await db.update(invoices).set({ qbSyncStatus: 'failed', qbLastError: reason, syncStatus: 'error', syncError: reason, updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
-        result.failed++; result.results.push({ ...item, outcome: 'failed', reason });
+        result.failed++; result.results.push({ ...item, outcome: 'failed', reason }); await auditForce(item, 'failed', reason, wasStabilityBlocked);
+      } finally {
+        await releaseQuickBooksSyncLease({ organizationId: params.organizationId, resourceType: 'invoice', resourceId: item.id, leaseOwner }).catch(() => undefined);
       }
       continue;
     }
 
-    const [payment] = await db.select({ id: payments.id, status: payments.status, syncStatus: payments.syncStatus, updatedAt: payments.updatedAt, qbInvoiceId: invoices.qbInvoiceId }).from(payments).innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId))).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId))).limit(1);
-    if (!payment) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
-    if (!['pending', 'failed'].includes(String(payment.syncStatus)) || !['succeeded', 'captured'].includes(String(payment.status).toLowerCase()) || !payment.qbInvoiceId || new Date(payment.updatedAt).getTime() > cutoff.getTime()) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Payment is not currently eligible.' }); continue; }
+    const [payment] = await db.select({ id: payments.id, status: payments.status, syncStatus: payments.syncStatus, accountingUpdatedAt: payments.accountingUpdatedAt, qbInvoiceId: invoices.qbInvoiceId }).from(payments).innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId))).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId))).limit(1);
+    if (!payment) { const reason = 'Record not found or not permitted.'; result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason }); await auditForce(item, 'rejected', reason, false); continue; }
+    const wasStabilityBlocked = !isAccountingUpdatedBeforeQuickBooksStabilityCutoff(new Date(payment.accountingUpdatedAt), now, stabilityWindowMs);
+    if (!['pending', 'failed'].includes(String(payment.syncStatus))) { const reason = 'Payment is no longer pending sync.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
+    if (!['succeeded', 'captured'].includes(String(payment.status).toLowerCase())) { const reason = 'Only captured or succeeded payments can sync.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
+    if (!payment.qbInvoiceId) { const reason = 'Invoice must sync first.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
+    const leaseOwner = `manual_force:${params.actor.userId || 'unknown'}:${randomUUID()}`;
+    if (!await claimQuickBooksSyncLease({ organizationId: params.organizationId, resourceType: 'payment', resourceId: item.id, leaseOwner })) {
+      const reason = 'Another QuickBooks synchronization is already in progress.';
+      result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue;
+    }
     try {
       const qb = await syncSinglePaymentToQuickBooksForOrganization(params.organizationId, item.id);
       await db.update(payments).set({ externalAccountingId: qb.qbPaymentId, syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId)));
-      result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null });
+      result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null }); await auditForce(item, 'synced', null, wasStabilityBlocked);
     } catch (error: any) {
       const reason = toOneLineHumanMessage(error?.message || error);
       await db.update(payments).set({ syncStatus: 'failed', syncError: reason, updatedAt: new Date() } as any).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId)));
-      result.failed++; result.results.push({ ...item, outcome: 'failed', reason });
+      result.failed++; result.results.push({ ...item, outcome: 'failed', reason }); await auditForce(item, 'failed', reason, wasStabilityBlocked);
+    } finally {
+      await releaseQuickBooksSyncLease({ organizationId: params.organizationId, resourceType: 'payment', resourceId: item.id, leaseOwner }).catch(() => undefined);
     }
   }
   return result;

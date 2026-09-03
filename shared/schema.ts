@@ -4917,6 +4917,9 @@ export const invoices = pgTable("invoices", {
   status: varchar("status", { length: 50 }).notNull().default('draft'), // MVP: draft | billed | paid | void (legacy values may exist)
   // Lightweight invoice versioning
   invoiceVersion: integer("invoice_version").notNull().default(1),
+  // Changes only when a field serialized to external accounting changes.  This
+  // deliberately excludes queueing, retries, and other operational writes.
+  accountingUpdatedAt: timestamp("accounting_updated_at", { withTimezone: true }).defaultNow().notNull(),
   lastSentVersion: integer("last_sent_version"),
   lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
   lastSentVia: text("last_sent_via"),
@@ -5363,6 +5366,8 @@ export const payments = pgTable("payments", {
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
   qbReconciledAt: timestamp("qb_reconciled_at", { withTimezone: true }),
+  // The accounting payload clock; never use generic updatedAt for sync stability.
+  accountingUpdatedAt: timestamp("accounting_updated_at", { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [

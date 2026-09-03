@@ -25,7 +25,7 @@ test('selection remains explicit and is not mutated by paging or filtering', () 
   expect(source).toContain('for (const item of items.filter((item) => item.eligible))');
   expect(source).toContain('const changeView = (next: QueueView) => { setView(next); setPage(1); };');
   expect(source).toContain('Queue Selected ({selectedQueueable.length})');
-  expect(source).toContain('Sync Selected ({selectedTransmissible.length})');
+  expect(source).toContain('Force Sync Selected ({selectedForceable.length})');
 });
 
 test('server query receives all canonical sort, filter, search, and page state', () => {

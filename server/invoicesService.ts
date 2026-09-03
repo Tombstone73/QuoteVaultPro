@@ -1099,6 +1099,7 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     balanceDue: centsToDecimalString(financialState.amountDueCents),
     status: financialState.status as any,
     invoiceVersion: nextInvoiceVersion,
+    accountingUpdatedAt: new Date(),
     // Local Order truth remains current, but an already-synced QuickBooks
     // invoice must never be silently mutated outside the explicit accounting
     // workflow.
@@ -1193,7 +1194,10 @@ export async function updateInvoiceSafeDraftCanonical(input: {
     if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (input.patch.terms !== undefined) updates.terms = input.patch.terms;
-    if (input.patch.customDueDate !== undefined) updates.dueDate = input.patch.customDueDate;
+    if (input.patch.customDueDate !== undefined) {
+      updates.dueDate = input.patch.customDueDate;
+      updates.accountingUpdatedAt = new Date();
+    }
     if (input.patch.notesPublic !== undefined) updates.notesPublic = input.patch.notesPublic;
     if (Object.keys(updates).length === 1) throw Object.assign(new Error("Provide at least one safe draft field to update."), { code: "INVOICE_PATCH_EMPTY" });
     const [updated] = await tx.update(invoices).set(updates as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();

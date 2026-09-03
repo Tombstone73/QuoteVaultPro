@@ -173,7 +173,15 @@ export function registerQuickBooksRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
-      const data = await runSelectedQuickBooksSyncForOrg({ organizationId, items: parsed.data.items });
+      const data = await runSelectedQuickBooksSyncForOrg({
+        organizationId,
+        items: parsed.data.items,
+        syncMode: 'manual_force',
+        actor: {
+          userId: req.user?.id ? String(req.user.id) : null,
+          userName: req.user?.name || req.user?.email || null,
+        },
+      });
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || 'Selected QuickBooks sync failed' });
@@ -182,8 +190,8 @@ export function registerQuickBooksRoutes(
 
   /**
    * POST /api/integrations/quickbooks/flush
-   * Manual run: bypasses the timer but still respects the stability window.
-   * Pass { force: true } only for explicit test/operator override.
+   * Manually starts one bounded automatic worker pass.  The worker always
+   * observes stability; record-level force sync is the authorized endpoint above.
    */
   app.post('/api/integrations/quickbooks/flush', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -192,13 +200,11 @@ export function registerQuickBooksRoutes(
 
       const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
       const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
-      const force = req.body?.force === true;
-
       const result = await runQuickBooksSyncWorkerForOrg({
         organizationId,
         stabilityWindowMs,
         limitPerRun,
-        ignoreStabilityWindow: force,
+        ignoreStabilityWindow: false,
         includeFailed: true,
         log: true,
       });
@@ -569,13 +575,11 @@ export function registerQuickBooksRoutes(
       if (qbSyncPolicy === 'queue_only') {
         const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
         const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
-        const force = req.body?.force === true;
-
         const result = await runQuickBooksSyncWorkerForOrg({
           organizationId,
           stabilityWindowMs,
           limitPerRun,
-          ignoreStabilityWindow: force,
+          ignoreStabilityWindow: false,
           includeFailed: true,
           log: true,
         });
