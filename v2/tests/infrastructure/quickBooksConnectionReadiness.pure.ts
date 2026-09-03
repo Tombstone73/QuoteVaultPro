@@ -6,6 +6,7 @@ const service=readFileSync(resolve("server/quickbooksService.ts"),"utf8");
 const route=readFileSync(resolve("v2/src/interfaces/http/quickBooksIntegrationRoutes.ts"),"utf8");
 const ui=readFileSync(resolve("v2/ui/src/QuickBooksSettingsWorkspace.tsx"),"utf8");
 const notice=readFileSync(resolve("v2/ui/src/quickBooksIntegrationCallbackNotice.ts"),"utf8");
+const presentation=readFileSync(resolve("v2/ui/src/quickBooksConnectionPresentation.ts"),"utf8");
 
 assert.match(service,/getQuickBooksConnectionReadinessForOrganization/);
 assert.match(service,/configured === "sandbox"/);
@@ -33,4 +34,6 @@ assert.match(ui,/Save refund account/);
 assert.match(ui,/Connection & refund configuration/);
 assert.match(ui,/quickBooksIntegrationCallbackNotice/);
 assert.match(notice,/quickbooks/);
+assert.match(presentation,/company name unavailable/);
+assert.match(presentation,/No QuickBooks company connected/);
 console.log("QuickBooks readiness and OAuth settings contracts passed.");

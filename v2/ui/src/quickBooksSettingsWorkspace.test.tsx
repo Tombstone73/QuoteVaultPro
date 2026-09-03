@@ -21,4 +21,6 @@ assert.match(source, /Reconcile & resume/);
 assert.match(source, /Retry sync/);
 assert.match(source, /No eligible invoices need synchronization/);
 assert.match(source, /Nothing needs action/);
+assert.match(source, /quickBooksCompanyConnectionCopy/);
+assert.match(source, /Dismiss QuickBooks authorization notice/);
 console.log("QuickBooks operations console presentation contracts passed.");
