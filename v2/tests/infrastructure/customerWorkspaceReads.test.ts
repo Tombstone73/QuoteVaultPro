@@ -7,13 +7,16 @@ const linkedContact = { id: "contact-a", first_name: "Ada", last_name: "Lovelace
 describe("M4 Customer workspace PostgreSQL projection", () => {
   test("binds active organization scope, searches canonical Customer/Contact facts, and bounds the catalog", async () => {
     const calls: { text: string; values?: readonly unknown[] }[] = [];
-    const reader = new PostgresCustomerWorkspaceReader({ query: async <T>(text: string, values?: readonly unknown[]) => { calls.push({ text, values }); return { rows: [{ customer_id: "customer-a", display_name: "Acme", company_name: "Acme Printing", email: "billing@acme.test", phone: "555-0100", contact_id: "contact-a", contact_first_name: "Ada", contact_last_name: "Lovelace", contact_email: "ada@acme.test", contact_phone: "555-0111", contact_is_primary: true }] as T[] }; } } as any);
-    await expect(reader.list("org-a", "Ada")).resolves.toMatchObject([{ customerId: "customer-a", primaryContact: { contactId: "contact-a", displayName: "Ada Lovelace", primary: true } }]);
+    const responses = [[{ customer_id: "customer-a", display_name: "Acme", company_name: "Acme Printing", email: "billing@acme.test", phone: "555-0100", contact_id: "contact-a", contact_first_name: "Ada", contact_last_name: "Lovelace", contact_email: "ada@acme.test", contact_phone: "555-0111", contact_is_primary: true, sort_name: "acme" }], [{ total_matching: "1" }]];
+    const reader = new PostgresCustomerWorkspaceReader({ query: async <T>(text: string, values?: readonly unknown[]) => { calls.push({ text, values }); return { rows: (responses.shift() ?? []) as T[] }; } } as any);
+    await expect(reader.list("org-a", { query: "Ada", limit: 25 })).resolves.toMatchObject({ items: [{ customerId: "customer-a", primaryContact: { contactId: "contact-a", displayName: "Ada Lovelace", primary: true } }], totalMatching: 1 });
     expect(calls[0]!.text).toContain("c.organization_id = $1");
     expect(calls[0]!.text).toContain("customer_contact_links");
     expect(calls[0]!.text).toContain("l.is_primary DESC");
-    expect(calls[0]!.text).toContain("LIMIT 100");
-    expect(calls[0]!.values).toEqual(["org-a", "%Ada%"]);
+    expect(calls[0]!.text).toContain("LIMIT $5");
+    expect(calls[0]!.text).toContain("c.id::text) > ($3::text, $4::text)");
+    expect(calls[0]!.values).toEqual(["org-a", "%Ada%", null, null, 26]);
+    expect(calls[1]!.values).toEqual(["org-a", "%Ada%"]);
   });
   test("reads Contacts only through the active tenant-scoped Customer relationship", async () => {
     const calls: { text: string; values?: readonly unknown[] }[] = [];

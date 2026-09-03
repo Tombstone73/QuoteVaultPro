@@ -3,8 +3,8 @@ import React, { useState } from "react";
 import { contactApi, customerApi, newBusinessRequestId, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
 
 const keys = {
-  list: (scope: string, organizationId: string, search: string) => ["v2", scope, organizationId, "customers", search] as const,
-  detail: (scope: string, organizationId: string, customerId: string) => ["v2", scope, organizationId, "customers", customerId] as const,
+  list: (scope: string, organizationId: string, search: string, cursor: string) => ["v2", scope, organizationId, "customers", "catalog", search, cursor] as const,
+  detail: (scope: string, organizationId: string, customerId: string) => ["v2", scope, organizationId, "customers", "detail", customerId] as const,
 };
 
 const unavailable = "—";
@@ -40,13 +40,15 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
   backToCatalog: () => void;
 }>) => {
   const [search, setSearch] = useState("");
+  const [cursor, setCursor] = useState("");
+  const [cursorHistory, setCursorHistory] = useState<readonly string[]>([]);
   const [creating, setCreating] = useState(false);
   const [companyName, setCompanyName] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const queryClient = useQueryClient();
-  const list = useQuery({ queryKey: keys.list(sessionScope, organizationId, search), queryFn: () => customerApi.list(organizationId, search), enabled: Boolean(organizationId && sessionScope && canView && !customerId) });
+  const list = useQuery({ queryKey: keys.list(sessionScope, organizationId, search, cursor), queryFn: () => customerApi.list(organizationId, search, { ...(cursor ? { cursor } : {}), limit: 25 }), enabled: Boolean(organizationId && sessionScope && canView && !customerId) });
   const detail = useQuery({ queryKey: keys.detail(sessionScope, organizationId, customerId), queryFn: () => customerApi.get(organizationId, customerId), enabled: Boolean(organizationId && sessionScope && customerId && canView) });
   const create = useMutation({
     mutationFn: () => customerApi.create(organizationId, { companyName, ...(displayName.trim() ? { displayName } : {}), ...(email.trim() ? { email } : {}), ...(phone.trim() ? { phone } : {}) }),
@@ -61,7 +63,7 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
   if (customerId) return <CustomerDetail state={detail} organizationId={organizationId} sessionScope={sessionScope} canCreate={canCreate} openContact={openContact} backToCatalog={backToCatalog} />;
 
   return <section className="v2-customers" aria-label="Customers">
-    <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.items.length} customer accounts` : "Customer accounts"}</p></div>{canCreate && <button type="button" onClick={() => setCreating((value) => !value)}>{creating ? "Cancel" : "New Customer"}</button>}</header>
+    <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.totalMatching} customer accounts` : "Customer accounts"}</p></div>{canCreate && <button type="button" onClick={() => setCreating((value) => !value)}>{creating ? "Cancel" : "New Customer"}</button>}</header>
     {creating && <form className="v2-customer-create" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
       <label>Company name <input value={companyName} required maxLength={255} onChange={(event) => setCompanyName(event.target.value)} /></label>
       <label>Display name <input value={displayName} maxLength={255} onChange={(event) => setDisplayName(event.target.value)} /></label>
@@ -70,7 +72,7 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
       <button type="submit" disabled={create.isPending}>{create.isPending ? "Creating…" : "Create Customer"}</button>
       {create.isError && <p role="alert">Customer creation is unavailable.</p>}
     </form>}
-    <div className="v2-customers-tools"><label className="v2-customers-search"><span aria-hidden>⌕</span><input aria-label="Search Customers" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Company, contact, email, phone…" /></label></div>
+    <div className="v2-customers-tools"><label className="v2-customers-search"><span aria-hidden>⌕</span><input aria-label="Search Customers" value={search} onChange={(event) => { setSearch(event.target.value); setCursor(""); setCursorHistory([]); }} placeholder="Company, contact, email, phone…" /></label></div>
     <div className="v2-customers-table-wrap"><table className="v2-customers-table"><thead><tr><th>Company</th><th>Primary Contact</th><th>Email</th><th>Phone</th></tr></thead><tbody>
       {list.isLoading && <tr><td colSpan={4}>Loading Customers…</td></tr>}
       {list.isError && <tr><td colSpan={4}>Customers are unavailable.</td></tr>}
@@ -80,6 +82,11 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
         <td>{contactSummary(customer)}</td><td>{customer.email ?? customer.primaryContact?.email ?? unavailable}</td><td className="num">{customer.phone ?? customer.primaryContact?.phone ?? unavailable}</td>
       </tr>)}
     </tbody></table></div>
+    <div className="v2-customers-pagination">
+      <span>{list.data ? `${list.data.items.length} shown · ${list.data.totalMatching} matching` : "Loading Customers…"}</span>
+      <button type="button" disabled={!cursorHistory.length || list.isFetching} onClick={() => { const previous = cursorHistory.at(-1) ?? ""; setCursorHistory((values) => values.slice(0, -1)); setCursor(previous); }}>Previous</button>
+      <button type="button" disabled={!list.data?.nextCursor || list.isFetching} onClick={() => { if (!list.data?.nextCursor) return; setCursorHistory((values) => [...values, cursor]); setCursor(list.data.nextCursor!); }}>Next</button>
+    </div>
   </section>;
 };
 

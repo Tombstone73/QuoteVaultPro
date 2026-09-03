@@ -30,7 +30,7 @@ const calls: string[] = [];
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL | Request) => {
   calls.push(String(input));
-  return new Response(JSON.stringify({ ok: true, data: { items: [{ customerId: "brainstorm", displayName: "Brainstorm Print", companyName: "Brainstorm Print" }] } }), {
+  return new Response(JSON.stringify({ ok: true, data: { items: [{ customerId: "brainstorm", displayName: "Brainstorm Print", companyName: "Brainstorm Print" }], totalMatching: 1 } }), {
     headers: { "content-type": "application/json" },
   });
 }) as typeof fetch;

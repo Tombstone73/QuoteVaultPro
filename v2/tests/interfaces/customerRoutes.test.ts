@@ -14,7 +14,9 @@ const app = (principal: StaffPrincipal) => {
   const dependencies: CustomerHttpDependencies = {
     principals: { principal: async () => principal },
     customers: {
-      list: async (organizationId, query) => organizationId === "org-a" && query === "Acme" ? [catalog] : [],
+      list: async (organizationId, catalogRequest) => organizationId === "org-a" && catalogRequest?.query === "Acme"
+        ? { items: [catalog], totalMatching: 1 }
+        : { items: [], totalMatching: 0 },
       read: async (organizationId, customerId) => organizationId === "org-a" && customerId === "customer-a" ? detail : null,
     },
   };
@@ -23,7 +25,7 @@ const app = (principal: StaffPrincipal) => {
 
 describe("M4 Customer workspace HTTP projection", () => {
   test("lists the authenticated tenant's bounded Customer catalog and supports canonical search", async () => {
-    await request(app(staff("org-a"))).get("/v2/organizations/org-a/customers?q=Acme").expect(200, { ok: true, data: { items: [catalog] } });
+    await request(app(staff("org-a"))).get("/v2/organizations/org-a/customers?q=Acme&limit=25").expect(200, { ok: true, data: { items: [catalog], totalMatching: 1 } });
   });
   test("returns only Customer-owned detail and relationship-scoped Contacts", async () => {
     await request(app(staff("org-a"))).get("/v2/organizations/org-a/customers/customer-a").expect(200, { ok: true, data: detail });

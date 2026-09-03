@@ -48,7 +48,8 @@ export const QuotesList = ({
     ...(cursor ? { cursor } : {}),
   });
   const rows = list.data?.items ?? [];
-  const total = rows.reduce((sum, row) => sum + row.sellingTotalCents, 0);
+  const summary = list.data?.summary;
+  const total = summary?.sellingTotalCents ?? rows.reduce((sum, row) => sum + row.sellingTotalCents, 0);
   const select = (row: QuoteListItem) => {
     if (row.source === "legacy") onOpenLegacy(row.recordId);
     else onOpenV2(row.quoteId);
@@ -64,7 +65,7 @@ export const QuotesList = ({
         <div className="min-w-0">
           <h1 className="text-lg font-semibold tracking-tight">Quotes</h1>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
-            {rows.length} quotes · {money({ cents: total, currency: rows[0]?.currency ?? "USD" })} total value
+            {list.data?.totalMatching ?? rows.length} quotes · {money({ cents: total, currency: summary?.currencies[0] ?? rows[0]?.currency ?? "USD" })} total value
           </p>
         </div>
         <button type="button" className="v2-quotes-new" onClick={onCreate} disabled={!canCreate}>

@@ -146,6 +146,7 @@ export type UiBootstrap = Readonly<{
 }>;
 export type SalesListPage<T> = Readonly<{
   items: readonly T[];
+  totalMatching: number;
   nextCursor?: string;
   summary?: Readonly<{
     itemCount: number;
@@ -1750,6 +1751,9 @@ export const orderApi = {
     query?: Readonly<{
       q?: string;
       lifecycle?: string;
+      dueFrom?: string;
+      dueTo?: string;
+      sort?: "updated_desc" | "updated_asc";
       cursor?: string;
       limit?: number;
     }>,
@@ -1915,11 +1919,20 @@ export type CustomerCatalogItem = Readonly<{
     primary: boolean;
   }>;
 }>;
+export type CustomerCatalogPage = Readonly<{
+  items: readonly CustomerCatalogItem[];
+  totalMatching: number;
+  nextCursor?: string;
+}>;
 export const customerApi = {
-  list: (organizationId: string, query = "") =>
-    request<{ items: readonly CustomerCatalogItem[] }>(
-      `/v2/organizations/${encodeURIComponent(organizationId)}/customers${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-    ),
+  list: (organizationId: string, query = "", options: Readonly<{ cursor?: string; limit?: number }> = {}) => {
+    const parameters = new URLSearchParams();
+    if (query) parameters.set("q", query);
+    if (options.cursor) parameters.set("cursor", options.cursor);
+    if (options.limit) parameters.set("limit", String(options.limit));
+    const suffix = parameters.size ? `?${parameters.toString()}` : "";
+    return request<CustomerCatalogPage>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers${suffix}`);
+  },
   get: (organizationId: string, customerId: string) =>
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,

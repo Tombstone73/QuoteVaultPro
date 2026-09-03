@@ -4,12 +4,12 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { OperationContext } from "../../application/operation.js";
-import type { CustomerCatalogItem, CustomerWorkspaceRead } from "../../../infrastructure/compatibility/postgresCustomerWorkspaceRead.js";
+import type { CustomerCatalogPage, CustomerCatalogPageRequest, CustomerWorkspaceRead } from "../../../infrastructure/compatibility/postgresCustomerWorkspaceRead.js";
 import type { UpdateCustomerInput, SetPrimaryContactInput } from "../../../infrastructure/customers/postgresCustomerContactAdministration.js";
 
 export type CustomerHttpDependencies = Readonly<{
   customers: Readonly<{
-    list(organizationId: string, query?: string): Promise<readonly CustomerCatalogItem[]>;
+    list(organizationId: string, request?: CustomerCatalogPageRequest): Promise<CustomerCatalogPage>;
     read(organizationId: string, customerId: string): Promise<CustomerWorkspaceRead | null>;
   }>;
   creation?: Readonly<{
@@ -100,7 +100,14 @@ export const createCustomerRouter = (dependencies: CustomerHttpDependencies) => 
       const { organizationId, allowed } = await principalFor(request);
       if (!allowed) return deny(response, 403, "FORBIDDEN", "Customer access is unavailable.");
       const query = typeof request.query.q === "string" ? request.query.q : "";
-      return response.status(200).json({ ok: true, data: { items: await dependencies.customers.list(organizationId, query) } });
+      const cursor = typeof request.query.cursor === "string" ? request.query.cursor : undefined;
+      const requestedLimit = typeof request.query.limit === "string" ? Number(request.query.limit) : undefined;
+      const page = await dependencies.customers.list(organizationId, {
+        query,
+        ...(cursor ? { cursor } : {}),
+        ...(Number.isInteger(requestedLimit) ? { limit: requestedLimit } : {}),
+      });
+      return response.status(200).json({ ok: true, data: page });
     } catch {
       return deny(response, 403, "FORBIDDEN", "Authenticated access is required.");
     }

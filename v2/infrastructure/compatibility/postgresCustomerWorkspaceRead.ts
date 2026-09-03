@@ -33,6 +33,12 @@ export type CustomerCatalogItem = Readonly<{
   phone?: string;
   primaryContact?: CustomerPrimaryContact;
 }>;
+export type CustomerCatalogPageRequest = Readonly<{ query?: string; limit?: number; cursor?: string }>;
+export type CustomerCatalogPage = Readonly<{
+  items: readonly CustomerCatalogItem[];
+  totalMatching: number;
+  nextCursor?: string;
+}>;
 
 type CustomerCatalogRow = Readonly<{
   customer_id: string;
@@ -46,7 +52,9 @@ type CustomerCatalogRow = Readonly<{
   contact_email: string | null;
   contact_phone: string | null;
   contact_is_primary: boolean | null;
+  sort_name: string;
 }>;
+type CustomerCatalogCursor = Readonly<{ sortName: string; customerId: string }>;
 type CustomerContactRow = Readonly<{
   id: string;
   first_name: string;
@@ -82,19 +90,57 @@ const catalogContact = (row: CustomerCatalogRow): CustomerPrimaryContact | undef
         primary: row.contact_is_primary === true,
       }
     : undefined;
+const customerCatalogLimit = (value: number | undefined) =>
+  Number.isInteger(value) ? Math.max(1, Math.min(value!, 50)) : 25;
+const encodeCustomerCursor = (cursor: CustomerCatalogCursor) =>
+  Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+const decodeCustomerCursor = (value?: string): CustomerCatalogCursor | undefined => {
+  if (!value) return undefined;
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
+    return typeof decoded.sortName === "string" && typeof decoded.customerId === "string"
+      ? { sortName: decoded.sortName, customerId: decoded.customerId }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 /** Read-only Customer workspace projection; CRM remains the source of these facts. */
 export class PostgresCustomerWorkspaceReader {
   constructor(private readonly pool: Pool) {}
 
-  /** Bounded Customer-owned catalog. Contacts are relationship-scoped in SQL, never filtered only in the browser. */
-  async list(organizationId: OrganizationId, query = ""): Promise<readonly CustomerCatalogItem[]> {
-    const pattern = `%${query.trim().slice(0, 120)}%`;
-    const result = await this.pool.query<CustomerCatalogRow>(
-      `SELECT c.id AS customer_id, c.display_name, c.company_name, c.email, c.phone,
+  /** Keyset-paged Customer-owned catalog. Contacts are relationship-scoped in SQL, never filtered only in the browser. */
+  async list(organizationId: OrganizationId, request: CustomerCatalogPageRequest = {}): Promise<CustomerCatalogPage> {
+    const query = request.query?.trim().slice(0, 120) ?? "";
+    const pattern = query ? `%${query}%` : null;
+    const limit = customerCatalogLimit(request.limit);
+    const cursor = decodeCustomerCursor(request.cursor);
+    const values = [organizationId, pattern, cursor?.sortName ?? null, cursor?.customerId ?? null, limit + 1];
+    const [result, count] = await Promise.all([
+      this.pool.query<CustomerCatalogRow>(
+      `WITH candidates AS (
+        SELECT c.id,
+          lower(COALESCE(NULLIF(c.display_name, ''), c.company_name)) AS sort_name
+        FROM customers c
+        WHERE c.organization_id = $1 AND c.is_active IS NOT FALSE
+          AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted') AND c.merged_into_customer_id IS NULL
+          AND ($2::text IS NULL OR c.display_name ILIKE $2 OR c.company_name ILIKE $2 OR c.email ILIKE $2 OR c.phone ILIKE $2
+            OR EXISTS (
+              SELECT 1 FROM customer_contact_links l
+              JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
+              WHERE l.organization_id = c.organization_id AND l.customer_id = c.id AND l.status = 'active'
+                AND (ct.first_name ILIKE $2 OR ct.last_name ILIKE $2 OR ct.email ILIKE $2 OR ct.phone ILIKE $2)
+            ))
+          AND ($3::text IS NULL OR (lower(COALESCE(NULLIF(c.display_name, ''), c.company_name)), c.id::text) > ($3::text, $4::text))
+        ORDER BY sort_name, c.id
+        LIMIT $5
+      )
+      SELECT c.id AS customer_id, c.display_name, c.company_name, c.email, c.phone, candidates.sort_name,
         primary_contact.id AS contact_id, primary_contact.first_name AS contact_first_name, primary_contact.last_name AS contact_last_name,
         primary_contact.email AS contact_email, primary_contact.phone AS contact_phone, primary_contact.is_primary AS contact_is_primary
-      FROM customers c
+      FROM candidates
+      JOIN customers c ON c.organization_id = $1 AND c.id = candidates.id
       LEFT JOIN LATERAL (
         SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone, l.is_primary
         FROM customer_contact_links l
@@ -103,27 +149,35 @@ export class PostgresCustomerWorkspaceReader {
         ORDER BY l.is_primary DESC, lower(ct.last_name), lower(ct.first_name), ct.id
         LIMIT 1
       ) primary_contact ON TRUE
-      WHERE c.organization_id = $1 AND c.is_active IS NOT FALSE
-        AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted') AND c.merged_into_customer_id IS NULL
-        AND (c.display_name ILIKE $2 OR c.company_name ILIKE $2 OR c.email ILIKE $2 OR c.phone ILIKE $2
+      ORDER BY candidates.sort_name, c.id`,
+      values,
+    ),
+      this.pool.query<{ total_matching: string }>(
+        `SELECT count(*)::text AS total_matching
+        FROM customers c
+        WHERE c.organization_id = $1 AND c.is_active IS NOT FALSE
+          AND COALESCE(c.status, 'active') NOT IN ('archived', 'superseded', 'deleted') AND c.merged_into_customer_id IS NULL
+          AND ($2::text IS NULL OR c.display_name ILIKE $2 OR c.company_name ILIKE $2 OR c.email ILIKE $2 OR c.phone ILIKE $2
           OR EXISTS (
             SELECT 1 FROM customer_contact_links l
             JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id AND ct.status = 'active'
             WHERE l.organization_id = c.organization_id AND l.customer_id = c.id AND l.status = 'active'
               AND (ct.first_name ILIKE $2 OR ct.last_name ILIKE $2 OR ct.email ILIKE $2 OR ct.phone ILIKE $2)
-          ))
-      ORDER BY lower(COALESCE(NULLIF(c.display_name, ''), c.company_name)), c.id
-      LIMIT 100`,
-      [organizationId, pattern],
-    );
-    return result.rows.map((row) => ({
+          ))`,
+        [organizationId, pattern],
+      ),
+    ]);
+    const visible = result.rows.slice(0, limit);
+    const last = visible.at(-1);
+    return { items: visible.map((row) => ({
       customerId: brandedId<"CustomerId">(row.customer_id),
       displayName: row.display_name?.trim() || row.company_name,
       companyName: row.company_name,
       ...(row.email ? { email: row.email } : {}),
       ...(row.phone ? { phone: row.phone } : {}),
       ...(catalogContact(row) ? { primaryContact: catalogContact(row)! } : {}),
-    }));
+    })), totalMatching: Number(count.rows[0]?.total_matching ?? 0),
+      ...(result.rows.length > limit && last ? { nextCursor: encodeCustomerCursor({ sortName: last.sort_name, customerId: last.customer_id }) } : {}) };
   }
 
   async read(organizationId: OrganizationId, customerId: CustomerId): Promise<CustomerWorkspaceRead | null> {

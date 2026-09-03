@@ -18,6 +18,7 @@ export type SalesWorkspacePageRequest = Readonly<{
 
 export type SalesWorkspacePage<T> = Readonly<{
   items: readonly T[];
+  totalMatching: number;
   nextCursor?: string;
   summary?: Readonly<{
     itemCount: number;
