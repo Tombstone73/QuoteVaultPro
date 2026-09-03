@@ -30,7 +30,7 @@ assert.match(ui,/Connect QuickBooks/);
 assert.match(ui,/Reconnect QuickBooks/);
 assert.match(ui,/Refund disbursement account/);
 assert.match(ui,/Save refund account/);
-assert.match(ui,/QuickBooks Connection/);
+assert.match(ui,/Connection & refund configuration/);
 assert.match(ui,/quickBooksIntegrationCallbackNotice/);
 assert.match(notice,/quickbooks/);
 console.log("QuickBooks readiness and OAuth settings contracts passed.");
