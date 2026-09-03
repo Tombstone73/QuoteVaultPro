@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, Plus, Calculator, Loader2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { serializeOrderDateInput } from "@/lib/orderDate";
 import { CustomerSelect } from "@/components/CustomerSelect";
 import { ContactSelect } from "@/components/ContactSelect";
 import {
@@ -466,8 +467,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       contactId: selectedContactId || null,
       status,
       priority,
-      dueDate: dueDate ? new Date(dueDate) : null,
-      promisedDate: promisedDate ? new Date(promisedDate) : null,
+      dueDate: serializeOrderDateInput(dueDate),
+      promisedDate: serializeOrderDateInput(promisedDate),
       discount: Number(discount),
       notesInternal: notesInternal || null,
       poNumber: poNumber || null,

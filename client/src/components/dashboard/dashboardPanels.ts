@@ -57,26 +57,12 @@ export function isDashboardPanel(value: string | null | undefined): value is Das
   return !!value && value in DASHBOARD_PANELS;
 }
 
-function toDateOnly(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function addDays(date: Date, days: number) {
-  const out = new Date(date);
-  out.setDate(out.getDate() + days);
-  return out;
-}
-
 export function getPanelOpenTarget(panel: DashboardPanel): { label: string; href: string } | null {
-  const now = new Date();
-  const today = toDateOnly(now);
-  const tomorrow = toDateOnly(addDays(now, 1));
-
   switch (panel) {
     case "orders_due_today":
-      return { label: "Open in Orders", href: `${ROUTES.orders.list}?startDate=${today}&endDate=${today}` };
+      return { label: "Open in Orders", href: `${ROUTES.orders.list}?due=today` };
     case "orders_due_tomorrow":
-      return { label: "Open in Orders", href: `${ROUTES.orders.list}?startDate=${tomorrow}&endDate=${tomorrow}` };
+      return { label: "Open in Orders", href: `${ROUTES.orders.list}?due=tomorrow` };
     case "orders_status_new":
       return { label: "Open in Orders", href: `${ROUTES.orders.list}?status=new` };
     case "orders_status_in_production":

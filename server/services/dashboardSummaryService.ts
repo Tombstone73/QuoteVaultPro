@@ -2,6 +2,11 @@ import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { invoices, materials, orders, payments, productionJobs, quotes, vendors } from "@shared/schema";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
+import {
+  activeOrderDuePredicates,
+  businessDateForOrderDueFilter,
+  getOrganizationTimezone,
+} from "./orderDueDateService";
 
 export type DashboardSummary = {
   criticalAlerts: {
@@ -148,15 +153,15 @@ export async function getLowInventoryDashboardItems(
   }));
 }
 
-export async function getDashboardSummary(organizationId: string): Promise<DashboardSummary> {
-  const now = new Date();
+export async function getDashboardSummary(organizationId: string, now = new Date()): Promise<DashboardSummary> {
   const todayStart = startOfDay(now);
   const tomorrowStart = addDays(todayStart, 1);
-  const dayAfterTomorrowStart = addDays(todayStart, 2);
   const weekStart = startOfWeekMonday(now);
   const todayStartIso = todayStart.toISOString();
   const tomorrowStartIso = tomorrowStart.toISOString();
-  const dayAfterTomorrowStartIso = dayAfterTomorrowStart.toISOString();
+  const organizationTimezone = await getOrganizationTimezone(organizationId);
+  const dueToday = businessDateForOrderDueFilter("today", now, organizationTimezone);
+  const dueTomorrow = businessDateForOrderDueFilter("tomorrow", now, organizationTimezone);
 
   const summary: DashboardSummary = {
     ...DEFAULT_SUMMARY,
@@ -175,10 +180,7 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
         .where(
           and(
             eq(orders.organizationId, organizationId),
-            gte(orders.dueDate, todayStartIso),
-            lt(orders.dueDate, tomorrowStartIso),
-            not(eq(orders.state, "closed")),
-            not(eq(orders.state, "canceled")),
+            ...activeOrderDuePredicates("today", dueToday),
           ),
         ),
     );
@@ -190,10 +192,7 @@ export async function getDashboardSummary(organizationId: string): Promise<Dashb
         .where(
           and(
             eq(orders.organizationId, organizationId),
-            gte(orders.dueDate, tomorrowStartIso),
-            lt(orders.dueDate, dayAfterTomorrowStartIso),
-            not(eq(orders.state, "closed")),
-            not(eq(orders.state, "canceled")),
+            ...activeOrderDuePredicates("tomorrow", dueTomorrow),
           ),
         ),
     );

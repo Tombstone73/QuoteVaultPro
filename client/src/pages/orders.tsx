@@ -29,6 +29,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { formatOrderDate } from "@/lib/orderDate";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
@@ -206,6 +207,10 @@ export default function Orders() {
   const { onSmartBack } = useSmartBack();
   
   const [search, setSearch] = useState("");
+  const dueFilter = useMemo(() => {
+    const value = new URLSearchParams(location.search).get("due");
+    return value === "today" || value === "tomorrow" || value === "overdue" ? value : undefined;
+  }, [location.search]);
   const debouncedSearch = useDebouncedValue(search.trim());
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
   // null means every active pill is included. An empty array intentionally
@@ -338,20 +343,23 @@ export default function Orders() {
   // Stable filters object for query key consistency
   const ordersFilters = useMemo(() => ({
     search: debouncedSearch || undefined,
-    state: stateFilter === "all" ? undefined : stateFilter,
+    // Due-window links use the Dashboard's active-order predicate, which
+    // includes production-complete Orders until they are closed/canceled.
+    state: dueFilter ? undefined : stateFilter === "all" ? undefined : stateFilter,
     statusPillIds: statusPillIdsForQuery,
     priority: priorityFilter === "all" ? undefined : priorityFilter,
+    due: dueFilter,
     page,
     pageSize,
     includeThumbnails,
     sortBy: sortKey,
     sortDir: sortDirection,
-  }), [debouncedSearch, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
+  }), [debouncedSearch, dueFilter, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
 
   // Every change to the server query shape starts at the first matching page.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, stateFilter, statusPillIdsForQuery, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
+  }, [debouncedSearch, dueFilter, stateFilter, statusPillIdsForQuery, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
 
   // Fetch orders with pagination support
   const { data: ordersData, isLoading, error } = useOrders(ordersFilters);
@@ -972,7 +980,7 @@ export default function Orders() {
       }
 
       case "dueDate":
-        return row.dueDate ? format(new Date(row.dueDate), "MMM d, yyyy") : <span className="text-muted-foreground italic">—</span>;
+        return row.dueDate ? formatOrderDate(row.dueDate, "short") : <span className="text-muted-foreground italic">—</span>;
 
       case "items":
         return row.lineItemsCount || 0;

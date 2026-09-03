@@ -32,6 +32,7 @@ export const ordersListQueryKey = (filters?: OrdersQueryParams) => {
     customerId: filters.customerId,
     startDate: filters.startDate,
     endDate: filters.endDate,
+    due: filters.due,
   } : undefined;
   return ["orders", "list", stableFilters] as const;
 };
@@ -424,6 +425,8 @@ export interface OrdersFilterParams {
   customerId?: string;
   startDate?: string;
   endDate?: string;
+  /** Server-authoritative Order due-date window in the tenant timezone. */
+  due?: "today" | "tomorrow" | "overdue";
 }
 
 // Query params type for paginated queries (includes pagination fields)
@@ -461,6 +464,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
       if (filters?.customerId) params.append("customerId", filters.customerId);
       if (filters?.startDate) params.append("startDate", filters.startDate);
       if (filters?.endDate) params.append("endDate", filters.endDate);
+      if (filters?.due) params.append("due", filters.due);
       
       // Pagination params
       if (filters?.page !== undefined) params.append("page", String(filters.page));

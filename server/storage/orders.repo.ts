@@ -78,6 +78,8 @@ import {
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
+import { activeOrderDuePredicates } from "../services/orderDueDateService";
+import { serializeOrderBusinessDate } from "@shared/orderBusinessDate";
 import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
 import {
@@ -824,6 +826,8 @@ export class OrdersRepository {
         customerId?: string;
         startDate?: string;
         endDate?: string;
+        dueFilter?: "today" | "tomorrow" | "overdue";
+        dueDatePart?: string;
         sortBy?: string;
         sortDir?: 'asc' | 'desc';
         page: number;
@@ -869,6 +873,9 @@ export class OrdersRepository {
         if (opts.customerId) conditions.push(eq(orders.customerId, opts.customerId));
         if (opts.startDate) conditions.push(gte(orders.createdAt, opts.startDate));
         if (opts.endDate) conditions.push(lte(orders.createdAt, opts.endDate));
+        if (opts.dueFilter && opts.dueDatePart) {
+            conditions.push(...activeOrderDuePredicates(opts.dueFilter, opts.dueDatePart));
+        }
 
         const whereClause = and(...conditions);
 
@@ -1462,12 +1469,11 @@ export class OrdersRepository {
         const shipping = Math.max(0, Number(data.shippingCents ?? 0)) / 100;
         const total = subtotal - discount + taxAmount + shipping;
 
-        // Sanitize date fields: convert Date objects to ISO strings, keep strings as-is, convert undefined/invalid to null
+        // Order due-related dates are business calendar dates, even though
+        // legacy columns are timestamptz. Normalize every creation path to
+        // the shared UTC-noon representation before persistence.
         const sanitizeDateField = (value: any): string | null => {
-            if (!value) return null;
-            if (value instanceof Date) return value.toISOString();
-            if (typeof value === 'string') return value;
-            return null;
+            return serializeOrderBusinessDate(value);
         };
 
         const created = await this.dbInstance.transaction(async (tx) => {
@@ -1916,6 +1922,9 @@ export class OrdersRepository {
             );
         }
         const updateData: any = { ...orderData, updatedAt: new Date() };
+        for (const field of ["dueDate", "promisedDate", "requestedDueDate", "productionDueDate"] as const) {
+            if (field in orderData) updateData[field] = serializeOrderBusinessDate(orderData[field]);
+        }
         const [updated] = await this.dbInstance
             .update(orders)
             .set(updateData)

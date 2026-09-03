@@ -11,6 +11,7 @@ import { useInvoices } from "@/hooks/useInvoices";
 import { useFulfillmentQueueQuery } from "@/hooks/useFulfillment";
 import { DASHBOARD_PANELS, getPanelOpenTarget, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { formatOrderDate } from "@/lib/orderDate";
 
 type QuoteRow = {
   id: string;
@@ -59,12 +60,6 @@ function formatQty(value?: number | null, unit?: string | null) {
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
 function panelTitle(panel: DashboardPanel) {
   return DASHBOARD_PANELS[panel]?.title ?? "Details";
 }
@@ -91,7 +86,16 @@ function DetailErrorState({ message }: { message: string }) {
 export default function DashboardDetailsView({ panel }: { panel: DashboardPanel }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const ordersQuery = useOrders();
+  const dueFilter = panel === "orders_due_today"
+    ? "today"
+    : panel === "orders_due_tomorrow"
+      ? "tomorrow"
+      : undefined;
+  // Due panels use the same server-side tenant-calendar predicate as the
+  // dashboard counts. Other dashboard panels retain their existing list flow.
+  const ordersQuery = useOrders(dueFilter
+    ? { due: dueFilter, page: 1, pageSize: 200, includeThumbnails: false, sortBy: "dueDate", sortDir: "asc" }
+    : undefined);
   const invoicesQuery = useInvoices();
   const fulfillmentQueueQuery = useFulfillmentQueueQuery({
     type: "all",
@@ -127,24 +131,22 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
   });
 
   const filteredOrders = useMemo(() => {
-    const list = Array.isArray(ordersQuery.data) ? ordersQuery.data : [];
+    const paginated = ordersQuery.data && !Array.isArray(ordersQuery.data) && "items" in ordersQuery.data
+      ? ordersQuery.data
+      : null;
+    const list = paginated?.items ?? (Array.isArray(ordersQuery.data) ? ordersQuery.data : []);
+    if (dueFilter) return list;
     const now = new Date();
-    const today = startOfDay(now);
-    const tomorrow = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
-    const dayAfterTomorrow = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
-
-    const isOpenOrder = (o: any) => o?.status !== "completed" && o?.status !== "canceled" && o?.canonicalState !== "completed" && o?.canonicalState !== "canceled";
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
 
     return list.filter((o: any) => {
-      const dueDate = o?.dueDate ? new Date(o.dueDate) : null;
       const canonical = String(o?.canonicalState || "").toLowerCase();
       const status = String(o?.status || "").toLowerCase();
 
       switch (panel) {
-        case "orders_due_today":
-          return !!dueDate && dueDate >= today && dueDate < tomorrow && isOpenOrder(o);
-        case "orders_due_tomorrow":
-          return !!dueDate && dueDate >= tomorrow && dueDate < dayAfterTomorrow && isOpenOrder(o);
         case "orders_status_new":
           return canonical ? canonical === "new" : status === "new";
         case "orders_status_in_production":
@@ -162,7 +164,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
           return false;
       }
     });
-  }, [ordersQuery.data, panel]);
+  }, [dueFilter, ordersQuery.data, panel]);
 
   const filteredInvoices = useMemo(() => {
     const list = Array.isArray(invoicesQuery.data) ? invoicesQuery.data : [];
@@ -422,7 +424,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
               <TableRow key={o.id} className="cursor-pointer" onClick={() => navigate(ROUTES.orders.detail(o.id), { state: { referrer: buildReferrer(location) } })}>
                 <TableCell className="font-medium">{o.orderNumber || "—"}</TableCell>
                 <TableCell>{o.status || "—"}</TableCell>
-                <TableCell>{formatDate(o.dueDate)}</TableCell>
+                <TableCell>{formatOrderDate(o.dueDate, "short")}</TableCell>
                 <TableCell>{o.customer?.companyName || o.customerName || "—"}</TableCell>
                 <TableCell className="text-right">{formatCurrency(o.total)}</TableCell>
               </TableRow>

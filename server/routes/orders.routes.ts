@@ -78,6 +78,11 @@ import { routeLineItemToProduction } from "../services/productionRoutingService"
 import { resolvePostPrepressProductionRoute } from "../services/productionRoutingResolver";
 import { routeEligibleOrderLineItems } from "../services/orderSaveRoutingService";
 import { normalizeOrderSaveRoutingMode } from "@shared/orderSaveRouting";
+import {
+    businessDateForOrderDueFilter,
+    getOrganizationTimezone,
+    isOrderDueFilter,
+} from "../services/orderDueDateService";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
@@ -1627,6 +1632,11 @@ export async function registerOrderRoutes(
             const includeThumbnailsRaw = req.query.includeThumbnails as string | undefined;
             const sortBy = req.query.sortBy as string | undefined;
             const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
+            const dueFilterRaw = req.query.due as string | undefined;
+            if (dueFilterRaw !== undefined && !isOrderDueFilter(dueFilterRaw)) {
+                return res.status(400).json({ message: "due must be one of: today, tomorrow, overdue" });
+            }
+            const dueFilter = dueFilterRaw;
 
             const hasPaging = pageRaw !== undefined || pageSizeRaw !== undefined;
 
@@ -1637,6 +1647,9 @@ export async function registerOrderRoutes(
                 // Default to false to avoid breaking page load if thumbnails schema is incomplete
                 const includeThumbnails = includeThumbnailsRaw === 'true' || includeThumbnailsRaw === '1';
                 const statusPillIds = parseOrderStatusPillIdsQuery(req.query.statusPillIds);
+                const dueDatePart = dueFilter
+                    ? businessDateForOrderDueFilter(dueFilter, new Date(), await getOrganizationTimezone(organizationId))
+                    : undefined;
 
                 const result = await storage.getAllOrdersPaginated(organizationId, {
                     search: req.query.search as string | undefined,
@@ -1648,6 +1661,8 @@ export async function registerOrderRoutes(
                     customerId: req.query.customerId as string | undefined,
                     startDate: req.query.startDate as string | undefined,
                     endDate: req.query.endDate as string | undefined,
+                    dueFilter,
+                    dueDatePart,
                     sortBy,
                     sortDir,
                     page,

@@ -37,7 +37,16 @@ describe("status-pill assignment cache synchronization", () => {
         state: "canceled",
         statusPillId: "pill-hold",
         priority: "rush",
+        due: undefined,
       }),
+    ]);
+  });
+
+  test("keeps a dashboard due-window request in its own list cache entry", () => {
+    expect(ordersListQueryKey({ page: 1, pageSize: 25, due: "tomorrow" })).toEqual([
+      "orders",
+      "list",
+      expect.objectContaining({ due: "tomorrow" }),
     ]);
   });
 
