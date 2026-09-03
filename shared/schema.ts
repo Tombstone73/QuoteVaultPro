@@ -5362,6 +5362,8 @@ export const payments = pgTable("payments", {
   appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow().notNull(),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'restrict' }),
   externalAccountingId: varchar("external_accounting_id"),
+  // Immutable once assigned: a short, human-readable QuickBooks PaymentRefNum fallback.
+  quickbooksPaymentReference: varchar("quickbooks_payment_reference", { length: 21 }),
   syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
@@ -5382,6 +5384,9 @@ export const payments = pgTable("payments", {
   uniqueIndex("payments_org_provider_idempotency_key_uidx")
     .on(table.organizationId, table.provider, table.providerIdempotencyKey)
     .where(sql`${table.providerIdempotencyKey} IS NOT NULL`),
+  uniqueIndex("payments_org_quickbooks_payment_reference_uidx")
+    .on(table.organizationId, table.quickbooksPaymentReference)
+    .where(sql`${table.quickbooksPaymentReference} IS NOT NULL`),
   index("payments_eps_ptk_idx").on(table.organizationId, table.epsPtk),
   index("payments_method_idx").on(table.method),
   index("payments_created_by_user_id_idx").on(table.createdByUserId),
@@ -5398,6 +5403,7 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   updatedAt: true,
   syncedAt: true,
   organizationId: true,
+  quickbooksPaymentReference: true,
 }).extend({
   amount: z.coerce.number().positive(),
   provider: z.enum(['manual','stripe','eps']).default('manual'),

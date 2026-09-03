@@ -7,6 +7,11 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
+import {
+  assertQuickBooksDocumentNumber,
+  formatQuickBooksPaymentReference,
+  resolveQuickBooksPaymentReference,
+} from './lib/quickBooksPaymentReference';
 import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHistoricalNumbering';
 import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quickBooksHistoricalInvoiceNumbering.service';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
@@ -1307,7 +1312,10 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
 
   const txnDate = (invoice.issuedAt || invoice.issueDate || new Date()) as any;
 
-  const invoiceDisplayNumber = String((invoice as any).displayNumber || invoice.invoiceNumber);
+  const invoiceDisplayNumber = assertQuickBooksDocumentNumber(
+    String((invoice as any).displayNumber || invoice.invoiceNumber || '').trim(),
+    'QuickBooks invoice document number',
+  );
 
   const qbInvoiceData: any = {
     CustomerRef: { value: qbCustomerId },
@@ -1387,8 +1395,6 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     .limit(1);
   if (!customer) throw new Error('Customer not found for invoice');
 
-  const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
-
   const amountCents = Math.max(0, Math.round(Number((payment as any).amountCents || 0)));
   if (amountCents <= 0) throw new Error('Payment amount must be > 0');
   const amount = Number((amountCents / 100).toFixed(2));
@@ -1397,9 +1403,57 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
   const txnDate = new Date(paidAtRaw as any);
   const txnDateStr = Number.isNaN(txnDate.getTime()) ? new Date().toISOString().split('T')[0] : txnDate.toISOString().split('T')[0];
 
-  const localPaymentId = String((payment as any).id);
-  const paymentRefNum = `QVP-${localPaymentId}`;
-  const privateNote = `QVP payment ${localPaymentId}`;
+  let paymentReference = resolveQuickBooksPaymentReference({
+    metadata: (payment as any).metadata,
+    canonicalReference: (payment as any).quickbooksPaymentReference,
+  });
+  if (!paymentReference) {
+    const allocation = await db.execute(sql`
+      INSERT INTO global_variables (
+        id, organization_id, name, value, description, category, is_active, created_at, updated_at
+      ) VALUES (
+        gen_random_uuid(), ${organizationId}, 'next_quickbooks_payment_reference', '1001',
+        'Next PrintersHero payment reference for QuickBooks (auto-initialized)', 'numbering', true, NOW(), NOW()
+      )
+      ON CONFLICT (organization_id, name) DO UPDATE
+      SET value = (
+        CASE
+          WHEN global_variables.value ~ '^[0-9]+$' THEN global_variables.value::integer
+          ELSE 1000
+        END + 1
+      )::text,
+      updated_at = NOW()
+      RETURNING (value::integer - 1) AS reference_number
+    `);
+    const allocationRows = Array.isArray(allocation) ? allocation : ((allocation as any)?.rows ?? []);
+    const referenceNumber = Math.floor(Number(allocationRows[0]?.reference_number ?? allocationRows[0]?.referenceNumber));
+    const generatedReference = formatQuickBooksPaymentReference(referenceNumber);
+    const [persisted] = await db
+      .update(payments)
+      .set({ quickbooksPaymentReference: generatedReference })
+      .where(and(
+        eq(payments.id, paymentId),
+        eq(payments.organizationId, organizationId),
+        isNull(payments.quickbooksPaymentReference),
+      ))
+      .returning();
+
+    if (persisted) {
+      paymentReference = { value: generatedReference, source: 'canonical' };
+    } else {
+      const [current] = await db
+        .select({ quickbooksPaymentReference: payments.quickbooksPaymentReference })
+        .from(payments)
+        .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+        .limit(1);
+      paymentReference = resolveQuickBooksPaymentReference({ metadata: null, canonicalReference: current?.quickbooksPaymentReference });
+      if (!paymentReference) throw new Error('Failed to persist a canonical QuickBooks payment reference');
+    }
+  }
+  const paymentRefNum = assertQuickBooksDocumentNumber(paymentReference.value, 'QuickBooks payment reference');
+  const privateNote = `PrintersHero payment ${paymentRefNum}`;
+
+  const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
 
   const qbPaymentData: any = {
     CustomerRef: { value: qbCustomerId },
@@ -1426,18 +1480,21 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     return { qbPaymentId: String(qb.Id) };
   }
 
-  // Idempotency fallback: query by PaymentRefNum (PrivateNote is not queryable in QB).
+  // A generated, organization-scoped reference is safe for legacy recovery. An
+  // operator-entered check/reference number is presentation data, not identity.
   const findQuery = `SELECT Id FROM Payment WHERE PaymentRefNum = '${escapeQBQueryString(paymentRefNum)}' MAXRESULTS 1`;
-  const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
-  const found = findResp?.QueryResponse?.Payment?.[0];
-  if (found?.Id) {
-    const existing = await makeQBRequest('GET', `/payment/${String(found.Id)}`, undefined, organizationId);
-    qbPaymentData.Id = String(found.Id);
-    qbPaymentData.SyncToken = existing?.Payment?.SyncToken;
-    const updated = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
-    const qb = updated?.Payment;
-    if (!qb?.Id) throw new Error('QuickBooks payment update returned no Id');
-    return { qbPaymentId: String(qb.Id) };
+  if (paymentReference.source === 'canonical') {
+    const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
+    const found = findResp?.QueryResponse?.Payment?.[0];
+    if (found?.Id) {
+      const existing = await makeQBRequest('GET', `/payment/${String(found.Id)}`, undefined, organizationId);
+      qbPaymentData.Id = String(found.Id);
+      qbPaymentData.SyncToken = existing?.Payment?.SyncToken;
+      const updated = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
+      const qb = updated?.Payment;
+      if (!qb?.Id) throw new Error('QuickBooks payment update returned no Id');
+      return { qbPaymentId: String(qb.Id) };
+    }
   }
 
   try {
@@ -1452,10 +1509,12 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     const isDuplicate = msg.includes('duplicate') || msg.includes('already exists') || msg.includes('already-exists');
     if (!isDuplicate) throw err;
 
-    const retryFindResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
-    const retryFound = retryFindResp?.QueryResponse?.Payment?.[0];
-    if (retryFound?.Id) {
-      return { qbPaymentId: String(retryFound.Id) };
+    if (paymentReference.source === 'canonical') {
+      const retryFindResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
+      const retryFound = retryFindResp?.QueryResponse?.Payment?.[0];
+      if (retryFound?.Id) {
+        return { qbPaymentId: String(retryFound.Id) };
+      }
     }
 
     throw err;
