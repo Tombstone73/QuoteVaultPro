@@ -406,6 +406,21 @@ export const OrderWorkspace = (
     onSuccess: (result) => { apply(result); complete("cancel"); setNotice("Order cancelled. Billing and downstream history were preserved."); },
     onError: (error) => setNotice(message(error)),
   });
+  const completeOrder = useMutation({
+    mutationFn: () => orderApi.complete(props.organizationId, props.orderId, requestId("complete", { revision: current!.revision }), current!.revision),
+    onSuccess: (result) => { apply(result); complete("complete"); setNotice("Order marked complete. Billing and financial state were unchanged."); },
+    onError: (error) => setNotice(message(error)),
+  });
+  const archiveOrder = useMutation({
+    mutationFn: () => orderApi.archive(props.organizationId, props.orderId, requestId("archive", { revision: current!.revision }), current!.revision),
+    onSuccess: (result) => { apply(result); complete("archive"); setNotice("Order archived. Its operational and financial history remains available."); },
+    onError: (error) => setNotice(message(error)),
+  });
+  const unarchiveOrder = useMutation({
+    mutationFn: () => orderApi.unarchive(props.organizationId, props.orderId, requestId("unarchive", { revision: current!.revision }), current!.revision),
+    onSuccess: (result) => { apply(result); complete("unarchive"); setNotice("Order restored to terminal history visibility."); },
+    onError: (error) => setNotice(message(error)),
+  });
   const duplicateOrder = useMutation({
     mutationFn: () =>
       orderApi.duplicate(
@@ -744,12 +759,19 @@ export const OrderWorkspace = (
         ← Orders
       </button>
       {notice && <div className="notice">{notice}</div>}
+      {current.order.commercialState === "open" && !current.completionEligibility.eligible && (
+        <div className="notice" role="status">
+          <strong>Order completion unavailable.</strong>{" "}
+          {current.completionEligibility.blockers.map((blocker) => blocker.reason).join(" ")}
+        </div>
+      )}
       <SalesDocumentFrame
         documentType="Order"
         number={current.number.display}
         status={
           <>
             <LifecycleBadge value={current.order.commercialState} />
+            {current.order.archivedAt && <LifecycleBadge value="archived" />}
             {current.order.sourceQuoteId && (
               <button
                 className="v2-sales-source-link"
@@ -827,6 +849,17 @@ export const OrderWorkspace = (
                 else if (reason !== null) setNotice("A cancellation reason is required.");
               }}>{cancelOrder.isPending ? "Cancelling…" : "Cancel Order"}</button>
             )}
+            {props.canEdit && current.order.commercialState === "open" && (
+              <button className="button secondary" type="button" title={current.completionEligibility.eligible ? "All required operational work is complete." : current.completionEligibility.blockers.map((blocker) => blocker.reason).join(" ")} disabled={!current.completionEligibility.eligible || completeOrder.isPending || !props.csrfReady} onClick={() => completeOrder.mutate()}>
+                {completeOrder.isPending ? "Completing…" : "Mark Order Complete"}
+              </button>
+            )}
+            {props.canEdit && current.order.commercialState !== "open" && !current.order.archivedAt && (
+              <button className="button secondary" type="button" disabled={archiveOrder.isPending || !props.csrfReady} onClick={() => archiveOrder.mutate()}>{archiveOrder.isPending ? "Archiving…" : "Archive Order"}</button>
+            )}
+            {props.canEdit && current.order.archivedAt && (
+              <button className="button secondary" type="button" disabled={unarchiveOrder.isPending || !props.csrfReady} onClick={() => unarchiveOrder.mutate()}>{unarchiveOrder.isPending ? "Restoring…" : "Unarchive Order"}</button>
+            )}
           </>
         }
         metadata={headerMetadata}
@@ -838,7 +871,7 @@ export const OrderWorkspace = (
               lines={current.order.lines}
               artwork={artwork.data ?? []}
               loading={artwork.isLoading}
-              canUpload={props.canViewArtwork}
+              canUpload={props.canViewArtwork && editable}
               onOpen={(lineId) =>
                 props.openArtwork?.(current.order.orderId, lineId)
               }

@@ -42,7 +42,8 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
     /* The queue is deliberately bounded. Coverage is loaded by the same
        transaction/repository, so no UI component infers requirements from art. */
     const rows=await this.client.query<{order_id:string;order_number:string;customer_id:string|null;customer_display_name:string;line_id:string;line_description:string;quantity:number;requested_due_date:string|null;step_kind:"proofing"|"prepress"|"production"|"fulfillment"|null;production_requirement_state:"configured"|"unconfigured"}>(`SELECT d.id order_id,d.display_number order_number,d.customer_id customer_id,COALESCE(c.display_name,c.company_name,'Customer') customer_display_name,l.id line_id,l.description line_description,l.quantity,d.requested_due_date::text,step.step_kind,l.production_requirement_state
-      FROM v2_sales_documents d JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id
+      FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id AND o.commercial_state='open' AND o.archived_at IS NULL
+      JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id
       JOIN v2_route_instances ri ON ri.organization_id=l.organization_id AND ri.order_document_id=d.id AND ri.order_line_id=l.id
       LEFT JOIN v2_route_instance_steps step ON step.organization_id=ri.organization_id AND step.route_instance_id=ri.id AND step.id=ri.current_step_id
       LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id

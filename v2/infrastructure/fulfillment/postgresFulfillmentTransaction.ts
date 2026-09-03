@@ -1,25 +1,26 @@
 import type { Pool, PoolClient } from "pg";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import type { FulfillmentTransaction, FulfillmentTransactionRunner } from "../../src/modules/fulfillment/fulfillmentApplication.js";
-import { fulfillmentPhysicalIntegrityAnomaly, type FulfillmentAvailability, type FulfillmentHandoff, type FulfillmentHandoffLine } from "../../src/modules/fulfillment/contracts.js";
+import { fulfillmentPhysicalIntegrityAnomaly, fulfillmentSupplyQuantity, type FulfillmentAvailability, type FulfillmentHandoff, type FulfillmentHandoffLine } from "../../src/modules/fulfillment/contracts.js";
 import { brandedId, type FulfillmentHandoffId, type OrganizationId, type OrderId } from "../../src/modules/shared/commercialValues.js";
 
 type HandoffRow={id:string;organization_id:string;order_document_id:string;handoff_method:"pickup"|"shipment";completed_at:Date;customer_id:string|null;contact_id:string|null;completed_principal_kind:FulfillmentHandoff["completedPrincipalKind"];completed_principal_subject:string;completed_staff_actor_user_id:string|null};
 type LineRow={id:string;organization_id:string;handoff_id:string;order_document_id:string;order_line_id:string;quantity:number};
-type AvailabilityRow={order_document_id:string;order_line_id:string;ordered_quantity:number;pickup_quantity:string;shipment_quantity:string;completed_production_quantity:string};
+type AvailabilityRow={order_document_id:string;order_line_id:string;ordered_quantity:number;pickup_quantity:string;shipment_quantity:string;completed_production_quantity:string;workflow_intent:"standard_production"|"fulfillment_only"|"service_fee"|null;requires_production:boolean};
 const handoff=(r:HandoffRow):FulfillmentHandoff=>({handoffId:brandedId<"FulfillmentHandoffId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),orderId:brandedId<"OrderId">(r.order_document_id),method:r.handoff_method,completedAt:r.completed_at.toISOString(),...(r.customer_id?{customerId:brandedId<"CustomerId">(r.customer_id)}:{}),...(r.contact_id?{contactId:brandedId<"ContactId">(r.contact_id)}:{}),completedPrincipalKind:r.completed_principal_kind,completedPrincipalSubject:r.completed_principal_subject,...(r.completed_staff_actor_user_id?{completedStaffActorUserId:r.completed_staff_actor_user_id}:{})});
 const allocation=(r:LineRow):FulfillmentHandoffLine=>({handoffLineId:brandedId<"FulfillmentHandoffLineId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),handoffId:brandedId<"FulfillmentHandoffId">(r.handoff_id),orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),quantity:r.quantity});
 const availability=(r:AvailabilityRow):FulfillmentAvailability=>{
  const pickup=Number(r.pickup_quantity),shipment=Number(r.shipment_quantity),completedFulfillment=pickup+shipment;
  const completedProduction=Math.min(r.ordered_quantity,Math.max(0,Number(r.completed_production_quantity)));
- const physicalAvailable=Math.max(0,completedProduction-completedFulfillment);
- const anomaly=fulfillmentPhysicalIntegrityAnomaly(completedProduction,completedFulfillment);
- return {orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),orderedQuantity:r.ordered_quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,availableFulfillmentQuantity:physicalAvailable,remainingProductionQuantity:Math.max(0,r.ordered_quantity-completedProduction),remainingFulfillmentQuantity:Math.max(0,r.ordered_quantity-completedFulfillment),...(anomaly?{physicalIntegrityAnomaly:anomaly}:{})};
+ const supplyQuantity=fulfillmentSupplyQuantity({orderedQuantity:r.ordered_quantity,completedProductionQuantity:completedProduction,productionRequired:r.requires_production,workflowIntent:r.workflow_intent});
+ const physicalAvailable=Math.max(0,supplyQuantity-completedFulfillment);
+ const anomaly=fulfillmentPhysicalIntegrityAnomaly(supplyQuantity,completedFulfillment);
+ return {orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),orderedQuantity:r.ordered_quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,productionRequired:r.requires_production,availableFulfillmentQuantity:physicalAvailable,remainingProductionQuantity:r.requires_production?Math.max(0,r.ordered_quantity-completedProduction):0,remainingFulfillmentQuantity:Math.max(0,r.ordered_quantity-completedFulfillment),...(anomaly?{physicalIntegrityAnomaly:anomaly}:{})};
 };
 /**
- * Production remains the source of physical output. A sellable unit is available only
- * when every frozen required production unit has completed that many good copies.
- * No requirement or no completed work therefore safely yields zero available output.
+ * Production remains the source of physical output for production-required lines.
+ * A frozen fulfillment-only line deliberately exposes its ordered quantity without
+ * inventing Production evidence; service-fee lines never become physical inventory.
  */
 const availabilitySql=`WITH production_output AS (
   SELECT l.id order_line_id,
@@ -44,10 +45,13 @@ const availabilitySql=`WITH production_output AS (
   WHERE l.organization_id=$1 AND l.document_id=$2
   GROUP BY l.id
 ) SELECT l.document_id order_document_id,l.id order_line_id,l.quantity ordered_quantity,
-  f.pickup_quantity,f.shipment_quantity,p.completed_production_quantity
+  f.pickup_quantity,f.shipment_quantity,p.completed_production_quantity,
+  CASE WHEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') IN ('standard_production','fulfillment_only','service_fee') THEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') ELSE NULL END workflow_intent,
+  COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) requires_production
   FROM v2_sales_document_lines l
   JOIN production_output p ON p.order_line_id=l.id
   JOIN fulfillment_output f ON f.order_line_id=l.id
+  LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId'
   WHERE l.organization_id=$1 AND l.document_id=$2 ORDER BY l.id`;
 export type FulfillmentPersistenceTestHooks=Readonly<{afterHandoff?:()=>Promise<void>;afterAllocation?:()=>Promise<void>;afterAudit?:()=>Promise<void>}>;
 

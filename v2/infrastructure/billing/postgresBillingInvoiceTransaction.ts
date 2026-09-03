@@ -12,7 +12,7 @@ import { enqueueV2QuickBooksAutoSync } from "../accounting/quickBooksBillingQueu
 
 type InvoiceRow={id:string;organization_id:string;sales_order_document_id:string;invoice_state:"draft"|"issued"|"void";invoice_display_number:string|null;invoice_sequence:number|null;customer_id:string|null;contact_id:string|null;purchase_order_number:string|null;currency:string;terms_code:string|null;source_sales_state_token:string;synchronization_version:string;subtotal_cents:string;tax_total_cents:string;total_cents:string;sales_adjustment_cents:string;sales_adjustment_reason:string|null;tax_context_reference:string|null;tax_calculator_version:string;tax_evidence:unknown;issued_at:Date|null;voided_at:Date|null;created_at:Date;updated_at:Date};
 type LineRow={source_sales_line_id:string;product_id:string;description:string;quantity:number;selling_unit_cents:string;selling_line_cents:string;sales_pricing_evidence_fingerprint:string};
-type OrderRow={id:string;display_number:string;customer_id:string|null;contact_id:string|null;currency:string;terms_json:unknown;revision:string;commercial_state:"open"|"cancelled"};
+type OrderRow={id:string;display_number:string;customer_id:string|null;contact_id:string|null;currency:string;terms_json:unknown;revision:string;commercial_state:"open"|"completed"|"cancelled"};
 type Actor={principalKind:"staff"|"delegated_ai"|"portal"|"service";principalSubject:string;staffActorUserId?:string};
 export type BillingInvoicePersistenceTestHooks=Readonly<{afterIssue?:()=>Promise<void>;afterCheckpoint?:()=>Promise<void>;afterOutbox?:()=>Promise<void>;afterAudit?:()=>Promise<void>}>;
 

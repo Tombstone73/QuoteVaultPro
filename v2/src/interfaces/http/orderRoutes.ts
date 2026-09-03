@@ -33,6 +33,18 @@ export interface OrderHttpService {
     context: OperationContext,
     input: Readonly<Record<string, unknown>>,
   ): Promise<ApplicationResult<unknown>>;
+  complete?(
+    context: OperationContext,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<ApplicationResult<unknown>>;
+  archive?(
+    context: OperationContext,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<ApplicationResult<unknown>>;
+  unarchive?(
+    context: OperationContext,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<ApplicationResult<unknown>>;
   duplicate?(
     context: OperationContext,
     input: import("../../modules/sales/contracts.js").DuplicateOrderCommand,
@@ -109,6 +121,12 @@ const dueDateQuery = (value: unknown): string | undefined => {
   const parsed = new Date(`${value}T00:00:00.000Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
     throw new V2ApplicationError("VALIDATION_ERROR", "Due-date filters must use a real calendar date.");
+  return value;
+};
+const archiveQuery = (value: unknown): "active" | "archived" | "all" | undefined => {
+  if (value === undefined) return undefined;
+  if (value !== "active" && value !== "archived" && value !== "all")
+    throw new V2ApplicationError("VALIDATION_ERROR", "Order archive scope is invalid.");
   return value;
 };
 
@@ -196,11 +214,13 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       const limit = Number(request.query.limit ?? 25);
       const dueFrom = dueDateQuery(request.query.dueFrom);
       const dueTo = dueDateQuery(request.query.dueTo);
+      const archive = archiveQuery(request.query.archive);
       const data = await dependencies.workspace.listOrdersForWorkspace(brandedId<"OrganizationId">(operation.organizationId), {
         ...(Number.isFinite(limit) ? { limit } : {}),
         ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
         ...(typeof request.query.q === "string" ? { search: request.query.q } : {}),
         ...(typeof request.query.lifecycle === "string" ? { lifecycle: request.query.lifecycle } : {}),
+        ...(archive ? { archive } : {}),
         ...(dueFrom ? { dueFrom } : {}),
         ...(dueTo ? { dueTo } : {}),
         ...(request.query.sort === "updated_asc" || request.query.sort === "updated_desc" ? { sort: request.query.sort } : {}),
@@ -295,6 +315,27 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
         await context(request, dependencies, true),
         commandForOrder(request),
       ));
+    } catch (cause) { error(response, cause); }
+  });
+
+  router.post("/:orderId/complete", async (request, response) => {
+    try {
+      if (!dependencies.service.complete) throw new V2ApplicationError("INTERNAL_ERROR", "Order completion runtime is unavailable.");
+      send(response, await dependencies.service.complete(await context(request, dependencies, true), commandForOrder(request)));
+    } catch (cause) { error(response, cause); }
+  });
+
+  router.post("/:orderId/archive", async (request, response) => {
+    try {
+      if (!dependencies.service.archive) throw new V2ApplicationError("INTERNAL_ERROR", "Order archive runtime is unavailable.");
+      send(response, await dependencies.service.archive(await context(request, dependencies, true), commandForOrder(request)));
+    } catch (cause) { error(response, cause); }
+  });
+
+  router.post("/:orderId/unarchive", async (request, response) => {
+    try {
+      if (!dependencies.service.unarchive) throw new V2ApplicationError("INTERNAL_ERROR", "Order restore runtime is unavailable.");
+      send(response, await dependencies.service.unarchive(await context(request, dependencies, true), commandForOrder(request)));
     } catch (cause) { error(response, cause); }
   });
 

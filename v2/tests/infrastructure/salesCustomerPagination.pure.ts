@@ -53,13 +53,16 @@ const salesPool = {
       if (text.startsWith("BEGIN") || text === "COMMIT" || text === "ROLLBACK") return { rows: [] };
       salesSql.push(text);
       const isNative = text.includes("FROM v2_sales_documents");
+      const isOrderQuery = text.includes("v2_sales_order_details") || text.includes("FROM orders o");
       const sourceRows = isNative ? nativeSales : legacySales;
       if (!text.includes("cursor_updated_at")) return { rows: [{ item_count: String(sourceRows.length), selling_total_cents: String(sourceRows.length * 1000), currency_count: "1", currency: "USD" }] };
       const ascending = /ORDER BY [^\n]+ ASC/u.test(text);
-      const cursor = values[5] ? [String(values[5]), String(values[6]), String(values[7])] : undefined;
+      const cursorIndex = isOrderQuery ? 6 : 5;
+      const limitIndex = isOrderQuery ? 9 : 8;
+      const cursor = values[cursorIndex] ? [String(values[cursorIndex]), String(values[cursorIndex + 1]), String(values[cursorIndex + 2])] : undefined;
       const search = values[1] ? String(values[1]).toLocaleLowerCase() : "";
       const lifecycle = values[2] ? String(values[2]) : "";
-      const limit = Number(values[8]);
+      const limit = Number(values[limitIndex]);
       const rows = sourceRows
         .filter((row) => !search || String(row.number).toLocaleLowerCase().includes(search) || String(row.customer_display_name).toLocaleLowerCase().includes(search) || String(row.purchase_order_number ?? row.po_number ?? "").toLocaleLowerCase().includes(search))
         .filter((row) => !lifecycle || row.lifecycle === lifecycle)
@@ -96,6 +99,7 @@ await exhaust("quotes", "updated_asc");
 const deepOrder = await sales.listOrdersForWorkspace("org-a", { search: "deep", limit: 3 });
 assert.deepEqual(deepOrder.items.map((row) => row.recordId), ["legacy-12"]);
 assert.ok(salesSql.some((sql) => sql.includes("$6::timestamptz") && sql.includes("LIMIT $9")), "Sales cursors must be applied by each bounded SQL source query");
+assert.ok(salesSql.some((sql) => sql.includes("$6::text='archived'") && sql.includes("$7::timestamptz") && sql.includes("LIMIT $10")), "Order archive scope must remain server-backed before bounded pagination");
 assert.ok(salesSql.every((sql) => !sql.includes("COALESCE(q.created_at,now())") && !sql.includes("COALESCE(o.updated_at,o.created_at,now())")), "resumable sort keys must not use now()");
 
 type CustomerRow = Readonly<Record<string, unknown> & { customer_id: string; sort_name: string; company_name: string }>;

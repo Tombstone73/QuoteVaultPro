@@ -11,6 +11,16 @@ export type FulfillmentPhysicalIntegrityAnomaly = Readonly<{
   excessFulfillmentQuantity: number;
 }>;
 export const fulfillmentPhysicalIntegrityAnomaly=(completedProductionQuantity:number,completedFulfillmentQuantity:number):FulfillmentPhysicalIntegrityAnomaly|undefined=>completedFulfillmentQuantity>completedProductionQuantity?{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION",completedProductionQuantity,completedFulfillmentQuantity,excessFulfillmentQuantity:completedFulfillmentQuantity-completedProductionQuantity}:undefined;
+export const fulfillmentSupplyQuantity = (input: Readonly<{
+  orderedQuantity: number;
+  completedProductionQuantity: number;
+  productionRequired: boolean;
+  workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
+}>): number => input.productionRequired
+  ? Math.min(input.orderedQuantity, Math.max(0, input.completedProductionQuantity))
+  : input.workflowIntent === "standard_production" || input.workflowIntent === "fulfillment_only"
+    ? input.orderedQuantity
+    : 0;
 
 /** Immutable completed customer-handoff fact. Carrier mechanics deliberately are not modeled here. */
 export type FulfillmentHandoff = Readonly<{
@@ -29,6 +39,7 @@ export type FulfillmentAvailability = Readonly<{
   completedShipmentQuantity: number; completedFulfillmentQuantity: number;
   /** Production-owned output, capped to the commercial line quantity for this read-only projection. */
   completedProductionQuantity: number;
+  productionRequired: boolean;
   /** Physical output not yet consumed by an immutable pickup or shipment handoff. */
   availableFulfillmentQuantity: number;
   /** Commercial quantity still not produced. */
@@ -50,7 +61,7 @@ export type FulfillmentTerminalResult = Readonly<{
 
 /** Bounded operator projection; Sales supplies commercial context, Fulfillment supplies quantities/history. */
 export type FulfillmentOrderWorkspace = Readonly<{
-  orderId: OrderId; number: string; commercialState: "open" | "cancelled"; customerName: string; customerId?: CustomerId; contactId?: ContactId;
+  orderId: OrderId; number: string; commercialState: "open" | "completed" | "cancelled"; customerName: string; customerId?: CustomerId; contactId?: ContactId;
   requestedDueDate?: string; lines: readonly Readonly<{ orderLineId: OrderLineId; description: string } & FulfillmentAvailability>[];
   /** Sales-owned plan, projected read-only. It is not an actual handoff method. */
   requestedFulfillment?: Readonly<{ method: "pickup" | "shipping" | "local_delivery"; destination?: Readonly<{ recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }>; instructions?: string }>;

@@ -284,6 +284,7 @@ export class QuoteConversionApplicationService {
     await transaction.quote.audit({ organizationId: context.organizationId, requestId: operationRequestId, operation, event: { eventType: "quote_converted", resourceId: current.quote.quoteId, changes: [] }, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
     await transaction.quote.attribute({ organizationId: context.organizationId, requestId: operationRequestId, operation, resourceType: "quote", resourceId: current.quote.quoteId, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
     trace?.event("audit", "ok");
+    if (!created.draftInvoiceId) throw new Error("Converted Order did not create its required Billing projection.");
     return { quoteId: current.quote.quoteId, sourceCheckpointId: source.checkpointId, conversionCheckpointId: checkpointId, orderId: created.order.order.orderId, draftInvoiceId: created.draftInvoiceId, orderNumber: created.order.number.display };
   }
 }

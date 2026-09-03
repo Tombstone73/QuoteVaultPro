@@ -9,6 +9,8 @@ export type SalesWorkspacePageRequest = Readonly<{
   cursor?: string;
   search?: string;
   lifecycle?: string;
+  /** Orders default to the unarchived workload; history is explicitly addressable. */
+  archive?: "active" | "archived" | "all";
   /** Inclusive ISO date bounds for the Sales-owned requested due date. */
   dueFrom?: string;
   dueTo?: string;
@@ -55,6 +57,7 @@ export type OrderListItem = Readonly<{
   purchaseOrderNumber?: string;
   lineCount?: number;
   lifecycle: string;
+  archived?: boolean;
   sellingTotalCents: number;
   currency: string;
   requestedDueDate?: string;

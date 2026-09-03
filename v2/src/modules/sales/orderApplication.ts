@@ -39,7 +39,9 @@ import {
 import {
   assertSalesLineSnapshot,
   type AttributionSnapshot,
+  type ArchiveOrderCommand,
   type CancelOrderCommand,
+  type CompleteOrderCommand,
   type CommercialTerms,
   type DuplicateOrderCommand,
   type MeaningfulAuditChange,
@@ -49,6 +51,7 @@ import {
   type SalesLineSnapshot,
   type SellingPriceDecision,
 } from "./contracts.js";
+import type { OrderCompletionEligibility } from "./orderLifecycle.js";
 import type { CommercialCharge } from "./taxComposition.js";
 import type { SalesTaxComposition } from "./taxComposition.js";
 import type { SalesDocumentNumber } from "./persistenceContracts.js";
@@ -129,11 +132,12 @@ export type OrderReadModel = Readonly<{
     total: Money;
   }>;
   routes: readonly (RouteInstance & Readonly<{ currentPrerequisite?: RoutePrerequisite }>)[];
+  completionEligibility: OrderCompletionEligibility;
 }>;
 
 export type OrderOperationResult = Readonly<{
   order: OrderReadModel;
-  draftInvoiceId: InvoiceId;
+  draftInvoiceId?: InvoiceId;
   routeInstances: readonly InstantiateRouteResult["routeInstance"][];
   lineCorrelations?: readonly Readonly<{ clientLineKey: string; orderLineId: SalesLineId }>[];
 }>;
@@ -168,7 +172,7 @@ export type OrderReservation = Readonly<{
 }>;
 
 export type OrderAuditEvent = Readonly<{
-  eventType: "order_created" | "order_updated" | "order_duplicated" | "order_cancelled";
+  eventType: "order_created" | "order_updated" | "order_duplicated" | "order_cancelled" | "order_completed" | "order_archived" | "order_unarchived";
   resourceId: OrderId;
   changes: readonly MeaningfulAuditChange[];
 }>;
@@ -182,7 +186,7 @@ export interface OrderTransaction {
   readonly customers: CustomersReadPort;
   readonly products: ProductPricingCompatibilityPort;
   readonly pricing: PricingPort;
-  readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder">;
+  readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder" | "readInvoiceForOrder">;
   readonly routing: RoutingPort;
   readonly materialRequirements: Readonly<{
     freeze(organizationId: string, orderId: OrderId, lines: readonly SalesLineSnapshot[]): Promise<void>;
@@ -259,6 +263,16 @@ export interface OrderTransaction {
   /** Downstream owners remain independent. Sales consumes only these facts to
    * decide whether cancellation would create an impossible state. */
   cancellationBlockers(organizationId: OrganizationId, orderId: OrderId): Promise<readonly string[]>;
+  completionEligibility(organizationId: OrganizationId, orderId: OrderId): Promise<OrderCompletionEligibility>;
+  complete(input: Readonly<{
+    organizationId: OrganizationId; orderId: OrderId; expectedRevision: number;
+    principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string;
+  }>): Promise<boolean>;
+  archive(input: Readonly<{
+    organizationId: OrganizationId; orderId: OrderId; expectedRevision: number;
+    principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string;
+  }>): Promise<boolean>;
+  unarchive(input: Readonly<{ organizationId: OrganizationId; orderId: OrderId; expectedRevision: number }>): Promise<boolean>;
   cancel(input: Readonly<{
     organizationId: OrganizationId;
     orderId: OrderId;
@@ -606,7 +620,7 @@ export class OrderApplicationService {
       if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
       requireAllowed(this.authority, context, "order.edit", current.order.customerContact.customerId);
       if (current.order.commercialState !== "open")
-        throw new V2ApplicationError("CONFLICT", "A cancelled Order cannot be edited.");
+        throw new V2ApplicationError("CONFLICT", "Only an open Order can be edited.");
       if (current.revision !== input.expectedRevision)
         throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before editing.");
 
@@ -704,8 +718,10 @@ export class OrderApplicationService {
       requireAllowed(this.authority, context, "order.cancel", current.order.customerContact.customerId);
       const reason = input.reason.trim();
       if (!reason) throw new V2ApplicationError("VALIDATION_ERROR", "A cancellation reason is required.");
-      if (current.order.commercialState !== "open")
+      if (current.order.commercialState === "cancelled")
         throw new V2ApplicationError("CONFLICT", "This Order is already cancelled.");
+      if (current.order.commercialState === "completed")
+        throw new V2ApplicationError("CONFLICT", "A completed Order cannot be cancelled.");
       if (current.revision !== input.expectedStateToken)
         throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before cancelling.");
       const blockers = await tx.cancellationBlockers(brandedId<"OrganizationId">(context.organizationId), input.orderId);
@@ -724,6 +740,88 @@ export class OrderApplicationService {
         throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice projection is missing; reconcile Billing before cancellation.");
       return { order, draftInvoiceId: invoiceId, routeInstances: [] };
     });
+  }
+
+  async complete(
+    context: OperationContext,
+    input: CompleteOrderCommand,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.complete.v1", input, "order.edit", async (tx, request) => {
+      const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+      requireAllowed(this.authority, context, "order.edit", current.order.customerContact.customerId);
+      if (current.order.commercialState === "completed")
+        throw new V2ApplicationError("CONFLICT", "This Order is already completed.");
+      if (current.order.commercialState === "cancelled")
+        throw new V2ApplicationError("CONFLICT", "A cancelled Order cannot be completed.");
+      if (current.revision !== input.expectedStateToken)
+        throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before completing it.");
+      const eligibility = await tx.completionEligibility(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (!eligibility.eligible)
+        throw new V2ApplicationError("CONFLICT", eligibility.blockers.map((blocker) => blocker.reason).join(" "));
+      const actor = attribution(context);
+      if (!await tx.complete({
+        organizationId: brandedId<"OrganizationId">(context.organizationId), orderId: input.orderId,
+        expectedRevision: Number(current.revision), principalKind: actor.principalKind,
+        principalSubject: actor.subjectId, ...(actor.staffActorUserId ? { staffActorUserId: actor.staffActorUserId } : {}),
+      })) throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before completing it.");
+      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (!order) throw new Error("Completed Order could not be read.");
+      await this.history(tx, context, request.id, "sales.order.complete.v1", {
+        eventType: "order_completed", resourceId: input.orderId,
+        changes: [{ group: "lifecycle", kind: "order_completed", summary: "Order operational work marked complete; financial facts were unchanged." }],
+      });
+      return this.existingResult(order);
+    });
+  }
+
+  async archive(
+    context: OperationContext,
+    input: ArchiveOrderCommand,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.archive.v1", input, "order.edit", async (tx, request) => {
+      const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+      requireAllowed(this.authority, context, "order.edit", current.order.customerContact.customerId);
+      if (current.order.archivedAt) throw new V2ApplicationError("CONFLICT", "This Order is already archived.");
+      if (current.order.commercialState === "open") throw new V2ApplicationError("CONFLICT", "An open Order cannot be archived. Complete or cancel it first.");
+      if (current.revision !== input.expectedStateToken) throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before archiving it.");
+      const actor = attribution(context);
+      if (!await tx.archive({ organizationId: brandedId<"OrganizationId">(context.organizationId), orderId: input.orderId,
+        expectedRevision: Number(current.revision), principalKind: actor.principalKind, principalSubject: actor.subjectId,
+        ...(actor.staffActorUserId ? { staffActorUserId: actor.staffActorUserId } : {}) }))
+        throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before archiving it.");
+      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (!order) throw new Error("Archived Order could not be read.");
+      await this.history(tx, context, request.id, "sales.order.archive.v1", { eventType: "order_archived", resourceId: input.orderId,
+        changes: [{ group: "lifecycle", kind: "order_archived", summary: "Terminal Order archived; operational and financial history were preserved." }] });
+      return this.existingResult(order);
+    });
+  }
+
+  async unarchive(
+    context: OperationContext,
+    input: ArchiveOrderCommand,
+  ): Promise<ApplicationResult<OrderOperationResult>> {
+    return this.mutate(context, "sales.order.unarchive.v1", input, "order.edit", async (tx, request) => {
+      const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+      requireAllowed(this.authority, context, "order.edit", current.order.customerContact.customerId);
+      if (!current.order.archivedAt) throw new V2ApplicationError("CONFLICT", "This Order is not archived.");
+      if (current.revision !== input.expectedStateToken) throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before restoring it.");
+      if (!await tx.unarchive({ organizationId: brandedId<"OrganizationId">(context.organizationId), orderId: input.orderId, expectedRevision: Number(current.revision) }))
+        throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before restoring it.");
+      const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+      if (!order) throw new Error("Restored Order could not be read.");
+      await this.history(tx, context, request.id, "sales.order.unarchive.v1", { eventType: "order_unarchived", resourceId: input.orderId,
+        changes: [{ group: "lifecycle", kind: "order_unarchived", summary: "Order restored to terminal history visibility; operational state was unchanged." }] });
+      return this.existingResult(order);
+    });
+  }
+
+  private existingResult(order: OrderReadModel): OrderOperationResult {
+    const invoiceId = order.order.billingInvoiceReference;
+    return { order, ...(invoiceId ? { draftInvoiceId: invoiceId } : {}), routeInstances: [] };
   }
 
   private async buildLines(
@@ -993,8 +1091,8 @@ export class OrderApplicationService {
 
   private async mutate(
     context: OperationContext,
-    operation: "sales.order.create.v1" | "sales.order.duplicate.v1" | "sales.order.edit.v1" | "sales.order.cancel.v1",
-    command: CreateOrderInput | DuplicateOrderCommand | UpdateOrderInput | CancelOrderCommand,
+    operation: "sales.order.create.v1" | "sales.order.duplicate.v1" | "sales.order.edit.v1" | "sales.order.cancel.v1" | "sales.order.complete.v1" | "sales.order.archive.v1" | "sales.order.unarchive.v1",
+    command: CreateOrderInput | DuplicateOrderCommand | UpdateOrderInput | CancelOrderCommand | CompleteOrderCommand | ArchiveOrderCommand,
     capability: "order.create" | "order.edit" | "order.cancel",
     work: (tx: OrderTransaction, request: OrderOperationRequest) => Promise<OrderOperationResult>,
   ): Promise<ApplicationResult<OrderOperationResult>> {

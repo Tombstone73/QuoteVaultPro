@@ -13,18 +13,23 @@ import { toSalesDocumentTermsPersistence, toSalesLinePersistenceEnvelope } from 
 import { removeProductionRequirementsForAbsentLines, synchronizeProductionRequirements } from "./postgresProductionRequirements.js";
 import { composePostgresSalesTax } from "./postgresSalesTaxComposition.js";
 import { brandedId, currencyCode, money, type OrderId, type OrganizationId, type SalesLineId } from "../../src/modules/shared/commercialValues.js";
-import type { OrderCurrentState, RequestedFulfillment, SalesLineSnapshot, SalesOrderAdjustment } from "../../src/modules/sales/contracts.js";
+import type { AttributionSnapshot, OrderCurrentState, RequestedFulfillment, SalesLineSnapshot, SalesOrderAdjustment } from "../../src/modules/sales/contracts.js";
 import type { CommercialCharge } from "../../src/modules/sales/taxComposition.js";
 import type { BillingPort, BillingReadPort } from "../../src/modules/billing/contracts.js";
 import type { RoutingPort } from "../../src/modules/routing/contracts.js";
 import type { QuoteConversionTrace } from "../../src/modules/sales/quoteConversionApplication.js";
+import { orderCompletionEligibility } from "../../src/modules/sales/orderLifecycle.js";
 
 type HeaderRow = Readonly<{
   id: string; organization_id: string; business_number: string; display_number: string;
   customer_id: string | null; contact_id: string | null; purchase_order_number: string | null;
   requested_due_date: string | null; currency: string; terms_json: unknown;
   tax_context_reference: string | null; sales_representative_id: string | null;
-  commercial_notes: string | null; revision: string; commercial_state: "open" | "cancelled";
+  commercial_notes: string | null; revision: string; commercial_state: "open" | "completed" | "cancelled";
+  completed_at: Date | null; completed_principal_kind: "staff" | "delegated_ai" | "portal" | "service" | null;
+  completed_principal_subject: string | null; completed_staff_actor_user_id: string | null;
+  archived_at: Date | null; archived_principal_kind: "staff" | "delegated_ai" | "portal" | "service" | null;
+  archived_principal_subject: string | null; archived_staff_actor_user_id: string | null;
   requested_fulfillment_method: "pickup" | "shipping" | "local_delivery" | null; requested_destination: unknown; fulfillment_instructions: string | null;
   selling_adjustment_cents: string; selling_adjustment_reason: string | null;
   commercial_charge: unknown; tax_composition: unknown;
@@ -35,6 +40,17 @@ type LineRow = Readonly<{
   pricing_result: unknown; selling_price_decision: unknown; taxability_snapshot: unknown;
 }>;
 const asObject = <T>(value: unknown): T => value as T;
+const lifecycleActor = (
+  principalKind: NonNullable<HeaderRow["completed_principal_kind"]>,
+  subjectId: string,
+  staffActorUserId: string | null,
+): AttributionSnapshot => {
+  if (principalKind === "delegated_ai") {
+    if (!staffActorUserId) throw new Error("Delegated Order lifecycle attribution is incomplete.");
+    return { principalKind, subjectId, staffActorUserId };
+  }
+  return { principalKind, subjectId };
+};
 
 const storedResult = (result: OrderOperationResult): unknown => ({
   ...result, order: { ...result.order, number: { ...result.order.number, core: result.order.number.core.toString() } },
@@ -58,7 +74,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
   readonly customers;
   readonly products;
   readonly pricing = new V2PricingParityAdapter();
-  readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder">;
+  readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder" | "readInvoiceForOrder">;
   readonly routing: RoutingPort;
   readonly materialRequirements: OrderTransaction["materialRequirements"];
   private readonly requests = new PostgresOperationRequestRepository();
@@ -69,6 +85,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
     const billing = new PostgresBillingDraftInvoiceTransaction(client);
     this.billing = {
       createDraftInvoice: async (input) => { const result = await billing.createDraftInvoice(input); await hooks?.afterBilling?.(); return result; },
+      readInvoiceForOrder: (organizationId, orderId) => billing.readInvoiceForOrder(organizationId, orderId),
       synchronizeDraftInvoice: async (input) => { const result = await billing.synchronizeDraftInvoice(input); await hooks?.afterBilling?.(); return result; },
       readDraftForOrder: (...args) => billing.readDraftForOrder(...args),
     };
@@ -124,7 +141,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
   }
   async read(organizationId: OrganizationId, orderId: OrderId, forUpdate = false): Promise<OrderReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,o.commercial_state,o.requested_fulfillment_method,o.requested_destination,o.fulfillment_instructions,o.selling_adjustment_cents,o.selling_adjustment_reason,o.commercial_charge,o.tax_composition FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.document_id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order'${forUpdate ? " FOR UPDATE OF d,o" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,o.commercial_state,o.completed_at,o.completed_principal_kind,o.completed_principal_subject,o.completed_staff_actor_user_id,o.archived_at,o.archived_principal_kind,o.archived_principal_subject,o.archived_staff_actor_user_id,o.requested_fulfillment_method,o.requested_destination,o.fulfillment_instructions,o.selling_adjustment_cents,o.selling_adjustment_reason,o.commercial_charge,o.tax_composition FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.document_id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order'${forUpdate ? " FOR UPDATE OF d,o" : ""}`,
       [organizationId, orderId],
     );
     const row = header.rows[0]; if (!row) return null;
@@ -144,7 +161,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
     const customerContact = row.customer_id
       ? { organizationId, customerId: brandedId<"CustomerId">(row.customer_id), ...(row.contact_id ? { contactId: brandedId<"ContactId">(row.contact_id) } : {}) }
       : { organizationId, contactId: brandedId<"ContactId">(row.contact_id!) };
-    const draftInvoice = await this.billing.readDraftForOrder(organizationId, orderId);
+    const billingInvoice = await this.billing.readInvoiceForOrder(organizationId, orderId);
     const conversion = await this.client.query<{ quote_document_id: string; source_checkpoint_id: string }>(
       "SELECT quote_document_id,source_checkpoint_id FROM v2_sales_quote_conversions WHERE organization_id=$1 AND order_document_id=$2",
       [organizationId, orderId],
@@ -153,7 +170,10 @@ export class PostgresOrderTransaction implements OrderTransaction {
     const order: OrderCurrentState = { organizationId, orderId, customerContact, currency: orderCurrency,
       ...(row.purchase_order_number ? {purchaseOrderNumber: row.purchase_order_number} : {}), ...(row.requested_due_date ? {requestedDueDate: row.requested_due_date} : {}),
       terms: {...(terms.termsCode ? {termsCode:terms.termsCode}: {}), ...(row.tax_context_reference ? {taxContextReference:row.tax_context_reference}: {}), ...(row.sales_representative_id ? {salesRepresentativeId:row.sales_representative_id}: {}), ...(row.commercial_notes ? {commercialNotes:row.commercial_notes}: {})},
-      lines, commercialState: row.commercial_state, ...(draftInvoice ? {billingInvoiceReference: draftInvoice.invoiceId} : {}),
+      lines, commercialState: row.commercial_state,
+      ...(row.completed_at && row.completed_principal_kind && row.completed_principal_subject ? { completedAt: row.completed_at.toISOString(), completedBy: lifecycleActor(row.completed_principal_kind, row.completed_principal_subject, row.completed_staff_actor_user_id) } : {}),
+      ...(row.archived_at && row.archived_principal_kind && row.archived_principal_subject ? { archivedAt: row.archived_at.toISOString(), archivedBy: lifecycleActor(row.archived_principal_kind, row.archived_principal_subject, row.archived_staff_actor_user_id) } : {}),
+      ...(billingInvoice ? {billingInvoiceReference: billingInvoice.invoiceId} : {}),
       ...(row.requested_fulfillment_method ? { requestedFulfillment: { method: row.requested_fulfillment_method, ...(row.requested_destination ? { destination: asObject<any>(row.requested_destination) } : {}), ...(row.fulfillment_instructions ? { instructions: row.fulfillment_instructions } : {}) } } : {}),
       ...(Number(row.selling_adjustment_cents) !== 0 && row.selling_adjustment_reason ? { sellingAdjustment: { cents: Number(row.selling_adjustment_cents), reason: row.selling_adjustment_reason } } : {}),
       ...(row.commercial_charge ? { commercialCharge: asObject<OrderCurrentState["commercialCharge"]>(row.commercial_charge) } : {}),
@@ -166,14 +186,15 @@ export class PostgresOrderTransaction implements OrderTransaction {
       const current = route.steps.find((step) => step.routeInstanceStepId === route.currentStepId);
       return current ? { ...route, currentPrerequisite: await readRoutePrerequisite(this.client, organizationId, brandedId<"OrderLineId">(line.lineId), current.kind) } : route;
     }))).filter((route): route is NonNullable<typeof route> => route !== null);
-    if (draftInvoice && draftInvoice.lifecycle !== "draft") throw new Error("Draft Invoice read returned a non-Draft lifecycle.");
+    const completionEligibility = await this.completionEligibility(organizationId, orderId);
     return {
       order,
       number: {kind:"order",core:BigInt(row.business_number),display:row.display_number},
       revision: row.revision,
       totals: summarizeOrderTotals(lines, orderCurrency, Number(row.selling_adjustment_cents)),
-      ...(draftInvoice ? { draftInvoice: { invoiceId: draftInvoice.invoiceId, lifecycle: "draft" as const, synchronizationVersion: draftInvoice.synchronizationVersion, lineCount: draftInvoice.lines.length, total: draftInvoice.total } } : {}),
+      ...(billingInvoice?.lifecycle === "draft" ? { draftInvoice: { invoiceId: billingInvoice.invoiceId, lifecycle: "draft" as const, synchronizationVersion: billingInvoice.synchronizationVersion, lineCount: billingInvoice.lines.length, total: billingInvoice.total } } : {}),
       routes,
+      completionEligibility,
     };
   }
   async update(input: Parameters<OrderTransaction["update"]>[0]): Promise<boolean> {
@@ -214,6 +235,47 @@ export class PostgresOrderTransaction implements OrderTransaction {
     ];
     const results = await Promise.all(checks.map(async ([label, sql]) => ({ label, result: await this.client.query<{ exists: boolean }>(sql, [organizationId, orderId]) })));
     return results.filter(({ result }) => result.rows[0]?.exists).map(({ label }) => label);
+  }
+  async completionEligibility(organizationId: OrganizationId, orderId: OrderId) {
+    type Row = { id:string; description:string; quantity:number; workflow_intent:string|null; requires_production:boolean; production_complete:boolean; fulfilled_quantity:string; route_complete:boolean };
+    const result = await this.client.query<Row>(`SELECT l.id,l.description,l.quantity,
+      CASE WHEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') IN ('standard_production','fulfillment_only','service_fee')
+        THEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') ELSE NULL END workflow_intent,
+      COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) requires_production,
+      CASE WHEN COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false)=false THEN true ELSE
+        COALESCE((SELECT count(*)>0 AND bool_and(COALESCE((SELECT sum(a.good_quantity) FROM v2_production_works w LEFT JOIN v2_production_attempts a ON a.organization_id=w.organization_id AND a.production_work_id=w.id AND a.completed_at IS NOT NULL WHERE w.organization_id=req.organization_id AND w.order_line_id=req.order_line_id AND w.requirement_key=req.requirement_key),0)>=l.quantity) FROM v2_sales_line_production_requirements req WHERE req.organization_id=l.organization_id AND req.order_line_id=l.id),false) END production_complete,
+      COALESCE((SELECT sum(hl.quantity) FROM v2_fulfillment_handoff_lines hl WHERE hl.organization_id=l.organization_id AND hl.order_document_id=l.document_id AND hl.order_line_id=l.id),0)::text fulfilled_quantity,
+      CASE WHEN EXISTS(SELECT 1 FROM v2_route_instances ri WHERE ri.organization_id=l.organization_id AND ri.order_line_id=l.id)
+        THEN NOT EXISTS(SELECT 1 FROM v2_route_instances ri WHERE ri.organization_id=l.organization_id AND ri.order_line_id=l.id AND ri.route_state<>'completed')
+        ELSE NOT COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) END route_complete
+      FROM v2_sales_document_lines l
+      LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId'
+      WHERE l.organization_id=$1 AND l.document_id=$2 ORDER BY l.position,l.id`, [organizationId, orderId]);
+    return orderCompletionEligibility(result.rows.map((row) => ({ orderLineId: row.id, description: row.description,
+      workflowIntent: row.workflow_intent === "standard_production" || row.workflow_intent === "fulfillment_only" || row.workflow_intent === "service_fee" ? row.workflow_intent : null,
+      requiresProduction: row.requires_production, orderedQuantity: row.quantity, productionComplete: row.production_complete,
+      fulfilledQuantity: Number(row.fulfilled_quantity), routeComplete: row.route_complete })));
+  }
+  async complete(input: Parameters<OrderTransaction["complete"]>[0]): Promise<boolean> {
+    const state = await this.client.query("UPDATE v2_sales_order_details SET commercial_state='completed',completed_at=now(),completed_principal_kind=$3,completed_principal_subject=$4,completed_staff_actor_user_id=$5,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state='open'", [input.organizationId,input.orderId,input.principalKind,input.principalSubject,input.staffActorUserId??null]);
+    if (state.rowCount !== 1) return false;
+    const header = await this.client.query("UPDATE v2_sales_documents SET updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 AND document_kind='order'", [input.organizationId,input.orderId,input.expectedRevision]);
+    if (header.rowCount !== 1) throw new Error("Order completion state changed without the expected commercial revision.");
+    return true;
+  }
+  async archive(input: Parameters<OrderTransaction["archive"]>[0]): Promise<boolean> {
+    const state = await this.client.query("UPDATE v2_sales_order_details SET archived_at=now(),archived_principal_kind=$3,archived_principal_subject=$4,archived_staff_actor_user_id=$5,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state IN ('completed','cancelled') AND archived_at IS NULL", [input.organizationId,input.orderId,input.principalKind,input.principalSubject,input.staffActorUserId??null]);
+    if (state.rowCount !== 1) return false;
+    const header = await this.client.query("UPDATE v2_sales_documents SET updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 AND document_kind='order'", [input.organizationId,input.orderId,input.expectedRevision]);
+    if (header.rowCount !== 1) throw new Error("Order archive state changed without the expected commercial revision.");
+    return true;
+  }
+  async unarchive(input: Parameters<OrderTransaction["unarchive"]>[0]): Promise<boolean> {
+    const state = await this.client.query("UPDATE v2_sales_order_details SET archived_at=NULL,archived_principal_kind=NULL,archived_principal_subject=NULL,archived_staff_actor_user_id=NULL,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state IN ('completed','cancelled') AND archived_at IS NOT NULL", [input.organizationId,input.orderId]);
+    if (state.rowCount !== 1) return false;
+    const header = await this.client.query("UPDATE v2_sales_documents SET updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 AND document_kind='order'", [input.organizationId,input.orderId,input.expectedRevision]);
+    if (header.rowCount !== 1) throw new Error("Order restore state changed without the expected commercial revision.");
+    return true;
   }
   async cancel(input: Parameters<OrderTransaction["cancel"]>[0]): Promise<boolean> {
     const state = await this.client.query(

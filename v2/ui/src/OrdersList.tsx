@@ -6,9 +6,10 @@ import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
 import { useSalesOrders } from "./quoteFormQueries";
 import { useSalesUpdatedSortPreference } from "./salesSortPreference";
 
-const filters = ["All", "Open", "Cancelled"] as const;
-const lifecycleFor = (filter: (typeof filters)[number]) =>
-  filter === "All" ? undefined : filter.toLowerCase();
+const filters = ["All", "Open", "Completed", "Cancelled", "Archived"] as const;
+const scopeFor = (filter: (typeof filters)[number]) => filter === "Archived"
+  ? { archive: "archived" as const }
+  : { archive: "active" as const, ...(filter === "All" ? {} : { lifecycle: filter.toLowerCase() }) };
 const date = (value?: string) =>
   value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
 const statusTone = (value: string) =>
@@ -52,7 +53,7 @@ export const OrdersList = ({
   const [cursor, setCursor] = useState("");
   const list = useSalesOrders(sessionScope, organizationId, {
     q: search,
-    ...(lifecycleFor(filter) ? { lifecycle: lifecycleFor(filter) } : {}),
+    ...scopeFor(filter),
     ...(dueFrom ? { dueFrom } : {}),
     ...(dueTo ? { dueTo } : {}),
     sort,
@@ -84,7 +85,7 @@ export const OrdersList = ({
       <label className="v2-orders-sort">Sort <select value={sort} disabled={!preferenceReady} onChange={(event) => selectSort(event.target.value === "updated_asc" ? "updated_asc" : "updated_desc")}><option value="updated_desc">Updated: newest</option><option value="updated_asc">Updated: oldest</option></select></label>
     </div>
     <div className="panel overflow-hidden v2-orders-table-wrap"><table className="w-full border-collapse"><thead><tr><th>Order #</th><th>Customer</th><th>PO</th><th>Rep</th><th className="is-number">Lines</th><th>Due</th><th>Status</th><th className="is-number">Total</th><th>Actions</th></tr></thead><tbody>
-      {rows.map((row) => <tr key={`${row.source}:${row.recordId}`} className="row-h" onClick={() => select(row)}><td><button type="button" className="v2-orders-number">#{row.number}</button>{row.source === "legacy" && <span className="v2-orders-legacy">Legacy · Read only</span>}</td><td>{row.customerDisplayName}</td><td className="num muted">{row.purchaseOrderNumber ?? "—"}</td><td className="muted">—</td><td className="num is-number">{row.lineCount ?? "—"}</td><td className="num">{date(row.requestedDueDate)}</td><td><Status value={row.lifecycle} /></td><td className="num is-number v2-orders-total">{money({ cents: row.sellingTotalCents, currency: row.currency })}</td><td onClick={(event) => event.stopPropagation()}><details className="v2-sales-row-actions"><summary>Actions</summary><button type="button" onClick={() => select(row)}>Open</button></details></td></tr>)}
+      {rows.map((row) => <tr key={`${row.source}:${row.recordId}`} className="row-h" onClick={() => select(row)}><td><button type="button" className="v2-orders-number">#{row.number}</button>{row.source === "legacy" && <span className="v2-orders-legacy">Legacy · Read only</span>}</td><td>{row.customerDisplayName}</td><td className="num muted">{row.purchaseOrderNumber ?? "—"}</td><td className="muted">—</td><td className="num is-number">{row.lineCount ?? "—"}</td><td className="num">{date(row.requestedDueDate)}</td><td><Status value={row.archived ? "archived" : row.lifecycle} /></td><td className="num is-number v2-orders-total">{money({ cents: row.sellingTotalCents, currency: row.currency })}</td><td onClick={(event) => event.stopPropagation()}><details className="v2-sales-row-actions"><summary>Actions</summary><button type="button" onClick={() => select(row)}>Open</button></details></td></tr>)}
       {!list.isLoading && rows.length === 0 && <tr><td colSpan={9} className="v2-orders-empty">Nothing matches that filter.</td></tr>}
       {list.isLoading && <tr><td colSpan={9} className="v2-orders-empty">Loading Orders…</td></tr>}
     </tbody></table></div>

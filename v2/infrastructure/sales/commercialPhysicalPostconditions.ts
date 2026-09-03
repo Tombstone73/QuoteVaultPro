@@ -8,13 +8,14 @@ const constraints = [
   "v2_sales_documents_kind_chk", "v2_sales_documents_business_number_chk", "v2_sales_documents_display_number_chk", "v2_sales_documents_currency_chk", "v2_sales_documents_terms_object_chk", "v2_sales_documents_revision_chk", "v2_sales_documents_customer_or_contact_chk", "v2_sales_documents_terms_no_duplicate_projection_chk",
   "v2_sales_document_lines_quantity_chk", "v2_sales_document_lines_currency_chk", "v2_sales_document_lines_resolved_configuration_object_chk",
   "v2_sales_document_lines_pricing_result_object_chk", "v2_sales_document_lines_selling_decision_object_chk",
-  "v2_sales_quote_details_kind_chk", "v2_sales_quote_details_delivery_state_chk", "v2_sales_quote_details_acceptance_state_chk", "v2_sales_order_details_kind_chk", "v2_sales_order_details_commercial_state_chk", "v2_sales_order_details_cancellation_chk",
+  "v2_sales_quote_details_kind_chk", "v2_sales_quote_details_delivery_state_chk", "v2_sales_quote_details_acceptance_state_chk", "v2_sales_order_details_kind_chk", "v2_sales_order_details_commercial_state_chk", "v2_sales_order_details_cancellation_chk", "v2_sales_order_details_archive_chk",
   "v2_sales_quote_checkpoints_kind_chk", "v2_sales_quote_checkpoints_payload_object_chk",
 ] as const;
 const indexes = [
   "v2_sales_documents_org_kind_number_uidx", "v2_sales_documents_org_kind_display_number_uidx", "v2_sales_document_lines_org_document_position_uidx",
   "v2_sales_quote_checkpoints_org_quote_sequence_uidx", "v2_sales_quote_checkpoints_one_acceptance_uidx", "v2_sales_quote_checkpoints_one_conversion_uidx",
   "v2_sales_quote_conversions_org_quote_uidx", "v2_sales_quote_conversions_org_order_uidx", "v2_sales_quote_conversions_org_source_checkpoint_uidx", "v2_sales_quote_conversions_org_conversion_checkpoint_uidx", "v2_sales_quote_conversions_org_operation_request_uidx",
+  "v2_sales_order_details_org_state_archive_idx",
 ] as const;
 const foreignKeyConstraints = [
   "v2_sales_documents_customer_tenant_fk", "v2_sales_documents_contact_tenant_fk", "v2_sales_quote_details_document_fk", "v2_sales_order_details_document_fk",

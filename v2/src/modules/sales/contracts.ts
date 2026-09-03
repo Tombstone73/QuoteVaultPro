@@ -99,7 +99,11 @@ export type OrderCurrentState = Readonly<SalesDocumentCurrentState & {
   orderId: OrderId;
   sourceQuoteId?: QuoteId;
   sourceQuoteCheckpointId?: QuoteCheckpointId;
-  commercialState: "open" | "cancelled";
+  commercialState: "open" | "completed" | "cancelled";
+  completedAt?: string;
+  completedBy?: AttributionSnapshot;
+  archivedAt?: string;
+  archivedBy?: AttributionSnapshot;
   billingInvoiceReference?: InvoiceId;
   requestedFulfillment?: RequestedFulfillment;
   sellingAdjustment?: SalesOrderAdjustment;
@@ -149,6 +153,9 @@ export type EditOrderCommand = Readonly<{ organizationId: OrganizationId; orderI
 /** Cancellation is an optimistic, auditable Sales lifecycle action.  It never
  * deletes the Order or any downstream operational/financial history. */
 export type CancelOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; expectedStateToken: string; reason: string }>;
+export type CompleteOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; expectedStateToken: string }>;
+export type ArchiveOrderCommand = Readonly<{ organizationId: OrganizationId; orderId: OrderId; businessRequestId: BusinessRequestId; expectedStateToken: string }>;
+export type UnarchiveOrderCommand = ArchiveOrderCommand;
 
 export type QuoteCommandResult = Readonly<{ quoteId: QuoteId; checkpointId?: QuoteCheckpointId }>;
 export type OrderCommandResult = Readonly<{ orderId: OrderId; draftInvoiceId?: InvoiceId }>;
@@ -157,7 +164,7 @@ export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{
   group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment" | "lifecycle";
-  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled";
+  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_archived" | "order_unarchived";
   resourceId?: SalesLineId | CustomerId | ContactId;
   summary: string;
 }>;

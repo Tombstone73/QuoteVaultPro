@@ -542,7 +542,9 @@ export const resolveActivePbv2PricingInput = (
       productFacts: {
         measurementMode: quantityOnly ? "quantity_only" : "dimensions_required",
         pricingProfileKey: isFeeProfile ? "fee" : source.productPricingProfileKey ?? "default",
-      },
+        ...(typeof general.workflowIntent === "string" ? { workflowIntent: general.workflowIntent } : {}),
+        ...(typeof general.requiresProductionJob === "boolean" ? { requiresProductionJob: general.requiresProductionJob } : {}),
+      } as Record<string, JsonValue>,
       productionRequirements,
     },
     rules,

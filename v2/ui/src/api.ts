@@ -720,6 +720,7 @@ export type FulfillmentMethod = "pickup" | "shipment";
 export type FulfillmentPhysicalIntegrityAnomaly = Readonly<{
   code: "FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION";
   completedProductionQuantity: number;
+  productionRequired: boolean;
   completedFulfillmentQuantity: number;
   excessFulfillmentQuantity: number;
 }>;
@@ -739,7 +740,7 @@ export type FulfillmentAvailability = Readonly<{
 export type FulfillmentWorkspaceOrder = Readonly<{
   orderId: string;
   number: string;
-  commercialState: "open" | "cancelled";
+  commercialState: "open" | "completed" | "cancelled";
   requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }; instructions?: string };
   customerName: string;
   customerId?: string;
@@ -792,6 +793,7 @@ export type OrderListItem = Readonly<{
   purchaseOrderNumber?: string;
   lineCount?: number;
   lifecycle: string;
+  archived?: boolean;
   sellingTotalCents: number;
   currency: string;
   requestedDueDate?: string;
@@ -817,7 +819,9 @@ export type OrderRead = Readonly<{
     requestedDueDate?: string;
     terms: { termsCode?: string; commercialNotes?: string };
     currency: string;
-    commercialState: "open" | "cancelled";
+    commercialState: "open" | "completed" | "cancelled";
+    completedAt?: string;
+    archivedAt?: string;
     requestedFulfillment?: { method: "pickup" | "shipping" | "local_delivery"; destination?: { recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }; instructions?: string };
     sellingAdjustment?: { cents: number; reason: string };
     sourceQuoteId?: string;
@@ -849,10 +853,15 @@ export type OrderRead = Readonly<{
       kind: string;
     }>[];
   }>[];
+  completionEligibility: Readonly<{
+    eligible: boolean;
+    blockers: readonly Readonly<{ orderLineId: string; kind: "production_incomplete" | "fulfillment_remaining" | "route_incomplete" | "workflow_unavailable"; reason: string }>[];
+    lines: readonly Readonly<{ orderLineId: string; workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | "unavailable"; productionRequired: boolean; fulfillmentRequired: boolean; routeRequired: boolean; productionComplete: boolean; fulfillmentComplete: boolean; routeComplete: boolean }>[];
+  }>;
 }>;
 export type OrderResult = Readonly<{
   order: OrderRead;
-  draftInvoiceId: string;
+  draftInvoiceId?: string;
   lineCorrelations?: readonly Readonly<{
     clientLineKey: string;
     orderLineId: string;
@@ -1751,6 +1760,7 @@ export const orderApi = {
     query?: Readonly<{
       q?: string;
       lifecycle?: string;
+      archive?: "active" | "archived" | "all";
       dueFrom?: string;
       dueTo?: string;
       sort?: "updated_desc" | "updated_asc";
@@ -1803,6 +1813,18 @@ export const orderApi = {
   },
   cancel: async (organizationId: string, orderId: string, businessRequestId: string, expectedStateToken: string, reason: string): Promise<OrderResult> => {
     const raw = await request<{ order: RawOrderRead; draftInvoiceId: string }>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/cancel`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, expectedStateToken, reason }) });
+    return { ...raw, order: orderForUi(raw.order) };
+  },
+  complete: async (organizationId: string, orderId: string, businessRequestId: string, expectedStateToken: string): Promise<OrderResult> => {
+    const raw = await request<{ order: RawOrderRead; draftInvoiceId?: string }>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/complete`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, expectedStateToken }) });
+    return { ...raw, order: orderForUi(raw.order) };
+  },
+  archive: async (organizationId: string, orderId: string, businessRequestId: string, expectedStateToken: string): Promise<OrderResult> => {
+    const raw = await request<{ order: RawOrderRead; draftInvoiceId?: string }>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/archive`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, expectedStateToken }) });
+    return { ...raw, order: orderForUi(raw.order) };
+  },
+  unarchive: async (organizationId: string, orderId: string, businessRequestId: string, expectedStateToken: string): Promise<OrderResult> => {
+    const raw = await request<{ order: RawOrderRead; draftInvoiceId?: string }>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/unarchive`), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ businessRequestId, expectedStateToken }) });
     return { ...raw, order: orderForUi(raw.order) };
   },
 };
