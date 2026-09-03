@@ -211,6 +211,9 @@ export default function Orders() {
     const value = new URLSearchParams(location.search).get("due");
     return value === "today" || value === "tomorrow" || value === "overdue" ? value : undefined;
   }, [location.search]);
+  // Dashboard links must show the exact server-authoritative due window, not
+  // a user's sticky list filters from a prior visit.
+  const isDashboardDueDrilldown = dueFilter !== undefined;
   const debouncedSearch = useDebouncedValue(search.trim());
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
   // null means every active pill is included. An empty array intentionally
@@ -322,16 +325,16 @@ export default function Orders() {
   const { data: pillsForFilter, isLoading: pillsForFilterLoading } = useOrderStatusPills();
   const activeStatusPills = useMemo(() => activeOrderStatusPills(pillsForFilter), [pillsForFilter]);
   const selectedStatusPillIds = useMemo(
-    () => selectedOrderStatusPillIds(statusPillSelection, activeStatusPills),
-    [statusPillSelection, activeStatusPills],
+    () => selectedOrderStatusPillIds(isDashboardDueDrilldown ? null : statusPillSelection, activeStatusPills),
+    [activeStatusPills, isDashboardDueDrilldown, statusPillSelection],
   );
   const statusPillIdsForQuery = useMemo(
-    () => orderStatusPillIdsForQuery(statusPillSelection, activeStatusPills),
-    [statusPillSelection, activeStatusPills],
+    () => orderStatusPillIdsForQuery(isDashboardDueDrilldown ? null : statusPillSelection, activeStatusPills),
+    [activeStatusPills, isDashboardDueDrilldown, statusPillSelection],
   );
   const statusPillFilterLabel = useMemo(
-    () => orderStatusPillFilterLabel(statusPillSelection, activeStatusPills),
-    [statusPillSelection, activeStatusPills],
+    () => orderStatusPillFilterLabel(isDashboardDueDrilldown ? null : statusPillSelection, activeStatusPills),
+    [activeStatusPills, isDashboardDueDrilldown, statusPillSelection],
   );
   const completeStatusPill = activeStatusPills.find((pill) =>
     pill.name.trim().toLowerCase() === "complete" || pill.key === "complete",
@@ -342,19 +345,19 @@ export default function Orders() {
 
   // Stable filters object for query key consistency
   const ordersFilters = useMemo(() => ({
-    search: debouncedSearch || undefined,
+    search: isDashboardDueDrilldown ? undefined : debouncedSearch || undefined,
     // Due-window links use the Dashboard's active-order predicate, which
     // includes production-complete Orders until they are closed/canceled.
-    state: dueFilter ? undefined : stateFilter === "all" ? undefined : stateFilter,
+    state: isDashboardDueDrilldown || stateFilter === "all" ? undefined : stateFilter,
     statusPillIds: statusPillIdsForQuery,
-    priority: priorityFilter === "all" ? undefined : priorityFilter,
+    priority: isDashboardDueDrilldown || priorityFilter === "all" ? undefined : priorityFilter,
     due: dueFilter,
     page,
     pageSize,
     includeThumbnails,
     sortBy: sortKey,
     sortDir: sortDirection,
-  }), [debouncedSearch, dueFilter, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
+  }), [debouncedSearch, dueFilter, isDashboardDueDrilldown, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
 
   // Every change to the server query shape starts at the first matching page.
   useEffect(() => {
@@ -388,7 +391,7 @@ export default function Orders() {
   const filteredOrders = useMemo(() => {
     let filtered = baseFilteredOrders;
 
-    if (productionFilter !== "all") {
+    if (!isDashboardDueDrilldown && productionFilter !== "all") {
       filtered = filtered.filter((order: any) => {
       const productionStatus = order.productionSummary?.status || "none";
 
@@ -400,12 +403,12 @@ export default function Orders() {
       });
     }
 
-    if (proofFilter === "needs_action") {
+    if (!isDashboardDueDrilldown && proofFilter === "needs_action") {
       filtered = filtered.filter((order) => order.proofActionRequired === true);
     }
 
     return filtered;
-  }, [baseFilteredOrders, productionFilter, proofFilter]);
+  }, [baseFilteredOrders, isDashboardDueDrilldown, productionFilter, proofFilter]);
 
   const actionNeededCount = useMemo(
     () => baseFilteredOrders.filter((order) => {
@@ -1081,11 +1084,11 @@ export default function Orders() {
 
       <ContentLayout className="space-y-3">
         {/* TitanOS State Tabs */}
-        <Tabs value={stateFilter} onValueChange={(value) => setStateFilter(value as OrderState | "all")}>
+        <Tabs value={isDashboardDueDrilldown ? "all" : stateFilter} onValueChange={(value) => setStateFilter(value as OrderState | "all")}>
           <TabsList>
             <TabsTrigger value="open">
               Open
-              {stateFilter === "open" && (
+              {!isDashboardDueDrilldown && stateFilter === "open" && (
                 <Badge variant="secondary" className="ml-2">
                   {filteredOrders.length}
                 </Badge>

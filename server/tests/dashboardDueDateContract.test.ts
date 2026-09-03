@@ -29,6 +29,8 @@ describe("Dashboard Order due-date contract", () => {
     expect(repository).toContain('"dueDate", "promisedDate", "requestedDueDate", "productionDueDate"');
     expect(orderForm).toContain("serializeOrderDateInput(dueDate)");
     expect(ordersList).toContain('formatOrderDate(row.dueDate, "short")');
+    expect(ordersList).toContain("const isDashboardDueDrilldown = dueFilter !== undefined");
+    expect(ordersList).toContain("orderStatusPillIdsForQuery(isDashboardDueDrilldown ? null : statusPillSelection");
     expect(details).toContain('formatOrderDate(o.dueDate, "short")');
   });
 });
