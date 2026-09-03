@@ -41,7 +41,7 @@ test('an Order revision keeps local truth while requiring an explicit accounting
 
   expect(invoicesService).toContain('qbSyncStatus: "needs_resync"');
   expect(invoicesService).toContain('modifiedAfterBilling: true');
-  expect(worker).toContain("inArray(invoices.qbSyncStatus, invoiceStatuses as any)");
+  expect(worker).toContain("i.qb_sync_status in ('not_synced', 'needs_resync')");
   expect(state).toContain("INVOICE_UNSYNCED_STATUSES = ['not_synced', 'needs_resync']");
 });
 
@@ -69,7 +69,7 @@ test('local discovery includes unsynced native invoices and keeps it independent
   const invoicesService = read('server/invoicesService.ts');
 
   expect(state).toContain("INVOICE_UNSYNCED_STATUSES = ['not_synced', 'needs_resync']");
-  expect(worker).toContain("const queueState = invoiceQueueState(row.syncStatus)");
+  expect(worker).toContain("i.qb_sync_status in ('not_synced', 'needs_resync')");
   expect(worker).toContain("deferred org=${organizationId} not-connected; retained local queue work");
   expect(invoicesService).toContain("qbSyncStatus: 'pending' as any");
 });
@@ -86,22 +86,30 @@ test('enqueue selected is bounded, tenant scoped, idempotent, and makes no Intui
   expect(worker).toContain('QuickBooks authorization requires reconnection. The local queue item was retained.');
 });
 
-test('console supports state views and server-side searchable bounded source queries', () => {
+test('console supports state views and server-side searchable, sorted, filtered pagination', () => {
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
   const state = read('server/services/quickbooksSyncQueueState.ts');
   const page = read('client/src/pages/settings/quickbooks-sync-queue.tsx');
   const routes = read('server/routes/quickbooks.routes.ts');
 
   expect(state).toContain("type QuickBooksSyncQueueView = 'all' | QuickBooksSyncQueueState");
-  expect(worker).toContain('ilike(customers.companyName, searchPattern)');
-  expect(worker).toContain('.limit(fetchLimit)');
+  expect(worker).toContain('customer_name ilike ${searchPattern}');
+  expect(worker).toContain('from accounting_work where ${where}');
+  expect(worker).toContain('order by ${sortColumn} ${sortDirection}, updated_at desc, resource_type asc, id asc');
+  expect(worker).toContain('limit ${pageSize} offset ${offset}');
   expect(worker).toContain('totalCount');
   expect(worker).toContain('totalPages');
   expect(page).toContain('Eligible / Unsynced');
   expect(page).toContain('QuickBooks Sync Console');
   expect(page).toContain('queue/enqueue-selected');
   expect(page).toContain('Unable to load local accounting work.');
-  expect(page).toContain('query.data.data.totalPages');
+  expect(page).toContain("renderPagination('top')");
+  expect(page).toContain("renderPagination('bottom')");
+  expect(page).toContain('QUICKBOOKS_SYNC_PAGE_SIZES');
+  expect(page).toContain('sortBy');
+  expect(page).toContain('eligibilityFilter');
+  expect(page).toContain('selectedCount');
+  expect(routes).toContain("sortBy: String(req.query.sortBy || 'updatedAt')");
   expect(routes).toContain('listQuickBooksSyncQueueItemsForOrg');
   expect(routes).not.toContain('syncWorker.listQuickBooksSyncQueueItemsForOrg');
 });

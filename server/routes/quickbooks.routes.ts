@@ -129,7 +129,21 @@ export function registerQuickBooksRoutes(
       const page = Math.max(1, Number(req.query.page || 1));
       const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize || 25)));
       const view = String(req.query.view || 'all') as QuickBooksSyncQueueView;
-      const data = await listQuickBooksSyncQueueItemsForOrg({ organizationId, page, pageSize, search: String(req.query.search || ''), view });
+      const data = await listQuickBooksSyncQueueItemsForOrg({
+        organizationId,
+        page,
+        pageSize,
+        search: String(req.query.search || ''),
+        view,
+        filters: {
+          type: String(req.query.type || 'all') as any,
+          state: String(req.query.state || 'all') as any,
+          eligibility: String(req.query.eligibility || 'all') as any,
+          error: String(req.query.error || 'all') as any,
+          sortBy: String(req.query.sortBy || 'updatedAt') as any,
+          sortDir: String(req.query.sortDir || 'desc') as any,
+        },
+      });
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || 'Failed to list QuickBooks sync queue items' });

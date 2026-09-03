@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, customers, invoices, oauthConnections, payments } from "../../shared/schema";
 import {
@@ -9,15 +9,19 @@ import {
 } from "../quickbooksService";
 import {
   INVOICE_UNSYNCED_STATUSES,
-  matchesQueueView,
   PAYMENT_FAILED_STATUSES,
-  paymentQueueState,
   PAYMENT_UNSYNCED_STATUSES,
   type QuickBooksSyncQueueState,
   type QuickBooksSyncQueueView,
-  VALID_PAYMENT_STATUSES,
   invoiceQueueState,
 } from "./quickbooksSyncQueueState";
+import {
+  getQuickBooksSyncQueueTotalPages,
+  normalizeQuickBooksSyncQueueListFilters,
+  type QuickBooksSyncQueueEligibilityFilter,
+  type QuickBooksSyncQueueListFilters,
+  type QuickBooksSyncQueueSort,
+} from './quickbooksSyncQueueList';
 
 export type QuickBooksSyncQueueCounts = {
   invoices: { unsynced: number; pending: number; failed: number; synced: number };
@@ -40,12 +44,15 @@ export type QuickBooksSyncQueueItem = {
   id: string;
   resourceType: 'invoice' | 'payment';
   displayNumber: string;
+  customerName: string | null;
+  amountCents: number;
   status: string;
   syncStatus: string;
   queueState: QuickBooksSyncQueueState;
   updatedAt: Date;
   eligible: boolean;
   canTransmit: boolean;
+  eligibility: QuickBooksSyncQueueEligibilityFilter;
   ineligibleReason: string | null;
   lastError: string | null;
 };
@@ -445,96 +452,181 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   pageSize: number;
   search?: string;
   view?: QuickBooksSyncQueueView;
+  filters?: QuickBooksSyncQueueListFilters;
 }): Promise<{ items: QuickBooksSyncQueueItem[]; total: number; totalCount: number; totalPages: number; page: number; pageSize: number }> {
   const stabilityWindowMs = getQuickBooksSyncStabilityWindowMs();
   const cutoff = cutoffDate({ now: new Date(), stabilityWindowMs, ignoreStabilityWindow: false });
-  const page = Math.max(1, params.page);
-  const pageSize = Math.max(1, Math.min(100, params.pageSize));
+  const requestedPage = Number(params.page);
+  const requestedPageSize = Number(params.pageSize);
+  const page = Number.isFinite(requestedPage) ? Math.max(1, Math.floor(requestedPage)) : 1;
+  const pageSize = Number.isFinite(requestedPageSize) ? Math.max(1, Math.min(100, Math.floor(requestedPageSize))) : 25;
   const view: QuickBooksSyncQueueView = ['unsynced', 'queued', 'failed', 'synced'].includes(String(params.view))
     ? params.view as QuickBooksSyncQueueView
     : 'all';
+  const filters = normalizeQuickBooksSyncQueueListFilters(params.filters ?? {});
   const needle = String(params.search || '').trim();
   const searchPattern = `%${needle}%`;
-  const fetchLimit = page * pageSize;
-  const invoiceConditions = [
-    eq(invoices.organizationId, params.organizationId),
-    or(isNull(invoices.importSource), ne(invoices.importSource, 'quickbooks')),
-    eq(invoices.isHistorical, false),
-  ];
-  const invoiceUnsynced = and(
-    inArray(invoices.qbSyncStatus, INVOICE_UNSYNCED_STATUSES as any),
-    sql`lower(${invoices.status}) not in ('void', 'canceled', 'cancelled')`,
-  );
-  const invoiceQueued = eq(invoices.qbSyncStatus, 'pending');
-  const invoiceFailed = eq(invoices.qbSyncStatus, 'failed');
-  const invoiceSynced = eq(invoices.qbSyncStatus, 'synced');
-  if (view === 'unsynced') invoiceConditions.push(invoiceUnsynced);
-  else if (view === 'queued') invoiceConditions.push(invoiceQueued);
-  else if (view === 'failed') invoiceConditions.push(invoiceFailed);
-  else if (view === 'synced') invoiceConditions.push(invoiceSynced);
-  else invoiceConditions.push(or(invoiceUnsynced, invoiceQueued, invoiceFailed, invoiceSynced)!);
-  if (needle) invoiceConditions.push(or(ilike(invoices.displayNumber, searchPattern), sql`cast(${invoices.invoiceNumber} as text) ilike ${searchPattern}`, ilike(invoices.jobNumber, searchPattern), ilike(customers.companyName, searchPattern))!);
-  const paymentConditions = [
-    eq(payments.organizationId, params.organizationId),
-    or(isNull(invoices.importSource), ne(invoices.importSource, 'quickbooks')),
-    eq(invoices.isHistorical, false),
-  ];
-  const paymentUnsynced = and(
-    isNull(payments.externalAccountingId),
-    inArray(payments.syncStatus, PAYMENT_UNSYNCED_STATUSES as any),
-    sql`lower(${payments.status}) in ('succeeded', 'captured')`,
-  );
-  const paymentQueued = and(isNull(payments.externalAccountingId), eq(payments.syncStatus, 'pending'));
-  const paymentFailed = and(isNull(payments.externalAccountingId), inArray(payments.syncStatus, PAYMENT_FAILED_STATUSES as any));
-  const paymentSynced = or(isNotNull(payments.externalAccountingId), eq(payments.syncStatus, 'synced'));
-  if (view === 'unsynced') paymentConditions.push(paymentUnsynced);
-  else if (view === 'queued') paymentConditions.push(paymentQueued);
-  else if (view === 'failed') paymentConditions.push(paymentFailed);
-  else if (view === 'synced') paymentConditions.push(paymentSynced!);
-  else paymentConditions.push(or(paymentUnsynced, paymentQueued, paymentFailed, paymentSynced)!);
-  if (needle) paymentConditions.push(or(ilike(invoices.displayNumber, searchPattern), sql`cast(${invoices.invoiceNumber} as text) ilike ${searchPattern}`, ilike(payments.providerTransactionId, searchPattern), ilike(customers.companyName, searchPattern))!);
+  const effectiveState = filters.state === 'all' ? view : filters.state;
+  const conditions = [sql`true`];
+  if (effectiveState !== 'all') conditions.push(sql`queue_state = ${effectiveState}`);
+  if (filters.type !== 'all') conditions.push(sql`resource_type = ${filters.type}`);
+  if (filters.eligibility !== 'all') conditions.push(sql`eligibility_key = ${filters.eligibility}`);
+  if (filters.error === 'has_error') conditions.push(sql`last_error is not null and btrim(last_error) <> ''`);
+  if (filters.error === 'no_error') conditions.push(sql`(last_error is null or btrim(last_error) = '')`);
+  if (needle) conditions.push(sql`(
+    display_number ilike ${searchPattern}
+    or customer_name ilike ${searchPattern}
+    or coalesce(reference, '') ilike ${searchPattern}
+  )`);
+  const where = sql.join(conditions, sql` and `);
+  const sortColumns: Record<QuickBooksSyncQueueSort, string> = {
+    record: 'lower(display_number)',
+    customer: "lower(coalesce(customer_name, ''))",
+    type: 'resource_type',
+    state: 'queue_state',
+    eligibility: 'eligibility_key',
+    amount: 'amount_cents',
+    updatedAt: 'updated_at',
+    createdAt: 'created_at',
+  };
+  const sortColumn = sql.raw(sortColumns[filters.sortBy]);
+  const sortDirection = sql.raw(filters.sortDir);
+  const offset = (page - 1) * pageSize;
 
-  // Each source query is bounded and searched in PostgreSQL. The small merged
-  // page is then deterministically sorted across invoices and payments.
-  const [invoiceRows, paymentRows, invoiceTotalRows, paymentTotalRows] = await Promise.all([
-    db.select({ id: invoices.id, displayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber, status: invoices.status, syncStatus: invoices.qbSyncStatus, updatedAt: invoices.updatedAt, lastError: invoices.qbLastError })
-      .from(invoices).leftJoin(customers, and(eq(invoices.customerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
-      .where(and(...invoiceConditions)).orderBy(desc(invoices.updatedAt)).limit(fetchLimit),
-    db.select({ id: payments.id, invoiceDisplayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber, status: payments.status, syncStatus: payments.syncStatus, updatedAt: payments.updatedAt, lastError: payments.syncError, qbInvoiceId: invoices.qbInvoiceId, externalAccountingId: payments.externalAccountingId })
-      .from(payments).innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId)))
-      .leftJoin(customers, and(eq(invoices.customerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
-      .where(and(...paymentConditions)).orderBy(desc(payments.updatedAt)).limit(fetchLimit),
-    db.select({ count: sql<number>`count(*)::int` }).from(invoices)
-      .leftJoin(customers, and(eq(invoices.customerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
-      .where(and(...invoiceConditions)),
-    db.select({ count: sql<number>`count(*)::int` }).from(payments)
-      .innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId)))
-      .leftJoin(customers, and(eq(invoices.customerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
-      .where(and(...paymentConditions)),
+  const accountingWorkCte = sql`
+    with source_work as (
+      select
+        i.id::text as id,
+        'invoice'::text as resource_type,
+        coalesce(i.display_number, i.invoice_number::text) as display_number,
+        coalesce(c.company_name, '')::text as customer_name,
+        coalesce(i.total_cents, round(coalesce(i.total, 0)::numeric * 100)::int)::int as amount_cents,
+        i.status::text as status,
+        i.qb_sync_status::text as sync_status,
+        case
+          when i.qb_sync_status = 'pending' then 'queued'
+          when i.qb_sync_status = 'failed' then 'failed'
+          when i.qb_sync_status = 'synced' then 'synced'
+          else 'unsynced'
+        end::text as queue_state,
+        i.updated_at as updated_at,
+        i.created_at as created_at,
+        i.qb_last_error::text as last_error,
+        coalesce(i.job_number::text, i.invoice_number::text, '')::text as reference,
+        (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status <> 'synced') as eligible,
+        (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status in ('pending', 'failed') and i.updated_at <= ${cutoff}) as can_transmit,
+        null::text as ineligible_reason
+      from invoices i
+      left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
+      where i.organization_id = ${params.organizationId}
+        and (i.import_source is null or i.import_source <> 'quickbooks')
+        and i.is_historical = false
+        and (
+          (
+            i.qb_sync_status in ('not_synced', 'needs_resync')
+            and lower(i.status) not in ('void', 'canceled', 'cancelled')
+          )
+          or i.qb_sync_status in ('pending', 'failed', 'synced')
+        )
+
+      union all
+
+      select
+        p.id::text as id,
+        'payment'::text as resource_type,
+        ('Payment for ' || coalesce(i.display_number, i.invoice_number::text))::text as display_number,
+        coalesce(c.company_name, '')::text as customer_name,
+        coalesce(p.amount_cents, round(coalesce(p.amount, 0)::numeric * 100)::int)::int as amount_cents,
+        p.status::text as status,
+        p.sync_status::text as sync_status,
+        case
+          when p.external_accounting_id is not null or p.sync_status = 'synced' then 'synced'
+          when p.sync_status = 'pending' then 'queued'
+          when p.sync_status in ('failed', 'error') then 'failed'
+          else 'unsynced'
+        end::text as queue_state,
+        p.updated_at as updated_at,
+        p.created_at as created_at,
+        p.sync_error::text as last_error,
+        coalesce(p.provider_transaction_id, i.display_number, i.invoice_number::text, '')::text as reference,
+        (lower(p.status) in ('succeeded', 'captured')
+          and p.external_accounting_id is null
+          and p.sync_status <> 'synced'
+          and coalesce(i.qb_invoice_id, '') <> '') as eligible,
+        (lower(p.status) in ('succeeded', 'captured')
+          and p.external_accounting_id is null
+          and p.sync_status in ('pending', 'failed')
+          and coalesce(i.qb_invoice_id, '') <> ''
+          and p.updated_at <= ${cutoff}) as can_transmit,
+        case
+          when lower(p.status) not in ('succeeded', 'captured') then 'Only captured or succeeded payments can sync.'
+          when coalesce(i.qb_invoice_id, '') = '' then 'Invoice must sync first.'
+          when p.external_accounting_id is not null or p.sync_status = 'synced' then 'Already synchronized.'
+          else null
+        end::text as ineligible_reason
+      from payments p
+      inner join invoices i on i.id = p.invoice_id and i.organization_id = p.organization_id
+      left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
+      where p.organization_id = ${params.organizationId}
+        and (i.import_source is null or i.import_source <> 'quickbooks')
+        and i.is_historical = false
+        and (
+          p.external_accounting_id is not null
+          or p.sync_status in ('synced', 'pending', 'failed', 'error')
+          or (
+            p.sync_status in ('not_synced', 'skipped')
+            and lower(p.status) in ('succeeded', 'captured')
+          )
+        )
+    ), accounting_work as (
+      select *, case
+        when queue_state = 'unsynced' and eligible then 'queueable'
+        when can_transmit then 'syncable'
+        else 'blocked'
+      end::text as eligibility_key
+      from source_work
+    )`;
+
+  const [rowResult, countResult] = await Promise.all([
+    db.execute(sql`${accountingWorkCte}
+      select id, resource_type, display_number, customer_name, amount_cents, status, sync_status,
+        queue_state, updated_at, created_at, eligible, can_transmit, eligibility_key, last_error,
+        case
+          when eligible and (can_transmit or queue_state = 'unsynced') then null
+          when ineligible_reason is not null then ineligible_reason
+          when eligible then 'Waiting for the stability window.'
+          else 'Void, canceled, or synchronized records cannot sync.'
+        end as ineligible_reason
+      from accounting_work where ${where}
+      order by ${sortColumn} ${sortDirection}, updated_at desc, resource_type asc, id asc
+      limit ${pageSize} offset ${offset}`),
+    db.execute(sql`${accountingWorkCte}
+      select count(*)::int as count from accounting_work where ${where}`),
   ]);
-
-  const items: QuickBooksSyncQueueItem[] = [
-    ...invoiceRows.map((row: any) => {
-      const queueState = invoiceQueueState(row.syncStatus);
-      const eligible = isQuickBooksInvoiceExportableStatus(row.status) && queueState !== 'synced';
-      const canTransmit = eligible && new Date(row.updatedAt).getTime() <= cutoff.getTime() && queueState !== 'unsynced';
-      return { id: String(row.id), resourceType: 'invoice' as const, displayNumber: String(row.displayNumber || row.invoiceNumber), status: String(row.status), syncStatus: String(row.syncStatus), queueState, updatedAt: row.updatedAt, eligible, canTransmit, ineligibleReason: eligible ? (canTransmit || queueState === 'unsynced' ? null : 'Waiting for the stability window.') : 'Void or canceled invoices cannot sync.', lastError: row.lastError ?? null };
-    }),
-    ...paymentRows.map((row: any) => {
-      const queueState = paymentQueueState(row.syncStatus, row.externalAccountingId);
-      const validPayment = VALID_PAYMENT_STATUSES.includes(String(row.status || '').toLowerCase() as typeof VALID_PAYMENT_STATUSES[number]);
-      const eligible = validPayment && queueState !== 'synced' && Boolean(row.qbInvoiceId);
-      const canTransmit = eligible && new Date(row.updatedAt).getTime() <= cutoff.getTime() && queueState !== 'unsynced';
-      return { id: String(row.id), resourceType: 'payment' as const, displayNumber: `Payment for ${String(row.invoiceDisplayNumber || row.invoiceNumber)}`, status: String(row.status), syncStatus: String(row.syncStatus), queueState, updatedAt: row.updatedAt, eligible, canTransmit, ineligibleReason: eligible ? (canTransmit || queueState === 'unsynced' ? null : 'Waiting for the stability window.') : !validPayment ? 'Only captured or succeeded payments can sync.' : !row.qbInvoiceId ? 'Invoice must sync first.' : 'Already synchronized.', lastError: row.lastError ?? null };
-    }),
-  ].filter((item) => matchesQueueView(item.queueState, view));
-  const sorted = items.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  const totalCount = Number(invoiceTotalRows[0]?.count || 0) + Number(paymentTotalRows[0]?.count || 0);
+  const rows = ((rowResult as any).rows ?? rowResult) as any[];
+  const countRows = ((countResult as any).rows ?? countResult) as Array<{ count: number }>;
+  const totalCount = Number(countRows[0]?.count || 0);
+  const items: QuickBooksSyncQueueItem[] = rows.map((row) => ({
+    id: String(row.id),
+    resourceType: row.resource_type as 'invoice' | 'payment',
+    displayNumber: String(row.display_number),
+    customerName: String(row.customer_name || '') || null,
+    amountCents: Number(row.amount_cents || 0),
+    status: String(row.status),
+    syncStatus: String(row.sync_status),
+    queueState: row.queue_state as QuickBooksSyncQueueState,
+    updatedAt: new Date(row.updated_at),
+    eligible: Boolean(row.eligible),
+    canTransmit: Boolean(row.can_transmit),
+    eligibility: row.eligibility_key as QuickBooksSyncQueueEligibilityFilter,
+    ineligibleReason: row.ineligible_reason == null ? null : String(row.ineligible_reason),
+    lastError: row.last_error == null ? null : String(row.last_error),
+  }));
   return {
-    items: sorted.slice((page - 1) * pageSize, page * pageSize),
+    items,
     total: totalCount,
     totalCount,
-    totalPages: Math.ceil(totalCount / pageSize),
+    totalPages: getQuickBooksSyncQueueTotalPages(totalCount, pageSize),
     page,
     pageSize,
   };
