@@ -33,6 +33,9 @@ import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructur
 import { composeAuthenticatedQuickBooksIntegrationRuntime } from "../../infrastructure/accounting/authenticatedQuickBooksIntegrationRuntime.js";
 import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
 import { startV2InvoiceEmailDeliveryWorker } from "../../infrastructure/communications/invoiceEmailDeliveryQueue.js";
+import { startV2ProofEmailDeliveryWorker } from "../../infrastructure/communications/proofEmailDeliveryQueue.js";
+import { PostgresPortalProofRead } from "../../infrastructure/proofing/postgresPortalProofRead.js";
+import { V2ApplicationError } from "../errors/applicationError.js";
 import { PermissionSetPrincipalIssuer } from "../authorization/permissionSets.js";
 import { PostgresPermissionAuthorityReader } from "../../infrastructure/authorization/postgresPermissionAuthorityRead.js";
 
@@ -88,7 +91,7 @@ export const createV2DeploymentApp = (
     emailIntegration,
     quickBooksIntegration,
     { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
-    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal },
+    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}) },
   );
 };
 
@@ -113,6 +116,7 @@ export const startV2DeploymentServer = async (
   const app = createV2DeploymentApp(config, pool, logger, authentication);
   let stopQuickBooksWorker: (() => void) | null = null;
   let stopInvoiceEmailWorker: (() => void) | null = null;
+  let stopProofEmailWorker: (() => void) | null = null;
   let server: Server | undefined;
   try {
     server = await new Promise<Server>((resolve, reject) => {
@@ -121,8 +125,10 @@ export const startV2DeploymentServer = async (
     });
     stopQuickBooksWorker = startV2QuickBooksBillingWorker(pool, (event, data) => logger.log("info", event, data));
     stopInvoiceEmailWorker = startV2InvoiceEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
+    stopProofEmailWorker = startV2ProofEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
   } catch (error) {
     stopInvoiceEmailWorker?.();
+    stopProofEmailWorker?.();
     stopQuickBooksWorker?.();
     await pool.end();
     throw error;
@@ -137,6 +143,7 @@ export const startV2DeploymentServer = async (
     );
     stopQuickBooksWorker?.();
     stopInvoiceEmailWorker?.();
+    stopProofEmailWorker?.();
     await pool.end();
     logger.log("info", "v2.deployment.stopped");
   };

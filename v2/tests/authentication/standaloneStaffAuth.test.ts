@@ -41,9 +41,11 @@ const appFor = (verifier = createVerifier(), config = loadV2StandaloneAuthConfig
 };
 
 describe("standalone V2 Staff authentication", () => {
-  test("only preserves internal V2 portal invoice destinations", () => {
+  test("only preserves canonical internal V2 portal destinations", () => {
     expect(safePortalReturnTo("/portal/invoices")).toBe("/portal/invoices");
     expect(safePortalReturnTo("/portal/invoices/invoice_1")).toBe("/portal/invoices/invoice_1");
+    expect(safePortalReturnTo("/portal/proofs")).toBe("/portal/proofs");
+    expect(safePortalReturnTo("/portal/proofs/proof_1")).toBe("/portal/proofs/proof_1");
     for (const unsafe of ["https://attacker.invalid", "//attacker.invalid", "/\\attacker", "/staff", "/portal/orders/1"]) expect(safePortalReturnTo(unsafe)).toBe("/portal/invoices");
   });
   test("rejects bad, unknown, inactive, and no-membership login without account enumeration", async () => {

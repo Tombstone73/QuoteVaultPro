@@ -73,7 +73,7 @@ export const safePortalReturnTo = (value: unknown): string => {
   if (typeof value !== "string") return "/portal/invoices";
   const destination = value.trim();
   if (!destination.startsWith("/") || destination.startsWith("//") || destination.includes("\\")) return "/portal/invoices";
-  return /^\/portal\/invoices(?:\/[A-Za-z0-9_-]+)?$/.test(destination) ? destination : "/portal/invoices";
+  return /^\/portal\/(?:invoices|proofs)(?:\/[A-Za-z0-9_-]+)?$/.test(destination) ? destination : "/portal/invoices";
 };
 
 export type V2StandaloneAuthConfig = Readonly<{

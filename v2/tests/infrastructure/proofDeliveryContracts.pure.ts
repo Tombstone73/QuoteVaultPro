@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+
+const queue=readFileSync("v2/infrastructure/communications/proofEmailDeliveryQueue.ts","utf8");
+const portal=readFileSync("v2/infrastructure/proofing/postgresPortalProofRead.ts","utf8");
+const migration=readFileSync("server/db/migrations_v2/0259_v2_customer_proof_delivery.sql","utf8");
+assert.match(queue,/FOR UPDATE SKIP LOCKED/u);
+assert.match(queue,/provider_attempted_at IS NOT NULL/u);
+assert.match(queue,/state='ambiguous'/u);
+assert.match(queue,/status>=500\)return"ambiguous"/u);
+assert.match(queue,/Review Proof/u);
+assert.match(queue,/\/portal\/setup\?token=/u);
+assert.doesNotMatch(queue,/object_key|storage_provider/u);
+assert.match(portal,/d\.customer_id=\$2/u);
+assert.match(portal,/v\.issued_at IS NOT NULL/u);
+assert.match(portal,/sequence<row\.latest_sequence/u);
+assert.match(portal,/cache|viewUrl/u);
+assert.match(migration,/UNIQUE \(organization_id, proof_version_id\)/u);
+assert.match(migration,/proof_response\.outcome='revision_requested'/u,"Only a canonical request for changes may unlock corrected artwork");
+assert.match(migration,/Proof-bound artwork can be replaced only after the current Proof requests changes/u);
+console.log("V2 proof delivery reliability and portal scope contracts passed.");

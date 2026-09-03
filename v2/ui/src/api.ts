@@ -1025,6 +1025,7 @@ export type ArtworkOrderProjection = Readonly<{
     orderId: string;
     orderLineId: string;
     purpose: "customer_supplied" | "production" | "proof" | "reference";
+    supersedesArtworkAssignmentId?:string;
     side?: "front" | "back";
     sourcePageIndex?: number;
     layerKey?: string;
@@ -1113,7 +1114,9 @@ export type ProofWorkProjection = Readonly<{
   versions: readonly Readonly<{
     version: ProofVersion;
     response?: ProofResponse;
+    delivery?: Readonly<{ jobId:string;recipient:Readonly<{contactId:string;displayName:string;email:string}>;state:"queued"|"processing"|"retry_wait"|"sent"|"failed"|"ambiguous";attemptCount:number;providerMessageId?:string;deliveredAt?:string;lastError?:string }>;
   }>[];
+  recipients: readonly Readonly<{contactId:string;displayName:string;email:string}>[];
 }>;
 export type ProofingMutationResult = Readonly<{
   work: ProofWorkProjection["work"];
@@ -1129,6 +1132,7 @@ export type ProofQueueItem = Readonly<{
     sequence: number;
     issuedAt?: string;
     outcome?: "approved" | "revision_requested";
+    deliveryState?:"queued"|"processing"|"retry_wait"|"sent"|"failed"|"ambiguous";
   }>;
 }>;
 export type PrepressUnit = Readonly<{
@@ -2588,13 +2592,14 @@ export const proofingApi = {
       businessRequestId,
       { artworkAssignmentIds },
     ),
-  issue: (org: string, proofVersionId: string, businessRequestId: string) =>
+  issue: (org: string, proofVersionId: string, businessRequestId: string, recipientContactId: string) =>
     proofMutation<ProofingMutationResult>(
       org,
       `/versions/${encodeURIComponent(proofVersionId)}/issue`,
       businessRequestId,
-      {},
+      { recipientContactId },
     ),
+  retryDelivery: (org:string,proofVersionId:string,businessRequestId:string)=>proofMutation<ProofingMutationResult>(org,`/versions/${encodeURIComponent(proofVersionId)}/delivery/retry`,businessRequestId,{}),
   respond: (
     org: string,
     proofVersionId: string,

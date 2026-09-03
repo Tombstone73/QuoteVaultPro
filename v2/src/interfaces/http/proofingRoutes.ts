@@ -13,6 +13,7 @@ export interface ProofingHttpService {
   start(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
   createVersion(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
   issue(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
+  retryDelivery(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
   respond(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
 }
 export interface VerifiedV2ProofingPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
@@ -31,6 +32,7 @@ export const createProofingRouter=(dependencies:ProofingHttpDependencies):Router
   router.post("/works",(request,response)=>void run(response,async()=>dependencies.service.start(await context(request,dependencies,true),body(request.body))));
   router.post("/works/:proofWorkId/versions", (request,response) => void run(response, async () => dependencies.service.createVersion(await context(request,dependencies,true), {...body(request.body),proofWorkId:request.params.proofWorkId})));
   router.post("/versions/:proofVersionId/issue", (request,response) => void run(response, async () => dependencies.service.issue(await context(request,dependencies,true), {...body(request.body),proofVersionId:request.params.proofVersionId})));
+  router.post("/versions/:proofVersionId/delivery/retry", (request,response) => void run(response, async () => dependencies.service.retryDelivery(await context(request,dependencies,true), {...body(request.body),proofVersionId:request.params.proofVersionId})));
   router.post("/versions/:proofVersionId/respond", (request,response) => void run(response, async () => dependencies.service.respond(await context(request,dependencies,true), {...body(request.body),proofVersionId:request.params.proofVersionId})));
   return router;
 };

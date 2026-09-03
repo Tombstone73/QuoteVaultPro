@@ -4,7 +4,7 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type ArtworkAssignmentId, type OrderId, type OrderLineId, type OrganizationId, type ProofVersionId, type ProofWorkId } from "../shared/commercialValues.js";
-import { type CreateProofVersionInput, type ProofResponse, type ProofVersion, type ProofVersionProjection, type ProofWork, type ProofWorkProjection, type ProofWorkQueueItem, type RespondToProofInput, type StartProofWorkInput, type IssueProofVersionInput, validateProofComment } from "./contracts.js";
+import { type CreateProofVersionInput, type ProofResponse, type ProofVersion, type ProofVersionProjection, type ProofWork, type ProofWorkProjection, type ProofWorkQueueItem, type RespondToProofInput, type RetryProofDeliveryInput, type StartProofWorkInput, type IssueProofVersionInput, validateProofComment } from "./contracts.js";
 
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
@@ -14,7 +14,7 @@ export interface ProofingTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string } & Actor>): Promise<Reservation>;
   succeed(organizationId: string, requestId: string, result: ProofingMutationResult): Promise<void>;
   attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceType: "proof_work" | "proof_version" | "proof_response"; resourceId: string } & Actor>): Promise<void>;
-  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "proof_work_started" | "proof_version_created" | "proof_issued" | "proof_approved" | "proof_revision_requested"; resourceId: string; summary: string } & Actor>): Promise<void>;
+  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "proof_work_started" | "proof_version_created" | "proof_issued" | "proof_delivery_retried" | "proof_approved" | "proof_revision_requested"; resourceId: string; summary: string } & Actor>): Promise<void>;
   findWork(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofWork | null>;
   lockWork(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofWork | null>;
   createOrGetWork(input: Readonly<{ id: ProofWorkId; organizationId: OrganizationId; orderId: OrderId; orderLineId: OrderLineId } & Actor>): Promise<ProofWork>;
@@ -24,7 +24,8 @@ export interface ProofingTransaction {
   latestVersion(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<ProofVersionProjection | null>;
   findVersion(organizationId: OrganizationId, proofVersionId: ProofVersionId): Promise<ProofVersionProjection | null>;
   createVersion(input: Readonly<{ id: ProofVersionId; organizationId: OrganizationId; proofWorkId: ProofWorkId; sequence: number; artworkAssignmentIds: readonly ArtworkAssignmentId[] } & Actor>): Promise<ProofVersion>;
-  issueVersion(input: Readonly<{ organizationId: OrganizationId; proofVersionId: ProofVersionId } & Actor>): Promise<ProofVersion>;
+  issueVersion(input: Readonly<{ organizationId: OrganizationId; proofVersionId: ProofVersionId; recipientContactId: string } & Actor>): Promise<ProofVersion>;
+  retryDelivery(input: Readonly<{ organizationId: OrganizationId; proofVersionId: ProofVersionId } & Actor>): Promise<ProofVersion>;
   createResponse(input: Readonly<{ id: string; organizationId: OrganizationId; proofVersionId: ProofVersionId; outcome: "approved" | "revision_requested"; comment?: string; origin: "direct" | "staff_recorded_customer"; recordedCustomerId?: string } & Actor>): Promise<ProofResponse>;
   workCustomerId(organizationId: OrganizationId, proofWorkId: ProofWorkId): Promise<string | null>;
 }
@@ -63,7 +64,14 @@ export class ProofingApplicationService {
       const work = await tx.lockWork(found.version.organizationId, found.version.proofWorkId); if (!work) throw new V2ApplicationError("NOT_FOUND", "Proof work was not found.");
       const version = await tx.findVersion(work.organizationId, input.proofVersionId); if (!version || version.version.issuedAt) throw new V2ApplicationError("CONFLICT", "Proof Version has already been issued.");
       if (!version.version.artwork.length) throw new V2ApplicationError("VALIDATION_ERROR", "Proof Version needs Artwork before it can be issued.");
-      return { work, version: await tx.issueVersion({ organizationId: work.organizationId, proofVersionId: input.proofVersionId, ...actor(context) }) };
+      return { work, version: await tx.issueVersion({ organizationId: work.organizationId, proofVersionId: input.proofVersionId, recipientContactId: input.recipientContactId, ...actor(context) }) };
+    });
+  }
+  async retryDelivery(context: OperationContext, input: RetryProofDeliveryInput): Promise<ApplicationResult<ProofingMutationResult>> {
+    return this.mutate(context, "proof.delivery.retry.v1", input, "proof.issue", "proof_delivery_retried", "Proof notification intentionally requeued.", async (tx) => {
+      const found = await tx.findVersion(brandedId<"OrganizationId">(context.organizationId), input.proofVersionId); if (!found) throw new V2ApplicationError("NOT_FOUND", "Proof Version was not found.");
+      const work = await tx.lockWork(found.version.organizationId, found.version.proofWorkId); if (!work) throw new V2ApplicationError("NOT_FOUND", "Proof work was not found.");
+      return { work, version: await tx.retryDelivery({ organizationId: work.organizationId, proofVersionId: input.proofVersionId, ...actor(context) }) };
     });
   }
   async respond(context: OperationContext, input: RespondToProofInput): Promise<ApplicationResult<ProofingMutationResult>> {

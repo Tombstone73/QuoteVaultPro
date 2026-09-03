@@ -15,7 +15,7 @@ export type ArtworkWorkspaceFile = Readonly<{
 }>;
 export type ArtworkWorkspaceAssignment = Readonly<{
   id: string; artworkFileId: string; orderId: string; orderLineId: string;
-  purpose: "customer_supplied" | "production" | "proof" | "reference";
+  purpose: "customer_supplied" | "production" | "proof" | "reference"; supersedesArtworkAssignmentId?:string;
   side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; createdAt: string;
 }>;
 export type ArtworkWorkspaceContext = Readonly<{
@@ -25,7 +25,7 @@ export type ArtworkWorkspaceItem = ArtworkWorkspaceContext & Readonly<{ file: Ar
 export type ArtworkWorkspaceDetail = Readonly<{ file: ArtworkWorkspaceFile; assignments: readonly ArtworkWorkspaceContext[] }>;
 
 type Row = Readonly<{
-  assignment_id: string | null; artwork_file_id: string | null; order_id: string | null; order_line_id: string | null;
+  assignment_id: string | null; artwork_file_id: string | null; order_id: string | null; order_line_id: string | null; supersedes_artwork_assignment_id:string|null;
   purpose: ArtworkWorkspaceAssignment["purpose"] | null; side: "front" | "back" | null; source_page_index: number | null; layer_key: string | null; layer_order: number | null; assignment_created_at: Date | null;
   file_id: string; original_filename: string; display_filename: string; content_type: string; byte_size: string; source_kind: ArtworkWorkspaceFile["source"]; page_count: number | null; detected_width_microns: number | null; detected_height_microns: number | null; derived_from_artwork_file_id: string | null; file_created_at: Date;
   order_number: string | null; customer_id: string | null; customer_display_name: string | null; line_description: string | null;
@@ -42,11 +42,11 @@ const file = (row: Row): ArtworkWorkspaceFile => ({
 const context = (row: Row): ArtworkWorkspaceContext | undefined => {
   if (!row.assignment_id || !row.artwork_file_id || !row.order_id || !row.order_line_id || !row.purpose || !row.assignment_created_at || !row.order_number || !row.customer_display_name || row.line_description === null) return undefined;
   return {
-    assignment: { id: row.assignment_id, artworkFileId: row.artwork_file_id, orderId: row.order_id, orderLineId: row.order_line_id, purpose: row.purpose, ...(row.side ? { side: row.side } : {}), ...(row.source_page_index === null ? {} : { sourcePageIndex: row.source_page_index }), ...(row.layer_key ? { layerKey: row.layer_key, layerOrder: row.layer_order! } : {}), createdAt: row.assignment_created_at.toISOString() },
+    assignment: { id: row.assignment_id, artworkFileId: row.artwork_file_id, orderId: row.order_id, orderLineId: row.order_line_id, purpose: row.purpose, ...(row.supersedes_artwork_assignment_id?{supersedesArtworkAssignmentId:row.supersedes_artwork_assignment_id}:{}), ...(row.side ? { side: row.side } : {}), ...(row.source_page_index === null ? {} : { sourcePageIndex: row.source_page_index }), ...(row.layer_key ? { layerKey: row.layer_key, layerOrder: row.layer_order! } : {}), createdAt: row.assignment_created_at.toISOString() },
     orderNumber: row.order_number, ...(row.customer_id ? { customerId: row.customer_id } : {}), customerDisplayName: row.customer_display_name, lineDescription: row.line_description,
   };
 };
-const select = `SELECT a.id assignment_id,a.artwork_file_id,a.order_document_id order_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.created_at assignment_created_at,
+const select = `SELECT a.id assignment_id,a.artwork_file_id,a.order_document_id order_id,a.order_line_id,a.supersedes_artwork_assignment_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.created_at assignment_created_at,
   f.id file_id,f.original_filename,f.display_filename,f.content_type,f.byte_size,f.source_kind,f.page_count,f.detected_width_microns,f.detected_height_microns,f.derived_from_artwork_file_id,f.created_at file_created_at,
   d.display_number order_number,c.id customer_id,COALESCE(c.display_name,c.company_name,'Customer') customer_display_name,l.description line_description
   FROM v2_artwork_files f`;

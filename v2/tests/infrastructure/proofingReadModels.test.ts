@@ -16,6 +16,8 @@ describe("Proofing PostgreSQL read models", () => {
         if (text.startsWith("SELECT * FROM v2_proof_versions WHERE organization_id=$1 AND proof_work_id")) return { rows: [versionRow] as T[] };
         if (text.startsWith("SELECT proof_version_id,position")) return { rows: [{ proof_version_id: "version-a", position: 0, artwork_assignment_id: "assignment-a", artwork_file_id: "file-a" }] as T[] };
         if (text.startsWith("SELECT * FROM v2_proof_responses")) return { rows: [{ id: "response-a", organization_id: "org-a", proof_version_id: "version-a", outcome: "approved", comment: null, response_origin: "direct", recorded_customer_id: null, responder_principal_kind: "portal", responder_principal_subject: "portal-a", responder_staff_actor_user_id: null, responded_at: date }] as T[] };
+        if (text.startsWith("SELECT id,recipient_contact_id")) return { rows: [{id:"delivery-a",recipient_contact_id:"contact-a",recipient_email:"qa@example.com",recipient_name:"QA Customer",state:"sent",attempt_count:1,provider_message_id:"gmail-a",delivered_at:date,last_error:null}] as T[] };
+        if (text.startsWith("SELECT DISTINCT c.id contact_id")) return { rows: [{contact_id:"contact-a",display_name:"QA Customer",email:"qa@example.com"}] as T[] };
         throw new Error(`Unexpected query: ${text}`);
       },
     } as any;
@@ -24,11 +26,11 @@ describe("Proofing PostgreSQL read models", () => {
     const foreign = await repository.readWork(brandedId<"OrganizationId">("org-b"), brandedId<"ProofWorkId">("proof-a"));
     expect(detail).toMatchObject({
       work: { proofWorkId: "proof-a", orderId: "order-a", orderLineId: "line-a" },
-      versions: [{ version: { proofVersionId: "version-a", artwork: [{ artworkAssignmentId: "assignment-a", artworkFileId: "file-a" }] }, response: { outcome: "approved", origin: "direct" }],
+      versions: [{ version: { proofVersionId: "version-a", artwork: [{ artworkAssignmentId: "assignment-a", artworkFileId: "file-a" }] }, response: { outcome: "approved", origin: "direct" },delivery:{state:"sent",recipient:{contactId:"contact-a"}} }],recipients:[{contactId:"contact-a",email:"qa@example.com"}],
     });
     expect(foreign).toBeNull();
     expect(calls[0]).toMatchObject({ values: ["org-a", "proof-a"] });
-    expect(calls[4]).toMatchObject({ values: ["org-b", "proof-a"] });
+    expect(calls.at(-1)).toMatchObject({ values: ["org-b", "proof-a"] });
     expect(calls[0]!.text).toContain("organization_id=$1 AND id=$2");
   });
 
@@ -36,12 +38,12 @@ describe("Proofing PostgreSQL read models", () => {
     const calls: { text: string; values?: readonly unknown[] }[] = [];
     const client = { query: async <T>(text: string, values?: readonly unknown[]) => {
       calls.push({ text, values });
-      return { rows: [{ ...workRow, display_number: "SO-100", customer_display_name: "Acme", line_description: "Signs", latest_sequence: 2, latest_issued_at: date, latest_outcome: "revision_requested" }] as T[] };
+      return { rows: [{ ...workRow, display_number: "SO-100", customer_display_name: "Acme", line_description: "Signs", latest_sequence: 2, latest_issued_at: date, latest_outcome: "revision_requested",latest_delivery_state:"sent" }] as T[] };
     } } as any;
     const repository = new PostgresProofingTransaction(client);
     await expect(repository.listWorkQueue(brandedId<"OrganizationId">("org-a"), 25)).resolves.toEqual([{
       work: expect.objectContaining({ proofWorkId: "proof-a" }), orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs",
-      latest: { sequence: 2, issuedAt: date.toISOString(), outcome: "revision_requested" },
+      latest: { sequence: 2, issuedAt: date.toISOString(), outcome: "revision_requested",deliveryState:"sent" },
     }]);
     expect(calls[0]!.text).toContain("WHERE w.organization_id=$1");
     expect(calls[0]!.values).toEqual(["org-a", 25]);

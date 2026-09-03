@@ -1,7 +1,7 @@
 import type { TransactionalClient } from "../persistence/types.js";
 
-const tables=["v2_proof_works","v2_proof_versions","v2_proof_version_artwork","v2_proof_responses"] as const;
-const constraints=["v2_proof_works_order_line_uidx","v2_proof_works_order_line_tenant_fk","v2_proof_versions_work_sequence_uidx","v2_proof_version_artwork_assignment_file_tenant_fk","v2_proof_responses_version_uidx","v2_proof_responses_version_tenant_fk"] as const;
+const tables=["v2_proof_works","v2_proof_versions","v2_proof_version_artwork","v2_proof_responses","v2_proof_delivery_jobs"] as const;
+const constraints=["v2_proof_works_order_line_uidx","v2_proof_works_order_line_tenant_fk","v2_proof_versions_work_sequence_uidx","v2_proof_version_artwork_assignment_file_tenant_fk","v2_proof_responses_version_uidx","v2_proof_responses_version_tenant_fk","v2_proof_delivery_version_uidx"] as const;
 const triggers=["v2_proof_version_artwork_validate_trigger","v2_proof_version_immutable_validate_trigger","v2_proof_version_issuance_evidence_validate_trigger","v2_proof_response_immutable_validate_trigger"] as const;
 export async function assertV2ProofingPhysicalPostconditions(client:TransactionalClient):Promise<void>{
   const [found,con,tg]=await Promise.all([

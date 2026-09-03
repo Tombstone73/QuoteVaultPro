@@ -35,7 +35,7 @@ import { createEmailIntegrationCallback, createEmailIntegrationRouter, type Emai
 import { createQuickBooksIntegrationCallback, createQuickBooksIntegrationRouter, type QuickBooksIntegrationHttpDependencies } from "./quickBooksIntegrationRoutes.js";
 import { createStripeSettingsRouter, type StripeSettingsHttpDependencies } from "./stripeSettingsRoutes.js";
 import { createStripeWebhookHandler } from "./stripeWebhookRoutes.js";
-import { createPortalInvoiceRouter } from "./portalInvoiceRoutes.js";
+import { createPortalInvoiceRouter, type PortalProofRead, type PortalProofResponseService } from "./portalInvoiceRoutes.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -84,7 +84,7 @@ export const createV2HttpApp = (
   emailIntegration?: EmailIntegrationHttpDependencies,
   quickBooksIntegration?: QuickBooksIntegrationHttpDependencies,
   stripeSettings?: StripeSettingsHttpDependencies,
-  portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }> }>,
+  portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService }>,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -99,7 +99,7 @@ export const createV2HttpApp = (
     );
   app.use(express.json({ limit: "1mb" }));
   configure?.(app);
-  if (billing && portal) app.use("/v2/portal", portal.middleware, createPortalInvoiceRouter({ ...billing.dependencies, portalPrincipal: portal.principal }));
+  if (billing && portal) app.use("/v2/portal", portal.middleware, createPortalInvoiceRouter({ ...billing.dependencies, portalPrincipal: portal.principal, ...(portal.proofs?{proofs:portal.proofs}:{}), ...(portal.proofing?{proofing:portal.proofing}:{}) }));
 
   app.get("/health", (_request: Request, response: Response) => {
     response.status(200).json({ status: "ok", service: config.serviceName });
