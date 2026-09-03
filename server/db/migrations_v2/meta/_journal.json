@@ -1338,6 +1338,13 @@
       "when": 1788048000042,
       "tag": "0195_invoice_accounting_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 197,
+      "version": "7",
+      "when": 1788048000043,
+      "tag": "0196_repair_posters_laminate_pricing",
+      "breakpoints": true
     }
   ]
 }

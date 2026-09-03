@@ -7,7 +7,7 @@ import {
   lineItemOptionSelectionsV2Schema,
   optionTreeV2Schema,
 } from "../../shared/optionTreeV2";
-import { resolveRuntimeVisibility, validateOptionTreeV2 } from "../../shared/optionTreeV2Runtime";
+import { evaluateCondition, resolveRuntimeVisibility, validateOptionTreeV2 } from "../../shared/optionTreeV2Runtime";
 import { buildFormulaEvaluationScope, buildFormulaScope } from "../../shared/pbv2/formulaScope";
 import { buildNumericSelectionFormulaVariables } from "../../shared/pbv2/numericSelectionFormulaVariables";
 
@@ -125,11 +125,16 @@ const buildFormulaImpactError = (input: {
   return err;
 };
 
-const applyWhenOk = (applyWhen: any, treeSelected: Record<string, { value?: any }>): boolean => {
+const applyWhenOk = (applyWhen: any, effectiveSelections: Record<string, unknown>): boolean => {
   if (!applyWhen) return true;
-  // We intentionally rely on the shared runtime evaluator via resolveVisibleNodes’ internal calls.
-  // Here we just do a cheap shape check; actual evaluation is done in runtime when needed.
-  return true;
+  // Pricing impacts are subject to the same resolved selection contract used by
+  // option visibility/defaults.  Failing closed prevents a conditional impact
+  // (for example, Laminate != NONE) from charging its default choice.
+  try {
+    return evaluateCondition(applyWhen, effectiveSelections as any);
+  } catch {
+    return false;
+  }
 };
 
 export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTreeV2EvaluateResult {
@@ -361,7 +366,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
       // applyWhen evaluation is handled in shared runtime in future extensions;
       // for now, we treat missing refs as false by leaving runtime as the source of truth.
-      if (!applyWhenOk(impact.applyWhen, selected)) {
+      if (!applyWhenOk(impact.applyWhen, runtimeVisibility.effectiveSelections)) {
         continue;
       }
 
@@ -446,7 +451,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
           const impact: any = choice.pricingImpact[k];
           if (!impact) continue;
 
-          if (!applyWhenOk(impact.applyWhen, selected)) {
+          if (!applyWhenOk(impact.applyWhen, runtimeVisibility.effectiveSelections)) {
             continue;
           }
 
