@@ -4920,6 +4920,10 @@ export const invoices = pgTable("invoices", {
   // Changes only when a field serialized to external accounting changes.  This
   // deliberately excludes queueing, retries, and other operational writes.
   accountingUpdatedAt: timestamp("accounting_updated_at", { withTimezone: true }).defaultNow().notNull(),
+  accountingApprovedAt: timestamp("accounting_approved_at", { withTimezone: true }),
+  accountingApprovedByUserId: varchar("accounting_approved_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  accountingApprovedVersion: integer("accounting_approved_version"),
+  accountingApprovalRevokedAt: timestamp("accounting_approval_revoked_at", { withTimezone: true }),
   lastSentVersion: integer("last_sent_version"),
   lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
   lastSentVia: text("last_sent_via"),
@@ -5004,6 +5008,10 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   lastSentAt: true,
   lastSentVia: true,
   lastQbSyncedVersion: true,
+  accountingApprovedAt: true,
+  accountingApprovedByUserId: true,
+  accountingApprovedVersion: true,
+  accountingApprovalRevokedAt: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
   status: z.enum(['draft','finalized','billed','paid','void','sent','partially_paid','credit','overdue']).default('draft'),

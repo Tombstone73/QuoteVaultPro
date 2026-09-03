@@ -20,6 +20,7 @@ import {
   resolveBillingCustomerForOrder,
   writeContactAccountingPromotionAudit,
 } from './services/contactAccountingPromotionService';
+import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState } from './lib/invoiceAccountingApproval';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -186,6 +187,7 @@ export type InvoiceListSortBy =
 export type InvoiceListSortDir = 'asc' | 'desc';
 
 export type InvoiceListColumnFilters = {
+  accountingApproval?: 'approved' | 'not_approved' | 'needs_reapproval';
   customer?: string;
   contact?: string;
   jobName?: string;
@@ -373,6 +375,10 @@ export async function listInvoicesPageForOrganization(
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
   const columnFilters = opts.columnFilters ?? {};
+  const currentAccountingApproval = sql`${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}`;
+  if (columnFilters.accountingApproval === 'approved') whereClauses.push(currentAccountingApproval);
+  if (columnFilters.accountingApproval === 'needs_reapproval') whereClauses.push(sql`${invoices.accountingApprovalRevokedAt} is not null or (${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovedVersion} is distinct from ${invoices.invoiceVersion})`);
+  if (columnFilters.accountingApproval === 'not_approved') whereClauses.push(sql`not (${currentAccountingApproval}) and ${invoices.accountingApprovalRevokedAt} is null`);
   const contains = (value: string | undefined) => {
     const trimmed = String(value || '').trim();
     return trimmed ? `%${trimmed}%` : null;
@@ -1100,6 +1106,7 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     status: financialState.status as any,
     invoiceVersion: nextInvoiceVersion,
     accountingUpdatedAt: new Date(),
+    ...accountingApprovalRevocationPatch(invoice as any),
     // Local Order truth remains current, but an already-synced QuickBooks
     // invoice must never be silently mutated outside the explicit accounting
     // workflow.
@@ -1117,6 +1124,9 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     oldValues: { subtotalCents: invoice.subtotalCents, taxCents: invoice.taxCents, shippingCents: invoice.shippingCents, totalCents: invoice.totalCents } as any,
     newValues: { subtotalCents: snapshot.subtotalCents, taxCents: snapshot.taxCents, shippingCents: snapshot.shippingCents, totalCents: snapshot.totalCents, amountPaidCents: financialState.amountPaidCents, amountDueCents: financialState.amountDueCents, status: financialState.status, lineSnapshotsChanged, quickBooksNeedsResync: hasQuickBooksLink } as any,
   } as any);
+  if (getInvoiceAccountingApprovalState(invoice as any) === 'approved') {
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId ?? null, actionType: 'invoice_accounting_approval_revoked', entityType: 'invoice', entityId: invoice.id, entityName: String(invoice.displayNumber || invoice.invoiceNumber), description: 'Accounting approval was revoked because the Order-backed invoice commercial snapshot changed.', oldValues: { approvedAccountingVersion: invoice.accountingApprovedVersion } as any, newValues: { currentAccountingVersion: nextInvoiceVersion, trigger: 'order_backed_invoice_synchronization' } as any } as any);
+  }
   return { status: "updated" as const, invoice: updated };
 }
 
@@ -1197,11 +1207,17 @@ export async function updateInvoiceSafeDraftCanonical(input: {
     if (input.patch.customDueDate !== undefined) {
       updates.dueDate = input.patch.customDueDate;
       updates.accountingUpdatedAt = new Date();
+      updates.invoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;
+      Object.assign(updates, accountingApprovalRevocationPatch(invoice as any));
+      if (String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || '').trim()) updates.qbSyncStatus = 'needs_resync';
     }
     if (input.patch.notesPublic !== undefined) updates.notesPublic = input.patch.notesPublic;
     if (Object.keys(updates).length === 1) throw Object.assign(new Error("Provide at least one safe draft field to update."), { code: "INVOICE_PATCH_EMPTY" });
     const [updated] = await tx.update(invoices).set(updates as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
     await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_draft_updated", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Updated safe draft invoice details through the canonical Invoice operation.", oldValues: { terms: invoice.terms, dueDate: invoice.dueDate, notesPublic: invoice.notesPublic } as any, newValues: { terms: updated.terms, dueDate: updated.dueDate, notesPublic: updated.notesPublic } as any } as any);
+    if (input.patch.customDueDate !== undefined && getInvoiceAccountingApprovalState(invoice as any) === 'approved') {
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: 'invoice_accounting_approval_revoked', entityType: 'invoice', entityId: invoice.id, entityName: String(invoice.displayNumber || invoice.invoiceNumber), description: 'Accounting approval was revoked because the QuickBooks due date changed.', oldValues: { approvedAccountingVersion: invoice.accountingApprovedVersion } as any, newValues: { currentAccountingVersion: Number((invoice as any).invoiceVersion || 1) + 1, trigger: 'invoice_due_date_updated' } as any } as any);
+    }
     return { previous: invoice, updated };
   });
 }

@@ -56,6 +56,7 @@ export interface InvoiceListResponse {
 }
 
 export type InvoiceListColumnFilterQuery = {
+  accountingApproval?: 'approved' | 'not_approved' | 'needs_reapproval';
   customer?: string;
   contact?: string;
   jobName?: string;
@@ -153,6 +154,7 @@ export function useInvoicesPage(filters: {
       if (filters?.pageSize) params.append('pageSize', String(filters.pageSize));
       const columnKeys: Array<keyof InvoiceListColumnFilterQuery> = [
         'customer', 'contact', 'jobName', 'purchaseOrderNumber', 'columnOrderNumber', 'invoiceNumber',
+        'accountingApproval',
         'issueDateFrom', 'issueDateTo', 'dueDateFrom', 'dueDateTo', 'lastSent',
         'totalMin', 'totalMax', 'paidMin', 'paidMax', 'balanceMin', 'balanceMax',
       ];
@@ -459,6 +461,33 @@ export function useQueueInvoiceQbSync() {
       queryClient.invalidateQueries({ queryKey: ['invoices', id] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+    },
+  });
+}
+
+export function useApproveInvoicesForAccounting() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (invoiceIds: string[]) => {
+      const endpoint = invoiceIds.length === 1
+        ? `/api/invoices/${encodeURIComponent(invoiceIds[0])}/approve-for-accounting`
+        : '/api/invoices/accounting-approval/bulk';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: invoiceIds.length === 1 ? undefined : JSON.stringify({ invoiceIds }),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || 'Failed to approve invoice for accounting');
+      }
+      return res.json();
+    },
+    onSuccess: (_, invoiceIds) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      invoiceIds.forEach((id) => queryClient.invalidateQueries({ queryKey: ['invoices', id] }));
+      queryClient.invalidateQueries({ queryKey: ['quickbooksSyncQueue'] });
     },
   });
 }

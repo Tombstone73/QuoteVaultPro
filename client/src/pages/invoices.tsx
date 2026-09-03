@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Filter, Plus, FileText, Mail, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -102,6 +102,7 @@ export default function InvoicesListPage() {
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const batchSendInvoices = useBatchSendInvoices();
+  const approveInvoices = useApproveInvoicesForAccounting();
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -125,9 +126,14 @@ export default function InvoicesListPage() {
   const totalCount = pagination?.totalCount ?? 0;
   const totalPages = pagination?.totalPages ?? 1;
   const currentPage = pagination?.page ?? page;
-  const sendableInvoices = filteredInvoices.filter((invoice) => !["paid", "void"].includes(String(invoice.status || "").toLowerCase()));
+  const accountingApprovableInvoices = filteredInvoices.filter((invoice) => {
+    const status = String(invoice.status || "").toLowerCase();
+    return !["void", "canceled", "cancelled"].includes(status)
+      && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"
+      && !(invoice as any).isHistorical;
+  });
   const selectedCount = selectedInvoiceIds.size;
-  const allVisibleSendableSelected = sendableInvoices.length > 0 && sendableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
+  const allVisibleApprovableSelected = accountingApprovableInvoices.length > 0 && accountingApprovableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
   const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>).filter(([, value]) => Boolean(value));
 
   const setColumnFilter = (key: keyof InvoiceListColumnFilterQuery, value: string) => {
@@ -194,7 +200,7 @@ export default function InvoicesListPage() {
   const toggleAllVisible = (checked: boolean) => {
     setSelectedInvoiceIds((current) => {
       const next = new Set(current);
-      sendableInvoices.forEach((invoice) => {
+      accountingApprovableInvoices.forEach((invoice) => {
         if (checked) next.add(invoice.id);
         else next.delete(invoice.id);
       });
@@ -226,6 +232,26 @@ export default function InvoicesListPage() {
       setSelectedInvoiceIds(new Set());
     } catch (error: any) {
       toast({ title: "Batch queue failed", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const approvalState = (invoice: any) => {
+    const currentVersion = Number(invoice.invoiceVersion || 1);
+    if (invoice.accountingApprovedAt && !invoice.accountingApprovalRevokedAt && Number(invoice.accountingApprovedVersion || 0) === currentVersion) return 'Approved for Accounting';
+    if (invoice.accountingApprovalRevokedAt || (invoice.accountingApprovedAt && Number(invoice.accountingApprovedVersion || 0) !== currentVersion)) return 'Needs Reapproval';
+    return 'Not Approved';
+  };
+
+  const handleApproveSelected = async () => {
+    const ids = Array.from(selectedInvoiceIds);
+    if (!ids.length) return;
+    try {
+      const response = await approveInvoices.mutateAsync(ids);
+      const result = response.data || response;
+      toast({ title: 'Accounting approval updated', description: `${result.approved || 0} approved${result.skipped ? `, ${result.skipped} skipped` : ''}.` });
+      setSelectedInvoiceIds(new Set());
+    } catch (error: any) {
+      toast({ title: 'Accounting approval failed', description: error.message, variant: 'destructive' });
     }
   };
 
@@ -263,6 +289,9 @@ export default function InvoicesListPage() {
               <Button variant="outline" onClick={handleBatchSend} disabled={selectedCount === 0 || batchSendInvoices.isPending}>
                 <Mail className="mr-2 h-4 w-4" />
                 {batchSendInvoices.isPending ? "Preparing..." : `Send Selected${selectedCount ? ` (${selectedCount})` : ""}`}
+              </Button>
+              <Button variant="outline" onClick={handleApproveSelected} disabled={selectedCount === 0 || approveInvoices.isPending}>
+                {approveInvoices.isPending ? 'Approving…' : `Approve Selected${selectedCount ? ` (${selectedCount})` : ''}`}
               </Button>
               <Button asChild>
                 <Link to={ROUTES.orders.list}>
@@ -374,6 +403,10 @@ export default function InvoicesListPage() {
               Totals
             </Button>
             <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
+              <Select value={columnFilters.accountingApproval || "all"} onValueChange={(value) => setColumnFilter("accountingApproval", value === "all" ? "" : value)}>
+                <SelectTrigger className="w-[190px]" aria-label="Accounting approval filter"><SelectValue placeholder="Accounting approval" /></SelectTrigger>
+                <SelectContent><SelectItem value="all">All accounting approvals</SelectItem><SelectItem value="approved">Approved for Accounting</SelectItem><SelectItem value="not_approved">Not Approved</SelectItem><SelectItem value="needs_reapproval">Needs Reapproval</SelectItem></SelectContent>
+              </Select>
               {renderPaginationControls("top")}
             </div>
           </div>
@@ -395,9 +428,9 @@ export default function InvoicesListPage() {
               <TitanTableRow>
                 <TitanTableHead className="w-[44px]">
                   <Checkbox
-                    checked={allVisibleSendableSelected}
+                    checked={allVisibleApprovableSelected}
                     onCheckedChange={(checked) => toggleAllVisible(checked === true)}
-                    aria-label="Select all visible sendable invoices"
+                    aria-label="Select all visible accounting-approvable invoices"
                   />
                 </TitanTableHead>
                 {renderSortableHead("customer", "Customer", "min-w-[180px] max-w-[220px]")}
@@ -409,6 +442,7 @@ export default function InvoicesListPage() {
                 {renderSortableHead("issueDate", "Issue Date", "min-w-[120px]")}
                 {renderSortableHead("dueDate", "Due Date", "min-w-[120px]")}
                 {renderSortableHead("status", "Status", "min-w-[130px]")}
+                <TitanTableHead className="min-w-[160px]">Accounting Approval</TitanTableHead>
                 {renderSortableHead("lastSentAt", "Last Sent", "min-w-[140px]")}
                 {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
                 <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
@@ -417,11 +451,11 @@ export default function InvoicesListPage() {
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={15} message="Loading invoices..." />}
+              {isLoading && <TitanTableLoading colSpan={16} message="Loading invoices..." />}
               
               {!isLoading && filteredInvoices.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={15}
+                  colSpan={16}
                   icon={<FileText className="w-12 h-12" />}
                   message="No invoices found"
                   action={
@@ -446,7 +480,7 @@ export default function InvoicesListPage() {
                   <TitanTableCell onClick={(e) => e.stopPropagation()}>
                     <Checkbox
                       checked={selectedInvoiceIds.has(invoice.id)}
-                      disabled={["paid", "void"].includes(String(invoice.status || "").toLowerCase())}
+                      disabled={["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()) || String((invoice as any).importSource || "").toLowerCase() === "quickbooks" || Boolean((invoice as any).isHistorical)}
                       onCheckedChange={(checked) => toggleSelected(invoice.id, checked === true)}
                       aria-label={`Select invoice ${invoice.invoiceNumber}`}
                     />
@@ -499,6 +533,11 @@ export default function InvoicesListPage() {
                   <TitanTableCell>
                     <StatusPill variant={getStatusVariant(invoice.status)}>
                       {invoice.displayStatus || statusLabels[invoice.status] || invoice.status}
+                    </StatusPill>
+                  </TitanTableCell>
+                  <TitanTableCell onClick={(event) => event.stopPropagation()}>
+                    <StatusPill variant={approvalState(invoice) === 'Approved for Accounting' ? 'info' : approvalState(invoice) === 'Needs Reapproval' ? 'warning' : 'muted'}>
+                      {approvalState(invoice)}
                     </StatusPill>
                   </TitanTableCell>
                   <TitanTableCell>

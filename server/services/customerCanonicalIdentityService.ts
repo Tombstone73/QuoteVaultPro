@@ -329,7 +329,19 @@ export async function mergeDuplicateCustomers(input: {
     counts.ordersMoved = Number((await tx.update(orders).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(orders.organizationId, input.organizationId), eq(orders.customerId, duplicate.id))).returning({ id: orders.id })).length);
     // Customer identity is serialized as QuickBooks CustomerRef, so this is a
     // commercial/accounting mutation rather than generic merge bookkeeping.
-    counts.invoicesMoved = Number((await tx.update(invoices).set({ customerId: survivor.id, accountingUpdatedAt: new Date(), updatedAt: new Date() }).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.customerId, duplicate.id))).returning({ id: invoices.id })).length);
+    counts.invoicesMoved = Number((await tx.update(invoices).set({
+      customerId: survivor.id,
+      accountingUpdatedAt: new Date(),
+      updatedAt: new Date(),
+      // Customer identity is emitted as QuickBooks CustomerRef.  Moving an
+      // invoice to a survivor therefore changes its accounting payload and
+      // requires an explicit re-approval before any future transmission.
+      invoiceVersion: sql`${invoices.invoiceVersion} + 1`,
+      accountingApprovedAt: null,
+      accountingApprovedByUserId: null,
+      accountingApprovalRevokedAt: sql`case when ${invoices.accountingApprovedAt} is not null then now() else ${invoices.accountingApprovalRevokedAt} end`,
+      qbSyncStatus: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') <> '' then 'needs_resync' else ${invoices.qbSyncStatus} end`,
+    }).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.customerId, duplicate.id))).returning({ id: invoices.id })).length);
     counts.portalAccessMoved = Number((await tx.update(customerPortalAccess).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(customerPortalAccess.organizationId, input.organizationId), eq(customerPortalAccess.customerId, duplicate.id))).returning({ id: customerPortalAccess.id })).length);
     counts.portalBatchItemsMoved = Number((await tx.update(customerPortalOnboardingBatchItems).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(customerPortalOnboardingBatchItems.organizationId, input.organizationId), eq(customerPortalOnboardingBatchItems.customerId, duplicate.id))).returning({ id: customerPortalOnboardingBatchItems.id })).length);
     counts.productionFolderRefsMoved = Number((await tx.update(customerProductionFolderReferences).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(customerProductionFolderReferences.organizationId, input.organizationId), eq(customerProductionFolderReferences.customerId, duplicate.id))).returning({ id: customerProductionFolderReferences.id })).length);

@@ -30,6 +30,8 @@ import { resolveInvoiceEmailPortalDestination } from "../services/customerPortal
 import { hydrateInvoicePdfLineItemsWithArtwork } from "../services/invoicePdfArtwork";
 import { issueGuestInvoicePaymentToken } from "../services/guestInvoicePayment.service";
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
+import { approveInvoicesForAccounting } from "../services/invoiceAccountingApproval.service";
+import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
@@ -201,11 +203,16 @@ function invoiceListQueryCents(value: unknown): number | undefined {
 }
 
 function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListColumnFilters {
+  const accountingApproval = invoiceListQueryText(query.accountingApproval);
+  if (accountingApproval && !['approved', 'not_approved', 'needs_reapproval'].includes(accountingApproval)) {
+    throw Object.assign(new Error('Invalid accounting approval filter'), { statusCode: 400 });
+  }
   const lastSent = invoiceListQueryText(query.lastSent);
   if (lastSent && lastSent !== 'sent' && lastSent !== 'not_sent') {
     throw Object.assign(new Error('Invalid Last Sent filter'), { statusCode: 400 });
   }
   return {
+    accountingApproval: accountingApproval as InvoiceListColumnFilters['accountingApproval'],
     customer: invoiceListQueryText(query.customer),
     contact: invoiceListQueryText(query.contact),
     jobName: invoiceListQueryText(query.jobName),
@@ -2238,6 +2245,45 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
+  // Accounting approval is a hard gate for QuickBooks export. It is separate
+  // from invoice payment and customer-portal availability.
+  // ------------------------------------------------------------
+  const accountingApprovalMiddlewares = requireOrgOwnerAdmin
+    ? [isAuthenticated, tenantContext, requireOrgOwnerAdmin]
+    : [isAuthenticated, tenantContext];
+
+  app.post('/api/invoices/:id/approve-for-accounting', ...accountingApprovalMiddlewares, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(401).json({ error: 'Missing organization or user context' });
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
+      const result = await approveInvoicesForAccounting({ organizationId, invoiceIds: [String(req.params.id)], actorUserId: userId, actorUserName: userName });
+      const row = result.results[0];
+      if (row?.outcome === 'failed') return res.status(404).json({ error: row.reason });
+      const refreshed = await getInvoiceWithRelations(String(req.params.id));
+      return res.json({ success: true, data: refreshed?.invoice ?? null, result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to approve invoice for accounting' });
+    }
+  });
+
+  app.post('/api/invoices/accounting-approval/bulk', ...accountingApprovalMiddlewares, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      const invoiceIds = Array.isArray(req.body?.invoiceIds) ? req.body.invoiceIds.map(String).filter(Boolean).slice(0, 100) : [];
+      if (!organizationId || !userId) return res.status(401).json({ error: 'Missing organization or user context' });
+      if (!invoiceIds.length) return res.status(400).json({ error: 'Select at least one invoice to approve.' });
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
+      const result = await approveInvoicesForAccounting({ organizationId, invoiceIds, actorUserId: userId, actorUserName: userName });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to approve selected invoices for accounting' });
+    }
+  });
+
+  // ------------------------------------------------------------
   // Retry QB sync (fail-soft)
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/retry-qb-sync", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -2252,6 +2298,7 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+      if (!isInvoiceApprovedForAccounting(inv)) return res.status(409).json({ error: 'Approve invoice for accounting before syncing.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
 
       await db.update(invoices).set({ qbSyncStatus: "pending", updatedAt: new Date() } as any).where(eq(invoices.id, inv.id));
 
@@ -2320,6 +2367,7 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+      if (!isInvoiceApprovedForAccounting(inv)) return res.status(409).json({ success: false, error: 'Approve invoice for accounting before syncing.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
       const status = String(inv.status || "").toLowerCase();
       if (status === "void") {
         return res.status(400).json({ success: false, error: "Void invoices cannot be queued for QuickBooks" });
@@ -2364,6 +2412,7 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+      if (!isInvoiceApprovedForAccounting(inv)) return res.status(409).json({ success: false, error: 'Approve invoice for accounting before syncing.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
 
       await db.update(invoices).set({ qbSyncStatus: "pending", updatedAt: new Date() } as any).where(eq(invoices.id, inv.id));
 
@@ -2457,6 +2506,10 @@ export async function registerMvpInvoicingRoutes(
       const invoiceId = p?.invoiceId ? String(p.invoiceId).trim() : '';
       if (!invoiceId) {
         return res.status(400).json({ success: false, error: 'Payment is missing invoiceId', code: 'PAYMENT_MISSING_INVOICE' });
+      }
+      const [paymentInvoice] = await db.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId))).limit(1);
+      if (!paymentInvoice || !isInvoiceApprovedForAccounting(paymentInvoice as any)) {
+        return res.status(409).json({ success: false, error: 'Approve the invoice for accounting before syncing its payment.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
       }
 
       const paymentStatus = String(p.status || '').toLowerCase();
@@ -2739,8 +2792,9 @@ export async function registerMvpInvoicingRoutes(
       if (financialOrCustomerVisibleChanged) {
         updates.invoiceVersion = nextInvoiceVersion;
         updates.accountingUpdatedAt = new Date();
+        Object.assign(updates, accountingApprovalRevocationPatch(existing));
 
-        if (String(existing.qbSyncStatus || "") === "synced") {
+        if (String(existing.qbInvoiceId || existing.externalAccountingId || '').trim()) {
           // Financial/customer-visible changes invalidate previous accounting sync.
           financialUpdates.qbSyncStatus = "needs_resync";
         }
@@ -2782,6 +2836,9 @@ export async function registerMvpInvoicingRoutes(
       }
 
       await db.update(invoices).set({ ...updates, ...financialUpdates, updatedAt: new Date() } as any).where(eq(invoices.id, id));
+      if (financialOrCustomerVisibleChanged && getInvoiceAccountingApprovalState(existing) === 'approved') {
+        await db.insert(auditLogs).values({ organizationId, userId: userId || null, userName, actionType: 'invoice_accounting_approval_revoked', entityType: 'invoice', entityId: id, entityName: String(existing.displayNumber || existing.invoiceNumber), description: 'Accounting approval was revoked because an accounting-relevant invoice field changed.', oldValues: { approvedAccountingVersion: existing.accountingApprovedVersion } as any, newValues: { currentAccountingVersion: nextInvoiceVersion, trigger: 'invoice_patch' } as any } as any);
+      }
 
       const refreshed = await getInvoiceWithRelations(id);
       res.json({ success: true, data: refreshed?.invoice ?? null });

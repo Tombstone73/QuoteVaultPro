@@ -1331,6 +1331,13 @@
       "when": 1788048000041,
       "tag": "0194_quickbooks_payment_references",
       "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1788048000042,
+      "tag": "0195_invoice_accounting_approval",
+      "breakpoints": true
     }
   ]
 }

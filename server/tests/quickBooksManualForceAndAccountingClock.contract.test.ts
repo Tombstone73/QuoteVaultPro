@@ -45,5 +45,6 @@ test('real Order-backed commercial edits restart the accounting stability window
 
   expect(invoicesService).toContain('accountingUpdatedAt: new Date()');
   expect(invoiceRoute).toContain('updates.accountingUpdatedAt = new Date();');
-  expect(customerIdentity).toContain('customerId: survivor.id, accountingUpdatedAt: new Date()');
+  expect(customerIdentity).toContain('customerId: survivor.id');
+  expect(customerIdentity).toContain('accountingUpdatedAt: new Date()');
 });

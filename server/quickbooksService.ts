@@ -7,6 +7,7 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
+import { isInvoiceApprovedForAccounting } from './lib/invoiceAccountingApproval';
 import {
   assertQuickBooksDocumentNumber,
   formatQuickBooksPaymentReference,
@@ -1282,6 +1283,12 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found');
+  if (!isInvoiceApprovedForAccounting(invoice as any)) {
+    const error: any = new Error('Approve invoice for accounting before syncing.');
+    error.code = 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED';
+    error.statusCode = 409;
+    throw error;
+  }
 
   const status = String((invoice as any).status || '').toLowerCase();
   if (status === 'void') throw new Error('Cannot sync a void invoice');
@@ -1377,6 +1384,12 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, (payment as any).invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found for payment');
+  if (!isInvoiceApprovedForAccounting(invoice as any)) {
+    const error: any = new Error('Approve the invoice for accounting before syncing its payment.');
+    error.code = 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED';
+    error.statusCode = 409;
+    throw error;
+  }
 
   const invoiceStatus = String((invoice as any).status || '').toLowerCase();
   if (invoiceStatus === 'void') throw new Error('Cannot sync payments for void invoices');

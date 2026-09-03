@@ -28,7 +28,7 @@ import {
 import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder, useInvoiceEmailRecipients } from "@/hooks/useInvoices";
 import { orderDetailQueryKey, useOrder } from "@/hooks/useOrders";
 import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
@@ -198,6 +198,7 @@ export default function InvoiceDetailPage() {
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
   const queueQbSync = useQueueInvoiceQbSync();
+  const approveForAccounting = useApproveInvoicesForAccounting();
   const sendInvoice = useSendInvoice();
   const markSent = useMarkInvoiceSent();
   const refreshStatus = useRefreshInvoiceStatus();
@@ -1003,6 +1004,13 @@ export default function InvoiceDetailPage() {
 
   const customerHasLatest = emailStatus === 'sent_current';
   const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
+  const accountingApprovalState = (() => {
+    const approvedVersion = Number((invoice as any)?.accountingApprovedVersion || 0);
+    if ((invoice as any)?.accountingApprovedAt && !(invoice as any)?.accountingApprovalRevokedAt && approvedVersion === invoiceVersion) return 'approved';
+    if ((invoice as any)?.accountingApprovalRevokedAt || ((invoice as any)?.accountingApprovedAt && approvedVersion !== invoiceVersion)) return 'needs_reapproval';
+    return 'not_approved';
+  })();
+  const accountingApprovalLabel = accountingApprovalState === 'approved' ? 'Approved for Accounting' : accountingApprovalState === 'needs_reapproval' ? 'Needs Reapproval' : 'Approval Required';
   const qbSyncLabel = qbFailed
     ? 'Failed'
     : (isImportedFromQuickBooks
@@ -2271,6 +2279,15 @@ export default function InvoiceDetailPage() {
             label="Accounting Status"
             value={<Badge variant="secondary">{isImportedFromQuickBooks ? `QuickBooks ${accountingModeLabel}` : qbSyncLabel}</Badge>}
           />
+          {!isImportedFromQuickBooks ? <StatusTile
+            label="Accounting Approval"
+            value={<Badge variant={accountingApprovalState === 'approved' ? 'default' : accountingApprovalState === 'needs_reapproval' ? 'destructive' : 'secondary'}>{accountingApprovalLabel}</Badge>}
+            right={isAdminOrOwner && accountingApprovalState !== 'approved' ? (
+              <Button size="sm" variant="outline" className="h-7 px-3" disabled={approveForAccounting.isPending} onClick={() => invoiceId && approveForAccounting.mutate([invoiceId], { onSuccess: () => toast({ title: 'Approved for Accounting' }), onError: (error: any) => toast({ title: 'Accounting approval failed', description: error.message, variant: 'destructive' }) })}>
+                {approveForAccounting.isPending ? 'Approving…' : 'Approve'}
+              </Button>
+            ) : null}
+          /> : null}
           <StatusTile
             label="QB Sync"
             value={
