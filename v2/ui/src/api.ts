@@ -1326,6 +1326,7 @@ const withSearch = (
   query: Readonly<{
     q?: string;
     lifecycle?: string;
+    archive?: "active" | "archived" | "all";
     dueFrom?: string;
     dueTo?: string;
     sort?: "updated_desc" | "updated_asc";
@@ -1336,6 +1337,7 @@ const withSearch = (
   const value = new URLSearchParams();
   if (query.q) value.set("q", query.q);
   if (query.lifecycle) value.set("lifecycle", query.lifecycle);
+  if (query.archive) value.set("archive", query.archive);
   if (query.dueFrom) value.set("dueFrom", query.dueFrom);
   if (query.dueTo) value.set("dueTo", query.dueTo);
   if (query.sort) value.set("sort", query.sort);
