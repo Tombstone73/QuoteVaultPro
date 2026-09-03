@@ -23,6 +23,7 @@ describe("Dashboard Order due-date contract", () => {
     const repository = read("server/storage/orders.repo.ts");
     const orderForm = read("client/src/components/order-form.tsx");
     const ordersList = read("client/src/pages/orders.tsx");
+    const customerOrders = read("client/src/components/customers/tables/CustomerOrdersTable.tsx");
     const details = read("client/src/components/dashboard/DashboardDetailsView.tsx");
 
     expect(repository).toContain("serializeOrderBusinessDate(value)");
@@ -31,6 +32,7 @@ describe("Dashboard Order due-date contract", () => {
     expect(ordersList).toContain('formatOrderDate(row.dueDate, "short")');
     expect(ordersList).toContain("const isDashboardDueDrilldown = dueFilter !== undefined");
     expect(ordersList).toContain("orderStatusPillIdsForQuery(isDashboardDueDrilldown ? null : statusPillSelection");
+    expect(customerOrders).toContain('formatOrderDate(o.dueDate, "short")');
     expect(details).toContain('formatOrderDate(o.dueDate, "short")');
   });
 });

@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { Eye, Download, Mail, Edit as EditIcon, Ticket } from "lucide-react";
+import { formatOrderDate } from "@/lib/orderDate";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "orderNumber", label: "Order #", visible: true, order: 0 },
@@ -104,7 +105,7 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
                     case "product": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{Array.isArray(o.lineItems) && o.lineItems[0]?.description || "-"}</td>;
                     case "quantity": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{Array.isArray(o.lineItems) ? o.lineItems.reduce((n: number, li: any) => n + (li.quantity || 0), 0) : 0}</td>;
                     case "amount": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>${Number(o.total || 0).toFixed(2)}</td>;
-                    case "dueDate": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{o.dueDate ? new Date(o.dueDate).toLocaleDateString() : "-"}</td>;
+                    case "dueDate": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{o.dueDate ? formatOrderDate(o.dueDate, "short") : "-"}</td>;
                     case "status": return (
                       <td className="px-3 py-2" key={c.id}>
                         <span style={statusPillStyle(o.status)}>
