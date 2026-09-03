@@ -6,6 +6,7 @@
  */
 
 import type { Order, InsertOrder } from '@shared/schema';
+import { isOrderCommerciallyEditable } from '@shared/orderCommercialEditability';
 
 export type OrderStatus = 'new' | 'in_production' | 'on_hold' | 'ready_for_shipment' | 'completed' | 'canceled';
 
@@ -269,9 +270,10 @@ export function areLineItemsEditable(order: Order): boolean {
 }
 
 /**
- * Check if pricing fields can be edited for an order.
- * Pricing is locked once production starts.
+ * Commercial pricing corrections are distinct from production/routing edits.
+ * A completed legacy Order can still need an authoritative price correction;
+ * voided and cancelled Orders remain protected.
  */
 export function isPricingEditable(order: Order): boolean {
-  return order.status === 'new';
+  return isOrderCommerciallyEditable(order);
 }

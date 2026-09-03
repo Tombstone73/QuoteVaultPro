@@ -2447,9 +2447,14 @@ export default function InvoiceDetailPage() {
                           From Order #{invoice.sourceOrderNumber ?? "—"}
                         </span>
                         {invoice.orderId ? (
-                          <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
-                            <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
-                          </Button>
+                          <>
+                            <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                              <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
+                            </Button>
+                            <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                              <Link to={`/orders/${invoice.orderId}/edit?focus=pricing`}>Edit Order Pricing</Link>
+                            </Button>
+                          </>
                         ) : null}
                       </>
                     ) : null}

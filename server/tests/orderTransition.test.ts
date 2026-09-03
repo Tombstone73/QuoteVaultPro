@@ -13,7 +13,7 @@ import {
   areLineItemsEditable,
   isPricingEditable,
   type TransitionContext 
-} from '../server/services/orderTransition';
+} from '../services/orderTransition';
 import type { Order } from '@shared/schema';
 
 // Mock order factory
@@ -331,7 +331,7 @@ describe('Order Transition Validation', () => {
 
     it('should return correct next statuses for in_production', () => {
       const allowed = getAllowedNextStatuses('in_production');
-      expect(allowed).toEqual(['ready_for_shipment', 'on_hold', 'canceled']);
+      expect(allowed).toEqual(['ready_for_shipment', 'completed', 'on_hold', 'canceled']);
     });
 
     it('should return empty array for terminal statuses', () => {
@@ -370,10 +370,11 @@ describe('Order Transition Validation', () => {
   });
 
   describe('isPricingEditable', () => {
-    it('should only allow pricing edits in new status', () => {
+    it('allows commercial corrections after operational progression but protects cancelled orders', () => {
       expect(isPricingEditable(createMockOrder({ status: 'new' }))).toBe(true);
-      expect(isPricingEditable(createMockOrder({ status: 'in_production' }))).toBe(false);
-      expect(isPricingEditable(createMockOrder({ status: 'completed' }))).toBe(false);
+      expect(isPricingEditable(createMockOrder({ status: 'in_production' }))).toBe(true);
+      expect(isPricingEditable(createMockOrder({ status: 'completed' }))).toBe(true);
+      expect(isPricingEditable(createMockOrder({ status: 'canceled' }))).toBe(false);
     });
   });
 });

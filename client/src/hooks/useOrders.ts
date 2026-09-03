@@ -932,6 +932,49 @@ export function useUpdateOrderLineItem(
   });
 }
 
+/**
+ * The completed-order commercial correction path deliberately accepts only a
+ * price override. It cannot carry the broad product/routing form payload used
+ * by the standard line-item editor.
+ */
+export function useUpdateOrderLineItemCommercialPricing(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: {
+        priceOverrideMode: string | null;
+        priceOverrideValueCents?: number | null;
+        priceOverrideValuePercent?: number | null;
+      };
+    }) => {
+      const response = await fetch(`/api/order-line-items/${id}/commercial-pricing`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to correct line item pricing");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOrderOperationalQueries(queryClient, orderId);
+      toast({ title: "Pricing corrected", description: "The Order and its live Invoice were recalculated." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Pricing correction failed", description: error.message, variant: "destructive" });
+    },
+  });
+}
+
 export function useCreateOrderLineItem(orderId: string) {
   const queryClient = useQueryClient();
   const { toast } = useToast();

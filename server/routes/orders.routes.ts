@@ -159,6 +159,7 @@ import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
+import { isLineItemCommerciallyEditable, isOrderCommerciallyEditable } from "@shared/orderCommercialEditability";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { assertValidParentLink } from "../services/lineItemParentLinking";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
@@ -7989,6 +7990,119 @@ export async function registerOrderRoutes(
             return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updated as any) });
         } catch (error: any) {
             return res.status(error?.statusCode ?? 400).json({ success: false, message: error?.message ?? "Failed to update line item parent" });
+        }
+    });
+
+    // Commercial corrections deliberately use a narrow endpoint. The normal
+    // line-item editor submits a broad product/routing payload, so reusing it
+    // after production completion would risk rewriting operational history.
+    app.patch("/api/order-line-items/:id/commercial-pricing", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const payload = z.object({
+                priceOverrideMode: z.enum([
+                    "override_total_after_margin",
+                    "override_unit_after_margin",
+                    "override_total_before_margin",
+                    "override_unit_before_margin",
+                    "apply_discount",
+                    "append_value",
+                ]).nullable(),
+                priceOverrideValueCents: z.number().int().min(0).nullable().optional(),
+                priceOverrideValuePercent: z.number().min(0).max(100).nullable().optional(),
+            }).strict().parse(req.body ?? {});
+            const lineItemId = String(req.params.id);
+            const userId = getUserId(req.user) ?? null;
+
+            const [ownership] = await db
+                .select({
+                    orderId: orderLineItems.orderId,
+                    orderState: orders.state,
+                    orderStatus: orders.status,
+                    orderCanceledAt: orders.canceledAt,
+                })
+                .from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!ownership) return res.status(404).json({ message: "Order line item not found" });
+            if (!isOrderCommerciallyEditable({ state: ownership.orderState, status: ownership.orderStatus, canceledAt: ownership.orderCanceledAt })) {
+                return res.status(409).json({ message: "Cannot correct pricing on a cancelled or voided order.", code: "ORDER_COMMERCIAL_EDIT_LOCKED" });
+            }
+
+            const oldLineItem = await storage.getOrderLineItemById(lineItemId);
+            if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });
+            if (!isLineItemCommerciallyEditable(oldLineItem)) {
+                return res.status(409).json({ message: "Cannot correct pricing on a cancelled or voided line item.", code: "LINE_ITEM_COMMERCIAL_EDIT_LOCKED" });
+            }
+
+            const baseCalculatedTotalCents = getPersistedBaseCalculatedTotalCents(oldLineItem as any);
+            const pricing = resolvePersistedLineItemPricing({
+                baseCalculatedTotalCents,
+                quantity: (oldLineItem as any).quantity,
+                body: {
+                    ...payload,
+                    // The resolver recognizes an explicit null as a clear. For
+                    // a new override the mode/value are authoritative; this
+                    // compatibility value is only a fallback for old records.
+                    overridePriceCents: payload.priceOverrideMode === null
+                        ? null
+                        : (oldLineItem as any).overridePriceCents,
+                },
+                specsJson: (oldLineItem as any).specsJson,
+                legacyOverridePriceCents: (oldLineItem as any).overridePriceCents,
+            });
+
+            const [lineItem] = await db
+                .update(orderLineItems)
+                .set({
+                    specsJson: mergePricingIntoSpecsJson({ specsJson: (oldLineItem as any).specsJson, pricing }),
+                    overridePriceCents: pricing.hasPriceOverride ? pricing.effectiveTotalCents : null,
+                    overrideAt: pricing.hasPriceOverride ? new Date() : null,
+                    overrideByUserId: pricing.hasPriceOverride ? userId : null,
+                    unitPrice: (pricing.effectiveUnitPriceCents / 100).toFixed(2),
+                    totalPrice: (pricing.effectiveTotalCents / 100).toFixed(2),
+                    updatedAt: new Date(),
+                })
+                .where(eq(orderLineItems.id, lineItemId))
+                .returning();
+            if (!lineItem) return res.status(404).json({ message: "Order line item not found" });
+
+            await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId, userId);
+            await recomputeOrderBillingStatus({ organizationId, orderId: String(lineItem.orderId) });
+
+            const oldTotalCents = Math.round(Number((oldLineItem as any).totalPrice ?? 0) * 100);
+            await storage.createOrderAuditLog({
+                orderId: lineItem.orderId,
+                orderLineItemId: lineItem.id,
+                userId,
+                userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+                actionType: "line_item.commercial_pricing_corrected",
+                fromStatus: null,
+                toStatus: null,
+                note: "Commercial pricing correction applied without changing production routing.",
+                metadata: {
+                    structuredEvent: {
+                        eventType: "line_item.commercial_pricing_corrected",
+                        entityType: "order_line_item",
+                        entityId: lineItem.id,
+                        fieldKey: "totalPriceCents",
+                        fromValue: oldTotalCents,
+                        toValue: pricing.effectiveTotalCents,
+                        actorUserId: userId,
+                        createdAt: new Date().toISOString(),
+                        metadata: { orderId: lineItem.orderId, priceOverrideMode: pricing.priceOverrideMode },
+                    },
+                },
+            });
+
+            return res.json(enrichLineItemWithEffectivePricing(lineItem as any));
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            console.error("[OrderCommercialPricing] Failed", error);
+            return res.status(500).json({ message: "Failed to correct line item pricing" });
         }
     });
 

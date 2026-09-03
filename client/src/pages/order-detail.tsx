@@ -86,6 +86,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
 import { isCanceledOrder } from "@shared/operationalState";
+import { isOrderCommerciallyEditable } from "@shared/orderCommercialEditability";
 import { ROUTES } from "@/config/routes";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
@@ -761,6 +762,7 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  const canEditCommercialPricing = Boolean(order && isAdminOrOwner && isOrderCommerciallyEditable(order));
   const canShowCancelOrder = Boolean(order && !orderIsCanceled);
   const canCancelOrder = Boolean(canShowCancelOrder && isAdminOrOwner && cancellationEligibilityQuery.data?.canCancel);
   const cancelOrderUnavailableReason = canShowCancelOrder
@@ -2943,6 +2945,7 @@ export default function OrderDetail() {
                 orderId={orderId!}
                 customerId={order.customerId}
                 readOnly={!(isAdminOrOwner && canEditOrder)}
+                commercialPricingEditable={canEditCommercialPricing}
                 lineItems={order.lineItems as any}
                 showHistoricalCanceledLineItems={orderIsCanceled}
                 productionFocusLineItemIds={productionFocus.highlightedIds}

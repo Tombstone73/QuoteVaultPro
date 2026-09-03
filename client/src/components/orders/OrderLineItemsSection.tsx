@@ -53,7 +53,7 @@ import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOp
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { orderDetailQueryKey, useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
+import { orderDetailQueryKey, useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem, useUpdateOrderLineItemCommercialPricing } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
@@ -119,6 +119,7 @@ import {
   shouldApplyOrderLineItemPreviewResult,
   type OrderLineItemSavedSnapshot,
 } from "@/components/orders/orderLineItemEditState";
+import { isLineItemCommerciallyEditable } from "@shared/orderCommercialEditability";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -562,6 +563,8 @@ type OrderLineItemsSectionProps = {
   orderId: string;
   customerId?: string | null;
   readOnly: boolean;
+  /** Elevated commercial correction access; operational controls remain read-only. */
+  commercialPricingEditable?: boolean;
   lineItems: OrderLineItem[];
   /** Cancelled orders retain their sold line-item history for read-only review. */
   showHistoricalCanceledLineItems?: boolean;
@@ -579,6 +582,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   orderId,
   customerId,
   readOnly,
+  commercialPricingEditable = false,
   lineItems,
   showHistoricalCanceledLineItems = false,
   productionFocusLineItemIds = [],
@@ -802,6 +806,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const updateLineItem = useUpdateOrderLineItem(orderId);
   const updateLineItemSilent = useUpdateOrderLineItem(orderId, { toast: false });
+  const updateLineItemCommercialPricing = useUpdateOrderLineItemCommercialPricing(orderId);
   const createLineItem = useCreateOrderLineItem(orderId);
   const deleteLineItem = useDeleteOrderLineItem(orderId);
 
@@ -852,6 +857,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       return !lockedStates.has(status) && !lockedStates.has(workflowState);
     },
     [readOnly]
+  );
+
+  const canEditLineItemCommercialPricing = useCallback(
+    (item: OrderLineItem) => commercialPricingEditable && isLineItemCommerciallyEditable(item as any),
+    [commercialPricingEditable],
   );
 
   const buildComputedPbv2Env = (li: any): Record<string, unknown> => {
@@ -2544,6 +2554,32 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     void saveExpandedLineItem();
   };
 
+  const saveCommercialPricing = async (item: OrderLineItem, pricing: PendingLineItemPriceOverride) => {
+    const lineItemId = String(item.id);
+    setSavingItemId(lineItemId);
+    try {
+      await updateLineItemCommercialPricing.mutateAsync({
+        id: lineItemId,
+        data: {
+          priceOverrideMode: pricing.hasPriceOverride ? pricing.priceOverrideMode : null,
+          priceOverrideValueCents: pricing.hasPriceOverride ? pricing.priceOverrideValueCents : null,
+          priceOverrideValuePercent: pricing.hasPriceOverride ? pricing.priceOverrideValuePercent : null,
+        },
+      });
+      setPendingPriceOverrideById((prev) => {
+        if (!prev[lineItemId]) return prev;
+        const next = { ...prev };
+        delete next[lineItemId];
+        return next;
+      });
+      onDraftLineItemPricingChange?.(lineItemId, null);
+      resetPricingDirtyByUser(lineItemId);
+      if (onAfterLineItemsChange) await onAfterLineItemsChange();
+    } finally {
+      setSavingItemId(null);
+    }
+  };
+
   // Imperative API for the parent's Save Order orchestration. Recreated each
   // render so it always closes over the latest draft state / dirty flag.
   useImperativeHandle(ref, () => ({
@@ -2862,6 +2898,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
                   const statusValue = item.status || "new";
                   const readOnly = !canEditLineItemRecord(item);
+                  const commercialPricingOnly = readOnly && canEditLineItemCommercialPricing(item);
+                  const canEditPrice = !readOnly || commercialPricingOnly;
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
@@ -3272,7 +3310,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 editingPrice={isEditingPrice}
                                 priceEditText={priceEditText}
                                 onPriceClick={
-                                  readOnly
+                                  !canEditPrice
                                     ? undefined
                                     : () => {
                                         const lineItemId = String(item.id);
@@ -3281,7 +3319,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       }
                                 }
                                 onPriceChange={
-                                  readOnly
+                                  !canEditPrice
                                     ? undefined
                                     : (value) => {
                                         const lineItemId = String(item.id);
@@ -3289,7 +3327,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       }
                                 }
                                 onPriceBlur={
-                                  readOnly
+                                  !canEditPrice
                                     ? undefined
                                     : async () => {
                                         const lineItemId = String(item.id);
@@ -3313,7 +3351,25 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           valueCents: nextCents,
                                         });
 
-                                        if (nextPricing.effectiveTotalCents !== calculatedCents || mode !== "override_total_after_margin") {
+                                        const shouldClearOverride = nextPricing.effectiveTotalCents === calculatedCents && mode === "override_total_after_margin";
+                                        if (commercialPricingOnly) {
+                                          const commercialPricing: PendingLineItemPriceOverride = shouldClearOverride
+                                            ? {
+                                                ...nextPricing,
+                                                hasPriceOverride: false,
+                                                priceOverrideMode: null,
+                                                priceOverrideValueCents: null,
+                                                priceOverrideValuePercent: null,
+                                                effectiveTotalCents: calculatedCents,
+                                                effectiveUnitPriceCents: Math.round(calculatedCents / Math.max(1, qtyForOverride)),
+                                              }
+                                            : nextPricing;
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                          void saveCommercialPricing(item, commercialPricing);
+                                          return;
+                                        }
+
+                                        if (!shouldClearOverride) {
                                           setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: nextPricing }));
                                           setComputedTotal(nextPricing.effectiveTotalCents / 100);
                                           setComputedTotalQty(qtyForOverride);
@@ -3339,7 +3395,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       }
                                 }
                                 onPriceKeyDown={
-                                  readOnly
+                                  !canEditPrice
                                     ? undefined
                                     : (e) => {
                                         const lineItemId = String(item.id);
@@ -3355,7 +3411,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       }
                                 }
                                 onUndoOverride={
-                                  readOnly || currentOverrideCents === null
+                                  !canEditPrice || currentOverrideCents === null
                                     ? undefined
                                     : () => {
                                         const lineItemId = String(item.id);
@@ -3372,6 +3428,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           priceOverrideValuePercent: null,
                                           hasPriceOverride: false,
                                         };
+                                        if (commercialPricingOnly) {
+                                          void saveCommercialPricing(item, clearPricing);
+                                          return;
+                                        }
                                         setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: clearPricing }));
                                         setComputedTotal(clearPricing.effectiveTotalCents / 100);
                                         setComputedTotalQty(qtyForOverride);
@@ -3418,6 +3478,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                               return next;
                                             });
                                             setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
+                                            if (commercialPricingOnly) {
+                                              void saveCommercialPricing(item, clearPricing);
+                                            }
                                             return;
                                           }
 
@@ -3442,7 +3505,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (valueCents / 100).toFixed(2) }));
                                         }}
                                         className="h-8 w-36 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                                        disabled={readOnly}
+                                        disabled={!canEditPrice}
                                       >
                                         <option value="__none">No override</option>
                                         <option value="override_total_after_margin">Total override</option>
@@ -4050,6 +4113,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
                                 onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}
                                 readOnly={readOnly}
+                                commercialPricingEditable={commercialPricingOnly}
                               />
 
                               {!readOnly && !serviceFee ? (

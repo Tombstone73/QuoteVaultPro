@@ -153,6 +153,8 @@ export type LineItemCardProps = {
 
   // Mode
   readOnly?: boolean;
+  /** Allows only the price override control while operational fields stay read-only. */
+  commercialPricingEditable?: boolean;
 };
 
 function formatMoney(n: number): string {
@@ -304,6 +306,7 @@ export function LineItemCard({
   onDuplicate,
   onRemove,
   readOnly = false,
+  commercialPricingEditable = false,
 }: LineItemCardProps) {
   const nonProductionItem = fulfillmentOnly || serviceFee;
   const hasNote = Boolean(descriptionPreview) && showNoteLabel;
@@ -315,6 +318,7 @@ export function LineItemCard({
   const proofApprovalLocked = proofApprovalLockEnabled && proofRequiredByDefault;
   const displayedRequiresProofApproval = proofApprovalLocked ? true : requiresProofApproval === true;
   const proofApprovalDisabled = readOnly || proofApprovalLocked || !onRequiresProofApprovalChange;
+  const canEditPrice = !readOnly || commercialPricingEditable;
   const [secondaryDetailsOpen, setSecondaryDetailsOpen] = useState(false);
   const [quantityDraft, setQuantityDraft] = useState(String(quantity));
   const [quantityError, setQuantityError] = useState<string | null>(null);
@@ -882,12 +886,12 @@ export function LineItemCard({
                       type="button"
                       className={cn(
                         "h-8 w-32 rounded-md border border-input bg-background px-3 text-right font-mono text-sm font-semibold shadow-sm",
-                        !readOnly && onPriceClick
+                        canEditPrice && onPriceClick
                           ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           : "cursor-default"
                       )}
                       onClick={onPriceClick}
-                      disabled={readOnly || !onPriceClick}
+                      disabled={!canEditPrice || !onPriceClick}
                     >
                       {formatMoney(priceOverride != null ? priceOverride : price)}
                     </button>
@@ -897,7 +901,7 @@ export function LineItemCard({
                       <span className="text-xs bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded font-medium">
                         {priceOverrideLabel}
                       </span>
-                      {!readOnly && onUndoOverride && (
+                      {canEditPrice && onUndoOverride && (
                         <Button
                           type="button"
                           variant="ghost"
