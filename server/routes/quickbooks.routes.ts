@@ -33,7 +33,9 @@ import * as quickbooksService from "../quickbooksService";
 import * as syncWorker from "../workers/syncProcessor";
 import {
   getQuickBooksSyncStabilityWindowMs,
+  enqueueSelectedQuickBooksSyncForOrg,
   getQuickBooksSyncQueueCountsForOrg,
+  type QuickBooksSyncQueueView,
   runQuickBooksSyncWorkerForOrg,
 } from "../services/quickbooksSyncQueueWorker";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
@@ -121,10 +123,26 @@ export function registerQuickBooksRoutes(
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
       const page = Math.max(1, Number(req.query.page || 1));
       const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize || 25)));
-      const data = await syncWorker.listQuickBooksSyncQueueItemsForOrg({ organizationId, page, pageSize, search: String(req.query.search || '') });
+      const view = String(req.query.view || 'all') as QuickBooksSyncQueueView;
+      const data = await syncWorker.listQuickBooksSyncQueueItemsForOrg({ organizationId, page, pageSize, search: String(req.query.search || ''), view });
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || 'Failed to list QuickBooks sync queue items' });
+    }
+  });
+
+  app.post('/api/integrations/quickbooks/queue/enqueue-selected', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    const parsed = z.object({
+      items: z.array(z.object({ id: z.string().min(1), resourceType: z.enum(['invoice', 'payment']) })).min(1).max(100),
+    }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, error: 'Select between 1 and 100 local accounting records.' });
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+      const data = await enqueueSelectedQuickBooksSyncForOrg({ organizationId, items: parsed.data.items });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message || 'Failed to queue selected accounting records' });
     }
   });
 

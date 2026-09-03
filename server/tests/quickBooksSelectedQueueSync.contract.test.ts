@@ -28,7 +28,8 @@ test('historical QuickBooks imports cannot become outbound queue candidates', ()
 
   expect(importer).toContain("importSource: 'quickbooks'");
   expect(importer).toContain("qbSyncStatus: 'synced'");
-  expect(worker).toContain("inArray(invoices.qbSyncStatus, ['pending', 'failed'] as any)");
+  expect(worker).toContain("ne(invoices.importSource, 'quickbooks')");
+  expect(worker).toContain("QuickBooks-imported invoices are not exported back to QuickBooks.");
   expect(worker).toContain("Invoice is no longer pending sync.");
 });
 
@@ -39,7 +40,7 @@ test('an Order revision keeps local truth while requiring an explicit accounting
   expect(invoicesService).toContain('qbSyncStatus: "needs_resync"');
   expect(invoicesService).toContain('modifiedAfterBilling: true');
   expect(worker).toContain("inArray(invoices.qbSyncStatus, invoiceStatuses as any)");
-  expect(worker).not.toContain("needs_resync', 'pending'");
+  expect(worker).toContain("['not_synced', 'needs_resync', 'pending', 'failed', 'synced']");
 });
 
 test('queue list uses canonical ids, supports a single-row sync, and is reachable from the Push settings section', () => {
@@ -47,7 +48,8 @@ test('queue list uses canonical ids, supports a single-row sync, and is reachabl
   const settings = read('client/src/pages/settings/integrations.tsx');
   const app = read('client/src/App.tsx');
   expect(page).toContain('const keyOf');
-  expect(page).toContain('Select all eligible on this page');
+  expect(page).toContain('Select eligible on this page');
+  expect(page).toContain('Queue Selected (');
   expect(page).toContain('Sync Selected (');
   expect(page).toContain('>Sync now</Button>');
   expect(settings).toContain('Link as RouterLink } from "react-router-dom"');
@@ -57,4 +59,38 @@ test('queue list uses canonical ids, supports a single-row sync, and is reachabl
   expect(settings).toContain('Runs one bounded background queue batch.');
   expect(app).toContain('import QuickBooksSyncQueuePage from "@/pages/settings/quickbooks-sync-queue"');
   expect(app).toContain('<Route path="integrations/quickbooks-sync-queue" element={<QuickBooksSyncQueuePage />} />');
+});
+
+test('local discovery includes unsynced native invoices and keeps it independent of OAuth availability', () => {
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const invoicesService = read('server/invoicesService.ts');
+
+  expect(worker).toContain("['not_synced', 'needs_resync', 'pending', 'failed', 'synced']");
+  expect(worker).toContain("const queueState = invoiceQueueState(row.syncStatus)");
+  expect(worker).toContain("deferred org=${organizationId} not-connected; retained local queue work");
+  expect(invoicesService).toContain("qbSyncStatus: 'pending' as any");
+});
+
+test('enqueue selected is bounded, tenant scoped, idempotent, and makes no Intuit call', () => {
+  const routes = read('server/routes/quickbooks.routes.ts');
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+
+  expect(routes).toContain('/api/integrations/quickbooks/queue/enqueue-selected');
+  expect(routes).toContain('enqueueSelectedQuickBooksSyncForOrg');
+  expect(worker).toContain('Convert locally discoverable accounting work into the derived outbox');
+  expect(worker).toContain("qbSyncStatus: 'pending'");
+  expect(worker).toContain("syncStatus: 'pending'");
+  expect(worker).toContain('QuickBooks authorization requires reconnection. The local queue item was retained.');
+});
+
+test('console supports state views and server-side searchable bounded source queries', () => {
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const page = read('client/src/pages/settings/quickbooks-sync-queue.tsx');
+
+  expect(worker).toContain("type QuickBooksSyncQueueView = 'all' | 'unsynced' | 'queued' | 'failed' | 'synced'");
+  expect(worker).toContain('ilike(customers.companyName, searchPattern)');
+  expect(worker).toContain('.limit(fetchLimit)');
+  expect(page).toContain('Eligible / Unsynced');
+  expect(page).toContain('QuickBooks Sync Console');
+  expect(page).toContain('queue/enqueue-selected');
 });
