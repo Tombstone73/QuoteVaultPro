@@ -1901,6 +1901,7 @@ export type QuickBooksConnectionReadiness = Readonly<{
   state: "not_connected" | "connected_sandbox" | "connected_production" | "connected_unknown" | "authorization_required" | "reconnect_required" | "worker_not_ready" | "sync_ready" | "action_required";
   environment: "sandbox" | "production" | "unknown";
   connected: boolean;
+  companyAssociated: boolean;
   connectedCompanyName: string | null;
   actionRequired: string | null;
   refunds: Readonly<{ state: "ready" | "configuration_required"; account: QuickBooksRefundDisbursementAccount | null }>;
@@ -1911,12 +1912,13 @@ export async function getQuickBooksConnectionReadinessForOrganization(organizati
   const environment: QuickBooksConnectionReadiness["environment"] = configured === "sandbox" ? "sandbox" : configured === "production" ? "production" : "unknown";
   const workerReady = String(process.env.QUICKBOOKS_AUTOMATION_OWNER || "").trim().toLowerCase() === "queue";
   const noRefundConfig = { state: "configuration_required" as const, account: null };
-  if (!status.connected) return { state: status.authState === "needs_reauth" ? "reconnect_required" : "not_connected", environment, connected: false, connectedCompanyName: null, actionRequired: status.authState === "needs_reauth" ? "Reconnect QuickBooks to restore authorization." : "Connect QuickBooks to enable accounting synchronization.", refunds: noRefundConfig };
-  if (status.authState === "needs_reauth" || status.requiresUserAction) return { state: "authorization_required", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: status.healthMessage || "Reconnect QuickBooks to restore authorization.", refunds: noRefundConfig };
-  if (environment === "unknown") return { state: "connected_unknown", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks connection mode must be configured explicitly before provider writes are enabled.", refunds: noRefundConfig };
-  if (!workerReady) return { state: "worker_not_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks synchronization worker is not ready.", refunds: noRefundConfig };
+  const companyAssociated = Boolean(status.quickBooksCompanyId);
+  if (!status.connected) return { state: status.authState === "needs_reauth" ? "reconnect_required" : "not_connected", environment, connected: false, companyAssociated, connectedCompanyName: status.connectedCompanyName, actionRequired: status.authState === "needs_reauth" ? "Reconnect QuickBooks to restore authorization." : "Connect QuickBooks to enable accounting synchronization.", refunds: noRefundConfig };
+  if (status.authState === "needs_reauth" || status.requiresUserAction) return { state: "authorization_required", environment, connected: true, companyAssociated, connectedCompanyName: status.connectedCompanyName, actionRequired: status.healthMessage || "Reconnect QuickBooks to restore authorization.", refunds: noRefundConfig };
+  if (environment === "unknown") return { state: "connected_unknown", environment, connected: true, companyAssociated, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks connection mode must be configured explicitly before provider writes are enabled.", refunds: noRefundConfig };
+  if (!workerReady) return { state: "worker_not_ready", environment, connected: true, companyAssociated, connectedCompanyName: status.connectedCompanyName, actionRequired: "QuickBooks synchronization worker is not ready.", refunds: noRefundConfig };
   const refundConfiguration = await getQuickBooksRefundDisbursementConfiguration(organizationId);
-  return { state: "sync_ready", environment, connected: true, connectedCompanyName: status.connectedCompanyName, actionRequired: null, refunds: { state: refundConfiguration.account ? "ready" : "configuration_required", account: refundConfiguration.account } };
+  return { state: "sync_ready", environment, connected: true, companyAssociated, connectedCompanyName: status.connectedCompanyName, actionRequired: null, refunds: { state: refundConfiguration.account ? "ready" : "configuration_required", account: refundConfiguration.account } };
 }
 
 export async function fetchQBCustomersForMigrationSource(organizationId: string): Promise<{

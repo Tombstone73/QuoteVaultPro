@@ -23,4 +23,6 @@ assert.match(source, /No eligible invoices need synchronization/);
 assert.match(source, /Nothing needs action/);
 assert.match(source, /quickBooksCompanyConnectionCopy/);
 assert.match(source, /Dismiss QuickBooks authorization notice/);
+assert.match(source, /Company association retained · authorization required/);
+assert.match(source, /state\?\.companyAssociated && <button/);
 console.log("QuickBooks operations console presentation contracts passed.");

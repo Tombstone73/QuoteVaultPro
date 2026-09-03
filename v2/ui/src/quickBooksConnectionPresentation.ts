@@ -1,5 +1,6 @@
 export type QuickBooksConnectionPresentationState = Readonly<{
   connected: boolean;
+  companyAssociated: boolean;
   connectedCompanyName: string | null;
 }>;
 
@@ -9,7 +10,7 @@ export type QuickBooksConnectionPresentationState = Readonly<{
  * Keep those states distinct: missing display metadata is not a disconnection.
  */
 export const quickBooksCompanyConnectionCopy = (state: QuickBooksConnectionPresentationState | undefined): string => {
-  if (!state?.connected) return "No QuickBooks company connected.";
+  if (!state?.companyAssociated) return "No QuickBooks company connected.";
   if (state.connectedCompanyName) return `Connected to ${state.connectedCompanyName}.`;
   return "QuickBooks company connected · company name unavailable.";
 };
