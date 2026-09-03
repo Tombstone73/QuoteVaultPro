@@ -21,6 +21,15 @@ describe("CanonicalProductPublishOperations", () => {
     },
     pricingMatrix: { dimensions: ["finish"], rows: [{ id: "economy", match: { finish: "economy" }, variables: { base_price: basePrice } }] },
   });
+  const materialConflictTree = (override = "mat_b") => {
+    const tree = directMatrixTree() as any;
+    tree.nodes[0].choices[0] = {
+      ...tree.nodes[0].choices[0],
+      materialOverride: { materialId: override },
+      inventoryConsumption: [{ materialId: "mat_a", quantityBasis: "area_sqft", multiplier: 1 }],
+    };
+    return tree;
+  };
   it("binds exact versions and atomically requests publish plus activation", async () => {
     let current: any = target(); const calls: any[] = [];
     const service = new CanonicalProductPublishOperations({ get: async ({ organizationId }: any) => organizationId === "org_1" ? current : null, publish: async (input: any) => { calls.push(input); return { product: { ...current.product, isActive: true, pbv2ActiveTreeVersionId: "tree_1" }, tree: { ...current.tree, status: "ACTIVE" } }; } } as any, () => ({ treeJson: { schemaVersion: 2 }, findings: [], warnings: [], errors: [] }));
@@ -72,6 +81,32 @@ describe("CanonicalProductPublishOperations", () => {
       expect.objectContaining({ code: "PBV2_E_TREE_STATUS_INVALID" }),
     ]));
     expect(validation.treeJson.status).toBe("DRAFT");
+  });
+
+  it("keeps an unchanged legacy material conflict visible as a warning but rejects a newly changed conflict", () => {
+    const inherited = target() as any;
+    inherited.tree.treeJson = materialConflictTree();
+    inherited.activeTreeJson = { ...materialConflictTree(), status: "ACTIVE" };
+    inherited.materials = [
+      { id: "mat_a", name: "Legacy A", sku: null, weightOzPerBasis: null },
+      { id: "mat_b", name: "Legacy B", sku: null, weightOzPerBasis: null },
+      { id: "mat_c", name: "New C", sku: null, weightOzPerBasis: null },
+    ];
+
+    const preserved = validateCanonicalProductPublishTarget(inherited);
+    expect(preserved.errors).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT" }),
+    ]));
+    expect(preserved.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_W_LEGACY_CHOICE_MATERIAL_OVERRIDE_CONFLICT" }),
+    ]));
+
+    const changed = structuredClone(inherited);
+    changed.tree.treeJson = materialConflictTree("mat_c");
+    const blocked = validateCanonicalProductPublishTarget(changed);
+    expect(blocked.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT" }),
+    ]));
   });
 
   it("blocks publication until a Draft inheriting a legacy Product Formula owns a canonical Formula", () => {
