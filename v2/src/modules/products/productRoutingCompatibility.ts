@@ -5,7 +5,7 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 
-export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_NO_PRODUCT_TYPE" | "UNROUTABLE_PRODUCT_TYPE_NO_DEFAULT_ROUTE" | "UNROUTABLE_INVALID_ROUTE" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
+export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_NO_PRODUCT_TYPE" | "UNROUTABLE_PRODUCT_TYPE_NO_DEFAULT_ROUTE" | "UNROUTABLE_INVALID_ROUTE" | "UNROUTABLE_PRODUCTION_UNITS_MISSING" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
 export type RouteTemplateChoice = Readonly<{ routeTemplateId: string; name: string; steps: readonly ("proofing" | "prepress" | "production" | "fulfillment")[] }>;
 export type ProductTypeRoutingChoice = Readonly<{ productTypeId: string; name: string; updatedAt: string; defaultRoute?: Readonly<{ routeTemplateId: string; name: string }> }>;
 export type ProductRoutingCompatibility = Readonly<{

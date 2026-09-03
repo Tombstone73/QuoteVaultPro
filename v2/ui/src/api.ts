@@ -703,7 +703,7 @@ export type ProductCatalogPage = Readonly<{
   total: number;
   hasMore: boolean;
 }>;
-export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_NO_PRODUCT_TYPE" | "UNROUTABLE_PRODUCT_TYPE_NO_DEFAULT_ROUTE" | "UNROUTABLE_INVALID_ROUTE" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
+export type ProductRoutingReadiness = "ROUTABLE_VERSION_ROUTE" | "ROUTABLE_COMPATIBILITY_ROUTE" | "UNROUTABLE_NO_PRODUCT_TYPE" | "UNROUTABLE_PRODUCT_TYPE_NO_DEFAULT_ROUTE" | "UNROUTABLE_INVALID_ROUTE" | "UNROUTABLE_PRODUCTION_UNITS_MISSING" | "NON_PRODUCTION_ROUTING_NOT_REQUIRED";
 export type ProductRoutingCompatibility = Readonly<{
   productId:string; productName:string; productUpdatedAt:string; readiness:ProductRoutingReadiness;
   productTypeId?:string; productTypeName?:string; versionRouteName?:string; compatibilityRouteName?:string;
