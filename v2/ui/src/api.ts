@@ -2522,6 +2522,7 @@ export const artworkApi = {
       orderLineId: string;
       purpose: "customer_supplied" | "production" | "proof" | "reference";
       side?: "front" | "back";
+      supersedesArtworkAssignmentId?: string;
       file: File;
     }>,
   ) => {
@@ -2531,6 +2532,7 @@ export const artworkApi = {
     body.append("orderLineId", input.orderLineId);
     body.append("purpose", input.purpose);
     if (input.side) body.append("side", input.side);
+    if (input.supersedesArtworkAssignmentId) body.append("supersedesArtworkAssignmentId", input.supersedesArtworkAssignmentId);
     body.append("file", input.file);
     return request<
       Readonly<{
