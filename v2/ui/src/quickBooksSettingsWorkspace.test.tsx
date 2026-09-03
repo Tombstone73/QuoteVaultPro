@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const source = readFileSync(resolve("v2/ui/src/QuickBooksSettingsWorkspace.tsx"), "utf8");
+const styles = readFileSync(resolve("v2/ui/src/QuickBooksSettingsWorkspace.css"), "utf8");
 
 assert.match(source, /QuickBooks operational health/);
 assert.match(source, /Auto Sync is off\. Operators manually select eligible records/);
@@ -25,4 +26,5 @@ assert.match(source, /quickBooksCompanyConnectionCopy/);
 assert.match(source, /Dismiss QuickBooks authorization notice/);
 assert.match(source, /Company association retained · authorization required/);
 assert.match(source, /state\?\.companyAssociated && <button/);
+assert.match(styles, /\.v2-quickbooks-health span\{[^}]*white-space:normal/);
 console.log("QuickBooks operations console presentation contracts passed.");
