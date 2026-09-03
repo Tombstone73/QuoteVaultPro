@@ -42,6 +42,8 @@ type DraftPublicationState = Readonly<{
   lifecycle: "draft" | "active" | "historical";
   workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
   requiresProductionJob: boolean;
+  /** Production-required drafts need at least one frozen unit rule. */
+  hasProductionUnitRules: boolean;
   routing: ProductRoutingPolicy;
 }>;
 
@@ -149,8 +151,12 @@ export class ProductPublicationApplicationService {
       if (state.lifecycle !== "draft") throw new V2ApplicationError("CONFLICT", "Only the current Product Draft can be published.");
       if (state.productUpdatedAt !== input.expectedProductUpdatedAt || state.draftUpdatedAt !== input.expectedDraftUpdatedAt)
         throw new V2ApplicationError("STALE_STATE", "The Product Draft changed before publication. Refresh and try again.");
-      if (state.workflowIntent === "standard_production" && state.requiresProductionJob && state.routing.kind !== "route_required")
-        throw new V2ApplicationError("VALIDATION_ERROR", "Production routing is required before this Product can be published. Select a Production Route in the Routing section.");
+      if (state.workflowIntent === "standard_production" && state.requiresProductionJob) {
+        if (!state.hasProductionUnitRules)
+          throw new V2ApplicationError("VALIDATION_ERROR", "At least one Production unit is required before this Product can be published.");
+        if (state.routing.kind !== "route_required" || !state.routing.steps.some((step) => step.kind === "production"))
+          throw new V2ApplicationError("VALIDATION_ERROR", "Production routing is required before this Product can be published. Select a Production Route in the Routing section.");
+      }
 
       const canonicalPlan = await this.publisher.propose({
         organizationId: context.organizationId,

@@ -12,7 +12,7 @@ class MemoryRunner implements ProductPublicationTransactionRunner {
   async transaction<T>(action: (transaction: ProductPublicationTransaction) => Promise<T>): Promise<T> {
     const requests = this.requests;
     return action({
-      readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}),
+      readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}),
       reserve: async (input) => {
         const current = requests.get(input.businessRequestId);
         if (current && current.fingerprint !== input.payloadFingerprint) throw Object.assign(new Error("conflict"), { code: "IDEMPOTENCY_CONFLICT" });
@@ -64,8 +64,24 @@ describe("V2 Product publication adapter", () => {
   test("blocks physical standard-production Draft publication when neither an exact route nor compatibility fallback is valid", async () => {
     const runner = new MemoryRunner();
     const original = runner.transaction.bind(runner);
-    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, routing:{kind:"unconfigured" as const} }) }));
+    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"unconfigured" as const} }) }));
     const result = await new ProductPublicationApplicationService(runner, publisher([])).publish(context("routing-required"),command("routing-required"));
     expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
+  });
+  test("blocks production-required Draft publication when the selected route has no production step", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    const original = runner.transaction.bind(runner);
+    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Incomplete",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"proofing" as const},{position:1,kind:"fulfillment" as const}]}}) }));
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("production-step-required"),command("production-step-required"));
+    expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
+    expect(calls).toHaveLength(0);
+  });
+  test("blocks production-required Draft publication with no frozen production-unit rules", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    const original = runner.transaction.bind(runner);
+    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:false, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}) }));
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("production-units-required"),command("production-units-required"));
+    expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
+    expect(calls).toHaveLength(0);
   });
 });
