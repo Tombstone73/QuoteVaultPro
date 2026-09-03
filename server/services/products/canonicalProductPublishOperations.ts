@@ -140,10 +140,37 @@ const legacyFormulaCanonicalizationFindings = (target: CanonicalProductPublishTa
  * historical fact rather than become impossible to publish, while a new or
  * changed conflict remains a hard error.
  */
-const materialConflictKey = (finding: Finding): string | null => {
+const nodeForFinding = (tree: unknown, entityId: unknown): Record<string, unknown> | null => {
+  if (!entityId || !tree || typeof tree !== "object" || Array.isArray(tree)) return null;
+  const nodes = (tree as Record<string, unknown>).nodes;
+  if (Array.isArray(nodes)) return nodes.find((node) => record(node)?.id === entityId) as Record<string, unknown> | undefined ?? null;
+  return record(nodes)?.[String(entityId)] as Record<string, unknown> | undefined ?? null;
+};
+const materialConflictKey = (tree: unknown, finding: Finding): string | null => {
   if (finding.code !== "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT") return null;
   const value = finding as Finding & { entityId?: unknown; context?: unknown };
-  return stable({ entityId: value.entityId ?? null, context: value.context ?? null });
+  const node = nodeForFinding(tree, value.entityId);
+  const input = record(node?.input);
+  const context = record(value.context);
+  const overrideId = typeof context?.materialOverrideId === "string" ? context.materialOverrideId : null;
+  const conflictingIds = Array.isArray(context?.conflictingInventoryMaterialIds)
+    ? context.conflictingInventoryMaterialIds.filter((id): id is string => typeof id === "string").sort()
+    : [];
+  const choice = Array.isArray(node?.choices)
+    ? node.choices.map(record).find((candidate) => {
+      const materialId = record(candidate?.materialOverride)?.materialId;
+      const inventoryIds = Array.isArray(candidate?.inventoryConsumption)
+        ? candidate.inventoryConsumption.map(record).map((entry) => entry?.materialId).filter((id): id is string => typeof id === "string")
+        : [];
+      return materialId === overrideId && conflictingIds.every((id) => inventoryIds.includes(id));
+    })
+    : null;
+  return stable({
+    selectionKey: typeof input?.selectionKey === "string" ? input.selectionKey : node?.key ?? node?.id ?? null,
+    choiceValue: choice?.value ?? null,
+    materialOverrideId: overrideId,
+    conflictingInventoryMaterialIds: conflictingIds,
+  });
 };
 const inheritedLegacyMaterialConflictFindings = (
   draftFindings: readonly Finding[],
@@ -153,11 +180,11 @@ const inheritedLegacyMaterialConflictFindings = (
   const activeCandidate = { ...(activeTreeJson as Record<string, unknown>), status: "DRAFT" };
   const inherited = new Set(
     validateTreeForPublish(activeCandidate as any, DEFAULT_VALIDATE_OPTS).errors
-      .map(materialConflictKey)
+      .map((finding) => materialConflictKey(activeCandidate, finding))
       .filter((key): key is string => key !== null),
   );
   return draftFindings.map((finding) => {
-    const key = materialConflictKey(finding);
+    const key = materialConflictKey(activeTreeJson, finding);
     if (!key || !inherited.has(key)) return finding;
     return {
       ...finding,
