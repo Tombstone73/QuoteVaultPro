@@ -32,6 +32,21 @@ import { OrderStatusPillSelector } from "./OrderStatusPillSelector";
 
 const pills = [
   {
+    id: "pill-new",
+    organizationId: "org-1",
+    stateScope: "open",
+    key: "new",
+    name: "New",
+    color: "#2563eb",
+    customerVisible: false,
+    notificationTriggerEligible: true,
+    isDefault: true,
+    isActive: true,
+    sortOrder: 0,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-19T00:00:00.000Z",
+  },
+  {
     id: "pill-waiting",
     organizationId: "org-1",
     stateScope: "open",
@@ -80,6 +95,23 @@ describe("OrderStatusPillSelector controlled display", () => {
     mockUseAssignOrderStatusPill.mockReset();
     mockUseOrderStatusPills.mockReturnValue({ data: pills, isLoading: false });
     mockUseAssignOrderStatusPill.mockReturnValue({ mutate: mockMutate, isPending: false });
+  });
+
+  test("renders a persisted canonical New assignment on Order detail", async () => {
+    const { act } = require("react") as typeof import("react");
+    const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => root.render(
+      <OrderStatusPillSelector {...props({ currentPillId: "pill-new", currentPillValue: "New" })} />,
+    ));
+
+    expect(container.querySelector('[data-testid="status-select"]')?.getAttribute("data-selected-value")).toBe("pill-new");
+    expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe("New");
+    await act(async () => root.unmount());
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 
   test("shows a successful selection immediately without waiting for a parent remount", async () => {

@@ -21,6 +21,7 @@ import {
     quotes,
     quoteListNotes,
     orderListNotes,
+    orderStatusPills,
     quoteAttachments,
     quoteLineItems,
     productionJobs,
@@ -79,6 +80,11 @@ import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPr
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
+import {
+    buildInitialOrderStatusFields,
+    CANONICAL_NEW_ORDER_STATUS,
+    CANONICAL_NEW_ORDER_STATUS_PILL_KEY,
+} from "../services/orders/initialOrderStatus";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -1469,6 +1475,28 @@ export class OrdersRepository {
             const orderNumberParts = Number.isSafeInteger(inheritedJobNumber) && inheritedJobNumber > 0
                 ? { jobNumber: inheritedJobNumber, orderNumber: String(inheritedJobNumber), displayNumber: String(inheritedJobNumber), numberCore: inheritedJobNumber }
                 : await this.generateNextOrderNumber(organizationId, tx);
+            const requestedStatus = data.status?.trim() || CANONICAL_NEW_ORDER_STATUS;
+            const [canonicalNewPill] = requestedStatus === CANONICAL_NEW_ORDER_STATUS
+                ? await tx
+                    .select({
+                        id: orderStatusPills.id,
+                        key: orderStatusPills.key,
+                        name: orderStatusPills.name,
+                        isActive: orderStatusPills.isActive,
+                    })
+                    .from(orderStatusPills)
+                    .where(and(
+                        eq(orderStatusPills.organizationId, organizationId),
+                        eq(orderStatusPills.key, CANONICAL_NEW_ORDER_STATUS_PILL_KEY),
+                        eq(orderStatusPills.isActive, true),
+                    ))
+                    .limit(1)
+                : [];
+            const initialStatusFields = buildInitialOrderStatusFields({
+                requestedStatus,
+                canonicalNewPill,
+                actorUserId: data.createdByUserId,
+            });
             const orderInsert: typeof orders.$inferInsert = {
                 organizationId,
                 orderNumber: orderNumberParts.orderNumber,
@@ -1481,7 +1509,7 @@ export class OrdersRepository {
                 contactId: data.contactId || null,
                 poNumber: data.poNumber || null,
                 label: data.label || null,
-                status: data.status || 'new',
+                ...initialStatusFields,
                 priority: data.priority || 'normal',
                 dueDate: sanitizeDateField(data.dueDate),
                 promisedDate: sanitizeDateField(data.promisedDate),

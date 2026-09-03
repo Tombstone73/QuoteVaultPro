@@ -30,6 +30,21 @@ import { OrdersListStatusCell } from "./OrdersListStatusCell";
 
 const pills = [
   {
+    id: "pill-new",
+    organizationId: "org-1",
+    stateScope: "open",
+    key: "new",
+    name: "New",
+    color: "#2563eb",
+    customerVisible: false,
+    notificationTriggerEligible: true,
+    isDefault: true,
+    isActive: true,
+    sortOrder: 0,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-19T00:00:00.000Z",
+  },
+  {
     id: "pill-design-needed",
     organizationId: "org-1",
     stateScope: "open",
@@ -68,13 +83,13 @@ const row = {
   statusPillValue: "Design Needed",
 };
 
-async function renderCell() {
+async function renderCell(currentRow = row) {
   const { act } = require("react") as typeof import("react");
   const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement("div");
   const root = createRoot(container);
-  await act(async () => root.render(<OrdersListStatusCell row={row} />));
+  await act(async () => root.render(<OrdersListStatusCell row={currentRow} />));
   return { act, container, root };
 }
 
@@ -83,6 +98,20 @@ describe("Orders list status cell", () => {
     mockMutate.mockReset();
     mockUseOrderStatusPills.mockReturnValue({ data: pills, isLoading: false });
     mockUseAssignOrderStatusPill.mockReturnValue({ mutate: mockMutate, isPending: false });
+  });
+
+  test("renders a persisted canonical New assignment in the Orders list", async () => {
+    const { act, container, root } = await renderCell({
+      id: "order-new",
+      state: "open",
+      statusPillId: "pill-new",
+      statusPillValue: "New",
+    });
+
+    expect(container.querySelector('[data-testid="status-select"]')?.getAttribute("data-selected-value")).toBe("pill-new");
+    expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe("New");
+    await act(async () => root.unmount());
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 
   test("shows Picked Up immediately after successful assignment without remounting the row", async () => {

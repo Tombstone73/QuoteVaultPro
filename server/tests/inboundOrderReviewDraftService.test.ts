@@ -2931,6 +2931,7 @@ describe("InboundOrderService editable review draft", () => {
     });
 
     expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      status: "new",
       lineItems: [expect.objectContaining({
         quantity: 3,
         unitPrice: 20,

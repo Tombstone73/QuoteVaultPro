@@ -24,6 +24,7 @@ import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../serv
 import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { findAllActiveJobsForLineItem } from "../services/productionOwnership";
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
+import { seedDefaultPillsForOrg } from "../services/orderStatusPillService";
 
 const quotesRepo = new QuotesRepository(db);
 const ordersRepo = new OrdersRepository(db);
@@ -80,6 +81,8 @@ beforeAll(async () => {
     values (${userId}, ${`workflow-contract-${suffix}@example.com`}, ${"owner"}, ${true}, ${false})
     on conflict (id) do nothing
   `);
+
+  await seedDefaultPillsForOrg(organizationId);
 
   await db.execute(sql`
     insert into user_organizations (user_id, organization_id, role, is_default)
@@ -454,6 +457,9 @@ describe("quote routing persistence and conversion contract", () => {
     expect(afterCounts).toEqual(beforeCounts);
     expect(afterQuoteSequence).toBe(beforeQuoteSequence);
     expect(createdOrder.orderNumber).toBeTruthy();
+    expect(createdOrder.status).toBe("new");
+    expect(createdOrder.statusPillValue).toBe("New");
+    expect(createdOrder.statusPillId).toBeTruthy();
     expect(createdOrder.quoteId).toBeNull();
     expect(createdOrder.sourceQuoteNumber).toBeNull();
     expect(createdOrder.label).toBe(`Direct Order ${suffix}`);
@@ -507,6 +513,10 @@ describe("quote routing persistence and conversion contract", () => {
   test("quote to order conversion reconciles mixed routing into workflow state and ownership", async () => {
     const quote = await createMixedRoutingQuote(`Conversion ${suffix}`);
     const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+
+    expect(createdOrder.status).toBe("new");
+    expect(createdOrder.statusPillValue).toBe("New");
+    expect(createdOrder.statusPillId).toBeTruthy();
 
     const lineItemsByQuoteLineItemId = new Map(
       createdOrder.lineItems.map((lineItem: any) => [lineItem.quoteLineItemId, lineItem]),
