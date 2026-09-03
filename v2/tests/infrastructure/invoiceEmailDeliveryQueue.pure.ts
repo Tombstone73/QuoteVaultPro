@@ -33,6 +33,8 @@ assert.match(queue, /return "ambiguous"/u);
 assert.match(queue, /state IN \('queued','retry_wait'\)/u);
 assert.doesNotMatch(queue, /state IN \('queued','retry_wait','ambiguous'\)/u, "ambiguous delivery is never automatically claimed for a new send");
 assert.match(queue, /provider_attempted_at=now\(\)/u, "the provider boundary is durable before Gmail is called");
+assert.match(queue, /state=\$3::varchar/u, "the worker completion update explicitly types its state parameter before reuse in settlement cases");
+assert.match(queue, /CASE WHEN \$3::varchar='sent'/u, "completion state comparisons reuse the explicit database type rather than relying on PostgreSQL parameter inference");
 assert.match(queue, /lease_expires_at<=now\(\) AND provider_attempted_at IS NOT NULL/u, "expired provider attempts become ambiguous instead of being sent again");
 assert.match(queue, /timeout:invoiceEmailProviderTimeoutMs/u, "a hung provider call resolves to the existing ambiguous outcome");
 assert.match(queue, /provider_attempted_at=NULL/u, "an operator retry starts a new intentional provider attempt");
