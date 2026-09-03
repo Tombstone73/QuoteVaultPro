@@ -12,11 +12,6 @@ type TreeRecord = Pick<typeof pbv2TreeVersions.$inferSelect, "id" | "organizatio
 export type CanonicalProductPublishTarget = {
   product: ProductRecord;
   tree: TreeRecord;
-  /**
-   * The immutable active source is read only to distinguish an inherited
-   * compatibility finding from a newly authored invalid Draft change.
-   */
-  activeTreeJson?: unknown | null;
   materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>;
   pricingFormula?: { id: string; isActive: boolean; expression: string | null } | null;
   /** A Draft binding is promoted with the same immutable ProductVersion row. */
@@ -132,42 +127,6 @@ const legacyFormulaCanonicalizationFindings = (target: CanonicalProductPublishTa
   return [{ code: "PBV2_E_LEGACY_PRODUCT_FORMULA_NOT_CANONICALIZED", severity: "ERROR", message: "A Draft inheriting a legacy Product Formula must own a canonical ProductVersion Formula before publication.", path: "tree.meta.pricingFormula" } as Finding];
 };
 
-/** A legacy PBV2 material conflict must never become a new authoring bypass.
- *
- * Some historically published trees contain both an old materialOverride and
- * an inventoryConsumption reference for a choice.  V2's Product Builder does
- * not author either field.  A routing-only revision must preserve that exact
- * historical fact rather than become impossible to publish, while a new or
- * changed conflict remains a hard error.
- */
-const materialConflictKey = (finding: Finding): string | null => {
-  if (finding.code !== "PBV2_E_CHOICE_MATERIAL_OVERRIDE_CONFLICT") return null;
-  const value = finding as Finding & { entityId?: unknown; context?: unknown };
-  return stable({ entityId: value.entityId ?? null, context: value.context ?? null });
-};
-const inheritedLegacyMaterialConflictFindings = (
-  draftFindings: readonly Finding[],
-  activeTreeJson: unknown | null | undefined,
-): Finding[] => {
-  if (!activeTreeJson || typeof activeTreeJson !== "object" || Array.isArray(activeTreeJson)) return [...draftFindings];
-  const activeCandidate = { ...(activeTreeJson as Record<string, unknown>), status: "DRAFT" };
-  const inherited = new Set(
-    validateTreeForPublish(activeCandidate as any, DEFAULT_VALIDATE_OPTS).errors
-      .map(materialConflictKey)
-      .filter((key): key is string => key !== null),
-  );
-  return draftFindings.map((finding) => {
-    const key = materialConflictKey(finding);
-    if (!key || !inherited.has(key)) return finding;
-    return {
-      ...finding,
-      code: "PBV2_W_LEGACY_CHOICE_MATERIAL_OVERRIDE_CONFLICT",
-      severity: "WARNING",
-      message: "An inherited legacy material override conflict is preserved unchanged. Review material configuration before editing this Product option.",
-    } as Finding;
-  });
-};
-
 const repository: PublishRepository = {
   async get(input) {
     const { db } = await import("../../db");
@@ -179,14 +138,6 @@ const repository: PublishRepository = {
     if (!tree) return null;
     const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, category: products.category, description: products.description, measurementMode: products.measurementMode, workflowIntent: products.workflowIntent, requiresProofApproval: products.requiresProofApproval, requiresProductionJob: products.requiresProductionJob, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId, pricingFormula: products.pricingFormula }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
     if (!product || (input.productId && product.id !== input.productId)) return null;
-    const [activeTree] = product.pbv2ActiveTreeVersionId && product.pbv2ActiveTreeVersionId !== tree.id
-      ? await db.select({ treeJson: pbv2TreeVersions.treeJson }).from(pbv2TreeVersions).where(and(
-        eq(pbv2TreeVersions.organizationId, input.organizationId),
-        eq(pbv2TreeVersions.productId, tree.productId),
-        eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
-        eq(pbv2TreeVersions.status, "ACTIVE"),
-      )).limit(1)
-      : [];
     const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
     const [formulaRevision] = await db.select({ id: v2FormulaRevisions.id, formulaId: v2FormulaRevisions.formulaId, expression: v2FormulaRevisions.expression })
@@ -204,7 +155,7 @@ const repository: PublishRepository = {
     const projectedFormulaId = formulaRevision ? null : formulaLibraryProjection(tree.treeJson as Record<string, unknown>);
     const formulaId = projectedFormulaId === undefined ? product.pricingFormulaId : projectedFormulaId;
     const [pricingFormula] = formulaId ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive, expression: pricingFormulas.expression }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, formulaId))).limit(1) : [];
-    return { product, tree, ...(activeTree ? { activeTreeJson: activeTree.treeJson } : {}), materials: materialRows, pricingFormula: pricingFormula ?? null, formulaRevision: formulaRevision ?? null };
+    return { product, tree, materials: materialRows, pricingFormula: pricingFormula ?? null, formulaRevision: formulaRevision ?? null };
   },
   async publish(input) {
     const { db } = await import("../../db");
@@ -284,13 +235,12 @@ export function validateCanonicalProductPublishTarget(target: CanonicalProductPu
   // validatePublish's status check is specific to the DRAFT→ACTIVE transition.
   const publishCandidate = String((treeJson as any).status).toUpperCase() === "ACTIVE" ? { ...treeJson, status: "DRAFT" } : treeJson;
   const publish = validateTreeForPublish(publishCandidate as any, DEFAULT_VALIDATE_OPTS);
-  const publishFindings = inheritedLegacyMaterialConflictFindings(publish.findings, target.activeTreeJson);
   const materialFindings = validatePbv2MaterialReferences({ treeJson, productPrimaryMaterialId: target.product.primaryMaterialId, materials: target.materials });
   const projectedFormulaId = target.formulaRevision ? null : formulaLibraryProjection(treeJson);
   const formulaFindings: Finding[] = !target.formulaRevision && (projectedFormulaId === undefined ? target.product.pricingEngine === "formulaLibrary" : projectedFormulaId !== null) && (!(projectedFormulaId === undefined ? target.product.pricingFormulaId : projectedFormulaId) || !target.pricingFormula?.isActive)
     ? [{ code: "PBV2_E_FORMULA_LIBRARY_REFERENCE_MISSING", severity: "ERROR", message: "Formula Library pricing requires an active Formula Library entry in this organization.", path: "product.pricingFormulaId" } as Finding]
     : [];
-  const findings = mergeFindings(schemaFindings, base.findings, publishFindings, materialFindings, formulaFindings, productBasicsProjectionFindings(treeJson, target.product), legacyFormulaCanonicalizationFindings(target, treeJson));
+  const findings = mergeFindings(schemaFindings, base.findings, publish.findings, materialFindings, formulaFindings, productBasicsProjectionFindings(treeJson, target.product), legacyFormulaCanonicalizationFindings(target, treeJson));
   return { treeJson, findings, warnings: findings.filter((item) => item.severity === "WARNING"), errors: findings.filter((item) => item.severity === "ERROR") };
 }
 
