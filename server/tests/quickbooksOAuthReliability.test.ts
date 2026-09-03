@@ -11,6 +11,7 @@ import {
   isEncryptedQuickBooksToken,
   mergeQuickBooksRefreshToken,
   redactQuickBooksOAuthDiagnostic,
+  resolveQuickBooksTokenExpiryMetadata,
   selectAuthoritativeQuickBooksConnection,
 } from "../services/quickbooksCredentialManager";
 
@@ -59,12 +60,22 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(mergeQuickBooksRefreshToken("existing-refresh", { access_token: "next-access", refresh_token: "rotated-refresh" })).toBe("rotated-refresh");
   });
 
-  test("classifies invalid grants separately from transient refresh failures", () => {
+  test("classifies structured and Intuit plain-text invalid refresh-token failures as reauthorization required", () => {
     expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_grant" } } })).toBe("invalid_grant");
-    expect(classifyQuickBooksCredentialError(new Error("invalid_grant"))).toBe("unknown");
+    expect(classifyQuickBooksCredentialError(new Error("invalid_grant"))).toBe("invalid_grant");
+    expect(classifyQuickBooksCredentialError(new Error("The Refresh token is invalid, please Authorize again."))).toBe("invalid_grant");
     expect(classifyQuickBooksCredentialError({ response: { data: { error: "invalid_client" } } })).toBe("invalid_client");
     expect(classifyQuickBooksCredentialError({ status: 503, message: "Service unavailable" })).toBe("transient_api_failure");
     expect(classifyQuickBooksCredentialError(new Error("request timeout"))).toBe("network_failure");
+  });
+
+  test("uses Intuit expiry metadata and preserves refresh-token expiry for rotation diagnostics", () => {
+    const now = new Date("2026-09-03T12:00:00.000Z");
+    expect(resolveQuickBooksTokenExpiryMetadata({ expires_in: 3600, x_refresh_token_expires_in: 8_640_000 }, now)).toEqual({
+      accessExpiresAt: new Date("2026-09-03T13:00:00.000Z"),
+      refreshTokenExpiresAt: "2026-12-12T12:00:00.000Z",
+      refreshTokenExpiresInSeconds: 8_640_000,
+    });
   });
 
   test("extracts OAuth refresh failure details and keeps the cause text", () => {
@@ -110,11 +121,11 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(makeRequestBody).not.toContain("organizationId ?? DEFAULT_ORGANIZATION_ID");
   });
 
-  test("QuickBooks requests force refresh and replay exactly once after an API 401", () => {
+  test("QuickBooks only replays idempotent reads after an API 401", () => {
     const serviceSource = readRepoFile("server/quickbooksService.ts");
     const makeRequestBody = serviceSource.slice(serviceSource.indexOf("async function makeQBRequest"), serviceSource.indexOf("async function fetchAllQuickBooksQueryPages"));
 
-    expect(makeRequestBody).toContain("response.status === 401");
+    expect(makeRequestBody).toContain("response.status === 401 && method === 'GET'");
     expect(makeRequestBody).toContain("refreshQuickBooksCredentialsForRequest(orgId, true)");
     expect((makeRequestBody.match(/sendRequest\(/g) ?? []).length).toBe(2);
     expect(makeRequestBody).toContain("replayAttempted: true");
@@ -138,7 +149,7 @@ describe("QuickBooks OAuth credential reliability", () => {
 
     expect(credentialSource).toContain("db.transaction");
     expect(credentialSource).toContain("pg_try_advisory_xact_lock");
-    expect(credentialSource).toContain("quickbooks_oauth_refresh:${orgId}");
+    expect(credentialSource).toContain("quickbooks_oauth_credentials:${String(organizationId ?? \"\").trim()}");
     expect(credentialSource).not.toContain("pg_advisory_unlock");
     expect(credentialSource).toContain("refreshLock.acquired");
     expect(credentialSource).toContain("refreshLock.timeout");
@@ -220,6 +231,7 @@ describe("QuickBooks OAuth credential reliability", () => {
     const exchangeBody = serviceSource.slice(serviceSource.indexOf("export async function exchangeCodeForTokens"), serviceSource.indexOf("export async function refreshAccessToken"));
 
     expect(exchangeBody).toContain("pg_advisory_xact_lock");
+    expect(exchangeBody).toContain("quickBooksCredentialLockKey(orgId)");
     expect(exchangeBody).toContain("selectAuthoritativeQuickBooksConnection(existingConnections)");
     expect(exchangeBody).toContain(".update(oauthConnections)");
     expect(exchangeBody).toContain(".insert(oauthConnections)");
@@ -227,6 +239,7 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(exchangeBody).toContain("state: 'superseded'");
     expect(exchangeBody).toContain("qbAuth: _qbAuth");
     expect(exchangeBody).toContain("lastOAuthError: null");
+    expect(exchangeBody).toContain("refreshTokenExpiresAt: expiry.refreshTokenExpiresAt");
   });
 
   test("refreshed credential persistence is one-row verified and preserves non-OAuth failures", () => {
@@ -238,8 +251,27 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(persistBody).toContain("updated.length !== 1");
     expect(persistBody).toContain("Refusing to persist empty QuickBooks refresh token");
     expect(persistBody).toContain("stale qbAuth metadata remains");
+    expect(persistBody).toContain("credentialGeneration");
     expect(refreshBody).toContain("category: \"persistence_failure\"");
+    expect(refreshBody).toContain("markNeedsReauth(orgId, latest, error, \"persistence_failure\")");
     expect(refreshBody).not.toContain("markNeedsReauth(orgId, latest, error); } catch");
+  });
+
+  test("a forced 401 refresh uses a peer-rotated credential instead of rotating again", () => {
+    const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    const refreshBody = credentialSource.slice(credentialSource.indexOf("async refreshCredentials"), credentialSource.indexOf("async recordSuccessfulRequest"));
+
+    expect(refreshBody).toContain("peerAlreadyRefreshed");
+    expect(refreshBody).toContain("latest.accessToken !== input.connection.accessToken");
+    expect(refreshBody).toContain("!accessTokenExpired");
+  });
+
+  test("credential reads never write a stale plaintext snapshot over a rotated token", () => {
+    const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    const loadBody = credentialSource.slice(credentialSource.indexOf("async loadCredentials"), credentialSource.indexOf("async getStatus"));
+
+    expect(loadBody).toContain("Do not opportunistically rewrite legacy plaintext rows here");
+    expect(loadBody).not.toContain("plaintextCompatibilityRewriteAt");
   });
 
   test("successful reauthorization clears stale needs_reauth and transient metadata", () => {

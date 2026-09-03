@@ -23,6 +23,8 @@ import {
   extractQuickBooksOAuthDiagnostic,
   getQuickBooksCredentialCauseText,
   quickBooksCredentialManager,
+  quickBooksCredentialLockKey,
+  resolveQuickBooksTokenExpiryMetadata,
   selectAuthoritativeQuickBooksConnection,
   type QuickBooksConnectionState,
   type QuickBooksCredentialErrorCategory,
@@ -459,7 +461,8 @@ export async function exchangeCodeForTokens(
   const token = authResponse.token;
   const accessToken = String(token.access_token ?? '').trim();
   const refreshToken = String(token.refresh_token ?? '').trim();
-  const expiresAt = new Date(Date.now() + (Number(token.expires_in || 3600) * 1000));
+  const expiry = resolveQuickBooksTokenExpiryMetadata(token);
+  const expiresAt = expiry.accessExpiresAt;
 
   if (!accessToken) {
     throw new Error('QuickBooks token exchange did not return an access token');
@@ -483,7 +486,7 @@ export async function exchangeCodeForTokens(
   let storedConnectionId: string | null = null;
 
   await db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`quickbooks_oauth_connection:${orgId}`}))`);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${quickBooksCredentialLockKey(orgId)}))`);
 
     const existingConnections = await tx
       .select()
@@ -511,6 +514,9 @@ export async function exchangeCodeForTokens(
       },
       qbCredential: {
         state: 'connected',
+        credentialGeneration: Number((baseMetadata as any)?.qbCredential?.credentialGeneration || 0) + 1,
+        refreshTokenExpiresAt: expiry.refreshTokenExpiresAt,
+        refreshTokenExpiresInSeconds: expiry.refreshTokenExpiresInSeconds,
         lastSuccessfulRefreshAt: null,
         lastSuccessfulRequestAt: null,
         lastErrorAt: null,
@@ -1051,7 +1057,7 @@ async function makeQBRequest(
     throw error;
   }
 
-  if (response.status === 401) {
+  if (response.status === 401 && method === 'GET') {
     console.warn('[QuickBooks] API returned 401; forcing one credential refresh and replay', {
       organizationId: orgId,
       connectionId: connection.id,

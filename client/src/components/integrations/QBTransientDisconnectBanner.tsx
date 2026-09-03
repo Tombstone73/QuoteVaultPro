@@ -10,6 +10,7 @@ type QBStatusLike = {
   healthState?: string;
   healthMessage?: string;
   lastErrorAt?: string;
+  requiresUserAction?: boolean;
 };
 
 function getSnoozeKey(params: { organizationId: string; userId: string }) {
@@ -75,7 +76,8 @@ export function QBTransientDisconnectBanner(props: {
   const healthState = qbStatus?.healthState || "";
   const snoozed = !!snoozeUntilMs && snoozeUntilMs > Date.now();
 
-  const shouldShow = (state === "degraded" || (authState === "connected" && healthState === "transient_error")) && !snoozed;
+  const requiresReauth = qbStatus?.requiresUserAction === true || state === "needs_reauth" || authState === "needs_reauth";
+  const shouldShow = !requiresReauth && (state === "degraded" || (authState === "connected" && healthState === "transient_error")) && !snoozed;
   if (!shouldShow) return null;
 
   const onDismiss = (hours: number) => {

@@ -25,6 +25,10 @@ export type QuickBooksTokenRefreshResponse = {
   access_token?: string | null;
   refresh_token?: string | null;
   expires_in?: number | null;
+  // Intuit returns this on token exchange/refresh. Keep it in non-secret
+  // credential metadata so an approaching refresh-token expiry is observable.
+  x_refresh_token_expires_in?: number | null;
+  refresh_token_expires_in?: number | null;
   token_type?: string | null;
   __quickBooksOAuthDiagnostic?: QuickBooksOAuthDiagnostic;
 };
@@ -71,6 +75,33 @@ const REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_LOCK_TIMEOUT_MS = 8000;
 const DEFAULT_LOCK_POLL_MS = 250;
 const LOG_BODY_LIMIT = 1600;
+
+/**
+ * Every writer of a QuickBooks credential row must use this key. In particular,
+ * an OAuth callback/reconnect must not race an in-flight refresh and restore an
+ * older, already-rotated refresh token.
+ */
+export function quickBooksCredentialLockKey(organizationId: string): string {
+  return `quickbooks_oauth_credentials:${String(organizationId ?? "").trim()}`;
+}
+
+export function resolveQuickBooksTokenExpiryMetadata(
+  token: QuickBooksTokenRefreshResponse,
+  now = new Date(),
+): { accessExpiresAt: Date; refreshTokenExpiresAt: string | null; refreshTokenExpiresInSeconds: number | null } {
+  const accessExpiresInSeconds = firstNumber(token.expires_in) ?? 3600;
+  const refreshTokenExpiresInSeconds = firstNumber(
+    token.x_refresh_token_expires_in,
+    token.refresh_token_expires_in,
+  );
+  return {
+    accessExpiresAt: new Date(now.getTime() + accessExpiresInSeconds * 1000),
+    refreshTokenExpiresAt: refreshTokenExpiresInSeconds
+      ? new Date(now.getTime() + refreshTokenExpiresInSeconds * 1000).toISOString()
+      : null,
+    refreshTokenExpiresInSeconds,
+  };
+}
 
 export class QuickBooksCredentialManagerError extends Error {
   category: QuickBooksCredentialErrorCategory;
@@ -313,6 +344,16 @@ export function classifyQuickBooksCredentialError(error: unknown): QuickBooksCre
     serialized = JSON.stringify(error).toLowerCase();
   } catch {}
   const haystack = `${message} ${serialized}`;
+  // The Intuit SDK can surface this as a plain Error rather than structured
+  // OAuth JSON. It is not transient: retrying the same refresh token cannot
+  // repair it, and operators need the existing reconnect action.
+  if (
+    haystack.includes("invalid_grant") ||
+    ((haystack.includes("refresh token is invalid") || haystack.includes("invalid refresh token")) &&
+      (haystack.includes("authorize again") || haystack.includes("authorise again") || haystack.includes("reauthoriz") || haystack.includes("reconnect")))
+  ) {
+    return "invalid_grant";
+  }
   if (haystack.includes("invalid_client") || haystack.includes("invalid client") || haystack.includes("client_secret")) {
     return "invalid_client";
   }
@@ -512,19 +553,10 @@ export class QuickBooksCredentialManager {
       accessTokenExpired: this.isExpiredOrExpiring(connection),
     });
 
-    if ((!access.wasEncrypted || !refresh.wasEncrypted) && encryptionSecret()) {
-      await this.persistCredentials({
-        organizationId: orgId,
-        connection: decrypted,
-        accessToken: decrypted.accessToken,
-        refreshToken: decrypted.refreshToken,
-        expiresAt: connection.expiresAt,
-        metadataPatch: {
-          encryptedAt: new Date().toISOString(),
-          plaintextCompatibilityRewriteAt: new Date().toISOString(),
-        },
-      });
-    }
+    // Do not opportunistically rewrite legacy plaintext rows here. This read
+    // path can run concurrently with a token rotation; a late rewrite of the
+    // snapshot would restore an obsolete refresh token. The explicit backfill
+    // command remains the safe, lock-aware migration path for legacy rows.
 
     return decrypted;
   }
@@ -663,7 +695,8 @@ export class QuickBooksCredentialManager {
         accessTokenExpired,
         refreshAttempted: false,
       });
-      if (!input.force && !accessTokenExpired) {
+      const peerAlreadyRefreshed = input.force && latest.accessToken !== input.connection.accessToken && !accessTokenExpired;
+      if ((!input.force && !accessTokenExpired) || peerAlreadyRefreshed) {
         credentialLog("info", "refreshCredentials.skipped_after_lock", {
           organizationId: orgId,
           connectionId: latest.id,
@@ -671,6 +704,7 @@ export class QuickBooksCredentialManager {
           connectionState,
           accessTokenExpired: false,
           refreshAttempted: false,
+          peerAlreadyRefreshed,
           finalCredentialState: connectionState,
         });
         return latest;
@@ -767,7 +801,8 @@ export class QuickBooksCredentialManager {
       const refreshToken = mergeQuickBooksRefreshToken(latest.refreshToken, token);
       const refreshTokenRotated = String(token.refresh_token ?? "").trim().length > 0 && refreshToken !== latest.refreshToken;
       const refreshTokenPreserved = String(token.refresh_token ?? "").trim().length === 0;
-      const expiresAt = new Date(Date.now() + (Number(token.expires_in || 3600) * 1000));
+      const expiry = resolveQuickBooksTokenExpiryMetadata(token);
+      const existingCredential = qbCredentialMetadata(latest);
 
       try {
         await this.persistCredentials({
@@ -775,7 +810,7 @@ export class QuickBooksCredentialManager {
           connection: latest,
           accessToken,
           refreshToken,
-          expiresAt,
+          expiresAt: expiry.accessExpiresAt,
           metadataPatch: {
             state: "connected",
             lastSuccessfulRefreshAt: new Date().toISOString(),
@@ -783,6 +818,15 @@ export class QuickBooksCredentialManager {
             lastErrorCode: null,
             lastErrorMessage: null,
             consecutiveTransientFailureCount: 0,
+            ...(refreshTokenRotated || expiry.refreshTokenExpiresAt
+              ? {
+                  refreshTokenExpiresAt: expiry.refreshTokenExpiresAt,
+                  refreshTokenExpiresInSeconds: expiry.refreshTokenExpiresInSeconds,
+                }
+              : {
+                  refreshTokenExpiresAt: existingCredential.refreshTokenExpiresAt ?? null,
+                  refreshTokenExpiresInSeconds: existingCredential.refreshTokenExpiresInSeconds ?? null,
+                }),
           },
           clearQbAuth: true,
         });
@@ -800,6 +844,10 @@ export class QuickBooksCredentialManager {
           oauthErrorDescription: persistDiagnostic.oauthErrorDescription,
           finalCredentialState: "degraded",
         });
+        // Intuit may already have invalidated the previous refresh token. Do
+        // not advertise automatic recovery when its replacement could not be
+        // durably stored; a reconnect is the only safe recovery path.
+        await this.markNeedsReauth(orgId, latest, error, "persistence_failure");
         throw new QuickBooksCredentialManagerError("QuickBooks refreshed credentials could not be persisted.", {
           category: "persistence_failure",
           stage: "persist_refreshed_credentials",
@@ -849,7 +897,12 @@ export class QuickBooksCredentialManager {
     await this.markDegraded(orgId, connection, category, error);
   }
 
-  async markNeedsReauth(organizationId: string, connection: OAuthConnection, error: unknown): Promise<void> {
+  async markNeedsReauth(
+    organizationId: string,
+    connection: OAuthConnection,
+    error: unknown,
+    category: QuickBooksCredentialErrorCategory = "invalid_grant",
+  ): Promise<void> {
     const orgId = requireOrganizationId(organizationId, "markNeedsReauth");
     const nowIso = new Date().toISOString();
     const diagnostic = extractQuickBooksOAuthDiagnostic(error);
@@ -866,7 +919,7 @@ export class QuickBooksCredentialManager {
           qbAuth: {
             state: "needs_reauth",
             latchedAt: nowIso,
-            reason: "invalid_grant",
+            reason: category,
             message,
           },
           qbCredential: {
@@ -874,11 +927,11 @@ export class QuickBooksCredentialManager {
             state: "needs_reauth",
             needsReauthAt: nowIso,
             lastErrorAt: nowIso,
-            lastErrorCode: "invalid_grant",
+            lastErrorCode: category,
             lastErrorMessage: message,
             lastErrorStage: (error as any)?.stage ?? "intuit_refresh",
             lastErrorHttpStatus: diagnostic.httpStatus ?? null,
-            lastOAuthError: diagnostic.oauthError ?? "invalid_grant",
+            lastOAuthError: diagnostic.oauthError ?? category,
             lastOAuthErrorDescription: diagnostic.oauthErrorDescription ?? null,
           },
         } as any,
@@ -950,6 +1003,7 @@ export class QuickBooksCredentialManager {
           ...nextMeta,
           qbCredential: {
             ...qbCredentialMetadata(args.connection),
+            credentialGeneration: Number(qbCredentialMetadata(args.connection).credentialGeneration || 0) + 1,
             ...args.metadataPatch,
             encrypted: Boolean(encryptionSecret()),
             encryptionKeyId: encryptionSecret() ? encryptionKeyId() : null,
@@ -985,7 +1039,7 @@ export class QuickBooksCredentialManager {
 
   async withRefreshLock<T>(organizationId: string, work: () => Promise<T>, timeoutMs = DEFAULT_LOCK_TIMEOUT_MS): Promise<T> {
     const orgId = requireOrganizationId(organizationId, "withRefreshLock");
-    const lockKey = `quickbooks_oauth_refresh:${orgId}`;
+    const lockKey = quickBooksCredentialLockKey(orgId);
     const deadline = Date.now() + timeoutMs;
 
     credentialLog("info", "refreshLock.wait_started", {
