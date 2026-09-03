@@ -187,7 +187,9 @@ assert.match(migration, /Production attempts require an open Order/);
 assert.match(billingSource, /commercial_state==="cancelled"/, "completed Orders retain independent Billing issuance");
 assert.match(workspaceSource, /o\.archived_at IS NULL/);
 assert.match(workspaceSource, /o\.archived_at IS NOT NULL/);
+assert.match(workspaceSource, /created_at AS occurred_at/, "Order audit history uses the canonical audit timestamp column");
 assert.match(orderWorkspaceSource, /canUpload=\{props\.canViewArtwork && editable\}/, "terminal Order artwork replacement is not offered");
+assert.match(orderWorkspaceSource, /"order-history",\s*result\.order\.order\.orderId/, "lifecycle mutations refresh persisted audit history");
 for (const queueSource of [productionSource, prepressSource, proofingSource, fulfillmentSource])
   assert.match(queueSource, /archived_at IS NULL/, "archived Orders are absent from normal operational queues");
 

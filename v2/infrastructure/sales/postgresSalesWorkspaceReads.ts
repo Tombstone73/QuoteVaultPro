@@ -80,7 +80,7 @@ export class PostgresSalesWorkspaceReads implements SalesWorkspaceReadPort {
 
   async listOrderHistory(organizationId: OrganizationId, orderId: any): Promise<readonly SalesOrderHistoryEvent[]> {
     return this.read(async (client) => {
-      const rows = await client.query<{ event_type: string; occurred_at: Date; changes: unknown }>("SELECT event_type,occurred_at,changes FROM v2_audit_events WHERE organization_id=$1 AND resource_type='order' AND resource_id=$2 ORDER BY occurred_at DESC,id DESC LIMIT 100", [organizationId, orderId]);
+      const rows = await client.query<{ event_type: string; occurred_at: Date; changes: unknown }>("SELECT event_type,created_at AS occurred_at,changes FROM v2_audit_events WHERE organization_id=$1 AND resource_type='order' AND resource_id=$2 ORDER BY created_at DESC,id DESC LIMIT 100", [organizationId, orderId]);
       return rows.rows.map((row) => { const first = Array.isArray(row.changes) ? row.changes[0] as { summary?: unknown } | undefined : undefined; return { eventType: row.event_type, occurredAt: row.occurred_at.toISOString(), summary: typeof first?.summary === "string" ? first.summary : row.event_type.replaceAll("_", " ") }; });
     });
   }

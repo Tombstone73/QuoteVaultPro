@@ -314,6 +314,15 @@ export const OrderWorkspace = (
     void queryClient.invalidateQueries({
       queryKey: salesKeys.orders(props.sessionScope, props.organizationId),
     });
+    void queryClient.invalidateQueries({
+      queryKey: [
+        "v2",
+        props.sessionScope,
+        props.organizationId,
+        "order-history",
+        result.order.order.orderId,
+      ],
+    });
     complete("header");
     complete("line");
   };
