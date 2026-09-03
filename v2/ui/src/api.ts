@@ -2072,6 +2072,20 @@ export const productApi = {
         }),
       },
     ),
+  abandonDraft: (
+    organizationId: string,
+    productId: string,
+    businessRequestId: string,
+    input: Readonly<{ draftVersionId: string; expectedDraftUpdatedAt: string }>,
+  ) =>
+    request<ProductVersionLifecycle>(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/products/${encodeURIComponent(productId)}/draft/abandon`,
+      {
+        method: "POST",
+        headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+        body: JSON.stringify({ businessRequestId, ...input }),
+      },
+    ),
   publishDraft: (
     organizationId: string,
     productId: string,

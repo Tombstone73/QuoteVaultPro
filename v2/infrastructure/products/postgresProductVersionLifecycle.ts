@@ -1506,6 +1506,42 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       lifecycle: lifecycle(all.rows, activeId),
     };
   }
+  async abandonDraft(
+    input: NonNullable<ProductVersionTransaction["abandonDraft"]> extends (value: infer Value) => unknown
+      ? Value
+      : never,
+  ): Promise<ProductVersionLifecycle> {
+    const product = await this.client.query<{ pbv2_active_tree_version_id: string | null }>(
+      "SELECT pbv2_active_tree_version_id FROM products WHERE organization_id=$1 AND id=$2 FOR UPDATE",
+      [input.organizationId, input.productId],
+    );
+    const activeId = product.rows[0]?.pbv2_active_tree_version_id;
+    if (!product.rows[0]) throw new V2ApplicationError("NOT_FOUND", "Product was not found.");
+    const draft = await this.client.query<VersionRow>(
+      "SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 AND id=$3 FOR UPDATE",
+      [input.organizationId, input.productId, input.draftVersionId],
+    );
+    const current = draft.rows[0];
+    if (!current || current.status !== "DRAFT")
+      throw new V2ApplicationError("CONFLICT", "Only the current Draft can be abandoned.");
+    const latest = await this.client.query<{ id: string }>(
+      "SELECT id FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 AND status='DRAFT' ORDER BY updated_at DESC,id DESC LIMIT 1 FOR UPDATE",
+      [input.organizationId, input.productId],
+    );
+    if (latest.rows[0]?.id !== input.draftVersionId)
+      throw new V2ApplicationError("CONFLICT", "Only the current Draft can be abandoned.");
+    if (current.updated_at.toISOString() !== new Date(input.expectedDraftUpdatedAt).toISOString())
+      throw new V2ApplicationError("STALE_STATE", "This Draft changed elsewhere. Refresh and try again.");
+    await this.client.query(
+      "UPDATE pbv2_tree_versions SET status='ARCHIVED',updated_at=now(),updated_by_user_id=$1 WHERE organization_id=$2 AND product_id=$3 AND id=$4 AND status='DRAFT'",
+      [input.staffActorUserId ?? null, input.organizationId, input.productId, input.draftVersionId],
+    );
+    const all = await this.client.query<VersionRow>(
+      "SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 ORDER BY updated_at DESC,id DESC LIMIT $3",
+      [input.organizationId, input.productId, historyLimit + 3],
+    );
+    return lifecycle(all.rows, activeId ?? null);
+  }
   async createProductWithInitialDraft(
     input: Parameters<
       NonNullable<ProductVersionTransaction["createProductWithInitialDraft"]>
@@ -1573,11 +1609,12 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
   }
   async audit(input: Parameters<ProductVersionTransaction["audit"]>[0]) {
     await this.client.query(
-      "INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,'product_draft_created','product_version',$4,$5,$6,$7,'[]'::jsonb)",
+      "INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,'product_version',$5,$6,$7,$8,'[]'::jsonb)",
       [
         input.organizationId,
         input.requestId,
         input.operation,
+        input.operation === "product.version.abandonDraft.v1" ? "product_draft_abandoned" : "product_draft_created",
         input.resourceId,
         input.principalKind,
         input.principalSubject,

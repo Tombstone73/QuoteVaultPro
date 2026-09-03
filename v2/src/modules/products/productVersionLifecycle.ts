@@ -46,6 +46,13 @@ export type CreateProductDraftInput = Readonly<{
   businessRequestId: string;
   expectedActiveVersionUpdatedAt: string;
 }>;
+/** Archives an abandoned mutable draft without changing the active ProductVersion. */
+export type AbandonProductDraftInput = Readonly<{
+  productId: string;
+  draftVersionId: string;
+  businessRequestId: string;
+  expectedDraftUpdatedAt: string;
+}>;
 /** Creates a Product identity only together with its first editable Draft. */
 export type CreateProductWithInitialDraftInput = Readonly<{
   displayName: string;
@@ -407,6 +414,15 @@ export interface ProductVersionTransaction {
       staffActorUserId?: string;
     }>,
   ): Promise<Readonly<{ draftId: string; lifecycle: ProductVersionLifecycle }>>;
+  abandonDraft?(
+    input: Readonly<{
+      organizationId: string;
+      productId: string;
+      draftVersionId: string;
+      expectedDraftUpdatedAt: string;
+      staffActorUserId?: string;
+    }>,
+  ): Promise<ProductVersionLifecycle>;
   createProductWithInitialDraft?(
     input: Readonly<{
       organizationId: string;
@@ -592,6 +608,7 @@ export interface ProductVersionTransactionRunner {
 }
 
 const operation = "product.version.createDraft.v1";
+const abandonOperation = "product.version.abandonDraft.v1";
 const createProductOperation = "product.createWithDraft.v1";
 const updateGeneralOperation = "product.draft.general.update.v1";
 const updateOptionsOperation = "product.draft.options.update.v1";
@@ -614,6 +631,16 @@ const fingerprint = (input: CreateProductDraftInput) =>
       JSON.stringify({
         productId: input.productId,
         expectedActiveVersionUpdatedAt: input.expectedActiveVersionUpdatedAt,
+      }),
+    )
+    .digest("hex");
+const abandonFingerprint = (input: AbandonProductDraftInput) =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        productId: input.productId,
+        draftVersionId: input.draftVersionId,
+        expectedDraftUpdatedAt: input.expectedDraftUpdatedAt,
       }),
     )
     .digest("hex");
@@ -1171,6 +1198,66 @@ export class ProductVersionLifecycleApplicationService {
                 : "Product Draft could not be created.",
             ),
       );
+    }
+  }
+
+  /**
+   * A Draft has never become a sellable definition.  Preserve it as immutable
+   * archived history so an administrator can safely start a fresh revision
+   * from the current Active version rather than editing or deleting it.
+   */
+  async abandonDraft(
+    context: OperationContext,
+    input: AbandonProductDraftInput,
+  ): Promise<ApplicationResult<ProductVersionLifecycle>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId)
+        throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      if (!input.productId || !input.draftVersionId || !input.businessRequestId || Number.isNaN(Date.parse(input.expectedDraftUpdatedAt)))
+        throw new V2ApplicationError("VALIDATION_ERROR", "A Product Draft and its current revision are required.");
+      if (!this.authority.decide(context.principal, { capability: "product.edit", resource: { organizationId: context.organizationId } }).allowed)
+        throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to abandon a Product Draft.");
+      if (!this.runner.transaction)
+        throw new V2ApplicationError("CONFLICT", "Product Draft abandonment is unavailable.");
+      const value = await this.runner.transaction(async (tx) => {
+        if (!tx.abandonDraft)
+          throw new V2ApplicationError("CONFLICT", "Product Draft abandonment is unavailable.");
+        const request = await tx.reserve({
+          organizationId: context.organizationId,
+          operation: abandonOperation,
+          businessRequestId: input.businessRequestId,
+          payloadFingerprint: abandonFingerprint(input),
+          ...actor(context),
+        });
+        if (request.kind === "replay") return request.request.resultJson as ProductVersionLifecycle;
+        const lifecycle = await tx.abandonDraft({
+          organizationId: context.organizationId,
+          productId: input.productId,
+          draftVersionId: input.draftVersionId,
+          expectedDraftUpdatedAt: input.expectedDraftUpdatedAt,
+          staffActorUserId: staffActorId(context.principal),
+        });
+        await tx.attribute({
+          organizationId: context.organizationId,
+          requestId: request.request.id,
+          operation: abandonOperation,
+          resourceId: input.draftVersionId,
+          ...actor(context),
+        });
+        await tx.audit({
+          organizationId: context.organizationId,
+          requestId: request.request.id,
+          operation: abandonOperation,
+          resourceId: input.draftVersionId,
+          ...actor(context),
+        });
+        await tx.succeed(context.organizationId, request.request.id, input.draftVersionId, lifecycle);
+        return lifecycle;
+      });
+      return success(value);
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", error instanceof Error ? error.message : "Product Draft could not be abandoned."));
     }
   }
 

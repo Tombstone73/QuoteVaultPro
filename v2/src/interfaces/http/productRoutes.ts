@@ -505,6 +505,31 @@ export const createProductRouter = (dependencies: ProductHttpDependencies) => {
       );
     }
   });
+  router.post("/:productId/draft/abandon", async (request, response) => {
+    try {
+      const organizationId = (request.params as Record<string, string>).organizationId;
+      const principal = await dependencies.principals.principal(request, organizationId);
+      if (!validProductId(request.params.productId))
+        return deny(response, 404, "NOT_FOUND", "Product is unavailable in this organization.");
+      const body = request.body as Record<string, unknown>;
+      const businessRequestId = typeof body.businessRequestId === "string" ? body.businessRequestId.trim() : "";
+      const draftVersionId = typeof body.draftVersionId === "string" ? body.draftVersionId : "";
+      const expectedDraftUpdatedAt = typeof body.expectedDraftUpdatedAt === "string" ? body.expectedDraftUpdatedAt : "";
+      if (!businessRequestId || !draftVersionId || !expectedDraftUpdatedAt)
+        return response.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "A Product Draft and its current revision are required." } });
+      const result = await dependencies.lifecycle.abandonDraft(
+        { principal, organizationId, operationId: businessRequestId, businessRequest: { id: businessRequestId, payloadFingerprint: businessRequestId } },
+        { productId: request.params.productId, draftVersionId, expectedDraftUpdatedAt, businessRequestId },
+      );
+      return result.ok
+        ? response.status(200).json({ ok: true, data: result.value })
+        : response.status(commandStatus(result.error.code)).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+    } catch (error) {
+      if (error instanceof V2ApplicationError)
+        return response.status(commandStatus(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } });
+      return deny(response, 403, "FORBIDDEN", "Authenticated access is required.");
+    }
+  });
   router.post("/:productId/draft/publish", async (request, response) => {
     try {
       const organizationId = (request.params as Record<string, string>)
