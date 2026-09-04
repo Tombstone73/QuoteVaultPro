@@ -323,6 +323,23 @@ export const OrderWorkspace = (
         result.order.order.orderId,
       ],
     });
+    void queryClient.invalidateQueries({
+      queryKey: [
+        "v2",
+        props.sessionScope,
+        props.organizationId,
+        "order-invoice",
+        result.order.order.orderId,
+      ],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: [
+        "v2",
+        props.sessionScope,
+        props.organizationId,
+        "order-invoice-settlement",
+      ],
+    });
     complete("header");
     complete("line");
   };

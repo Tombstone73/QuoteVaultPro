@@ -51,6 +51,8 @@ assert.match(workspace, /showConfigurationFields=\{false\}/);
 assert.match(workspace, /Fulfillment method/);
 assert.match(workspace, /Available to fulfill/);
 assert.match(workspace, /v2-order-owner-summaries/);
+assert.match(workspace, /"order-invoice"/);
+assert.match(workspace, /"order-invoice-settlement"/);
 assert.doesNotMatch(workspace, /requestedFulfillment\.method\.replaceAll/);
 
 console.log("Order saved workspace presentation tests passed.");
