@@ -82,9 +82,7 @@ export function MatrixPricing({
 }: Readonly<{
   matrix: ProductDraftPricingMatrix;
   disabled?: boolean;
-  onChange: (
-    update: (current: ProductDraftPricingMatrix) => ProductDraftPricingMatrix,
-  ) => void;
+  onChange: (matrix: ProductDraftPricingMatrix) => void;
 }>) {
   const [slice, setSlice] = useState<Record<string, Value>>({});
   // Input events can arrive before React commits an intervening parent render.
@@ -112,10 +110,11 @@ export function MatrixPricing({
   ) => {
     const next = update(matrixRef.current);
     matrixRef.current = next;
-    // The parent owns the submitted Draft snapshot.  Pass the transformation,
-    // rather than a child-rendered object, so fast successive field events
-    // cannot overwrite an already staged tier in that canonical snapshot.
-    onChange(update);
+    // Pass the fully composed immutable snapshot. The editor owns the newest
+    // staged value while React schedules its parent render; handing the parent
+    // a transformation against its prior prop can otherwise submit an older
+    // row even though the visible control shows the latest tier value.
+    onChange(next);
   };
   const setDimensions = (selectionKeys: readonly string[]) => {
     staged((current) => {
