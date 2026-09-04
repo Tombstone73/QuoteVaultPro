@@ -62,6 +62,19 @@ export const updateMatrixPricingRow = (
   rows: matrix.rows.map((row) => row.rowId === rowId ? { ...row, ...change } : row),
 });
 
+export const updateMatrixPricingTier = (
+  matrix: ProductDraftPricingMatrix,
+  rowId: string,
+  tierIndex: number,
+  change: Partial<ProductDraftPricingTier>,
+): ProductDraftPricingMatrix => {
+  const row = matrix.rows.find((entry) => entry.rowId === rowId);
+  if (!row) return matrix;
+  return updateMatrixPricingRow(matrix, rowId, {
+    tiers: row.tiers.map((tier, index) => index === tierIndex ? { ...tier, ...change } : tier),
+  });
+};
+
 export function MatrixPricing({
   matrix,
   disabled,
@@ -119,6 +132,19 @@ export function MatrixPricing({
     change: Partial<ProductDraftPricingMatrix["rows"][number]>,
   ) =>
     staged(updateMatrixPricingRow(matrixRef.current, rowId, change));
+  const updateTier = (
+    rowId: string,
+    tierIndex: number,
+    change: Partial<ProductDraftPricingTier>,
+  ) => staged(updateMatrixPricingTier(matrixRef.current, rowId, tierIndex, change));
+  const removeTier = (rowId: string, tierIndex: number) => {
+    const row = matrixRef.current.rows.find((entry) => entry.rowId === rowId);
+    if (!row) return;
+    updateRow(rowId, {
+      tiers: row.tiers.filter((_, index) => index !== tierIndex),
+      tierBasis: row.tiers.length === 1 ? null : row.tierBasis,
+    });
+  };
   const activeRow = (row: Value, column?: Value) =>
     matrix.rows.find(
       (entry) =>
@@ -387,13 +413,7 @@ export function MatrixPricing({
                                   pricingUnit={matrix.pricingUnit}
                                   disabled={!editable}
                                   onChange={(change) =>
-                                    updateRow(row.rowId, {
-                                      tiers: row.tiers.map((value, position) =>
-                                        position === index
-                                          ? { ...value, ...change }
-                                          : value,
-                                      ),
-                                    })
+                                    updateTier(row.rowId, index, change)
                                   }
                                   onComputed={(computed) =>
                                     updateRow(row.rowId, {
@@ -402,17 +422,7 @@ export function MatrixPricing({
                                         : "quantity",
                                     })
                                   }
-                                  onRemove={() =>
-                                    updateRow(row.rowId, {
-                                      tiers: row.tiers.filter(
-                                        (_, position) => position !== index,
-                                      ),
-                                      tierBasis:
-                                        row.tiers.length === 1
-                                          ? null
-                                          : row.tierBasis,
-                                    })
-                                  }
+                                  onRemove={() => removeTier(row.rowId, index)}
                                 />
                               ))}
                             </td>
