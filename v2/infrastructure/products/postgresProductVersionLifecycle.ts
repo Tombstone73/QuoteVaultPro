@@ -2043,27 +2043,37 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       combinations.add(key);
       let prior = 0;
       for (const [tierIndex, tier] of entry.tiers.entries()) {
-        if (
+        const invalidMinimum =
           !Number.isSafeInteger(tier.minimum) ||
           tier.minimum < 1 ||
-          tier.minimum <= prior ||
-          (tier.maximum !== null &&
-            (!Number.isSafeInteger(tier.maximum) ||
-              tier.maximum < tier.minimum)) ||
-          (tier.perPieceCents !== null &&
-            (!Number.isSafeInteger(tier.perPieceCents) ||
-              tier.perPieceCents < 0)) ||
-          (tier.perSqftCents !== null &&
-            (!Number.isSafeInteger(tier.perSqftCents) ||
-              tier.perSqftCents < 0)) ||
-          (tier.minimumChargeCents !== null &&
-            (!Number.isSafeInteger(tier.minimumChargeCents) ||
-              tier.minimumChargeCents < 0)) ||
+          tier.minimum <= prior;
+        const invalidMaximum =
+          tier.maximum !== null &&
+          (!Number.isSafeInteger(tier.maximum) ||
+            tier.maximum < tier.minimum);
+        const invalidPieceRate =
+          tier.perPieceCents !== null &&
+          (!Number.isSafeInteger(tier.perPieceCents) || tier.perPieceCents < 0);
+        const invalidSquareFootRate =
+          tier.perSqftCents !== null &&
+          (!Number.isSafeInteger(tier.perSqftCents) || tier.perSqftCents < 0);
+        const invalidMinimumCharge =
+          tier.minimumChargeCents !== null &&
+          (!Number.isSafeInteger(tier.minimumChargeCents) ||
+            tier.minimumChargeCents < 0);
+        if (
+          invalidMinimum ||
+          invalidMaximum ||
+          invalidPieceRate ||
+          invalidSquareFootRate ||
+          invalidMinimumCharge ||
           (tier.perPieceCents !== null && tier.perSqftCents !== null)
         )
           throw new V2ApplicationError(
             "VALIDATION_ERROR",
-            `Matrix row ${entry.rowId} tier ${tierIndex + 1} is invalid. Tier minimums must be whole numbers that increase from left to right, and optional rates and bounds must be valid non-negative amounts.`,
+            invalidMinimum
+              ? `Matrix row ${entry.rowId} tier ${tierIndex + 1} minimum ${String(tier.minimum)} must be a whole number greater than the prior tier minimum ${prior}.`
+              : `Matrix row ${entry.rowId} tier ${tierIndex + 1} has an invalid maximum, rate, or minimum charge.`,
           );
         prior = tier.minimum;
       }
