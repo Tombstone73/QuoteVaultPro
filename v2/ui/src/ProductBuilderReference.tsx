@@ -198,6 +198,14 @@ const clone = <T,>(value: T): T => structuredClone(value);
  */
 export const stageProductBuilderDraft = <T,>(current: T, update: (current: T) => T): T => update(clone(current));
 
+/** A newly created Product needs its initial general settings persisted; an
+ * existing Product must not advance that section merely because another
+ * Draft section is being saved. */
+export const shouldSaveDraftGeneral = (
+  hasPersistedProduct: boolean,
+  dirty: ReadonlySet<DirtySection>,
+) => !hasPersistedProduct || dirty.has("general");
+
 const key = (scope: string, org: string, id: string, part: string) => ["v2", scope, org, "reference-product-builder", id, part] as const;
 
 export const ProductBuilderReference = ({
@@ -466,7 +474,7 @@ export const ProductBuilderReference = ({
         setDraft(state);
         savedSection("options", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
-      if (!adoptedIdentity || dirty.has("general")) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: state.general }); savedSection("general", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
+      if (shouldSaveDraftGeneral(Boolean(product?.productId), dirty)) { const value = await productApi.saveDraftGeneral(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, general: state.general }); savedSection("general", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
       if (dirty.has("formula")) {
         if (!state.formula.formulaRevisionId) throw new Error("Select an active Formula revision before saving this Product Draft.");
         const value = await productApi.saveDraftFormula(organizationId, id, request(), {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { publishGateForDraft, stageProductBuilderDraft, type DirtySection } from "../ProductBuilderReference";
+import { publishGateForDraft, shouldSaveDraftGeneral, stageProductBuilderDraft, type DirtySection } from "../ProductBuilderReference";
 
 const gate = (overrides: Partial<Parameters<typeof publishGateForDraft>[0]> = {}) => publishGateForDraft({
   canEdit: true,
@@ -41,5 +41,8 @@ const afterThirdTier = stageProductBuilderDraft(afterSecondTier, (current) => ({
 }));
 assert.deepEqual(afterThirdTier.rows[0].tiers.map((tier) => tier.min), [1, 10, 51], "successive edits compose from the latest staged draft");
 assert.deepEqual(initialMatrix.rows[0].tiers.map((tier) => tier.min), [1, 1, 1], "staging must not mutate the rendered snapshot");
+assert.equal(shouldSaveDraftGeneral(false, new Set()), true, "new Products persist their initial general settings");
+assert.equal(shouldSaveDraftGeneral(true, new Set(["matrix"])), false, "an existing Product saves only its changed matrix section");
+assert.equal(shouldSaveDraftGeneral(true, new Set(["general"])), true, "an explicit general edit remains persistable");
 
 console.log("Product Builder publish-gate state tests passed.");
