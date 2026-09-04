@@ -9,6 +9,7 @@ import {
   uniqueIndex,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   primaryKey,
