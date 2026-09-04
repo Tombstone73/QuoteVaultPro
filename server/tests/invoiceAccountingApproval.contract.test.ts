@@ -34,6 +34,9 @@ test('invoice UI exposes approval list/detail controls and server-side filter', 
   const detail = read('client/src/pages/invoice-detail.tsx');
   const invoiceService = read('server/invoicesService.ts');
   expect(list).toContain('Approve Selected');
+  expect(list).toContain('handleApproveInvoice');
+  expect(list).toContain("await approveInvoices.mutateAsync([invoice.id])");
+  expect(list).toContain('>Approved</TitanTableHead>');
   expect(list).toContain('All accounting approvals');
   expect(detail).toContain('Accounting Approval');
   expect(detail).toContain('Approved for Accounting');

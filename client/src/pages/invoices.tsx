@@ -108,6 +108,7 @@ export default function InvoicesListPage() {
   const [quickSendInvoice, setQuickSendInvoice] = useState<{ id: string; label: string } | null>(null);
   const [needsReviewPromptJob, setNeedsReviewPromptJob] = useState<{ id: string; invoiceId: string; label: string } | null>(null);
   const [reviewJob, setReviewJob] = useState<{ id: string; invoiceId: string; label: string; source: 'direct' | 'queue' } | null>(null);
+  const [approvingInvoiceId, setApprovingInvoiceId] = useState<string | null>(null);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -315,6 +316,20 @@ export default function InvoicesListPage() {
     }
   };
 
+  const handleApproveInvoice = async (invoice: InvoiceListItem) => {
+    if (approveInvoices.isPending) return;
+
+    setApprovingInvoiceId(invoice.id);
+    try {
+      await approveInvoices.mutateAsync([invoice.id]);
+      toast({ title: 'Approved for Accounting' });
+    } catch (error: any) {
+      toast({ title: 'Accounting approval failed', description: error.message, variant: 'destructive' });
+    } finally {
+      setApprovingInvoiceId(null);
+    }
+  };
+
   const renderPaginationControls = (position: "top" | "bottom") => (
     <>
       <div className="text-sm text-muted-foreground" aria-live="polite">
@@ -505,7 +520,7 @@ export default function InvoicesListPage() {
                 {renderSortableHead("issueDate", "Issue Date", "min-w-[120px]")}
                 {renderSortableHead("dueDate", "Due Date", "min-w-[120px]")}
                 {renderSortableHead("status", "Status", "min-w-[130px]")}
-                <TitanTableHead className="min-w-[160px]">Accounting Approval</TitanTableHead>
+                <TitanTableHead className="w-[116px] min-w-[116px]">Approved</TitanTableHead>
                 {renderSortableHead("lastSentAt", "Last Sent", "min-w-[140px]")}
                 {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
                 <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
@@ -598,10 +613,27 @@ export default function InvoicesListPage() {
                       {invoice.displayStatus || statusLabels[invoice.status] || invoice.status}
                     </StatusPill>
                   </TitanTableCell>
-                  <TitanTableCell onClick={(event) => event.stopPropagation()}>
-                    <StatusPill variant={approvalState(invoice) === 'Approved for Accounting' ? 'info' : approvalState(invoice) === 'Needs Reapproval' ? 'warning' : 'muted'}>
-                      {approvalState(invoice)}
-                    </StatusPill>
+                  <TitanTableCell className="w-[116px] min-w-[116px]" onClick={(event) => event.stopPropagation()}>
+                    {approvalState(invoice) === 'Approved for Accounting' ? (
+                      <StatusPill variant="info">Approved</StatusPill>
+                    ) : isAdminOrOwner ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 whitespace-nowrap px-2 text-xs"
+                        aria-label={`Approve invoice ${invoice.invoiceNumber} for accounting`}
+                        disabled={approveInvoices.isPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleApproveInvoice(invoice);
+                        }}
+                      >
+                        {approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Not Approved'}
+                      </Button>
+                    ) : (
+                      <StatusPill variant={approvalState(invoice) === 'Needs Reapproval' ? 'warning' : 'muted'}>Not Approved</StatusPill>
+                    )}
                   </TitanTableCell>
                   <TitanTableCell>
                     <div className="space-y-1">

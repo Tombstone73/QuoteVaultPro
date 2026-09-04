@@ -111,6 +111,18 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
   });
 
+  it("uses the canonical accounting-approval mutation for a compact inline approval control", () => {
+    expect(invoicesPageSource).toContain('<TitanTableHead className="w-[116px] min-w-[116px]">Approved</TitanTableHead>');
+    expect(invoicesPageSource).toContain("const handleApproveInvoice = async (invoice: InvoiceListItem)");
+    expect(invoicesPageSource).toContain("await approveInvoices.mutateAsync([invoice.id])");
+    expect(invoicesPageSource).toContain("if (approveInvoices.isPending) return");
+    expect(invoicesPageSource).toContain("aria-label={`Approve invoice ${invoice.invoiceNumber} for accounting`}");
+    expect(invoicesPageSource).toContain("{approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Not Approved'}");
+    expect(invoicesPageSource).toContain("<StatusPill variant=\"info\">Approved</StatusPill>");
+    expect(invoicesPageSource).toContain("isAdminOrOwner ? (");
+    expect(invoicesPageSource).toContain("event.stopPropagation();\n                          void handleApproveInvoice(invoice);");
+  });
+
   it("detects an uncertain delivery before opening the normal direct-send dialog", () => {
     const quickSend = invoicesPageSource.slice(invoicesPageSource.indexOf("const handleQuickSend"), invoicesPageSource.indexOf("const confirmVerifiedNotSent"));
     expect(quickSend).toContain("invoice.emailDeliveryStatus === 'needs_review'");
