@@ -55,6 +55,7 @@ import {
   resolveOrdersListViewPreferences,
   type OrdersListSortKey,
 } from "@/lib/ordersListPreferences";
+import { resolveOrdersColumnWidths } from "@/lib/ordersTableLayout";
 
 type SortKey = OrdersListSortKey;
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -195,7 +196,7 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "items", label: "Items", defaultVisible: true, defaultWidth: 80, minWidth: 60, maxWidth: 120, sortable: true },
   { key: "total", label: "Total", defaultVisible: true, defaultWidth: 110, minWidth: 80, maxWidth: 150, sortable: true, align: "right" },
   { key: "created", label: "Created", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
-  { key: "actions", label: "Actions", defaultVisible: true, defaultWidth: 200, minWidth: 150, maxWidth: 280 },
+  { key: "actions", label: "Actions", defaultVisible: true, defaultWidth: 112, minWidth: 112, maxWidth: 140 },
 ];
 
 export default function Orders() {
@@ -254,6 +255,20 @@ export default function Orders() {
     ? `titan:listview:orders:user_${user.id}`
     : "orders_column_settings"; // fallback for loading state
   const [columnSettings, setColumnSettings] = useColumnSettings(ORDER_COLUMNS, storageKey);
+  const tableViewportRef = useRef<HTMLDivElement>(null);
+  const [tableViewportWidth, setTableViewportWidth] = useState(0);
+  const autoFit = columnSettings._autoFit === true;
+
+  useEffect(() => {
+    const viewport = tableViewportRef.current;
+    if (!viewport) return;
+    const measure = () => setTableViewportWidth(Math.floor(viewport.clientWidth));
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
@@ -342,6 +357,10 @@ export default function Orders() {
 
   // Computed ordered columns (ensures Actions column always last)
   const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
+  const resolvedColumnWidths = useMemo(
+    () => resolveOrdersColumnWidths(orderedColumns, columnSettings, tableViewportWidth, autoFit),
+    [autoFit, columnSettings, orderedColumns, tableViewportWidth],
+  );
 
   // Stable filters object for query key consistency
   const ordersFilters = useMemo(() => ({
@@ -996,42 +1015,45 @@ export default function Orders() {
 
       case "actions":
         return (
-          <div className="flex gap-1" data-stop-row-nav="true">
+          <div className="flex items-center gap-0.5 whitespace-nowrap" data-stop-row-nav="true">
             <Button
               size="sm"
               variant="ghost"
+              className="h-7 w-7 p-0"
+              title="View order"
               onClick={() => navigate(ROUTES.orders.detail(row.id), { state: { referrer: buildReferrer(location) } })}
             >
               <Eye className="w-4 h-4" />
             </Button>
-            <PrintTicketButton orderId={row.id} iconOnly variant="ghost" />
+            <PrintTicketButton orderId={row.id} iconOnly variant="ghost" className="h-7 w-7 p-0" />
             {isAdminOrOwner && (
               <>
                 <Button
                   size="sm"
                   variant="ghost"
+                  className="h-7 w-7 p-0"
                   onClick={() => navigate(ROUTES.orders.edit(row.id), { state: { referrer: buildReferrer(location) } })}
                   title="Edit order"
                 >
                   <Edit className="w-4 h-4" />
                 </Button>
                 {row.state === "closed" ? (
-                  <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "reopen" })} title="Reopen order">
+                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setPendingStateAction({ order: row, action: "reopen" })} title="Reopen order">
                     <RotateCcw className="w-4 h-4" />
                   </Button>
                 ) : row.state !== "canceled" ? (
                   <>
                     {row.state === "production_complete" && row.routingTarget === "fulfillment" && (row.fulfillmentStatus === "shipped" || row.fulfillmentStatus === "delivered") && (
-                      <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "complete" })} title="Complete order">
+                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setPendingStateAction({ order: row, action: "complete" })} title="Complete order">
                         <Check className="w-4 h-4" />
                       </Button>
                     )}
                     {row.state === "production_complete" && row.routingTarget !== "fulfillment" && row.invoiceState?.key === "paid" && (
-                      <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "close" })} title="Close order">
+                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setPendingStateAction({ order: row, action: "close" })} title="Close order">
                         <Check className="w-4 h-4" />
                       </Button>
                     )}
-                    <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setPendingStateAction({ order: row, action: "cancel" })} title="Cancel order">
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" onClick={() => setPendingStateAction({ order: row, action: "cancel" })} title="Cancel order">
                       <Ban className="w-4 h-4" />
                     </Button>
                   </>
@@ -1237,6 +1259,16 @@ export default function Orders() {
             </span>
           </button>
           <div className="flex items-center gap-3 whitespace-nowrap">
+            <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2" title="Fit Orders columns to the available workspace width.">
+              <Switch
+                id="orders-auto-fit"
+                checked={autoFit}
+                onCheckedChange={(checked) => setColumnSettings((current) => ({ ...current, _autoFit: checked === true }))}
+                aria-label="Toggle Orders auto fit"
+              />
+              <Label htmlFor="orders-auto-fit" className="cursor-pointer text-sm text-foreground">Auto Fit</Label>
+              <Badge variant={autoFit ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">{autoFit ? "On" : "Off"}</Badge>
+            </div>
             <div
               className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2"
               title="Remember this sort when returning to Orders."
@@ -1299,8 +1331,8 @@ export default function Orders() {
           }
           noPadding
         >
-          <div className="overflow-x-auto">
-            <Table className="table-dense">
+          <div ref={tableViewportRef} className="min-w-0">
+            <Table className="table-dense table-fixed" style={{ minWidth: autoFit ? undefined : `${orderedColumns.filter((col) => isVisible(col.key)).reduce((sum, col) => sum + (resolvedColumnWidths[col.key] ?? 0), 0)}px` }}>
               <TableHeader>
                 <TableRow>
                   {orderedColumns.map((col) => {
@@ -1313,8 +1345,8 @@ export default function Orders() {
                     return (
                       <TableHead
                         key={col.key}
-                        className={`${isSortable ? "cursor-pointer hover:bg-muted/50 select-none" : ""} ${isRightAligned ? "text-right" : ""}`}
-                        style={getColStyle(col.key)}
+                        className={`${isSortable ? "cursor-pointer hover:bg-muted/50 select-none" : ""} ${isRightAligned ? "text-right" : ""} ${col.key === "actions" ? "sticky right-0 z-20 bg-background shadow-[-8px_0_8px_-8px_rgba(15,23,42,0.35)]" : ""}`}
+                        style={{ ...getColStyle(col.key), width: resolvedColumnWidths[col.key], minWidth: resolvedColumnWidths[col.key] }}
                         onClick={isSortable ? () => handleSort(col.key as SortKey) : undefined}
                       >
                         {displayName}
@@ -1367,8 +1399,8 @@ export default function Orders() {
                         return (
                           <TableCell 
                             key={col.key}
-                            style={getColStyle(col.key)}
-                            className={col.align === "right" ? "text-right" : ""}
+                            style={{ ...getColStyle(col.key), width: resolvedColumnWidths[col.key], minWidth: resolvedColumnWidths[col.key] }}
+                            className={`${col.align === "right" ? "text-right" : ""} ${col.key === "actions" ? "sticky right-0 z-10 bg-background px-1 shadow-[-8px_0_8px_-8px_rgba(15,23,42,0.25)]" : ""}`}
                             data-stop-row-nav={col.key === "status" ? "true" : undefined}
                             data-testid={col.key === "status" ? `order-status-cell-${order.id}` : undefined}
                           >

@@ -47,8 +47,9 @@ export interface ColumnState {
 export interface ColumnSettings {
   // Stored settings include per-column state plus a special `_columnOrder` list.
   // Keep runtime shape identical, but widen the index signature so `_columnOrder` doesn't violate it.
-  [key: string]: ColumnState | string[] | undefined;
+  [key: string]: ColumnState | string[] | boolean | undefined;
   _columnOrder?: string[]; // Special key to store column order
+  _autoFit?: boolean;
 }
 
 interface ColumnConfigProps {
