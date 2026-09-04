@@ -13,23 +13,22 @@ const operation = (name: string) => async (context: { organizationId: string }, 
 };
 const application = express().use(express.json()).use("/v2/organizations/:organizationId/orders", createOrderRouter({
   principals: { principal: async () => principal },
-  service: { complete: operation("complete"), archive: operation("archive"), unarchive: operation("unarchive") } as OrderHttpDependencies["service"],
+  service: { archive: operation("archive"), unarchive: operation("unarchive") } as OrderHttpDependencies["service"],
 }));
 
-for (const action of ["complete", "archive", "unarchive"] as const) {
+for (const action of ["archive", "unarchive"] as const) {
   const result = await request(application).post(`/v2/organizations/org-a/orders/order-a/${action}`).send({ businessRequestId: `request-${action}`, expectedStateToken: "7", orderId: "body-cannot-retarget" });
   assert.equal(result.status, 200);
   assert.equal(result.body.ok, true);
 }
-assert.deepEqual(calls.map((call) => call.operation), ["complete", "archive", "unarchive"]);
+assert.deepEqual(calls.map((call) => call.operation), ["archive", "unarchive"]);
 for (const call of calls) {
   assert.equal(call.contextOrganizationId, "org-a");
   assert.equal(call.input.orderId, "order-a", "the authoritative path identity replaces any browser-supplied Order identity");
   assert.equal(call.input.expectedStateToken, "7");
 }
-const invalid = await request(application).post("/v2/organizations/org-a/orders/order-a/complete").send({ expectedStateToken: "7" });
-assert.equal(invalid.status, 400);
-assert.equal(invalid.body.error.code, "VALIDATION_ERROR");
+const retiredComplete = await request(application).post("/v2/organizations/org-a/orders/order-a/complete").send({ businessRequestId: "request-complete", expectedStateToken: "7" });
+assert.equal(retiredComplete.status, 404, "routine completion cannot bypass the canonical reconciler");
 
 const listCalls: Record<string, unknown>[] = [];
 const listApplication = express().use("/v2/organizations/:organizationId/orders", createOrderRouter({

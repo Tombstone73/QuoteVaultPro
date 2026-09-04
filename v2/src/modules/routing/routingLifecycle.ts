@@ -4,6 +4,7 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type OrganizationId, type RouteInstanceId } from "../shared/commercialValues.js";
+import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
 import type { CompleteCurrentRouteStepInput, CompleteCurrentRouteStepResult, RouteInstance, RouteInstanceStep, RouteStepKind } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
@@ -36,7 +37,7 @@ const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").u
  * makes the frozen production step current.
  */
 export class RoutingLifecycleApplicationService {
-  constructor(private readonly runner: RoutingLifecycleTransactionRunner, private readonly authority = new AuthorityPolicy()) {}
+  constructor(private readonly runner: RoutingLifecycleTransactionRunner, private readonly authority = new AuthorityPolicy(), private readonly orderLifecycle?: OrderAutomaticLifecycle) {}
 
   async completeCurrentStep(context: OperationContext, input: CompleteCurrentRouteStepInput): Promise<ApplicationResult<CompleteCurrentRouteStepResult>> {
     try {
@@ -46,7 +47,7 @@ export class RoutingLifecycleApplicationService {
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId)
         throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
       if (!input.expectedRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "The current Route revision is required.");
-      return success(await this.runner.transaction(async (tx) => {
+      const result = await this.runner.transaction(async (tx) => {
         const reserved = await tx.reserve({ organizationId: context.organizationId, operation: "routing.step.complete.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) });
         if (reserved.kind === "replay") return reserved.request.resultJson as CompleteCurrentRouteStepResult;
         const route = await tx.lockRouteInstance(brandedId<"OrganizationId">(context.organizationId), input.routeInstanceId);
@@ -64,7 +65,9 @@ export class RoutingLifecycleApplicationService {
         await tx.audit({ organizationId: context.organizationId, requestId: reserved.request.id, operation: "routing.step.complete.v1", resourceId: route.routeInstanceId, completedStep: current, ...(next ? { nextStep: next } : {}), ...actor(context) });
         await tx.succeed(context.organizationId, reserved.request.id, result);
         return result;
-      }));
+      });
+      await this.orderLifecycle?.reconcileOrder(brandedId<"OrganizationId">(context.organizationId), result.routeInstance.work.orderId);
+      return success(result);
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("VALIDATION_ERROR", error instanceof Error ? error.message : "Routing could not be advanced."));
     }

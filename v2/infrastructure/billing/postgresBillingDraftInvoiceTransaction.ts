@@ -243,12 +243,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       const issued = invoices.find((invoice) => invoice.invoice_state === "issued");
       const voided = invoices.find((invoice) => invoice.invoice_state === "void");
       if (issued) {
-        return {
-          invoiceId: brandedId<"InvoiceId">(issued.id),
-          status: "not_editable",
-          reason: "invoice_issued",
-          synchronizationVersion: issued.synchronization_version,
-        };
+        return this.synchronizeLiveInvoice(input, issued);
       }
       if (voided) {
         return {
@@ -270,6 +265,15 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         synchronizationVersion: draft.synchronization_version,
       };
     }
+    return this.synchronizeLiveInvoice(input, draft);
+  }
+
+  /** The issued checkpoint is immutable evidence; the canonical Order-backed
+   * Invoice still projects current commercial facts and keeps its identity. */
+  private async synchronizeLiveInvoice(input: DraftInvoiceSynchronizationInput, invoice: InvoiceRow): Promise<DraftInvoiceSynchronizationResult> {
+    if (invoice.source_sales_state_token === input.sourceSalesStateToken) {
+      return { invoiceId: brandedId<"InvoiceId">(invoice.id), status: "unchanged", synchronizationVersion: invoice.synchronization_version };
+    }
     const totals = await this.totals(input);
     const updated = await this.client.query<{ synchronization_version: string }>(
       `UPDATE v2_billing_invoices SET
@@ -279,11 +283,11 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
         tax_context_reference=$13,tax_calculator_version=$14,tax_evidence=$15::jsonb,sales_adjustment_cents=$16,sales_adjustment_reason=$17,sales_commercial_charge=$18::jsonb,sales_tax_composition=$19::jsonb,
         updated_at=now()
        WHERE organization_id=$1 AND id=$2 AND sales_order_document_id=$3
-         AND invoice_state='draft'
+         AND invoice_state IN ('draft','issued')
        RETURNING synchronization_version`,
       [
         input.organizationId,
-        draft.id,
+        invoice.id,
         input.orderId,
         input.customerContact.customerId ?? null,
         input.customerContact.contactId ?? null,
@@ -299,15 +303,15 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     );
     if (!updated.rows[0]) {
       return {
-        invoiceId: brandedId<"InvoiceId">(draft.id),
+        invoiceId: brandedId<"InvoiceId">(invoice.id),
         status: "not_editable",
         reason: "invoice_issued",
       };
     }
-    await this.writeLines(input, brandedId<"InvoiceId">(draft.id));
-    await enqueueV2QuickBooksAutoSync(this.client, input.organizationId, "invoice", draft.id);
+    await this.writeLines(input, brandedId<"InvoiceId">(invoice.id));
+    await enqueueV2QuickBooksAutoSync(this.client, input.organizationId, "invoice", invoice.id);
     return {
-      invoiceId: brandedId<"InvoiceId">(draft.id),
+      invoiceId: brandedId<"InvoiceId">(invoice.id),
       status: "synchronized",
       synchronizationVersion: updated.rows[0].synchronization_version,
     };

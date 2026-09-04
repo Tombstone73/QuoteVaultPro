@@ -4,6 +4,7 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type FulfillmentHandoffId, type FulfillmentHandoffLineId, type OrderId, type OrganizationId } from "../shared/commercialValues.js";
+import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
 import type { CompleteFulfillmentInput, FulfillmentAvailability, FulfillmentHandoff, FulfillmentHandoffLine, FulfillmentMethod, FulfillmentTerminalResult } from "./contracts.js";
 
 type Actor=Readonly<{principalKind:OperationContext["principal"]["kind"];principalSubject:string;staffActorUserId?:string}>;
@@ -26,7 +27,7 @@ const fingerprint=(x:unknown)=>`sha256:${createHash("sha256").update(canonicalJs
 
 /** Fulfillment writes immutable customer handoffs; Sales owns demand and Production owns physical output. */
 export class FulfillmentApplicationService {
- constructor(private readonly runner:FulfillmentTransactionRunner,private readonly authority=new AuthorityPolicy()){}
+ constructor(private readonly runner:FulfillmentTransactionRunner,private readonly authority=new AuthorityPolicy(),private readonly orderLifecycle?:OrderAutomaticLifecycle){}
  async getAvailability(c:OperationContext,orderId:OrderId):Promise<ApplicationResult<readonly FulfillmentAvailability[]>>{
   try { requireOperationPrincipalScope(c); return success(await this.runner.transaction(async tx=>{
    const projection=await tx.readAvailability(brandedId<"OrganizationId">(c.organizationId),orderId);
@@ -38,7 +39,7 @@ export class FulfillmentApplicationService {
  private async complete(c:OperationContext,input:CompleteFulfillmentInput,method:FulfillmentMethod,operation:string,cap:"fulfillment.pickup"|"fulfillment.ship"):Promise<ApplicationResult<FulfillmentTerminalResult>>{
   try {
    requireOperationPrincipalScope(c); this.validate(c,input);
-   return success(await this.runner.transaction(async tx=>{
+   const result=await this.runner.transaction(async tx=>{
     const org=brandedId<"OrganizationId">(c.organizationId), initial=await tx.readAvailability(org,input.orderId);
     if(!initial)throw new V2ApplicationError("NOT_FOUND","Order was not found."); this.require(c,cap,initial.customerId);
     const r=await tx.reserve({organizationId:c.organizationId,operation,businessRequestId:input.businessRequestId,payloadFingerprint:fingerprint(input),...actor(c)});
@@ -61,7 +62,9 @@ export class FulfillmentApplicationService {
     await tx.attribute({organizationId:c.organizationId,requestId:r.request.id,operation,resourceId:handoff.handoffId,...actor(c)});
     await tx.audit({organizationId:c.organizationId,requestId:r.request.id,operation,method,resourceId:handoff.handoffId,allocations,...actor(c)});
     await tx.succeed(c.organizationId,r.request.id,result); return result;
-   }));
+   });
+   await this.orderLifecycle?.reconcileOrder(brandedId<"OrganizationId">(c.organizationId),input.orderId);
+   return success(result);
   } catch(e) { return failure(this.error(e)); }
  }
  private validate(c:OperationContext,input:CompleteFulfillmentInput){if(!c.businessRequest||c.businessRequest.id!==input.businessRequestId)throw new V2ApplicationError("VALIDATION_ERROR","A matching business request identity is required.");if(!input.allocations.length)throw new V2ApplicationError("VALIDATION_ERROR","At least one OrderLine allocation is required.");const ids=new Set<string>();for(const a of input.allocations){if(!a.orderLineId||!Number.isSafeInteger(a.quantity)||a.quantity<=0)throw new V2ApplicationError("VALIDATION_ERROR","Fulfillment quantities must be positive safe integers.");if(ids.has(a.orderLineId))throw new V2ApplicationError("VALIDATION_ERROR","An OrderLine may appear only once in a handoff.");ids.add(a.orderLineId);}}

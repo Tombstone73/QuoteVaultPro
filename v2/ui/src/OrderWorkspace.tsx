@@ -415,11 +415,6 @@ export const OrderWorkspace = (
     onSuccess: (result) => { apply(result); complete("cancel"); setNotice("Order cancelled. Billing and downstream history were preserved."); },
     onError: (error) => setNotice(message(error)),
   });
-  const completeOrder = useMutation({
-    mutationFn: () => orderApi.complete(props.organizationId, props.orderId, requestId("complete", { revision: current!.revision }), current!.revision),
-    onSuccess: (result) => { apply(result); complete("complete"); setNotice("Order marked complete. Billing and financial state were unchanged."); },
-    onError: (error) => setNotice(message(error)),
-  });
   const archiveOrder = useMutation({
     mutationFn: () => orderApi.archive(props.organizationId, props.orderId, requestId("archive", { revision: current!.revision }), current!.revision),
     onSuccess: (result) => { apply(result); complete("archive"); setNotice("Order archived. Its operational and financial history remains available."); },
@@ -448,7 +443,9 @@ export const OrderWorkspace = (
     return <div className="notice error">{message(order.error)}</div>;
   const routeFor = (lineId: string) =>
     current.routes.find((route) => route.work.orderLineId === lineId);
-  const editable = props.canEdit && current.order.commercialState === "open";
+  // Closed is a derived state. A permitted current commercial revision is
+  // allowed to reopen it; cancelled and archived records stay read-only.
+  const editable = props.canEdit && current.order.commercialState !== "cancelled" && !current.order.archivedAt;
   const change = (lineChanges: unknown[]) =>
     update.mutate({
       expectedRevision: current.revision,
@@ -857,11 +854,6 @@ export const OrderWorkspace = (
                 if (reason?.trim()) cancelOrder.mutate(reason.trim());
                 else if (reason !== null) setNotice("A cancellation reason is required.");
               }}>{cancelOrder.isPending ? "Cancelling…" : "Cancel Order"}</button>
-            )}
-            {props.canEdit && current.order.commercialState === "open" && (
-              <button className="button secondary" type="button" title={current.completionEligibility.eligible ? "All required operational work is complete." : current.completionEligibility.blockers.map((blocker) => blocker.reason).join(" ")} disabled={!current.completionEligibility.eligible || completeOrder.isPending || !props.csrfReady} onClick={() => completeOrder.mutate()}>
-                {completeOrder.isPending ? "Completing…" : "Mark Order Complete"}
-              </button>
             )}
             {props.canEdit && current.order.commercialState !== "open" && !current.order.archivedAt && (
               <button className="button secondary" type="button" disabled={archiveOrder.isPending || !props.csrfReady} onClick={() => archiveOrder.mutate()}>{archiveOrder.isPending ? "Archiving…" : "Archive Order"}</button>

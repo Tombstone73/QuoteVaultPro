@@ -16,10 +16,11 @@ import { StripeProviderIngress, productionStripeWebhookVerifier } from "./stripe
 import { StripePaymentInitiation } from "./stripePaymentInitiation.js";
 import { PostgresStripeConnectAccounts } from "./stripeConnectAccounts.js";
 import { PostgresInvoiceEmailDeliveryQueue } from "../communications/invoiceEmailDeliveryQueue.js";
+import type { OrderAutomaticLifecycle } from "../../src/modules/sales/orderAutomaticLifecycle.js";
 
-export type AuthenticatedBillingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; publicWebOrigin?:string }>;
+export type AuthenticatedBillingRuntimeDependencies = Readonly<{ pool: Pool; trustedHostIdentity: TrustedHostIdentitySource; trustedHostMiddleware: RequestHandler; publicWebOrigin?:string; orderLifecycle?: OrderAutomaticLifecycle }>;
 export const composeAuthenticatedBillingRuntime = (input: AuthenticatedBillingRuntimeDependencies): Readonly<{ dependencies: InvoiceHttpDependencies & import("../../src/interfaces/http/financeRoutes.js").FinanceHttpDependencies & Readonly<{ stripeIngress: StripeProviderIngress; stripeConnect:PostgresStripeConnectAccounts }>; trustedHostMiddleware: RequestHandler }> => {
-  const payments = new BillingPaymentsApplicationService(new PostgresBillingPaymentsTransactionRunner(input.pool));
+  const payments = new BillingPaymentsApplicationService(new PostgresBillingPaymentsTransactionRunner(input.pool), undefined, input.orderLifecycle);
   const stripeConnect=new PostgresStripeConnectAccounts(input.pool,input.publicWebOrigin);
   return {
     dependencies: {

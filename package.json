@@ -81,7 +81,7 @@
     "v2:quote-conversion-storage:pure": "tsx v2/tests/infrastructure/quoteConversionResultStorage.pure.ts",
     "v2:quote-conversion-http:pure": "tsx v2/tests/interfaces/quoteConversionHttpProjection.pure.ts",
     "v2:order-duplicate-audit:pure": "tsx v2/tests/modules/orderDuplicateAuditUniqueness.pure.ts",
-    "v2:order-lifecycle:pure": "tsx v2/tests/modules/orderCompletionLifecycle.pure.ts && tsx v2/tests/interfaces/orderLifecycleRoutes.pure.ts",
+    "v2:order-lifecycle:pure": "tsx v2/tests/modules/orderAutomaticLifecycle.pure.ts && tsx v2/tests/modules/orderCompletionLifecycle.pure.ts && tsx v2/tests/interfaces/orderLifecycleRoutes.pure.ts",
     "v2:m1:quote-conversion": "tsx v2/scripts/runM110QuoteConversionRehearsal.ts",
     "v2:m5:commercial-parity": "jest --runInBand v2/tests/parity/commercialSpineParity.test.ts",
     "v2:m5:operational-parity": "jest --runInBand v2/tests/parity/operationalSpineParity.test.ts",

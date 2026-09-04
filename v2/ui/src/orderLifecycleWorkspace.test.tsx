@@ -42,18 +42,17 @@ const markup = (value: OrderRead) => {
 };
 
 const eligibleOpen = markup(order("open"));
-assert.match(eligibleOpen, /Mark Order Complete/);
+assert.doesNotMatch(eligibleOpen, /Mark Order Complete/);
 assert.doesNotMatch(eligibleOpen, /Archive Order|Unarchive Order/);
 
 const blockedOpen = markup(order("open", false));
-assert.match(blockedOpen, /Order completion unavailable/);
-assert.match(blockedOpen, /1 item remains to be fulfilled/);
-assert.match(blockedOpen, /Mark Order Complete/);
+assert.doesNotMatch(blockedOpen, /Mark Order Complete/);
+assert.doesNotMatch(blockedOpen, /Archive Order|Unarchive Order/);
 
 const completed = markup(order("completed"));
 assert.match(completed, /Archive Order/);
 assert.doesNotMatch(completed, /Mark Order Complete/);
-assert.match(completed, /<button class="button" type="button" disabled="">Save<\/button>/);
+assert.match(completed, /<button class="button" type="button">Save<\/button>/, "a current commercial revision may reopen a closed Order");
 
 const archived = markup(order("completed", true, true));
 assert.match(archived, /Unarchive Order/);

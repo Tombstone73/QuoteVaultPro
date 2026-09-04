@@ -616,7 +616,7 @@ export const ProductionWorkspace = ({
       ]),
     ).values(),
   ];
-  const totalWork = allWork.length;
+  const totalWork = (flatbedQueue.data?.pagination.totalCount ?? 0) + (rollQueue.data?.pagination.totalCount ?? 0);
   const activeWork = allWork.filter((item) =>
     item.attempts.some((attempt) => !attempt.completedAt),
   ).length;
@@ -725,19 +725,19 @@ export const ProductionWorkspace = ({
             aria-label="Production summary"
           >
             <article>
-              <small>In production</small>
+              <small>In production (visible)</small>
               <b>{activeWork}</b>
             </article>
             <article>
               <small>Flatbed queue</small>
-              <b>{stationQueues.flatbed.length}</b>
+              <b>{flatbedQueue.data?.pagination.totalCount ?? 0}</b>
             </article>
             <article>
               <small>Roll queue</small>
-              <b>{stationQueues.roll.length}</b>
+              <b>{rollQueue.data?.pagination.totalCount ?? 0}</b>
             </article>
             <article>
-              <small>Units satisfied</small>
+              <small>Units satisfied (visible)</small>
               <b>{satisfiedWork}</b>
             </article>
           </section>

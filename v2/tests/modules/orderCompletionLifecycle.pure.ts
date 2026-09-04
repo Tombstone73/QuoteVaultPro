@@ -179,18 +179,23 @@ const [applicationSource, persistenceSource, migration, billingSource, workspace
   readFile(new URL("../../infrastructure/proofing/postgresProofingTransaction.ts", import.meta.url), "utf8"),
   readFile(new URL("../../infrastructure/fulfillment/postgresFulfillmentWorkspaceReads.ts", import.meta.url), "utf8"),
 ]);
-assert.match(applicationSource, /Only an open Order can be edited/);
+assert.match(applicationSource, /if \(wasCompleted && !await tx\.reopen/, "a commercial revision first reopens a completed Order");
+assert.match(applicationSource, /automaticLifecycle\?\.reconcileOrder/, "commercial changes trigger canonical lifecycle reconciliation");
 assert.match(persistenceSource, /FROM v2_sales_document_lines/);
 assert.doesNotMatch(persistenceSource.slice(persistenceSource.indexOf("async complete("), persistenceSource.indexOf("async cancel(")), /v2_billing_payments|v2_billing_refunds|v2_quickbooks/);
 assert.match(migration, /archived_at IS NOT NULL AND commercial_state IN \('completed', 'cancelled'\)/);
 assert.match(migration, /Production attempts require an open Order/);
+const liveInvoiceRevisionMigration = await readFile(new URL("../../../server/db/migrations_v2/0260_v2_live_order_invoice_revisions.sql", import.meta.url), "utf8");
+assert.match(liveInvoiceRevisionMigration, /issued Invoice checkpoint lifecycle is immutable/);
+assert.match(liveInvoiceRevisionMigration, /RETURN NEW/, "issued Invoice current projection may revise without replacing its identity");
 assert.match(billingSource, /commercial_state==="cancelled"/, "completed Orders retain independent Billing issuance");
 assert.match(workspaceSource, /o\.archived_at IS NULL/);
 assert.match(workspaceSource, /o\.archived_at IS NOT NULL/);
 assert.match(workspaceSource, /created_at AS occurred_at/, "Order audit history uses the canonical audit timestamp column");
 assert.match(workspaceSource, /='canceled' THEN 'cancelled'/, "legacy cancelled Orders remain discoverable through the canonical lifecycle scope");
-assert.match(orderWorkspaceSource, /canUpload=\{props\.canViewArtwork && editable\}/, "terminal Order artwork replacement is not offered");
+assert.match(orderWorkspaceSource, /commercial revision is[\s/]*allowed to reopen it/, "closed Orders can accept an authorized current commercial revision");
 assert.match(orderWorkspaceSource, /"order-history",\s*result\.order\.order\.orderId/, "lifecycle mutations refresh persisted audit history");
+assert.doesNotMatch(orderWorkspaceSource, /Mark Order Complete/, "routine manual completion is retired from the Order UI");
 for (const queueSource of [productionSource, prepressSource, proofingSource, fulfillmentSource])
   assert.match(queueSource, /archived_at IS NULL/, "archived Orders are absent from normal operational queues");
 

@@ -52,6 +52,7 @@ import {
   type SellingPriceDecision,
 } from "./contracts.js";
 import type { OrderCompletionEligibility } from "./orderLifecycle.js";
+import type { OrderAutomaticLifecycle } from "./orderAutomaticLifecycle.js";
 import type { CommercialCharge } from "./taxComposition.js";
 import type { SalesTaxComposition } from "./taxComposition.js";
 import type { SalesDocumentNumber } from "./persistenceContracts.js";
@@ -264,6 +265,9 @@ export interface OrderTransaction {
    * decide whether cancellation would create an impossible state. */
   cancellationBlockers(organizationId: OrganizationId, orderId: OrderId): Promise<readonly string[]>;
   completionEligibility(organizationId: OrganizationId, orderId: OrderId): Promise<OrderCompletionEligibility>;
+  /** A commercial revision invalidates a derived closed state before the
+   * revised canonical Invoice and obligations are recalculated. */
+  reopen(organizationId: OrganizationId, orderId: OrderId): Promise<boolean>;
   complete(input: Readonly<{
     organizationId: OrganizationId; orderId: OrderId; expectedRevision: number;
     principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string;
@@ -426,6 +430,7 @@ export class OrderApplicationService {
   constructor(
     private readonly runner: OrderTransactionRunner,
     private readonly authority = new AuthorityPolicy(),
+    private readonly automaticLifecycle?: OrderAutomaticLifecycle,
   ) {}
 
   async create(
@@ -615,14 +620,15 @@ export class OrderApplicationService {
     context: OperationContext,
     input: UpdateOrderInput,
   ): Promise<ApplicationResult<OrderOperationResult>> {
-    return this.mutate(context, "sales.order.edit.v1", input, "order.edit", async (tx, request) => {
+    const result = await this.mutate(context, "sales.order.edit.v1", input, "order.edit", async (tx, request) => {
       const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
       if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
       requireAllowed(this.authority, context, "order.edit", current.order.customerContact.customerId);
-      if (current.order.commercialState !== "open")
-        throw new V2ApplicationError("CONFLICT", "Only an open Order can be edited.");
+      if (current.order.commercialState === "cancelled")
+        throw new V2ApplicationError("CONFLICT", "A cancelled Order cannot be edited.");
       if (current.revision !== input.expectedRevision)
         throw new V2ApplicationError("STALE_STATE", "Order has changed; reload before editing.");
+      const wasCompleted = current.order.commercialState === "completed";
 
       const patch = input.patch;
       const customerContact = patch.customerContact ?? current.order.customerContact;
@@ -652,6 +658,8 @@ export class OrderApplicationService {
         if (!invoiceId) throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice is missing.");
         return { order: current, draftInvoiceId: invoiceId, routeInstances: [] };
       }
+      if (wasCompleted && !await tx.reopen(brandedId<"OrganizationId">(context.organizationId), input.orderId))
+        throw new V2ApplicationError("STALE_STATE", "Order lifecycle changed; reload before editing.");
 
       const applied = await tx.update({
         organizationId: brandedId<"OrganizationId">(context.organizationId),
@@ -695,12 +703,15 @@ export class OrderApplicationService {
       const routeInstances = await this.instantiateRoutes(tx, context, input.orderId, added);
       const order = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId);
       if (!order) throw new Error("Updated Order could not be read.");
-      const changes = [...this.headerChanges(current.order, order.order), ...this.lineChanges(current.order.lines, order.order.lines)];
+      const lifecycleChanges: readonly MeaningfulAuditChange[] = wasCompleted ? [{ group: "lifecycle", kind: "order_auto_reopened", summary: "Order reopened because its current commercial facts are being revised." }] : [];
+      const changes = [...lifecycleChanges, ...this.headerChanges(current.order, order.order), ...this.lineChanges(current.order.lines, order.order.lines)];
       await this.history(tx, context, request.id, "sales.order.edit.v1", {
         eventType: "order_updated", resourceId: input.orderId, changes,
       });
       return { order, draftInvoiceId: draft.invoiceId, routeInstances };
     });
+    if (result.ok) await this.automaticLifecycle?.reconcileOrder(brandedId<"OrganizationId">(context.organizationId), input.orderId);
+    return result;
   }
 
   /**

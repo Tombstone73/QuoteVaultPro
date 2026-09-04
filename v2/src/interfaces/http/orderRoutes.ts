@@ -318,13 +318,6 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
     } catch (cause) { error(response, cause); }
   });
 
-  router.post("/:orderId/complete", async (request, response) => {
-    try {
-      if (!dependencies.service.complete) throw new V2ApplicationError("INTERNAL_ERROR", "Order completion runtime is unavailable.");
-      send(response, await dependencies.service.complete(await context(request, dependencies, true), commandForOrder(request)));
-    } catch (cause) { error(response, cause); }
-  });
-
   router.post("/:orderId/archive", async (request, response) => {
     try {
       if (!dependencies.service.archive) throw new V2ApplicationError("INTERNAL_ERROR", "Order archive runtime is unavailable.");

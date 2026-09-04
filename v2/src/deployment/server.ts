@@ -20,6 +20,13 @@ import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/aut
 import { composeAuthenticatedOrderRuntime } from "../../infrastructure/sales/authenticatedOrderRuntime.js";
 import { OrderApplicationService } from "../modules/sales/orderApplication.js";
 import { PostgresOrderTransactionRunner } from "../../infrastructure/sales/postgresOrderTransaction.js";
+import { PostgresOrderAutomaticLifecycle } from "../../infrastructure/sales/postgresOrderAutomaticLifecycle.js";
+import { ProductionApplicationService } from "../modules/production/productionApplication.js";
+import { PostgresProductionTransactionRunner } from "../../infrastructure/production/postgresProductionTransaction.js";
+import { FulfillmentApplicationService } from "../modules/fulfillment/fulfillmentApplication.js";
+import { PostgresFulfillmentTransactionRunner } from "../../infrastructure/fulfillment/postgresFulfillmentTransaction.js";
+import { RoutingLifecycleApplicationService } from "../modules/routing/routingLifecycle.js";
+import { PostgresRoutingLifecycleTransactionRunner } from "../../infrastructure/routing/postgresRoutingLifecycleTransaction.js";
 import { composeAuthenticatedBillingRuntime } from "../../infrastructure/billing/authenticatedBillingRuntime.js";
 import { composeAuthenticatedArtworkRuntime } from "../../infrastructure/artwork/authenticatedArtworkRuntime.js";
 import { composeAuthenticatedProofingRuntime } from "../../infrastructure/proofing/authenticatedProofingRuntime.js";
@@ -46,20 +53,21 @@ export const createV2DeploymentApp = (
   authentication: StandaloneStaffAuthentication,
 ) => {
   const { trustedHostIdentity, trustedHostMiddleware } = authentication;
+  const orderLifecycle = new PostgresOrderAutomaticLifecycle(pool);
   const quote = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const order = composeAuthenticatedOrderRuntime({
     pool,
     trustedHostIdentity,
     trustedHostMiddleware,
-    service: new OrderApplicationService(new PostgresOrderTransactionRunner(pool)),
+    service: new OrderApplicationService(new PostgresOrderTransactionRunner(pool), undefined, orderLifecycle),
   });
-  const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, publicWebOrigin: authentication.publicWebOrigin });
+  const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, publicWebOrigin: authentication.publicWebOrigin, orderLifecycle });
   const artwork = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const proofing = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const prepress = composeAuthenticatedPrepressRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
-  const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
-  const fulfillment = composeAuthenticatedFulfillmentRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
-  const routing = composeAuthenticatedRoutingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new ProductionApplicationService(new PostgresProductionTransactionRunner(pool), undefined, orderLifecycle) });
+  const fulfillment = composeAuthenticatedFulfillmentRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new FulfillmentApplicationService(new PostgresFulfillmentTransactionRunner(pool), undefined, orderLifecycle) });
+  const routing = composeAuthenticatedRoutingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new RoutingLifecycleApplicationService(new PostgresRoutingLifecycleTransactionRunner(pool), undefined, orderLifecycle) });
   const inventory = composeAuthenticatedInventoryRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const formulas = composeAuthenticatedFormulaRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const emailIntegration = composeAuthenticatedEmailIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });

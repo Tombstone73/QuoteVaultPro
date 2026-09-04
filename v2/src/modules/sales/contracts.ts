@@ -164,7 +164,7 @@ export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{
   group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment" | "lifecycle";
-  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_archived" | "order_unarchived";
+  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_auto_reopened" | "order_archived" | "order_unarchived";
   resourceId?: SalesLineId | CustomerId | ContactId;
   summary: string;
 }>;

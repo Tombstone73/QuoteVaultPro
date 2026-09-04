@@ -256,6 +256,10 @@ export class PostgresOrderTransaction implements OrderTransaction {
       requiresProduction: row.requires_production, orderedQuantity: row.quantity, productionComplete: row.production_complete,
       fulfilledQuantity: Number(row.fulfilled_quantity), routeComplete: row.route_complete })));
   }
+  async reopen(organizationId: OrganizationId, orderId: OrderId): Promise<boolean> {
+    const state = await this.client.query("UPDATE v2_sales_order_details SET commercial_state='open',completed_at=NULL,completed_principal_kind=NULL,completed_principal_subject=NULL,completed_staff_actor_user_id=NULL,archived_at=NULL,archived_principal_kind=NULL,archived_principal_subject=NULL,archived_staff_actor_user_id=NULL,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state='completed'", [organizationId, orderId]);
+    return state.rowCount === 1;
+  }
   async complete(input: Parameters<OrderTransaction["complete"]>[0]): Promise<boolean> {
     const state = await this.client.query("UPDATE v2_sales_order_details SET commercial_state='completed',completed_at=now(),completed_principal_kind=$3,completed_principal_subject=$4,completed_staff_actor_user_id=$5,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state='open'", [input.organizationId,input.orderId,input.principalKind,input.principalSubject,input.staffActorUserId??null]);
     if (state.rowCount !== 1) return false;
