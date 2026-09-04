@@ -19,6 +19,7 @@ import {
   storedQuickBooksProjectionLines as storedProjectionLines,
   type QuickBooksInvoiceProjection as InvoiceProjection,
 } from "./quickBooksLiveInvoiceProjection.js";
+import { quickBooksPaymentReference } from "./quickBooksPaymentReference.js";
 export { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
 
 export type QuickBooksSyncSubject = "invoice" | "payment" | "refund";
@@ -339,9 +340,31 @@ export class V2QuickBooksBillingWorker {
       const customerQuickBooksId = await this.link(job.organizationId, "customer", row.customer_id);
       if (!customerQuickBooksId) throw new Error("V2 Payment waits for its Customer QuickBooks projection.");
       const existingPayment = await this.link(job.organizationId, "payment", job.subjectId);
-      const provider = await syncV2PaymentToQuickBooks({ organizationId: job.organizationId, paymentId: job.subjectId, quickBooksPaymentId: existingPayment ?? undefined, quickBooksInvoiceId: invoiceLink.providerId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString() });
+      const provider = await syncV2PaymentToQuickBooks({ organizationId: job.organizationId, paymentId: job.subjectId, quickBooksPaymentId: existingPayment ?? undefined, ...(existingPayment ? {} : { paymentReference: await this.paymentReference(client, job.organizationId, job.subjectId) }), quickBooksInvoiceId: invoiceLink.providerId, quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.amount_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString() });
       await this.upsertLink(job.organizationId, "payment", job.subjectId, provider.qbPaymentId);
     } finally { client.release(); }
+  }
+
+  /** Exactly one persisted PMT sequence belongs to one V2 Payment. It is
+   * integration evidence, allowing a lost provider response to be reconciled
+   * by the same PaymentRefNum instead of creating another Payment. */
+  private async paymentReference(client: QuickBooksQueueClient, organizationId: string, paymentId: string): Promise<string> {
+    await client.query("BEGIN");
+    try {
+      const existing = await client.query<{ payment_ref_num: string }>("SELECT payment_ref_num FROM v2_quickbooks_payment_references WHERE organization_id=$1 AND payment_id=$2 FOR KEY SHARE", [organizationId, paymentId]);
+      if (existing.rows[0]) { await client.query("COMMIT"); return existing.rows[0].payment_ref_num; }
+      const allocated = await client.query<{ sequence_number: string }>(`INSERT INTO v2_quickbooks_payment_reference_counters(organization_id,next_sequence) VALUES($1,2)
+        ON CONFLICT(organization_id) DO UPDATE SET next_sequence=v2_quickbooks_payment_reference_counters.next_sequence+1
+        WHERE v2_quickbooks_payment_reference_counters.next_sequence <= 99999999999999999
+        RETURNING (next_sequence-1)::text sequence_number`, [organizationId]);
+      const sequence = allocated.rows[0]?.sequence_number;
+      if (!sequence) throw new Error("QuickBooks Payment reference sequence is exhausted.");
+      const reference = quickBooksPaymentReference(sequence);
+      const created = await client.query<{ payment_ref_num: string }>(`INSERT INTO v2_quickbooks_payment_references(organization_id,payment_id,sequence_number,payment_ref_num)
+        VALUES($1,$2,$3::bigint,$4) RETURNING payment_ref_num`, [organizationId, paymentId, sequence, reference]);
+      await client.query("COMMIT");
+      return created.rows[0]!.payment_ref_num;
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
   }
 
   /**
