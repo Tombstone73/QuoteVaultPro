@@ -98,7 +98,7 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("uses compact accessible quick actions and sends through the canonical delivery queue", () => {
-    expect(invoicesPageSource).toContain("handleQuickSend(invoice.id)");
+    expect(invoicesPageSource).toContain("handleQuickSend(invoice)");
     expect(invoicesPageSource).toContain("invoiceIds: [invoiceId], dryRun: true");
     expect(invoicesPageSource).toContain("invoiceIds: [invoiceId], idempotencyKey");
     expect(invoicesPageSource).toContain("Send Invoice</TooltipContent>");
@@ -109,6 +109,13 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("aria-label={`Send invoice ${invoice.invoiceNumber}`}");
     expect(invoicesPageSource).toContain('isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"');
     expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
+  });
+
+  it("detects an uncertain delivery before showing the normal queue confirmation", () => {
+    const quickSend = invoicesPageSource.slice(invoicesPageSource.indexOf("const handleQuickSend"), invoicesPageSource.indexOf("const confirmVerifiedNotSent"));
+    expect(quickSend).toContain("invoice.emailDeliveryStatus === 'needs_review'");
+    expect(quickSend).toContain("setNeedsReviewPromptJob");
+    expect(quickSend.indexOf("invoice.emailDeliveryStatus === 'needs_review'")).toBeLessThan(quickSend.indexOf("dryRun: true"));
   });
 
   it("keeps queued, sending, retrying, and failed delivery states distinct from Last Sent", () => {
@@ -123,18 +130,23 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain('"queued", "processing", "retrying"');
   });
 
-  it("provides a bounded, polling email queue view with no unsafe retry action", () => {
+  it("provides a bounded, polling email queue with an explicit needs-review resolution flow", () => {
     expect(invoicesPageSource).toContain("Invoice Email Queue");
     expect(invoicesPageSource).toContain("invoice-email-queue-open");
     expect(invoicesPageSource).toContain("Active");
     expect(invoicesPageSource).toContain("Delivery Failed");
-    expect(invoicesPageSource).toContain("Retry blocked:");
+    expect(invoicesPageSource).toContain("Delivery outcome uncertain. Retry blocked until reviewed.");
     expect(invoicesPageSource).toContain("Safe to send again:");
+    expect(invoicesPageSource).toContain(">Review</Button>");
+    expect(invoicesPageSource).toContain("I verified this email was not sent. Retry delivery.");
+    expect(invoicesPageSource).toContain("Keep Blocked");
+    expect(invoicesPageSource).toContain("Previous delivery needs review");
     expect(invoicesPageSource).toContain("Stale");
     expect(invoicesPageSource).toContain("navigate(`/invoices/${job.invoiceId}`)");
     expect(invoicesPageSource).not.toContain("Retry email");
     expect(invoiceHooksSource).toContain("useInvoiceEmailQueue");
     expect(invoiceHooksSource).toContain("email-queue?view=");
+    expect(invoiceHooksSource).toContain("useResolveInvoiceEmailDeliveryReview");
   });
 
   it("shows Take Payment for a live draft balance, but not void or zero-balance invoices", () => {

@@ -30,6 +30,8 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).toContain("generateInvoicePdfBytes");
     expect(route).toContain("createInvoicePdfEmailAttachment");
     expect(route).toContain("buildInvoiceEmailSentAudit");
+    expect(route).toContain('logQueueDeliveryStage("gmail_accepted"');
+    expect(route).toContain('logQueueDeliveryStage("delivery_persistence_completed"');
   });
 
   test("persists one active job per invoice-recipient-version and claims it safely", () => {
@@ -71,6 +73,20 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).toContain("Previous delivery needs review because the provider outcome is uncertain.");
   });
 
+  test("requires an explicit verified-not-sent review before one replacement job can be queued", () => {
+    expect(queue).toContain("resolveInvoiceEmailDeliveryNeedsReview");
+    expect(queue).toContain("FOR UPDATE");
+    expect(queue).toContain('resolution: "verified_not_sent"');
+    expect(queue).toContain("originalNeedsReviewJobId");
+    expect(queue).toContain("replacementJobId");
+    expect(queue).toContain('status: "failed"');
+    expect(queue).toContain('status: "queued"');
+    expect(queue).toContain("needs-review-retry:");
+    expect(retrySafetyMigration).toContain("invoice_email_delivery_jobs_active_guard_uidx");
+    expect(route).toContain('app.post("/api/invoices/email-queue/:jobId/resolve"');
+    expect(route).toContain("invoice_email_delivery_verified_not_sent");
+  });
+
   test("keeps every invoice send entry point on the durable queue", () => {
     const directSendRoute = route.slice(route.indexOf('app.post("/api/invoices/:id/send"'), route.indexOf('app.post("/api/invoices/batch-send"'));
     expect(directSendRoute).toContain("enqueueBulkInvoiceEmailCampaign");
@@ -85,7 +101,7 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("This deliberately describes the queue job, not");
   });
 
-  test("exposes a bounded tenant-scoped read-only queue list without an unsafe retry mutation", () => {
+  test("exposes a bounded tenant-scoped queue list and only the explicit review resolution mutation", () => {
     expect(route).toContain('app.get("/api/invoices/email-queue"');
     expect(route).toContain("listInvoiceEmailDeliveryJobs");
     expect(queue).toContain("InvoiceEmailQueueView");

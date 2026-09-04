@@ -32,6 +32,7 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAcc
   // Queue state is diagnostic only. Last Sent remains populated exclusively
   // after the provider-successful canonical email log is written.
   emailDeliveryStatus: InvoiceEmailDeliveryStatus | null;
+  emailDeliveryJobId: string | null;
   emailDeliveryFailureReason: string | null;
   emailDeliveryUpdatedAt: string | null;
   // Reminder tracking
@@ -61,7 +62,7 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
 }
 
-export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; };
+export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: { deliveryReview?: { resolution?: 'verified_not_sent'; reviewedAt?: string; reviewedByUserName?: string | null; replacementJobId?: string } }; };
 export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; pagination: InvoiceListPagination; counts: { active: number; failed: number; needsReview: number }; claimSeconds: number };
 
 export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'all', page: number) {
@@ -671,6 +672,27 @@ export function useBatchSendInvoices() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+    },
+  });
+}
+
+export function useResolveInvoiceEmailDeliveryReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ jobId }: { jobId: string }) => {
+      const response = await fetch(`/api/invoices/email-queue/${jobId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolution: 'verified_not_sent' }),
+        credentials: 'include',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Unable to resolve invoice email delivery');
+      return payload.data as { originalJobId: string; replacementJob: { id: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number }; replayed: boolean };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', 'email-queue'] });
     },
   });
 }

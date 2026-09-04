@@ -2,7 +2,7 @@ import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 import { buildRawMessage, normalizeEmailAttachments, type EmailAttachment } from "./lib/emailMime";
-import { markInvoiceEmailDeliveryFailure } from "./services/invoiceBulkEmailQueue.service";
+import { markInvoiceEmailDeliveryFailure } from "./services/invoiceEmailDeliveryFailure";
 export { buildRawMessage, normalizeEmailAttachments } from "./lib/emailMime";
 
 /**
@@ -166,10 +166,11 @@ class EmailService {
   /**
    * Create Gmail API client with OAuth2 credentials
    */
-  private async createGmailClient(config: EmailConfig) {
+  private async createGmailClient(config: EmailConfig, deliveryJobId?: string | null) {
     console.log('[EmailService] [STAGE: create-gmail-client] Creating Gmail API client:', {
       fromAddress: config.fromAddress,
       provider: config.provider,
+      deliveryJobId: deliveryJobId || undefined,
     });
 
     const OAuth2 = google.auth.OAuth2;
@@ -187,18 +188,19 @@ class EmailService {
     });
 
     // Get access token with timeout
-    console.log('[EmailService] [STAGE: fetch-access-token] Requesting OAuth2 access token from Google...');
+    console.log('[EmailService] [STAGE: gmail-auth-started] Requesting OAuth2 access token from Google...', { deliveryJobId: deliveryJobId || undefined });
     try {
       await withTimeout(
         'OAuth2 access token retrieval',
         10000, // 10 second timeout
         oauth2Client.getAccessToken()
       );
-      console.log('[EmailService] [STAGE: fetch-access-token] ✅ OAuth2 access token obtained successfully');
+      console.log('[EmailService] [STAGE: gmail-auth-succeeded] OAuth2 access token obtained successfully', { deliveryJobId: deliveryJobId || undefined });
     } catch (error: any) {
       console.error('[EmailService] [STAGE: fetch-access-token] ❌ Failed to get OAuth2 access token:', {
         error: error.message,
         code: error.code,
+        deliveryJobId: deliveryJobId || undefined,
       });
       if (error.message.includes('timed out')) {
         throw markInvoiceEmailDeliveryFailure(new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.'), 'retryable');
@@ -214,7 +216,7 @@ class EmailService {
 
     // Create Gmail API client
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-    console.log('[EmailService] [STAGE: create-gmail-client] ✅ Gmail API client created');
+    console.log('[EmailService] [STAGE: create-gmail-client] Gmail API client created', { deliveryJobId: deliveryJobId || undefined });
     
     return gmail;
   }
@@ -229,8 +231,9 @@ class EmailService {
     text?: string;
     replyTo?: string;
     attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+    deliveryJobId?: string | null;
   }): Promise<string> {
-    const gmail = await this.createGmailClient(config);
+    const gmail = await this.createGmailClient(config, options.deliveryJobId);
 
     const fromAddress = `"${config.fromName}" <${config.fromAddress}>`;
     console.log(`[EmailService] Using From: "${config.fromName}" <${config.fromAddress}>`);
@@ -248,7 +251,7 @@ class EmailService {
       attachments: options.attachments,
     });
 
-    console.log('[EmailService] [STAGE: send-via-gmail-api] Sending email via Gmail API...');
+    console.log('[EmailService] [STAGE: gmail-send-invoked] Sending email via Gmail API...', { deliveryJobId: options.deliveryJobId || undefined });
     try {
       const result = await withTimeout(
         'Gmail API send operation',
@@ -264,6 +267,7 @@ class EmailService {
       console.log('[EmailService] [STAGE: send-via-gmail-api] ✅ Email sent successfully via Gmail API:', {
         messageId: result.data.id,
         threadId: result.data.threadId,
+        deliveryJobId: options.deliveryJobId || undefined,
       });
 
       return result.data.id || 'no-message-id';
@@ -271,6 +275,7 @@ class EmailService {
       console.error('[EmailService] [STAGE: send-via-gmail-api] ❌ Gmail API send failed:', {
         error: error.message,
         code: error.code,
+        deliveryJobId: options.deliveryJobId || undefined,
       });
       if (error.message.includes('timed out')) {
         // The request may still have reached Gmail after our local timeout, so
@@ -472,7 +477,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[] }): Promise<string> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[]; deliveryJobId?: string | null }): Promise<string> {
     console.log(`[EmailService] [STAGE: load-config] sendEmail called:`, {
       organizationId,
       to: options.to,
@@ -480,6 +485,7 @@ class EmailService {
       hasHtml: !!options.html,
       hasReplyTo: !!options.replyTo,
       hasAttachments: !!(options.attachments && options.attachments.length > 0),
+      deliveryJobId: options.deliveryJobId || undefined,
     });
 
     const config = await this.getEmailConfig(organizationId);
@@ -512,6 +518,7 @@ class EmailService {
       text: options.text,
       replyTo,
       attachments: gmailAttachments,
+      deliveryJobId: options.deliveryJobId,
     });
   }
 
@@ -530,6 +537,7 @@ class EmailService {
       text?: string;
       replyTo?: string;
       attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+      deliveryJobId?: string | null;
     },
   ): Promise<string> {
     try {

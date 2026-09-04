@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -104,6 +104,8 @@ export default function InvoicesListPage() {
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
   const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'all'>('active');
   const [emailQueuePage, setEmailQueuePage] = useState(1);
+  const [needsReviewPromptJob, setNeedsReviewPromptJob] = useState<{ id: string; label: string } | null>(null);
+  const [reviewJob, setReviewJob] = useState<{ id: string; label: string } | null>(null);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -117,6 +119,7 @@ export default function InvoicesListPage() {
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const batchSendInvoices = useBatchSendInvoices();
+  const resolveEmailDeliveryReview = useResolveInvoiceEmailDeliveryReview();
   const emailQueue = useInvoiceEmailQueue(emailQueueOpen, emailQueueView, emailQueuePage);
   const approveInvoices = useApproveInvoicesForAccounting();
 
@@ -259,8 +262,13 @@ export default function InvoicesListPage() {
   };
   const queueStatusLabel = (status: string) => deliveryStatusMeta[status as keyof typeof deliveryStatusMeta]?.label || status;
 
-  const handleQuickSend = async (invoiceId: string) => {
+  const handleQuickSend = async (invoice: InvoiceListItem) => {
+    if (invoice.emailDeliveryStatus === 'needs_review' && invoice.emailDeliveryJobId) {
+      setNeedsReviewPromptJob({ id: invoice.emailDeliveryJobId, label: String(invoice.invoiceNumber || invoice.id) });
+      return;
+    }
     try {
+      const invoiceId = invoice.id;
       const idempotencyKey = crypto.randomUUID();
       const preview = (await batchSendInvoices.mutateAsync({ invoiceIds: [invoiceId], dryRun: true, idempotencyKey })).data;
       const confirmation = preview.eligible === 1
@@ -272,6 +280,24 @@ export default function InvoicesListPage() {
       toast({ title: result.queued ? "Invoice delivery queued" : needsReview ? "Invoice delivery needs review" : "Invoice delivery active", description: result.queued ? "The invoice email was queued." : needsReview ? "Previous delivery outcome is uncertain; review it before sending again." : "The invoice is already being delivered." });
     } catch (error: any) {
       toast({ title: "Invoice send failed", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const confirmVerifiedNotSent = async () => {
+    if (!reviewJob) return;
+    try {
+      const result = await resolveEmailDeliveryReview.mutateAsync({ jobId: reviewJob.id });
+      setReviewJob(null);
+      setNeedsReviewPromptJob(null);
+      setEmailQueueView('active');
+      setEmailQueuePage(1);
+      setEmailQueueOpen(true);
+      toast({
+        title: result.replayed ? 'Delivery review already resolved' : 'Replacement delivery queued',
+        description: result.replayed ? 'The previously approved replacement remains the only active delivery.' : 'The original review record was retained and one new delivery job is queued.',
+      });
+    } catch (error: any) {
+      toast({ title: 'Delivery review failed', description: error.message, variant: 'destructive' });
     }
   };
 
@@ -601,7 +627,7 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="sticky right-0 w-[116px] min-w-[116px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
                     <TooltipProvider delayDuration={250}>
                     <div className="flex items-center justify-center gap-1">
-                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice.id)}><Mail className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Send Invoice</TooltipContent></Tooltip> : null}
+                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice)}><Mail className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Send Invoice</TooltipContent></Tooltip> : null}
                       {canTakePaymentFromInvoiceList(invoice) ? (
                         <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
                       ) : null}
@@ -626,10 +652,44 @@ export default function InvoicesListPage() {
           </div>
           <div className="min-h-0 flex-1 overflow-auto rounded border">
             <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left"><th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Status</th><th className="p-2">Timing</th><th className="p-2">Attempts</th><th className="p-2">Detail</th><th className="p-2" /></tr></thead><tbody>
-              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => { const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000; const needsReview = job.status === 'needs_review'; const retryable = job.status === 'failed'; return <tr className="border-b align-top" key={job.id}><td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td><td className="p-2 break-all">{job.recipientEmail}</td><td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Stale' : ''}</StatusPill></td><td className="p-2 text-xs">Queued {format(new Date(job.queuedAt), 'PP p')}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td><td className="p-2">{job.attemptCount} / {job.maxAttempts}</td><td className="max-w-[220px] p-2 text-xs text-muted-foreground">{needsReview ? 'Retry blocked: ' : retryable ? 'Safe to send again: ' : ''}{job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}</td><td className="p-2"><Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button></td></tr>; }) : <tr><td className="p-4 text-muted-foreground" colSpan={7}>No matching email delivery jobs.</td></tr>}
+              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => {
+                const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000;
+                const needsReview = job.status === 'needs_review';
+                const retryable = job.status === 'failed';
+                const reviewed = job.metadata?.deliveryReview;
+                return <tr className="border-b align-top" key={job.id}>
+                  <td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td>
+                  <td className="p-2 break-all">{job.recipientEmail}</td>
+                  <td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Stale' : ''}</StatusPill></td>
+                  <td className="p-2 text-xs">Queued {format(new Date(job.queuedAt), 'PP p')}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td>
+                  <td className="p-2">{job.attemptCount} / {job.maxAttempts}</td>
+                  <td className="max-w-[220px] p-2 text-xs text-muted-foreground">
+                    {needsReview ? 'Delivery outcome uncertain. Retry blocked until reviewed. ' : retryable ? 'Safe to send again: ' : ''}
+                    {job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}
+                    {reviewed?.resolution === 'verified_not_sent' && reviewed.reviewedAt ? <><br />Reviewed {format(new Date(reviewed.reviewedAt), 'PP p')}{reviewed.reviewedByUserName ? ` by ${reviewed.reviewedByUserName}` : ''}. Operator verified email was not sent; retry allowed.</> : null}
+                  </td>
+                  <td className="p-2"><div className="flex gap-1">
+                    {needsReview ? <Button variant="outline" size="sm" onClick={() => setReviewJob({ id: job.id, label: String(job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice') })}>Review</Button> : null}
+                    <Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button>
+                  </div></td>
+                </tr>;
+              }) : <tr><td className="p-4 text-muted-foreground" colSpan={7}>No matching email delivery jobs.</td></tr>}
             </tbody></table>
           </div>
           {emailQueue.data ? <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Page {emailQueue.data.pagination.page} of {emailQueue.data.pagination.totalPages}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={emailQueuePage <= 1} onClick={() => setEmailQueuePage((page) => page - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={emailQueuePage >= emailQueue.data.pagination.totalPages} onClick={() => setEmailQueuePage((page) => page + 1)}>Next</Button></div></div> : null}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(needsReviewPromptJob)} onOpenChange={(open) => { if (!open) setNeedsReviewPromptJob(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Previous delivery needs review</DialogTitle><DialogDescription>We could not confirm whether the previous email for invoice {needsReviewPromptJob?.label} was delivered. Sending again could create a duplicate email.</DialogDescription></DialogHeader>
+          <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setNeedsReviewPromptJob(null)}>Cancel</Button><Button onClick={() => { setReviewJob(needsReviewPromptJob); setNeedsReviewPromptJob(null); }}>Review Delivery</Button></div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(reviewJob)} onOpenChange={(open) => { if (!open && !resolveEmailDeliveryReview.isPending) setReviewJob(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Resolve uncertain delivery</DialogTitle><DialogDescription>We could not confirm whether the previous email for invoice {reviewJob?.label} was delivered. Only continue if you verified it was not sent.</DialogDescription></DialogHeader>
+          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">Sending again after an uncertain provider outcome can create a duplicate customer email.</p>
+          <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={resolveEmailDeliveryReview.isPending} onClick={() => setReviewJob(null)}>Keep Blocked</Button><Button disabled={resolveEmailDeliveryReview.isPending} onClick={() => void confirmVerifiedNotSent()}>{resolveEmailDeliveryReview.isPending ? 'Queueing…' : 'I verified this email was not sent. Retry delivery.'}</Button></div>
         </DialogContent>
       </Dialog>
     </Page>

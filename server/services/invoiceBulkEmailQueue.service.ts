@@ -8,6 +8,16 @@ import {
   invoices,
   customers,
 } from "../../shared/schema";
+import {
+  getInvoiceEmailDeliveryFailureKind,
+  type InvoiceEmailDeliveryFailureKind,
+} from "./invoiceEmailDeliveryFailure";
+
+export {
+  getInvoiceEmailDeliveryFailureKind,
+  markInvoiceEmailDeliveryFailure,
+  type InvoiceEmailDeliveryFailureKind,
+} from "./invoiceEmailDeliveryFailure";
 
 type CanonicalInvoiceEmailSender = (input: {
   organizationId: string;
@@ -15,6 +25,7 @@ type CanonicalInvoiceEmailSender = (input: {
   userId?: string | null;
   userName?: string | null;
   toEmail?: string | null;
+  deliveryJobId?: string | null;
 }) => Promise<{ messageId?: string | null }>;
 
 export type BulkInvoiceEmailCandidate = {
@@ -33,6 +44,7 @@ export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
 export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "needs_review" | "canceled";
 
 export type InvoiceEmailDeliveryState = {
+  id: string;
   status: InvoiceEmailDeliveryStatus;
   failureReason: string | null;
   updatedAt: Date | null;
@@ -45,18 +57,6 @@ export type InvoiceEmailQueueView = "active" | "failed" | "sent" | "all";
  * This is deliberately a property rather than message matching: retries must
  * never depend on a provider's human-readable error text.
  */
-export type InvoiceEmailDeliveryFailureKind = "retryable" | "needs_review";
-
-export function markInvoiceEmailDeliveryFailure<T extends Error>(error: T, kind: InvoiceEmailDeliveryFailureKind): T {
-  (error as T & { invoiceEmailDeliveryFailureKind?: InvoiceEmailDeliveryFailureKind }).invoiceEmailDeliveryFailureKind = kind;
-  return error;
-}
-
-export function getInvoiceEmailDeliveryFailureKind(error: unknown): InvoiceEmailDeliveryFailureKind | null {
-  const explicit = (error as { invoiceEmailDeliveryFailureKind?: unknown } | null)?.invoiceEmailDeliveryFailureKind;
-  return explicit === "needs_review" || explicit === "retryable" ? explicit : null;
-}
-
 export async function listInvoiceEmailDeliveryJobs(input: {
   organizationId: string;
   view: InvoiceEmailQueueView;
@@ -90,6 +90,7 @@ export async function listInvoiceEmailDeliveryJobs(input: {
       sentAt: invoiceEmailDeliveryJobs.sentAt,
       failureReason: invoiceEmailDeliveryJobs.failureReason,
       providerMessageId: invoiceEmailDeliveryJobs.providerMessageId,
+      metadata: invoiceEmailDeliveryJobs.metadata,
     }).from(invoiceEmailDeliveryJobs)
       .innerJoin(invoices, and(eq(invoices.id, invoiceEmailDeliveryJobs.invoiceId), eq(invoices.organizationId, input.organizationId)))
       .leftJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.organizationId, input.organizationId)))
@@ -169,6 +170,7 @@ export async function getInvoiceEmailDeliveryStates(input: {
 
   const rows = await db
     .select({
+      id: invoiceEmailDeliveryJobs.id,
       invoiceId: invoiceEmailDeliveryJobs.invoiceId,
       status: invoiceEmailDeliveryJobs.status,
       failureReason: invoiceEmailDeliveryJobs.failureReason,
@@ -184,12 +186,156 @@ export async function getInvoiceEmailDeliveryStates(input: {
   for (const row of rows) {
     if (result.has(row.invoiceId)) continue;
     result.set(row.invoiceId, {
+      id: row.id,
       status: row.status as InvoiceEmailDeliveryStatus,
       failureReason: row.failureReason ?? null,
       updatedAt: row.updatedAt ?? null,
     });
   }
   return result;
+}
+
+type InvoiceEmailDeliveryReviewMetadata = {
+  resolution: "verified_not_sent";
+  reviewedAt: string;
+  reviewedByUserId: string | null;
+  reviewedByUserName: string | null;
+  originalNeedsReviewJobId: string;
+  replacementJobId: string;
+};
+
+function asMetadata(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/**
+ * Resolves an ambiguous provider outcome only after an authorized operator
+ * explicitly verifies that no email was sent. The original job remains an
+ * immutable audit record; a new queued job is created for the replacement.
+ */
+export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
+  organizationId: string;
+  jobId: string;
+  reviewedByUserId?: string | null;
+  reviewedByUserName?: string | null;
+}) {
+  return db.transaction(async (tx) => {
+    const locked: any = await tx.execute(sql`
+      SELECT id, organization_id AS "organizationId", campaign_id AS "campaignId",
+             invoice_id AS "invoiceId", invoice_version AS "invoiceVersion",
+             recipient_email AS "recipientEmail", recipient_key AS "recipientKey",
+             attempt_count AS "attemptCount", max_attempts AS "maxAttempts",
+             failure_reason AS "failureReason", metadata
+      FROM invoice_email_delivery_jobs
+      WHERE id = ${input.jobId} AND organization_id = ${input.organizationId}
+      FOR UPDATE
+    `);
+    const original = (locked.rows || locked)[0] as any;
+    if (!original) throw Object.assign(new Error("Invoice delivery job was not found"), { statusCode: 404 });
+
+    const originalMetadata = asMetadata(original.metadata);
+    const priorReview = originalMetadata.deliveryReview as Partial<InvoiceEmailDeliveryReviewMetadata> | undefined;
+    if (priorReview?.resolution === "verified_not_sent" && priorReview.replacementJobId) {
+      const replacementResult: any = await tx.execute(sql`
+        SELECT id, status, attempt_count AS "attemptCount", max_attempts AS "maxAttempts"
+        FROM invoice_email_delivery_jobs
+        WHERE id = ${priorReview.replacementJobId} AND organization_id = ${input.organizationId}
+        LIMIT 1
+      `);
+      const replacement = (replacementResult.rows || replacementResult)[0];
+      if (replacement) return { originalJobId: original.id, replacementJob: replacement, replayed: true };
+    }
+    if (original.status !== "needs_review") {
+      throw Object.assign(new Error("This delivery is no longer awaiting operator review"), { statusCode: 409 });
+    }
+
+    const reviewedAt = new Date();
+    const retainedReason = String(original.failureReason || "Delivery outcome was uncertain.").trim();
+    const reviewer = input.reviewedByUserName || "an authorized operator";
+    // Release only this reviewed terminal record from the partial active guard
+    // before inserting its replacement. The transaction rolls this back if a
+    // concurrent active delivery makes the replacement unsafe.
+    await tx.update(invoiceEmailDeliveryJobs).set({
+      status: "failed",
+      claimExpiresAt: null,
+      availableAt: reviewedAt,
+      updatedAt: reviewedAt,
+    } as any).where(and(
+      eq(invoiceEmailDeliveryJobs.id, original.id),
+      eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
+      eq(invoiceEmailDeliveryJobs.status, "needs_review"),
+    ));
+
+    const [campaign] = await tx.insert(invoiceEmailCampaigns).values({
+      organizationId: input.organizationId,
+      createdByUserId: input.reviewedByUserId || null,
+      idempotencyKey: `needs-review-resolution:${original.id}`,
+      requestedInvoiceIds: [original.invoiceId],
+      selectedInvoiceCount: 1,
+      queuedInvoiceCount: 1,
+      skippedInvoiceCount: 0,
+      recipientGroupCount: 1,
+      status: "queued",
+      resultSummary: { queued: 1, deliveryMode: "individual_invoice_messages", replacesNeedsReviewJobId: original.id },
+      metadata: { deliveryMode: "individual_invoice_messages", replacesNeedsReviewJobId: original.id },
+    } as any).returning({ id: invoiceEmailCampaigns.id });
+
+    const replacementReview: InvoiceEmailDeliveryReviewMetadata = {
+      resolution: "verified_not_sent",
+      reviewedAt: reviewedAt.toISOString(),
+      reviewedByUserId: input.reviewedByUserId || null,
+      reviewedByUserName: input.reviewedByUserName || null,
+      originalNeedsReviewJobId: original.id,
+      replacementJobId: "",
+    };
+    const [replacement] = await tx.insert(invoiceEmailDeliveryJobs).values({
+      organizationId: input.organizationId,
+      campaignId: campaign.id,
+      invoiceId: original.invoiceId,
+      invoiceVersion: Number(original.invoiceVersion),
+      recipientEmail: original.recipientEmail,
+      recipientKey: original.recipientKey,
+      idempotencyKey: `needs-review-retry:${original.id}`,
+      status: "queued",
+      attemptCount: 0,
+      maxAttempts: Number(original.maxAttempts) || getBulkInvoiceEmailQueueConfig().maxAttempts,
+      metadata: {
+        deliveryMode: "individual_invoice_messages",
+        createdByUserId: input.reviewedByUserId || null,
+        retryOfNeedsReviewJobId: original.id,
+      },
+    } as any).returning({
+      id: invoiceEmailDeliveryJobs.id,
+      status: invoiceEmailDeliveryJobs.status,
+      attemptCount: invoiceEmailDeliveryJobs.attemptCount,
+      maxAttempts: invoiceEmailDeliveryJobs.maxAttempts,
+    });
+    if (!replacement) throw Object.assign(new Error("A delivery for this invoice is already active"), { statusCode: 409 });
+
+    replacementReview.replacementJobId = replacement.id;
+    await tx.update(invoiceEmailDeliveryJobs).set({
+      status: "failed",
+      claimExpiresAt: null,
+      availableAt: reviewedAt,
+      failureReason: `${retainedReason}\n\nReviewed ${reviewedAt.toISOString()} by ${reviewer}. Operator verified email was not sent; replacement delivery job ${replacement.id} was queued.`,
+      metadata: { ...originalMetadata, deliveryReview: replacementReview },
+      updatedAt: reviewedAt,
+    } as any).where(and(
+      eq(invoiceEmailDeliveryJobs.id, original.id),
+      eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
+    ));
+
+    return { originalJobId: original.id, replacementJob: replacement, replayed: false };
+  });
 }
 
 export async function enqueueBulkInvoiceEmailCampaign(input: {
@@ -307,6 +453,17 @@ type ClaimedJob = {
   metadata?: { createdByUserId?: string | null };
 };
 
+function logDeliveryStage(job: ClaimedJob, stage: string, detail: Record<string, unknown> = {}): void {
+  console.log("[InvoiceEmailQueue]", {
+    stage,
+    jobId: job.id,
+    organizationId: job.organizationId,
+    invoiceId: job.invoiceId,
+    attempt: job.attemptCount,
+    ...detail,
+  });
+}
+
 async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedJob | null> {
   const config = getBulkInvoiceEmailQueueConfig();
   return db.transaction(async (tx) => {
@@ -392,6 +549,7 @@ async function updateCampaignCompletion(campaignId: string): Promise<void> {
 }
 
 async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
+  logDeliveryStage(job, "job_claimed");
   if (!canonicalInvoiceEmailSender) {
     const terminal = job.attemptCount >= job.maxAttempts;
     await db.update(invoiceEmailDeliveryJobs).set({
@@ -401,6 +559,7 @@ async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
       failureReason: "Canonical invoice email sender is not registered",
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    logDeliveryStage(job, "sender_unavailable", { terminal });
     if (terminal) await updateCampaignCompletion(job.campaignId);
     return "failed";
   }
@@ -417,11 +576,13 @@ async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
     )).limit(1);
 
   try {
+    logDeliveryStage(job, "canonical_sender_started", { alreadySent: Boolean(alreadySent) });
     const outcome = alreadySent || await canonicalInvoiceEmailSender({
       organizationId: job.organizationId,
       invoiceId: job.invoiceId,
       userId: job.metadata?.createdByUserId || null,
       toEmail: job.recipientEmail,
+      deliveryJobId: job.id,
     });
     await db.update(invoiceEmailDeliveryJobs).set({
       status: "sent",
@@ -431,6 +592,7 @@ async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
       claimExpiresAt: null,
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    logDeliveryStage(job, "job_marked_sent", { providerMessageIdPresent: Boolean(outcome?.messageId) });
     await updateCampaignCompletion(job.campaignId);
     return "sent";
   } catch (error) {
@@ -449,6 +611,10 @@ async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
         : message,
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    logDeliveryStage(job, needsReview ? "job_marked_needs_review" : terminal ? "job_marked_failed" : "job_scheduled_retry", {
+      failureKind: failureKind || "unclassified",
+      terminal,
+    });
     if (terminal) await updateCampaignCompletion(job.campaignId);
     return "failed";
   }

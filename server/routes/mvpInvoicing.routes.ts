@@ -51,6 +51,7 @@ import {
   getBulkInvoiceEmailQueueConfig,
   markInvoiceEmailDeliveryFailure,
   registerCanonicalInvoiceEmailSender,
+  resolveInvoiceEmailDeliveryNeedsReview,
   type BulkInvoiceEmailCandidate,
   type BulkInvoiceEmailSkip,
 } from "../services/invoiceBulkEmailQueue.service";
@@ -331,7 +332,12 @@ export async function registerMvpInvoicingRoutes(
     userId?: string | null;
     userName?: string | null;
     toEmail?: string | null;
+    deliveryJobId?: string | null;
   }) {
+    const logQueueDeliveryStage = (stage: string, detail: Record<string, unknown> = {}) => {
+      if (!input.deliveryJobId) return;
+      console.log("[InvoiceEmailQueue]", { stage, jobId: input.deliveryJobId, invoiceId: input.invoiceId, organizationId: input.organizationId, ...detail });
+    };
     const emailConfig = await storage.getDefaultEmailSettings(input.organizationId);
     if (!emailConfig) {
       throw Object.assign(
@@ -398,6 +404,7 @@ export async function registerMvpInvoicingRoutes(
 
     const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
 
+    logQueueDeliveryStage("invoice_rendering_started");
     const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
       organizationId: input.organizationId,
       lineItems: lineItems as any,
@@ -443,6 +450,7 @@ export async function registerMvpInvoicingRoutes(
       actorUserId: input.userId,
       returnTo: `/portal/invoices/${encodeURIComponent(inv.id)}`,
     });
+    logQueueDeliveryStage("invoice_rendering_completed", { pdfBytes: pdfBytes.length });
     const directInvoiceUrl = buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id });
     const portalUrl = portalDestination?.kind === "setup"
       ? portalDestination.url
@@ -482,6 +490,7 @@ export async function registerMvpInvoicingRoutes(
     let messageId: string | null = null;
     let providerAccepted = false;
     try {
+      logQueueDeliveryStage("gmail_send_invoked");
       messageId = await emailService.sendEmail(input.organizationId, {
         to: recipientEmail,
         subject: `Invoice #${invoiceNumber} from ${companyName}`,
@@ -490,8 +499,10 @@ export async function registerMvpInvoicingRoutes(
         attachments: [
           pdfAttachment,
         ] as any,
+        deliveryJobId: input.deliveryJobId,
       });
       providerAccepted = true;
+      logQueueDeliveryStage("gmail_accepted", { providerMessageIdPresent: Boolean(messageId) });
 
       await createInvoiceEmailLog({
         organizationId: input.organizationId,
@@ -502,6 +513,7 @@ export async function registerMvpInvoicingRoutes(
         messageId,
         sentAt: now,
       });
+      logQueueDeliveryStage("delivery_persistence_completed", { logStatus: "sent" });
     } catch (sendError) {
       if (!providerAccepted) {
         try {
@@ -2070,10 +2082,12 @@ export async function registerMvpInvoicingRoutes(
               emailStatus: 'not_sent' as const,
             }),
             ...(emailDeliveryStates.get(row.id) ? {
+              emailDeliveryJobId: emailDeliveryStates.get(row.id)!.id,
               emailDeliveryStatus: emailDeliveryStates.get(row.id)!.status,
               emailDeliveryFailureReason: emailDeliveryStates.get(row.id)!.failureReason,
               emailDeliveryUpdatedAt: emailDeliveryStates.get(row.id)!.updatedAt,
             } : {
+              emailDeliveryJobId: null,
               emailDeliveryStatus: null,
               emailDeliveryFailureReason: null,
               emailDeliveryUpdatedAt: null,
@@ -2115,6 +2129,47 @@ export async function registerMvpInvoicingRoutes(
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || "Failed to list invoice email queue" });
+    }
+  });
+
+  // An uncertain provider result is never retried automatically. An
+  // authorized operator may explicitly attest that it was not sent; this
+  // creates a new durable job while retaining the original in history.
+  app.post("/api/invoices/email-queue/:jobId/resolve", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+      const userId = getUserId(req.user) || null;
+      const userName = String(req.user?.firstName && req.user?.lastName
+        ? `${req.user.firstName} ${req.user.lastName}`
+        : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
+      const result = await resolveInvoiceEmailDeliveryNeedsReview({
+        organizationId,
+        jobId: String(req.params.jobId || "").trim(),
+        reviewedByUserId: userId,
+        reviewedByUserName: userName,
+      });
+      if (!result.replayed) {
+        try {
+          await storage.createAuditLog(organizationId, {
+            userId,
+            userName,
+            actionType: "invoice_email_delivery_verified_not_sent",
+            entityType: "invoice_email_delivery_job",
+            entityId: result.originalJobId,
+            entityName: "Invoice email delivery review",
+            description: "Operator verified an uncertain invoice email was not sent and queued one replacement delivery job.",
+            newValues: { resolution: "verified_not_sent", replacementJobId: result.replacementJob.id },
+            ipAddress: req.ip ?? null,
+            userAgent: req.get("user-agent") || null,
+          });
+        } catch (auditError: any) {
+          console.error("[InvoiceEmailQueue] delivery-review audit write failed", { jobId: result.originalJobId, error: auditError?.message || auditError });
+        }
+      }
+      return res.json({ success: true, data: result, message: result.replayed ? "Delivery review was already resolved" : "Verified-not-sent review recorded and replacement delivery queued" });
+    } catch (error: any) {
+      return res.status(Number(error?.statusCode || 500)).json({ success: false, error: error?.message || "Unable to resolve invoice email delivery" });
     }
   });
 
