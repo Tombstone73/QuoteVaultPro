@@ -482,8 +482,12 @@ export const ProductBuilderReference = ({
         savedSection("formula", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
       if (dirty.has("pricing")) { const value = await productApi.saveDraftPricing(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, base: { perPieceCents: state.pricing.perPieceCents, perSqftCents: state.pricing.perSqftCents, minimumChargeCents: state.pricing.minimumChargeCents }, flatFeeCents: state.pricing.flatFeeCents, tierBasis: state.pricing.tierBasis, tiers: state.pricing.tiers, tierSets: state.pricing.tierSets }); savedSection("pricing", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt }); }
-      if (dirty.has("matrix") && state.matrix) {
-        const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, active: state.matrix.active, matrixId: state.matrix.matrixId, pricingUnit: state.matrix.pricingUnit, dimensions: state.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: state.matrix.rows });
+      // A matrix field can settle while an earlier section write is in flight.
+      // Submit the latest staged owner snapshot, not the pre-await `state`
+      // capture, so the persisted Draft reflects every completed tier edit.
+      const matrix = draftRef.current.matrix ?? state.matrix;
+      if (dirty.has("matrix") && matrix) {
+        const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, active: matrix.active, matrixId: matrix.matrixId, pricingUnit: matrix.pricingUnit, dimensions: matrix.dimensions.map((dimension) => dimension.selectionKey), rows: matrix.rows });
         state = { ...state, matrix: clone(value) };
         draftRef.current = state;
         setDraft(state);
