@@ -78,6 +78,7 @@ export interface CanonicalProductPublisher {
 
 export interface ProductPublicationTransaction {
   readDraftPublicationState(input: Readonly<{ organizationId: string; productId: string; draftVersionId: string }>): Promise<DraftPublicationState | null>;
+  normalizeLegacyDraftScaffold(input: Readonly<{ organizationId: string; productId: string; draftVersionId: string; expectedDraftUpdatedAt: string; staffActorUserId?: string }>): Promise<void>;
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string }> & Actor): Promise<Reservation>;
   succeed(organizationId: string, requestId: string, result: PublishedProductVersion): Promise<void>;
   markRetryableFailure(organizationId: string, requestId: string): Promise<void>;
@@ -157,6 +158,17 @@ export class ProductPublicationApplicationService {
         if (state.routing.kind !== "route_required" || !state.routing.steps.some((step) => step.kind === "production"))
           throw new V2ApplicationError("VALIDATION_ERROR", "Production routing is required before this Product can be published. Select a Production Route in the Routing section.");
       }
+
+      // Compatibility-only normalization for V2 drafts created with the old
+      // empty GROUP scaffold. It is performed after the browser revision has
+      // been verified and before the canonical publisher reads the Draft.
+      await this.runner.transaction((tx) => tx.normalizeLegacyDraftScaffold({
+        organizationId: context.organizationId,
+        productId: input.productId,
+        draftVersionId: input.draftVersionId,
+        expectedDraftUpdatedAt: state.draftUpdatedAt,
+        ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),
+      }));
 
       const canonicalPlan = await this.publisher.propose({
         organizationId: context.organizationId,

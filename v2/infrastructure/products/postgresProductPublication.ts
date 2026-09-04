@@ -3,6 +3,7 @@ import { PostgresOperationRequestRepository } from "../persistence/postgresOpera
 import type { ProductPublicationTransaction, ProductPublicationTransactionRunner, PublishedProductVersion } from "../../src/modules/products/productPublication.js";
 import { PostgresProductVersionRoutingReader } from "./postgresProductRouting.js";
 import { validateProductionUnitSpecification } from "../../src/modules/shared/productionRequirements.js";
+import { V2ApplicationError } from "../../src/errors/applicationError.js";
 
 type WorkflowIntent = "standard_production" | "fulfillment_only" | "service_fee";
 
@@ -41,6 +42,41 @@ const hasProductionUnitRules = (tree: unknown): boolean => {
   }
 };
 
+/**
+ * Retires only the empty starter GROUP used by older V2 drafts. A GROUP with
+ * children or structural edges is merchant-authored data and must remain
+ * untouched. The canonical publisher rejects a GROUP root, so normalize the
+ * harmless scaffold before it receives an otherwise publishable draft.
+ */
+const normalizeLegacyDraftScaffold = (tree: unknown): { tree: Record<string, unknown>; changed: boolean } => {
+  const candidate = structuredClone(record(tree));
+  const roots = Array.isArray(candidate.rootNodeIds)
+    ? candidate.rootNodeIds.filter((id): id is string => typeof id === "string")
+    : [];
+  if (!roots.includes("product_configuration")) return { tree: candidate, changed: false };
+  const nodes = record(candidate.nodes);
+  const scaffold = record(nodes.product_configuration);
+  const otherRoots = roots.filter((id) => id !== "product_configuration");
+  const hasSemanticRoot = otherRoots.some((id) => record(nodes[id]).kind === "question");
+  const edges = Array.isArray(candidate.edges) ? candidate.edges : [];
+  const hasStructuralEdge = edges.some((edge) => {
+    const value = record(edge);
+    return value.fromNodeId === "product_configuration" || value.toNodeId === "product_configuration";
+  });
+  if (
+    scaffold.kind !== "group" ||
+    scaffold.label !== "Product configuration" ||
+    (Array.isArray(scaffold.children) && scaffold.children.length > 0) ||
+    hasStructuralEdge ||
+    !hasSemanticRoot
+  )
+    return { tree: candidate, changed: false };
+  delete nodes.product_configuration;
+  candidate.nodes = nodes;
+  candidate.rootNodeIds = otherRoots;
+  return { tree: candidate, changed: true };
+};
+
 class Transaction implements ProductPublicationTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
   constructor(private readonly client: PoolClient) {}
@@ -66,6 +102,34 @@ class Transaction implements ProductPublicationTransaction {
       hasProductionUnitRules: hasProductionUnitRules(row.tree_json),
       routing: await new PostgresProductVersionRoutingReader(this.client).read(input.organizationId,input.productId,input.draftVersionId),
     };
+  }
+  async normalizeLegacyDraftScaffold(input: Parameters<ProductPublicationTransaction["normalizeLegacyDraftScaffold"]>[0]) {
+    const row = (await this.client.query<{ updated_at: Date; status: string; tree_json: unknown }>(
+      `SELECT updated_at,status,tree_json FROM pbv2_tree_versions
+       WHERE organization_id=$1 AND product_id=$2 AND id=$3 FOR UPDATE`,
+      [input.organizationId, input.productId, input.draftVersionId],
+    )).rows[0];
+    if (!row || row.status !== "DRAFT")
+      throw new V2ApplicationError("CONFLICT", "Only the current Product Draft can be published.");
+    if (row.updated_at.toISOString() !== new Date(input.expectedDraftUpdatedAt).toISOString())
+      throw new V2ApplicationError("STALE_STATE", "The Product Draft changed before publication. Refresh and try again.");
+    const normalized = normalizeLegacyDraftScaffold(row.tree_json);
+    if (!normalized.changed) return;
+    const updated = await this.client.query<{ updated_at: Date }>(
+      `UPDATE pbv2_tree_versions SET tree_json=$1::jsonb,updated_at=now(),updated_by_user_id=$2
+       WHERE organization_id=$3 AND product_id=$4 AND id=$5 AND status='DRAFT' AND updated_at=$6
+       RETURNING updated_at`,
+      [
+        JSON.stringify(normalized.tree),
+        input.staffActorUserId ?? null,
+        input.organizationId,
+        input.productId,
+        input.draftVersionId,
+        row.updated_at,
+      ],
+    );
+    if (!updated.rows[0])
+      throw new V2ApplicationError("STALE_STATE", "The Product Draft changed before publication. Refresh and try again.");
   }
   async reserve(input: Parameters<ProductPublicationTransaction["reserve"]>[0]) { return this.requests.reserve(this.client, input); }
   async succeed(organizationId: string, requestId: string, result: PublishedProductVersion) { await this.requests.succeed(this.client, organizationId, requestId, { resourceType: "product_version", resourceId: result.productVersionId, resultJson: result }); }

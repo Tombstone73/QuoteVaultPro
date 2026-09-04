@@ -9,10 +9,12 @@ const context = (id: string): OperationContext => ({ principal, organizationId: 
 class MemoryRunner implements ProductPublicationTransactionRunner {
   readonly requests = new Map<string, any>();
   readonly audits: string[] = [];
+  readonly normalizations: string[] = [];
   async transaction<T>(action: (transaction: ProductPublicationTransaction) => Promise<T>): Promise<T> {
     const requests = this.requests;
     return action({
       readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}),
+      normalizeLegacyDraftScaffold: async (input) => { this.normalizations.push(input.draftVersionId); },
       reserve: async (input) => {
         const current = requests.get(input.businessRequestId);
         if (current && current.fingerprint !== input.payloadFingerprint) throw Object.assign(new Error("conflict"), { code: "IDEMPOTENCY_CONFLICT" });
@@ -44,6 +46,7 @@ describe("V2 Product publication adapter", () => {
     expect(replay).toEqual(first);
     expect(calls).toHaveLength(1);
     expect(runner.audits).toEqual(["draft-a"]);
+    expect(runner.normalizations).toEqual(["draft-a"]);
   });
 
   test("enforces the dedicated publish capability and rejects a reused request with changed content", async () => {
