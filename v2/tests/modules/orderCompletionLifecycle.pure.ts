@@ -182,6 +182,7 @@ const [applicationSource, persistenceSource, migration, billingSource, workspace
 assert.match(applicationSource, /if \(wasCompleted && !await tx\.reopen/, "a commercial revision first reopens a completed Order");
 assert.match(applicationSource, /automaticLifecycle\?\.reconcileOrder/, "commercial changes trigger canonical lifecycle reconciliation");
 assert.match(persistenceSource, /FROM v2_sales_document_lines/);
+assert.match(persistenceSource, /UPDATE v2_production_works SET ordered_quantity=\$4/, "commercial quantity revisions refresh the current ProductionWork target without replacing attempt history");
 assert.doesNotMatch(persistenceSource.slice(persistenceSource.indexOf("async complete("), persistenceSource.indexOf("async cancel(")), /v2_billing_payments|v2_billing_refunds|v2_quickbooks/);
 assert.match(migration, /archived_at IS NOT NULL AND commercial_state IN \('completed', 'cancelled'\)/);
 assert.match(migration, /Production attempts require an open Order/);

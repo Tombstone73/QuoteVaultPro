@@ -316,6 +316,14 @@ export class PostgresOrderTransaction implements OrderTransaction {
         [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision,JSON.stringify(e.taxability)],
       );
       await synchronizeProductionRequirements(this.client, organizationId, orderId, line);
+      // A ProductionWork is durable attempt history, but its target remains a
+      // projection of the current commercial line.  A later quantity revision
+      // must expose the remaining output to Production rather than leaving a
+      // previously satisfied one-unit work falsely complete.
+      await this.client.query(
+        "UPDATE v2_production_works SET ordered_quantity=$4 WHERE organization_id=$1 AND order_document_id=$2 AND order_line_id=$3 AND ordered_quantity IS DISTINCT FROM $4",
+        [organizationId, orderId, line.lineId, line.quantity],
+      );
     }
   }
 }
