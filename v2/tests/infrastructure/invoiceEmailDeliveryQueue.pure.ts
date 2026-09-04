@@ -2,20 +2,21 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const queue = readFileSync("v2/infrastructure/communications/invoiceEmailDeliveryQueue.ts", "utf8");
+const sender = readFileSync("v2/infrastructure/communications/invoiceEmailSender.ts", "utf8");
 const migration = readFileSync("server/db/migrations_v2/0252_v2_invoice_email_delivery_queue.sql", "utf8");
 const providerSafetyMigration = readFileSync("server/db/migrations_v2/0255_v2_invoice_email_provider_attempt_safety.sql", "utf8");
 const routes = readFileSync("v2/src/interfaces/http/invoiceRoutes.ts", "utf8");
 const finance = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 
-// Admission is bounded, tenant-scoped, de-duplicates submitted IDs, groups
-// only exact normalized addresses, and has no provider call on its route.
+// Admission is bounded, tenant-scoped, de-duplicates submitted IDs, and has
+// no provider call on its route. Recipient planning belongs to the sender.
 assert.match(queue, /invoiceEmailSelectionLimit = 100/u);
-assert.match(queue, /new Set\(input\.invoiceIds/u);
-assert.match(queue, /i\.organization_id=\$1 AND i\.id=ANY/u);
-assert.match(queue, /i\.id AS "invoiceId",i\.customer_id AS "customerId"/u, "recipient resolution must return the camel-case fields consumed when persisting queue items");
-assert.match(queue, /recipient=row\.email\?normalize\(row\.email\)/u);
-assert.match(queue, /grouped\.get\(recipient\)/u);
-assert.match(queue, /invoiceEmailMessageInvoiceLimit = 20/u);
+assert.match(queue, /new Set\(values\.map/u);
+assert.match(queue, /this\.sender\.plan\(organizationId,allowed\)/u, "the scheduler delegates recipient expansion to the canonical sender");
+assert.match(sender, /customer_contact_links/u, "the canonical sender resolves configured billing and primary recipients");
+assert.match(sender, /recipient.*invoiceIds/u, "the canonical sender owns recipient delivery plans");
+assert.match(queue, /invoiceEmailScheduleSpacingMs = 60_000/u, "each queued message has a durable one-minute scheduled offset");
+assert.match(queue, /available_at\) VALUES[\s\S]*availableAt/u, "the scheduled time is persisted with the job");
 assert.match(routes, /emailDelivery\.admit/u);
 assert.doesNotMatch(routes, /gmail|users\.messages\.send/u);
 
@@ -36,7 +37,7 @@ assert.match(queue, /provider_attempted_at=now\(\)/u, "the provider boundary is 
 assert.match(queue, /state=\$3::varchar/u, "the worker completion update explicitly types its state parameter before reuse in settlement cases");
 assert.match(queue, /CASE WHEN \$3::varchar='sent'/u, "completion state comparisons reuse the explicit database type rather than relying on PostgreSQL parameter inference");
 assert.match(queue, /lease_expires_at<=now\(\) AND provider_attempted_at IS NOT NULL/u, "expired provider attempts become ambiguous instead of being sent again");
-assert.match(queue, /timeout:invoiceEmailProviderTimeoutMs/u, "a hung provider call resolves to the existing ambiguous outcome");
+assert.match(sender, /timeout:30_000/u, "a hung provider call resolves to the existing ambiguous outcome");
 assert.match(queue, /provider_attempted_at=NULL/u, "an operator retry starts a new intentional provider attempt");
 assert.match(providerSafetyMigration, /ADD COLUMN provider_attempted_at/u);
 assert.match(providerSafetyMigration, /WHERE state='processing'/u, "pre-marker in-flight jobs are conservatively held for reconciliation");
@@ -49,8 +50,13 @@ assert.match(finance, /Queue email delivery/u);
 assert.match(finance, /emailAdmissionError/u);
 assert.match(finance, /emailAdmission\.queuedInvoices/u);
 assert.match(finance, /emailInvoiceIds/u);
-assert.match(queue, /\/portal\/invoices\/\$\{encodeURIComponent/u);
-assert.match(queue, /"\/portal\/invoices"/u);
-assert.doesNotMatch(queue, /[?&](token|secret)=/iu);
+assert.match(sender, /\/portal\/invoices\/\$\{encodeURIComponent/u);
+assert.match(sender, /"\/portal\/invoices"/u);
+assert.doesNotMatch(sender, /[?&](token|secret)=/iu);
+assert.match(queue, /this\.sender\.send\(/u, "the worker invokes the one canonical direct sender");
+assert.doesNotMatch(queue, /users\.messages\.send/u, "the scheduler never calls Gmail directly");
+assert.doesNotMatch(queue, /rawMime/u, "the scheduler never constructs MIME");
+assert.match(sender, /users\.messages\.send/u, "only the direct sender reaches Gmail");
+assert.match(sender, /invoice_email_sent/u, "the direct sender writes per-Invoice delivery audit");
 
 console.log("V2 invoice email queue contract tests passed.");
