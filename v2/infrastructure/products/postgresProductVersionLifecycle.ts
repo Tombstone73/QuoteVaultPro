@@ -1994,6 +1994,11 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
     collectExpected(0, []);
     const rowIds = new Set<string>(),
       combinations = new Set<string>();
+    const canonicalCents = (value: number | null | undefined) => {
+      if (value == null || !Number.isFinite(value)) return value ?? null;
+      const rounded = Math.round(value);
+      return Math.abs(value - rounded) < 0.000001 ? rounded : value;
+    };
     const rows = matrix.rows.map((entry) => {
       const baseRateCents = entry.baseRateCents;
       if (
@@ -2050,13 +2055,20 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         // A matrix has one declared pricing unit. Compatibility data can carry
         // a stale alternate rate alongside the selected one; it is not a
         // second rate and must not make an otherwise valid row unsaveable.
+        // Currency is persisted as whole cents.  The matrix editor can carry
+        // a harmless IEEE-754 residue after applying a percentage break (for
+        // example 220.00000000000003).  Canonicalize only values that are
+        // demonstrably a whole cent; real fractional-cent input remains a
+        // validation error rather than being silently rounded.
         const perPieceCents =
-          matrix.pricingUnit === "per_piece" ? tier.perPieceCents ?? null : null;
+          matrix.pricingUnit === "per_piece"
+            ? canonicalCents(tier.perPieceCents)
+            : null;
         const perSqftCents =
           matrix.pricingUnit === "per_square_foot"
-            ? tier.perSqftCents ?? null
+            ? canonicalCents(tier.perSqftCents)
             : null;
-        const minimumChargeCents = tier.minimumChargeCents ?? null;
+        const minimumChargeCents = canonicalCents(tier.minimumChargeCents);
         const invalidMinimum =
           !Number.isSafeInteger(tier.minimum) ||
           tier.minimum < 1 ||
@@ -2098,22 +2110,29 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         variables: { base_price: (baseRateCents as number) / 100 },
         ...(entry.tiers.length
           ? {
-              qtyTiers: entry.tiers.map((tier) => ({
-                id: tier.tierId.startsWith("new:")
-                  ? `matrix-tier:${randomUUID()}`
-                  : tier.tierId,
-                minQty: tier.minimum,
-                maxQty: tier.maximum ?? null,
-                ...(matrix.pricingUnit !== "per_piece" || tier.perPieceCents == null
-                  ? {}
-                  : { perPieceCents: tier.perPieceCents }),
-                ...(matrix.pricingUnit !== "per_square_foot" || tier.perSqftCents == null
-                  ? {}
-                  : { perSqftCents: tier.perSqftCents }),
-                ...(tier.minimumChargeCents == null
-                  ? {}
-                  : { minimumChargeCents: tier.minimumChargeCents }),
-              })),
+              qtyTiers: entry.tiers.map((tier) => {
+                const perPieceCents =
+                  matrix.pricingUnit === "per_piece"
+                    ? canonicalCents(tier.perPieceCents)
+                    : null;
+                const perSqftCents =
+                  matrix.pricingUnit === "per_square_foot"
+                    ? canonicalCents(tier.perSqftCents)
+                    : null;
+                const minimumChargeCents = canonicalCents(
+                  tier.minimumChargeCents,
+                );
+                return {
+                  id: tier.tierId.startsWith("new:")
+                    ? `matrix-tier:${randomUUID()}`
+                    : tier.tierId,
+                  minQty: tier.minimum,
+                  maxQty: tier.maximum ?? null,
+                  ...(perPieceCents == null ? {} : { perPieceCents }),
+                  ...(perSqftCents == null ? {} : { perSqftCents }),
+                  ...(minimumChargeCents == null ? {} : { minimumChargeCents }),
+                };
+              }),
               tierBasis:
                 entry.tierBasis === "computed_sheet_usage"
                   ? "computed_sheet_usage"
