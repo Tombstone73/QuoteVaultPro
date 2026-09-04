@@ -54,6 +54,13 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("maxAttempts");
   });
 
+  test("bounds delivery attempts and converts expired processing claims to non-resend review failures", () => {
+    expect(queue).toContain("attempt_count < max_attempts");
+    expect(queue).toContain("SET status = 'failed', claim_expires_at = null");
+    expect(queue).toContain("The message was not resent to avoid a duplicate email.");
+    expect(queue).not.toContain("OR (status = 'processing' AND claim_expires_at <= now())");
+  });
+
   test("starts a healthy worker immediately and exposes durable queue state without treating it as Last Sent", () => {
     expect(server).toContain("void runBulkInvoiceEmailTick()");
     expect(queue).toContain("getInvoiceEmailDeliveryStates");

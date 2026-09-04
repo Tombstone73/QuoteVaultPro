@@ -273,14 +273,26 @@ type ClaimedJob = {
 async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedJob | null> {
   const config = getBulkInvoiceEmailQueueConfig();
   return db.transaction(async (tx) => {
+    // A lost worker can leave a provider submission ambiguous. Never reclaim
+    // that work: Gmail may have accepted it after the process lost its
+    // response. Surface it for review instead of turning each poll into an
+    // unbounded resend attempt.
+    await tx.execute(sql`
+      UPDATE invoice_email_delivery_jobs
+      SET status = 'failed', claim_expires_at = null,
+          failure_reason = coalesce(failure_reason, 'Needs review: worker claim expired before delivery outcome was recorded. The message was not resent to avoid a duplicate email.'),
+          updated_at = now()
+      WHERE status = 'processing' AND claim_expires_at <= now()
+    `);
     const result: any = await tx.execute(sql`
       SELECT id, organization_id AS "organizationId", invoice_id AS "invoiceId",
              recipient_email AS "recipientEmail", attempt_count AS "attemptCount",
              max_attempts AS "maxAttempts", created_at AS "createdAt", campaign_id AS "campaignId",
              metadata AS "metadata"
       FROM invoice_email_delivery_jobs
-      WHERE (status IN ('queued', 'retrying') AND available_at <= now())
-         OR (status = 'processing' AND claim_expires_at <= now())
+      WHERE status IN ('queued', 'retrying')
+        AND available_at <= now()
+        AND attempt_count < max_attempts
       ORDER BY created_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -309,13 +321,14 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedJob | null> {
     }
 
     const workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
-    await tx.execute(sql`
+    const claimResult: any = await tx.execute(sql`
       UPDATE invoice_email_delivery_jobs
       SET status = 'processing', attempt_count = attempt_count + 1, claimed_at = now(),
           claim_expires_at = now() + (${config.claimSeconds} * interval '1 second'),
           claimed_by_worker_id = ${workerId}, updated_at = now()
-      WHERE id = ${row.id}
+      WHERE id = ${row.id} AND status IN ('queued', 'retrying') AND attempt_count < max_attempts
     `);
+    if (Number(claimResult.rowCount ?? 1) === 0) return null;
     return { ...row, attemptCount: Number(row.attemptCount || 0) + 1 };
   });
 }
