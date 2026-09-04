@@ -233,6 +233,7 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
       SELECT id, organization_id AS "organizationId", campaign_id AS "campaignId",
              invoice_id AS "invoiceId", invoice_version AS "invoiceVersion",
              recipient_email AS "recipientEmail", recipient_key AS "recipientKey",
+             status,
              attempt_count AS "attemptCount", max_attempts AS "maxAttempts",
              failure_reason AS "failureReason", metadata
       FROM invoice_email_delivery_jobs
