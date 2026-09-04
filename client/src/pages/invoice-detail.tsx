@@ -34,6 +34,7 @@ import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
 import { useCreateEpsHostedSession, usePaymentSettings, useRecordEpsHostedResult } from "@/hooks/usePaymentSettings";
 import { Page } from "@/components/titan/Page";
+import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { format } from "date-fns";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -2022,6 +2023,7 @@ export default function InvoiceDetailPage() {
                     >
                       Download PDF
                     </Button>
+                    {orderId ? <PrintTicketButton orderId={orderId} variant="outline" size="sm" /> : null}
                   </>
                 ) : null}
 

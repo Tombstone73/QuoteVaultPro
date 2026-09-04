@@ -13,6 +13,8 @@ import {
   Search,
   Settings,
   Truck,
+  ChevronDown,
+  Printer,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
@@ -38,6 +40,11 @@ import {
   useUnreadyFulfillmentOrderMutation,
   useUpdateFulfillmentChecklistItemMutation,
 } from "@/hooks/useFulfillment";
+import { useGeneratePackingSlip } from "@/hooks/useShipments";
+import { PackingSlipModal } from "@/components/PackingSlipModal";
+import { PrintTicketButton } from "@/components/production/PrintTicketButton";
+import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNowStrict } from "date-fns";
 
 const statusOptions = [
@@ -135,6 +142,9 @@ function FulfillmentDetailPanel({
   const markPickedUp = useMarkPickupPickedUpMutation(ticketId, orderId || undefined);
   const shipmentId = detail?.shipmentId || detail?.shipments?.[0]?.id || "";
   const markShipped = useMarkShippedMutation(shipmentId);
+  const generatePackingSlip = useGeneratePackingSlip(orderId || "");
+  const [packingSlipHtml, setPackingSlipHtml] = useState<string | null>(null);
+  const [packingSlipOpen, setPackingSlipOpen] = useState(false);
 
   if (!orderId) {
     return (
@@ -186,6 +196,16 @@ function FulfillmentDetailPanel({
     await runAction(checked ? "Item verified" : "Item unverified", () =>
       updateChecklist.mutateAsync({ lineItemId, checked, notes: notes ?? null }),
     );
+  };
+
+  const openPackingSlip = async () => {
+    try {
+      const html = await generatePackingSlip.mutateAsync();
+      setPackingSlipHtml(html);
+      setPackingSlipOpen(true);
+    } catch (error) {
+      toast({ title: "Packing slip unavailable", description: error instanceof Error ? error.message : "Failed to generate packing slip", variant: "destructive" });
+    }
   };
 
   return (
@@ -246,6 +266,22 @@ function FulfillmentDetailPanel({
                   Open Shipment
                 </button>
               ) : null}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" disabled={generatePackingSlip.isPending}>
+                    <Printer className="mr-1.5 h-4 w-4" />
+                    Print
+                    <ChevronDown className="ml-1 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <PrintTicketButton orderId={detail.orderId} asMenuItem />
+                  <DropdownMenuItem onSelect={() => void openPackingSlip()} disabled={generatePackingSlip.isPending}>
+                    <Printer />
+                    {generatePackingSlip.isPending ? "Generating packing slip…" : "Packing Slip"}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <button type="button" className="rounded-lg border border-border px-3 py-2 text-sm font-bold hover:bg-accent" onClick={() => onOpenOrder(detail.orderId)}>
                 Open Order
               </button>
@@ -445,7 +481,8 @@ function FulfillmentDetailPanel({
             </div>
           </div>
         )}
-    </aside>
+        {packingSlipHtml ? <PackingSlipModal open={packingSlipOpen} onOpenChange={setPackingSlipOpen} packingSlipHtml={packingSlipHtml} /> : null}
+      </aside>
   );
 }
 
