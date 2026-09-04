@@ -26,6 +26,9 @@ const invoice = (overrides: Partial<InvoiceListItem> = {}): InvoiceListItem => (
   purchaseOrderNumber: null,
   lastSentAt: null,
   lastInvoiceEmailRecipient: null,
+  emailDeliveryStatus: null,
+  emailDeliveryFailureReason: null,
+  emailDeliveryUpdatedAt: null,
   reminderStatus: "not_due",
   lastReminderSentAt: null,
   lastReminderRecipient: null,
@@ -106,6 +109,17 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("aria-label={`Send invoice ${invoice.invoiceNumber}`}");
     expect(invoicesPageSource).toContain('isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"');
     expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
+  });
+
+  it("keeps queued, sending, retrying, and failed delivery states distinct from Last Sent", () => {
+    expect(invoicesPageSource).toContain('queued: { label: "Queued"');
+    expect(invoicesPageSource).toContain('processing: { label: "Sending"');
+    expect(invoicesPageSource).toContain('retrying: { label: "Retrying"');
+    expect(invoicesPageSource).toContain('failed: { label: "Delivery Failed"');
+    expect(invoicesPageSource).toContain("emailDeliveryFailureReason");
+    expect(invoicesPageSource).toContain("invoice.lastSentAt ? formatDate(invoice.lastSentAt) : EMPTY_VALUE");
+    expect(invoiceHooksSource).toContain("refetchInterval");
+    expect(invoiceHooksSource).toContain('"queued", "processing", "retrying"');
   });
 
   it("shows Take Payment for a live draft balance, but not void or zero-balance invoices", () => {

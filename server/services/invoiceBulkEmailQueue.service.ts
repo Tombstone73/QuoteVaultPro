@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   invoiceEmailCampaigns,
@@ -22,6 +22,19 @@ export type BulkInvoiceEmailCandidate = {
 };
 
 export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
+
+/**
+ * Durable delivery state.  This deliberately describes the queue job, not
+ * successful delivery.  `invoice_email_logs` remains the only source for an
+ * invoice's Last Sent value.
+ */
+export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "canceled";
+
+export type InvoiceEmailDeliveryState = {
+  status: InvoiceEmailDeliveryStatus;
+  failureReason: string | null;
+  updatedAt: Date | null;
+};
 
 let canonicalInvoiceEmailSender: CanonicalInvoiceEmailSender | null = null;
 let workerRunning = false;
@@ -70,6 +83,44 @@ export function buildBulkInvoiceEmailRequestKey(input: { organizationId: string;
 
 export function registerCanonicalInvoiceEmailSender(sender: CanonicalInvoiceEmailSender): void {
   canonicalInvoiceEmailSender = sender;
+}
+
+/**
+ * Returns the most recently-created canonical delivery job for each supplied
+ * invoice. This is display/diagnostic data only; it must never be used as a
+ * substitute for the successful-delivery email log or Last Sent projection.
+ */
+export async function getInvoiceEmailDeliveryStates(input: {
+  organizationId: string;
+  invoiceIds: string[];
+}): Promise<Map<string, InvoiceEmailDeliveryState>> {
+  const result = new Map<string, InvoiceEmailDeliveryState>();
+  const invoiceIds = Array.from(new Set(input.invoiceIds.filter(Boolean)));
+  if (invoiceIds.length === 0) return result;
+
+  const rows = await db
+    .select({
+      invoiceId: invoiceEmailDeliveryJobs.invoiceId,
+      status: invoiceEmailDeliveryJobs.status,
+      failureReason: invoiceEmailDeliveryJobs.failureReason,
+      updatedAt: invoiceEmailDeliveryJobs.updatedAt,
+    })
+    .from(invoiceEmailDeliveryJobs)
+    .where(and(
+      eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
+      inArray(invoiceEmailDeliveryJobs.invoiceId, invoiceIds),
+    ))
+    .orderBy(invoiceEmailDeliveryJobs.invoiceId, desc(invoiceEmailDeliveryJobs.createdAt));
+
+  for (const row of rows) {
+    if (result.has(row.invoiceId)) continue;
+    result.set(row.invoiceId, {
+      status: row.status as InvoiceEmailDeliveryStatus,
+      failureReason: row.failureReason ?? null,
+      updatedAt: row.updatedAt ?? null,
+    });
+  }
+  return result;
 }
 
 export async function enqueueBulkInvoiceEmailCampaign(input: {

@@ -7,6 +7,7 @@ const source = (file: string) => readFileSync(path.join(process.cwd(), file), "u
 describe("bulk invoice email delivery queue contract", () => {
   const route = source("server/routes/mvpInvoicing.routes.ts");
   const queue = source("server/services/invoiceBulkEmailQueue.service.ts");
+  const server = source("server/index.ts");
   const migration = source("server/db/migrations_v2/0191_bulk_invoice_email_delivery_queue.sql");
   const client = source("client/src/pages/invoices.tsx");
   const v2Contracts = source("v2/src/modules/billing/contracts.ts");
@@ -51,6 +52,13 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("Outcome requires review before retry to avoid a duplicate email");
     expect(queue).toContain("isAmbiguousProviderFailure");
     expect(queue).toContain("maxAttempts");
+  });
+
+  test("starts a healthy worker immediately and exposes durable queue state without treating it as Last Sent", () => {
+    expect(server).toContain("void runBulkInvoiceEmailTick()");
+    expect(queue).toContain("getInvoiceEmailDeliveryStates");
+    expect(queue).toContain("invoiceEmailDeliveryJobs.failureReason");
+    expect(queue).toContain("This deliberately describes the queue job, not");
   });
 
   test("gives the V1 operator a preflight confirmation and models the V2 shared boundary", () => {

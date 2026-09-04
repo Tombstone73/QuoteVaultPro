@@ -55,6 +55,15 @@ const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "mut
   sent_outdated: { label: "Updated After Sent", variant: "warning" },
 };
 
+const deliveryStatusMeta = {
+  queued: { label: "Queued", variant: "info" },
+  processing: { label: "Sending", variant: "warning" },
+  retrying: { label: "Retrying", variant: "warning" },
+  failed: { label: "Delivery Failed", variant: "error" },
+  sent: { label: "Sent", variant: "info" },
+  canceled: { label: "Delivery Canceled", variant: "muted" },
+} as const;
+
 const EMPTY_COLUMN_FILTERS: InvoiceListColumnFilterQuery = {};
 
 const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
@@ -234,6 +243,13 @@ export default function InvoicesListPage() {
     } catch (error: any) {
       toast({ title: "Batch queue failed", description: error.message, variant: "destructive" });
     }
+  };
+
+  const getEmailDeliveryStatus = (invoice: { emailDeliveryStatus?: string | null; emailStatus: InvoiceEmailStatus }) => {
+    const queueStatus = String(invoice.emailDeliveryStatus || "").toLowerCase() as keyof typeof deliveryStatusMeta;
+    return queueStatus && deliveryStatusMeta[queueStatus]
+      ? deliveryStatusMeta[queueStatus]
+      : emailStatusMeta[invoice.emailStatus];
   };
 
   const handleQuickSend = async (invoiceId: string) => {
@@ -559,9 +575,11 @@ export default function InvoicesListPage() {
                   <TitanTableCell>
                     <div className="space-y-1">
                       <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : EMPTY_VALUE}</div>
-                      <StatusPill variant={emailStatusMeta[invoice.emailStatus].variant}>
-                        {emailStatusMeta[invoice.emailStatus].label}
-                      </StatusPill>
+                      <span title={invoice.emailDeliveryStatus === "failed" ? invoice.emailDeliveryFailureReason || "Invoice delivery failed" : undefined}>
+                        <StatusPill variant={getEmailDeliveryStatus(invoice).variant}>
+                          {getEmailDeliveryStatus(invoice).label}
+                        </StatusPill>
+                      </span>
                     </div>
                   </TitanTableCell>
                   <TitanTableCell className="text-right">{formatCurrency(invoice.displayTotal ?? invoice.total)}</TitanTableCell>

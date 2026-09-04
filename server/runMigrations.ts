@@ -183,6 +183,11 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // Migration 0191 backs the durable invoice email queue. If a deploy is
+  // serving the quick-send UI without these tables, fail startup explicitly
+  // instead of accepting an enqueue request that cannot be processed.
+  { type: "table_exists", table: "invoice_email_campaigns", label: "invoice_email_campaigns table" },
+  { type: "table_exists", table: "invoice_email_delivery_jobs", label: "invoice_email_delivery_jobs table" },
   // Migration 0178 verifies physical repair postconditions rather than trusting
   // that a migration ledger timestamp implies the intended catalog state.
   { type: "exact_foreign_key", table: "production_runs", column: "order_id", referencesTable: "orders", referencesColumn: "id", onDelete: "SET NULL", label: "production_runs.order_id has exactly one orders(id) SET NULL FK" },

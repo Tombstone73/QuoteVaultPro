@@ -5,6 +5,7 @@ import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
 import { apiRequest } from '@/lib/queryClient';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
+export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'canceled';
 
 export type ReminderListStatus =
   | 'due'
@@ -28,6 +29,11 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAcc
   lastSentAt: string | null;
   lastInvoiceEmailRecipient: string | null;
   emailStatus: InvoiceEmailStatus;
+  // Queue state is diagnostic only. Last Sent remains populated exclusively
+  // after the provider-successful canonical email log is written.
+  emailDeliveryStatus: InvoiceEmailDeliveryStatus | null;
+  emailDeliveryFailureReason: string | null;
+  emailDeliveryUpdatedAt: string | null;
   // Reminder tracking
   reminderStatus: ReminderListStatus;
   lastReminderSentAt: string | null;
@@ -142,6 +148,16 @@ export function useInvoicesPage(filters: {
 } & InvoiceListColumnFilterQuery) {
   return useQuery<InvoiceListResponse>({
     queryKey: ['invoices', filters],
+    // Poll only while this visible page contains active delivery work. This
+    // lets Queue → Sending → Sent/Failed replace the temporary queue label
+    // with authoritative backend state without manufacturing Last Sent in
+    // the browser or polling an idle invoice workspace.
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      return items.some((invoice) => ["queued", "processing", "retrying"].includes(String(invoice.emailDeliveryStatus || "")))
+        ? 5_000
+        : false;
+    },
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters?.status) params.append('status', filters.status);

@@ -400,6 +400,10 @@ process.on('uncaughtException', (error) => {
         };
         const bulkInvoiceEmailTimer = setInterval(runBulkInvoiceEmailTick, bulkInvoiceEmailInterval);
         bulkInvoiceEmailTimer.unref?.();
+        // Do not leave a just-queued invoice waiting for the first polling
+        // interval after a deploy or restart. The worker itself prevents
+        // overlapping ticks and only processes durably-claimed jobs.
+        void runBulkInvoiceEmailTick();
       }
 
       const paymentReconciliationEnabled = isWorkerEnabled('PAYMENT_RECONCILIATION', true);

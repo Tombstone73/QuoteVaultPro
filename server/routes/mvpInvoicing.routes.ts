@@ -45,6 +45,7 @@ import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptI
 import {
   buildBulkInvoiceEmailRequestKey,
   enqueueBulkInvoiceEmailCampaign,
+  getInvoiceEmailDeliveryStates,
   getBulkInvoiceEmailQueueConfig,
   registerCanonicalInvoiceEmailSender,
   type BulkInvoiceEmailCandidate,
@@ -1997,12 +1998,15 @@ export async function registerMvpInvoicingRoutes(
       }), includeSummary ? getInvoiceDashboardSummary(organizationId) : Promise.resolve(null)]);
       const rows = invoicePage.items;
 
-      const emailStatuses = await getInvoiceEmailStatuses(
-        rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
-        organizationId,
-      );
-
       const invoiceIds = rows.map((row) => row.id);
+      const [emailStatuses, emailDeliveryStates] = await Promise.all([
+        getInvoiceEmailStatuses(
+          rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
+          organizationId,
+        ),
+        getInvoiceEmailDeliveryStates({ organizationId, invoiceIds }),
+      ]);
+
       const paymentRows = invoiceIds.length > 0
         ? await db
             .select()
@@ -2047,6 +2051,15 @@ export async function registerMvpInvoicingRoutes(
               lastSentAt: null,
               lastInvoiceEmailRecipient: null,
               emailStatus: 'not_sent' as const,
+            }),
+            ...(emailDeliveryStates.get(row.id) ? {
+              emailDeliveryStatus: emailDeliveryStates.get(row.id)!.status,
+              emailDeliveryFailureReason: emailDeliveryStates.get(row.id)!.failureReason,
+              emailDeliveryUpdatedAt: emailDeliveryStates.get(row.id)!.updatedAt,
+            } : {
+              emailDeliveryStatus: null,
+              emailDeliveryFailureReason: null,
+              emailDeliveryUpdatedAt: null,
             }),
             ...(reminderInfoMap.get(row.id) || {
               reminderStatus: 'not_due' as const,
