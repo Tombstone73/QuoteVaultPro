@@ -36,6 +36,7 @@ const input = (expectedDraftUpdatedAt: string, options: readonly any[]) => ({
 
 const first = await runner.transaction((tx) => tx.updateDraftOptions!(input(updatedAt.toISOString(), [{
   optionId: "new:flute",
+  selectionKey: "new:flute",
   label: "Flute direction matters?",
   inputType: "select",
   required: false,
@@ -49,10 +50,12 @@ const first = await runner.transaction((tx) => tx.updateDraftOptions!(input(upda
 
 assert.deepEqual(first.options[0]?.choices.map((choice) => choice.choiceValue), ["yes", "no"]);
 assert.equal(first.options[0]?.defaultValue, "yes");
+assert.equal(first.options[0]?.selectionKey, first.options[0]?.optionId, "a newly created option returns its durable selection identity");
 assert.equal((tree as any).nodes[first.options[0]!.optionId].input.valueType, "ENUM");
 
 const second = await runner.transaction((tx) => tx.updateDraftOptions!(input(first.draftUpdatedAt, first.options)));
 assert.equal(second.options[0]?.optionId, first.options[0]?.optionId);
+assert.equal(second.options[0]?.selectionKey, first.options[0]?.optionId, "the next revision accepts the returned canonical selection identity");
 assert.deepEqual(second.options[0]?.choices.map((choice) => choice.choiceValue), ["yes", "no"]);
 assert.equal(second.options[0]?.defaultValue, "yes");
 

@@ -2909,13 +2909,22 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         removalError(candidate, [value], "choice");
       }
       const defaultValue = option.defaultValue;
+      // A browser-created option starts with a transient `new:` identity. Once
+      // this transaction assigns its durable PBV2 node id, that id is the
+      // option's canonical selection key as well.  The Product Builder
+      // remaps dependent draft sections to this returned id before its next
+      // revision-aware write; retaining the transient key here would make a
+      // routine second save look like an attempt to change a stable identity.
+      const isNewOption = !currentById.has(option.optionId);
       const inputValue: Record<string, unknown> = {
         ...priorInput,
         type: option.inputType,
         valueType: pbv2ValueType(option.inputType),
         required: option.required,
         selectionKey:
-          typeof priorInput.selectionKey === "string"
+          isNewOption
+            ? id
+            : typeof priorInput.selectionKey === "string"
             ? priorInput.selectionKey
             : option.selectionKey,
       };
@@ -2943,7 +2952,10 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         throw new V2ApplicationError("VALIDATION_ERROR", "Product option rules are invalid.");
       const selectionKeys = new Map<string, string>(input.options.map((option) => [option.optionId, option.selectionKey]));
       for (const [temporaryId, generatedId] of generatedIds) {
-        selectionKeys.set(generatedId, selectionKeys.get(temporaryId)!);
+        // Rules saved with a newly created option must point at the same
+        // canonical selection key returned to the Builder, not its `new:`
+        // staging identity.
+        selectionKeys.set(generatedId, generatedId);
       }
       tree.optionRules = remapOptionRuleReferences(input.optionRules, selectionKeys);
       delete tree.rules;
