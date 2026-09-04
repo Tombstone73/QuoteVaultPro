@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 192,
+  "entryCount": 193,
   "immutableThrough": {
-    "idx": 197,
-    "when": 1788048000043,
-    "tag": "0196_repair_posters_laminate_pricing"
+    "idx": 198,
+    "when": 1788048000044,
+    "tag": "0197_repair_active_posters_pricing"
   },
-  "canonicalSha256": "6917868a5bd35e789c877a1b52b07ee03d57894cc85f7131c9efe13078f4fa22"
+  "canonicalSha256": "7cd419a99804d98f5a23aa5a3b617e60026742f10425e9bd1385b7fcb98691f3"
 }
