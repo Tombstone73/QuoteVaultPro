@@ -97,10 +97,10 @@ describe("Invoices List payment entry point", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 100, balanceDue: "100.00" }))).toBe(true);
   });
 
-  it("uses compact accessible quick actions and sends through the canonical delivery queue", () => {
+  it("uses compact accessible quick actions and opens the canonical direct-send dialog", () => {
     expect(invoicesPageSource).toContain("handleQuickSend(invoice)");
-    expect(invoicesPageSource).toContain("invoiceIds: [invoiceId], dryRun: true");
-    expect(invoicesPageSource).toContain("invoiceIds: [invoiceId], idempotencyKey");
+    expect(invoicesPageSource).toContain("InvoiceEmailSendDialog");
+    expect(invoicesPageSource).toContain("setQuickSendInvoice");
     expect(invoicesPageSource).toContain("Send Invoice</TooltipContent>");
     expect(invoicesPageSource).toContain("Take Payment</TooltipContent>");
     expect(invoicesPageSource).toContain("View Invoice</TooltipContent>");
@@ -111,11 +111,11 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
   });
 
-  it("detects an uncertain delivery before showing the normal queue confirmation", () => {
+  it("detects an uncertain delivery before opening the normal direct-send dialog", () => {
     const quickSend = invoicesPageSource.slice(invoicesPageSource.indexOf("const handleQuickSend"), invoicesPageSource.indexOf("const confirmVerifiedNotSent"));
     expect(quickSend).toContain("invoice.emailDeliveryStatus === 'needs_review'");
     expect(quickSend).toContain("setNeedsReviewPromptJob");
-    expect(quickSend.indexOf("invoice.emailDeliveryStatus === 'needs_review'")).toBeLessThan(quickSend.indexOf("dryRun: true"));
+    expect(quickSend).toContain("setQuickSendInvoice");
   });
 
   it("keeps queued, sending, retrying, and failed delivery states distinct from Last Sent", () => {
@@ -138,7 +138,8 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("Delivery outcome uncertain. Retry blocked until reviewed.");
     expect(invoicesPageSource).toContain("Safe to send again:");
     expect(invoicesPageSource).toContain(">Review</Button>");
-    expect(invoicesPageSource).toContain("I verified this email was not sent. Retry delivery.");
+    expect(invoicesPageSource).toContain("Retry through Queue");
+    expect(invoicesPageSource).toContain("I verified this email was not sent");
     expect(invoicesPageSource).toContain("Keep Blocked");
     expect(invoicesPageSource).toContain("Previous delivery needs review");
     expect(invoicesPageSource).toContain("Stale");

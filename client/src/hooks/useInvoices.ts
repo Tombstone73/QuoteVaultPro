@@ -62,7 +62,7 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
 }
 
-export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: { deliveryReview?: { resolution?: 'verified_not_sent'; reviewedAt?: string; reviewedByUserName?: string | null; replacementJobId?: string } }; };
+export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: { deliveryReview?: { resolution?: 'verified_not_sent'; reviewedAt?: string; reviewedByUserName?: string | null; replacementJobId?: string | null } }; };
 export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; pagination: InvoiceListPagination; counts: { active: number; failed: number; needsReview: number }; claimSeconds: number };
 
 export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'all', page: number) {
@@ -679,16 +679,16 @@ export function useBatchSendInvoices() {
 export function useResolveInvoiceEmailDeliveryReview() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ jobId }: { jobId: string }) => {
+    mutationFn: async ({ jobId, retryThroughQueue = false }: { jobId: string; retryThroughQueue?: boolean }) => {
       const response = await fetch(`/api/invoices/email-queue/${jobId}/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resolution: 'verified_not_sent' }),
+        body: JSON.stringify({ resolution: 'verified_not_sent', retryThroughQueue }),
         credentials: 'include',
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Unable to resolve invoice email delivery');
-      return payload.data as { originalJobId: string; replacementJob: { id: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number }; replayed: boolean };
+      return payload.data as { originalJobId: string; replacementJob: { id: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number } | null; replayed: boolean };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });

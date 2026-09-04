@@ -49,6 +49,7 @@ import {
   getInvoiceEmailDeliveryStates,
   listInvoiceEmailDeliveryJobs,
   getBulkInvoiceEmailQueueConfig,
+  getInvoiceEmailDeliveryFailureKind,
   markInvoiceEmailDeliveryFailure,
   registerCanonicalInvoiceEmailSender,
   resolveInvoiceEmailDeliveryNeedsReview,
@@ -2133,8 +2134,8 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // An uncertain provider result is never retried automatically. An
-  // authorized operator may explicitly attest that it was not sent; this
-  // creates a new durable job while retaining the original in history.
+  // authorized operator first clears the review block, then may explicitly
+  // choose a separate queue retry.
   app.post("/api/invoices/email-queue/:jobId/resolve", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -2148,6 +2149,7 @@ export async function registerMvpInvoicingRoutes(
         jobId: String(req.params.jobId || "").trim(),
         reviewedByUserId: userId,
         reviewedByUserName: userName,
+        retryThroughQueue: req.body?.retryThroughQueue === true,
       });
       if (!result.replayed) {
         try {
@@ -2158,8 +2160,10 @@ export async function registerMvpInvoicingRoutes(
             entityType: "invoice_email_delivery_job",
             entityId: result.originalJobId,
             entityName: "Invoice email delivery review",
-            description: "Operator verified an uncertain invoice email was not sent and queued one replacement delivery job.",
-            newValues: { resolution: "verified_not_sent", replacementJobId: result.replacementJob.id },
+            description: result.replacementJob
+              ? "Operator verified an uncertain invoice email was not sent and explicitly queued one replacement delivery job."
+              : "Operator verified an uncertain invoice email was not sent and cleared the delivery review block.",
+            newValues: { resolution: "verified_not_sent", replacementJobId: result.replacementJob?.id || null },
             ipAddress: req.ip ?? null,
             userAgent: req.get("user-agent") || null,
           });
@@ -2167,7 +2171,7 @@ export async function registerMvpInvoicingRoutes(
           console.error("[InvoiceEmailQueue] delivery-review audit write failed", { jobId: result.originalJobId, error: auditError?.message || auditError });
         }
       }
-      return res.json({ success: true, data: result, message: result.replayed ? "Delivery review was already resolved" : "Verified-not-sent review recorded and replacement delivery queued" });
+      return res.json({ success: true, data: result, message: result.replayed ? "Delivery review was already resolved" : result.replacementJob ? "Verified-not-sent review recorded and replacement delivery queued" : "Verified-not-sent review recorded; delivery is no longer blocked" });
     } catch (error: any) {
       return res.status(Number(error?.statusCode || 500)).json({ success: false, error: error?.message || "Unable to resolve invoice email delivery" });
     }
@@ -3046,9 +3050,8 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
-  // Queue one invoice email. Delivery always happens in the durable worker;
-  // this endpoint intentionally does not bypass the queue for a synchronous
-  // provider call.
+  // One operator-requested invoice email is intentionally synchronous. It
+  // reuses the canonical sender; only multi-invoice selections use the queue.
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/send", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -3058,51 +3061,17 @@ export async function registerMvpInvoicingRoutes(
       const userId = getUserId(req.user);
       const { id } = req.params;
       const { toEmail } = req.body || {};
-      const requestedRecipient = toEmail == null ? null : String(toEmail).trim();
-      if (requestedRecipient && !isValidInvoiceRecipientEmail(requestedRecipient)) {
-        return res.status(400).json({ success: false, error: "Enter a valid recipient email address" });
-      }
-      if (toEmail != null && !requestedRecipient) {
-        return res.status(400).json({ success: false, error: "Enter a valid recipient email address" });
-      }
-
-      const resolution = await resolveInvoiceEmailRecipientsForOperations({ organizationId, invoiceId: id });
-      const status = String(resolution.invoice.status || "").toLowerCase();
-      if (status === "void") return res.status(400).json({ success: false, error: "Void invoices cannot be sent" });
-      if (status === "paid") return res.status(400).json({ success: false, error: "Paid invoices do not need to be sent" });
-      const recipients = requestedRecipient ? [requestedRecipient] : resolution.recipients.map((recipient) => recipient.email);
-      if (recipients.length === 0) return res.status(400).json({ success: false, error: "No recipient email is available. Enter another email address before sending." });
-
-      const queued = await enqueueBulkInvoiceEmailCampaign({
+      const userName = String(req.user?.firstName && req.user?.lastName
+        ? `${req.user.firstName} ${req.user.lastName}`
+        : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
+      const result = await sendInvoiceEmailForOperations({
         organizationId,
-        createdByUserId: userId || null,
-        invoiceIds: [id],
-        candidates: recipients.map((recipientEmail) => ({
-          invoiceId: id,
-          invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
-          recipientEmail,
-        })),
-        skipped: [],
-        idempotencyKey: buildBulkInvoiceEmailRequestKey({
-          organizationId,
-          invoiceIds: [id],
-          // The detail-page legacy endpoint did not historically supply an
-          // Idempotency-Key. Give each deliberate click a fresh durable
-          // request identity so a retry-safe failed delivery can be queued
-          // again, while preserving caller-supplied retry idempotency.
-          suppliedKey: req.get("Idempotency-Key") || randomUUID(),
-        }),
+        invoiceId: id,
+        userId: userId || null,
+        userName,
+        toEmail: toEmail == null ? null : String(toEmail),
       });
-      const needsReview = queued.blocked.some((job) => job.status === "needs_review");
-      return res.json({
-        success: true,
-        data: queued,
-        message: queued.queued
-          ? "Invoice delivery queued"
-          : needsReview
-            ? "Previous delivery needs review because the provider outcome is uncertain."
-            : "Invoice delivery is already active.",
-      });
+      return res.json({ success: true, data: result, message: "Invoice sent" });
     } catch (error: any) {
       console.error("[Invoice Send] FAILED:", {
         error: error.message,
@@ -3111,9 +3080,12 @@ export async function registerMvpInvoicingRoutes(
       });
 
       const errorMessage = error.message || "Failed to send invoice";
+      const uncertain = getInvoiceEmailDeliveryFailureKind(error) === "needs_review";
       return res.status(Number(error.statusCode || error.status || 500)).json({
         success: false,
-        error: errorMessage.includes("Email settings not configured")
+        error: uncertain
+          ? "The email provider outcome is uncertain. Check Gmail Sent before trying again to avoid a duplicate email."
+          : errorMessage.includes("Email settings not configured")
           ? "Email is not configured. Please configure email settings in the admin panel."
           : errorMessage,
       });

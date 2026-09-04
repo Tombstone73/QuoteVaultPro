@@ -58,11 +58,8 @@ describe("invoice email needs-review resolution", () => {
     updatedValues.splice(0);
   });
 
-  test("locks a needs-review row, preserves it as failed, and creates one fresh queued replacement", async () => {
+  test("locks a needs-review row, preserves it as failed, and clears the block without sending or queueing", async () => {
     execute.mockResolvedValueOnce({ rows: [lockedNeedsReviewJob()] });
-    tx.insert
-      .mockReturnValueOnce(valuesReturning({ id: "campaign-retry" }))
-      .mockReturnValueOnce(valuesReturning({ id: "replacement-job", status: "queued", attemptCount: 0, maxAttempts: 3 }));
 
     const result = await resolveInvoiceEmailDeliveryNeedsReview({
       organizationId: "org-1",
@@ -71,9 +68,21 @@ describe("invoice email needs-review resolution", () => {
       reviewedByUserName: "Dale",
     });
 
-    expect(result).toMatchObject({ originalJobId: "needs-review-job", replayed: false, replacementJob: { id: "replacement-job", status: "queued", attemptCount: 0 } });
+    expect(result).toMatchObject({ originalJobId: "needs-review-job", replayed: false, replacementJob: null });
     expect(updatedValues[0]).toMatchObject({ status: "failed" });
-    expect(updatedValues[1]).toMatchObject({ status: "failed", metadata: { deliveryReview: expect.objectContaining({ resolution: "verified_not_sent", reviewedByUserId: "user-1", replacementJobId: "replacement-job" }) } });
+    expect(updatedValues[0]).toMatchObject({ metadata: { deliveryReview: expect.objectContaining({ resolution: "verified_not_sent", reviewedByUserId: "user-1", replacementJobId: null }) } });
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  test("creates one fresh queued replacement only when the operator explicitly chooses Retry through Queue", async () => {
+    execute.mockResolvedValueOnce({ rows: [lockedNeedsReviewJob()] });
+    tx.insert
+      .mockReturnValueOnce(valuesReturning({ id: "campaign-retry" }))
+      .mockReturnValueOnce(valuesReturning({ id: "replacement-job", status: "queued", attemptCount: 0, maxAttempts: 3 }));
+
+    const result = await resolveInvoiceEmailDeliveryNeedsReview({ organizationId: "org-1", jobId: "needs-review-job", retryThroughQueue: true });
+
+    expect(result).toMatchObject({ originalJobId: "needs-review-job", replayed: false, replacementJob: { id: "replacement-job", status: "queued", attemptCount: 0 } });
     expect(insertedValues[1]).toMatchObject({ status: "queued", attemptCount: 0, invoiceId: "invoice-1", recipientEmail: "customer@example.test" });
     expect(insertedValues[1]).not.toHaveProperty("sentAt");
   });
@@ -91,6 +100,6 @@ describe("invoice email needs-review resolution", () => {
     const source = readFileSync(path.join(process.cwd(), "server/services/invoiceBulkEmailQueue.service.ts"), "utf8");
     const resolver = source.slice(source.indexOf("export async function resolveInvoiceEmailDeliveryNeedsReview"), source.indexOf("type ClaimedJob"));
     expect(resolver).toContain('recipient_email AS "recipientEmail", recipient_key AS "recipientKey",\n             status,');
-    expect(resolver).toContain('if (original.status !== "needs_review")');
+    expect(resolver).toContain('original.status !== "needs_review"');
   });
 });

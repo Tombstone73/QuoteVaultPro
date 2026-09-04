@@ -201,7 +201,7 @@ type InvoiceEmailDeliveryReviewMetadata = {
   reviewedByUserId: string | null;
   reviewedByUserName: string | null;
   originalNeedsReviewJobId: string;
-  replacementJobId: string;
+  replacementJobId: string | null;
 };
 
 function asMetadata(value: unknown): Record<string, unknown> {
@@ -219,14 +219,15 @@ function asMetadata(value: unknown): Record<string, unknown> {
 
 /**
  * Resolves an ambiguous provider outcome only after an authorized operator
- * explicitly verifies that no email was sent. The original job remains an
- * immutable audit record; a new queued job is created for the replacement.
+ * explicitly verifies that no email was sent. Resolution only clears the
+ * safety block. A queue retry is a separate, explicit operator choice.
  */
 export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
   organizationId: string;
   jobId: string;
   reviewedByUserId?: string | null;
   reviewedByUserName?: string | null;
+  retryThroughQueue?: boolean;
 }) {
   return db.transaction(async (tx) => {
     const locked: any = await tx.execute(sql`
@@ -255,26 +256,44 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
       const replacement = (replacementResult.rows || replacementResult)[0];
       if (replacement) return { originalJobId: original.id, replacementJob: replacement, replayed: true };
     }
-    if (original.status !== "needs_review") {
+    const alreadyReviewed = priorReview?.resolution === "verified_not_sent";
+    if (!alreadyReviewed && original.status !== "needs_review") {
       throw Object.assign(new Error("This delivery is no longer awaiting operator review"), { statusCode: 409 });
     }
 
     const reviewedAt = new Date();
     const retainedReason = String(original.failureReason || "Delivery outcome was uncertain.").trim();
     const reviewer = input.reviewedByUserName || "an authorized operator";
-    // Release only this reviewed terminal record from the partial active guard
-    // before inserting its replacement. The transaction rolls this back if a
-    // concurrent active delivery makes the replacement unsafe.
-    await tx.update(invoiceEmailDeliveryJobs).set({
-      status: "failed",
-      claimExpiresAt: null,
-      availableAt: reviewedAt,
-      updatedAt: reviewedAt,
-    } as any).where(and(
-      eq(invoiceEmailDeliveryJobs.id, original.id),
-      eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
-      eq(invoiceEmailDeliveryJobs.status, "needs_review"),
-    ));
+    const review: InvoiceEmailDeliveryReviewMetadata = {
+      resolution: "verified_not_sent",
+      reviewedAt: alreadyReviewed && priorReview?.reviewedAt ? priorReview.reviewedAt : reviewedAt.toISOString(),
+      reviewedByUserId: alreadyReviewed ? priorReview?.reviewedByUserId || null : input.reviewedByUserId || null,
+      reviewedByUserName: alreadyReviewed ? priorReview?.reviewedByUserName || null : input.reviewedByUserName || null,
+      originalNeedsReviewJobId: original.id,
+      replacementJobId: null,
+    };
+
+    if (!alreadyReviewed) {
+      // Mark the original terminally failed and preserve its audit history.
+      // This releases only the reviewed record from the active-job guard;
+      // direct sending remains a separately requested synchronous operation.
+      await tx.update(invoiceEmailDeliveryJobs).set({
+        status: "failed",
+        claimExpiresAt: null,
+        availableAt: reviewedAt,
+        failureReason: `${retainedReason}\n\nReviewed ${reviewedAt.toISOString()} by ${reviewer}. Operator verified email was not sent; no replacement was queued.`,
+        metadata: { ...originalMetadata, deliveryReview: review },
+        updatedAt: reviewedAt,
+      } as any).where(and(
+        eq(invoiceEmailDeliveryJobs.id, original.id),
+        eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
+        eq(invoiceEmailDeliveryJobs.status, "needs_review"),
+      ));
+    }
+
+    if (!input.retryThroughQueue) {
+      return { originalJobId: original.id, replacementJob: null, replayed: alreadyReviewed };
+    }
 
     const [campaign] = await tx.insert(invoiceEmailCampaigns).values({
       organizationId: input.organizationId,
@@ -290,14 +309,6 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
       metadata: { deliveryMode: "individual_invoice_messages", replacesNeedsReviewJobId: original.id },
     } as any).returning({ id: invoiceEmailCampaigns.id });
 
-    const replacementReview: InvoiceEmailDeliveryReviewMetadata = {
-      resolution: "verified_not_sent",
-      reviewedAt: reviewedAt.toISOString(),
-      reviewedByUserId: input.reviewedByUserId || null,
-      reviewedByUserName: input.reviewedByUserName || null,
-      originalNeedsReviewJobId: original.id,
-      replacementJobId: "",
-    };
     const [replacement] = await tx.insert(invoiceEmailDeliveryJobs).values({
       organizationId: input.organizationId,
       campaignId: campaign.id,
@@ -322,13 +333,13 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
     });
     if (!replacement) throw Object.assign(new Error("A delivery for this invoice is already active"), { statusCode: 409 });
 
-    replacementReview.replacementJobId = replacement.id;
+    review.replacementJobId = replacement.id;
     await tx.update(invoiceEmailDeliveryJobs).set({
       status: "failed",
       claimExpiresAt: null,
       availableAt: reviewedAt,
-      failureReason: `${retainedReason}\n\nReviewed ${reviewedAt.toISOString()} by ${reviewer}. Operator verified email was not sent; replacement delivery job ${replacement.id} was queued.`,
-      metadata: { ...originalMetadata, deliveryReview: replacementReview },
+      failureReason: `${retainedReason}\n\nReviewed ${review.reviewedAt} by ${review.reviewedByUserName || reviewer}. Operator explicitly queued replacement delivery job ${replacement.id}.`,
+      metadata: { ...originalMetadata, deliveryReview: review },
       updatedAt: reviewedAt,
     } as any).where(and(
       eq(invoiceEmailDeliveryJobs.id, original.id),

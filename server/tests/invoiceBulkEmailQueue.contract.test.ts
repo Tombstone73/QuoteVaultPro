@@ -70,28 +70,27 @@ describe("bulk invoice email delivery queue contract", () => {
   test("permits a new explicit attempt after a retry-safe terminal failure but blocks active and ambiguous work", () => {
     expect(retrySafetyMigration).toContain("DROP INDEX IF EXISTS invoice_email_delivery_jobs_invoice_recipient_version_uidx");
     expect(queue).toContain('inArray(invoiceEmailDeliveryJobs.status, ["queued", "processing", "retrying", "needs_review"])');
-    expect(route).toContain("Previous delivery needs review because the provider outcome is uncertain.");
+    expect(route).toContain("The email provider outcome is uncertain. Check Gmail Sent before trying again");
   });
 
-  test("requires an explicit verified-not-sent review before one replacement job can be queued", () => {
+  test("clears an uncertain-delivery review without auto-queueing, with a separate explicit queue retry", () => {
     expect(queue).toContain("resolveInvoiceEmailDeliveryNeedsReview");
     expect(queue).toContain("FOR UPDATE");
     expect(queue).toContain('resolution: "verified_not_sent"');
     expect(queue).toContain("originalNeedsReviewJobId");
-    expect(queue).toContain("replacementJobId");
+    expect(queue).toContain("retryThroughQueue?: boolean");
     expect(queue).toContain('status: "failed"');
-    expect(queue).toContain('status: "queued"');
+    expect(queue).toContain("if (!input.retryThroughQueue)");
     expect(queue).toContain("needs-review-retry:");
     expect(retrySafetyMigration).toContain("invoice_email_delivery_jobs_active_guard_uidx");
     expect(route).toContain('app.post("/api/invoices/email-queue/:jobId/resolve"');
     expect(route).toContain("invoice_email_delivery_verified_not_sent");
   });
 
-  test("keeps every invoice send entry point on the durable queue", () => {
+  test("uses direct canonical delivery for one interactive invoice and the queue only for bulk send", () => {
     const directSendRoute = route.slice(route.indexOf('app.post("/api/invoices/:id/send"'), route.indexOf('app.post("/api/invoices/batch-send"'));
-    expect(directSendRoute).toContain("enqueueBulkInvoiceEmailCampaign");
-    expect(directSendRoute).toContain('req.get("Idempotency-Key") || randomUUID()');
-    expect(directSendRoute).not.toContain("await sendInvoiceEmailForOperations(");
+    expect(directSendRoute).toContain("await sendInvoiceEmailForOperations(");
+    expect(directSendRoute).not.toContain("enqueueBulkInvoiceEmailCampaign");
   });
 
   test("starts a healthy worker immediately and exposes durable queue state without treating it as Last Sent", () => {
@@ -114,10 +113,12 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route.indexOf('app.get("/api/invoices/email-queue"')).toBeLessThan(route.indexOf('app.get("/api/invoices/:id"'));
   });
 
-  test("gives the V1 operator a preflight confirmation and models the V2 shared boundary", () => {
+  test("keeps a V1 bulk preflight while the one-invoice envelope opens the shared direct-send dialog", () => {
     expect(client).toContain("dryRun: true");
     expect(client).toContain("window.confirm(confirmation)");
     expect(client).toContain("Emails will be queued and sent in a throttled background worker.");
+    expect(client).toContain("InvoiceEmailSendDialog");
+    expect(client).toContain("setQuickSendInvoice");
     expect(v2Contracts).toContain("BulkInvoiceDeliveryPort");
     expect(v2Contracts).toContain("queueBulkInvoiceDelivery");
   });
