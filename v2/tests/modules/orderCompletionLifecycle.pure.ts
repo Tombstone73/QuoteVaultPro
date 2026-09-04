@@ -187,8 +187,13 @@ assert.doesNotMatch(persistenceSource.slice(persistenceSource.indexOf("async com
 assert.match(migration, /archived_at IS NOT NULL AND commercial_state IN \('completed', 'cancelled'\)/);
 assert.match(migration, /Production attempts require an open Order/);
 const liveInvoiceRevisionMigration = await readFile(new URL("../../../server/db/migrations_v2/0260_v2_live_order_invoice_revisions.sql", import.meta.url), "utf8");
+const productionTargetMigration = await readFile(new URL("../../../server/db/migrations_v2/0261_v2_production_work_current_target.sql", import.meta.url), "utf8");
 assert.match(liveInvoiceRevisionMigration, /issued Invoice checkpoint lifecycle is immutable/);
 assert.match(liveInvoiceRevisionMigration, /RETURN NEW/, "issued Invoice current projection may revise without replacing its identity");
+assert.match(productionTargetMigration, /NEW\.ordered_quantity IS DISTINCT FROM line_quantity/, "only the current Order-line quantity can become the ProductionWork target");
+assert.match(productionTargetMigration, /NEW\.artwork_assignment_id IS DISTINCT FROM OLD\.artwork_assignment_id/, "the target exception cannot rewrite Artwork evidence");
+assert.match(productionTargetMigration, /Production work evidence is immutable/, "all non-target ProductionWork evidence remains immutable");
+assert.match(productionTargetMigration, /Completed Production attempt is immutable/, "target updates never weaken completed Production-attempt history");
 assert.match(billingSource, /commercial_state==="cancelled"/, "completed Orders retain independent Billing issuance");
 assert.match(workspaceSource, /o\.archived_at IS NULL/);
 assert.match(workspaceSource, /o\.archived_at IS NOT NULL/);
