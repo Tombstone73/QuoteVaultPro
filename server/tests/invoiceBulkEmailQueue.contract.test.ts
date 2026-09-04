@@ -9,7 +9,7 @@ describe("bulk invoice email delivery queue contract", () => {
   const queue = source("server/services/invoiceBulkEmailQueue.service.ts");
   const server = source("server/index.ts");
   const migration = source("server/db/migrations_v2/0191_bulk_invoice_email_delivery_queue.sql");
-  const retrySafetyMigration = source("server/db/migrations_v2/0192_invoice_email_delivery_retry_safety.sql");
+  const retrySafetyMigration = source("server/db/migrations_v2/0199_invoice_email_delivery_retry_safety.sql");
   const client = source("client/src/pages/invoices.tsx");
   const v2Contracts = source("v2/src/modules/billing/contracts.ts");
 
