@@ -11,7 +11,7 @@ import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoicesPage,
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
-import { canTakePaymentFromInvoiceList, getInvoiceListSendPath, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
+import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getNextInvoiceSortState, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
@@ -233,6 +233,21 @@ export default function InvoicesListPage() {
       setSelectedInvoiceIds(new Set());
     } catch (error: any) {
       toast({ title: "Batch queue failed", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const handleQuickSend = async (invoiceId: string) => {
+    try {
+      const idempotencyKey = crypto.randomUUID();
+      const preview = (await batchSendInvoices.mutateAsync({ invoiceIds: [invoiceId], dryRun: true, idempotencyKey })).data;
+      const confirmation = preview.eligible === 1
+        ? `Send this invoice to its ${preview.recipientGroups} configured recipient group${preview.recipientGroups === 1 ? "" : "s"}?\n\nThe email will use the normal invoice delivery queue.`
+        : preview.skipped[0]?.reason || "This invoice is not eligible for email delivery.";
+      if (preview.eligible !== 1 || !window.confirm(confirmation)) return;
+      const result = (await batchSendInvoices.mutateAsync({ invoiceIds: [invoiceId], idempotencyKey })).data;
+      toast({ title: "Invoice delivery queued", description: result.queued ? "The invoice email was queued." : "The invoice was already queued." });
+    } catch (error: any) {
+      toast({ title: "Invoice send failed", description: error.message, variant: "destructive" });
     }
   };
 
@@ -557,7 +572,7 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="sticky right-0 w-[116px] min-w-[116px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
                     <TooltipProvider delayDuration={250}>
                     <div className="flex items-center justify-center gap-1">
-                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Send invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListSendPath(invoice.id))}><Mail className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Send Invoice</TooltipContent></Tooltip> : null}
+                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice.id)}><Mail className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Send Invoice</TooltipContent></Tooltip> : null}
                       {canTakePaymentFromInvoiceList(invoice) ? (
                         <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
                       ) : null}

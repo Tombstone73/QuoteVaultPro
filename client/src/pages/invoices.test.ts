@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
-import { canTakePaymentFromInvoiceList, getInvoiceListSendPath, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
+import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import type { InvoiceListItem } from "@/hooks/useInvoices";
 
 const invoicesPageSource = readFileSync("client/src/pages/invoices.tsx", "utf8");
-const invoiceDetailSource = readFileSync("client/src/pages/invoice-detail.tsx", "utf8");
 const invoiceHooksSource = readFileSync("client/src/hooks/useInvoices.ts", "utf8");
 
 const invoice = (overrides: Partial<InvoiceListItem> = {}): InvoiceListItem => ({
@@ -95,9 +94,10 @@ describe("Invoices List payment entry point", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 100, balanceDue: "100.00" }))).toBe(true);
   });
 
-  it("uses compact accessible quick actions and routes send to the canonical detail dialog", () => {
-    expect(getInvoiceListSendPath("invoice-123")).toBe("/invoices/invoice-123?sendInvoice=1");
-    expect(invoicesPageSource).toContain("getInvoiceListSendPath(invoice.id)");
+  it("uses compact accessible quick actions and sends through the canonical delivery queue", () => {
+    expect(invoicesPageSource).toContain("handleQuickSend(invoice.id)");
+    expect(invoicesPageSource).toContain("invoiceIds: [invoiceId], dryRun: true");
+    expect(invoicesPageSource).toContain("invoiceIds: [invoiceId], idempotencyKey");
     expect(invoicesPageSource).toContain("Send Invoice</TooltipContent>");
     expect(invoicesPageSource).toContain("Take Payment</TooltipContent>");
     expect(invoicesPageSource).toContain("View Invoice</TooltipContent>");
@@ -105,10 +105,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain(">$</Button>");
     expect(invoicesPageSource).toContain("aria-label={`Send invoice ${invoice.invoiceNumber}`}");
     expect(invoicesPageSource).toContain('isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"');
-    expect(invoiceDetailSource).toContain('searchParams.get("sendInvoice") !== "1"');
-    expect(invoiceDetailSource).toContain("handleEmailDialogOpenChange(true)");
-    expect(invoiceDetailSource).toContain('next.delete("sendInvoice")');
-    expect(invoiceDetailSource).toContain("if (!canSendInvoiceEmail)");
+    expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
   });
 
   it("shows Take Payment for a live draft balance, but not void or zero-balance invoices", () => {

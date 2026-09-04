@@ -257,7 +257,6 @@ export default function InvoiceDetailPage() {
   const [recipientEmailError, setRecipientEmailError] = useState<string | null>(null);
   const [expandedQBLines, setExpandedQBLines] = useState<Set<number>>(new Set());
   const takePaymentAutoLaunchRef = useRef(false);
-  const sendInvoiceAutoLaunchRef = useRef(false);
   const invoiceEmailRecipients = useInvoiceEmailRecipients(invoiceId, emailDialogOpen);
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
@@ -279,7 +278,6 @@ export default function InvoiceDetailPage() {
 
   useEffect(() => {
     takePaymentAutoLaunchRef.current = false;
-    sendInvoiceAutoLaunchRef.current = false;
   }, [invoiceId]);
 
   // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
@@ -1256,22 +1254,6 @@ export default function InvoiceDetailPage() {
       setRecipientEmailError(null);
     }
   };
-
-  useEffect(() => {
-    if (searchParams.get("sendInvoice") !== "1" || sendInvoiceAutoLaunchRef.current || !invoice) return;
-    sendInvoiceAutoLaunchRef.current = true;
-    const next = new URLSearchParams(searchParams);
-    next.delete("sendInvoice");
-    setSearchParams(next, { replace: true });
-    if (!canSendInvoiceEmail) {
-      toast({ title: "Invoice email unavailable", description: "This invoice cannot be emailed with your current permissions or source type.", variant: "destructive" });
-      return;
-    }
-    handleEmailDialogOpenChange(true);
-    // The query flag is deliberately consumed exactly once after invoice and
-    // permission state resolve; dialog internals remain the canonical workflow.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invoice, canSendInvoiceEmail, searchParams]);
 
   const handleSendEmail = async () => {
     if (!invoiceId) return;
