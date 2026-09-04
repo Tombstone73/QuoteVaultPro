@@ -5,13 +5,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Filter, Plus, FileText, Mail, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
-import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
+import { canTakePaymentFromInvoiceList, getInvoiceListSendPath, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getNextInvoiceSortState, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import {
@@ -447,7 +448,7 @@ export default function InvoicesListPage() {
                 {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
                 <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
                 {renderSortableHead("balance", "Balance", "min-w-[110px] text-right")}
-                <TitanTableHead className="sticky right-0 z-10 min-w-[90px] bg-background">Actions</TitanTableHead>
+                <TitanTableHead className="sticky right-0 z-10 w-[116px] min-w-[116px] bg-background text-center">Actions</TitanTableHead>
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
@@ -553,17 +554,16 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="text-right font-semibold">
                     {formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}
                   </TitanTableCell>
-                  <TitanTableCell className="sticky right-0 bg-background" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center gap-2">
+                  <TitanTableCell className="sticky right-0 w-[116px] min-w-[116px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
+                    <TooltipProvider delayDuration={250}>
+                    <div className="flex items-center justify-center gap-1">
+                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Send invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListSendPath(invoice.id))}><Mail className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Send Invoice</TooltipContent></Tooltip> : null}
                       {canTakePaymentFromInvoiceList(invoice) ? (
-                        <Button variant="outline" size="sm" onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>
-                          Take Payment
-                        </Button>
+                        <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
                       ) : null}
-                      <Button variant="outline" size="sm" asChild>
-                        <Link to={`/invoices/${invoice.id}`}>View</Link>
-                      </Button>
+                      <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip>
                     </div>
+                    </TooltipProvider>
                   </TitanTableCell>
                 </TitanTableRow>
               ))}
