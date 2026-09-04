@@ -3,6 +3,9 @@ import { z } from "zod";
 import { insertPrinterProfileSchema, updatePrinterProfileSchema } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import { and, eq, sql } from "drizzle-orm";
+import { db } from "../db";
+import { directPrintJobs, localBridgeAgents, orders, printerProfiles } from "@shared/schema";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -44,6 +47,32 @@ export function registerPrinterProfileRoutes(
     } catch (error) {
       sendError(res, error, "Failed to list printer profiles");
     }
+  });
+
+  // Direct printing exposes only destination metadata. A browser never receives
+  // a raw queue name and can submit only a tenant-owned profile id.
+  app.get("/api/direct-print/traveler-destinations", isAuthenticated, tenantContext, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+    const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, trailingFeedMm: printerProfiles.trailingFeedMm, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId, agentName: localBridgeAgents.name, lastSeenAt: localBridgeAgents.lastSeenAt, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`));
+    const now = Date.now();
+    res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.lastSeenAt && now - new Date(item.lastSeenAt).getTime() < 120000) })) });
+  });
+
+  app.post("/api/orders/:orderId/direct-print/traveler", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req); const orderId = String(req.params.orderId || "");
+      const destinationId = String(req.body?.destinationId || ""); const copies = Number(req.body?.copies);
+      const printNote = typeof req.body?.printNote === "string" ? req.body.printNote.trim() : "";
+      if (!organizationId || !orderId || !destinationId || !Number.isInteger(copies) || copies < 1 || copies > 99 || printNote.length > 1000) return res.status(400).json({ success: false, code: "DIRECT_PRINT_VALIDATION", error: "Select a destination and enter 1–99 copies." });
+      const [order] = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId))).limit(1);
+      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`)).limit(1);
+      if (!order || !destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Traveler destination is not available for direct printing." });
+      const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
+      if (!agent?.lastSeenAt || Date.now() - new Date(agent.lastSeenAt).getTime() > 120000) return res.status(409).json({ success: false, code: "PRINT_AGENT_OFFLINE", error: "The mapped Print Agent is offline." });
+      const [job] = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId, agentId: agent.id, copies, printNote: printNote || null, trailingFeedMm: destination.trailingFeedMm, createdByUserId: getUserId(req.user) ?? null }).returning();
+      res.status(202).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName } });
+    } catch (error) { sendError(res, error, "Failed to queue Traveler print"); }
   });
 
   app.post("/api/printer-profiles", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {

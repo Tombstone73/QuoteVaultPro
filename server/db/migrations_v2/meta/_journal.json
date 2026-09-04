@@ -1352,6 +1352,13 @@
       "when": 1788048000044,
       "tag": "0197_repair_active_posters_pricing",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1788048000045,
+      "tag": "0198_direct_traveler_printing",
+      "breakpoints": true
     }
   ]
 }

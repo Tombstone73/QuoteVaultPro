@@ -10,6 +10,12 @@ export interface PrinterProfile {
   printerType: PrinterProfileType;
   intendedUse: string;
   stationRoute?: string | null;
+  location?: string | null;
+  windowsQueueName?: string | null;
+  printAgentId?: string | null;
+  supportedDocuments?: string[];
+  defaultCopies?: number;
+  trailingFeedMm?: string | number;
   scope: "organization";
   isActive: boolean;
   isDefault: boolean;
@@ -23,6 +29,12 @@ export interface PrinterProfileInput {
   printerType: PrinterProfileType;
   intendedUse: string;
   stationRoute?: string | null;
+  location?: string | null;
+  windowsQueueName?: string | null;
+  printAgentId?: string | null;
+  supportedDocuments?: string[];
+  defaultCopies?: number;
+  trailingFeedMm?: number;
   scope?: "organization";
   isActive: boolean;
   isDefault: boolean;

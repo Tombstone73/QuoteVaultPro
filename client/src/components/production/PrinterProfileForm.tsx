@@ -42,6 +42,10 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
   const [displayName, setDisplayName] = useState("");
   const [printerType, setPrinterType] = useState<PrinterProfileInput["printerType"]>(defaultType);
   const [stationRoute, setStationRoute] = useState("");
+  const [location, setLocation] = useState("");
+  const [windowsQueueName, setWindowsQueueName] = useState("");
+  const [defaultCopies, setDefaultCopies] = useState("1");
+  const [trailingFeedMm, setTrailingFeedMm] = useState("0");
   const [isActive, setIsActive] = useState(true);
   const [isDefault, setIsDefault] = useState(false);
 
@@ -49,6 +53,8 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     setDisplayName(profile?.displayName ?? "");
     setPrinterType(profile?.printerType ?? defaultType);
     setStationRoute(profile?.stationRoute ?? "");
+    setLocation(profile?.location ?? ""); setWindowsQueueName(profile?.windowsQueueName ?? "");
+    setDefaultCopies(String(profile?.defaultCopies ?? 1)); setTrailingFeedMm(String(profile?.trailingFeedMm ?? 0));
     setIsActive(profile?.isActive ?? true);
     setIsDefault(profile?.isDefault ?? false);
   }, [defaultType, profile]);
@@ -63,6 +69,8 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
       printerType,
       intendedUse: toIntendedUse(printerType),
       stationRoute: stationRoute.trim() || null,
+      location: location.trim() || null, windowsQueueName: windowsQueueName.trim() || null,
+      supportedDocuments: ["traveler"], defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm),
       scope: "organization",
       isActive,
       isDefault: isActive && isDefault,
@@ -79,6 +87,10 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
           <Label>Display name</Label>
           <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Epson TM-L90 Ticket Printer" />
         </div>
+        <div className="space-y-1.5"><Label>Location</Label><Input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Front Office" /></div>
+        <div className="space-y-1.5"><Label>Windows printer queue</Label><Input value={windowsQueueName} onChange={(event) => setWindowsQueueName(event.target.value)} placeholder="Select from the paired agent inventory" /></div>
+        <div className="space-y-1.5"><Label>Default copies</Label><Input type="number" min="1" max="99" value={defaultCopies} onChange={(event) => setDefaultCopies(event.target.value)} /></div>
+        <div className="space-y-1.5"><Label>Trailing feed (mm)</Label><Input type="number" min="0" max="100" step="0.1" value={trailingFeedMm} onChange={(event) => setTrailingFeedMm(event.target.value)} placeholder="12.7 for 0.5 in" /></div>
         <div className="space-y-1.5">
           <Label>Printer type</Label>
           <Select value={printerType} onValueChange={(value) => setPrinterType(value as PrinterProfileInput["printerType"])}>
@@ -106,7 +118,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
         </div>
       </div>
       <p className="text-xs text-titan-text-secondary">
-        Printer profiles are organization-wide routing labels. Printing still uses the browser print dialog; choose the matching physical printer there.
+        Traveler destinations are mapped to a paired Windows Print Agent. Queue names are resolved server-side and are never supplied by an operator at print time.
       </p>
       <div className="flex justify-end gap-2">
         {onCancel && <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>Cancel</Button>}

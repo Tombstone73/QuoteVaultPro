@@ -2340,6 +2340,12 @@ export const printerProfiles = pgTable("printer_profiles", {
   printerType: varchar("printer_type", { length: 40 }).notNull().$type<typeof printerProfileTypeValues[number]>(),
   intendedUse: varchar("intended_use", { length: 80 }).notNull().default("production_ticket"),
   stationRoute: varchar("station_route", { length: 120 }),
+  location: varchar("location", { length: 160 }),
+  windowsQueueName: varchar("windows_queue_name", { length: 255 }),
+  printAgentId: varchar("print_agent_id").references(() => localBridgeAgents.id, { onDelete: "set null" }),
+  supportedDocuments: jsonb("supported_documents").$type<string[]>().notNull().default(sql`'["traveler"]'::jsonb`),
+  defaultCopies: integer("default_copies").notNull().default(1),
+  trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
   scope: varchar("scope", { length: 40 }).notNull().default("organization").$type<typeof printerProfileScopeValues[number]>(),
   isActive: boolean("is_active").notNull().default(true),
   isDefault: boolean("is_default").notNull().default(false),
@@ -2370,6 +2376,12 @@ export const insertPrinterProfileSchema = createInsertSchema(printerProfiles).om
   printerType: z.enum(printerProfileTypeValues),
   intendedUse: z.string().trim().min(1).max(80).default("production_ticket"),
   stationRoute: z.string().trim().max(120).optional().nullable(),
+  location: z.string().trim().max(160).optional().nullable(),
+  windowsQueueName: z.string().trim().max(255).optional().nullable(),
+  printAgentId: z.string().trim().min(1).optional().nullable(),
+  supportedDocuments: z.array(z.enum(["traveler"])).min(1).default(["traveler"]),
+  defaultCopies: z.number().int().min(1).max(99).default(1),
+  trailingFeedMm: z.coerce.number().min(0).max(100).default(0),
   scope: z.enum(printerProfileScopeValues).default("organization"),
   isActive: z.boolean().default(true),
   isDefault: z.boolean().default(false),
@@ -8679,6 +8691,22 @@ export const localBridgeAgents = pgTable("local_bridge_agents", {
   name: varchar("name", { length: 255 }).notNull(), status: localBridgeAgentStatusEnum("status").notNull().default("pending"), tokenHash: varchar("token_hash", { length: 128 }).notNull(),
   machineLabel: varchar("machine_label", { length: 255 }), agentVersion: varchar("agent_version", { length: 64 }), lastSeenAt: timestamp("last_seen_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(), revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
+
+export const directPrintJobStatusValues = ["queued", "claimed", "rendering", "submitted", "failed"] as const;
+export const directPrintJobs = pgTable("direct_print_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  destinationId: varchar("destination_id").notNull().references(() => printerProfiles.id, { onDelete: "restrict" }),
+  agentId: varchar("agent_id").notNull().references(() => localBridgeAgents.id, { onDelete: "restrict" }),
+  documentType: varchar("document_type", { length: 40 }).notNull().default("traveler"),
+  copies: integer("copies").notNull(), printNote: varchar("print_note", { length: 1000 }),
+  trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
+  status: varchar("status", { length: 20 }).notNull().$type<typeof directPrintJobStatusValues[number]>().default("queued"),
+  attempts: integer("attempts").notNull().default(0), claimedAt: timestamp("claimed_at", { withTimezone: true }), submittedAt: timestamp("submitted_at", { withTimezone: true }), failedAt: timestamp("failed_at", { withTimezone: true }), lastError: text("last_error"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("direct_print_jobs_agent_queue_idx").on(table.agentId, table.status, table.createdAt), index("direct_print_jobs_org_idx").on(table.organizationId, table.createdAt)]);
 
 // Stage 19G: authoritative batch/child state is separate from generic plans.
 // A plan describes one confirmed action; these records retain row payloads,

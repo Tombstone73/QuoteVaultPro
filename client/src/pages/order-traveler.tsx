@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import QRCode from "qrcode";
 
@@ -46,6 +46,7 @@ function useOrderTraveler(orderId: string | undefined) {
 
 export default function OrderTravelerPage() {
   const { orderId } = useParams<{ orderId: string }>();
+  const [searchParams] = useSearchParams();
   const { data, isLoading, error } = useOrderTraveler(orderId);
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -73,6 +74,8 @@ export default function OrderTravelerPage() {
     if (!data) return null;
     return buildOrderTravelerData(data, template);
   }, [data, template]);
+  const printNote = searchParams.get("printNote")?.trim() || null;
+  const feedMm = Number(searchParams.get("feedMm"));
 
   function handlePrint() {
     if (printer.profiles.length > 0 && !printer.selectedProfile) {
@@ -113,11 +116,12 @@ export default function OrderTravelerPage() {
       </div>
 
       <div className="mx-auto max-w-md px-4 py-6">
-        <ThermalPrintPage>
+        <ThermalPrintPage feedSpacer={Number.isFinite(feedMm) && feedMm > 0 ? `${feedMm}mm` : undefined}>
           <ThermalValue align="center" size="normal" style={{ textTransform: "uppercase" }}>
             Order Traveler
           </ThermalValue>
           <ThermalDivider heavy />
+          {printNote ? <><ThermalLabel>Print Note</ThermalLabel><ThermalValue size="normal" style={{ margin: "1.5mm 0" }}>{printNote}</ThermalValue><ThermalDivider /></> : null}
 
           {traveler.headerRows.map((row) => (
             <div key={row.key}>

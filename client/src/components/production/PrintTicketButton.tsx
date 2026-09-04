@@ -17,6 +17,8 @@ import { Button, type ButtonProps } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { ROUTES } from "@/config/routes";
 import { Ticket } from "lucide-react";
+import { useState } from "react";
+import { TravelerPrintDialog } from "@/components/production/TravelerPrintDialog";
 
 interface PrintTicketButtonBaseProps {
   /** Production job id — prints a single production ticket. */
@@ -57,6 +59,7 @@ export function PrintTicketButton({
   className,
 }: PrintTicketButtonProps) {
   const target = resolveTarget(jobId, orderId);
+  const [travelerOpen, setTravelerOpen] = useState(false);
   if (!target) return null;
 
   const text = label ?? target.label;
@@ -65,30 +68,25 @@ export function PrintTicketButton({
     // Avoid triggering row navigation when embedded in a clickable row.
     e.preventDefault();
     e.stopPropagation();
-    window.open(target.href, "_blank");
+    if (orderId && !jobId) setTravelerOpen(true);
+    else window.open(target.href, "_blank");
   };
 
   if (asMenuItem) {
-    return (
-      <DropdownMenuItem onSelect={(e) => open(e)} className={className}>
+    return <><DropdownMenuItem onSelect={(e) => open(e)} className={className}>
         <Ticket className="mr-2 h-4 w-4" />
         {text}
-      </DropdownMenuItem>
-    );
+      </DropdownMenuItem>{orderId && <TravelerPrintDialog orderId={orderId} open={travelerOpen} onOpenChange={setTravelerOpen} />}</>;
   }
 
   if (iconOnly) {
-    return (
-      <Button variant={variant} size={size} className={className} onClick={open} title={text}>
+    return <><Button variant={variant} size={size} className={className} onClick={open} title={text}>
         <Ticket className="h-4 w-4" />
-      </Button>
-    );
+      </Button>{orderId && <TravelerPrintDialog orderId={orderId} open={travelerOpen} onOpenChange={setTravelerOpen} />}</>;
   }
 
-  return (
-    <Button variant={variant} size={size} className={className} onClick={open}>
+  return <><Button variant={variant} size={size} className={className} onClick={open}>
       <Ticket className="mr-1.5 h-4 w-4" />
       {text}
-    </Button>
-  );
+    </Button>{orderId && <TravelerPrintDialog orderId={orderId} open={travelerOpen} onOpenChange={setTravelerOpen} />}</>;
 }

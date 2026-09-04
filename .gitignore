@@ -47,3 +47,6 @@ cleanup_migrations.py
 
 # Stray legacy migration (never commit; v2 chain is authoritative)
 server/db/migrations/0061_quote_line_item_routing.sql
+.tools/
+windows-print-agent/bin/
+windows-print-agent/obj/
