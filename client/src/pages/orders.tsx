@@ -56,6 +56,7 @@ import {
   type OrdersListSortKey,
 } from "@/lib/ordersListPreferences";
 import { resolveOrdersColumnWidths } from "@/lib/ordersTableLayout";
+import { hasHorizontalOverflow, syncHorizontalScroll } from "@/lib/ordersHorizontalScroll";
 
 type SortKey = OrdersListSortKey;
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -256,7 +257,11 @@ export default function Orders() {
     : "orders_column_settings"; // fallback for loading state
   const [columnSettings, setColumnSettings] = useColumnSettings(ORDER_COLUMNS, storageKey);
   const tableViewportRef = useRef<HTMLDivElement>(null);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const tableElementRef = useRef<HTMLTableElement>(null);
+  const persistentScrollRef = useRef<HTMLDivElement>(null);
   const [tableViewportWidth, setTableViewportWidth] = useState(0);
+  const [persistentScroll, setPersistentScroll] = useState({ visible: false, width: 0, left: 0, scrollWidth: 0 });
   const autoFit = columnSettings._autoFit === true;
 
   useEffect(() => {
@@ -361,6 +366,32 @@ export default function Orders() {
     () => resolveOrdersColumnWidths(orderedColumns, columnSettings, tableViewportWidth, autoFit),
     [autoFit, columnSettings, orderedColumns, tableViewportWidth],
   );
+
+  useEffect(() => {
+    const tableScroll = tableScrollRef.current;
+    const table = tableElementRef.current;
+    if (!tableScroll || !table) return;
+
+    const measure = () => {
+      const rect = tableScroll.getBoundingClientRect();
+      const next = { visible: hasHorizontalOverflow(tableScroll.scrollWidth, tableScroll.clientWidth), width: Math.floor(rect.width), left: Math.floor(rect.left), scrollWidth: tableScroll.scrollWidth };
+      setPersistentScroll((current) => current.visible === next.visible && current.width === next.width && current.left === next.left && current.scrollWidth === next.scrollWidth ? current : next);
+    };
+    const onTableScroll = () => {
+      if (persistentScrollRef.current) syncHorizontalScroll(tableScroll, persistentScrollRef.current);
+    };
+    tableScroll.addEventListener("scroll", onTableScroll, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(tableScroll);
+    observer?.observe(table);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      tableScroll.removeEventListener("scroll", onTableScroll);
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [autoFit, orderedColumns, resolvedColumnWidths]);
 
   // Stable filters object for query key consistency
   const ordersFilters = useMemo(() => ({
@@ -1332,7 +1363,7 @@ export default function Orders() {
           noPadding
         >
           <div ref={tableViewportRef} className="min-w-0">
-            <Table className="table-dense table-fixed" style={{ minWidth: autoFit ? undefined : `${orderedColumns.filter((col) => isVisible(col.key)).reduce((sum, col) => sum + (resolvedColumnWidths[col.key] ?? 0), 0)}px` }}>
+            <Table ref={tableElementRef} scrollContainerRef={tableScrollRef} className="table-dense table-fixed" style={{ minWidth: autoFit ? undefined : `${orderedColumns.filter((col) => isVisible(col.key)).reduce((sum, col) => sum + (resolvedColumnWidths[col.key] ?? 0), 0)}px` }}>
               <TableHeader>
                 <TableRow>
                   {orderedColumns.map((col) => {
@@ -1414,6 +1445,20 @@ export default function Orders() {
               </TableBody>
             </Table>
           </div>
+
+          {persistentScroll.visible ? (
+            <div
+              ref={persistentScrollRef}
+              className="fixed bottom-0 z-30 h-4 overflow-x-auto overflow-y-hidden border border-border/70 bg-background/95 shadow-[0_-3px_8px_-6px_rgba(15,23,42,0.45)]"
+              style={{ left: persistentScroll.left, width: persistentScroll.width }}
+              aria-label="Orders horizontal scroll"
+              onScroll={(event) => {
+                if (tableScrollRef.current) syncHorizontalScroll(event.currentTarget, tableScrollRef.current);
+              }}
+            >
+              <div style={{ width: persistentScroll.scrollWidth, height: 1 }} />
+            </div>
+          ) : null}
 
           {/* Pagination Controls */}
           {filteredOrders.length > 0 && (
