@@ -2073,6 +2073,8 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         const invalidMinimumCharge =
           minimumChargeCents !== null &&
           (!Number.isSafeInteger(minimumChargeCents) || minimumChargeCents < 0);
+        const tierValue = (value: unknown) =>
+          `${String(value)} (${typeof value})`;
         if (
           invalidMinimum ||
           invalidMaximum ||
@@ -2084,7 +2086,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
             "VALIDATION_ERROR",
             invalidMinimum
               ? `Matrix row ${entry.rowId} tier ${tierIndex + 1} minimum ${String(tier.minimum)} must be a whole number greater than the prior tier minimum ${prior}.`
-              : `Matrix row ${entry.rowId} tier ${tierIndex + 1} has an invalid maximum, rate, or minimum charge.`,
+              : `Matrix row ${entry.rowId} tier ${tierIndex + 1} has invalid optional pricing data: maximum ${tierValue(maximum)}, per-piece rate ${tierValue(perPieceCents)}, per-square-foot rate ${tierValue(perSqftCents)}, minimum charge ${tierValue(minimumChargeCents)}.`,
           );
         prior = tier.minimum;
       }
