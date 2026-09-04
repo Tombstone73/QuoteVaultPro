@@ -2047,8 +2047,15 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         // JSON.  The V2 Draft contract represents those same absent values as
         // null, so normalize at the persistence boundary before validation.
         const maximum = tier.maximum ?? null;
-        const perPieceCents = tier.perPieceCents ?? null;
-        const perSqftCents = tier.perSqftCents ?? null;
+        // A matrix has one declared pricing unit. Compatibility data can carry
+        // a stale alternate rate alongside the selected one; it is not a
+        // second rate and must not make an otherwise valid row unsaveable.
+        const perPieceCents =
+          matrix.pricingUnit === "per_piece" ? tier.perPieceCents ?? null : null;
+        const perSqftCents =
+          matrix.pricingUnit === "per_square_foot"
+            ? tier.perSqftCents ?? null
+            : null;
         const minimumChargeCents = tier.minimumChargeCents ?? null;
         const invalidMinimum =
           !Number.isSafeInteger(tier.minimum) ||
@@ -2071,8 +2078,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
           invalidMaximum ||
           invalidPieceRate ||
           invalidSquareFootRate ||
-          invalidMinimumCharge ||
-          (perPieceCents !== null && perSqftCents !== null)
+          invalidMinimumCharge
         )
           throw new V2ApplicationError(
             "VALIDATION_ERROR",
@@ -2096,10 +2102,10 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
                   : tier.tierId,
                 minQty: tier.minimum,
                 maxQty: tier.maximum ?? null,
-                ...(tier.perPieceCents == null
+                ...(matrix.pricingUnit !== "per_piece" || tier.perPieceCents == null
                   ? {}
                   : { perPieceCents: tier.perPieceCents }),
-                ...(tier.perSqftCents == null
+                ...(matrix.pricingUnit !== "per_square_foot" || tier.perSqftCents == null
                   ? {}
                   : { perSqftCents: tier.perSqftCents }),
                 ...(tier.minimumChargeCents == null
