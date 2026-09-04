@@ -240,7 +240,7 @@ export default function InvoicesListPage() {
         `${preview.selected} selected; ${preview.eligible} eligible for delivery.`,
         preview.recipientGroups ? `${preview.recipientGroups} recipient group${preview.recipientGroups === 1 ? '' : 's'} resolved.` : 'No recipient email is available for the selected invoices.',
         preview.skipped.length ? `${preview.skipped.length} will be skipped by the normal invoice email rules.` : '',
-        'Emails will be queued and sent in a throttled background worker.',
+        'Emails will be added to the Email Queue and sent approximately 1 minute apart.',
       ].filter(Boolean).join('\n\n');
       if (!window.confirm(confirmation)) return;
 
@@ -655,7 +655,7 @@ export default function InvoicesListPage() {
                   <td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td>
                   <td className="p-2 break-all">{job.recipientEmail}</td>
                   <td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Stale' : ''}</StatusPill></td>
-                  <td className="p-2 text-xs">Queued {format(new Date(job.queuedAt), 'PP p')}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td>
+                  <td className="p-2 text-xs">{job.status === 'queued' ? `Scheduled ${format(new Date(job.availableAt), 'PP p')}` : `Queued ${format(new Date(job.queuedAt), 'PP p')}`}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : job.status === 'queued' ? 'Waiting for its sender slot' : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td>
                   <td className="p-2">{job.attemptCount} / {job.maxAttempts}</td>
                   <td className="max-w-[220px] p-2 text-xs text-muted-foreground">
                     {needsReview ? 'Delivery outcome uncertain. Retry blocked until reviewed. ' : retryable ? 'Safe to send again: ' : ''}

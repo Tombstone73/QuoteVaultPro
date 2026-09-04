@@ -43,7 +43,7 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("FOR UPDATE SKIP LOCKED");
     expect(queue).toContain("pg_advisory_xact_lock");
     expect(queue).toContain("claim_expires_at");
-    expect(queue).toContain("BULK_INVOICE_EMAIL_RATE_LIMIT");
+    expect(queue).toContain("BULK_INVOICE_EMAIL_SPACING_SECONDS");
   });
 
   test("keeps same-recipient invoices as independently durable messages", () => {
@@ -51,6 +51,15 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain('deliveryMode: "individual_invoice_message"');
     expect(migration).toContain("(organization_id, invoice_id, recipient_key, invoice_version)");
     expect(migration).not.toContain("  invoice_ids jsonb");
+  });
+
+  test("uses durable per-organization available_at slots instead of a rate-window gate", () => {
+    expect(queue).toContain("bulk-invoice-email-schedule:");
+    expect(queue).toContain('SELECT max(available_at) AS "latestScheduledAt"');
+    expect(queue).toContain("availableAt: nextAvailableAt");
+    expect(queue).toContain("nextAvailableAt.getTime() + config.spacingSeconds * 1000");
+    expect(queue).not.toContain("BULK_INVOICE_EMAIL_RATE_LIMIT");
+    expect(queue).not.toContain("BULK_INVOICE_EMAIL_RATE_WINDOW_SECONDS");
   });
 
   test("does not retry an ambiguous provider result automatically", () => {
@@ -117,7 +126,7 @@ describe("bulk invoice email delivery queue contract", () => {
   test("keeps a V1 bulk preflight while the one-invoice envelope opens the shared direct-send dialog", () => {
     expect(client).toContain("dryRun: true");
     expect(client).toContain("window.confirm(confirmation)");
-    expect(client).toContain("Emails will be queued and sent in a throttled background worker.");
+    expect(client).toContain("sent approximately 1 minute apart");
     expect(client).toContain("InvoiceEmailSendDialog");
     expect(client).toContain("setQuickSendInvoice");
     expect(v2Contracts).toContain("BulkInvoiceDeliveryPort");

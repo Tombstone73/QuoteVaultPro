@@ -17,12 +17,14 @@ import {
   type InvoiceEmailDeliveryState,
   type InvoiceEmailDeliveryStatus,
 } from "./invoiceEmailDeliveryPresentation";
+import { getNextBulkInvoiceEmailSlot } from "./invoiceBulkEmailScheduling";
 
 export {
   resolveCurrentInvoiceEmailDeliveryState,
   type InvoiceEmailDeliveryState,
   type InvoiceEmailDeliveryStatus,
 } from "./invoiceEmailDeliveryPresentation";
+export { getNextBulkInvoiceEmailSlot } from "./invoiceBulkEmailScheduling";
 
 export {
   getInvoiceEmailDeliveryFailureKind,
@@ -110,8 +112,7 @@ const DEFAULT_MAX_BATCH_SIZE = 200;
 const HARD_MAX_BATCH_SIZE = 500;
 const DEFAULT_TICK_LIMIT = 10;
 const DEFAULT_MAX_ATTEMPTS = 3;
-const DEFAULT_RATE_LIMIT = 20;
-const DEFAULT_RATE_WINDOW_SECONDS = 60;
+const DEFAULT_SPACING_SECONDS = 60;
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(value);
@@ -123,8 +124,7 @@ export function getBulkInvoiceEmailQueueConfig() {
     maxBatchSize: boundedInteger(process.env.BULK_INVOICE_EMAIL_MAX_BATCH_SIZE, DEFAULT_MAX_BATCH_SIZE, 1, HARD_MAX_BATCH_SIZE),
     tickLimit: boundedInteger(process.env.BULK_INVOICE_EMAIL_TICK_LIMIT, DEFAULT_TICK_LIMIT, 1, 50),
     maxAttempts: boundedInteger(process.env.BULK_INVOICE_EMAIL_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS, 1, 5),
-    rateLimit: boundedInteger(process.env.BULK_INVOICE_EMAIL_RATE_LIMIT, DEFAULT_RATE_LIMIT, 1, 200),
-    rateWindowSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_RATE_WINDOW_SECONDS, DEFAULT_RATE_WINDOW_SECONDS, 10, 3600),
+    spacingSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SPACING_SECONDS, DEFAULT_SPACING_SECONDS, 10, 3600),
     retryBaseSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_RETRY_BASE_SECONDS, 300, 30, 3600),
     claimSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_CLAIM_SECONDS, 300, 60, 1800),
   };
@@ -382,6 +382,23 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
       return { campaign: existing, queued: 0, alreadyQueued: input.candidates.length, blocked: [], replayed: true };
     }
 
+    // Serialize slot allocation per organization. The durable jobs themselves
+    // are the scheduler; this lock only prevents two concurrent enqueue
+    // requests from allocating the same next slot.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
+    const scheduledResult: any = await tx.execute(sql`
+      SELECT max(available_at) AS "latestScheduledAt"
+      FROM invoice_email_delivery_jobs
+      WHERE organization_id = ${input.organizationId}
+        AND status IN ('queued', 'retrying', 'processing')
+    `);
+    const latestScheduledAt = (scheduledResult.rows || scheduledResult)[0]?.latestScheduledAt ?? null;
+    let nextAvailableAt = getNextBulkInvoiceEmailSlot({
+      now: new Date(),
+      latestScheduledAt,
+      spacingSeconds: config.spacingSeconds,
+    });
+
     let queued = 0;
     let alreadyQueued = 0;
     const blocked: Array<{ invoiceId: string; recipientEmail: string; status: "queued" | "processing" | "retrying" | "needs_review" }> = [];
@@ -396,12 +413,16 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
         recipientKey,
         idempotencyKey: buildBulkInvoiceEmailJobKey(candidate),
         maxAttempts: config.maxAttempts,
+        availableAt: nextAvailableAt,
         metadata: {
           deliveryMode: "individual_invoice_message",
           createdByUserId: input.createdByUserId || null,
         },
       } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
-      if (job) queued += 1;
+      if (job) {
+        queued += 1;
+        nextAvailableAt = new Date(nextAvailableAt.getTime() + config.spacingSeconds * 1000);
+      }
       else {
         alreadyQueued += 1;
         const [existing] = await tx.select({ status: invoiceEmailDeliveryJobs.status })
@@ -451,7 +472,7 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
   };
 }
 
-type ClaimedJob = {
+export type ClaimedBulkInvoiceEmailJob = {
   id: string;
   organizationId: string;
   invoiceId: string;
@@ -463,7 +484,7 @@ type ClaimedJob = {
   metadata?: { createdByUserId?: string | null };
 };
 
-function logDeliveryStage(job: ClaimedJob, stage: string, detail: Record<string, unknown> = {}): void {
+function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail: Record<string, unknown> = {}): void {
   console.log("[InvoiceEmailQueue]", {
     stage,
     jobId: job.id,
@@ -474,7 +495,7 @@ function logDeliveryStage(job: ClaimedJob, stage: string, detail: Record<string,
   });
 }
 
-async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedJob | null> {
+async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob | null> {
   const config = getBulkInvoiceEmailQueueConfig();
   return db.transaction(async (tx) => {
     // A lost worker can leave a provider submission ambiguous. Never reclaim
@@ -501,28 +522,8 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedJob | null> {
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     `);
-    const row = (result.rows || result)[0] as ClaimedJob | undefined;
+    const row = (result.rows || result)[0] as ClaimedBulkInvoiceEmailJob | undefined;
     if (!row) return null;
-
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-rate:${row.organizationId}`}))`);
-    const sentResult: any = await tx.execute(sql`
-      SELECT count(*)::int AS count
-      FROM invoice_email_delivery_jobs
-      WHERE organization_id = ${row.organizationId}
-        AND (
-          (status = 'sent' AND sent_at >= now() - (${config.rateWindowSeconds} * interval '1 second'))
-          OR (status = 'processing' AND claimed_at >= now() - (${config.rateWindowSeconds} * interval '1 second'))
-        )
-    `);
-    const sentCount = Number((sentResult.rows || sentResult)[0]?.count || 0);
-    if (sentCount >= config.rateLimit) {
-      await tx.execute(sql`
-        UPDATE invoice_email_delivery_jobs
-        SET available_at = now() + (${config.rateWindowSeconds} * interval '1 second'), updated_at = now()
-        WHERE id = ${row.id}
-      `);
-      return null;
-    }
 
     const workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
     const claimResult: any = await tx.execute(sql`
@@ -558,7 +559,8 @@ async function updateCampaignCompletion(campaignId: string): Promise<void> {
   } as any).where(eq(invoiceEmailCampaigns.id, campaignId));
 }
 
-async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
+/** The bulk worker's only delivery operation: invoke the registered canonical sender. */
+export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceEmailJob): Promise<"sent" | "failed"> {
   logDeliveryStage(job, "job_claimed");
   if (!canonicalInvoiceEmailSender) {
     const terminal = job.attemptCount >= job.maxAttempts;
@@ -643,7 +645,7 @@ export async function runBulkInvoiceEmailQueueWorker(): Promise<{ processed: num
       const job = await claimOneBulkInvoiceEmailJob();
       if (!job) break;
       processed += 1;
-      if (await processClaimedJob(job) === "sent") sent += 1;
+      if (await processClaimedBulkInvoiceEmailJob(job) === "sent") sent += 1;
       else failed += 1;
     }
     return { processed, sent, failed };
