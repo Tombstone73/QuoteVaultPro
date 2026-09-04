@@ -52,6 +52,7 @@ import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntak
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
 import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
+import { resolveInvoiceSendAutomationPreferences } from "@shared/invoiceSendAutomation";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -189,6 +190,7 @@ export function registerOrganizationRoutes(
       const materialsOverrideMode = resolveMaterialsOverrideModeFromOrgPreferences(preferences);
       const fileUploadNaming = resolveFileUploadNamingPolicyFromPreferences(preferences, organizationId);
       const billingInvoiceTriggerPolicy = resolveBillingInvoiceTriggerPolicyFromOrgPreferences(preferences);
+      const invoiceSendAutomation = resolveInvoiceSendAutomationPreferences(preferences);
       const quotePreferences = resolveQuotePreferencesFromOrgPreferences(preferences, organizationId);
       const rawProofing = (preferences as any)?.proofing && typeof (preferences as any).proofing === "object"
         ? (preferences as any).proofing
@@ -213,6 +215,7 @@ export function registerOrganizationRoutes(
         quotes: quotePreferences,
         proofing,
         billingInvoiceTriggerPolicy,
+        invoiceSendAutomation,
         fileUploadNaming,
         prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {

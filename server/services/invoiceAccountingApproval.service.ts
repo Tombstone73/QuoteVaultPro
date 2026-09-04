@@ -7,11 +7,12 @@ import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingAppro
 export async function approveInvoicesForAccounting(input: {
   organizationId: string;
   invoiceIds: string[];
-  actorUserId: string;
+  actorUserId?: string | null;
   actorUserName?: string | null;
-}) {
+  source?: "manual" | "invoice_delivery_automation";
+}, options?: { tx?: any }) {
   const uniqueIds = [...new Set(input.invoiceIds.map(String).filter(Boolean))];
-  return db.transaction(async (tx) => {
+  const approve = async (tx: any) => {
     const results: Array<{ id: string; outcome: 'approved' | 'skipped' | 'failed'; reason: string | null }> = [];
     for (const invoiceId of uniqueIds) {
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
@@ -36,14 +37,20 @@ export async function approveInvoicesForAccounting(input: {
       } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId)));
       await tx.insert(auditLogs).values({
         organizationId: input.organizationId,
-        userId: input.actorUserId,
+        userId: input.actorUserId || null,
         userName: input.actorUserName || null,
         actionType: 'invoice_accounting_approved',
         entityType: 'invoice',
         entityId: invoice.id,
         entityName: String(invoice.displayNumber || invoice.invoiceNumber),
-        description: 'Invoice approved for accounting for its current commercial version.',
-        newValues: { approvedAccountingVersion: approvedVersion, approvedAt: now.toISOString() } as any,
+        description: input.source === 'invoice_delivery_automation'
+          ? 'Invoice automatically approved for accounting after provider-confirmed customer delivery.'
+          : 'Invoice approved for accounting for its current commercial version.',
+        newValues: {
+          approvedAccountingVersion: approvedVersion,
+          approvedAt: now.toISOString(),
+          source: input.source || 'manual',
+        } as any,
       } as any);
       results.push({ id: invoiceId, outcome: 'approved', reason: null });
     }
@@ -54,5 +61,6 @@ export async function approveInvoicesForAccounting(input: {
       failed: results.filter((result) => result.outcome === 'failed').length,
       results,
     };
-  });
+  };
+  return options?.tx ? approve(options.tx) : db.transaction(approve);
 }

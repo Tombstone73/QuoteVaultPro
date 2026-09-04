@@ -231,6 +231,10 @@ export const organizations = pgTable("organizations", {
         | 'production_complete'
         | 'ready_for_pickup_or_ready_to_ship'
         | 'picked_up_or_shipped';
+      invoiceSendAutomation?: {
+        approveForAccountingAfterSuccessfulSend?: boolean;
+        dueDateOnFirstSuccessfulCustomerSend?: 'keep_existing' | 'recalculate_from_terms';
+      };
     };
     branding?: {
       logoUrl?: string;

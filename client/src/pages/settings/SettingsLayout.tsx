@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences, type OrgPreferences } from "@/hooks/useOrgPreferences";
 import { BILLING_INVOICE_TRIGGER_POLICIES, type BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
+import { DEFAULT_INVOICE_SEND_AUTOMATION_PREFERENCES, type InvoiceDueDateOnCustomerSend } from "@shared/invoiceSendAutomation";
 import { fetchMyOrgs } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
 import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
@@ -2031,6 +2032,17 @@ export function PreferencesSettings() {
     });
   };
 
+  const invoiceSendAutomation = preferences.invoiceSendAutomation ?? DEFAULT_INVOICE_SEND_AUTOMATION_PREFERENCES;
+  const handleInvoiceSendAutomationChange = async (patch: Partial<typeof invoiceSendAutomation>) => {
+    await updatePreferences({
+      ...preferences,
+      invoiceSendAutomation: {
+        ...invoiceSendAutomation,
+        ...patch,
+      },
+    });
+  };
+
   const materialsOverrideInProductionEnabled = (preferences as any)?.production?.materialsOverrideMode !== "prepress_only";
   const productionDocumentNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
 
@@ -2321,6 +2333,52 @@ export function PreferencesSettings() {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div>
+              <h4 className="text-titan-sm font-medium text-titan-text-primary">Invoice send automation</h4>
+              <p className="text-titan-xs text-titan-text-muted">
+                Apply these actions only after the email provider confirms customer delivery. Queueing, failed delivery, and delivery review do not trigger them.
+              </p>
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="approve-invoice-after-send" className="cursor-pointer text-titan-sm font-medium text-titan-text-primary">
+                  Approve invoice for accounting after successful customer delivery
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  If QuickBooks Auto Sync is enabled, approved invoices enter the existing QuickBooks synchronization workflow. Otherwise, synchronization remains manually controlled.
+                </p>
+              </div>
+              <Switch
+                id="approve-invoice-after-send"
+                checked={invoiceSendAutomation.approveForAccountingAfterSuccessfulSend}
+                onCheckedChange={(checked) => handleInvoiceSendAutomationChange({ approveForAccountingAfterSuccessfulSend: checked })}
+                disabled={isUpdating}
+              />
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="invoice-due-date-on-first-send" className="text-titan-sm font-medium text-titan-text-primary">
+                  Due date after first successful customer send
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Recalculation uses the invoice payment-terms snapshot and never moves the due date when an invoice is resent.
+                </p>
+              </div>
+              <Select
+                value={invoiceSendAutomation.dueDateOnFirstSuccessfulCustomerSend}
+                onValueChange={(value) => handleInvoiceSendAutomationChange({ dueDateOnFirstSuccessfulCustomerSend: value as InvoiceDueDateOnCustomerSend })}
+                disabled={isUpdating}
+              >
+                <SelectTrigger id="invoice-due-date-on-first-send" className="w-[310px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep_existing">Keep existing due date</SelectItem>
+                  <SelectItem value="recalculate_from_terms">Recalculate from customer/payment terms</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 

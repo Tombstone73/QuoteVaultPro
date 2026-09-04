@@ -9,6 +9,7 @@ import type { QuickBooksSyncPolicy } from "@shared/quickBooksPreferences";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 import type { BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
 import type { InboundEmailIntakeSettings } from "@shared/inboundEmailIntakeSettings";
+import type { InvoiceSendAutomationPreferences } from "@shared/invoiceSendAutomation";
 
 export interface OrgPreferences {
   prepressDefaultEnabled?: boolean;
@@ -59,6 +60,8 @@ export interface OrgPreferences {
   inboundEmail?: InboundEmailIntakeSettings;
 
   billingInvoiceTriggerPolicy?: BillingInvoiceTriggerPolicy;
+
+  invoiceSendAutomation?: InvoiceSendAutomationPreferences;
 
   production?: {
     materialsOverrideMode?: "prepress_only" | "prepress_and_production";

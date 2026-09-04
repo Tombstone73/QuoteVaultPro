@@ -40,7 +40,14 @@ import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
 import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
 import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../services/stripeRefundRecovery.service";
+import { applyInvoiceSendSuccessLifecycle } from "../services/invoiceSendLifecycleAutomation";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
+import {
+  calculateDueDateFromSuccessfulCustomerSend,
+  resolveInvoiceCustomerDeliveryTerms,
+  resolveInvoiceSendAutomationPreferences,
+  shouldRecalculateInvoiceDueDateAfterSuccessfulSend,
+} from "../../shared/invoiceSendAutomation";
 import type { StripePaymentConfirmSuccessResponse } from "../../shared/stripePaymentConfirm";
 import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
 import {
@@ -383,7 +390,27 @@ export async function registerMvpInvoicingRoutes(
     if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
     // An Order-backed invoice is already a live receivable. Sending it is a
     // delivery action, not an implicit financial finalization transition.
-    const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId));
+    const [[orgCompany], [organization]] = await Promise.all([
+      db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId)),
+      db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1),
+    ]);
+    const sendAutomation = resolveInvoiceSendAutomationPreferences((organization?.settings as any)?.preferences);
+    const successfulSendCandidateAt = new Date();
+    const projectedDueDate = shouldRecalculateInvoiceDueDateAfterSuccessfulSend({
+      isFirstSuccessfulCustomerDelivery: !inv.lastSentAt,
+      automation: sendAutomation,
+    })
+      ? calculateDueDateFromSuccessfulCustomerSend({
+        successfulSentAt: successfulSendCandidateAt,
+        terms: resolveInvoiceCustomerDeliveryTerms({
+          invoiceTerms: inv.terms,
+          customerPaymentTerms: cust.paymentTerms,
+        }),
+      })
+      : null;
+    // This is only a document preview. Durable invoice state is updated by the
+    // post-provider-success lifecycle handler below, never when Send is pressed.
+    const invoiceForCustomerDelivery = projectedDueDate ? { ...inv, dueDate: projectedDueDate } : inv;
     const lineItems = await db
       .select()
       .from(invoiceLineItems)
@@ -412,7 +439,7 @@ export async function registerMvpInvoicingRoutes(
       lineItems: lineItems as any,
     });
     const pdfBytes = await generateInvoicePdfBytes({
-      invoice: inv as any,
+      invoice: invoiceForCustomerDelivery as any,
       customer: (cust as any) || null,
       companySettings: (orgCompany as any) || null,
       paymentSummary,
@@ -464,7 +491,7 @@ export async function registerMvpInvoicingRoutes(
     const companyName = orgCompany?.companyName || "QuoteVaultPro";
     const customerName = cust.companyName || cust.email || "Valued Customer";
     const totalFormatted = (Number(inv.totalCents || 0) / 100).toFixed(2);
-    const dueDate = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "upon receipt";
+    const dueDate = invoiceForCustomerDelivery.dueDate ? new Date(invoiceForCustomerDelivery.dueDate).toLocaleDateString() : "upon receipt";
     const emailHtml = buildInvoiceEmailHtml({
       invoiceNumber,
       companyName,
@@ -488,7 +515,7 @@ export async function registerMvpInvoicingRoutes(
       guestPaymentUrl,
     });
 
-    const now = new Date();
+    const now = successfulSendCandidateAt;
     let messageId: string | null = null;
     let providerAccepted = false;
     try {
@@ -540,19 +567,18 @@ export async function registerMvpInvoicingRoutes(
     }
 
     const invoiceVersion = Number(inv.invoiceVersion || 1);
-    const currentStatus = String(inv.status || "").toLowerCase();
-    const nextStatus = ["paid", "partially_paid", "credit", "void"].includes(currentStatus) ? currentStatus : "sent";
+    let lifecycle;
     try {
-      await db
-        .update(invoices)
-        .set({
-          status: nextStatus,
-          lastSentAt: now,
-          lastSentVersion: invoiceVersion,
-          lastSentVia: "email",
-          updatedAt: now,
-        } as any)
-        .where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId)));
+      lifecycle = await applyInvoiceSendSuccessLifecycle({
+        organizationId: input.organizationId,
+        invoiceId: input.invoiceId,
+        successfulSentAt: now,
+      });
+      logQueueDeliveryStage("post_send_lifecycle_completed", {
+        firstSuccessfulCustomerDelivery: lifecycle.isFirstSuccessfulCustomerDelivery,
+        dueDateUpdated: lifecycle.dueDateUpdated,
+        accountingApproved: lifecycle.accountingApproved,
+      });
     } catch (persistenceError) {
       // Provider acceptance is already known. Preserve that uncertainty for
       // the worker instead of attempting another send on the next tick.
@@ -569,7 +595,7 @@ export async function registerMvpInvoicingRoutes(
         actorUserName: input.userName || "System",
         source: "system",
         reason: "Invoice sent",
-        metadata: { invoiceId: inv.id, invoiceStatus: nextStatus },
+        metadata: { invoiceId: inv.id, invoiceStatus: lifecycle.status },
       });
     }
 
@@ -594,7 +620,7 @@ export async function registerMvpInvoicingRoutes(
       invoiceNumber,
       recipientEmail,
       messageId,
-      status: nextStatus,
+      status: lifecycle.status,
     };
   }
 
