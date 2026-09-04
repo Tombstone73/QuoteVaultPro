@@ -29,9 +29,10 @@ type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBook
 export type QuickBooksQueueRunResult = Readonly<{ claimed: number; succeeded: number; retry: number; uncertain: number; blocked: number }>;
 export type QuickBooksOperationsRead = Readonly<{
   eligibleInvoiceCount: number;
+  awaitingApprovalInvoiceCount: number;
   queueSummary: Readonly<{ queued: number; processing: number; succeeded: number; actionRequired: number }>;
 }>;
-export type QuickBooksEligibleInvoice = Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string; issuedAt: string | null; syncStatus: "never_synced" | "out_of_sync" }>;
+export type QuickBooksEligibleInvoice = Readonly<{ invoiceId: string; displayNumber: string; customerName: string; totalCents: number; currency: string; issuedAt: string | null; syncStatus: "never_synced" | "out_of_sync"; accountingApproval: "approved" | "required" }>;
 export type QuickBooksEligibleFinancialFact = Readonly<{ subjectKind: "payment" | "refund"; subjectId: string; displayNumber: string; customerName: string; amountCents: number; currency: string; occurredAt: string }>;
 export type QuickBooksQueueActivity = Readonly<{ jobId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; displayNumber: string; customerName: string; amountCents: number | null; currency: string | null; state: JobState; attemptCount: number; lastError: string | null; updatedAt: string; completedAt: string | null; providerId: string | null; retryEligible: boolean; recoveryEligible: boolean }>;
 export type QuickBooksQueuePage = Readonly<{ items: readonly QuickBooksQueueActivity[]; total: number; page: number; pageSize: number; hasNextPage: boolean }>;
@@ -65,7 +66,15 @@ export const enqueueV2QuickBooksSync = async (client: QuickBooksQueueClient, org
  * worker, replays a historical backlog, or changes the manual queue path. */
 export const enqueueV2QuickBooksAutoSync = async (client: QuickBooksQueueClient, organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<void> => {
   const policy = await client.query<{ enabled:boolean }>("SELECT COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled FROM organizations WHERE id=$1", [organizationId]);
-  if (policy.rows[0]?.enabled) await enqueueV2QuickBooksSync(client, organizationId, subjectKind, subjectId);
+  if (!policy.rows[0]?.enabled) return;
+  // Payments and Refunds retain their canonical dependency ordering.  Invoice
+  // export additionally requires explicit approval of the current live
+  // projection so Auto Sync cannot bypass the accounting review gate.
+  if (subjectKind === "invoice") {
+    const approved = await client.query<{ id:string }>(`SELECT i.id FROM v2_billing_invoices i JOIN v2_quickbooks_invoice_approvals a ON a.organization_id=i.organization_id AND a.invoice_id=i.id AND a.synchronization_version=i.synchronization_version WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void'`, [organizationId, subjectId]);
+    if (!approved.rows[0]) return;
+  }
+  await enqueueV2QuickBooksSync(client, organizationId, subjectKind, subjectId);
 };
 
 export class PostgresQuickBooksSyncNow {
@@ -85,12 +94,28 @@ export class PostgresQuickBooksSyncNow {
       // V2 Billing IDs are durable varchar identities (even when their current
       // generated values happen to look like UUIDs).  Keep the queue boundary
       // typed to the canonical schema rather than coercing them to uuid[].
-      const invoice = await client.query<{ id: string }>("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id = ANY($2::varchar[]) AND invoice_state <> 'void'", [organizationId, unique]);
-      if (invoice.rows.length !== unique.length) throw new Error("Only payable V2 Order-backed Invoices may be synchronized to QuickBooks.");
+      const invoice = await client.query<{ id: string }>(`SELECT i.id FROM v2_billing_invoices i JOIN v2_quickbooks_invoice_approvals a ON a.organization_id=i.organization_id AND a.invoice_id=i.id AND a.synchronization_version=i.synchronization_version WHERE i.organization_id=$1 AND i.id = ANY($2::varchar[]) AND i.invoice_state <> 'void'`, [organizationId, unique]);
+      if (invoice.rows.length !== unique.length) throw new Error("Approve the current V2 Invoice version for accounting before forcing QuickBooks sync.");
       for (const item of unique) await enqueueV2QuickBooksSync(client, organizationId, "invoice", item);
       await client.query("COMMIT");
       return unique;
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  /** Approval belongs to the tenant QuickBooks integration, never to Billing.
+   * The immutable version key revokes eligibility automatically on revision. */
+  async approveInvoice(organizationId:string, invoiceId:string, principal:Readonly<{kind:string;subject:string;staffActorUserId:string|null}>):Promise<{invoiceId:string;synchronizationVersion:string;alreadyApproved:boolean}> {
+    const client=await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const invoice=await client.query<{synchronization_version:string}>("SELECT synchronization_version::text synchronization_version FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND invoice_state <> 'void' FOR SHARE",[organizationId,invoiceId]);
+      const version=invoice.rows[0]?.synchronization_version;
+      if(!version) throw new Error("Only non-void V2 Order-backed Invoices can be approved for QuickBooks.");
+      const inserted=await client.query<{id:string}>(`INSERT INTO v2_quickbooks_invoice_approvals(organization_id,invoice_id,synchronization_version,principal_kind,principal_subject,staff_actor_user_id) VALUES($1,$2,$3::bigint,$4,$5,$6) ON CONFLICT(organization_id,invoice_id,synchronization_version) DO NOTHING RETURNING id`,[organizationId,invoiceId,version,principal.kind,principal.subject,principal.staffActorUserId]);
+      if(inserted.rows[0]) await client.query("INSERT INTO v2_audit_events(organization_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,'quickbooks.invoice.approve.v1','quickbooks_invoice_approved','invoice',$2,$3,$4,$5,$6::jsonb)",[organizationId,invoiceId,principal.kind,principal.subject,principal.staffActorUserId,JSON.stringify([{synchronizationVersion:version}])]);
+      await enqueueV2QuickBooksAutoSync(client,organizationId,"invoice",invoiceId);
+      await client.query("COMMIT");
+      return {invoiceId,synchronizationVersion:version,alreadyApproved:!inserted.rows[0]};
+    } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
   /** Manual payment/refund selection is deliberately bounded and only exposes
    * facts whose prerequisite Invoice/Payment projections already exist. */
@@ -134,21 +159,22 @@ export class PostgresQuickBooksSyncNow {
    * identities remain serialized text; compare Billing's bigint version as text. */
   async operations(organizationId: string): Promise<QuickBooksOperationsRead> {
     const [eligible, queue] = await Promise.all([
-      this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version::varchar)`, [organizationId]),
+      this.pool.query<{ eligible_count:string; approval_count:string }>(`SELECT count(*) FILTER (WHERE a.id IS NOT NULL)::text eligible_count,count(*) FILTER (WHERE a.id IS NULL)::text approval_count FROM v2_billing_invoices i LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id LEFT JOIN v2_quickbooks_invoice_approvals a ON a.organization_id=i.organization_id AND a.invoice_id=i.id AND a.synchronization_version=i.synchronization_version WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version::varchar)`, [organizationId]),
       this.pool.query<{ queued:string; processing:string; succeeded:string; action_required:string }>(`SELECT count(*) FILTER (WHERE state IN ('queued','retry'))::text queued,count(*) FILTER (WHERE state='processing')::text processing,count(*) FILTER (WHERE state='succeeded')::text succeeded,count(*) FILTER (WHERE state IN ('blocked','retry','uncertain'))::text action_required FROM v2_quickbooks_sync_jobs WHERE organization_id=$1`, [organizationId]),
     ]);
     const counts=queue.rows[0];
     return {
-      eligibleInvoiceCount:Number(eligible.rows[0]?.count??0),
+      eligibleInvoiceCount:Number(eligible.rows[0]?.eligible_count??0),
+      awaitingApprovalInvoiceCount:Number(eligible.rows[0]?.approval_count??0),
       queueSummary:{queued:Number(counts?.queued??0),processing:Number(counts?.processing??0),succeeded:Number(counts?.succeeded??0),actionRequired:Number(counts?.action_required??0)},
     };
   }
   async unsyncedInvoices(organizationId:string,input:Readonly<{page:number;pageSize:number;search:string}>):Promise<{items:readonly QuickBooksEligibleInvoice[];total:number;page:number;pageSize:number;hasNextPage:boolean}> {
     const page=Math.max(1,Math.floor(input.page)),pageSize=Math.min(100,Math.max(10,Math.floor(input.pageSize))),search=input.search.trim(); const offset=(page-1)*pageSize;
     const [rows,count]=await Promise.all([
-      this.pool.query<{ id:string; display_number:string; customer_name:string; total_cents:string; currency:string; posted_at:Date; provider_id:string|null; projection_version:string|null; synchronization_version:string }>(`SELECT i.id,COALESCE(i.invoice_display_number,d.display_number) display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,l.provider_id,l.projection_version,i.synchronization_version FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version::varchar) AND ($2='' OR COALESCE(i.invoice_display_number,d.display_number) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') ORDER BY i.updated_at DESC,i.id DESC LIMIT $3 OFFSET $4`,[organizationId,search,pageSize,offset]),
+      this.pool.query<{ id:string; display_number:string; customer_name:string; total_cents:string; currency:string; posted_at:Date; provider_id:string|null; projection_version:string|null; synchronization_version:string; approval_id:string|null }>(`SELECT i.id,COALESCE(i.invoice_display_number,d.display_number) display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.total_cents::text,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,l.provider_id,l.projection_version,i.synchronization_version,a.id approval_id FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id LEFT JOIN v2_quickbooks_invoice_approvals a ON a.organization_id=i.organization_id AND a.invoice_id=i.id AND a.synchronization_version=i.synchronization_version WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version::varchar) AND ($2='' OR COALESCE(i.invoice_display_number,d.display_number) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%') ORDER BY i.updated_at DESC,i.id DESC LIMIT $3 OFFSET $4`,[organizationId,search,pageSize,offset]),
       this.pool.query<{ count:string }>(`SELECT count(*)::text count FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id WHERE i.organization_id=$1 AND i.invoice_state <> 'void' AND (l.provider_id IS NULL OR l.projection_version IS DISTINCT FROM i.synchronization_version::varchar) AND ($2='' OR COALESCE(i.invoice_display_number,d.display_number) ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%')`,[organizationId,search]),
-    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({invoiceId:row.id,displayNumber:row.display_number,customerName:row.customer_name,totalCents:Number(row.total_cents),currency:row.currency,issuedAt:row.posted_at?.toISOString()??null,syncStatus:(row.provider_id ? "out_of_sync" : "never_synced") as "never_synced" | "out_of_sync"})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
+    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({invoiceId:row.id,displayNumber:row.display_number,customerName:row.customer_name,totalCents:Number(row.total_cents),currency:row.currency,issuedAt:row.posted_at?.toISOString()??null,syncStatus:(row.provider_id ? "out_of_sync" : "never_synced") as "never_synced" | "out_of_sync",accountingApproval:row.approval_id ? "approved" : "required"})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
   }
   async unsyncedFinancialFacts(organizationId:string,input:Readonly<{page:number;pageSize:number;search:string}>):Promise<{items:readonly QuickBooksEligibleFinancialFact[];total:number;page:number;pageSize:number;hasNextPage:boolean}> {
     const page=Math.max(1,Math.floor(input.page)),pageSize=Math.min(100,Math.max(10,Math.floor(input.pageSize))),search=input.search.trim(),offset=(page-1)*pageSize;
@@ -173,7 +199,7 @@ export class PostgresQuickBooksSyncNow {
     try {
       await client.query("BEGIN");
       const valid = await client.query<{ id:string }>(subjectKind === "invoice"
-        ? "SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND invoice_state <> 'void'"
+        ? "SELECT i.id FROM v2_billing_invoices i JOIN v2_quickbooks_invoice_approvals a ON a.organization_id=i.organization_id AND a.invoice_id=i.id AND a.synchronization_version=i.synchronization_version WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void'"
         : subjectKind === "payment"
           ? "SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND i.invoice_state <> 'void'"
           : "SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void'", [organizationId, subjectId]);
@@ -271,9 +297,9 @@ export class V2QuickBooksBillingWorker {
       const invoice = await client.query<{ customer_id:string|null; display_number:string; currency:string; posted_at:Date; synchronization_version:string }>(
         `SELECT i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,i.synchronization_version
          FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
-         WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void'`, [job.organizationId, job.subjectId]);
+         WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_invoice_approvals approval WHERE approval.organization_id=i.organization_id AND approval.invoice_id=i.id AND approval.synchronization_version=i.synchronization_version)`, [job.organizationId, job.subjectId]);
       const row = invoice.rows[0];
-      if (!row?.customer_id || !row.display_number) throw new Error("V2 Order-backed Invoice lacks required QuickBooks projection facts.");
+      if (!row?.customer_id || !row.display_number) throw Object.assign(new Error("The current V2 Invoice version requires accounting approval before QuickBooks sync."), { statusCode: 409 });
       const customer = await client.query<{ id:string; display_name:string|null; company_name:string|null; email:string|null; phone:string|null; customer_type:string|null }>(
         "SELECT id,display_name,company_name,email,phone,customer_type FROM customers WHERE organization_id=$1 AND id=$2", [job.organizationId, row.customer_id]);
       const customerRow = customer.rows[0];
