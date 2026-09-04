@@ -139,6 +139,29 @@ export const createInitialProductDraftTree = (displayName: string) => ({
     pricingV2: { base: {} },
   },
 });
+
+/**
+ * Early Product Builder drafts used an empty GROUP solely to satisfy the
+ * lightweight draft-tree validator. Real options are authored at the root,
+ * and PBV2's publish validator correctly disallows a GROUP at that level.
+ * Remove only that exact, still-empty starter scaffold once the Draft has
+ * actual option roots; never flatten or discard a merchant-authored group.
+ */
+const isEmptyLegacyProductConfigurationScaffold = (
+  tree: Record<string, any>,
+  nodeId: string,
+): boolean => {
+  if (nodeId !== "product_configuration") return false;
+  const node = record(record(tree.nodes)[nodeId]);
+  if (node.kind !== "group" || node.label !== "Product configuration")
+    return false;
+  if (Array.isArray(node.children) && node.children.length > 0) return false;
+  const edges = Array.isArray(tree.edges) ? tree.edges : [];
+  return !edges.some((edge) => {
+    const value = record(edge);
+    return value.fromNodeId === nodeId || value.toNodeId === nodeId;
+  });
+};
 const general = (
   tree: unknown,
   fallback: ProductDraftGeneral,
@@ -2944,7 +2967,15 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         delete record(nodes[id]).choices;
       optionIds.push(id);
     }
-    const retainedRoots = roots.filter((id) => !currentById.has(id));
+    const retainedRoots = roots.filter((id) =>
+      !currentById.has(id) &&
+      !(optionIds.length > 0 && isEmptyLegacyProductConfigurationScaffold(tree, id)),
+    );
+    if (
+      optionIds.length > 0 &&
+      isEmptyLegacyProductConfigurationScaffold(tree, "product_configuration")
+    )
+      delete nodes.product_configuration;
     tree.nodes = nodes;
     tree.rootNodeIds = [...retainedRoots, ...optionIds];
     if (input.optionRules !== undefined) {

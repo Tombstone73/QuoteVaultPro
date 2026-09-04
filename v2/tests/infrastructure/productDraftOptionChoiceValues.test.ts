@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createInitialProductDraftTree, PostgresProductVersionTransactionRunner } from "../../infrastructure/products/postgresProductVersionLifecycle";
+import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "../../../shared/pbv2/validator";
 
 let tree: unknown = createInitialProductDraftTree("Rigid sign");
 let updatedAt = new Date("2026-08-22T12:00:00.000Z");
@@ -52,6 +53,9 @@ assert.deepEqual(first.options[0]?.choices.map((choice) => choice.choiceValue), 
 assert.equal(first.options[0]?.defaultValue, "yes");
 assert.equal(first.options[0]?.selectionKey, first.options[0]?.optionId, "a newly created option returns its durable selection identity");
 assert.equal((tree as any).nodes[first.options[0]!.optionId].input.valueType, "ENUM");
+assert.deepEqual((tree as any).rootNodeIds, [first.options[0]!.optionId], "a real option replaces the empty legacy root scaffold");
+assert.equal((tree as any).nodes.product_configuration, undefined, "the empty legacy root scaffold is not retained for publication");
+assert.equal(validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS).errors.some((finding: any) => finding.message === "Root node cannot be GROUP"), false, "a draft with authored options cannot retain a GROUP root");
 
 const second = await runner.transaction((tx) => tx.updateDraftOptions!(input(first.draftUpdatedAt, first.options)));
 assert.equal(second.options[0]?.optionId, first.options[0]?.optionId);
