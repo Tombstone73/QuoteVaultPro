@@ -30,7 +30,7 @@ export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
  * successful delivery.  `invoice_email_logs` remains the only source for an
  * invoice's Last Sent value.
  */
-export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "canceled";
+export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "needs_review" | "canceled";
 
 export type InvoiceEmailDeliveryState = {
   status: InvoiceEmailDeliveryStatus;
@@ -39,6 +39,23 @@ export type InvoiceEmailDeliveryState = {
 };
 
 export type InvoiceEmailQueueView = "active" | "failed" | "sent" | "all";
+
+/**
+ * A sender marks failures after the provider-submission boundary explicitly.
+ * This is deliberately a property rather than message matching: retries must
+ * never depend on a provider's human-readable error text.
+ */
+export type InvoiceEmailDeliveryFailureKind = "retryable" | "needs_review";
+
+export function markInvoiceEmailDeliveryFailure<T extends Error>(error: T, kind: InvoiceEmailDeliveryFailureKind): T {
+  (error as T & { invoiceEmailDeliveryFailureKind?: InvoiceEmailDeliveryFailureKind }).invoiceEmailDeliveryFailureKind = kind;
+  return error;
+}
+
+export function getInvoiceEmailDeliveryFailureKind(error: unknown): InvoiceEmailDeliveryFailureKind | null {
+  const explicit = (error as { invoiceEmailDeliveryFailureKind?: unknown } | null)?.invoiceEmailDeliveryFailureKind;
+  return explicit === "needs_review" || explicit === "retryable" ? explicit : null;
+}
 
 export async function listInvoiceEmailDeliveryJobs(input: {
   organizationId: string;
@@ -49,7 +66,7 @@ export async function listInvoiceEmailDeliveryJobs(input: {
   const page = Math.max(1, input.page);
   const pageSize = Math.max(1, Math.min(100, input.pageSize));
   const statuses = input.view === "active" ? ["queued", "processing", "retrying"]
-    : input.view === "failed" ? ["failed"]
+    : input.view === "failed" ? ["failed", "needs_review"]
       : input.view === "sent" ? ["sent"] : null;
   const where = statuses
     ? and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), inArray(invoiceEmailDeliveryJobs.status, statuses))
@@ -79,12 +96,13 @@ export async function listInvoiceEmailDeliveryJobs(input: {
       .where(where).orderBy(desc(invoiceEmailDeliveryJobs.createdAt), desc(invoiceEmailDeliveryJobs.id)).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ totalCount: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(where),
   ]);
-  const [active, failed] = await Promise.all([
+  const [active, failed, needsReview] = await Promise.all([
     db.select({ count: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), inArray(invoiceEmailDeliveryJobs.status, ["queued", "processing", "retrying"]))),
     db.select({ count: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), eq(invoiceEmailDeliveryJobs.status, "failed"))),
+    db.select({ count: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), eq(invoiceEmailDeliveryJobs.status, "needs_review"))),
   ]);
   const totalCount = Number(totals[0]?.totalCount || 0);
-  return { items: rows, pagination: { page, pageSize, totalCount, totalPages: Math.max(1, Math.ceil(totalCount / pageSize)) }, counts: { active: Number(active[0]?.count || 0), failed: Number(failed[0]?.count || 0) }, claimSeconds: getBulkInvoiceEmailQueueConfig().claimSeconds };
+  return { items: rows, pagination: { page, pageSize, totalCount, totalPages: Math.max(1, Math.ceil(totalCount / pageSize)) }, counts: { active: Number(active[0]?.count || 0), failed: Number(failed[0]?.count || 0), needsReview: Number(needsReview[0]?.count || 0) }, claimSeconds: getBulkInvoiceEmailQueueConfig().claimSeconds };
 }
 
 let canonicalInvoiceEmailSender: CanonicalInvoiceEmailSender | null = null;
@@ -205,11 +223,12 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
         eq(invoiceEmailCampaigns.organizationId, input.organizationId),
         eq(invoiceEmailCampaigns.idempotencyKey, input.idempotencyKey),
       )).limit(1);
-      return { campaign: existing, queued: 0, alreadyQueued: input.candidates.length, replayed: true };
+      return { campaign: existing, queued: 0, alreadyQueued: input.candidates.length, blocked: [], replayed: true };
     }
 
     let queued = 0;
     let alreadyQueued = 0;
+    const blocked: Array<{ invoiceId: string; recipientEmail: string; status: "queued" | "processing" | "retrying" | "needs_review" }> = [];
     for (const candidate of input.candidates) {
       const recipientKey = normalizeRecipient(candidate.recipientEmail);
       const [job] = await tx.insert(invoiceEmailDeliveryJobs).values({
@@ -227,7 +246,23 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
         },
       } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
       if (job) queued += 1;
-      else alreadyQueued += 1;
+      else {
+        alreadyQueued += 1;
+        const [existing] = await tx.select({ status: invoiceEmailDeliveryJobs.status })
+          .from(invoiceEmailDeliveryJobs)
+          .where(and(
+            eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
+            eq(invoiceEmailDeliveryJobs.invoiceId, candidate.invoiceId),
+            eq(invoiceEmailDeliveryJobs.recipientKey, recipientKey),
+            eq(invoiceEmailDeliveryJobs.invoiceVersion, candidate.invoiceVersion),
+            inArray(invoiceEmailDeliveryJobs.status, ["queued", "processing", "retrying", "needs_review"]),
+          ))
+          .orderBy(desc(invoiceEmailDeliveryJobs.createdAt))
+          .limit(1);
+        if (existing?.status && ["queued", "processing", "retrying", "needs_review"].includes(existing.status)) {
+          blocked.push({ invoiceId: candidate.invoiceId, recipientEmail: candidate.recipientEmail, status: existing.status as "queued" | "processing" | "retrying" | "needs_review" });
+        }
+      }
     }
 
     const completed = queued === 0;
@@ -239,12 +274,13 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
       resultSummary: {
         queued,
         alreadyQueued,
+        blocked,
         skipped: input.skipped,
         deliveryMode: "individual_invoice_messages",
       },
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailCampaigns.id, created.id)).returning();
-    return { campaign: updated, queued, alreadyQueued, replayed: false };
+    return { campaign: updated, queued, alreadyQueued, blocked, replayed: false };
   });
 
   return {
@@ -252,6 +288,7 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
     selected: input.invoiceIds.length,
     queued: campaign.queued,
     alreadyQueued: campaign.alreadyQueued,
+    blocked: campaign.blocked,
     skipped: input.skipped,
     recipientGroups: new Set(input.candidates.map((candidate) => normalizeRecipient(candidate.recipientEmail))).size,
     replayed: campaign.replayed,
@@ -279,8 +316,8 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedJob | null> {
     // unbounded resend attempt.
     await tx.execute(sql`
       UPDATE invoice_email_delivery_jobs
-      SET status = 'failed', claim_expires_at = null,
-          failure_reason = coalesce(failure_reason, 'Needs review: worker claim expired before delivery outcome was recorded. The message was not resent to avoid a duplicate email.'),
+      SET status = 'needs_review', claim_expires_at = null,
+          failure_reason = coalesce(failure_reason, 'Delivery outcome is uncertain because the worker claim expired before it recorded an outcome. The message was not resent to avoid a duplicate email.'),
           updated_at = now()
       WHERE status = 'processing' AND claim_expires_at <= now()
     `);
@@ -342,7 +379,7 @@ async function updateCampaignCompletion(campaignId: string): Promise<void> {
   const result: any = await db.execute(sql`
     SELECT
       count(*) FILTER (WHERE status IN ('queued', 'retrying', 'processing'))::int AS active,
-      count(*) FILTER (WHERE status = 'failed')::int AS failed
+      count(*) FILTER (WHERE status IN ('failed', 'needs_review'))::int AS failed
     FROM invoice_email_delivery_jobs WHERE campaign_id = ${campaignId}
   `);
   const row = (result.rows || result)[0] || {};
@@ -356,12 +393,15 @@ async function updateCampaignCompletion(campaignId: string): Promise<void> {
 
 async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
   if (!canonicalInvoiceEmailSender) {
+    const terminal = job.attemptCount >= job.maxAttempts;
     await db.update(invoiceEmailDeliveryJobs).set({
-      status: "retrying",
-      availableAt: new Date(Date.now() + 60_000),
+      status: terminal ? "failed" : "retrying",
+      availableAt: terminal ? new Date() : new Date(Date.now() + 60_000),
+      claimExpiresAt: null,
       failureReason: "Canonical invoice email sender is not registered",
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    if (terminal) await updateCampaignCompletion(job.campaignId);
     return "failed";
   }
 
@@ -395,13 +435,17 @@ async function processClaimedJob(job: ClaimedJob): Promise<"sent" | "failed"> {
     return "sent";
   } catch (error) {
     const message = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
-    const terminal = isAmbiguousProviderFailure(error) || job.attemptCount >= job.maxAttempts;
+    const failureKind = getInvoiceEmailDeliveryFailureKind(error);
+    // Old providers that have not been annotated yet remain conservative for
+    // transport uncertainty. Explicit sender annotations always win.
+    const needsReview = failureKind ? failureKind === "needs_review" : isAmbiguousProviderFailure(error);
+    const terminal = needsReview || job.attemptCount >= job.maxAttempts;
     await db.update(invoiceEmailDeliveryJobs).set({
-      status: terminal ? "failed" : "retrying",
+      status: needsReview ? "needs_review" : terminal ? "failed" : "retrying",
       availableAt: terminal ? new Date() : new Date(Date.now() + getBulkInvoiceEmailQueueConfig().retryBaseSeconds * 1000 * Math.max(1, job.attemptCount)),
       claimExpiresAt: null,
-      failureReason: terminal && isAmbiguousProviderFailure(error)
-        ? `Outcome requires review before retry to avoid a duplicate email: ${message}`
+      failureReason: needsReview
+        ? `Delivery outcome is uncertain. Review before retrying to avoid a duplicate email: ${message}`
         : message,
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));

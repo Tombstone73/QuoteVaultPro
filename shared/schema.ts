@@ -5154,8 +5154,6 @@ export const invoiceEmailDeliveryJobs = pgTable("invoice_email_delivery_jobs", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
-  uniqueIndex("invoice_email_delivery_jobs_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
-  uniqueIndex("invoice_email_delivery_jobs_invoice_recipient_version_uidx").on(table.organizationId, table.invoiceId, table.recipientKey, table.invoiceVersion),
   index("invoice_email_delivery_jobs_org_campaign_idx").on(table.organizationId, table.campaignId),
 ]);
 

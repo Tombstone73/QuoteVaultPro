@@ -61,6 +61,7 @@ const deliveryStatusMeta = {
   processing: { label: "Sending", variant: "warning" },
   retrying: { label: "Retrying", variant: "warning" },
   failed: { label: "Delivery Failed", variant: "error" },
+  needs_review: { label: "Needs Review", variant: "warning" },
   sent: { label: "Sent", variant: "info" },
   canceled: { label: "Delivery Canceled", variant: "muted" },
 } as const;
@@ -242,7 +243,7 @@ export default function InvoicesListPage() {
       const summary = result.data;
       toast({
         title: "Invoice delivery queued",
-        description: `${summary.queued || 0} queued${summary.alreadyQueued ? `, ${summary.alreadyQueued} already queued` : ''}${summary.skipped.length ? `, ${summary.skipped.length} skipped` : ''}.`,
+        description: `${summary.queued || 0} queued${summary.alreadyQueued ? summary.blocked?.some((job) => job.status === 'needs_review') ? `, ${summary.alreadyQueued} needs review` : `, ${summary.alreadyQueued} already active` : ''}${summary.skipped.length ? `, ${summary.skipped.length} skipped` : ''}.`,
       });
       setSelectedInvoiceIds(new Set());
     } catch (error: any) {
@@ -267,7 +268,8 @@ export default function InvoicesListPage() {
         : preview.skipped[0]?.reason || "This invoice is not eligible for email delivery.";
       if (preview.eligible !== 1 || !window.confirm(confirmation)) return;
       const result = (await batchSendInvoices.mutateAsync({ invoiceIds: [invoiceId], idempotencyKey })).data;
-      toast({ title: "Invoice delivery queued", description: result.queued ? "The invoice email was queued." : "The invoice was already queued." });
+      const needsReview = result.blocked?.some((job) => job.status === 'needs_review');
+      toast({ title: result.queued ? "Invoice delivery queued" : needsReview ? "Invoice delivery needs review" : "Invoice delivery active", description: result.queued ? "The invoice email was queued." : needsReview ? "Previous delivery outcome is uncertain; review it before sending again." : "The invoice is already being delivered." });
     } catch (error: any) {
       toast({ title: "Invoice send failed", description: error.message, variant: "destructive" });
     }
@@ -441,7 +443,7 @@ export default function InvoicesListPage() {
               Totals
             </Button>
             {isAdminOrOwner ? <Button type="button" variant="outline" size="sm" onClick={() => setEmailQueueOpen(true)} data-testid="invoice-email-queue-open">
-              <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
+              <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.needsReview ? ` (${emailQueue.data.counts.needsReview} review)` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
             </Button> : null}
             <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
               <Select value={columnFilters.accountingApproval || "all"} onValueChange={(value) => setColumnFilter("accountingApproval", value === "all" ? "" : value)}>
@@ -620,11 +622,11 @@ export default function InvoicesListPage() {
           <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Authoritative delivery jobs. Last Sent updates only after provider acceptance.</DialogDescription></DialogHeader>
           <div className="flex flex-wrap items-center gap-2">
             <Select value={emailQueueView} onValueChange={(value: any) => { setEmailQueueView(value); setEmailQueuePage(1); }}><SelectTrigger className="w-[150px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="failed">Failed</SelectItem><SelectItem value="sent">Sent / Recent</SelectItem><SelectItem value="all">All</SelectItem></SelectContent></Select>
-            <span className="text-xs text-muted-foreground">{emailQueue.data ? `${emailQueue.data.counts.active} active · ${emailQueue.data.counts.failed} failed` : ''}</span>
+            <span className="text-xs text-muted-foreground">{emailQueue.data ? `${emailQueue.data.counts.active} active · ${emailQueue.data.counts.failed} failed · ${emailQueue.data.counts.needsReview} needs review` : ''}</span>
           </div>
           <div className="min-h-0 flex-1 overflow-auto rounded border">
             <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left"><th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Status</th><th className="p-2">Timing</th><th className="p-2">Attempts</th><th className="p-2">Detail</th><th className="p-2" /></tr></thead><tbody>
-              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => { const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000; return <tr className="border-b align-top" key={job.id}><td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td><td className="p-2 break-all">{job.recipientEmail}</td><td className="p-2"><StatusPill variant={job.status === 'failed' ? 'error' : job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{stale ? ' · Stale' : ''}</StatusPill></td><td className="p-2 text-xs">Queued {format(new Date(job.queuedAt), 'PP p')}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td><td className="p-2">{job.attemptCount} / {job.maxAttempts}</td><td className="max-w-[220px] p-2 text-xs text-muted-foreground">{job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}</td><td className="p-2"><Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button></td></tr>; }) : <tr><td className="p-4 text-muted-foreground" colSpan={7}>No matching email delivery jobs.</td></tr>}
+              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => { const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000; const needsReview = job.status === 'needs_review'; const retryable = job.status === 'failed'; return <tr className="border-b align-top" key={job.id}><td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td><td className="p-2 break-all">{job.recipientEmail}</td><td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Stale' : ''}</StatusPill></td><td className="p-2 text-xs">Queued {format(new Date(job.queuedAt), 'PP p')}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td><td className="p-2">{job.attemptCount} / {job.maxAttempts}</td><td className="max-w-[220px] p-2 text-xs text-muted-foreground">{needsReview ? 'Retry blocked: ' : retryable ? 'Safe to send again: ' : ''}{job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}</td><td className="p-2"><Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button></td></tr>; }) : <tr><td className="p-4 text-muted-foreground" colSpan={7}>No matching email delivery jobs.</td></tr>}
             </tbody></table>
           </div>
           {emailQueue.data ? <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Page {emailQueue.data.pagination.page} of {emailQueue.data.pagination.totalPages}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={emailQueuePage <= 1} onClick={() => setEmailQueuePage((page) => page - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={emailQueuePage >= emailQueue.data.pagination.totalPages} onClick={() => setEmailQueuePage((page) => page + 1)}>Next</Button></div></div> : null}

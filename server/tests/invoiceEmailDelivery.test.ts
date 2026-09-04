@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 import { PDFDocument } from "pdf-lib";
 
 import { buildRawMessage, normalizeEmailAttachments } from "../lib/emailMime";
@@ -163,6 +163,76 @@ describe("invoice email delivery", () => {
     expect(portalUrl).toBe("https://app.example.test/portal/invoices/invoice_paid");
     expect(html).toContain("View Invoice");
     expect(html).not.toContain("View &amp; Pay Invoice");
+  });
+
+  test("invokes the Gmail provider adapter and returns its provider message id", async () => {
+    // The service imports the DB-backed storage facade, but this isolated
+    // provider-boundary test replaces storage before any database operation.
+    process.env.DATABASE_URL ||= "postgresql://test:test@localhost:5432/test";
+    const { emailService } = await import("../emailService");
+    const { storage } = await import("../storage");
+    const originalClient = (emailService as any).createGmailClient;
+    const originalTemplates = (emailService as any).getEmailTemplates;
+    const previousClientId = process.env.GOOGLE_CLIENT_ID;
+    const previousClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const send = jest.fn().mockResolvedValue({ data: { id: "gmail-message-123", threadId: "thread-123" } });
+    const settings = jest.spyOn(storage, "getDefaultEmailSettings").mockResolvedValue({
+      provider: "gmail",
+      fromAddress: "shop@example.test",
+      fromName: "Test Print Shop",
+      refreshToken: "test-refresh-token",
+      connectionStatus: "connected",
+    } as any);
+    process.env.GOOGLE_CLIENT_ID = "test-client-id";
+    process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+    (emailService as any).getEmailTemplates = jest.fn().mockResolvedValue({});
+    (emailService as any).createGmailClient = jest.fn().mockResolvedValue({ users: { messages: { send } } });
+
+    try {
+      await expect(emailService.sendEmail("org-1", {
+        to: "customer@example.test",
+        subject: "Invoice",
+        html: "<p>Invoice</p>",
+      })).resolves.toBe("gmail-message-123");
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ userId: "me", requestBody: expect.objectContaining({ raw: expect.any(String) }) }));
+    } finally {
+      settings.mockRestore();
+      (emailService as any).createGmailClient = originalClient;
+      (emailService as any).getEmailTemplates = originalTemplates;
+      if (previousClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+      else process.env.GOOGLE_CLIENT_ID = previousClientId;
+      if (previousClientSecret === undefined) delete process.env.GOOGLE_CLIENT_SECRET;
+      else process.env.GOOGLE_CLIENT_SECRET = previousClientSecret;
+    }
+  });
+
+  test("marks an uncertain Gmail submission timeout as needs review", async () => {
+    process.env.DATABASE_URL ||= "postgresql://test:test@localhost:5432/test";
+    const { emailService } = await import("../emailService");
+    const { storage } = await import("../storage");
+    const originalClient = (emailService as any).createGmailClient;
+    const originalTemplates = (emailService as any).getEmailTemplates;
+    const previousClientId = process.env.GOOGLE_CLIENT_ID;
+    const previousClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const settings = jest.spyOn(storage, "getDefaultEmailSettings").mockResolvedValue({
+      provider: "gmail", fromAddress: "shop@example.test", fromName: "Test Print Shop", refreshToken: "test-refresh-token", connectionStatus: "connected",
+    } as any);
+    process.env.GOOGLE_CLIENT_ID = "test-client-id";
+    process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+    (emailService as any).getEmailTemplates = jest.fn().mockResolvedValue({});
+    (emailService as any).createGmailClient = jest.fn().mockResolvedValue({ users: { messages: { send: jest.fn().mockRejectedValue(new Error("Gmail API send operation timed out after 20000ms")) } } });
+    try {
+      await expect(emailService.sendEmail("org-1", { to: "customer@example.test", subject: "Invoice", html: "<p>Invoice</p>" }))
+        .rejects.toMatchObject({ invoiceEmailDeliveryFailureKind: "needs_review" });
+    } finally {
+      settings.mockRestore();
+      (emailService as any).createGmailClient = originalClient;
+      (emailService as any).getEmailTemplates = originalTemplates;
+      if (previousClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+      else process.env.GOOGLE_CLIENT_ID = previousClientId;
+      if (previousClientSecret === undefined) delete process.env.GOOGLE_CLIENT_SECRET;
+      else process.env.GOOGLE_CLIENT_SECRET = previousClientSecret;
+    }
   });
 
 });

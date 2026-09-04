@@ -1269,7 +1269,7 @@ export default function InvoiceDetailPage() {
       await sendInvoice.mutateAsync(usingConfiguredRecipients
         ? { id: invoiceId }
         : { id: invoiceId, toEmail: resolvedRecipientEmail });
-      toast({ title: "Success", description: "Invoice sent successfully" });
+      toast({ title: "Invoice delivery queued", description: "The invoice will be sent by the background delivery worker." });
       setEmailDialogOpen(false);
       setSelectedRecipientEmail("");
       setManualRecipientEmail("");

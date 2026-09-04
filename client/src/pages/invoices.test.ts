@@ -116,6 +116,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain('processing: { label: "Sending"');
     expect(invoicesPageSource).toContain('retrying: { label: "Retrying"');
     expect(invoicesPageSource).toContain('failed: { label: "Delivery Failed"');
+    expect(invoicesPageSource).toContain('needs_review: { label: "Needs Review"');
     expect(invoicesPageSource).toContain("emailDeliveryFailureReason");
     expect(invoicesPageSource).toContain("invoice.lastSentAt ? formatDate(invoice.lastSentAt) : EMPTY_VALUE");
     expect(invoiceHooksSource).toContain("refetchInterval");
@@ -127,6 +128,8 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("invoice-email-queue-open");
     expect(invoicesPageSource).toContain("Active");
     expect(invoicesPageSource).toContain("Delivery Failed");
+    expect(invoicesPageSource).toContain("Retry blocked:");
+    expect(invoicesPageSource).toContain("Safe to send again:");
     expect(invoicesPageSource).toContain("Stale");
     expect(invoicesPageSource).toContain("navigate(`/invoices/${job.invoiceId}`)");
     expect(invoicesPageSource).not.toContain("Retry email");

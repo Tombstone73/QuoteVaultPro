@@ -5,7 +5,7 @@ import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
 import { apiRequest } from '@/lib/queryClient';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
-export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'canceled';
+export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'needs_review' | 'canceled';
 
 export type ReminderListStatus =
   | 'due'
@@ -62,7 +62,7 @@ export interface InvoiceListResponse {
 }
 
 export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; };
-export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; pagination: InvoiceListPagination; counts: { active: number; failed: number }; claimSeconds: number };
+export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; pagination: InvoiceListPagination; counts: { active: number; failed: number; needsReview: number }; claimSeconds: number };
 
 export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'all', page: number) {
   return useQuery<InvoiceEmailQueueResponse>({
@@ -600,7 +600,7 @@ export function useSendInvoice() {
     mutationFn: async ({ id, toEmail }: { id: string; toEmail?: string }) => {
       const res = await fetch(`/api/invoices/${id}/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ toEmail }),
         credentials: 'include',
       });
@@ -660,6 +660,7 @@ export function useBatchSendInvoices() {
           eligible: number;
           queued?: number;
           alreadyQueued?: number;
+          blocked?: Array<{ invoiceId: string; recipientEmail: string; status: 'queued' | 'processing' | 'retrying' | 'needs_review' }>;
           recipientGroups: number;
           skipped: Array<{ invoiceId: string; reason: string }>;
           deliveryMode: 'individual_invoice_messages';

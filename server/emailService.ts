@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 import { buildRawMessage, normalizeEmailAttachments, type EmailAttachment } from "./lib/emailMime";
+import { markInvoiceEmailDeliveryFailure } from "./services/invoiceBulkEmailQueue.service";
 export { buildRawMessage, normalizeEmailAttachments } from "./lib/emailMime";
 
 /**
@@ -200,15 +201,15 @@ class EmailService {
         code: error.code,
       });
       if (error.message.includes('timed out')) {
-        throw new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.');
+        throw markInvoiceEmailDeliveryFailure(new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.'), 'retryable');
       }
       // Surface auth errors with a recognisable marker so callers can detect them
       if (isGmailAuthError(error)) {
         const authErr = new Error(`GMAIL_AUTH_ERROR: ${error.message}`);
         (authErr as any).isGmailAuthError = true;
-        throw authErr;
+        throw markInvoiceEmailDeliveryFailure(authErr, 'retryable');
       }
-      throw new Error(`Failed to authenticate with Gmail: ${error.message}`);
+      throw markInvoiceEmailDeliveryFailure(new Error(`Failed to authenticate with Gmail: ${error.message}`), 'retryable');
     }
 
     // Create Gmail API client
@@ -272,15 +273,24 @@ class EmailService {
         code: error.code,
       });
       if (error.message.includes('timed out')) {
-        throw new Error('Timed out while sending email via Gmail API. Please check your network connection and try again.');
+        // The request may still have reached Gmail after our local timeout, so
+        // the queue must never retry this automatically.
+        throw markInvoiceEmailDeliveryFailure(new Error('Timed out while sending email via Gmail API. Please check your network connection and try again.'), 'needs_review');
       }
       // Re-surface tagged auth errors without wrapping
       if ((error as any).isGmailAuthError || isGmailAuthError(error)) {
         const authErr = new Error(`GMAIL_AUTH_ERROR: ${error.message}`);
         (authErr as any).isGmailAuthError = true;
-        throw authErr;
+        throw markInvoiceEmailDeliveryFailure(authErr, 'retryable');
       }
-      throw new Error(`Failed to send email via Gmail API: ${error.message}`);
+      // A non-auth Gmail API response is a known rejection, not an unknown
+      // outcome. Network/connection failures have no reliable response and
+      // must be reviewed before another customer email is attempted.
+      const transportUncertain = /econn|socket|connection reset|network|fetch failed/i.test(String(error?.message || error));
+      throw markInvoiceEmailDeliveryFailure(
+        new Error(`Failed to send email via Gmail API: ${error.message}`),
+        transportUncertain ? 'needs_review' : 'retryable',
+      );
     }
   }
 

@@ -188,6 +188,7 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // instead of accepting an enqueue request that cannot be processed.
   { type: "table_exists", table: "invoice_email_campaigns", label: "invoice_email_campaigns table" },
   { type: "table_exists", table: "invoice_email_delivery_jobs", label: "invoice_email_delivery_jobs table" },
+  { type: "index_exists", index: "invoice_email_delivery_jobs_active_guard_uidx", label: "invoice email active delivery guard" },
   // Migration 0178 verifies physical repair postconditions rather than trusting
   // that a migration ledger timestamp implies the intended catalog state.
   { type: "exact_foreign_key", table: "production_runs", column: "order_id", referencesTable: "orders", referencesColumn: "id", onDelete: "SET NULL", label: "production_runs.order_id has exactly one orders(id) SET NULL FK" },

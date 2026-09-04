@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
@@ -48,6 +49,7 @@ import {
   getInvoiceEmailDeliveryStates,
   listInvoiceEmailDeliveryJobs,
   getBulkInvoiceEmailQueueConfig,
+  markInvoiceEmailDeliveryFailure,
   registerCanonicalInvoiceEmailSender,
   type BulkInvoiceEmailCandidate,
   type BulkInvoiceEmailSkip,
@@ -478,6 +480,7 @@ export async function registerMvpInvoicingRoutes(
 
     const now = new Date();
     let messageId: string | null = null;
+    let providerAccepted = false;
     try {
       messageId = await emailService.sendEmail(input.organizationId, {
         to: recipientEmail,
@@ -488,6 +491,7 @@ export async function registerMvpInvoicingRoutes(
           pdfAttachment,
         ] as any,
       });
+      providerAccepted = true;
 
       await createInvoiceEmailLog({
         organizationId: input.organizationId,
@@ -499,18 +503,24 @@ export async function registerMvpInvoicingRoutes(
         sentAt: now,
       });
     } catch (sendError) {
-      try {
-        await createInvoiceEmailLog({
-          organizationId: input.organizationId,
-          invoiceId: input.invoiceId,
-          recipientEmail,
-          status: "failed",
-          type: "invoice_send",
-          messageId: null,
-          sentAt: now,
-        });
-      } catch (logError) {
-        console.error("[Invoice Send] Failed to write failed email log:", logError);
+      if (!providerAccepted) {
+        try {
+          await createInvoiceEmailLog({
+            organizationId: input.organizationId,
+            invoiceId: input.invoiceId,
+            recipientEmail,
+            status: "failed",
+            type: "invoice_send",
+            messageId: null,
+            sentAt: now,
+          });
+        } catch (logError) {
+          console.error("[Invoice Send] Failed to write failed email log:", logError);
+        }
+      } else {
+        // Gmail accepted the message but durable success recording did not
+        // complete. A retry here could create a duplicate customer email.
+        markInvoiceEmailDeliveryFailure(sendError as Error, "needs_review");
       }
       throw sendError;
     }
@@ -518,16 +528,22 @@ export async function registerMvpInvoicingRoutes(
     const invoiceVersion = Number(inv.invoiceVersion || 1);
     const currentStatus = String(inv.status || "").toLowerCase();
     const nextStatus = ["paid", "partially_paid", "credit", "void"].includes(currentStatus) ? currentStatus : "sent";
-    await db
-      .update(invoices)
-      .set({
-        status: nextStatus,
-        lastSentAt: now,
-        lastSentVersion: invoiceVersion,
-        lastSentVia: "email",
-        updatedAt: now,
-      } as any)
-      .where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId)));
+    try {
+      await db
+        .update(invoices)
+        .set({
+          status: nextStatus,
+          lastSentAt: now,
+          lastSentVersion: invoiceVersion,
+          lastSentVia: "email",
+          updatedAt: now,
+        } as any)
+        .where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId)));
+    } catch (persistenceError) {
+      // Provider acceptance is already known. Preserve that uncertainty for
+      // the worker instead of attempting another send on the next tick.
+      throw markInvoiceEmailDeliveryFailure(persistenceError as Error, "needs_review");
+    }
 
     if (inv.orderId) {
       const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
@@ -2975,7 +2991,9 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
-  // Send invoice via email with PDF attachment
+  // Queue one invoice email. Delivery always happens in the durable worker;
+  // this endpoint intentionally does not bypass the queue for a synchronous
+  // provider call.
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/send", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -2983,21 +3001,53 @@ export async function registerMvpInvoicingRoutes(
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
       const userId = getUserId(req.user);
-      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
       const { id } = req.params;
       const { toEmail } = req.body || {};
+      const requestedRecipient = toEmail == null ? null : String(toEmail).trim();
+      if (requestedRecipient && !isValidInvoiceRecipientEmail(requestedRecipient)) {
+        return res.status(400).json({ success: false, error: "Enter a valid recipient email address" });
+      }
+      if (toEmail != null && !requestedRecipient) {
+        return res.status(400).json({ success: false, error: "Enter a valid recipient email address" });
+      }
 
-      console.log(`[Invoice Send] Starting send for invoice ${id}, org ${organizationId}`);
-      const result = await sendInvoiceEmailForOperations({
+      const resolution = await resolveInvoiceEmailRecipientsForOperations({ organizationId, invoiceId: id });
+      const status = String(resolution.invoice.status || "").toLowerCase();
+      if (status === "void") return res.status(400).json({ success: false, error: "Void invoices cannot be sent" });
+      if (status === "paid") return res.status(400).json({ success: false, error: "Paid invoices do not need to be sent" });
+      const recipients = requestedRecipient ? [requestedRecipient] : resolution.recipients.map((recipient) => recipient.email);
+      if (recipients.length === 0) return res.status(400).json({ success: false, error: "No recipient email is available. Enter another email address before sending." });
+
+      const queued = await enqueueBulkInvoiceEmailCampaign({
         organizationId,
-        invoiceId: id,
-        userId,
-        userName,
-        toEmail,
+        createdByUserId: userId || null,
+        invoiceIds: [id],
+        candidates: recipients.map((recipientEmail) => ({
+          invoiceId: id,
+          invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
+          recipientEmail,
+        })),
+        skipped: [],
+        idempotencyKey: buildBulkInvoiceEmailRequestKey({
+          organizationId,
+          invoiceIds: [id],
+          // The detail-page legacy endpoint did not historically supply an
+          // Idempotency-Key. Give each deliberate click a fresh durable
+          // request identity so a retry-safe failed delivery can be queued
+          // again, while preserving caller-supplied retry idempotency.
+          suppliedKey: req.get("Idempotency-Key") || randomUUID(),
+        }),
       });
-
-      console.log(`[Invoice Send] Email sent successfully to ${result.recipientEmail}`);
-      return res.json({ success: true, data: result });
+      const needsReview = queued.blocked.some((job) => job.status === "needs_review");
+      return res.json({
+        success: true,
+        data: queued,
+        message: queued.queued
+          ? "Invoice delivery queued"
+          : needsReview
+            ? "Previous delivery needs review because the provider outcome is uncertain."
+            : "Invoice delivery is already active.",
+      });
     } catch (error: any) {
       console.error("[Invoice Send] FAILED:", {
         error: error.message,
@@ -3097,7 +3147,7 @@ export async function registerMvpInvoicingRoutes(
       return res.json({
         success: true,
         data: { ...preview, ...queued },
-        message: `${queued.queued} invoice email${queued.queued === 1 ? "" : "s"} queued${queued.alreadyQueued ? `, ${queued.alreadyQueued} already queued` : ""}`,
+        message: `${queued.queued} invoice email${queued.queued === 1 ? "" : "s"} queued${queued.alreadyQueued ? `, ${queued.alreadyQueued} active or needing review` : ""}`,
       });
     } catch (error: any) {
       console.error("[Invoice Batch Send] failed:", error);
