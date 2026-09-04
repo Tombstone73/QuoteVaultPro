@@ -2042,7 +2042,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         );
       combinations.add(key);
       let prior = 0;
-      for (const tier of entry.tiers) {
+      for (const [tierIndex, tier] of entry.tiers.entries()) {
         if (
           !Number.isSafeInteger(tier.minimum) ||
           tier.minimum < 1 ||
@@ -2063,7 +2063,7 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
         )
           throw new V2ApplicationError(
             "VALIDATION_ERROR",
-            "Matrix row tiers are invalid.",
+            `Matrix row ${entry.rowId} tier ${tierIndex + 1} is invalid. Tier minimums must be whole numbers that increase from left to right, and optional rates and bounds must be valid non-negative amounts.`,
           );
         prior = tier.minimum;
       }
