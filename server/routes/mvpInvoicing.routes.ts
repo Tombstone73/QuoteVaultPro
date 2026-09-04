@@ -2087,6 +2087,21 @@ export async function registerMvpInvoicingRoutes(
     }
   });
 
+  // Keep this concrete path ahead of /api/invoices/:id. Express matches in
+  // registration order; otherwise "email-queue" is incorrectly treated as
+  // an invoice id and the authoritative queue is never queried.
+  app.get("/api/invoices/email-queue", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+      const view = ["active", "failed", "sent", "all"].includes(String(req.query.view)) ? String(req.query.view) as any : "active";
+      const data = await listInvoiceEmailDeliveryJobs({ organizationId, view, page: Math.max(1, Number(req.query.page || 1)), pageSize: Math.max(1, Math.min(100, Number(req.query.pageSize || 25))) });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message || "Failed to list invoice email queue" });
+    }
+  });
+
   app.get("/api/invoices/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -3087,18 +3102,6 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("[Invoice Batch Send] failed:", error);
       res.status(500).json({ success: false, error: error.message || "Failed to batch send invoices" });
-    }
-  });
-
-  app.get("/api/invoices/email-queue", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-      const view = ["active", "failed", "sent", "all"].includes(String(req.query.view)) ? String(req.query.view) as any : "active";
-      const data = await listInvoiceEmailDeliveryJobs({ organizationId, view, page: Math.max(1, Number(req.query.page || 1)), pageSize: Math.max(1, Math.min(100, Number(req.query.pageSize || 25))) });
-      return res.json({ success: true, data });
-    } catch (error: any) {
-      return res.status(500).json({ success: false, error: error.message || "Failed to list invoice email queue" });
     }
   });
 

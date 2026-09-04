@@ -70,6 +70,10 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).not.toContain('app.post("/api/invoices/email-queue/retry"');
   });
 
+  test("registers the concrete queue path before the generic invoice-id route", () => {
+    expect(route.indexOf('app.get("/api/invoices/email-queue"')).toBeLessThan(route.indexOf('app.get("/api/invoices/:id"'));
+  });
+
   test("gives the V1 operator a preflight confirmation and models the V2 shared boundary", () => {
     expect(client).toContain("dryRun: true");
     expect(client).toContain("window.confirm(confirmation)");
