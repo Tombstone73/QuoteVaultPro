@@ -122,6 +122,18 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain('"queued", "processing", "retrying"');
   });
 
+  it("provides a bounded, polling email queue view with no unsafe retry action", () => {
+    expect(invoicesPageSource).toContain("Invoice Email Queue");
+    expect(invoicesPageSource).toContain("invoice-email-queue-open");
+    expect(invoicesPageSource).toContain("Active");
+    expect(invoicesPageSource).toContain("Delivery Failed");
+    expect(invoicesPageSource).toContain("Stale");
+    expect(invoicesPageSource).toContain("navigate(`/invoices/${job.invoiceId}`)");
+    expect(invoicesPageSource).not.toContain("Retry email");
+    expect(invoiceHooksSource).toContain("useInvoiceEmailQueue");
+    expect(invoiceHooksSource).toContain("email-queue?view=");
+  });
+
   it("shows Take Payment for a live draft balance, but not void or zero-balance invoices", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "void" }))).toBe(false);
     expect(canTakePaymentFromInvoiceList(invoice({ status: "draft" }))).toBe(true);
@@ -129,7 +141,6 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("no longer renders the legacy Record Payment dialog", () => {
-    expect(invoicesPageSource).not.toContain("<Dialog");
     expect(invoicesPageSource).not.toContain("Record Payment");
     expect(invoicesPageSource).not.toContain("payment-amount");
     expect(invoicesPageSource).not.toContain("payment-method");

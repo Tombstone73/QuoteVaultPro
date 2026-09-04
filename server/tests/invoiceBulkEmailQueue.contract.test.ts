@@ -61,6 +61,15 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("This deliberately describes the queue job, not");
   });
 
+  test("exposes a bounded tenant-scoped read-only queue list without an unsafe retry mutation", () => {
+    expect(route).toContain('app.get("/api/invoices/email-queue"');
+    expect(route).toContain("listInvoiceEmailDeliveryJobs");
+    expect(queue).toContain("InvoiceEmailQueueView");
+    expect(queue).toContain("Math.min(100, input.pageSize)");
+    expect(queue).toContain("eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId)");
+    expect(route).not.toContain('app.post("/api/invoices/email-queue/retry"');
+  });
+
   test("gives the V1 operator a preflight confirmation and models the V2 shared boundary", () => {
     expect(client).toContain("dryRun: true");
     expect(client).toContain("window.confirm(confirmation)");

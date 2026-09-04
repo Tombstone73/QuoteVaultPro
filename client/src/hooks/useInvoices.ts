@@ -61,6 +61,22 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
 }
 
+export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; };
+export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; pagination: InvoiceListPagination; counts: { active: number; failed: number }; claimSeconds: number };
+
+export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'all', page: number) {
+  return useQuery<InvoiceEmailQueueResponse>({
+    queryKey: ['invoices', 'email-queue', view, page], enabled: open,
+    refetchInterval: (query) => open && Number(query.state.data?.counts.active || 0) > 0 ? 5_000 : false,
+    queryFn: async () => {
+      const response = await fetch(`/api/invoices/email-queue?view=${view}&page=${page}&pageSize=25`, { credentials: 'include' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Failed to load invoice email queue');
+      return payload.data;
+    },
+  });
+}
+
 export type InvoiceListColumnFilterQuery = {
   accountingApproval?: 'approved' | 'not_approved' | 'needs_reapproval';
   customer?: string;

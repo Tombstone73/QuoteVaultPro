@@ -5,9 +5,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -99,6 +100,9 @@ export default function InvoicesListPage() {
   const [columnFilters, setColumnFilters] = useState<InvoiceListColumnFilterQuery>(EMPTY_COLUMN_FILTERS);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
+  const [emailQueueOpen, setEmailQueueOpen] = useState(false);
+  const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'all'>('active');
+  const [emailQueuePage, setEmailQueuePage] = useState(1);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -112,6 +116,7 @@ export default function InvoicesListPage() {
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const batchSendInvoices = useBatchSendInvoices();
+  const emailQueue = useInvoiceEmailQueue(emailQueueOpen, emailQueueView, emailQueuePage);
   const approveInvoices = useApproveInvoicesForAccounting();
 
   const formatCurrency = (amount: string | number) => {
@@ -251,6 +256,7 @@ export default function InvoicesListPage() {
       ? deliveryStatusMeta[queueStatus]
       : emailStatusMeta[invoice.emailStatus];
   };
+  const queueStatusLabel = (status: string) => deliveryStatusMeta[status as keyof typeof deliveryStatusMeta]?.label || status;
 
   const handleQuickSend = async (invoiceId: string) => {
     try {
@@ -434,6 +440,9 @@ export default function InvoicesListPage() {
             >
               Totals
             </Button>
+            {isAdminOrOwner ? <Button type="button" variant="outline" size="sm" onClick={() => setEmailQueueOpen(true)} data-testid="invoice-email-queue-open">
+              <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
+            </Button> : null}
             <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
               <Select value={columnFilters.accountingApproval || "all"} onValueChange={(value) => setColumnFilter("accountingApproval", value === "all" ? "" : value)}>
                 <SelectTrigger className="w-[190px]" aria-label="Accounting approval filter"><SelectValue placeholder="Accounting approval" /></SelectTrigger>
@@ -606,6 +615,21 @@ export default function InvoicesListPage() {
 
         {renderPagination("bottom")}
       </ContentLayout>
+      <Dialog open={emailQueueOpen} onOpenChange={setEmailQueueOpen}>
+        <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
+          <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Authoritative delivery jobs. Last Sent updates only after provider acceptance.</DialogDescription></DialogHeader>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={emailQueueView} onValueChange={(value: any) => { setEmailQueueView(value); setEmailQueuePage(1); }}><SelectTrigger className="w-[150px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="failed">Failed</SelectItem><SelectItem value="sent">Sent / Recent</SelectItem><SelectItem value="all">All</SelectItem></SelectContent></Select>
+            <span className="text-xs text-muted-foreground">{emailQueue.data ? `${emailQueue.data.counts.active} active · ${emailQueue.data.counts.failed} failed` : ''}</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto rounded border">
+            <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left"><th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Status</th><th className="p-2">Timing</th><th className="p-2">Attempts</th><th className="p-2">Detail</th><th className="p-2" /></tr></thead><tbody>
+              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => { const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000; return <tr className="border-b align-top" key={job.id}><td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td><td className="p-2 break-all">{job.recipientEmail}</td><td className="p-2"><StatusPill variant={job.status === 'failed' ? 'error' : job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{stale ? ' · Stale' : ''}</StatusPill></td><td className="p-2 text-xs">Queued {format(new Date(job.queuedAt), 'PP p')}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td><td className="p-2">{job.attemptCount} / {job.maxAttempts}</td><td className="max-w-[220px] p-2 text-xs text-muted-foreground">{job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}</td><td className="p-2"><Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button></td></tr>; }) : <tr><td className="p-4 text-muted-foreground" colSpan={7}>No matching email delivery jobs.</td></tr>}
+            </tbody></table>
+          </div>
+          {emailQueue.data ? <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Page {emailQueue.data.pagination.page} of {emailQueue.data.pagination.totalPages}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={emailQueuePage <= 1} onClick={() => setEmailQueuePage((page) => page - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={emailQueuePage >= emailQueue.data.pagination.totalPages} onClick={() => setEmailQueuePage((page) => page + 1)}>Next</Button></div></div> : null}
+        </DialogContent>
+      </Dialog>
     </Page>
   );
 }

@@ -5,6 +5,8 @@ import {
   invoiceEmailCampaigns,
   invoiceEmailDeliveryJobs,
   invoiceEmailLogs,
+  invoices,
+  customers,
 } from "../../shared/schema";
 
 type CanonicalInvoiceEmailSender = (input: {
@@ -35,6 +37,55 @@ export type InvoiceEmailDeliveryState = {
   failureReason: string | null;
   updatedAt: Date | null;
 };
+
+export type InvoiceEmailQueueView = "active" | "failed" | "sent" | "all";
+
+export async function listInvoiceEmailDeliveryJobs(input: {
+  organizationId: string;
+  view: InvoiceEmailQueueView;
+  page: number;
+  pageSize: number;
+}) {
+  const page = Math.max(1, input.page);
+  const pageSize = Math.max(1, Math.min(100, input.pageSize));
+  const statuses = input.view === "active" ? ["queued", "processing", "retrying"]
+    : input.view === "failed" ? ["failed"]
+      : input.view === "sent" ? ["sent"] : null;
+  const where = statuses
+    ? and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), inArray(invoiceEmailDeliveryJobs.status, statuses))
+    : eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId);
+  const [rows, totals] = await Promise.all([
+    db.select({
+      id: invoiceEmailDeliveryJobs.id,
+      invoiceId: invoiceEmailDeliveryJobs.invoiceId,
+      invoiceNumber: invoices.displayNumber,
+      legacyInvoiceNumber: invoices.invoiceNumber,
+      customerName: customers.companyName,
+      recipientEmail: invoiceEmailDeliveryJobs.recipientEmail,
+      status: invoiceEmailDeliveryJobs.status,
+      attemptCount: invoiceEmailDeliveryJobs.attemptCount,
+      maxAttempts: invoiceEmailDeliveryJobs.maxAttempts,
+      queuedAt: invoiceEmailDeliveryJobs.createdAt,
+      claimedAt: invoiceEmailDeliveryJobs.claimedAt,
+      claimExpiresAt: invoiceEmailDeliveryJobs.claimExpiresAt,
+      updatedAt: invoiceEmailDeliveryJobs.updatedAt,
+      availableAt: invoiceEmailDeliveryJobs.availableAt,
+      sentAt: invoiceEmailDeliveryJobs.sentAt,
+      failureReason: invoiceEmailDeliveryJobs.failureReason,
+      providerMessageId: invoiceEmailDeliveryJobs.providerMessageId,
+    }).from(invoiceEmailDeliveryJobs)
+      .innerJoin(invoices, and(eq(invoices.id, invoiceEmailDeliveryJobs.invoiceId), eq(invoices.organizationId, input.organizationId)))
+      .leftJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.organizationId, input.organizationId)))
+      .where(where).orderBy(desc(invoiceEmailDeliveryJobs.createdAt), desc(invoiceEmailDeliveryJobs.id)).limit(pageSize).offset((page - 1) * pageSize),
+    db.select({ totalCount: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(where),
+  ]);
+  const [active, failed] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), inArray(invoiceEmailDeliveryJobs.status, ["queued", "processing", "retrying"]))),
+    db.select({ count: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), eq(invoiceEmailDeliveryJobs.status, "failed"))),
+  ]);
+  const totalCount = Number(totals[0]?.totalCount || 0);
+  return { items: rows, pagination: { page, pageSize, totalCount, totalPages: Math.max(1, Math.ceil(totalCount / pageSize)) }, counts: { active: Number(active[0]?.count || 0), failed: Number(failed[0]?.count || 0) }, claimSeconds: getBulkInvoiceEmailQueueConfig().claimSeconds };
+}
 
 let canonicalInvoiceEmailSender: CanonicalInvoiceEmailSender | null = null;
 let workerRunning = false;
