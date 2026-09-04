@@ -82,7 +82,9 @@ export function MatrixPricing({
 }: Readonly<{
   matrix: ProductDraftPricingMatrix;
   disabled?: boolean;
-  onChange: (next: ProductDraftPricingMatrix) => void;
+  onChange: (
+    update: (current: ProductDraftPricingMatrix) => ProductDraftPricingMatrix,
+  ) => void;
 }>) {
   const [slice, setSlice] = useState<Record<string, Value>>({});
   // Input events can arrive before React commits an intervening parent render.
@@ -105,22 +107,29 @@ export function MatrixPricing({
       ) as Record<string, Value>,
     [extraDims, slice],
   );
-  const staged = (change: Partial<ProductDraftPricingMatrix>) => {
-    const next = { ...matrixRef.current, ...change };
+  const staged = (
+    update: (current: ProductDraftPricingMatrix) => ProductDraftPricingMatrix,
+  ) => {
+    const next = update(matrixRef.current);
     matrixRef.current = next;
-    onChange(next);
+    // The parent owns the submitted Draft snapshot.  Pass the transformation,
+    // rather than a child-rendered object, so fast successive field events
+    // cannot overwrite an already staged tier in that canonical snapshot.
+    onChange(update);
   };
   const setDimensions = (selectionKeys: readonly string[]) => {
-    const current = matrixRef.current;
-    const available = new Map(current.availableDimensions.map((dimension) => [dimension.selectionKey, dimension]));
-    const next = selectionKeys.flatMap((selectionKey) => {
-      const dimension = available.get(selectionKey);
-      return dimension ? [dimension] : [];
-    });
-    staged({
-      active: true,
-      dimensions: next,
-      rows: completeMatrixRows(next, current.rows),
+    staged((current) => {
+      const available = new Map(current.availableDimensions.map((dimension) => [dimension.selectionKey, dimension]));
+      const next = selectionKeys.flatMap((selectionKey) => {
+        const dimension = available.get(selectionKey);
+        return dimension ? [dimension] : [];
+      });
+      return {
+        ...current,
+        active: true,
+        dimensions: next,
+        rows: completeMatrixRows(next, current.rows),
+      };
     });
   };
   const moveDimension = (index: number, direction: -1 | 1) => {
@@ -130,13 +139,12 @@ export function MatrixPricing({
   const updateRow = (
     rowId: string,
     change: Partial<ProductDraftPricingMatrix["rows"][number]>,
-  ) =>
-    staged(updateMatrixPricingRow(matrixRef.current, rowId, change));
+  ) => staged((current) => updateMatrixPricingRow(current, rowId, change));
   const updateTier = (
     rowId: string,
     tierIndex: number,
     change: Partial<ProductDraftPricingTier>,
-  ) => staged(updateMatrixPricingTier(matrixRef.current, rowId, tierIndex, change));
+  ) => staged((current) => updateMatrixPricingTier(current, rowId, tierIndex, change));
   const removeTier = (rowId: string, tierIndex: number) => {
     const row = matrixRef.current.rows.find((entry) => entry.rowId === rowId);
     if (!row) return;
@@ -159,22 +167,26 @@ export function MatrixPricing({
   const missing = matrix.rows.filter(
     (row) => row.baseRateCents === null,
   ).length;
-  const addTier = (row: ProductDraftPricingMatrix["rows"][number]) =>
-    updateRow(row.rowId, {
-      tiers: [
-        ...row.tiers,
-        {
-          tierId: `new:${crypto.randomUUID()}`,
-          minimum: Math.max(1, (row.tiers.at(-1)?.maximum ?? 0) + 1),
-          maximum: null,
-          perPieceCents:
-            matrix.pricingUnit === "per_piece" ? row.baseRateCents : null,
-          perSqftCents:
-            matrix.pricingUnit === "per_square_foot" ? row.baseRateCents : null,
-          minimumChargeCents: null,
-        },
-      ],
-      tierBasis: row.tierBasis ?? "quantity",
+  const addTier = (rowId: string) =>
+    staged((current) => {
+      const row = current.rows.find((entry) => entry.rowId === rowId);
+      if (!row) return current;
+      return updateMatrixPricingRow(current, rowId, {
+        tiers: [
+          ...row.tiers,
+          {
+            tierId: `new:${crypto.randomUUID()}`,
+            minimum: Math.max(1, (row.tiers.at(-1)?.maximum ?? 0) + 1),
+            maximum: null,
+            perPieceCents:
+              current.pricingUnit === "per_piece" ? row.baseRateCents : null,
+            perSqftCents:
+              current.pricingUnit === "per_square_foot" ? row.baseRateCents : null,
+            minimumChargeCents: null,
+          },
+        ],
+        tierBasis: row.tierBasis ?? "quantity",
+      });
     });
 
   return (
@@ -184,11 +196,12 @@ export function MatrixPricing({
         hint="Rates come from a complete table driven by selected Product Options."
         checked={matrix.active}
         onChange={(active) =>
-          staged({
+          staged((current) => ({
+            ...current,
             active,
-            dimensions: active ? dimensions : [],
-            rows: active ? matrix.rows : [],
-          })
+            dimensions: active ? current.dimensions : [],
+            rows: active ? current.rows : [],
+          }))
         }
         disabled={!editable}
       />
@@ -270,10 +283,11 @@ export function MatrixPricing({
                     disabled={!editable}
                     value={matrix.pricingUnit}
                     onChange={(event) =>
-                      staged({
+                      staged((current) => ({
+                        ...current,
                         pricingUnit: event.target
                           .value as ProductDraftPricingMatrix["pricingUnit"],
-                      })
+                      }))
                     }
                   >
                     <option value="per_square_foot">Per square foot</option>
@@ -397,7 +411,7 @@ export function MatrixPricing({
                                     size="icon"
                                     aria-label="Add matrix tier"
                                     disabled={!editable}
-                                    onClick={() => addTier(row)}
+                                    onClick={() => addTier(row.rowId)}
                                   >
                                     <Plus className="size-3.5" />
                                   </ReferenceButton>
