@@ -2043,31 +2043,36 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
       combinations.add(key);
       let prior = 0;
       for (const [tierIndex, tier] of entry.tiers.entries()) {
+        // Older compatibility-derived matrix rows can omit optional fields in
+        // JSON.  The V2 Draft contract represents those same absent values as
+        // null, so normalize at the persistence boundary before validation.
+        const maximum = tier.maximum ?? null;
+        const perPieceCents = tier.perPieceCents ?? null;
+        const perSqftCents = tier.perSqftCents ?? null;
+        const minimumChargeCents = tier.minimumChargeCents ?? null;
         const invalidMinimum =
           !Number.isSafeInteger(tier.minimum) ||
           tier.minimum < 1 ||
           tier.minimum <= prior;
         const invalidMaximum =
-          tier.maximum !== null &&
-          (!Number.isSafeInteger(tier.maximum) ||
-            tier.maximum < tier.minimum);
+          maximum !== null &&
+          (!Number.isSafeInteger(maximum) || maximum < tier.minimum);
         const invalidPieceRate =
-          tier.perPieceCents !== null &&
-          (!Number.isSafeInteger(tier.perPieceCents) || tier.perPieceCents < 0);
+          perPieceCents !== null &&
+          (!Number.isSafeInteger(perPieceCents) || perPieceCents < 0);
         const invalidSquareFootRate =
-          tier.perSqftCents !== null &&
-          (!Number.isSafeInteger(tier.perSqftCents) || tier.perSqftCents < 0);
+          perSqftCents !== null &&
+          (!Number.isSafeInteger(perSqftCents) || perSqftCents < 0);
         const invalidMinimumCharge =
-          tier.minimumChargeCents !== null &&
-          (!Number.isSafeInteger(tier.minimumChargeCents) ||
-            tier.minimumChargeCents < 0);
+          minimumChargeCents !== null &&
+          (!Number.isSafeInteger(minimumChargeCents) || minimumChargeCents < 0);
         if (
           invalidMinimum ||
           invalidMaximum ||
           invalidPieceRate ||
           invalidSquareFootRate ||
           invalidMinimumCharge ||
-          (tier.perPieceCents !== null && tier.perSqftCents !== null)
+          (perPieceCents !== null && perSqftCents !== null)
         )
           throw new V2ApplicationError(
             "VALIDATION_ERROR",
@@ -2090,14 +2095,14 @@ class PostgresProductVersionTransaction implements ProductVersionTransaction {
                   ? `matrix-tier:${randomUUID()}`
                   : tier.tierId,
                 minQty: tier.minimum,
-                maxQty: tier.maximum,
-                ...(tier.perPieceCents === null
+                maxQty: tier.maximum ?? null,
+                ...(tier.perPieceCents == null
                   ? {}
                   : { perPieceCents: tier.perPieceCents }),
-                ...(tier.perSqftCents === null
+                ...(tier.perSqftCents == null
                   ? {}
                   : { perSqftCents: tier.perSqftCents }),
-                ...(tier.minimumChargeCents === null
+                ...(tier.minimumChargeCents == null
                   ? {}
                   : { minimumChargeCents: tier.minimumChargeCents }),
               })),
