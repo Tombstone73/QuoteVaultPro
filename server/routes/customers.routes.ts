@@ -47,13 +47,44 @@ import {
   canonicalCustomerContactOperations,
 } from "../services/customers/canonicalCustomerContactOperations";
 import { getCustomerCreditExposure, getCustomerCreditExposures } from "../services/customerCreditExposureService";
+import { canManageCustomerCommercialConfiguration as canManageCustomerCommercialConfigurationAccess } from "../services/customerCommercialConfigurationAccess";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
 export function canManageCustomerCredit(role: unknown): boolean {
-  return ["owner", "admin"].includes(String(role ?? "").trim().toLowerCase());
+  return canManageCustomerCommercialConfigurationAccess(role);
+}
+
+// Terms and credit limits are commercial configuration. Keep the list projection
+// and the mutation boundary aligned so a lower-privilege client cannot obtain or
+// change a value simply by bypassing the Customer List UI.
+export const canManageCustomerCommercialConfiguration = canManageCustomerCredit;
+
+function projectCustomerForList(customer: Record<string, unknown>, canViewCommercialConfiguration: boolean) {
+  if (canViewCommercialConfiguration) return customer;
+  const {
+    paymentTerms,
+    creditLimit,
+    creditLimitConfiguredAt,
+    creditLimitConfigured,
+    creditLimitCents,
+    outstandingAr,
+    outstandingArCents,
+    pendingBilling,
+    pendingBillingCents,
+    unbilledOpenOrders,
+    unbilledOpenOrdersCents,
+    creditExposure,
+    creditExposureCents,
+    availableCredit,
+    availableCreditCents,
+    overLimitCents,
+    currentBalance,
+    ...customerWithoutCommercialConfiguration
+  } = customer;
+  return customerWithoutCommercialConfiguration;
 }
 
 // =============================
@@ -131,6 +162,7 @@ export function registerCustomerRoutes(
         customerType: (req.query.customerType || req.query.type) as string | undefined,
         assignedTo: req.query.assignedTo as string | undefined,
       };
+      const canViewCommercialConfiguration = canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole);
 
       // Paginated path: when page/pageSize are explicitly provided the caller expects
       // a paginated envelope { items, total, page, pageSize, totalPages, … }.
@@ -146,11 +178,13 @@ export function registerCustomerRoutes(
           sortDir: req.query.sortDir as string | undefined,
         });
 
-        const exposures = await getCustomerCreditExposures(organizationId, result.items);
-        const customersWithCredit = result.items.map((customer: any) => ({
+        const exposures = canViewCommercialConfiguration
+          ? await getCustomerCreditExposures(organizationId, result.items)
+          : new Map();
+        const customersWithCredit = result.items.map((customer: any) => projectCustomerForList({
           ...customer,
           ...(exposures.get(customer.id) ?? {}),
-        }));
+        }, canViewCommercialConfiguration));
 
         return res.json({
           success: true,
@@ -171,11 +205,13 @@ export function registerCustomerRoutes(
       const customers = await storage.getAllCustomers(organizationId, filters);
       const capped = customers.slice(0, 500);
 
-      const exposures = await getCustomerCreditExposures(organizationId, capped);
-      const customersWithCredit = capped.map((customer: any) => ({
+      const exposures = canViewCommercialConfiguration
+        ? await getCustomerCreditExposures(organizationId, capped)
+        : new Map();
+      const customersWithCredit = capped.map((customer: any) => projectCustomerForList({
         ...customer,
         ...(exposures.get(customer.id) ?? {}),
-      }));
+      }, canViewCommercialConfiguration));
 
       res.json(customersWithCredit);
     } catch (error) {
@@ -204,8 +240,14 @@ export function registerCustomerRoutes(
       const requestedCreditLimit = Object.prototype.hasOwnProperty.call(req.body ?? {}, "creditLimit")
         ? req.body.creditLimit
         : undefined;
+      const requestedPaymentTerms = Object.prototype.hasOwnProperty.call(req.body ?? {}, "paymentTerms")
+        ? req.body.paymentTerms
+        : undefined;
       if (requestedCreditLimit !== undefined && !canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)) {
         return res.status(403).json({ message: "Organization Owner or Admin permission is required to set a customer credit limit.", code: "CUSTOMER_CREDIT_LIMIT_FORBIDDEN" });
+      }
+      if (requestedPaymentTerms !== undefined && !canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole)) {
+        return res.status(403).json({ message: "Organization Owner or Admin permission is required to change customer payment terms.", code: "CUSTOMER_PAYMENT_TERMS_FORBIDDEN" });
       }
       const createPayload = { ...(req.body ?? {}) };
       delete createPayload.creditLimit;
@@ -266,8 +308,14 @@ export function registerCustomerRoutes(
       const requestedCreditLimit = Object.prototype.hasOwnProperty.call(payload, "creditLimit")
         ? payload.creditLimit
         : undefined;
+      const requestedPaymentTerms = Object.prototype.hasOwnProperty.call(payload, "paymentTerms")
+        ? payload.paymentTerms
+        : undefined;
       if (requestedCreditLimit !== undefined && !canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)) {
         return res.status(403).json({ message: "Organization Owner or Admin permission is required to change a customer credit limit.", code: "CUSTOMER_CREDIT_LIMIT_FORBIDDEN" });
+      }
+      if (requestedPaymentTerms !== undefined && !canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole)) {
+        return res.status(403).json({ message: "Organization Owner or Admin permission is required to change customer payment terms.", code: "CUSTOMER_PAYMENT_TERMS_FORBIDDEN" });
       }
       const localCompanyFolderPath =
         payload.localCompanyFolderPath === null || typeof payload.localCompanyFolderPath === "string"

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -25,8 +25,21 @@ import {
   ArrowUpDown,
   Loader2,
   GitMerge,
+  Pencil,
+  Settings2,
+  X,
+  Check,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   buildCustomerListQueryKey,
   buildCustomerListSearchParams,
@@ -39,6 +52,30 @@ import {
 
 const DEFAULT_PAGE_SIZE = 20;
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+const CUSTOMER_COLUMN_PREFERENCE_PREFIX = "titanos.customers.listColumns";
+
+const PAYMENT_TERMS = [
+  { value: "due_on_receipt", label: "Due on Receipt" },
+  { value: "net_15", label: "Net 15" },
+  { value: "net_30", label: "Net 30" },
+  { value: "net_45", label: "Net 45" },
+  { value: "custom", label: "Custom" },
+] as const;
+
+const paymentTermsLabel = (value: string | null | undefined) =>
+  PAYMENT_TERMS.find((term) => term.value === value)?.label ?? "Due on Receipt";
+
+function formatCurrency(value: string | number | null | undefined) {
+  const amount = Number(value ?? 0);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number.isFinite(amount) ? amount : 0);
+}
+
+function parseCurrencyInput(value: string): number | null {
+  const normalized = value.trim().replace(/[$,\s]/g, "");
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
 
 type Customer = {
   id: string;
@@ -57,6 +94,10 @@ type Customer = {
   customerType: string | null;
   currentBalance: string | null;
   availableCredit: string | null;
+  creditExposure?: string | null;
+  creditLimit?: string | null;
+  creditLimitConfigured?: boolean;
+  paymentTerms?: string | null;
   createdAt: string;
   updatedAt?: string | null;
   orderCount?: number;
@@ -134,6 +175,8 @@ interface CustomerListProps {
   typeFilter?: string;
   onTypeFilterChange?: (value: string) => void;
   showFilterControls?: boolean;
+  canManageCommercialConfiguration?: boolean;
+  preferenceUserId?: string | null;
 }
 
 export default function CustomerList({
@@ -149,7 +192,10 @@ export default function CustomerList({
   typeFilter: controlledTypeFilter,
   onTypeFilterChange,
   showFilterControls = true,
+  canManageCommercialConfiguration = false,
+  preferenceUserId,
 }: CustomerListProps) {
+  const queryClient = useQueryClient();
   const [localStatusFilter, setLocalStatusFilter] = useState<string>("all");
   const [localTypeFilter, setLocalTypeFilter] = useState<string>("all");
   const statusFilter = controlledStatusFilter ?? localStatusFilter;
@@ -161,6 +207,86 @@ export default function CustomerList({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
+  const [editingCreditCustomerId, setEditingCreditCustomerId] = useState<string | null>(null);
+  const [editingTermsCustomerId, setEditingTermsCustomerId] = useState<string | null>(null);
+  const [creditLimitDraft, setCreditLimitDraft] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const columnPreferenceKey = `${CUSTOMER_COLUMN_PREFERENCE_PREFIX}.${preferenceUserId || "current"}`;
+  const supportedColumns = [
+    { id: "company", label: "Company Name", defaultVisible: true },
+    { id: "primaryContact", label: "Primary Contact", defaultVisible: true },
+    { id: "email", label: "Email", defaultVisible: true },
+    { id: "phone", label: "Phone", defaultVisible: true },
+    { id: "status", label: "Status", defaultVisible: true },
+    { id: "customerType", label: "Customer Type", defaultVisible: true },
+    { id: "updatedAt", label: "Last Updated", defaultVisible: true },
+    ...(canManageCommercialConfiguration ? [
+      { id: "paymentTerms", label: "Terms", defaultVisible: false },
+      { id: "credit", label: "Credit", defaultVisible: false },
+    ] : []),
+  ];
+  const defaultVisibleColumns = supportedColumns.filter((column) => column.defaultVisible).map((column) => column.id);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(defaultVisibleColumns);
+  const [loadedColumnPreferenceKey, setLoadedColumnPreferenceKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(columnPreferenceKey);
+      const parsed = stored ? JSON.parse(stored) : null;
+      if (Array.isArray(parsed)) {
+        const supportedIds = new Set(supportedColumns.map((column) => column.id));
+        const visible = parsed.filter((id): id is string => typeof id === "string" && supportedIds.has(id));
+        setVisibleColumns(visible.length > 0 ? visible : defaultVisibleColumns);
+      } else {
+        setVisibleColumns(defaultVisibleColumns);
+      }
+    } catch {
+      setVisibleColumns(defaultVisibleColumns);
+    }
+    setLoadedColumnPreferenceKey(columnPreferenceKey);
+  // The preference needs to be re-scoped if the authenticated user or allowed columns changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columnPreferenceKey, canManageCommercialConfiguration]);
+
+  useEffect(() => {
+    if (loadedColumnPreferenceKey !== columnPreferenceKey) return;
+    try {
+      window.localStorage.setItem(columnPreferenceKey, JSON.stringify(visibleColumns));
+    } catch {
+      // Browser preference persistence is optional.
+    }
+  }, [columnPreferenceKey, loadedColumnPreferenceKey, visibleColumns]);
+
+  const isColumnVisible = (columnId: string) => visibleColumns.includes(columnId);
+  const toggleColumn = (columnId: string) => setVisibleColumns((current) =>
+    current.includes(columnId) ? current.filter((id) => id !== columnId) : [...current, columnId],
+  );
+
+  const updateCustomerMutation = useMutation({
+    mutationFn: async ({ customerId, patch }: { customerId: string; patch: Record<string, unknown> }) => {
+      const response = await fetch(`/api/customers/${customerId}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message || "Unable to update customer financial settings.");
+      }
+      return response.json();
+    },
+    onSuccess: async (_updated, variables) => {
+      setEditError(null);
+      setEditingCreditCustomerId(null);
+      setEditingTermsCustomerId(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/customers"] }),
+        queryClient.invalidateQueries({ queryKey: [`/api/customers/${variables.customerId}`] }),
+      ]);
+    },
+    onError: (error: Error) => setEditError(error.message),
+  });
 
   useEffect(() => {
     setPage(1);
@@ -350,6 +476,31 @@ export default function CustomerList({
           </Select>
         </div>
       )}
+      {viewMode === "enhanced" && (
+        <div className="flex justify-end border-b border-border/40 px-2 py-1.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" aria-label="Manage customer list columns">
+                <Settings2 className="h-3.5 w-3.5" />
+                Columns
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[180px]">
+              <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {supportedColumns.map((column) => (
+                <DropdownMenuCheckboxItem
+                  key={column.id}
+                  checked={isColumnVisible(column.id)}
+                  onCheckedChange={() => toggleColumn(column.id)}
+                >
+                  {column.label}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
       {pagination && (
         <p className="text-[11px] text-muted-foreground mt-1.5 px-0.5">
           {pagination.total === 0
@@ -439,17 +590,19 @@ export default function CustomerList({
   );
 
   const enhancedTable = (
-    <Table>
+    <Table data-testid="customer-enhanced-table">
       <TableHeader>
         <TableRow>
           {onMergeCustomers && <TableHead className="w-10">Merge</TableHead>}
-          <TableHead>{sortHeader("Company Name", "name")}</TableHead>
-          <TableHead>{sortHeader("Primary Contact", "primaryContact")}</TableHead>
-          <TableHead>{sortHeader("Email", "email")}</TableHead>
-          <TableHead>{sortHeader("Phone", "phone")}</TableHead>
-          <TableHead>{sortHeader("Status", "status")}</TableHead>
-          <TableHead>{sortHeader("Customer Type", "customerType")}</TableHead>
-          <TableHead>{sortHeader("Last Updated", "updatedAt", "desc")}</TableHead>
+          {isColumnVisible("company") && <TableHead>{sortHeader("Company Name", "name")}</TableHead>}
+          {isColumnVisible("primaryContact") && <TableHead>{sortHeader("Primary Contact", "primaryContact")}</TableHead>}
+          {isColumnVisible("email") && <TableHead>{sortHeader("Email", "email")}</TableHead>}
+          {isColumnVisible("phone") && <TableHead>{sortHeader("Phone", "phone")}</TableHead>}
+          {isColumnVisible("status") && <TableHead>{sortHeader("Status", "status")}</TableHead>}
+          {isColumnVisible("customerType") && <TableHead>{sortHeader("Customer Type", "customerType")}</TableHead>}
+          {isColumnVisible("updatedAt") && <TableHead>{sortHeader("Last Updated", "updatedAt", "desc")}</TableHead>}
+          {canManageCommercialConfiguration && isColumnVisible("paymentTerms") && <TableHead className="w-[150px]">Terms</TableHead>}
+          {canManageCommercialConfiguration && isColumnVisible("credit") && <TableHead className="w-[210px]">Credit</TableHead>}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -468,17 +621,91 @@ export default function CustomerList({
               data-state={selectedCustomerId === customer.id ? "selected" : undefined}
             >
               {onMergeCustomers && <TableCell onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName} for merge`} checked={selectedForMerge.has(customer.id)} onCheckedChange={() => toggleMergeSelection(customer.id)} /></TableCell>}
-              <TableCell className="font-medium">{customer.companyName}</TableCell>
-              <TableCell>{contactName || "-"}</TableCell>
-              <TableCell className="max-w-[220px] truncate">{email}</TableCell>
-              <TableCell>{phone}</TableCell>
-              <TableCell>
+              {isColumnVisible("company") && <TableCell className="font-medium">{customer.companyName}</TableCell>}
+              {isColumnVisible("primaryContact") && <TableCell>{contactName || "-"}</TableCell>}
+              {isColumnVisible("email") && <TableCell className="max-w-[220px] truncate">{email}</TableCell>}
+              {isColumnVisible("phone") && <TableCell>{phone}</TableCell>}
+              {isColumnVisible("status") && <TableCell>
                 <Badge variant="outline" className={`capitalize ${getStatusBadgeClass(status)}`}>
                   {status.replace("_", " ")}
                 </Badge>
-              </TableCell>
-              <TableCell className="capitalize">{customer.customerType || "-"}</TableCell>
-              <TableCell>{formatDate(customer.updatedAt || customer.createdAt)}</TableCell>
+              </TableCell>}
+              {isColumnVisible("customerType") && <TableCell className="capitalize">{customer.customerType || "-"}</TableCell>}
+              {isColumnVisible("updatedAt") && <TableCell>{formatDate(customer.updatedAt || customer.createdAt)}</TableCell>}
+              {canManageCommercialConfiguration && isColumnVisible("paymentTerms") && (
+                <TableCell onClick={(event) => event.stopPropagation()}>
+                  <Select
+                    value={customer.paymentTerms || "due_on_receipt"}
+                    disabled={updateCustomerMutation.isPending}
+                    onValueChange={(paymentTerms) => {
+                      setEditingTermsCustomerId(customer.id);
+                      setEditError(null);
+                      updateCustomerMutation.mutate({ customerId: customer.id, patch: { paymentTerms } });
+                    }}
+                  >
+                    <SelectTrigger aria-label={`Payment terms for ${customer.companyName}`} className="h-7 min-w-[128px] border-transparent bg-transparent px-1 text-xs hover:border-input">
+                      <SelectValue>{paymentTermsLabel(customer.paymentTerms)}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {editingTermsCustomerId === customer.id && editError && <p role="alert" className="mt-1 max-w-[180px] text-[10px] text-destructive">{editError}</p>}
+                </TableCell>
+              )}
+              {canManageCommercialConfiguration && isColumnVisible("credit") && (
+                <TableCell onClick={(event) => event.stopPropagation()}>
+                  {editingCreditCustomerId === customer.id ? (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        aria-label={`Credit limit for ${customer.companyName}`}
+                        value={creditLimitDraft}
+                        inputMode="decimal"
+                        className="h-7 w-24 text-xs"
+                        onChange={(event) => { setCreditLimitDraft(event.target.value); setEditError(null); }}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        disabled={updateCustomerMutation.isPending}
+                        aria-label={`Save credit limit for ${customer.companyName}`}
+                        onClick={() => {
+                          const creditLimit = parseCurrencyInput(creditLimitDraft);
+                          if (creditLimit === null) {
+                            setEditError("Enter a non-negative amount with no more than two decimal places.");
+                            return;
+                          }
+                          updateCustomerMutation.mutate({ customerId: customer.id, patch: { creditLimit } });
+                        }}
+                      >
+                        {updateCustomerMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                      </Button>
+                      <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label="Cancel credit limit edit" onClick={() => { setEditingCreditCustomerId(null); setEditError(null); }}>
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 whitespace-nowrap">
+                      <span title={`${formatCurrency(customer.creditExposure)} used of ${customer.creditLimitConfigured ? formatCurrency(customer.creditLimit) : "no configured"} credit limit`} className="text-xs">
+                        {formatCurrency(customer.creditExposure)} / {customer.creditLimitConfigured ? formatCurrency(customer.creditLimit) : "Not set"}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        aria-label={`Edit credit limit for ${customer.companyName}`}
+                        onClick={() => { setEditingCreditCustomerId(customer.id); setCreditLimitDraft(customer.creditLimit || "0.00"); setEditError(null); }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  )}
+                  {editingCreditCustomerId === customer.id && editError && <p role="alert" className="mt-1 max-w-[180px] text-[10px] text-destructive">{editError}</p>}
+                </TableCell>
+              )}
             </TableRow>
           );
         })}

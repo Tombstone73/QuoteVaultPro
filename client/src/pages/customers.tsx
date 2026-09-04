@@ -132,6 +132,9 @@ export default function Customers({ embedded = false }: CustomersProps) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [mergeCustomerIds, setMergeCustomerIds] = useState<string[]>([]);
+  const canManageCommercialConfiguration = Boolean(
+    user?.isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()),
+  );
 
   // Fetch customer for editing
   const { data: editingCustomer } = useQuery({
@@ -198,6 +201,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
               onNewCustomer={handleNewCustomer}
               search={search}
               viewMode="split"
+              canManageCommercialConfiguration={canManageCommercialConfiguration}
+              preferenceUserId={user?.id}
             />
           </div>
           <div className="flex-1">
@@ -292,6 +297,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 typeFilter={typeFilter}
                 onTypeFilterChange={setTypeFilter}
                 showFilterControls={false}
+                canManageCommercialConfiguration={canManageCommercialConfiguration}
+                preferenceUserId={user?.id}
               />
             </DataCard>
             
@@ -323,6 +330,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
               typeFilter={typeFilter}
               onTypeFilterChange={setTypeFilter}
               showFilterControls={false}
+              canManageCommercialConfiguration={canManageCommercialConfiguration}
+              preferenceUserId={user?.id}
             />
           </DataCard>
         )}

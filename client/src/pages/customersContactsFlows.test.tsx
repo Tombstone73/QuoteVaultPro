@@ -140,6 +140,7 @@ jest.mock("@/components/ui/alert-dialog", () => ({
 
 jest.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuCheckboxItem: ({ children, checked, onCheckedChange, ...props }: any) => <label {...props}><input type="checkbox" checked={checked} onChange={(event) => onCheckedChange?.(event.currentTarget.checked)} />{children}</label>,
   DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
   DropdownMenuItem: ({ children, ...props }: any) => <button {...props}>{children}</button>,
   DropdownMenuLabel: ({ children }: any) => <span>{children}</span>,
@@ -179,6 +180,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  window.localStorage.clear();
 
   useContactsMock.mockReturnValue({
     data: {
@@ -489,4 +491,53 @@ test("Customers enhanced page does not add a nested vertical scroll card when Co
   expect(customerCard?.className).not.toContain("h-[calc");
   expect(container.querySelectorAll("tbody tr")).toHaveLength(20);
   expect(container.querySelector('[data-testid="customer-pagination-footer"]')).toBeTruthy();
+});
+
+test("Customer list keeps financial columns hidden by default and persists an admin's column selection", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(
+      <CustomerList
+        onSelectCustomer={jest.fn()}
+        onNewCustomer={jest.fn()}
+        search=""
+        viewMode="enhanced"
+        canManageCommercialConfiguration
+        preferenceUserId="admin-1"
+      />,
+    );
+  });
+
+  expect(container.textContent).toContain("Columns");
+  expect(container.querySelector("th")?.textContent).toContain("Company Name");
+  expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).not.toContain("Terms");
+  expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).not.toContain("Credit");
+
+  const termsChoice = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.includes("Terms"));
+  expect(termsChoice).toBeTruthy();
+  act(() => {
+    Simulate.change(termsChoice?.querySelector("input") as HTMLInputElement, { target: { checked: true } } as any);
+  });
+
+  expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).toContain("Terms");
+  expect(window.localStorage.getItem("titanos.customers.listColumns.admin-1")).toContain("paymentTerms");
+});
+
+test("Customer list does not expose financial columns to lower-permission list users", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(
+      <CustomerList
+        onSelectCustomer={jest.fn()}
+        onNewCustomer={jest.fn()}
+        search=""
+        viewMode="enhanced"
+        preferenceUserId="staff-1"
+      />,
+    );
+  });
+
+  expect(container.textContent).toContain("Columns");
+  expect(container.textContent).not.toContain("Terms");
+  expect(container.textContent).not.toContain("Credit");
 });
