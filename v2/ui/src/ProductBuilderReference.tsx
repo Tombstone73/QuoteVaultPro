@@ -190,6 +190,14 @@ const blankState = (name = ""): DraftState => ({
 });
 const clone = <T,>(value: T): T => structuredClone(value);
 
+/**
+ * Keep a single immutable snapshot for every locally staged Product Draft
+ * edit.  The builder can receive several field edits before React has
+ * committed a render; Save must submit that latest staged snapshot, rather
+ * than the render closure that happened to create its click handler.
+ */
+export const stageProductBuilderDraft = <T,>(current: T, update: (current: T) => T): T => update(clone(current));
+
 const key = (scope: string, org: string, id: string, part: string) => ["v2", scope, org, "reference-product-builder", id, part] as const;
 
 export const ProductBuilderReference = ({
@@ -221,6 +229,7 @@ export const ProductBuilderReference = ({
   const materials = useQuery({ queryKey: key(sessionScope, organizationId, productId ?? "new", "materials"), queryFn: () => productApi.materials(organizationId, productId!), enabled: Boolean(productId) });
   const templates = useQuery({ queryKey: ["v2", sessionScope, organizationId, "routing", "picker"], queryFn: () => routingApi.workspace(organizationId), retry: false });
   const [draft, setDraft] = useState<DraftState>(() => blankState());
+  const draftRef = useRef(draft);
   const selectedFormulaId = draft.formula.formulaId ?? formulaRead.data?.formulaId ?? "";
   const formulaRevisions = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "formulas", selectedFormulaId, "revisions", "picker"],
@@ -311,12 +320,20 @@ export const ProductBuilderReference = ({
       : { ...current, selections: { ...effectiveSelections } });
   }, [previewConfiguration.effectiveSelections]);
   useEffect(() => {
-    if (!productId) { if (initialised.current !== "new") { setDraft(blankState()); initialised.current = "new"; } return; }
+    if (!productId) {
+      if (initialised.current !== "new") {
+        const next = blankState();
+        draftRef.current = next;
+        setDraft(next);
+        initialised.current = "new";
+      }
+      return;
+    }
     // A first Save adopts a server-created Draft immediately and deliberately
     // keeps the local staged state until its independent section saves settle.
     if (adoptedIdentity && !product?.productId) { initialised.current = productId; return; }
     if (!sourceReady || initialised.current === productId) return;
-    setDraft({
+    const next: DraftState = {
       general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options), optionRules: clone(optionsRead.data!.optionRules ?? []),
       pricing: { ...clone(pricingRead.data!.base), flatFeeCents: pricingRead.data!.flatFeeCents, tierBasis: pricingRead.data!.tierBasis, tiers: clone(pricingRead.data!.tiers), tierSets: clone(pricingRead.data!.tierSets) },
       formula: formulaRead.data ? {
@@ -330,7 +347,9 @@ export const ProductBuilderReference = ({
       } : { source: "formula_revision", expression: "", inputValues: {}, allowRotation: false },
       matrix: matrixRead.data ? clone(matrixRead.data) : null,
       impacts: impactsRead.data ? clone(impactsRead.data.options) : [], recipe: clone(recipeRead.data!.components), routing: clone(routingRead.data!.routing),
-    });
+    };
+    draftRef.current = next;
+    setDraft(next);
     initialised.current = productId;
     setDirty(new Set()); setSaveError(null);
     authoritativeDraft.current = { draftVersionId: generalRead.data!.draftVersionId, expectedDraftUpdatedAt: generalRead.data!.draftUpdatedAt };
@@ -343,7 +362,9 @@ export const ProductBuilderReference = ({
   }, [publishError]);
 
   const patch = useCallback((section: DirtySection, update: (current: DraftState) => DraftState) => {
-    setDraft((current) => update(clone(current)));
+    const next = stageProductBuilderDraft(draftRef.current, update);
+    draftRef.current = next;
+    setDraft(next);
     setDirty((current) => new Set([...current, section]));
   }, []);
   /** A Formula screen can only return a revision for presentation here. The
@@ -410,7 +431,7 @@ export const ProductBuilderReference = ({
   }, [draft.formula.formulaId, formulaRead.data?.formulaId, generalRead.data?.draftVersionId, productId]);
   const runSave = async (): Promise<boolean> => {
     if (!canEdit || saving || requiresReconciliation) return false;
-    if (!draft.general.displayName.trim()) { setSaveError("Product name is required before saving."); sectionJumpRef.current?.("basics"); return false; }
+    if (!draftRef.current.general.displayName.trim()) { setSaveError("Product name is required before saving."); sectionJumpRef.current?.("basics"); return false; }
     setSaving(true); setSaveError(null);
     const saved: DirtySection[] = [];
     try {
@@ -419,7 +440,7 @@ export const ProductBuilderReference = ({
         const businessRequestId = firstSaveRequestId(pendingCreateRequestId.current, newBusinessRequestId);
         pendingCreateRequestId.current = businessRequestId;
         window.history.replaceState({ ...(window.history.state ?? {}), [firstSaveRequestHistoryKey]: businessRequestId }, "");
-        const created = await productApi.createProduct(organizationId, businessRequestId, draft.general.displayName.trim());
+        const created = await productApi.createProduct(organizationId, businessRequestId, draftRef.current.general.displayName.trim());
         id = created.productId; version = created.draftVersionId; revision = created.draftUpdatedAt;
         setAdoptedIdentity(adoptFirstSaveIdentity(created));
         // Replace the transient New Product URL now, but do not dispatch a
@@ -433,7 +454,7 @@ export const ProductBuilderReference = ({
       // Capture the submitted snapshot.  Each successful write advances the
       // canonical revision, while Option persistence may also replace local
       // `new:` identities needed by later dependent writes.
-      let state = draft;
+      let state = draftRef.current;
       const request = () => newBusinessRequestId();
       const savedSection = (section: DirtySection, value: PublishDraftRevision) => { version = value.draftVersionId; revision = value.expectedDraftUpdatedAt; authoritativeDraft.current = value; saved.push(section); setDirty((current) => { const next = new Set(current); next.delete(section); return next; }); };
       if (dirty.has("options")) {
@@ -441,6 +462,7 @@ export const ProductBuilderReference = ({
         const value = await productApi.saveDraftOptions(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, options: submitted, optionRules: state.optionRules });
         const mapping = optionIdMappingFromSaved(submitted, value.options);
         state = remapProductBuilderDraftOptionReferences({ ...state, options: clone(value.options), optionRules: clone(value.optionRules ?? state.optionRules) }, mapping);
+        draftRef.current = state;
         setDraft(state);
         savedSection("options", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
@@ -463,6 +485,7 @@ export const ProductBuilderReference = ({
       if (dirty.has("matrix") && state.matrix) {
         const value = await productApi.saveDraftPricingMatrix(organizationId, id, request(), { draftVersionId: version, expectedDraftUpdatedAt: revision, active: state.matrix.active, matrixId: state.matrix.matrixId, pricingUnit: state.matrix.pricingUnit, dimensions: state.matrix.dimensions.map((dimension) => dimension.selectionKey), rows: state.matrix.rows });
         state = { ...state, matrix: clone(value) };
+        draftRef.current = state;
         setDraft(state);
         savedSection("matrix", { draftVersionId: value.draftVersionId, expectedDraftUpdatedAt: value.draftUpdatedAt });
       }
