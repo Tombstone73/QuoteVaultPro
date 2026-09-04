@@ -12,6 +12,17 @@ import {
   getInvoiceEmailDeliveryFailureKind,
   type InvoiceEmailDeliveryFailureKind,
 } from "./invoiceEmailDeliveryFailure";
+import {
+  resolveCurrentInvoiceEmailDeliveryState,
+  type InvoiceEmailDeliveryState,
+  type InvoiceEmailDeliveryStatus,
+} from "./invoiceEmailDeliveryPresentation";
+
+export {
+  resolveCurrentInvoiceEmailDeliveryState,
+  type InvoiceEmailDeliveryState,
+  type InvoiceEmailDeliveryStatus,
+} from "./invoiceEmailDeliveryPresentation";
 
 export {
   getInvoiceEmailDeliveryFailureKind,
@@ -35,20 +46,6 @@ export type BulkInvoiceEmailCandidate = {
 };
 
 export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
-
-/**
- * Durable delivery state.  This deliberately describes the queue job, not
- * successful delivery.  `invoice_email_logs` remains the only source for an
- * invoice's Last Sent value.
- */
-export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "needs_review" | "canceled";
-
-export type InvoiceEmailDeliveryState = {
-  id: string;
-  status: InvoiceEmailDeliveryStatus;
-  failureReason: string | null;
-  updatedAt: Date | null;
-};
 
 export type InvoiceEmailQueueView = "active" | "failed" | "sent" | "all";
 
@@ -156,9 +153,9 @@ export function registerCanonicalInvoiceEmailSender(sender: CanonicalInvoiceEmai
 }
 
 /**
- * Returns the most recently-created canonical delivery job for each supplied
- * invoice. This is display/diagnostic data only; it must never be used as a
- * substitute for the successful-delivery email log or Last Sent projection.
+ * Returns the most recently-updated canonical delivery job for each supplied
+ * invoice. The Invoice List compares this timestamp with the successful email
+ * log so queue history cannot override a newer successful direct send.
  */
 export async function getInvoiceEmailDeliveryStates(input: {
   organizationId: string;
@@ -175,13 +172,14 @@ export async function getInvoiceEmailDeliveryStates(input: {
       status: invoiceEmailDeliveryJobs.status,
       failureReason: invoiceEmailDeliveryJobs.failureReason,
       updatedAt: invoiceEmailDeliveryJobs.updatedAt,
+      createdAt: invoiceEmailDeliveryJobs.createdAt,
     })
     .from(invoiceEmailDeliveryJobs)
     .where(and(
       eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId),
       inArray(invoiceEmailDeliveryJobs.invoiceId, invoiceIds),
     ))
-    .orderBy(invoiceEmailDeliveryJobs.invoiceId, desc(invoiceEmailDeliveryJobs.createdAt));
+    .orderBy(invoiceEmailDeliveryJobs.invoiceId, desc(invoiceEmailDeliveryJobs.updatedAt), desc(invoiceEmailDeliveryJobs.createdAt));
 
   for (const row of rows) {
     if (result.has(row.invoiceId)) continue;
@@ -189,7 +187,7 @@ export async function getInvoiceEmailDeliveryStates(input: {
       id: row.id,
       status: row.status as InvoiceEmailDeliveryStatus,
       failureReason: row.failureReason ?? null,
-      updatedAt: row.updatedAt ?? null,
+      updatedAt: row.updatedAt ?? row.createdAt ?? null,
     });
   }
   return result;

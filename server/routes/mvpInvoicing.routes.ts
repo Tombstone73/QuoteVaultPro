@@ -47,6 +47,7 @@ import {
   buildBulkInvoiceEmailRequestKey,
   enqueueBulkInvoiceEmailCampaign,
   getInvoiceEmailDeliveryStates,
+  resolveCurrentInvoiceEmailDeliveryState,
   listInvoiceEmailDeliveryJobs,
   getBulkInvoiceEmailQueueConfig,
   getInvoiceEmailDeliveryFailureKind,
@@ -2082,17 +2083,23 @@ export async function registerMvpInvoicingRoutes(
               lastInvoiceEmailRecipient: null,
               emailStatus: 'not_sent' as const,
             }),
-            ...(emailDeliveryStates.get(row.id) ? {
-              emailDeliveryJobId: emailDeliveryStates.get(row.id)!.id,
-              emailDeliveryStatus: emailDeliveryStates.get(row.id)!.status,
-              emailDeliveryFailureReason: emailDeliveryStates.get(row.id)!.failureReason,
-              emailDeliveryUpdatedAt: emailDeliveryStates.get(row.id)!.updatedAt,
-            } : {
-              emailDeliveryJobId: null,
-              emailDeliveryStatus: null,
-              emailDeliveryFailureReason: null,
-              emailDeliveryUpdatedAt: null,
-            }),
+            ...(() => {
+              const currentDelivery = resolveCurrentInvoiceEmailDeliveryState({
+                queueState: emailDeliveryStates.get(row.id),
+                lastSuccessfulDeliveryAt: emailStatuses.get(row.id)?.lastSentAt,
+              });
+              return currentDelivery ? {
+                emailDeliveryJobId: currentDelivery.id,
+                emailDeliveryStatus: currentDelivery.status,
+                emailDeliveryFailureReason: currentDelivery.failureReason,
+                emailDeliveryUpdatedAt: currentDelivery.updatedAt,
+              } : {
+                emailDeliveryJobId: null,
+                emailDeliveryStatus: null,
+                emailDeliveryFailureReason: null,
+                emailDeliveryUpdatedAt: null,
+              };
+            })(),
             ...(reminderInfoMap.get(row.id) || {
               reminderStatus: 'not_due' as const,
               lastReminderSentAt: null,

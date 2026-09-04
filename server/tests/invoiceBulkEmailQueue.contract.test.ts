@@ -7,6 +7,7 @@ const source = (file: string) => readFileSync(path.join(process.cwd(), file), "u
 describe("bulk invoice email delivery queue contract", () => {
   const route = source("server/routes/mvpInvoicing.routes.ts");
   const queue = source("server/services/invoiceBulkEmailQueue.service.ts");
+  const presentation = source("server/services/invoiceEmailDeliveryPresentation.ts");
   const server = source("server/index.ts");
   const migration = source("server/db/migrations_v2/0191_bulk_invoice_email_delivery_queue.sql");
   const retrySafetyMigration = source("server/db/migrations_v2/0199_invoice_email_delivery_retry_safety.sql");
@@ -97,7 +98,7 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(server).toContain("void runBulkInvoiceEmailTick()");
     expect(queue).toContain("getInvoiceEmailDeliveryStates");
     expect(queue).toContain("invoiceEmailDeliveryJobs.failureReason");
-    expect(queue).toContain("This deliberately describes the queue job, not");
+    expect(presentation).toContain("Durable queue states are delivery-operation history");
   });
 
   test("exposes a bounded tenant-scoped queue list and only the explicit review resolution mutation", () => {
