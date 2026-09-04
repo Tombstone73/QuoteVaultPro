@@ -5,9 +5,10 @@ import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { ProofingMutationResult } from "../../modules/proofing/proofingApplication.js";
 import { brandedId, type OrderId, type ProofWorkId } from "../../modules/shared/commercialValues.js";
+import type { OperationalQueuePageRequest } from "../../modules/shared/operationalQueue.js";
 
 export interface ProofingHttpService {
-  listWorkQueue(context: OperationContext, limit?: number): Promise<ApplicationResult<unknown>>;
+  listWorkQueue(context: OperationContext, request?: OperationalQueuePageRequest): Promise<ApplicationResult<unknown>>;
   listOrderWorks(context: OperationContext, orderId: OrderId): Promise<ApplicationResult<unknown>>;
   getWork(context: OperationContext, proofWorkId: ProofWorkId): Promise<ApplicationResult<unknown>>;
   start(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
@@ -23,11 +24,13 @@ const send=(response:Response,result:ApplicationResult<unknown>)=>{if(!result.ok
 const body=(value:unknown):Readonly<Record<string,unknown>>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new V2ApplicationError("VALIDATION_ERROR","A Proofing command object is required.");return value as Readonly<Record<string,unknown>>;};
 const context=async(request:Request,dependencies:ProofingHttpDependencies,mutation=false):Promise<OperationContext>=>{const organizationId=request.params.organizationId;if(!organizationId)throw new V2ApplicationError("VALIDATION_ERROR","organizationId is required.");const command=mutation?body(request.body):undefined;const id=command?.businessRequestId;if(mutation&&(typeof id!=="string"||!id.trim()))throw new V2ApplicationError("VALIDATION_ERROR","businessRequestId is required.");return {principal:await dependencies.principals.principal(request,organizationId),organizationId,operationId:`http:${request.method}:${request.path}`,...(mutation?{businessRequest:{id:id as string,payloadFingerprint:"route-fingerprint-is-derived-by-operation"}}:{})};};
 const run=async(response:Response,operation:()=>Promise<ApplicationResult<unknown>>)=>{try{send(response,await operation());}catch(cause){const error=cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","Proofing operation is unavailable.");response.status(status(error.code)).json({ok:false,error:{code:error.code,message:error.publicMessage}});}};
+const positive=(value:unknown,fallback:number)=>typeof value==="string"&&/^\d+$/.test(value)?Math.max(1,Number(value)):fallback;
+const pageRequest=(request:Request):OperationalQueuePageRequest=>({page:positive(request.query.page,1),pageSize:Math.min(100,positive(request.query.pageSize,25)),...(typeof request.query.q==="string"?{search:request.query.q}:{})});
 
 /** Authenticated bounded Proofing transport; it never owns Artwork, Sales, or Routing state. */
 export const createProofingRouter=(dependencies:ProofingHttpDependencies):Router=>{const router=expressRouter({mergeParams:true});
   router.get("/orders/:orderId/works",(request,response)=>void run(response,async()=>dependencies.service.listOrderWorks(await context(request,dependencies),brandedId<"OrderId">(request.params.orderId))));
-  router.get("/works",(request,response)=>void run(response,async()=>dependencies.service.listWorkQueue(await context(request,dependencies),Number(request.query.limit??50))));
+  router.get("/works",(request,response)=>void run(response,async()=>dependencies.service.listWorkQueue(await context(request,dependencies),pageRequest(request))));
   router.get("/works/:proofWorkId",(request,response)=>void run(response,async()=>dependencies.service.getWork(await context(request,dependencies),request.params.proofWorkId as ProofWorkId)));
   router.post("/works",(request,response)=>void run(response,async()=>dependencies.service.start(await context(request,dependencies,true),body(request.body))));
   router.post("/works/:proofWorkId/versions", (request,response) => void run(response, async () => dependencies.service.createVersion(await context(request,dependencies,true), {...body(request.body),proofWorkId:request.params.proofWorkId})));

@@ -38,14 +38,15 @@ describe("Proofing PostgreSQL read models", () => {
     const calls: { text: string; values?: readonly unknown[] }[] = [];
     const client = { query: async <T>(text: string, values?: readonly unknown[]) => {
       calls.push({ text, values });
+      if (text.startsWith("SELECT count(*) count")) return { rows: [{ count: "51" }] as T[] };
       return { rows: [{ ...workRow, display_number: "SO-100", customer_display_name: "Acme", line_description: "Signs", latest_sequence: 2, latest_issued_at: date, latest_outcome: "revision_requested",latest_delivery_state:"sent" }] as T[] };
     } } as any;
     const repository = new PostgresProofingTransaction(client);
-    await expect(repository.listWorkQueue(brandedId<"OrganizationId">("org-a"), 25)).resolves.toEqual([{
-      work: expect.objectContaining({ proofWorkId: "proof-a" }), orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs",
-      latest: { sequence: 2, issuedAt: date.toISOString(), outcome: "revision_requested",deliveryState:"sent" },
-    }]);
+    await expect(repository.listWorkQueue(brandedId<"OrganizationId">("org-a"), { page: 3, pageSize: 25, search: "SO" })).resolves.toEqual({
+      items: [{ work: expect.objectContaining({ proofWorkId: "proof-a" }), orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs", latest: { sequence: 2, issuedAt: date.toISOString(), outcome: "revision_requested",deliveryState:"sent" } }],
+      pagination: { page: 3, pageSize: 25, totalCount: 51, totalPages: 3 },
+    });
     expect(calls[0]!.text).toContain("WHERE w.organization_id=$1");
-    expect(calls[0]!.values).toEqual(["org-a", 25]);
+    expect(calls[1]!.values).toEqual(["org-a", "SO", 25, 50]);
   });
 });

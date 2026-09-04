@@ -3,6 +3,7 @@ import { PostgresOperationRequestRepository } from "../persistence/postgresOpera
 import type { PrepressTransaction, PrepressTransactionRunner } from "../../src/modules/prepress/prepressApplication.js";
 import type { OrderLinePrepressCoverage, PrepressQueueItem, PrepressUnit } from "../../src/modules/prepress/contracts.js";
 import type { ProductionUnitRequirement } from "../../src/modules/shared/productionRequirements.js";
+import type { OperationalQueuePage, OperationalQueuePageRequest } from "../../src/modules/shared/operationalQueue.js";
 import { brandedId, type ArtworkAssignmentId, type OrderLineId, type OrganizationId, type PrepressUnitId } from "../../src/modules/shared/commercialValues.js";
 
 type UnitRow = {
@@ -38,19 +39,25 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
   async orderLineExists(org:OrganizationId,line:OrderLineId){const r=await this.client.query<{id:string}>("SELECT l.id FROM v2_sales_document_lines l JOIN v2_sales_documents d ON d.organization_id=l.organization_id AND d.id=l.document_id WHERE l.organization_id=$1 AND l.id=$2 AND d.document_kind='order'",[org,line]);return Boolean(r.rows[0]);}
   async lockUnit(org:OrganizationId,id:PrepressUnitId){const r=await this.client.query<UnitRow>("SELECT * FROM v2_prepress_units WHERE organization_id=$1 AND id=$2 FOR UPDATE",[org,id]);return r.rows[0]?unit(r.rows[0]):null;}
   async listUnits(org:OrganizationId,line:OrderLineId){const r=await this.client.query<UnitRow>("SELECT * FROM v2_prepress_units WHERE organization_id=$1 AND order_line_id=$2 ORDER BY created_at,id",[org,line]);return r.rows.map(unit);}
-  async listQueue(org:OrganizationId,limit:number):Promise<readonly PrepressQueueItem[]>{
+  async listQueue(org:OrganizationId,request:OperationalQueuePageRequest):Promise<OperationalQueuePage<PrepressQueueItem>>{
     /* The queue is deliberately bounded. Coverage is loaded by the same
        transaction/repository, so no UI component infers requirements from art. */
-    const rows=await this.client.query<{order_id:string;order_number:string;customer_id:string|null;customer_display_name:string;line_id:string;line_description:string;quantity:number;requested_due_date:string|null;step_kind:"proofing"|"prepress"|"production"|"fulfillment"|null;production_requirement_state:"configured"|"unconfigured"}>(`SELECT d.id order_id,d.display_number order_number,d.customer_id customer_id,COALESCE(c.display_name,c.company_name,'Customer') customer_display_name,l.id line_id,l.description line_description,l.quantity,d.requested_due_date::text,step.step_kind,l.production_requirement_state
+    const page=request.page??1,pageSize=request.pageSize??25,search=request.search??"",offset=(page-1)*pageSize;
+    const where=`d.organization_id=$1 AND d.document_kind='order' AND ri.route_state IN ('pending','active')
+        AND EXISTS(SELECT 1 FROM v2_route_instance_steps ps WHERE ps.organization_id=ri.organization_id AND ps.route_instance_id=ri.id AND ps.step_kind='prepress')
+        AND ($2='' OR d.display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%' OR l.description ILIKE '%'||$2||'%')`;
+    const [count,rows]=await Promise.all([
+      this.client.query<{count:string}>(`SELECT count(*) count FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id AND o.commercial_state='open' AND o.archived_at IS NULL JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id JOIN v2_route_instances ri ON ri.organization_id=l.organization_id AND ri.order_document_id=d.id AND ri.order_line_id=l.id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id WHERE ${where}`,[org,search]),
+    this.client.query<{order_id:string;order_number:string;customer_id:string|null;customer_display_name:string;line_id:string;line_description:string;quantity:number;requested_due_date:string|null;step_kind:"proofing"|"prepress"|"production"|"fulfillment"|null;production_requirement_state:"configured"|"unconfigured"}>(`SELECT d.id order_id,d.display_number order_number,d.customer_id customer_id,COALESCE(c.display_name,c.company_name,'Customer') customer_display_name,l.id line_id,l.description line_description,l.quantity,d.requested_due_date::text,step.step_kind,l.production_requirement_state
       FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id AND o.commercial_state='open' AND o.archived_at IS NULL
       JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id
       JOIN v2_route_instances ri ON ri.organization_id=l.organization_id AND ri.order_document_id=d.id AND ri.order_line_id=l.id
       LEFT JOIN v2_route_instance_steps step ON step.organization_id=ri.organization_id AND step.route_instance_id=ri.id AND step.id=ri.current_step_id
       LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id
-      WHERE d.organization_id=$1 AND d.document_kind='order' AND ri.route_state IN ('pending','active')
-        AND EXISTS(SELECT 1 FROM v2_route_instance_steps ps WHERE ps.organization_id=ri.organization_id AND ps.route_instance_id=ri.id AND ps.step_kind='prepress')
-      ORDER BY d.requested_due_date NULLS LAST,d.updated_at DESC,l.position LIMIT $2`,[org,limit]);
-    const lineIds=rows.rows.map((row)=>row.line_id);if(!lineIds.length)return [];
+      WHERE ${where}
+      ORDER BY d.requested_due_date NULLS LAST,d.updated_at DESC,l.position,l.id LIMIT $3 OFFSET $4`,[org,search,pageSize,offset]),
+    ]);
+    const totalCount=Number(count.rows[0]?.count??0),lineIds=rows.rows.map((row)=>row.line_id);if(!lineIds.length)return {items:[],pagination:{page,pageSize:pageSize as 25|50|100,totalCount,totalPages:Math.ceil(totalCount/pageSize)}};
     const [requirements,evidence]=await Promise.all([
       this.client.query<RequirementRow>("SELECT order_line_id,requirement_key,side,source_page_index,layer_key,layer_order FROM v2_sales_line_production_requirements WHERE organization_id=$1 AND order_line_id=ANY($2::text[]) ORDER BY requirement_key",[org,lineIds]),
       this.client.query<CoverageEvidenceRow>(`SELECT r.order_line_id coverage_order_line_id,r.requirement_key,pu.*,a.id artwork_assignment_id FROM v2_sales_line_production_requirements r
@@ -58,7 +65,8 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
         LEFT JOIN v2_prepress_units pu ON pu.organization_id=a.organization_id AND pu.artwork_assignment_id=a.id
         WHERE r.organization_id=$1 AND r.order_line_id=ANY($2::text[])`,[org,lineIds]),
     ]);
-    return rows.rows.map((row)=>({orderId:brandedId<"OrderId">(row.order_id),orderNumber:row.order_number,...(row.customer_id?{customerId:row.customer_id}:{}),customerDisplayName:row.customer_display_name,orderLineId:brandedId<"OrderLineId">(row.line_id),lineDescription:row.line_description,quantity:row.quantity,...(row.requested_due_date?{requestedDueDate:row.requested_due_date}:{}),...(row.step_kind?{routingStepKind:row.step_kind}:{}),coverage:coverageFrom(row.production_requirement_state,requirements.rows.filter((value)=>value.order_line_id===row.line_id),evidence.rows.filter((value)=>value.coverage_order_line_id===row.line_id))}));
+    const items=rows.rows.map((row)=>({orderId:brandedId<"OrderId">(row.order_id),orderNumber:row.order_number,...(row.customer_id?{customerId:row.customer_id}:{}),customerDisplayName:row.customer_display_name,orderLineId:brandedId<"OrderLineId">(row.line_id),lineDescription:row.line_description,quantity:row.quantity,...(row.requested_due_date?{requestedDueDate:row.requested_due_date}:{}),...(row.step_kind?{routingStepKind:row.step_kind}:{}),coverage:coverageFrom(row.production_requirement_state,requirements.rows.filter((value)=>value.order_line_id===row.line_id),evidence.rows.filter((value)=>value.coverage_order_line_id===row.line_id))}));
+    return {items,pagination:{page,pageSize:pageSize as 25|50|100,totalCount,totalPages:Math.ceil(totalCount/pageSize)}};
   }
   async coverage(org:OrganizationId,line:OrderLineId):Promise<OrderLinePrepressCoverage>{
     const state=await this.client.query<{production_requirement_state:"configured"|"unconfigured"}>("SELECT production_requirement_state FROM v2_sales_document_lines WHERE organization_id=$1 AND id=$2",[org,line]);

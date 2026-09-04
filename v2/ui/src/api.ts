@@ -154,6 +154,11 @@ export type SalesListPage<T> = Readonly<{
     currencies: readonly string[];
   }>;
 }>;
+export type OperationalQueuePage<T> = Readonly<{
+  items: readonly T[];
+  pagination: Readonly<{ page: number; pageSize: 25 | 50 | 100; totalCount: number; totalPages: number }>;
+}>;
+export type OperationalQueuePageRequest = Readonly<{ page?: number; pageSize?: 25 | 50 | 100; search?: string }>;
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
 export type ProductCatalogItem = Readonly<{
@@ -2580,8 +2585,11 @@ const proofMutation = <T>(
   });
 export const proofingApi = {
   orderWorks: (org: string, orderId: string) => request<readonly ProofWorkProjection[]>(proofEndpoint(org, `/orders/${encodeURIComponent(orderId)}/works`)),
-  list: (org: string) =>
-    request<readonly ProofQueueItem[]>(proofEndpoint(org, "/works?limit=50")),
+  list: (org: string, query: OperationalQueuePageRequest = {}) => {
+    const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 25) });
+    if (query.search?.trim()) params.set("q", query.search.trim());
+    return request<OperationalQueuePage<ProofQueueItem>>(proofEndpoint(org, `/works?${params}`));
+  },
   get: (org: string, proofWorkId: string) =>
     request<ProofWorkProjection>(
       proofEndpoint(org, `/works/${encodeURIComponent(proofWorkId)}`),
@@ -2649,10 +2657,11 @@ const prepressMutation = <T>(
     body: JSON.stringify({ ...input, businessRequestId }),
   });
 export const prepressApi = {
-  list: (org: string) =>
-    request<readonly PrepressQueueItem[]>(
-      prepressEndpoint(org, "/queue?limit=50"),
-    ),
+  list: (org: string, query: OperationalQueuePageRequest = {}) => {
+    const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 25) });
+    if (query.search?.trim()) params.set("q", query.search.trim());
+    return request<OperationalQueuePage<PrepressQueueItem>>(prepressEndpoint(org, `/queue?${params}`));
+  },
   get: (org: string, prepressUnitId: string) =>
     request<PrepressUnit>(
       prepressEndpoint(org, `/units/${encodeURIComponent(prepressUnitId)}`),
@@ -2695,10 +2704,11 @@ const productionMutation = <T>(
   });
 export const productionApi = {
   orderWorks: (org: string, orderId: string) => request<readonly ProductionWorkProjection[]>(productionEndpoint(org, `/orders/${encodeURIComponent(orderId)}/works`)),
-  queue: (org: string, station: "flatbed" | "roll") =>
-    request<readonly ProductionWorkProjection[]>(
-      productionEndpoint(org, `/stations/${station}/queue?limit=50`),
-    ),
+  queue: (org: string, station: "flatbed" | "roll", query: OperationalQueuePageRequest = {}) => {
+    const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 25) });
+    if (query.search?.trim()) params.set("q", query.search.trim());
+    return request<OperationalQueuePage<ProductionWorkProjection>>(productionEndpoint(org, `/stations/${station}/queue?${params}`));
+  },
   get: (org: string, id: string) =>
     request<ProductionWorkProjection>(
       productionEndpoint(org, `/works/${encodeURIComponent(id)}`),

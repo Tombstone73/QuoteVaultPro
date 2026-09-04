@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { artworkApi, newBusinessRequestId, orderApi, proofingApi, type ApiError, type ArtworkOrderProjection, type OrderRead, type ProofQueueItem, type ProofWorkProjection } from "./api";
 
 const keys = {
-  queue: (scope: string, organizationId: string) => ["v2", scope, organizationId, "proofing", "works"] as const,
+  queue: (scope: string, organizationId: string, page: number, pageSize: number, search: string) => ["v2", scope, organizationId, "proofing", "works", page, pageSize, search] as const,
   work: (scope: string, organizationId: string, proofWorkId: string) => ["v2", scope, organizationId, "proofing", "work", proofWorkId] as const,
   artwork: (scope: string, organizationId: string, orderId: string) => ["v2", scope, organizationId, "artwork", "order", orderId] as const,
 };
@@ -27,10 +27,13 @@ export const ProofingWorkspace = ({ organizationId, sessionScope, canView, canPr
   const client = useQueryClient();
   const [selectedId, setSelectedId] = useState("");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(25);
   const [selectedVersionId, setSelectedVersionId] = useState("");
-  const queue = useQuery({ queryKey: keys.queue(sessionScope, organizationId), queryFn: () => proofingApi.list(organizationId), enabled: Boolean(canView && organizationId && sessionScope) });
-  const scopedWork = useMemo(() => orderId && lineId ? queue.data?.find((item) => item.work.orderId === orderId && item.work.orderLineId === lineId) : undefined, [lineId, orderId, queue.data]);
-  const scopedSelection = useMemo(() => proofWorkSelectionForScope(queue.data ?? [], proofWorkId, orderId, lineId), [lineId, orderId, proofWorkId, queue.data]);
+  const queue = useQuery({ queryKey: keys.queue(sessionScope, organizationId, page, pageSize, search), queryFn: () => proofingApi.list(organizationId, { page, pageSize, search }), enabled: Boolean(canView && organizationId && sessionScope) });
+  const queueItems = queue.data?.items ?? [];
+  const scopedWork = useMemo(() => orderId && lineId ? queueItems.find((item) => item.work.orderId === orderId && item.work.orderLineId === lineId) : undefined, [lineId, orderId, queueItems]);
+  const scopedSelection = useMemo(() => proofWorkSelectionForScope(queueItems, proofWorkId, orderId, lineId), [lineId, orderId, proofWorkId, queueItems]);
   useEffect(() => {
     if (proofWorkId || (orderId && lineId)) {
       setSelectedId(scopedSelection);
@@ -47,8 +50,8 @@ export const ProofingWorkspace = ({ organizationId, sessionScope, canView, canPr
   const line = order.data?.order.lines.find((candidate) => candidate.lineId === contextLineId);
   const sourceArtwork = useMemo(() => {const all=(artwork.data??[]).filter(item=>item.assignment.orderLineId===contextLineId&&(item.assignment.purpose==="customer_supplied"||item.assignment.purpose==="reference"));const superseded=new Set(all.flatMap(item=>item.assignment.supersedesArtworkAssignmentId?[item.assignment.supersedesArtworkAssignmentId]:[]));return all.filter(item=>!superseded.has(item.assignment.id));}, [artwork.data, contextLineId]);
   const context = order.data && line ? { order: order.data, line, sourceArtwork } : undefined;
-  const selectedQueueItem = queue.data?.find((item) => item.work.proofWorkId === selectedId);
-  const entries = useMemo(() => queue.data?.filter((item) => `${item.orderNumber} ${item.customerDisplayName} ${item.lineDescription}`.toLowerCase().includes(search.toLowerCase())) ?? [], [queue.data, search]);
+  const selectedQueueItem = queueItems.find((item) => item.work.proofWorkId === selectedId);
+  const entries = queueItems;
   const groups = useMemo(() => {
     const byOrder = new Map<string, ProofQueueItem[]>();
     for (const item of entries) byOrder.set(item.orderNumber, [...(byOrder.get(item.orderNumber) ?? []), item]);
@@ -56,17 +59,19 @@ export const ProofingWorkspace = ({ organizationId, sessionScope, canView, canPr
   }, [entries]);
   const refresh = async (nextWorkId?: string) => {
     if (nextWorkId) setSelectedId(nextWorkId);
-    await client.invalidateQueries({ queryKey: keys.queue(sessionScope, organizationId) });
+    await client.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "proofing", "works"] });
     await client.invalidateQueries({ queryKey: keys.work(sessionScope, organizationId, nextWorkId ?? selectedId) });
   };
   if (!organizationId || !canView) return <section className="v2-proofing"><div className="v2-proof-empty">{!organizationId ? "Enter an authenticated organization in Sales before opening Proofing." : "You do not have permission to view Proofing."}</div></section>;
   const loading = work.isLoading || order.isLoading || artwork.isLoading;
   return <section className="v2-proofing">
-    <aside className="v2-proof-queue" aria-label="Proof queue"><header><div><h2>Proof Queue</h2><span>{queue.data?.length ?? 0} proofs</span></div><input aria-label="Search proof queue" placeholder="Order, customer, item" value={search} onChange={(event) => setSearch(event.target.value)} /></header><div className="v2-proof-queue-list">{queue.isLoading && <p>Loading proof queue…</p>}{queue.isError && <p>Proof queue is unavailable.</p>}{queue.isSuccess && !groups.length && <p>No proof work matches this search.</p>}{groups.map(([orderNumber, items]) => <section className="v2-proof-order-group" key={orderNumber}><header><strong>Order #{orderNumber}</strong><span>{items[0]?.customerDisplayName}</span></header>{items.map((item) => <button type="button" key={item.work.proofWorkId} onClick={() => setSelectedId(item.work.proofWorkId)} className={selectedId === item.work.proofWorkId ? "active" : ""}><b>{item.lineDescription}</b><small>Proof v{item.latest?.sequence ?? 0}</small><em data-status={proofStatus(item)}>{proofStatus(item)}</em></button>)}</section>)}</div></aside>
+    <aside className="v2-proof-queue" aria-label="Proof queue"><header><div><h2>Proof Queue</h2><span>{queue.data?.pagination.totalCount ?? 0} proofs</span></div><input aria-label="Search proof queue" placeholder="Order, customer, item" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} /></header><QueuePager page={page} pageSize={pageSize} total={queue.data?.pagination.totalCount ?? 0} totalPages={queue.data?.pagination.totalPages ?? 0} onPage={setPage} onPageSize={(next) => { setPageSize(next); setPage(1); }} /><div className="v2-proof-queue-list">{queue.isLoading && <p>Loading proof queue…</p>}{queue.isError && <p>Proof queue is unavailable.</p>}{queue.isSuccess && !groups.length && <p>No proof work matches this search.</p>}{groups.map(([orderNumber, items]) => <section className="v2-proof-order-group" key={orderNumber}><header><strong>Order #{orderNumber}</strong><span>{items[0]?.customerDisplayName}</span></header>{items.map((item) => <button type="button" key={item.work.proofWorkId} onClick={() => setSelectedId(item.work.proofWorkId)} className={selectedId === item.work.proofWorkId ? "active" : ""}><b>{item.lineDescription}</b><small>Proof v{item.latest?.sequence ?? 0}</small><em data-status={proofStatus(item)}>{proofStatus(item)}</em></button>)}</section>)}</div><QueuePager page={page} pageSize={pageSize} total={queue.data?.pagination.totalCount ?? 0} totalPages={queue.data?.pagination.totalPages ?? 0} onPage={setPage} onPageSize={(next) => { setPageSize(next); setPage(1); }} /></aside>
     <main className="v2-proof-main">{loading ? <div className="skeleton" /> : !work.data && !context ? <div className="v2-proof-empty">Open Proofing from an Order line to start canonical Proof Work.</div> : <><ProofHeader context={context} item={selectedQueueItem} projection={work.data} onOpenOrder={openOrder} /><div className="v2-proof-content">{context && <SourceToVersion context={context} projection={work.data} onOpenOrder={openOrder} onOpenCustomer={openCustomer} onOpenArtwork={openArtwork} />}<PreviewUnavailable />{work.data && <ProofVersionHistory projection={work.data} artwork={artwork.data ?? []} selectedVersionId={selectedVersionId} onSelectVersion={setSelectedVersionId} onOpenArtwork={openArtwork} />}</div></>}</main>
     <aside className="v2-proof-rail" aria-label="Proof evidence and actions">{work.data && <ProofEvidenceRail projection={work.data} />}<ProofWorkflowActions organizationId={organizationId} context={context} projection={work.data} canPrepare={canPrepare} canIssue={canIssue} canRespond={canRespond} onRefresh={refresh} /></aside>
   </section>;
 };
+
+const QueuePager = ({ page, pageSize, total, totalPages, onPage, onPageSize }: Readonly<{ page: number; pageSize: 25 | 50 | 100; total: number; totalPages: number; onPage: (page: number) => void; onPageSize: (size: 25 | 50 | 100) => void }>) => <div className="v2-queue-pager"><small>{total ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}` : "0 work items"}</small><label>Rows <select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value) as 25 | 50 | 100)}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button><small>Page {page} of {Math.max(totalPages, 1)}</small><button type="button" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Next</button></div>;
 
 const ProofHeader = ({ context, item, projection, onOpenOrder }: Readonly<{ context?: ProofingOrderLineContext; item?: ProofQueueItem; projection?: ProofWorkProjection; onOpenOrder?: (orderId: string) => void }>) => {
   const latest = projection?.versions[0];

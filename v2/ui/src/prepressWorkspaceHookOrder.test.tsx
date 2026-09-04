@@ -12,7 +12,7 @@ const dom=new JSDOM("<!doctype html><html><body><div id='root'></div></body></ht
 Object.assign(globalThis,{window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,Event:dom.window.Event,IS_REACT_ACT_ENVIRONMENT:true});
 const {createRoot}=await import("react-dom/client");
 const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
-client.setQueryData(["v2","scope-a","org-a","prepress","queue"],queue);
+client.setQueryData(["v2","scope-a","org-a","prepress","queue",1,25,""],{items:queue,pagination:{page:1,pageSize:25 as const,totalCount:1,totalPages:1}});
 const root=createRoot(document.getElementById("root")!);
 const view=(canView:boolean)=><QueryClientProvider client={client}><PrepressWorkspace organizationId="org-a" sessionScope="scope-a" canView={canView} canArtworkAssign={false} canWork={false} canComplete={false} /></QueryClientProvider>;
 

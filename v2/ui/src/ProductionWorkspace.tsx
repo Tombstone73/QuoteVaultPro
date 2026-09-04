@@ -461,16 +461,17 @@ export const ProductionWorkspace = ({
   const [view, setView] = useState<ProductionView>("overview");
   const [selectedWorkId, setSelectedWorkId] = useState("");
   const [goodQuantity, setGoodQuantity] = useState("1");
+  const [queueState, setQueueState] = useState<Record<Station, { page: number; pageSize: 25 | 50 | 100; search: string }>>({ flatbed: { page: 1, pageSize: 25, search: "" }, roll: { page: 1, pageSize: 25, search: "" } });
   const queryClient = useQueryClient();
   const canRead = Boolean(organizationId && sessionScope && canView);
   const flatbedQueue = useQuery({
-    queryKey: keys.queue(sessionScope, organizationId, "flatbed"),
-    queryFn: () => productionApi.queue(organizationId, "flatbed"),
+    queryKey: [...keys.queue(sessionScope, organizationId, "flatbed"), queueState.flatbed.page, queueState.flatbed.pageSize, queueState.flatbed.search],
+    queryFn: () => productionApi.queue(organizationId, "flatbed", queueState.flatbed),
     enabled: canRead,
   });
   const rollQueue = useQuery({
-    queryKey: keys.queue(sessionScope, organizationId, "roll"),
-    queryFn: () => productionApi.queue(organizationId, "roll"),
+    queryKey: [...keys.queue(sessionScope, organizationId, "roll"), queueState.roll.page, queueState.roll.pageSize, queueState.roll.search],
+    queryFn: () => productionApi.queue(organizationId, "roll", queueState.roll),
     enabled: canRead,
   });
   const routedWork = useQuery({
@@ -479,10 +480,10 @@ export const ProductionWorkspace = ({
     enabled: canRead && Boolean(routedProductionWorkId),
     retry: false,
   });
-  const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId),enabled:canRead,retry:false});
+  const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId,{page:1,pageSize:100}),enabled:canRead,retry:false});
   const queue = station === "flatbed" ? flatbedQueue : rollQueue;
   const stationQueues = useMemo(
-    () => ({ flatbed: flatbedQueue.data ?? [], roll: rollQueue.data ?? [] }),
+    () => ({ flatbed: flatbedQueue.data?.items ?? [], roll: rollQueue.data?.items ?? [] }),
     [flatbedQueue.data, rollQueue.data],
   );
   useEffect(() => {
@@ -499,13 +500,13 @@ export const ProductionWorkspace = ({
   }, [routedProductionWorkId]);
 
   useEffect(() => {
-    if (!selectedWorkId && queue.data?.[0])
-      setSelectedWorkId(queue.data[0].work.productionWorkId);
+    if (!selectedWorkId && queue.data?.items[0])
+      setSelectedWorkId(queue.data.items[0].work.productionWorkId);
   }, [queue.data, selectedWorkId]);
 
   const work = routedProductionWorkId
     ? routedWork.data
-    : queue.data?.find((item) => item.work.productionWorkId === selectedWorkId);
+    : queue.data?.items.find((item) => item.work.productionWorkId === selectedWorkId);
   const activeAttempt = work?.attempts.find((attempt) => !attempt.completedAt);
   const mostRecentAttempt = work?.attempts[work.attempts.length - 1];
   const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? station;
@@ -584,6 +585,8 @@ export const ProductionWorkspace = ({
     setView("stations");
     onSelectWork(item.work.productionWorkId);
   };
+  const activeQueueState = queueState[station];
+  const updateQueueState = (next: Partial<{ page: number; pageSize: 25 | 50 | 100; search: string }>) => setQueueState((current) => ({ ...current, [station]: { ...current[station], ...next } }));
 
   if (!organizationId) {
     return (
@@ -620,7 +623,7 @@ export const ProductionWorkspace = ({
   const satisfiedWork = allWork.filter(
     (item) => item.unitQuantitySatisfied,
   ).length;
-  const openable = (eligible.data ?? []).flatMap((item) => item.routingStepKind === "production" && item.coverage.productionArtworkComplete && item.coverage.allRequiredPrepressUnitsComplete ? item.coverage.requirements.flatMap((requirement) => requirement.artworkAssignmentIds.map((artworkAssignmentId) => ({ item, requirement, artworkAssignmentId }))) : []);
+  const openable = (eligible.data?.items ?? []).flatMap((item) => item.routingStepKind === "production" && item.coverage.productionArtworkComplete && item.coverage.allRequiredPrepressUnitsComplete ? item.coverage.requirements.flatMap((requirement) => requirement.artworkAssignmentIds.map((artworkAssignmentId) => ({ item, requirement, artworkAssignmentId }))) : []);
 
   return (
     <section className="v2-production">
@@ -1085,11 +1088,13 @@ export const ProductionWorkspace = ({
                     {station[0]!.toUpperCase()}
                     {station.slice(1)} queue
                   </h2>
-                  <span>{queue.data?.length ?? 0} units</span>
+                  <span>{queue.data?.pagination.totalCount ?? 0} units</span>
                 </div>
+                <input aria-label={`Search ${station} queue`} placeholder="Search order, customer, item…" value={activeQueueState.search} onChange={(event) => updateQueueState({ search: event.target.value, page: 1 })} />
               </header>
+              <QueuePager page={activeQueueState.page} pageSize={activeQueueState.pageSize} total={queue.data?.pagination.totalCount ?? 0} totalPages={queue.data?.pagination.totalPages ?? 0} onPage={(page) => updateQueueState({ page })} onPageSize={(pageSize) => updateQueueState({ pageSize, page: 1 })} />
               <div>
-                {queue.data?.map((item) => (
+                {queue.data?.items.map((item) => (
                   <button
                     key={item.work.productionWorkId}
                     type="button"
@@ -1111,12 +1116,13 @@ export const ProductionWorkspace = ({
                     <em className={statusClass(item)}>{workState(item)}</em>
                   </button>
                 ))}
-                {queue.isSuccess && !queue.data?.length && (
+                {queue.isSuccess && !queue.data?.items.length && (
                   <p className="v2-proof-empty">
                     No Production work has been opened at this station.
                   </p>
                 )}
               </div>
+              <QueuePager page={activeQueueState.page} pageSize={activeQueueState.pageSize} total={queue.data?.pagination.totalCount ?? 0} totalPages={queue.data?.pagination.totalPages ?? 0} onPage={(page) => updateQueueState({ page })} onPageSize={(pageSize) => updateQueueState({ pageSize, page: 1 })} />
             </aside>
           </section>
         </>
@@ -1124,3 +1130,5 @@ export const ProductionWorkspace = ({
     </section>
   );
 };
+
+const QueuePager = ({ page, pageSize, total, totalPages, onPage, onPageSize }: Readonly<{ page: number; pageSize: 25 | 50 | 100; total: number; totalPages: number; onPage: (page: number) => void; onPageSize: (pageSize: 25 | 50 | 100) => void }>) => <div className="v2-queue-pager"><small>{total ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}` : "0 work items"}</small><label>Rows <select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value) as 25 | 50 | 100)}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button><small>Page {page} of {Math.max(totalPages, 1)}</small><button type="button" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Next</button></div>;

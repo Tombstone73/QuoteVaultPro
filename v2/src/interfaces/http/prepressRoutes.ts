@@ -5,10 +5,11 @@ import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { PrepressMutationResult } from "../../modules/prepress/prepressApplication.js";
 import type { OrderLineId, PrepressUnitId } from "../../modules/shared/commercialValues.js";
+import type { OperationalQueuePageRequest } from "../../modules/shared/operationalQueue.js";
 
 export interface PrepressHttpService {
   getUnit(context: OperationContext, prepressUnitId: PrepressUnitId): Promise<ApplicationResult<unknown>>;
-  listQueue(context: OperationContext, limit?: number): Promise<ApplicationResult<unknown>>;
+  listQueue(context: OperationContext, request?: OperationalQueuePageRequest): Promise<ApplicationResult<unknown>>;
   getOrderLineCoverage(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   listOrderLineUnits(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   open(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
@@ -22,10 +23,12 @@ const send=(response:Response,result:ApplicationResult<unknown>)=>{if(!result.ok
 const body=(value:unknown):Readonly<Record<string,unknown>>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new V2ApplicationError("VALIDATION_ERROR","A Prepress command object is required.");return value as Readonly<Record<string,unknown>>;};
 const context=async(request:Request,deps:PrepressHttpDependencies,mutation=false):Promise<OperationContext>=>{const organizationId=request.params.organizationId;if(!organizationId)throw new V2ApplicationError("VALIDATION_ERROR","organizationId is required.");const command=mutation?body(request.body):undefined;const id=command?.businessRequestId;if(mutation&&(typeof id!=="string"||!id.trim()))throw new V2ApplicationError("VALIDATION_ERROR","businessRequestId is required.");return{principal:await deps.principals.principal(request,organizationId),organizationId,operationId:`http:${request.method}:${request.path}`,...(mutation?{businessRequest:{id:id as string,payloadFingerprint:"route-fingerprint-is-derived-by-operation"}}:{})};};
 const run=async(response:Response,operation:()=>Promise<ApplicationResult<unknown>>)=>{try{send(response,await operation());}catch(cause){const error=cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","Prepress operation is unavailable.");response.status(status(error.code)).json({ok:false,error:{code:error.code,message:error.publicMessage}});}};
+const positive=(value:unknown,fallback:number)=>typeof value==="string"&&/^\d+$/.test(value)?Math.max(1,Number(value)):fallback;
+const pageRequest=(request:Request):OperationalQueuePageRequest=>({page:positive(request.query.page,1),pageSize:Math.min(100,positive(request.query.pageSize,25)),...(typeof request.query.q==="string"?{search:request.query.q}:{})});
 
 /** Authenticated transport for bounded queue reads and unit-scoped Prepress work. */
 export const createPrepressRouter=(deps:PrepressHttpDependencies):Router=>{const router=expressRouter({mergeParams:true});
-  router.get("/queue",(request,response)=>void run(response,async()=>deps.service.listQueue(await context(request,deps),Number(request.query.limit??50))));
+  router.get("/queue",(request,response)=>void run(response,async()=>deps.service.listQueue(await context(request,deps),pageRequest(request))));
   router.get("/units/:prepressUnitId",(request,response)=>void run(response,async()=>deps.service.getUnit(await context(request,deps),request.params.prepressUnitId as PrepressUnitId)));
   router.get("/lines/:orderLineId/coverage",(request,response)=>void run(response,async()=>deps.service.getOrderLineCoverage(await context(request,deps),request.params.orderLineId as OrderLineId)));
   router.get("/lines/:orderLineId/units",(request,response)=>void run(response,async()=>deps.service.listOrderLineUnits(await context(request,deps),request.params.orderLineId as OrderLineId)));

@@ -26,9 +26,9 @@ const app = (principal: StaffPrincipal, calls: unknown[] = []) => express().use(
       },
     },
     service: {
-      listWorkQueue: async (context, limit) => {
-        calls.push({ kind: "list", context, limit });
-        return { ok: true as const, value: [{ work, orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs" }] };
+      listWorkQueue: async (context, page) => {
+        calls.push({ kind: "list", context, page });
+        return { ok: true as const, value: { items: [{ work, orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs" }], pagination: { page: 2, pageSize: 25 as const, totalCount: 59, totalPages: 3 } } };
       },
       getWork: async (context, proofWorkId) => {
         calls.push({ kind: "get", context, proofWorkId });
@@ -61,13 +61,13 @@ describe("Proofing HTTP transport", () => {
   test("returns canonical queue and detail envelopes only in the authenticated tenant", async () => {
     const calls: any[] = [];
     const server = app(staff("org-a"), calls);
-    await request(server).get("/v2/organizations/org-a/proofing/works?limit=12").expect(200, {
+    await request(server).get("/v2/organizations/org-a/proofing/works?page=2&pageSize=25&q=SO-100").expect(200, {
       ok: true,
-      data: [{ work, orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs" }],
+      data: { items: [{ work, orderNumber: "SO-100", customerDisplayName: "Acme", lineDescription: "Signs" }], pagination: { page: 2, pageSize: 25, totalCount: 59, totalPages: 3 } },
     });
     await request(server).get("/v2/organizations/org-a/proofing/works/proof-a").expect(200, { ok: true, data: projection });
     expect(calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "list", limit: 12, context: expect.objectContaining({ organizationId: "org-a" }) }),
+      expect.objectContaining({ kind: "list", page: { page: 2, pageSize: 25, search: "SO-100" }, context: expect.objectContaining({ organizationId: "org-a" }) }),
       expect.objectContaining({ kind: "get", proofWorkId: "proof-a", context: expect.objectContaining({ organizationId: "org-a" }) }),
     ]));
   });
