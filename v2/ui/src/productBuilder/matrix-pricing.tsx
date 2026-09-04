@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Grid3x3, Plus, Trash2 } from "lucide-react";
 import type {
   ProductDraftPricingMatrix,
@@ -53,6 +53,15 @@ export const completeMatrixRows = (
   });
 };
 
+export const updateMatrixPricingRow = (
+  matrix: ProductDraftPricingMatrix,
+  rowId: string,
+  change: Partial<ProductDraftPricingMatrix["rows"][number]>,
+): ProductDraftPricingMatrix => ({
+  ...matrix,
+  rows: matrix.rows.map((row) => row.rowId === rowId ? { ...row, ...change } : row),
+});
+
 export function MatrixPricing({
   matrix,
   disabled,
@@ -63,6 +72,11 @@ export function MatrixPricing({
   onChange: (next: ProductDraftPricingMatrix) => void;
 }>) {
   const [slice, setSlice] = useState<Record<string, Value>>({});
+  // Input events can arrive before React commits an intervening parent render.
+  // Keep every local matrix edit composed from the latest staged snapshot so a
+  // later tier edit cannot restore an earlier tier's stale value.
+  const matrixRef = useRef(matrix);
+  matrixRef.current = matrix;
   const editable = !disabled && matrix.editable;
   const dimensions = matrix.dimensions;
   const rowDim = dimensions[0],
@@ -78,10 +92,14 @@ export function MatrixPricing({
       ) as Record<string, Value>,
     [extraDims, slice],
   );
-  const staged = (change: Partial<ProductDraftPricingMatrix>) =>
-    onChange({ ...matrix, ...change });
+  const staged = (change: Partial<ProductDraftPricingMatrix>) => {
+    const next = { ...matrixRef.current, ...change };
+    matrixRef.current = next;
+    onChange(next);
+  };
   const setDimensions = (selectionKeys: readonly string[]) => {
-    const available = new Map(matrix.availableDimensions.map((dimension) => [dimension.selectionKey, dimension]));
+    const current = matrixRef.current;
+    const available = new Map(current.availableDimensions.map((dimension) => [dimension.selectionKey, dimension]));
     const next = selectionKeys.flatMap((selectionKey) => {
       const dimension = available.get(selectionKey);
       return dimension ? [dimension] : [];
@@ -89,22 +107,18 @@ export function MatrixPricing({
     staged({
       active: true,
       dimensions: next,
-      rows: completeMatrixRows(next, matrix.rows),
+      rows: completeMatrixRows(next, current.rows),
     });
   };
   const moveDimension = (index: number, direction: -1 | 1) => {
-    const next = moveProductBuilderItem(dimensions, index, index + direction);
+    const next = moveProductBuilderItem(matrixRef.current.dimensions, index, index + direction);
     setDimensions(next.map((dimension) => dimension.selectionKey));
   };
   const updateRow = (
     rowId: string,
     change: Partial<ProductDraftPricingMatrix["rows"][number]>,
   ) =>
-    staged({
-      rows: matrix.rows.map((row) =>
-        row.rowId === rowId ? { ...row, ...change } : row,
-      ),
-    });
+    staged(updateMatrixPricingRow(matrixRef.current, rowId, change));
   const activeRow = (row: Value, column?: Value) =>
     matrix.rows.find(
       (entry) =>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { completeMatrixRows, MatrixPricing } from "./matrix-pricing";
+import { completeMatrixRows, MatrixPricing, updateMatrixPricingRow } from "./matrix-pricing";
 
 const dimensions: any = [
   { selectionKey: "opt_thickness", label: "Thickness", values: [{ value: "4mm", label: "4mm" }, { value: "10mm", label: "10mm" }] },
@@ -30,5 +30,21 @@ const tierMarkup = renderToStaticMarkup(React.createElement(MatrixPricing, {
 assert.match(tierMarkup, /Matrix tier minimum/);
 assert.match(tierMarkup, /Matrix tier maximum/);
 assert.match(tierMarkup, /Matrix tier minimum charge/);
+
+const stagedMatrix: any = {
+  ...existing[0],
+  rows: [{ rowId: "row-a", combination: {}, baseRateCents: 300, tierBasis: "quantity", tiers: [
+    { tierId: "tier-1", minimum: 1 },
+    { tierId: "tier-2", minimum: 1 },
+    { tierId: "tier-3", minimum: 1 },
+  ] }],
+};
+const afterSecondTier = updateMatrixPricingRow(stagedMatrix, "row-a", {
+  tiers: stagedMatrix.rows[0].tiers.map((tier: any, index: number) => index === 1 ? { ...tier, minimum: 10 } : tier),
+});
+const afterThirdTier = updateMatrixPricingRow(afterSecondTier, "row-a", {
+  tiers: afterSecondTier.rows[0].tiers.map((tier: any, index: number) => index === 2 ? { ...tier, minimum: 51 } : tier),
+});
+assert.deepEqual(afterThirdTier.rows[0].tiers.map((tier: any) => tier.minimum), [1, 10, 51], "successive row edits retain previously staged tier values");
 
 console.log("Product Builder N-dimensional Matrix authoring tests passed.");
