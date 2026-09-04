@@ -749,6 +749,7 @@ export const App = ({
           openOrder={(id) => {
             pushOrderLocation(id);
             setOrderId(id);
+            setPage("orders");
           }}
           openCustomer={(id) => {
             pushCustomerLocation(id);

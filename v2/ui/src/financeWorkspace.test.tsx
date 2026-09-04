@@ -133,6 +133,7 @@ const noSelection = renderToStaticMarkup(
 assert.doesNotMatch(noSelection, />Preview PDF</);
 const workspaceSource = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
+const appSource = readFileSync("v2/ui/src/App.tsx", "utf8");
 assert.doesNotMatch(workspaceSource, /QuickBooks sync/);
 assert.doesNotMatch(workspaceSource, /Retry Payment Sync/);
 assert.doesNotMatch(workspaceSource, /invoiceApi\.issue/);
@@ -153,4 +154,6 @@ assert.match(workspaceSource, /Selection cleared because the invoice search or f
 assert.match(workspaceSource, /serverSorting=\{\{ id: invoiceSort, direction: invoiceSortDirection \}\}/, "invoice sorting is delegated to the server query");
 assert.match(workspaceSource, /overview\.data\.totalMatching/, "Finance renders the authoritative matching count");
 assert.match(apiSource, /financeEndpoint\(organizationId, `\/overview\$\{suffix\}`\)/, "the API carries query parameters to the paged overview route");
+const financeOpenOrder = appSource.slice(appSource.indexOf("openOrder={(id) => {"), appSource.indexOf("openCustomer={(id) => {", appSource.indexOf("openOrder={(id) => {")));
+assert.match(financeOpenOrder, /pushOrderLocation\(id\);\s*setOrderId\(id\);\s*setPage\("orders"\);/, "opening a source Order from Finance updates both the URL and the active workspace");
 console.log("FinanceWorkspace invoice PDF action tests passed.");

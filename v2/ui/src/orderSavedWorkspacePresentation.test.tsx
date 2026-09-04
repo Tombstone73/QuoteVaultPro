@@ -53,6 +53,8 @@ assert.match(workspace, /Available to fulfill/);
 assert.match(workspace, /v2-order-owner-summaries/);
 assert.match(workspace, /"order-invoice"/);
 assert.match(workspace, /"order-invoice-settlement"/);
+assert.match(workspace, /invoice=\{billing\.data\}/, "the Order Billing tab uses the canonical invoice-for-order read, including issued invoices");
+assert.match(workspace, /billing\.data &&\s*props\.openInvoice\?\.\(billing\.data\.invoiceId\)/, "the Order Billing tab opens the canonical invoice-for-order identity");
 assert.doesNotMatch(workspace, /requestedFulfillment\.method\.replaceAll/);
 
 console.log("Order saved workspace presentation tests passed.");

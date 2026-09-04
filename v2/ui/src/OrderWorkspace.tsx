@@ -161,18 +161,6 @@ export const OrderWorkspace = (
     props.sessionScope,
     props.organizationId,
   );
-  const invoice = useQuery({
-    queryKey: [
-      "v2",
-      props.sessionScope,
-      props.organizationId,
-      "invoice",
-      current?.draftInvoice?.invoiceId,
-    ],
-    queryFn: () =>
-      invoiceApi.get(props.organizationId, current!.draftInvoice!.invoiceId),
-    enabled: Boolean(props.canViewInvoice && current?.draftInvoice?.invoiceId),
-  });
   const artwork = useQuery({
     queryKey: [
       "v2",
@@ -920,12 +908,12 @@ export const OrderWorkspace = (
           ),
           Billing: (
             <OrderBilling
-              invoice={invoice.data}
+              invoice={billing.data}
               draft={current.draftInvoice}
               canView={props.canViewInvoice}
               onOpen={() =>
-                current.draftInvoice &&
-                props.openInvoice?.(current.draftInvoice.invoiceId)
+                billing.data &&
+                props.openInvoice?.(billing.data.invoiceId)
               }
             />
           ),
@@ -1277,16 +1265,14 @@ const OrderBilling = ({
   canView,
   onOpen,
 }: Readonly<{
-  invoice?: import("./api").InvoiceRead;
+  invoice?: import("./api").InvoiceRead | null;
   draft?: OrderRead["draftInvoice"];
   canView: boolean;
   onOpen: () => void;
-}>) =>
-  !draft ? (
-    <SalesDocumentEmpty>
-      No invoice is available for this Order.
-    </SalesDocumentEmpty>
-  ) : (
+}>) => {
+  if (!invoice && !draft)
+    return <SalesDocumentEmpty>No invoice is available for this Order.</SalesDocumentEmpty>;
+  return (
     <section className="v2-order-tab">
       <header>
         <div>
@@ -1302,19 +1288,20 @@ const OrderBilling = ({
       <dl>
         <div>
           <dt>Status</dt>
-          <dd>{(invoice?.lifecycle ?? draft.lifecycle) === "draft" ? "Order-backed" : stateLabel(invoice?.lifecycle ?? draft.lifecycle)}</dd>
+          <dd>{(invoice?.lifecycle ?? draft!.lifecycle) === "draft" ? "Order-backed" : stateLabel(invoice?.lifecycle ?? draft!.lifecycle)}</dd>
         </div>
         <div>
           <dt>Lines</dt>
-          <dd>{invoice?.lines.length ?? draft.lineCount}</dd>
+          <dd>{invoice?.lines.length ?? draft!.lineCount}</dd>
         </div>
         <div>
           <dt>Total</dt>
-          <dd>{money(invoice?.total ?? draft.total)}</dd>
+          <dd>{money(invoice?.total ?? draft!.total)}</dd>
         </div>
       </dl>
     </section>
   );
+};
 
 const OrderFulfillment = ({
   loading,
