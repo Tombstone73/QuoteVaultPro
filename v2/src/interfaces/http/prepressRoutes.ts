@@ -5,11 +5,11 @@ import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { PrepressMutationResult } from "../../modules/prepress/prepressApplication.js";
 import type { OrderLineId, PrepressUnitId } from "../../modules/shared/commercialValues.js";
-import type { OperationalQueuePageRequest } from "../../modules/shared/operationalQueue.js";
+import type { PrepressQueuePageRequest } from "../../modules/prepress/contracts.js";
 
 export interface PrepressHttpService {
   getUnit(context: OperationContext, prepressUnitId: PrepressUnitId): Promise<ApplicationResult<unknown>>;
-  listQueue(context: OperationContext, request?: OperationalQueuePageRequest): Promise<ApplicationResult<unknown>>;
+  listQueue(context: OperationContext, request?: PrepressQueuePageRequest): Promise<ApplicationResult<unknown>>;
   getOrderLineCoverage(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   listOrderLineUnits(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   open(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
@@ -24,7 +24,11 @@ const body=(value:unknown):Readonly<Record<string,unknown>>=>{if(!value||typeof 
 const context=async(request:Request,deps:PrepressHttpDependencies,mutation=false):Promise<OperationContext>=>{const organizationId=request.params.organizationId;if(!organizationId)throw new V2ApplicationError("VALIDATION_ERROR","organizationId is required.");const command=mutation?body(request.body):undefined;const id=command?.businessRequestId;if(mutation&&(typeof id!=="string"||!id.trim()))throw new V2ApplicationError("VALIDATION_ERROR","businessRequestId is required.");return{principal:await deps.principals.principal(request,organizationId),organizationId,operationId:`http:${request.method}:${request.path}`,...(mutation?{businessRequest:{id:id as string,payloadFingerprint:"route-fingerprint-is-derived-by-operation"}}:{})};};
 const run=async(response:Response,operation:()=>Promise<ApplicationResult<unknown>>)=>{try{send(response,await operation());}catch(cause){const error=cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","Prepress operation is unavailable.");response.status(status(error.code)).json({ok:false,error:{code:error.code,message:error.publicMessage}});}};
 const positive=(value:unknown,fallback:number)=>typeof value==="string"&&/^\d+$/.test(value)?Math.max(1,Number(value)):fallback;
-const pageRequest=(request:Request):OperationalQueuePageRequest=>({page:positive(request.query.page,1),pageSize:Math.min(100,positive(request.query.pageSize,25)),...(typeof request.query.q==="string"?{search:request.query.q}:{})});
+const pageRequest=(request:Request):PrepressQueuePageRequest=>{
+  const requirementState=request.query.requirementState;
+  if(requirementState!==undefined&&requirementState!=="all"&&requirementState!=="configured"&&requirementState!=="unconfigured")throw new V2ApplicationError("VALIDATION_ERROR","requirementState must be configured, unconfigured, or all.");
+  return {page:positive(request.query.page,1),pageSize:Math.min(100,positive(request.query.pageSize,25)),...(typeof request.query.q==="string"?{search:request.query.q}:{}),...(requirementState===undefined?{}:{requirementState})};
+};
 
 /** Authenticated transport for bounded queue reads and unit-scoped Prepress work. */
 export const createPrepressRouter=(deps:PrepressHttpDependencies):Router=>{const router=expressRouter({mergeParams:true});

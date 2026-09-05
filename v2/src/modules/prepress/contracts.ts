@@ -1,7 +1,14 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkAssignmentId, ArtworkFileId, OrderId, OrderLineId, OrganizationId, PrepressUnitId } from "../shared/commercialValues.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
+import type { OperationalQueuePageRequest } from "../shared/operationalQueue.js";
 import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
+
+/** Read-only queue grouping; absent/all preserves every supported routed line. */
+export type PrepressQueueRequirementState = "configured" | "unconfigured" | "all";
+export type PrepressQueuePageRequest = OperationalQueuePageRequest & Readonly<{
+  requirementState?: PrepressQueueRequirementState;
+}>;
 
 /** One independently prepared, explicitly selected production-Artwork usage. */
 export type PrepressUnit = Readonly<{

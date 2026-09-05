@@ -2657,10 +2657,13 @@ const prepressMutation = <T>(
     headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
     body: JSON.stringify({ ...input, businessRequestId }),
   });
+export type PrepressQueueRequirementState = "configured" | "unconfigured" | "all";
+export type PrepressQueuePageRequest = OperationalQueuePageRequest & Readonly<{ requirementState?: PrepressQueueRequirementState }>;
 export const prepressApi = {
-  list: (org: string, query: OperationalQueuePageRequest = {}) => {
+  list: (org: string, query: PrepressQueuePageRequest = {}) => {
     const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 25) });
     if (query.search?.trim()) params.set("q", query.search.trim());
+    if (query.requirementState) params.set("requirementState", query.requirementState);
     return request<OperationalQueuePage<PrepressQueueItem>>(prepressEndpoint(org, `/queue?${params}`));
   },
   get: (org: string, prepressUnitId: string) =>

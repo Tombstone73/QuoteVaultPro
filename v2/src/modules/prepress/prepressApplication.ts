@@ -4,8 +4,8 @@ import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type ArtworkAssignmentId, type OrganizationId, type OrderLineId, type PrepressUnitId } from "../shared/commercialValues.js";
-import { normalizeOperationalQueuePage, type OperationalQueuePage, type OperationalQueuePageRequest } from "../shared/operationalQueue.js";
-import type { CompletePrepressUnitInput, OpenPrepressUnitInput, OrderLinePrepressCoverage, PrepressQueueItem, PrepressUnit, StartPrepressUnitInput } from "./contracts.js";
+import { normalizeOperationalQueuePage, type OperationalQueuePage } from "../shared/operationalQueue.js";
+import type { CompletePrepressUnitInput, OpenPrepressUnitInput, OrderLinePrepressCoverage, PrepressQueueItem, PrepressQueuePageRequest, PrepressUnit, StartPrepressUnitInput } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
@@ -20,7 +20,7 @@ export interface PrepressTransaction {
   orderLineExists(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<boolean>;
   lockUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
   listUnits(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<readonly PrepressUnit[]>;
-  listQueue(organizationId: OrganizationId, request: OperationalQueuePageRequest): Promise<OperationalQueuePage<PrepressQueueItem>>;
+  listQueue(organizationId: OrganizationId, request: PrepressQueuePageRequest): Promise<OperationalQueuePage<PrepressQueueItem>>;
   coverage(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<OrderLinePrepressCoverage>;
   /** Routing remains owner of this current-step eligibility projection. */
   eligibleProductionAssignment(organizationId: OrganizationId, artworkAssignmentId: ArtworkAssignmentId): Promise<boolean>;
@@ -44,10 +44,12 @@ export class PrepressApplicationService {
   async getOrderLineCoverage(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<OrderLinePrepressCoverage>> {
     try { requireOperationPrincipalScope(context); this.require(context, "prepress.view"); return success(await this.runner.transaction(async(tx) => { const org=brandedId<"OrganizationId">(context.organizationId); if(!await tx.orderLineExists(org,orderLineId))throw new V2ApplicationError("NOT_FOUND","Order line was not found."); return tx.coverage(org,orderLineId); })); } catch (error) { return failure(this.error(error)); }
   }
-  async listQueue(context: OperationContext, request: OperationalQueuePageRequest = {}): Promise<ApplicationResult<OperationalQueuePage<PrepressQueueItem>>> {
+  async listQueue(context: OperationContext, request: PrepressQueuePageRequest = {}): Promise<ApplicationResult<OperationalQueuePage<PrepressQueueItem>>> {
     try {
       requireOperationPrincipalScope(context); this.require(context, "prepress.view");
-      const page = normalizeOperationalQueuePage(request);
+      const requirementState = request.requirementState ?? "all";
+      if (!["all", "configured", "unconfigured"].includes(requirementState)) throw new V2ApplicationError("VALIDATION_ERROR", "requirementState must be configured, unconfigured, or all.");
+      const page = { ...normalizeOperationalQueuePage(request), requirementState };
       return success(await this.runner.transaction((tx) => tx.listQueue(brandedId<"OrganizationId">(context.organizationId), page)));
     } catch (error) { return failure(this.error(error)); }
   }
