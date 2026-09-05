@@ -22,11 +22,69 @@ const ADVISORY_LOCK_KEY = 928372001;
 const MIGRATIONS_TABLE = "__drizzle_migrations_v2";
 const MIGRATIONS_SCHEMA = "public";
 
+// A database that claims the M0199 timestamp but lacks its physical domain is
+// the production-shaped historical-ledger divergence identified in M7.2A.
+// Drizzle's timestamp-based ledger would otherwise skip M0187-M0199 and carry
+// on at M0200, leaving a structurally impossible schema.
+const M0199_JOURNAL_TIMESTAMP = 1788048000046;
+const RECONCILIATION_ATTESTATION_STAGE = "R0269";
+
 type MigrationRuntime = {
   pool: Pool;
   db: any;
   close: () => Promise<void>;
 };
+
+/**
+ * Blocks normal Drizzle migration only for the known journal/physical-schema
+ * divergence. Fresh databases and already-reconciled databases remain on the
+ * ordinary path. The independent reconciliation executor owns the ledger it
+ * checks here; this function never changes historical Drizzle records.
+ */
+async function assertPreDrizzleReconciliationAttested(client: any): Promise<void> {
+  const probe = await client.query(
+    `
+      SELECT
+        to_regclass('public.__drizzle_migrations_v2') IS NOT NULL AS has_drizzle_ledger,
+        to_regclass('public.v2_sales_documents') IS NOT NULL AS has_sales_foundation,
+        to_regclass('public.v2_proof_works') IS NOT NULL AS has_proof_foundation
+    `,
+  );
+  const shape = probe.rows[0] ?? {};
+  if (!shape.has_drizzle_ledger || (shape.has_sales_foundation && shape.has_proof_foundation)) {
+    return;
+  }
+
+  const ledger = await client.query(
+    `SELECT COALESCE(MAX(created_at), -1) AS max_created_at FROM public.__drizzle_migrations_v2`,
+  );
+  if (Number(ledger.rows[0]?.max_created_at ?? -1) < M0199_JOURNAL_TIMESTAMP) {
+    return;
+  }
+
+  const attestation = await client.query(
+    `
+      SELECT 1
+      FROM public.m7_reconciliation_stages
+      WHERE stage = $1
+        AND state = 'completed'
+        AND postcondition_digest IS NOT NULL
+      LIMIT 1
+    `,
+    [RECONCILIATION_ATTESTATION_STAGE],
+  ).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "unknown reconciliation-ledger error";
+    throw new Error(`Pre-Drizzle reconciliation ledger is unavailable: ${message}`);
+  });
+
+  if (attestation.rowCount !== 1) {
+    throw new Error(
+      "Refusing normal Drizzle migration: the ledger claims M0199 but required V2 physical " +
+      "foundation is absent. Run the dedicated pre-Drizzle reconciliation executor through " +
+      "R0269 and its physical postcondition attestation first.",
+    );
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -590,6 +648,9 @@ export async function runMigrations(): Promise<void> {
     } catch (e: any) {
       console.log(`[Migrations] Ledger before migrate: table not yet created (fresh database)`);
     }
+
+    await assertPreDrizzleReconciliationAttested(client);
+    console.log("[Migrations] Pre-Drizzle reconciliation gate passed");
 
     console.log("[Migrations] Calling drizzle migrate() now...");
     await migrate(migrationRuntime.db, {
