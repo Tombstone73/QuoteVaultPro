@@ -14,6 +14,7 @@ import { startCleanup, stopCleanup } from "./cleanup";
  */
 
 const CLEANUP_INTERVAL_MS = parseInt(process.env.PREPRESS_CLEANUP_INTERVAL_MS || String(30 * 60 * 1000));
+const SHUTDOWN_DRAIN_TIMEOUT_MS = parseInt(process.env.PREPRESS_WORKER_SHUTDOWN_TIMEOUT_MS || '30000');
 
 async function main() {
   console.log('[Prepress Worker] Starting...');
@@ -37,14 +38,21 @@ async function main() {
   console.log('[Prepress Worker] Running');
   
   // Graceful shutdown
-  const shutdown = async (signal: string) => {
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (signal: string) => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
     console.log(`[Prepress Worker] Received ${signal}, shutting down...`);
-    
-    stopPolling();
+
+    const drain = await stopPolling({ drainTimeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS });
     stopCleanup();
-    
+    if (!drain.drained) {
+      console.warn(`[Prepress Worker] Shutdown drain timed out with ${drain.activeJobs} active job(s)`);
+    }
     console.log('[Prepress Worker] Shutdown complete');
-    process.exit(0);
+    process.exit(drain.drained ? 0 : 1);
+    })();
+    return shutdownPromise;
   };
   
   process.on('SIGINT', () => shutdown('SIGINT'));

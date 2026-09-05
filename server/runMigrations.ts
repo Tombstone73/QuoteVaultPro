@@ -51,14 +51,18 @@ async function assertPreDrizzleReconciliationAttested(client: any): Promise<void
     `,
   );
   const shape = probe.rows[0] ?? {};
-  if (!shape.has_drizzle_ledger || (shape.has_sales_foundation && shape.has_proof_foundation)) {
+  if (!shape.has_drizzle_ledger) {
     return;
   }
 
   const ledger = await client.query(
     `SELECT COALESCE(MAX(created_at), -1) AS max_created_at FROM public.__drizzle_migrations_v2`,
   );
-  if (Number(ledger.rows[0]?.max_created_at ?? -1) < M0199_JOURNAL_TIMESTAMP) {
+  // Normal fully migrated DEV-style databases have a newer ledger timestamp
+  // and remain on the ordinary migration path. The exact M0199 timestamp is
+  // the audited divergent historic shape: physical tables alone cannot prove
+  // that its foundation was reconciled rather than hand-created.
+  if (Number(ledger.rows[0]?.max_created_at ?? -1) !== M0199_JOURNAL_TIMESTAMP) {
     return;
   }
 

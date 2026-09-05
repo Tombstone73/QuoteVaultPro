@@ -25,6 +25,7 @@
     "v2:m7_2c:reconcile": "tsx v2/scripts/runM72CReconciliation.ts",
     "v2:m7_2c:drizzle-follow-on": "tsx v2/scripts/runM72CDrizzleFollowOn.ts",
     "v2:m7_2c:stages:pure": "tsx v2/tests/salesRoutingReconciliationStages.pure.ts && tsx v2/tests/modules/handoffManifest.pure.ts",
+    "v2:m7_2d:cutover:pure": "tsx v2/tests/modules/cutoverWriterAssertion.pure.ts && tsx v2/tests/modules/reconciliationControls.pure.ts",
     "v2:boundaries": "node v2/scripts/check-import-boundaries.mjs",
     "v2:m0:postgres": "tsx v2/scripts/runM0PostgresRehearsal.ts",
     "v2:p4:options": "tsx v2/scripts/runP4ProductDraftOptionsRehearsal.ts",

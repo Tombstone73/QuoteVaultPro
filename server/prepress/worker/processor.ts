@@ -27,8 +27,8 @@ import { cleanupScratchFiles } from "../storage";
  */
 export async function claimJob(): Promise<PrepressJob | null> {
   try {
-    // Atomic UPDATE ... WHERE status='queued' ... RETURNING *
-    // If no row is returned, the job was already claimed by another worker
+    // Atomically claim one oldest queued row. The row lock prevents concurrent
+    // workers from claiming the same job without bulk-transitioning the queue.
     const [claimed] = await db
       .update(prepressJobs)
       .set({
@@ -36,7 +36,14 @@ export async function claimJob(): Promise<PrepressJob | null> {
         startedAt: new Date(),
         progressMessage: 'Processing...',
       })
-      .where(eq(prepressJobs.status, 'queued'))
+      .where(sql`${prepressJobs.id} = (
+        SELECT ${prepressJobs.id}
+        FROM ${prepressJobs}
+        WHERE ${prepressJobs.status} = 'queued'
+        ORDER BY ${prepressJobs.createdAt} ASC, ${prepressJobs.id} ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      )`)
       .returning();
     
     if (!claimed) {
@@ -158,7 +165,8 @@ export async function processJob(job: PrepressJob): Promise<void> {
  * 
  * @returns True if a job was processed, false if no jobs available
  */
-export async function processOneJob(): Promise<boolean> {
+export async function processOneJob(canClaim: () => boolean = () => true): Promise<boolean> {
+  if (!canClaim()) return false;
   const job = await claimJob();
   
   if (!job) {

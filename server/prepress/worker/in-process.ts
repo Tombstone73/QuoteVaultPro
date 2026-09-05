@@ -46,7 +46,7 @@ export function stopInProcessWorker(): void {
   
   console.log('[Prepress In-Process Worker] Stopping...');
   
-  stopPolling();
+  void stopPolling();
   stopCleanup();
   
   isStarted = false;
