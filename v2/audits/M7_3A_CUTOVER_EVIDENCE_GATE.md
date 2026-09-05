@@ -8,14 +8,15 @@ The caller supplies the manifest through `M73A_CUTOVER_EVIDENCE_FILE` and the in
 
 ## Required evidence
 
-The manifest schema `m7.3a-cutover-evidence-v1` requires all of the following:
+The manifest schema `m7.3b-cutover-evidence-v1` requires all of the following:
 
 - `MAINTENANCE_INGRESS = CLOSED` through the M7.2F runtime authority observation.
+- A Vercel control-plane proof naming the canonical domain, hashed project/team/deployment identities, and sanitized switch/rollback references.
 - `PRINTERSHERO_V1_RAILWAY_REPLICAS = 0`, with fresh Railway read-only evidence.
 - `V2_PROD_RUNTIME = NOT_RUNNING_AGAINST_PROD`.
 - `MCP_PROD` and `MCP_DEV` have no current write authority.
 - `RECONCILIATION_EXECUTOR = NOT_ALREADY_ACTIVE`, with target-bound database read-only evidence.
-- `FINAL_RESTORE_POINT = VERIFIED`, with Neon metadata evidence tied to the target fingerprint.
+- `FINAL_RESTORE_POINT = VERIFIED`, with Neon root-branch proof, hashed project/branch/operation identities, terminal create-operation state, retention reference, and target-bound metadata evidence.
 - `ACTIVE_WORK_MANIFEST = CAPTURED`, tied to the target and covering Orders, Production jobs, Prepress, Fulfillment, Invoices, Payments, financial/provider jobs, and email/delivery queues.
 
 Each active-work category carries only a non-negative aggregate count and a status-distribution digest. It is evidence, not a per-record handoff or migration authority.

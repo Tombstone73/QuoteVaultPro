@@ -27,10 +27,21 @@ const runtimeAuthorities: RuntimeAuthorityObservation[] = currentProdWriteFreeAu
 
 function manifest(): unknown {
   return {
-    schemaVersion: "m7.3a-cutover-evidence-v1",
+    schemaVersion: "m7.3b-cutover-evidence-v1",
     target: { environment: "production", observedEndpointHostSha256_16: endpoint, expectedEndpointHostSha256_16: endpoint },
     runtimeAuthorities,
     railwayV1ReplicaProof: { capturedAt: "2026-09-05T15:59:40.000Z", replicas: 0, evidence: [{ source: "railway-read-only", reference: "service:printershero; replicas:0" }] },
+    maintenanceControlPlane: {
+      provider: "vercel",
+      canonicalDomain: "www.printershero.com",
+      projectIdHash: digest,
+      teamIdHash: "b".repeat(64),
+      currentProductionDeploymentIdHash: "c".repeat(64),
+      maintenanceSwitchReference: "vercel-alias:maintenance-switch",
+      rollbackReference: "vercel-alias:restore-prior-production",
+      verifiedAt: "2026-09-05T15:59:41.000Z",
+      evidence: [{ source: "vercel-read-only", reference: "domain:canonical-owner-verified" }],
+    },
     activeWorkManifest: {
       manifestId: "cutover-aggregate-001",
       capturedAt: "2026-09-05T15:59:35.000Z",
@@ -40,8 +51,15 @@ function manifest(): unknown {
     },
     finalRestorePoint: {
       state: "verified",
+      provider: "neon",
       restorePointId: "neon-restore-point-sanitized-id",
       parentEndpointHostSha256_16: endpoint,
+      projectIdHash: "d".repeat(64),
+      rootBranchIdHash: "e".repeat(64),
+      sourceBranchIsRoot: true,
+      createOperationIdHash: "f".repeat(64),
+      createOperationState: "succeeded",
+      retentionReference: "neon-retention:verified-by-owner",
       recoveryProcedureReference: "runbook:restore-neon-branch",
       verifiedAt: "2026-09-05T15:59:45.000Z",
       evidence: [{ source: "neon-read-only", reference: "branch-metadata:restore-point-present" }],
@@ -61,6 +79,7 @@ assert.equal(passes(manifest()).pass, true, "complete sanitized cutover evidence
 assert.equal(passes({ ...manifest() as object, runtimeAuthorities: runtimeAuthorities.slice(1) }).pass, false, "maintenance evidence is mandatory");
 assert.equal(passes({ ...manifest() as object, railwayV1ReplicaProof: { capturedAt: at, replicas: 1, evidence: [{ source: "railway-read-only", reference: "replicas:1" }] } }).pass, false, "nonzero V1 replicas fail closed");
 assert.equal(passes({ ...manifest() as object, finalRestorePoint: { state: "pending" } }).pass, false, "unverified restore point fails closed");
+assert.equal(passes({ ...manifest() as object, maintenanceControlPlane: { provider: "vercel" } }).pass, false, "unverified maintenance ownership fails closed");
 assert.equal(passes({ ...manifest() as object, activeWorkManifest: { ...((manifest() as any).activeWorkManifest), categories: [] } }).pass, false, "incomplete active-work manifest fails closed");
 assert.equal(passes({ ...manifest() as object, target: { environment: "production", observedEndpointHostSha256_16: endpoint, expectedEndpointHostSha256_16: "fedcba9876543210" } }).pass, false, "wrong endpoint fails closed");
 assert.equal(assertM73ACutoverEvidenceBoundary(manifest(), now, "fedcba9876543210").pass, false, "manifest endpoint must match independently supplied target fingerprint");

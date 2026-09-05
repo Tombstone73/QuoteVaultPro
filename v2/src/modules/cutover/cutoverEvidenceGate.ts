@@ -16,7 +16,7 @@ export const cutoverWorkCategories = [
 ] as const;
 
 type CutoverWorkCategory = (typeof cutoverWorkCategories)[number];
-type EvidenceReference = { source: "railway-read-only" | "database-read-only" | "edge-probe" | "mcp-registry-read-only" | "source-read-only" | "neon-read-only" | "manifest-read-only"; reference: string };
+type EvidenceReference = { source: "railway-read-only" | "database-read-only" | "edge-probe" | "mcp-registry-read-only" | "source-read-only" | "neon-read-only" | "vercel-read-only" | "manifest-read-only"; reference: string };
 type RecordValue = Record<string, unknown>;
 
 export type CutoverEvidenceGate = { pass: boolean; failures: readonly string[] };
@@ -104,7 +104,7 @@ export function assertM73ACutoverEvidenceBoundary(
   const failures: string[] = [];
   const manifest = record(value);
   if (!manifest) return { pass: false, failures: ["cutover evidence manifest must be an object."] };
-  if (manifest.schemaVersion !== "m7.3a-cutover-evidence-v1") failures.push("unsupported cutover evidence manifest schema version.");
+  if (manifest.schemaVersion !== "m7.3b-cutover-evidence-v1") failures.push("unsupported cutover evidence manifest schema version.");
 
   const target = record(manifest.target);
   const observedEndpoint = target?.observedEndpointHostSha256_16;
@@ -127,6 +127,17 @@ export function assertM73ACutoverEvidenceBoundary(
   const zeroReplicasAt = timestamp(railway?.capturedAt, "Railway zero-replica", nowMs, maximumEvidenceAgeMs, failures);
   if (railway?.replicas !== 0) failures.push("PrintersHero V1 Railway replicas are not proven to be zero.");
   references(railway?.evidence, "Railway zero-replica proof", "railway-read-only", failures);
+
+  const maintenance = record(manifest.maintenanceControlPlane);
+  timestamp(maintenance?.verifiedAt, "maintenance control-plane", nowMs, maximumEvidenceAgeMs, failures);
+  if (maintenance?.provider !== "vercel" || maintenance?.canonicalDomain !== "www.printershero.com" ||
+    typeof maintenance?.projectIdHash !== "string" || !digest.test(maintenance.projectIdHash) ||
+    typeof maintenance?.teamIdHash !== "string" || !digest.test(maintenance.teamIdHash) ||
+    typeof maintenance?.currentProductionDeploymentIdHash !== "string" || !digest.test(maintenance.currentProductionDeploymentIdHash) ||
+    !nonSecretText(maintenance?.maintenanceSwitchReference) || !nonSecretText(maintenance?.rollbackReference)) {
+    failures.push("maintenance control-plane proof is incomplete or is not bound to the canonical production domain.");
+  }
+  references(maintenance?.evidence, "maintenance control-plane proof", "vercel-read-only", failures);
 
   const work = record(manifest.activeWorkManifest);
   const workCapturedAt = timestamp(work?.capturedAt, "active-work manifest", nowMs, maximumEvidenceAgeMs, failures);
@@ -155,8 +166,13 @@ export function assertM73ACutoverEvidenceBoundary(
 
   const restore = record(manifest.finalRestorePoint);
   const restoreVerifiedAt = timestamp(restore?.verifiedAt, "final restore point", nowMs, maximumEvidenceAgeMs, failures);
-  if (restore?.state !== "verified" || !nonSecretText(restore?.restorePointId) ||
+  if (restore?.provider !== "neon" || restore?.state !== "verified" || !nonSecretText(restore?.restorePointId) ||
     typeof restore?.parentEndpointHostSha256_16 !== "string" || restore.parentEndpointHostSha256_16 !== observedEndpoint ||
+    typeof restore?.projectIdHash !== "string" || !digest.test(restore.projectIdHash) ||
+    typeof restore?.rootBranchIdHash !== "string" || !digest.test(restore.rootBranchIdHash) ||
+    restore?.sourceBranchIsRoot !== true ||
+    typeof restore?.createOperationIdHash !== "string" || !digest.test(restore.createOperationIdHash) ||
+    restore?.createOperationState !== "succeeded" || !nonSecretText(restore?.retentionReference) ||
     !nonSecretText(restore?.recoveryProcedureReference)) {
     failures.push("final restore point is not verified for the expected production endpoint.");
   }
