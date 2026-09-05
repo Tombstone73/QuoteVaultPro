@@ -254,6 +254,17 @@ export const OrderWorkspace = (
     queryFn: () => orderApi.history(props.organizationId, props.orderId),
     enabled: Boolean(props.organizationId && props.sessionScope && current),
   });
+  const workflowActions = useQuery({
+    queryKey: [
+      "v2",
+      props.sessionScope,
+      props.organizationId,
+      "order-workflow-actions",
+      props.orderId,
+    ],
+    queryFn: () => orderApi.workflowActions(props.organizationId, props.orderId),
+    enabled: Boolean(props.organizationId && props.sessionScope && current),
+  });
 
   useEffect(() => {
     if (!current) return;
@@ -440,6 +451,55 @@ export const OrderWorkspace = (
     onSuccess: (result) => {
       setNotice(`New Order #${result.order.number.display} created.`);
       props.openOrder?.(result.order.order.orderId);
+    },
+    onError: (error) => setNotice(message(error)),
+  });
+  const refreshWorkflow = () => {
+    void order.refetch();
+    void workflowActions.refetch();
+    void production.refetch();
+    void fulfillment.refetch();
+    void queryClient.invalidateQueries({
+      queryKey: salesKeys.orders(props.sessionScope, props.organizationId),
+    });
+  };
+  const directProduction = useMutation({
+    mutationFn: (input: Readonly<{
+      orderLineId: string;
+      destination: "flatbed" | "roll";
+      confirmed?: boolean;
+    }>) =>
+      orderApi.directProduction(
+        props.organizationId,
+        props.orderId,
+        requestId("workflow-direct-production", input),
+        input,
+      ),
+    onSuccess: (result) => {
+      complete("workflow-direct-production");
+      refreshWorkflow();
+      setNotice(
+        `Order line sent directly to ${stateLabel(result.destination ?? "production")}.`,
+      );
+    },
+    onError: (error) => setNotice(message(error)),
+  });
+  const productionNotRequired = useMutation({
+    mutationFn: (input: Readonly<{
+      orderLineId: string;
+      reason: string;
+      confirmed?: boolean;
+    }>) =>
+      orderApi.productionNotRequired(
+        props.organizationId,
+        props.orderId,
+        requestId("workflow-production-not-required", input),
+        input,
+      ),
+    onSuccess: () => {
+      complete("workflow-production-not-required");
+      refreshWorkflow();
+      setNotice("Production was marked not required for the eligible Order line.");
     },
     onError: (error) => setNotice(message(error)),
   });
@@ -961,6 +1021,47 @@ export const OrderWorkspace = (
             />
           ),
           Routing: <OrderRouting order={current} onOpen={props.openRouting} />,
+          Workflow: (
+            <OrderWorkflowActions
+              actions={workflowActions.data}
+              lines={current.order.lines}
+              loading={workflowActions.isLoading}
+              busy={directProduction.isPending || productionNotRequired.isPending}
+              csrfReady={props.csrfReady}
+              onDirectProduction={(action, destination) => {
+                if (
+                  action.confirmationRequired &&
+                  !window.confirm(
+                    "This workflow policy requires confirmation before bypassing Prepress.",
+                  )
+                )
+                  return;
+                directProduction.mutate({
+                  orderLineId: action.orderLineId,
+                  destination,
+                  ...(action.confirmationRequired ? { confirmed: true } : {}),
+                });
+              }}
+              onProductionNotRequired={(action) => {
+                const reason = window.prompt(
+                  "Why is Production not required for this Order line?",
+                );
+                if (!reason?.trim()) return;
+                if (
+                  action.confirmationRequired &&
+                  !window.confirm(
+                    "This workflow policy requires confirmation before removing the Production obligation.",
+                  )
+                )
+                  return;
+                productionNotRequired.mutate({
+                  orderLineId: action.orderLineId,
+                  reason: reason.trim(),
+                  ...(action.confirmationRequired ? { confirmed: true } : {}),
+                });
+              }}
+            />
+          ),
           Production: (
             <OrderProduction
               works={production.data}
@@ -1024,6 +1125,83 @@ const OrderLifecycle = ({
     )}
   </div>
 );
+
+/**
+ * The backend returns only currently eligible line actions. This component
+ * deliberately does not reconstruct route, artwork, proof, or policy rules.
+ */
+export const OrderWorkflowActions = ({
+  actions,
+  lines,
+  loading,
+  busy,
+  csrfReady,
+  onDirectProduction,
+  onProductionNotRequired,
+}: Readonly<{
+  actions?: readonly import("./api").OrderWorkflowActionEligibility[];
+  lines: readonly SalesLine[];
+  loading: boolean;
+  busy: boolean;
+  csrfReady: boolean;
+  onDirectProduction: (
+    action: import("./api").OrderWorkflowActionEligibility,
+    destination: "flatbed" | "roll",
+  ) => void;
+  onProductionNotRequired: (
+    action: import("./api").OrderWorkflowActionEligibility,
+  ) => void;
+}>) => {
+  if (loading)
+    return <section className="v2-order-tab"><h2>Workflow</h2><p>Loading eligible workflow actions…</p></section>;
+  if (!actions?.length) return null;
+  return (
+    <section className="v2-order-tab v2-order-workflow-actions">
+      <header>
+        <div>
+          <h2>Workflow</h2>
+          <p>Only actions currently authorized by the canonical workflow are shown.</p>
+        </div>
+      </header>
+      <ul>
+        {actions.map((action) => {
+          const line = lines.find((candidate) => candidate.lineId === action.orderLineId);
+          const lineName = line?.description || "Order line";
+          if (action.action === "direct_production")
+            return <li key={`${action.action}:${action.orderLineId}`}>
+              <b>{lineName}</b>
+              <p>{action.eligibilityReason}</p>
+              <div>
+                {(action.allowedDestinations ?? []).map((destination) => (
+                  <button
+                    key={destination}
+                    className="button secondary"
+                    type="button"
+                    disabled={busy || !csrfReady}
+                    onClick={() => onDirectProduction(action, destination)}
+                  >
+                    Send to {stateLabel(destination)}
+                  </button>
+                ))}
+              </div>
+            </li>;
+          return <li key={`${action.action}:${action.orderLineId}`}>
+            <b>{lineName}</b>
+            <p>{action.eligibilityReason}</p>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={busy || !csrfReady || action.reasonRequired !== true}
+              onClick={() => onProductionNotRequired(action)}
+            >
+              Production not required
+            </button>
+          </li>;
+        })}
+      </ul>
+    </section>
+  );
+};
 
 export const OrderRouting = ({
   order,

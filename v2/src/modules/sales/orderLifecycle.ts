@@ -9,6 +9,8 @@ export type OrderCompletionLineEvidence = Readonly<{
   productionComplete: boolean;
   fulfilledQuantity: number;
   routeComplete: boolean;
+  /** Current audited exception state; never rewrites frozen Product facts. */
+  productionRequirement?: "required" | "not_required" | "satisfied";
 }>;
 
 export type OrderCompletionBlocker = Readonly<{
@@ -42,14 +44,20 @@ export const orderCompletionEligibility = (
 ): OrderCompletionEligibility => {
   const blockers: OrderCompletionBlocker[] = [];
   const projected = lines.map((line) => {
+    const productionRequired = line.productionRequirement
+      ? line.productionRequirement === "required"
+      : line.requiresProduction;
+    const productionComplete = line.productionRequirement === "satisfied"
+      || !productionRequired
+      || line.productionComplete;
     if (!line.workflowIntent) {
       blockers.push({ orderLineId: line.orderLineId, kind: "workflow_unavailable", reason: `${line.description}: frozen workflow requirements are unavailable.` });
-      return { orderLineId: line.orderLineId, workflowIntent: "unavailable" as const, productionRequired: line.requiresProduction, fulfillmentRequired: false, routeRequired: false, productionComplete: false, fulfillmentComplete: false, routeComplete: false };
+      return { orderLineId: line.orderLineId, workflowIntent: "unavailable" as const, productionRequired, fulfillmentRequired: false, routeRequired: false, productionComplete: false, fulfillmentComplete: false, routeComplete: false };
     }
     const fulfillmentRequired = line.workflowIntent !== "service_fee";
     const routeRequired = line.workflowIntent === "standard_production";
     const fulfillmentComplete = !fulfillmentRequired || line.fulfilledQuantity >= line.orderedQuantity;
-    if (line.requiresProduction && !line.productionComplete)
+    if (productionRequired && !productionComplete)
       blockers.push({ orderLineId: line.orderLineId, kind: "production_incomplete", reason: `${line.description}: required Production is incomplete.` });
     if (!fulfillmentComplete)
       blockers.push({ orderLineId: line.orderLineId, kind: "fulfillment_remaining", reason: `${line.description}: ${Math.max(0, line.orderedQuantity - line.fulfilledQuantity)} item(s) remain to be fulfilled.` });
@@ -58,10 +66,10 @@ export const orderCompletionEligibility = (
     return {
       orderLineId: line.orderLineId,
       workflowIntent: line.workflowIntent,
-      productionRequired: line.requiresProduction,
+      productionRequired,
       fulfillmentRequired,
       routeRequired,
-      productionComplete: !line.requiresProduction || line.productionComplete,
+      productionComplete,
       fulfillmentComplete,
       routeComplete: !routeRequired || line.routeComplete,
     };

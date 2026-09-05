@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { Pool } from "pg";
 import { PostgresCustomerWorkspaceReader } from "../../infrastructure/compatibility/postgresCustomerWorkspaceRead";
-import { PostgresSalesWorkspaceReads } from "../../infrastructure/sales/postgresSalesWorkspaceReads";
+import { PostgresSalesWorkspaceReads, projectOrderOperationalSummary } from "../../infrastructure/sales/postgresSalesWorkspaceReads";
 
 type SalesSource = "v2" | "legacy";
 type SalesFixture = Readonly<Record<string, unknown> & { source: SalesSource; id: string; cursor_updated_at: string; updated_at: Date }>;
@@ -34,6 +34,28 @@ const salesFixtures = (source: SalesSource): SalesFixture[] => Array.from({ leng
     production_open: "0",
     balance_due_cents: "1000",
     po_number: sequence === 12 ? "PO-DEEP" : null,
+    contact_id: source === "v2" ? `contact-${sequence}` : null,
+    contact_display_name: source === "v2" ? `Contact ${sequence}` : null,
+    sales_representative_id: source === "v2" ? `rep-${sequence}` : null,
+    artwork_assignment_count: source === "v2" ? "1" : "0",
+    artwork_file_id: source === "v2" ? `artwork-${sequence}` : null,
+    artwork_display_filename: source === "v2" ? `artwork-${sequence}.pdf` : null,
+    artwork_sides: source === "v2" ? ["front"] : null,
+    has_order_notes: source === "v2",
+    production_requirement_count: source === "v2" ? "1" : "0",
+    missing_artwork_requirement_count: "0",
+    prepress_total_count: source === "v2" ? "1" : "0",
+    prepress_started_count: source === "v2" ? "1" : "0",
+    prepress_completed_count: source === "v2" ? "1" : "0",
+    production_total_count: source === "v2" ? "1" : "0",
+    production_active_count: "0",
+    production_satisfied_count: source === "v2" ? "1" : "0",
+    production_destinations: source === "v2" ? ["flatbed"] : null,
+    fulfillment_line_count: source === "v2" ? "1" : "0",
+    fulfillment_satisfied_count: source === "v2" ? "1" : "0",
+    issued_invoice_count: source === "v2" ? "1" : "0",
+    billing_open_balance_cents: "0",
+    overdue: false,
   };
 });
 const nativeSales = salesFixtures("v2");
@@ -52,6 +74,10 @@ const salesPool = {
     query: async (text: string, values: readonly unknown[] = []) => {
       if (text.startsWith("BEGIN") || text === "COMMIT" || text === "ROLLBACK") return { rows: [] };
       salesSql.push(text);
+      if (text.includes("missing_artwork_requirement_count")) {
+        const ids = new Set((values[1] as readonly string[]) ?? []);
+        return { rows: nativeSales.filter((row) => ids.has(row.id)) };
+      }
       const isNative = text.includes("FROM v2_sales_documents");
       const isOrderQuery = text.includes("v2_sales_order_details") || text.includes("FROM orders o");
       const sourceRows = isNative ? nativeSales : legacySales;
@@ -98,9 +124,38 @@ await exhaust("quotes", "updated_desc");
 await exhaust("quotes", "updated_asc");
 const deepOrder = await sales.listOrdersForWorkspace("org-a", { search: "deep", limit: 3 });
 assert.deepEqual(deepOrder.items.map((row) => row.recordId), ["legacy-12"]);
+const operationalPage = await sales.listOrdersForWorkspace("org-a", { limit: 3, operationalFilter: "flatbed" });
+const operationalOrder = operationalPage.items.find((row) => row.source === "v2");
+assert.ok(operationalOrder?.operational, "canonical V2 Orders include the server-composed operational workboard summary");
+assert.deepEqual(operationalOrder.operational.production, { state: "satisfied", destinations: ["flatbed"] });
+assert.ok(operationalOrder.operational.artwork.representative?.artworkFileId.startsWith("artwork-"));
+assert.equal(operationalOrder.operational.notes.hasOrderNotes, true);
 assert.ok(salesSql.some((sql) => sql.includes("$6::timestamptz") && sql.includes("LIMIT $9")), "Sales cursors must be applied by each bounded SQL source query");
 assert.ok(salesSql.some((sql) => sql.includes("$6::text='archived'") && sql.includes("$7::timestamptz") && sql.includes("LIMIT $10")), "Order archive scope must remain server-backed before bounded pagination");
+assert.ok(salesSql.some((sql) => sql.includes("$11::text IN ('flatbed','roll')") && sql.includes("LIMIT $10")), "operational filtering must be part of the source SQL before the keyset page limit");
 assert.ok(salesSql.every((sql) => !sql.includes("COALESCE(q.created_at,now())") && !sql.includes("COALESCE(o.updated_at,o.created_at,now())")), "resumable sort keys must not use now()");
+
+const directProduction = projectOrderOperationalSummary({
+  id: "order-direct", contact_id: null, contact_display_name: null, sales_representative_id: null,
+  artwork_assignment_count: "1", artwork_file_id: "artwork-direct", artwork_display_filename: "direct.pdf", artwork_sides: ["front"], has_order_notes: false,
+  production_requirement_count: "1", prepress_requirement_count: "0", missing_artwork_requirement_count: "0",
+  prepress_total_count: "0", prepress_started_count: "0", prepress_completed_count: "0",
+  production_total_count: "0", production_active_count: "0", production_satisfied_count: "0", production_destinations: ["roll"],
+  fulfillment_line_count: "1", fulfillment_satisfied_count: "0", issued_invoice_count: "0", billing_open_balance_cents: "0", overdue: false,
+});
+assert.equal(directProduction.prepress, "not_required", "M0264 direct-production exceptions bypass prepress without fabricating completion");
+assert.deepEqual(directProduction.production, { state: "not_started", destinations: ["roll"] }, "the selected canonical direct-production destination is visible before work starts");
+const noProduction = projectOrderOperationalSummary({
+  id: "order-no-production", contact_id: null, contact_display_name: null, sales_representative_id: null,
+  artwork_assignment_count: "0", artwork_file_id: null, artwork_display_filename: null, artwork_sides: null, has_order_notes: false,
+  production_requirement_count: "0", prepress_requirement_count: "0", missing_artwork_requirement_count: "0",
+  prepress_total_count: "0", prepress_started_count: "0", prepress_completed_count: "0",
+  production_total_count: "0", production_active_count: "0", production_satisfied_count: "0", production_destinations: null,
+  fulfillment_line_count: "1", fulfillment_satisfied_count: "0", issued_invoice_count: "1", billing_open_balance_cents: "1200", overdue: false,
+});
+assert.equal(noProduction.production.state, "not_required");
+assert.equal(noProduction.attention.needsArtwork, false, "a canonical no-production exception does not produce a false artwork blocker");
+assert.deepEqual(noProduction.billing, { state: "open_balance", openBalanceCents: 1200 });
 
 type CustomerRow = Readonly<Record<string, unknown> & { customer_id: string; sort_name: string; company_name: string }>;
 const customerRows: CustomerRow[] = Array.from({ length: 125 }, (_, index) => ({

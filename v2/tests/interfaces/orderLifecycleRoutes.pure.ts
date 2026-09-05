@@ -39,5 +39,8 @@ const listApplication = express().use("/v2/organizations/:organizationId/orders"
 await request(listApplication).get("/v2/organizations/org-a/orders?archive=archived&lifecycle=completed").expect(200);
 assert.deepEqual(listCalls, [{ limit: 25, lifecycle: "completed", archive: "archived" }], "archive/lifecycle history scope is server-backed before paging");
 await request(listApplication).get("/v2/organizations/org-a/orders?archive=deleted").expect(400);
+await request(listApplication).get("/v2/organizations/org-a/orders?operational=open_balance").expect(200);
+assert.deepEqual(listCalls.at(-1), { limit: 25, operationalFilter: "open_balance" }, "the HTTP adapter forwards only the validated operational scope to the canonical workspace port");
+await request(listApplication).get("/v2/organizations/org-a/orders?operational=made-up").expect(400);
 
 console.log("Order lifecycle HTTP route tests passed.");

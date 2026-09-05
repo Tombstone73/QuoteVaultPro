@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import {
   defaultSalesUpdatedSort,
   mayWriteSalesUpdatedSort,
+  readSalesOrderLifecycleFilter,
+  readSalesOrderOperationalFilter,
   readSalesUpdatedSort,
+  salesOrderLifecyclePreferenceKey,
+  salesOrderOperationalPreferenceKey,
   salesSortPreferenceKey,
+  writeSalesOrderLifecycleFilter,
+  writeSalesOrderOperationalFilter,
   writeSalesUpdatedSort,
 } from "./salesSortPreference";
 
@@ -29,6 +35,9 @@ try {
   const ordersA = salesSortPreferenceKey("orders", "session-a", "org-a");
   const ordersB = salesSortPreferenceKey("orders", "session-a", "org-b");
   const quotesA = salesSortPreferenceKey("quotes", "session-a", "org-a");
+  const lifecycleA = salesOrderLifecyclePreferenceKey("session-a", "org-a");
+  const operationalA = salesOrderOperationalPreferenceKey("session-a", "org-a");
+  const operationalB = salesOrderOperationalPreferenceKey("session-a", "org-b");
 
   assert.equal(readSalesUpdatedSort(undefined), defaultSalesUpdatedSort, "unavailable scope uses the canonical default");
   assert.equal(readSalesUpdatedSort(ordersA), defaultSalesUpdatedSort, "no saved preference uses the default");
@@ -43,6 +52,13 @@ try {
 
   writeSalesUpdatedSort(quotesA, "updated_desc");
   assert.equal(readSalesUpdatedSort(quotesA), "updated_desc", "saved newest restores");
+  writeSalesOrderLifecycleFilter(lifecycleA, "Archived");
+  assert.equal(readSalesOrderLifecycleFilter(lifecycleA), "Archived", "the lifecycle scope restores only for the exact authenticated organization");
+  writeSalesOrderOperationalFilter(operationalA, "needs_artwork");
+  assert.equal(readSalesOrderOperationalFilter(operationalA), "needs_artwork", "the workboard scope restores the selected server-owned operational filter");
+  assert.equal(readSalesOrderOperationalFilter(operationalB), "all", "workboard preferences remain tenant scoped");
+  storage.setItem(operationalB, "not-a-workboard-scope");
+  assert.equal(readSalesOrderOperationalFilter(operationalB), "all", "invalid workboard preferences fail closed to all");
   storage.setItem(ordersB, "unexpected-value");
   assert.equal(readSalesUpdatedSort(ordersB), defaultSalesUpdatedSort, "invalid storage values fail safely");
 

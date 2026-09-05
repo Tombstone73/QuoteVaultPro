@@ -805,6 +805,32 @@ export type OrderListItem = Readonly<{
   updatedAt: string;
   draftInvoice?: { invoiceId: string; lifecycle: "draft"; totalCents: number };
   routing: "routed" | "no_route";
+  /** Bounded server-composed workboard facts; legacy compatibility rows omit this. */
+  operational?: Readonly<{
+    primaryContact?: Readonly<{ contactId: string; displayName: string }>;
+    salesRepresentativeId?: string;
+    artwork: Readonly<{
+      state: "none" | "present";
+      assignmentCount: number;
+      representative?: Readonly<{
+        artworkFileId: string;
+        displayFilename: string;
+        sides: readonly ("front" | "back")[];
+      }>;
+    }>;
+    notes: Readonly<{ hasOrderNotes: boolean }>;
+    prepress: "not_required" | "not_started" | "in_progress" | "satisfied";
+    production: Readonly<{
+      state: "not_required" | "not_started" | "in_progress" | "satisfied";
+      destinations: readonly ("flatbed" | "roll")[];
+    }>;
+    fulfillment: "not_required" | "required" | "satisfied";
+    billing: Readonly<{
+      state: "unbilled" | "open_balance" | "settled";
+      openBalanceCents: number;
+    }>;
+    attention: Readonly<{ overdue: boolean; needsArtwork: boolean }>;
+  }>;
   activeRecordClassification?:
     | "CLOSED_HISTORY"
     | "ACTIVE_BUT_CAN_REMAIN_LEGACY"
@@ -871,6 +897,22 @@ export type OrderResult = Readonly<{
     clientLineKey: string;
     orderLineId: string;
   }>[];
+}>;
+export type OrderWorkflowActionEligibility = Readonly<{
+  action: "direct_production" | "production_not_required";
+  orderLineId: string;
+  confirmationRequired: boolean;
+  allowedDestinations?: readonly ("flatbed" | "roll")[];
+  reasonRequired: boolean;
+  eligibilityReason: string;
+}>;
+export type OrderWorkflowTransitionResult = Readonly<{
+  orderId: string;
+  orderLineId: string;
+  action: "direct_production" | "production_not_required";
+  policy: "flexible" | "guided" | "strict";
+  confirmationRequired: boolean;
+  destination?: "flatbed" | "roll";
 }>;
 export type InvoiceRead = Readonly<{
   source?: "v2" | "legacy";
@@ -1338,6 +1380,7 @@ const withSearch = (
     archive?: "active" | "archived" | "all";
     dueFrom?: string;
     dueTo?: string;
+    operational?: string;
     sort?: "updated_desc" | "updated_asc";
     cursor?: string;
     limit?: number;
@@ -1349,6 +1392,7 @@ const withSearch = (
   if (query.archive) value.set("archive", query.archive);
   if (query.dueFrom) value.set("dueFrom", query.dueFrom);
   if (query.dueTo) value.set("dueTo", query.dueTo);
+  if (query.operational) value.set("operational", query.operational);
   if (query.sort) value.set("sort", query.sort);
   if (query.cursor) value.set("cursor", query.cursor);
   if (query.limit) value.set("limit", String(query.limit));
@@ -1775,6 +1819,19 @@ export const orderApi = {
       archive?: "active" | "archived" | "all";
       dueFrom?: string;
       dueTo?: string;
+      operational?:
+        | "all"
+        | "open"
+        | "completed"
+        | "cancelled"
+        | "needs_artwork"
+        | "prepress"
+        | "production"
+        | "flatbed"
+        | "roll"
+        | "ready_for_fulfillment"
+        | "fulfillment"
+        | "open_balance";
       sort?: "updated_desc" | "updated_asc";
       cursor?: string;
       limit?: number;
@@ -1790,6 +1847,36 @@ export const orderApi = {
       ),
     ),
   history: (organizationId: string, orderId: string) => request<readonly { eventType: string; occurredAt: string; summary: string }[]>(orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/history`)),
+  workflowActions: (organizationId: string, orderId: string) =>
+    request<readonly OrderWorkflowActionEligibility[]>(
+      orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/workflow/actions`),
+    ),
+  directProduction: (
+    organizationId: string,
+    orderId: string,
+    businessRequestId: string,
+    input: Readonly<{ orderLineId: string; destination: "flatbed" | "roll"; confirmed?: boolean }>,
+  ) => request<OrderWorkflowTransitionResult>(
+    orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/workflow/direct-production`),
+    {
+      method: "POST",
+      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+      body: JSON.stringify({ businessRequestId, ...input }),
+    },
+  ),
+  productionNotRequired: (
+    organizationId: string,
+    orderId: string,
+    businessRequestId: string,
+    input: Readonly<{ orderLineId: string; reason: string; confirmed?: boolean }>,
+  ) => request<OrderWorkflowTransitionResult>(
+    orderEndpoint(organizationId, `/${encodeURIComponent(orderId)}/workflow/production-not-required`),
+    {
+      method: "POST",
+      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+      body: JSON.stringify({ businessRequestId, ...input }),
+    },
+  ),
   legacy: (organizationId: string, recordId: string) =>
     request<LegacyCommercialDetail>(
       orderEndpoint(organizationId, `/legacy/${encodeURIComponent(recordId)}`),

@@ -12,6 +12,9 @@ import type {
 } from "../../src/interfaces/http/orderRoutes.js";
 import { PostgresSalesWorkspaceReads } from "./postgresSalesWorkspaceReads.js";
 import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
+import { OrderWorkflowApplicationService } from "../../src/modules/sales/workflowApplication.js";
+import { PostgresOrderWorkflowTransactionRunner } from "./postgresOrderWorkflowTransaction.js";
+import { PostgresOrderAutomaticLifecycle } from "./postgresOrderAutomaticLifecycle.js";
 
 export type AuthenticatedOrderRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -43,6 +46,7 @@ export const composeAuthenticatedOrderRuntime = (
       principals: new IssuedV2PrincipalProvider(input.trustedHostIdentity, issuer),
       workspace: new PostgresSalesWorkspaceReads(input.pool),
       documents: new PostgresCustomerDocumentService(input.pool),
+      workflow: new OrderWorkflowApplicationService(new PostgresOrderWorkflowTransactionRunner(input.pool), undefined, new PostgresOrderAutomaticLifecycle(input.pool)),
     },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };

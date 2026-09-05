@@ -9,6 +9,7 @@ import {
 import { brandedId, type OrderId } from "../../modules/shared/commercialValues.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
+import type { OrderWorkflowApplicationService } from "../../modules/sales/workflowApplication.js";
 
 /**
  * HTTP is deliberately an adapter over a future Order application service.
@@ -65,6 +66,7 @@ export type OrderHttpDependencies = Readonly<{
   principals: VerifiedV2OrderPrincipalProvider;
   workspace?: SalesWorkspaceReadPort;
   documents?: OrderCustomerDocumentPort;
+  workflow?: OrderWorkflowApplicationService;
 }>;
 
 const status = (code: string): number =>
@@ -129,6 +131,16 @@ const archiveQuery = (value: unknown): "active" | "archived" | "all" | undefined
     throw new V2ApplicationError("VALIDATION_ERROR", "Order archive scope is invalid.");
   return value;
 };
+const operationalFilterQuery = (value: unknown): import("../../modules/sales/workspaceReads.js").SalesWorkspacePageRequest["operationalFilter"] => {
+  if (value === undefined) return undefined;
+  const filters = new Set([
+    "all", "open", "completed", "cancelled", "needs_artwork", "prepress",
+    "production", "flatbed", "roll", "ready_for_fulfillment", "fulfillment", "open_balance",
+  ]);
+  if (typeof value !== "string" || !filters.has(value))
+    throw new V2ApplicationError("VALIDATION_ERROR", "Order operational filter is invalid.");
+  return value as import("../../modules/sales/workspaceReads.js").SalesWorkspacePageRequest["operationalFilter"];
+};
 
 const context = async (
   request: Request,
@@ -182,6 +194,12 @@ const commandForOrder = (
   // The path is authoritative; a body value cannot retarget the Order.
   orderId: brandedId<"OrderId">(request.params.orderId),
 });
+const workflowLineCommand = (request: Request): Readonly<{ orderId: OrderId; orderLineId: import("../../modules/shared/commercialValues.js").OrderLineId; businessRequestId: string }> => {
+  const value = body(request.body);
+  const orderLineId = value.orderLineId;
+  if (typeof orderLineId !== "string" || !orderLineId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "orderLineId is required.");
+  return { orderId: brandedId<"OrderId">(request.params.orderId), orderLineId: brandedId<"OrderLineId">(orderLineId), businessRequestId: businessRequestId(value) };
+};
 
 /**
  * Authenticated transport only. It does not implement Sales, Billing,
@@ -215,6 +233,7 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       const dueFrom = dueDateQuery(request.query.dueFrom);
       const dueTo = dueDateQuery(request.query.dueTo);
       const archive = archiveQuery(request.query.archive);
+      const operationalFilter = operationalFilterQuery(request.query.operational);
       const data = await dependencies.workspace.listOrdersForWorkspace(brandedId<"OrganizationId">(operation.organizationId), {
         ...(Number.isFinite(limit) ? { limit } : {}),
         ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}),
@@ -223,6 +242,7 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
         ...(archive ? { archive } : {}),
         ...(dueFrom ? { dueFrom } : {}),
         ...(dueTo ? { dueTo } : {}),
+        ...(operationalFilter ? { operationalFilter } : {}),
         ...(request.query.sort === "updated_asc" || request.query.sort === "updated_desc" ? { sort: request.query.sort } : {}),
       });
       response.status(200).json({ ok: true, data });
@@ -261,6 +281,13 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       if (!new AuthorityPolicy().decide(operation.principal, { capability: "order.view", resource: { organizationId: operation.organizationId } }).allowed)
         throw new V2ApplicationError("FORBIDDEN", "Order access is unavailable.");
       response.status(200).json({ ok: true, data: await dependencies.workspace.listOrderHistory(brandedId<"OrganizationId">(operation.organizationId), brandedId<"OrderId">(request.params.orderId)) });
+    } catch (cause) { error(response, cause); }
+  });
+
+  router.get("/:orderId/workflow/actions", async (request, response) => {
+    try {
+      if (!dependencies.workflow) throw new V2ApplicationError("INTERNAL_ERROR", "Order workflow runtime is unavailable.");
+      send(response, await dependencies.workflow.eligibleActions(await context(request, dependencies), brandedId<"OrderId">(request.params.orderId)));
     } catch (cause) { error(response, cause); }
   });
 
@@ -305,6 +332,26 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
     } catch (cause) {
       error(response, cause);
     }
+  });
+
+  router.post("/:orderId/workflow/direct-production", async (request, response) => {
+    try {
+      if (!dependencies.workflow) throw new V2ApplicationError("INTERNAL_ERROR", "Order workflow runtime is unavailable.");
+      const command = workflowLineCommand(request);
+      const destination = body(request.body).destination;
+      if (destination !== "flatbed" && destination !== "roll") throw new V2ApplicationError("VALIDATION_ERROR", "A configured Flatbed or Roll destination is required.");
+      send(response, await dependencies.workflow.directProduction(await context(request, dependencies, true), { ...command, destination, ...(body(request.body).confirmed === true ? { confirmed: true } : {}) }));
+    } catch (cause) { error(response, cause); }
+  });
+
+  router.post("/:orderId/workflow/production-not-required", async (request, response) => {
+    try {
+      if (!dependencies.workflow) throw new V2ApplicationError("INTERNAL_ERROR", "Order workflow runtime is unavailable.");
+      const command = workflowLineCommand(request);
+      const reason = body(request.body).reason;
+      if (typeof reason !== "string") throw new V2ApplicationError("VALIDATION_ERROR", "A reason is required when Production is not required.");
+      send(response, await dependencies.workflow.productionNotRequired(await context(request, dependencies, true), { ...command, reason, ...(body(request.body).confirmed === true ? { confirmed: true } : {}) }));
+    } catch (cause) { error(response, cause); }
   });
 
   router.post("/:orderId/cancel", async (request, response) => {
