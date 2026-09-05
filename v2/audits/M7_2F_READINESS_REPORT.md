@@ -1,8 +1,8 @@
 # M7.2F readiness report
 
-## Disposition: BLOCKED
+## Disposition: PASS WITH FINDINGS
 
-M7.2F conclusively narrows the single-service claim: it is true for the PrintersHero Railway project, but not yet safe for the complete production authority boundary.
+M7.2F confirms the current PrintersHero V1 application-writer boundary: stopping the single `PrintersHero-PRODUCTION` Railway service stops all observed current PrintersHero V1 application writers.
 
 ## Proven
 
@@ -10,16 +10,12 @@ M7.2F conclusively narrows the single-service claim: it is true for the Printers
 - Stripe, QuickBooks and Gmail do not independently mutate PrintersHero database state while that Railway process is stopped; Stripe outage events should be retried/reconciled by event identity after V2 readiness.
 - MCP is **NO CURRENT WRITE AUTHORITY — FUTURE INTEGRATION**.
 - The optional file bridge is **NO INDEPENDENT PROD DB WRITE AUTHORITY — FUTURE/OPTIONAL**.
+- The separately named `prepresshero` Railway project is an independent application and is outside PrintersHero / TitanOS scope. It is not included in the writer map, stop sequence, V2 start sequence, or migration/reconciliation scope.
 
-## P0
+## Remaining cutover findings
 
-1. Establish whether active `prepresshero` API/worker services target PrintersHero PROD database, Supabase/storage, or providers. Read-only Railway OAuth redacts the needed values; resolve with a sanitized target fingerprint/owner assertion from the service owner, or include those services in the cutover stop/zero-replica proof.
-2. If those services are in scope, prove their active-work drain and provider hold behavior before reconciliation. QuoteVaultPro's M7.2D prepress fix does not cover this separate runtime.
+1. P1: establish and verify the production maintenance/static ingress control before stopping Railway.
+2. P1: capture the active-work/queue manifest, obtain the final database restore-point procedure, and record fresh stopped-replica plus reconciliation-lock evidence at the boundary.
+3. P2: retain MCP and the local-file bridge as future-integration records; they are not current writer blockers.
 
-## P1/P2
-
-- P1: establish a real production Vercel/static maintenance route or alias and verify it before stopping Railway.
-- P1: obtain a final database restore-point procedure and read-only executor/migration-lock evidence at the boundary.
-- P2: retain MCP and local-file bridge as future integration records; they are not present writer blockers.
-
-M7 remains **NO-GO**. The mandatory Lovable/V2 UI convergence milestone remains required before M8.
+M7 overall remains **NO-GO** until its remaining runtime, reconciliation, and mandatory Lovable/V2 UI-convergence prerequisites are closed. This finding removes the independent-PrepressHero P0 blocker only.

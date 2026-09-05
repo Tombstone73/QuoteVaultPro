@@ -1,6 +1,6 @@
 # M7.2E runtime authority map
 
-> Superseded for cutover use by M7.2F: authenticated Railway inventory subsequently found a separate live `prepresshero` production worker project. See `M7_2F_RUNTIME_AUTHORITY_FINAL.md`.
+> Superseded for cutover use by the M7.2F actual-PrintersHero-topology contract. See `M7_2F_RUNTIME_AUTHORITY_FINAL.md`.
 
 ## Disposition: BLOCKED — live V1 writer confirmed; external MCP/Vercel authority unresolved
 

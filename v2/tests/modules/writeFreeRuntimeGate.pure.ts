@@ -9,7 +9,6 @@ const now = Date.parse("2026-09-05T16:00:00.000Z");
 const requiredSources: Record<RuntimeAuthorityObservation["authority"], RuntimeAuthorityObservation["evidence"]> = {
   "maintenance-ingress": [{ source: "edge-probe", reference: "probe:maintenance-503" }],
   "railway-v1-runtime": [{ source: "railway-read-only", reference: "service:v1 stopped replicas=0" }],
-  "independent-prod-writer": [{ source: "railway-read-only", reference: "services:only-v1" }],
   "mcp-production": [{ source: "source-read-only", reference: "mcp:disabled-no-bridge" }],
   "mcp-development": [{ source: "source-read-only", reference: "mcp:disabled-no-bridge" }],
   "v2-prod-runtime": [{ source: "railway-read-only", reference: "service:v2 absent" }],
@@ -19,7 +18,7 @@ const requiredSources: Record<RuntimeAuthorityObservation["authority"], RuntimeA
 const safe: RuntimeAuthorityObservation[] = currentProdWriteFreeAuthorities.map((authority) => ({
   authority,
   admission: authority === "maintenance-ingress" ? "closed" : "not_applicable",
-  process: authority === "maintenance-ingress" ? "read_only" : authority.includes("mcp") || authority === "v2-prod-runtime" || authority === "independent-prod-writer" || authority === "reconciliation-executor" ? "not_deployed" : "stopped",
+  process: authority === "maintenance-ingress" ? "read_only" : authority.includes("mcp") || authority === "v2-prod-runtime" || authority === "reconciliation-executor" ? "not_deployed" : "stopped",
   canMutate: false,
   capturedAt: new Date(now).toISOString(),
   evidence: requiredSources[authority],

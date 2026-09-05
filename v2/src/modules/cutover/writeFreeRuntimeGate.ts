@@ -1,7 +1,6 @@
 export const currentProdWriteFreeAuthorities = [
   "maintenance-ingress",
   "railway-v1-runtime",
-  "independent-prod-writer",
   "mcp-production",
   "mcp-development",
   "v2-prod-runtime",
@@ -30,7 +29,6 @@ type AuthorityRule = {
 const authorityRules: Readonly<Record<CurrentProdAuthority, AuthorityRule>> = {
   "maintenance-ingress": { allowedProcesses: ["read_only", "stopped"], requiredEvidence: ["edge-probe"] },
   "railway-v1-runtime": { allowedProcesses: ["stopped"], requiredEvidence: ["railway-read-only"] },
-  "independent-prod-writer": { allowedProcesses: ["not_deployed", "stopped"], requiredEvidence: ["railway-read-only"] },
   "mcp-production": { allowedProcesses: ["not_deployed", "stopped", "read_only"], requiredEvidence: ["source-read-only"] },
   "mcp-development": { allowedProcesses: ["not_deployed", "stopped", "read_only"], requiredEvidence: ["source-read-only"] },
   "v2-prod-runtime": { allowedProcesses: ["not_deployed", "stopped"], requiredEvidence: ["railway-read-only"] },
