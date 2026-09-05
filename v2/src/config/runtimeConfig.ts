@@ -6,7 +6,7 @@ export type V2RuntimeConfig = Readonly<{
   environment: "development" | "test" | "production";
   serviceName: string;
   port: number;
-  /** Canonical DEV-cutover runtime URL; disposable tests still use TEST_DATABASE_URL only. */
+  /** Canonical deployment runtime URL; disposable tests still use TEST_DATABASE_URL only. */
   databaseUrl?: string;
   /** Immutable build identifier, when the deployment platform provides one. */
   releaseVersion?: string;
@@ -58,12 +58,50 @@ export const requireV2RuntimeDatabaseUrl = (config: V2RuntimeConfig): string => 
   return config.databaseUrl;
 };
 
+export type V2DeploymentTarget = "development" | "production";
+
+const approvedRailwayDeploymentTargets: ReadonlyArray<Readonly<{
+  target: V2DeploymentTarget;
+  projectName: string;
+  environmentName: string;
+}>> = [
+  {
+    target: "development",
+    projectName: "PrintersHero-DEV",
+    environmentName: "Development",
+  },
+  {
+    target: "production",
+    projectName: "PrintersHero-PRODUCTION",
+    environmentName: "production",
+  },
+];
+
 /**
- * Deployment-only guard for the approved V1-to-V2 DEV cutover. V2 consumes the
- * canonical DEV DATABASE_URL, but only from the explicitly identified Railway
- * DEV environment. This prevents the V2 production entrypoint from being
- * pointed at MAIN/production merely because that environment has DATABASE_URL.
+ * Deployment-only guard for the approved V1-to-V2 cutover environments.
+ * `DATABASE_URL` remains an opaque secret-bearing connection string: this
+ * guard validates its syntax only. The exact Railway project/environment pair
+ * is the deployment target authority, so a URL alone can never move DEV into
+ * production or vice versa.
  */
+export const requireV2DeploymentTarget = (
+  environment: Environment = process.env,
+): V2DeploymentTarget => {
+  const projectName = optionalValue(environment, "RAILWAY_PROJECT_NAME");
+  const environmentName = optionalValue(environment, "RAILWAY_ENVIRONMENT_NAME");
+  const target = approvedRailwayDeploymentTargets.find((candidate) =>
+    candidate.projectName === projectName && candidate.environmentName === environmentName,
+  );
+
+  if (!target) {
+    throw new V2ConfigurationError(
+      "V2 cutover deployment requires an approved Railway project/environment identity.",
+    );
+  }
+
+  return target.target;
+};
+
 export const requireV2DeploymentDatabaseUrl = (
   environment: Environment = process.env,
 ): string => {
@@ -71,9 +109,7 @@ export const requireV2DeploymentDatabaseUrl = (
   if (config.environment !== "production") {
     throw new V2ConfigurationError("V2 cutover deployment requires NODE_ENV=production.");
   }
-  if (optionalValue(environment, "RAILWAY_PROJECT_NAME") !== "PrintersHero-DEV" || optionalValue(environment, "RAILWAY_ENVIRONMENT_NAME") !== "Development") {
-    throw new V2ConfigurationError("V2 cutover deployment is allowed only in Railway PrintersHero-DEV / Development.");
-  }
+  requireV2DeploymentTarget(environment);
   const databaseUrl = requireV2RuntimeDatabaseUrl(config);
   let parsed: URL;
   try {

@@ -3,22 +3,28 @@
   "framework": "vite",
   "buildCommand": "npm run build:vercel",
   "outputDirectory": "dist",
-  "rewrites": [
+  "routes": [
     {
-      "source": "/api/integrations/quickbooks/callback",
-      "destination": "https://api-dev.printershero.com/api/integrations/quickbooks/callback"
+      "src": "^/api/integrations/quickbooks/callback$",
+      "dest": "${V2_UI_API_ORIGIN}/api/integrations/quickbooks/callback",
+      "env": ["V2_UI_API_ORIGIN"]
     },
     {
-      "source": "/api/email/google/callback",
-      "destination": "https://api-dev.printershero.com/api/email/google/callback"
+      "src": "^/api/email/google/callback$",
+      "dest": "${V2_UI_API_ORIGIN}/api/email/google/callback",
+      "env": ["V2_UI_API_ORIGIN"]
     },
     {
-      "source": "/v2/:path*",
-      "destination": "https://api-dev.printershero.com/v2/:path*"
+      "src": "^/v2/(.*)$",
+      "dest": "${V2_UI_API_ORIGIN}/v2/$1",
+      "env": ["V2_UI_API_ORIGIN"]
     },
     {
-      "source": "/:path*",
-      "destination": "/index.html"
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }

@@ -41,6 +41,7 @@ import { composeAuthenticatedQuickBooksIntegrationRuntime } from "../../infrastr
 import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
 import { startV2InvoiceEmailDeliveryWorker } from "../../infrastructure/communications/invoiceEmailDeliveryQueue.js";
 import { startV2ProofEmailDeliveryWorker } from "../../infrastructure/communications/proofEmailDeliveryQueue.js";
+import { resolveV2MutationWorkerStartup } from "./mutationWorkerStartup.js";
 import { PostgresPortalProofRead } from "../../infrastructure/proofing/postgresPortalProofRead.js";
 import { V2ApplicationError } from "../errors/applicationError.js";
 import { PermissionSetPrincipalIssuer } from "../authorization/permissionSets.js";
@@ -111,6 +112,7 @@ export const startV2DeploymentServer = async (
 ): Promise<RunningV2DeploymentServer> => {
   const databaseUrl = requireV2DeploymentDatabaseUrl(environment);
   const config = loadV2RuntimeConfig(environment);
+  const mutationWorkers = resolveV2MutationWorkerStartup(environment);
   const authConfig = loadV2StandaloneAuthConfig(environment);
   const pool = new Pool({ connectionString: databaseUrl });
   const authentication = createStandaloneStaffAuthentication({
@@ -131,9 +133,15 @@ export const startV2DeploymentServer = async (
       const instance = app.listen(config.port, () => resolve(instance));
       instance.once("error", reject);
     });
-    stopQuickBooksWorker = startV2QuickBooksBillingWorker(pool, (event, data) => logger.log("info", event, data));
-    stopInvoiceEmailWorker = startV2InvoiceEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
-    stopProofEmailWorker = startV2ProofEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
+    if (mutationWorkers.enabled) {
+      stopQuickBooksWorker = startV2QuickBooksBillingWorker(pool, (event, data) => logger.log("info", event, data));
+      stopInvoiceEmailWorker = startV2InvoiceEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
+      stopProofEmailWorker = startV2ProofEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
+    } else {
+      logger.log("info", "v2.deployment.mutation_workers.disabled", {
+        errorCode: `MUTATION_WORKERS_${mutationWorkers.reason.toUpperCase()}`,
+      });
+    }
   } catch (error) {
     stopInvoiceEmailWorker?.();
     stopProofEmailWorker?.();

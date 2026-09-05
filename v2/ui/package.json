@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "build:vercel": "cross-env V2_UI_OUTPUT_DIR=dist vite build",
+    "build:vercel": "tsx scripts/assertVercelRoutingEnvironment.ts && cross-env V2_UI_OUTPUT_DIR=dist vite build",
     "check": "tsc -p tsconfig.json"
   },
   "dependencies": {

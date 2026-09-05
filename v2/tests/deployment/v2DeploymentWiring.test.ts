@@ -6,6 +6,7 @@ import session from "express-session";
 import {
   loadV2RuntimeConfig,
   requireV2DeploymentDatabaseUrl,
+  requireV2DeploymentTarget,
   V2ConfigurationError,
 } from "../../src/config/runtimeConfig";
 import { createV2DeploymentApp } from "../../src/deployment/server";
@@ -15,7 +16,7 @@ import { createStandaloneStaffAuthentication, loadV2StandaloneAuthConfig } from 
 const repoRoot = process.cwd();
 const logger: V2Logger = { log: () => undefined };
 
-describe("V2 DEV cutover deployment wiring", () => {
+describe("V2 deployment wiring", () => {
   test("runs the authoritative V2 migration runner as a Railway pre-deploy step", () => {
     const railway = JSON.parse(fs.readFileSync(path.join(repoRoot, "railway.json"), "utf8")) as {
       deploy?: { preDeployCommand?: string[] };
@@ -24,14 +25,30 @@ describe("V2 DEV cutover deployment wiring", () => {
     expect(railway.deploy?.preDeployCommand).toEqual(["npm run v2:migrations:apply"]);
   });
 
-  test("uses Railway PORT, the canonical DEV database, and rejects non-DEV deployment targets", () => {
+  test("uses Railway PORT, accepts only explicit DEV/PROD targets, and validates an opaque PostgreSQL URL", () => {
     expect(loadV2RuntimeConfig({ PORT: "8142", V2_PORT: "9999" }).port).toBe(8142);
-    const cutover = { NODE_ENV: "production", RAILWAY_PROJECT_NAME: "PrintersHero-DEV", RAILWAY_ENVIRONMENT_NAME: "Development", DATABASE_URL: "postgresql://dev.example/printershero" };
-    expect(requireV2DeploymentDatabaseUrl(cutover)).toBe(cutover.DATABASE_URL);
-    expect(() => requireV2DeploymentDatabaseUrl({ ...cutover, DATABASE_URL: "https://database.example/not-postgres" })).toThrow(V2ConfigurationError);
-    expect(() => requireV2DeploymentDatabaseUrl({ ...cutover, RAILWAY_ENVIRONMENT_NAME: "production" })).toThrow(/PrintersHero-DEV \/ Development/);
-    expect(() => requireV2DeploymentDatabaseUrl({ ...cutover, RAILWAY_PROJECT_NAME: "PrintersHero-PRODUCTION" })).toThrow(/PrintersHero-DEV \/ Development/);
-    expect(() => requireV2DeploymentDatabaseUrl({ ...cutover, DATABASE_URL: undefined, V2_DATABASE_URL: "postgresql://unused.example/v2" })).toThrow(/DATABASE_URL is required/);
+    const development = { NODE_ENV: "production", RAILWAY_PROJECT_NAME: "PrintersHero-DEV", RAILWAY_ENVIRONMENT_NAME: "Development", DATABASE_URL: "postgresql://dev.example/printershero" };
+    const production = { NODE_ENV: "production", RAILWAY_PROJECT_NAME: "PrintersHero-PRODUCTION", RAILWAY_ENVIRONMENT_NAME: "production", DATABASE_URL: "postgresql://production.example/printershero" };
+
+    expect(requireV2DeploymentTarget(development)).toBe("development");
+    expect(requireV2DeploymentDatabaseUrl(development)).toBe(development.DATABASE_URL);
+    expect(requireV2DeploymentTarget(production)).toBe("production");
+    expect(requireV2DeploymentDatabaseUrl(production)).toBe(production.DATABASE_URL);
+    expect(() => requireV2DeploymentDatabaseUrl({ ...production, DATABASE_URL: "https://database.example/not-postgres" })).toThrow(V2ConfigurationError);
+
+    for (const invalid of [
+      { ...development, RAILWAY_ENVIRONMENT_NAME: "production" },
+      { ...production, RAILWAY_ENVIRONMENT_NAME: "Development" },
+      { ...development, RAILWAY_PROJECT_NAME: "PrintersHero-PRODUCTION" },
+      { ...production, RAILWAY_PROJECT_NAME: "PrintersHero-DEV" },
+      { ...development, RAILWAY_PROJECT_NAME: "unknown", RAILWAY_ENVIRONMENT_NAME: "unknown" },
+      { ...development, RAILWAY_PROJECT_NAME: undefined },
+      { ...production, RAILWAY_ENVIRONMENT_NAME: undefined },
+    ]) {
+      expect(() => requireV2DeploymentDatabaseUrl(invalid)).toThrow(/approved Railway project\/environment identity/);
+    }
+
+    expect(() => requireV2DeploymentDatabaseUrl({ ...development, DATABASE_URL: undefined, V2_DATABASE_URL: "postgresql://unused.example/v2" })).toThrow(/DATABASE_URL is required/);
   });
 
   test("requires the dedicated standalone auth adapter before opening V2 business routes", async () => {
@@ -56,14 +73,18 @@ describe("V2 DEV cutover deployment wiring", () => {
     await request(app).get("/ready").expect(503);
   });
 
-  test("keeps the V1 production config unchanged while the V2 cutover UI targets the DEV API ahead of SPA fallback", () => {
+  test("keeps V1 routing unchanged while V2 delegates its environment-specific API origin to Vercel", () => {
     const v1Vercel = fs.readFileSync(path.join(repoRoot, "vercel.json"), "utf8");
-    const v2Vercel = JSON.parse(fs.readFileSync(path.join(repoRoot, "v2", "ui", "vercel.json"), "utf8")) as { rewrites: Array<{ source: string; destination: string }> };
+    const v2Vercel = JSON.parse(fs.readFileSync(path.join(repoRoot, "v2", "ui", "vercel.json"), "utf8")) as {
+      routes: Array<{ src?: string; dest?: string; env?: string[]; handle?: string }>;
+    };
     expect(v1Vercel).toContain("api-dev.printershero.com");
-    expect(v2Vercel.rewrites[0]).toEqual({ source: "/api/integrations/quickbooks/callback", destination: "https://api-dev.printershero.com/api/integrations/quickbooks/callback" });
-    expect(v2Vercel.rewrites[1]).toEqual({ source: "/api/email/google/callback", destination: "https://api-dev.printershero.com/api/email/google/callback" });
-    expect(v2Vercel.rewrites[2]).toEqual({ source: "/v2/:path*", destination: "https://api-dev.printershero.com/v2/:path*" });
-    expect(v2Vercel.rewrites[3]).toEqual({ source: "/:path*", destination: "/index.html" });
+    expect(v2Vercel.routes[0]).toEqual({ src: "^/api/integrations/quickbooks/callback$", dest: "${V2_UI_API_ORIGIN}/api/integrations/quickbooks/callback", env: ["V2_UI_API_ORIGIN"] });
+    expect(v2Vercel.routes[1]).toEqual({ src: "^/api/email/google/callback$", dest: "${V2_UI_API_ORIGIN}/api/email/google/callback", env: ["V2_UI_API_ORIGIN"] });
+    expect(v2Vercel.routes[2]).toEqual({ src: "^/v2/(.*)$", dest: "${V2_UI_API_ORIGIN}/v2/$1", env: ["V2_UI_API_ORIGIN"] });
+    expect(v2Vercel.routes[3]).toEqual({ handle: "filesystem" });
+    expect(v2Vercel.routes[4]).toEqual({ src: "/(.*)", dest: "/index.html" });
+    expect(JSON.stringify(v2Vercel)).not.toContain("api-dev.printershero.com");
     expect(v1Vercel).not.toContain('"/v2/:path*"');
   });
 
