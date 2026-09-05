@@ -278,26 +278,12 @@ const ProductDraftEntry = ({
   back: () => void;
 }>) => {
   const automaticDraftRequest = useRef("");
-  const client = useQueryClient();
-  const [confirmAbandonDraft,setConfirmAbandonDraft]=useState(false);
   const product = state.data;
   const routing = useQuery({queryKey:["v2",sessionScope,organizationId,"product-routing-compatibility",product?.productId],queryFn:()=>productApi.routingCompatibility(organizationId,product!.productId),enabled:Boolean(product?.productId && canEdit)});
   const [productTypeId,setProductTypeId]=useState("");
   useEffect(()=>{ if(routing.data)setProductTypeId(routing.data.productTypeId??"");},[routing.data]);
   const saveCompatibility=useMutation({mutationFn:()=>productApi.assignRoutingCompatibility(organizationId,product!.productId,{businessRequestId:newBusinessRequestId(),productTypeId:productTypeId||null,expectedProductUpdatedAt:product!.productUpdatedAt}),onSuccess:()=>{void routing.refetch();void state.refetch();}});
   const saveDefaultRoute=useMutation({mutationFn:(input:Readonly<{productTypeId:string;routeTemplateId:string;expectedProductTypeUpdatedAt:string}>)=>productApi.setProductTypeDefaultRoute(organizationId,input.productTypeId,{businessRequestId:newBusinessRequestId(),routeTemplateId:input.routeTemplateId,expectedProductTypeUpdatedAt:input.expectedProductTypeUpdatedAt}),onSuccess:()=>void routing.refetch()});
-  const abandonDraft=useMutation({
-    mutationFn: async () => {
-      const current=await productApi.get(organizationId,product!.productId),draft=current.versions.draft;
-      if(!draft){const error=new Error("This Product no longer has an editable Draft. Refresh and try again.");Object.assign(error,{code:"STALE_STATE"});throw error;}
-      return productApi.abandonDraft(organizationId,current.productId,newBusinessRequestId(),{draftVersionId:draft.productVersionId,expectedDraftUpdatedAt:draft.updatedAt});
-    },
-    onSuccess:()=>{
-      void client.invalidateQueries({queryKey:keys.detail(sessionScope,organizationId,product!.productId)});
-      void client.invalidateQueries({queryKey:keys.list(sessionScope,organizationId,"",1)});
-      void routing.refetch();
-    },
-  });
   useEffect(() => {
     if (!product || !canEdit || product.versions.draft || !product.versions.active || automaticDraftRequest.current === product.productId) return;
     automaticDraftRequest.current = product.productId;
@@ -312,7 +298,10 @@ const ProductDraftEntry = ({
   if (!product.versions.draft)
     return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">{draftCreationError ?? (creatingDraft ? "Preparing an editable Draft…" : "This Product has no editable Draft.")}</p></section>;
   return <>
-    {product.versions.active&&product.versions.draft&&<section className="v2-products" aria-label="Draft recovery"><header className="v2-products-heading"><div><h2>Draft recovery</h2><p>Abandon keeps this unpublished Draft in immutable history, then starts a fresh Draft from the current Active version.</p></div>{!confirmAbandonDraft?<button type="button" className="button secondary" disabled={abandonDraft.isPending} onClick={()=>setConfirmAbandonDraft(true)}>Abandon Draft</button>:<div className="flex items-center gap-2"><button type="button" className="button secondary" disabled={abandonDraft.isPending} onClick={()=>setConfirmAbandonDraft(false)}>Cancel</button><button type="button" className="button" disabled={abandonDraft.isPending} onClick={()=>abandonDraft.mutate()}>Confirm abandon Draft</button></div>}</header>{confirmAbandonDraft&&<p role="status" className="v2-proof-empty">This unpublished Draft will remain in immutable history and cannot be edited.</p>}{abandonDraft.isError&&<p role="alert" className="v2-proof-empty">{(abandonDraft.error as {message?:string}).message??"The Draft could not be abandoned."}</p>}</section>}
+    {/* A current Draft is the canonical editable version, whether or not an
+        immutable Active version also exists. Draft recovery is reserved for
+        an explicit server-reported recovery condition; the presence of both
+        lifecycle pointers is normal and must always open the Builder. */}
     <CompatibilityRoutingPanel routing={routing.data} loading={routing.isLoading} productTypeId={productTypeId} setProductTypeId={setProductTypeId} saveCompatibility={()=>saveCompatibility.mutate()} saveDefaultRoute={(input)=>saveDefaultRoute.mutate(input)} saving={saveCompatibility.isPending||saveDefaultRoute.isPending} error={(saveCompatibility.error??saveDefaultRoute.error) as Error|null}/>
     <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} publishError={publishError} />
   </>;

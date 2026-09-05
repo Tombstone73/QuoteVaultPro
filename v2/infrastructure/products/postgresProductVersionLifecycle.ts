@@ -1388,9 +1388,21 @@ export class PostgresProductVersionLifecycleReader {
       `SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 ORDER BY updated_at DESC,id DESC LIMIT $3`,
       [organizationId, productId, historyLimit + 3],
     );
+    // The history window is intentionally bounded, but the Product's Active
+    // pointer is lifecycle authority. An old Active version can otherwise
+    // fall behind a busy Product's newer Draft/history rows and make an
+    // Active Product look unconfigured to the Builder.
+    const active = product.rows[0].pbv2_active_tree_version_id;
+    if (active && !versions.rows.some((row) => row.id === active)) {
+      const pointed = await this.pool.query<VersionRow>(
+        "SELECT id,status,schema_version,tree_json,created_at,updated_at,published_at FROM pbv2_tree_versions WHERE organization_id=$1 AND product_id=$2 AND id=$3 AND status='ACTIVE'",
+        [organizationId, productId, active],
+      );
+      versions.rows.push(...pointed.rows);
+    }
     return lifecycle(
       versions.rows,
-      product.rows[0].pbv2_active_tree_version_id,
+      active,
     );
   }
 }
