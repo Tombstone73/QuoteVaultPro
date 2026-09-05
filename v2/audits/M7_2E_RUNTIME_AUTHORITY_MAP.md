@@ -1,5 +1,7 @@
 # M7.2E runtime authority map
 
+> Superseded for cutover use by M7.2F: authenticated Railway inventory subsequently found a separate live `prepresshero` production worker project. See `M7_2F_RUNTIME_AUTHORITY_FINAL.md`.
+
 ## Disposition: BLOCKED — live V1 writer confirmed; external MCP/Vercel authority unresolved
 
 Authenticated Railway read-only inspection found one `PrintersHero-PRODUCTION` project/environment service, one running replica, no Railway cron service, and a successful deployment of `main` revision `1326ad1` (2026-09-04). It exposes the production API and object domains. The deployment log records the in-process asset-preview worker actively processing pending assets, so V1 is demonstrably capable of writing operational/storage state now. This is not a cutover action; nothing was stopped or changed.

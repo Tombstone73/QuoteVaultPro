@@ -1,39 +1,34 @@
 import assert from "node:assert/strict";
 import {
-  assertM72eWriteFreeRuntime,
-  m72eRequiredAuthorities,
+  assertCurrentProdWriteFreeBoundary,
+  currentProdWriteFreeAuthorities,
   type RuntimeAuthorityObservation,
 } from "../../src/modules/cutover/writeFreeRuntimeGate.js";
 
 const now = Date.parse("2026-09-05T16:00:00.000Z");
 const requiredSources: Record<RuntimeAuthorityObservation["authority"], RuntimeAuthorityObservation["evidence"]> = {
-  "v1-http-mutation-ingress": [{ source: "railway-read-only", reference: "service:api stopped" }, { source: "http-probe", reference: "probe:maintenance-503" }],
-  "v1-background-workers": [{ source: "railway-read-only", reference: "service:api stopped" }],
-  "v1-standalone-prepress": [{ source: "railway-read-only", reference: "service:prepress stopped" }],
-  "v1-migration-runner": [{ source: "database-read-only", reference: "lock:none" }],
-  "stripe-webhook-application": [{ source: "railway-read-only", reference: "service:api stopped" }, { source: "provider-console-read-only", reference: "stripe:retry-policy-recorded" }],
-  "quickbooks-workers": [{ source: "railway-read-only", reference: "service:api stopped" }],
-  "email-delivery-workers": [{ source: "railway-read-only", reference: "service:api stopped" }],
-  "financial-outbox-consumer": [{ source: "railway-read-only", reference: "service:api stopped" }],
-  "mcp-production": [{ source: "mcp-registry-read-only", reference: "endpoint:inventory" }],
-  "mcp-development": [{ source: "mcp-registry-read-only", reference: "endpoint:inventory" }],
-  "v2-writers": [{ source: "railway-read-only", reference: "service:v2 absent" }],
+  "maintenance-ingress": [{ source: "edge-probe", reference: "probe:maintenance-503" }],
+  "railway-v1-runtime": [{ source: "railway-read-only", reference: "service:v1 stopped replicas=0" }],
+  "independent-prod-writer": [{ source: "railway-read-only", reference: "services:only-v1" }],
+  "mcp-production": [{ source: "source-read-only", reference: "mcp:disabled-no-bridge" }],
+  "mcp-development": [{ source: "source-read-only", reference: "mcp:disabled-no-bridge" }],
+  "v2-prod-runtime": [{ source: "railway-read-only", reference: "service:v2 absent" }],
   "reconciliation-executor": [{ source: "database-read-only", reference: "lock:none" }],
 };
 
-const safe: RuntimeAuthorityObservation[] = m72eRequiredAuthorities.map((authority) => ({
+const safe: RuntimeAuthorityObservation[] = currentProdWriteFreeAuthorities.map((authority) => ({
   authority,
-  admission: authority === "v1-http-mutation-ingress" || authority === "stripe-webhook-application" ? "closed" : "not_applicable",
-  process: "stopped",
+  admission: authority === "maintenance-ingress" ? "closed" : "not_applicable",
+  process: authority === "maintenance-ingress" ? "read_only" : authority.includes("mcp") || authority === "v2-prod-runtime" || authority === "independent-prod-writer" || authority === "reconciliation-executor" ? "not_deployed" : "stopped",
   canMutate: false,
   capturedAt: new Date(now).toISOString(),
   evidence: requiredSources[authority],
 }));
 
-assert.equal(assertM72eWriteFreeRuntime(safe, now).pass, true);
-assert.equal(assertM72eWriteFreeRuntime(safe.slice(1), now).pass, false, "missing authority fails closed");
-assert.equal(assertM72eWriteFreeRuntime([{ ...safe[0], process: "running" }, ...safe.slice(1)], now).pass, false, "a running writer fails closed");
-assert.equal(assertM72eWriteFreeRuntime([{ ...safe[0], capturedAt: "2026-09-05T15:00:00.000Z" }, ...safe.slice(1)], now).pass, false, "stale evidence fails closed");
-assert.equal(assertM72eWriteFreeRuntime([{ ...safe[0], evidence: [] }, ...safe.slice(1)], now).pass, false, "missing source-specific evidence fails closed");
+assert.equal(assertCurrentProdWriteFreeBoundary(safe, now).pass, true);
+assert.equal(assertCurrentProdWriteFreeBoundary(safe.slice(1), now).pass, false, "missing authority fails closed");
+assert.equal(assertCurrentProdWriteFreeBoundary([{ ...safe[1], process: "running" }, safe[0], ...safe.slice(2)], now).pass, false, "a running V1 runtime fails closed");
+assert.equal(assertCurrentProdWriteFreeBoundary([{ ...safe[0], capturedAt: "2026-09-05T15:00:00.000Z" }, ...safe.slice(1)], now).pass, false, "stale evidence fails closed");
+assert.equal(assertCurrentProdWriteFreeBoundary([{ ...safe[0], evidence: [] }, ...safe.slice(1)], now).pass, false, "missing source-specific evidence fails closed");
 
-console.log("M7.2E write-free runtime gate pure checks passed");
+console.log("M7.2F write-free runtime gate pure checks passed");

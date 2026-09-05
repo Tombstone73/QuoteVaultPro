@@ -1,12 +1,8 @@
 # M7.2E write-free cutover gate
 
-## Gate contract
+## Gate contract (superseded by M7.2F actual-topology contract)
 
-`v2/src/modules/cutover/writeFreeRuntimeGate.ts` implements a fail-closed assertion over a sanitized, read-only evidence manifest. It requires fresh evidence (five-minute default) for every authority:
-
-`v1-http-mutation-ingress`, `v1-background-workers`, `v1-standalone-prepress`, `v1-migration-runner`, `stripe-webhook-application`, `quickbooks-workers`, `email-delivery-workers`, `financial-outbox-consumer`, `mcp-production`, `mcp-development`, `v2-writers`, and `reconciliation-executor`.
-
-Each observation must say the process is `stopped` or `not_deployed`, admission is `closed` or `not_applicable`, mutation capability is exactly `false`, and include a non-secret evidence reference. Required sources are Railway read-only inventory for deployed-process authorities, database read-only evidence for migration/executor, an HTTP maintenance probe for V1 ingress, provider-console read-only evidence for Stripe retry policy, and MCP-registry read-only evidence for both MCP endpoints.
+M7.2F narrows the executable contract to deployed authorities and records its current meaning in `M7_2F_RUNTIME_AUTHORITY_FINAL.md`. The historical M7.2E inventory is superseded; it must not be used to decide a cutover.
 
 Run it only against a sanitized JSON array:
 

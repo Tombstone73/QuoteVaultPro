@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
 import {
-  assertM72eWriteFreeRuntime,
+  assertCurrentProdWriteFreeBoundary,
   type RuntimeAuthorityObservation,
 } from "../src/modules/cutover/writeFreeRuntimeGate.js";
 
 function fail(message: string): never {
-  throw new Error(`[M7.2E] ${message}`);
+  throw new Error(`[M7.2F] ${message}`);
 }
 
 function observationsFromJson(value: unknown): RuntimeAuthorityObservation[] {
@@ -33,15 +33,15 @@ function observationsFromJson(value: unknown): RuntimeAuthorityObservation[] {
 }
 
 async function main(): Promise<void> {
-  const path = process.env.M72E_EVIDENCE_FILE;
-  if (!path) fail("M72E_EVIDENCE_FILE is required and must name a sanitized JSON evidence manifest.");
+  const path = process.env.M72F_EVIDENCE_FILE ?? process.env.M72E_EVIDENCE_FILE;
+  if (!path) fail("M72F_EVIDENCE_FILE is required and must name a sanitized JSON evidence manifest.");
   const observations = observationsFromJson(JSON.parse(await readFile(path, "utf8")));
-  const result = assertM72eWriteFreeRuntime(observations, Date.now());
+  const result = assertCurrentProdWriteFreeBoundary(observations, Date.now());
   if (!result.pass) fail(`WRITE-FREE GATE FAILED: ${result.failures.join(" | ")}`);
-  console.log(`[M7.2E] WRITE-FREE GATE PASSED for ${observations.length} authorities.`);
+  console.log(`[M7.2F] WRITE-FREE GATE PASSED for ${observations.length} authorities.`);
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "[M7.2E] unknown gate failure");
+  console.error(error instanceof Error ? error.message : "[M7.2F] unknown gate failure");
   process.exitCode = 1;
 });
