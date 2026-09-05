@@ -1,6 +1,6 @@
 # M7.2C pre-Drizzle reconciliation executor
 
-`v2/scripts/runM72CReconciliation.ts` is a direct PostgreSQL, database-only executor. It requires all of: `M72C_REHEARSAL=1`, a dedicated `M72C_RECONCILIATION_DATABASE_URL`, and an exact `M72C_EXPECTED_CLONE_HOST_SHA256_16`. It ignores `DATABASE_URL`, rejects the known production endpoint fingerprint, requires a Neon hostname, uses a dedicated advisory lock, and closes its connection in `finally`.
+`v2/scripts/runM72CReconciliation.ts` is a direct PostgreSQL, database-only executor. It requires all of: `M72C_REHEARSAL=1`, a dedicated `M72C_RECONCILIATION_DATABASE_URL`, and an exact `M72C_EXPECTED_CLONE_HOST_SHA256_16`. It ignores `DATABASE_URL`, rejects the known production endpoint fingerprint, requires a Neon hostname, holds a transaction-pinned durable row lock for the complete execution, and closes its connections in `finally`. This replaced a session advisory lock after M7.2D demonstrated that session locking was not exclusive through a pooled Neon endpoint.
 
 It creates separate `m7_reconciliation_attempts` and `m7_reconciliation_stages` ledgers. It never updates `__drizzle_migrations_v2`. Every stage records the executor/source hash and finishes only after its physical postconditions are checked and digested. Failures roll back stage SQL, then record a recoverable failed stage outside that transaction. Completed stages are re-attested on retry; R0264 preserves its historical incomplete-baseline attestation because the later successful stages intentionally invalidate its absence checks.
 

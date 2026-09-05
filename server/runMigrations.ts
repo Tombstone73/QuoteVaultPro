@@ -84,7 +84,7 @@ async function assertPreDrizzleReconciliationAttested(client: any): Promise<void
   if (attestation.rowCount !== 1) {
     throw new Error(
       "Refusing normal Drizzle migration: the ledger claims M0199 but required V2 physical " +
-      "foundation is absent. Run the dedicated pre-Drizzle reconciliation executor through " +
+      "foundation is absent or has not been attested. Run the dedicated pre-Drizzle reconciliation executor through " +
       "R0269 and its physical postcondition attestation first.",
     );
   }

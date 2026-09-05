@@ -13,9 +13,9 @@ import { Client } from "pg";
 
 const PROD_HOST_SHA256_16 = "6775f8eb2ab01aad";
 const CLONE_LEDGER_MAX_CREATED_AT = 1788048000046;
-const LOCK_KEY = 726420264;
 const STAGES = ["R0264", "R0265", "R0266", "R0267", "R0268", "R0269"] as const;
 type Stage = (typeof STAGES)[number];
+type FailureInjectionPoint = `before:${Stage}` | `after:${Stage}` | `after-sql:${Stage}`;
 
 const stageMigrationFiles: Record<Exclude<Stage, "R0264" | "R0268" | "R0269">, readonly string[]> = {
   R0265: [
@@ -42,6 +42,15 @@ function sha256(value: string): string {
 
 function fail(message: string): never {
   throw new Error(`[M7.2C] ${message}`);
+}
+
+function injectFailure(point: FailureInjectionPoint): void {
+  const requested = process.env.M72C_TEST_ABORT_AT;
+  if (!requested) return;
+  if (process.env.M72C_REHEARSAL_FAILURE_INJECTION !== "1") {
+    fail("failure injection requires M72C_REHEARSAL_FAILURE_INJECTION=1.");
+  }
+  if (requested === point) fail(`controlled rehearsal interruption at ${point}.`);
 }
 
 function cloneUrl(): URL {
@@ -89,7 +98,35 @@ async function createLedger(client: Client): Promise<void> {
       completed_at timestamptz,
       last_error text
     );
+    CREATE TABLE IF NOT EXISTS m7_reconciliation_lock (
+      id smallint PRIMARY KEY CHECK (id = 1),
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
+  // Commit the singleton before acquiring it. Otherwise a second executor can
+  // block on an uncommitted INSERT conflict before it reaches NOWAIT.
+  await client.query("INSERT INTO m7_reconciliation_lock(id) VALUES (1) ON CONFLICT(id) DO NOTHING");
+}
+
+/**
+ * A session advisory lock was not exclusive through a pooled Neon endpoint in
+ * the M7.2D contention rehearsal. A row lock held inside an open transaction
+ * remains attached to its transaction-pinned backend, while the work client
+ * is free to commit each resumable reconciliation stage independently.
+ */
+async function acquireDurableExecutorLock(connectionString: string): Promise<Client> {
+  const lockClient = new Client({ connectionString, application_name: "m7_2c_reconciliation_durable_lock" });
+  await lockClient.connect();
+  try {
+    await lockClient.query("BEGIN");
+    await lockClient.query("SELECT id FROM m7_reconciliation_lock WHERE id = 1 FOR UPDATE NOWAIT");
+    return lockClient;
+  } catch (error) {
+    await lockClient.query("ROLLBACK").catch(() => undefined);
+    await lockClient.end();
+    const message = error instanceof Error ? error.message : "unknown lock error";
+    fail(`another reconciliation executor holds the durable single-executor lock: ${message}`);
+  }
 }
 
 async function mustHaveTable(client: Client, table: string): Promise<string> {
@@ -262,7 +299,9 @@ async function runStage(client: Client, attemptId: number, executorHash: string,
       ON CONFLICT(stage) DO UPDATE SET state = 'running', attempt_id = EXCLUDED.attempt_id, executor_hash = EXCLUDED.executor_hash,
         source_digest = EXCLUDED.source_digest, started_at = EXCLUDED.started_at, completed_at = NULL, postcondition_digest = NULL, last_error = NULL
     `, [stage, attemptId, executorHash, source]);
+    injectFailure(`before:${stage}`);
     if (stage !== "R0264") await executeStageSql(client, stage);
+    injectFailure(`after-sql:${stage}`);
     const observations = await stagePostconditions(client, stage);
     const postconditionDigest = sha256(observations.sort().join("\n"));
     await client.query(
@@ -289,18 +328,21 @@ async function main(): Promise<void> {
   const executorHash = sha256(await readFile(new URL(import.meta.url), "utf8"));
   const client = new Client({ connectionString: url.toString(), application_name: "m7_2c_reconciliation_database_only" });
   await client.connect();
+  let lockClient: Client | undefined;
   let attemptId: number | undefined;
   try {
-    const lock = await client.query<{ acquired: boolean }>("SELECT pg_try_advisory_lock($1) AS acquired", [LOCK_KEY]);
-    if (!lock.rows[0]?.acquired) fail("another reconciliation executor holds the single-executor lock.");
     await createLedger(client);
+    lockClient = await acquireDurableExecutorLock(url.toString());
     const attempt = await client.query<{ id: number }>(`
       INSERT INTO m7_reconciliation_attempts(executor_hash, target_host_sha256_16, state)
       VALUES ($1, $2, 'running') RETURNING id
     `, [executorHash, sha256(url.hostname).slice(0, 16)]);
     attemptId = attempt.rows[0]?.id;
     if (!attemptId) fail("unable to create reconciliation attempt ledger row.");
-    for (const stage of STAGES) await runStage(client, attemptId, executorHash, stage);
+    for (const stage of STAGES) {
+      await runStage(client, attemptId, executorHash, stage);
+      injectFailure(`after:${stage}`);
+    }
     await client.query("UPDATE m7_reconciliation_attempts SET state = 'completed', completed_at = now() WHERE id = $1", [attemptId]);
     console.log("[M7.2C] all reconciliation stages completed; normal Drizzle may now advance.");
   } catch (error) {
@@ -310,7 +352,10 @@ async function main(): Promise<void> {
     }
     throw error;
   } finally {
-    await client.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]).catch(() => undefined);
+    if (lockClient) {
+      await lockClient.query("COMMIT").catch(() => undefined);
+      await lockClient.end();
+    }
     await client.end();
   }
 }
