@@ -1,6 +1,6 @@
 # M7.5C V1 → V2 capability matrix
 
-**Source audited:** V2 `dev` `0169cad94ee62bb5f25ebd5cede4639fb0993137`; V1 `main` `29b99eb8ad7b94257c09e6a08e3413801b810679`.  
+**Source audited:** V2 `dev` `0169cad94ee62bb5f25ebd5cede4639fb0993137`; V1 `main` `29b99eb8ad7b94257c09e6a08e3413801b810679`.
 **Method:** source-level operator-task comparison. “Complete” requires usable UI/navigation and an end-to-end canonical path; it is not inferred from a component or endpoint alone. No live DEV/PROD claim is made.
 
 | Domain | Business task | V1 reference | V2 state | Classification | Cutover priority |
