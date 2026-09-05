@@ -30,6 +30,8 @@
     "v2:m7_2e:write-free-gate": "tsx v2/scripts/assertM72EWriteFreeGate.ts",
     "v2:m7_2f:write-free-gate": "tsx v2/scripts/assertM72EWriteFreeGate.ts",
     "v2:m7_2f:write-free-gate:pure": "tsx v2/tests/modules/writeFreeRuntimeGate.pure.ts",
+    "v2:m7_3a:cutover-evidence-gate": "tsx v2/scripts/assertM73ACutoverEvidenceGate.ts",
+    "v2:m7_3a:cutover-evidence-gate:pure": "tsx v2/tests/modules/cutoverEvidenceGate.pure.ts",
     "v2:boundaries": "node v2/scripts/check-import-boundaries.mjs",
     "v2:m0:postgres": "tsx v2/scripts/runM0PostgresRehearsal.ts",
     "v2:p4:options": "tsx v2/scripts/runP4ProductDraftOptionsRehearsal.ts",
