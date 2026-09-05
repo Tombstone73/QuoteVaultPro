@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { apiFetch } from "@/lib/queryClient";
-import { buildArtworkAccessUrl, downloadArtwork, getArtworkObjectUrl, openArtworkPreview } from "@/lib/artworkAccess";
+import { buildArtworkAccessUrl, downloadArtwork, getArtworkObjectUrl, openArtworkPreview, resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
 const mockedApiFetch = apiFetch as jest.MockedFunction<typeof apiFetch>;
@@ -32,6 +32,12 @@ describe("artworkAccess", () => {
   test("uses the canonical file-record endpoint and rejects invalid identities", () => {
     expect(buildArtworkAccessUrl("fr_1", "preview")).toBe("/api/artwork/file-records/fr_1/content?variant=preview");
     expect(buildArtworkAccessUrl(" ")).toBeNull();
+  });
+
+  test("uses canonical original access for downloads and permits legacy URLs only without a file record", () => {
+    expect(resolveArtworkDownloadUrl("fr_1", "https://storage.example/stale-signed-url")).toBe("/api/artwork/file-records/fr_1/content?variant=original");
+    expect(resolveArtworkDownloadUrl(null, "/legacy/artwork.pdf")).toBe("/legacy/artwork.pdf");
+    expect(resolveArtworkDownloadUrl(" ", null, undefined)).toBeNull();
   });
 
   test("opens a PDF or image only after authenticated Blob fetch", async () => {

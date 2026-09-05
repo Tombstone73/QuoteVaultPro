@@ -8,6 +8,20 @@ export function buildArtworkAccessUrl(fileRecordId: string | null | undefined, v
   return `/api/artwork/file-records/${encodeURIComponent(id)}/content?variant=${variant}`;
 }
 
+/**
+ * Resolve an artwork download through the tenant-authenticated canonical
+ * reader whenever the record has a canonical file identity. Legacy rows can
+ * still use their established URL only when no file record exists.
+ */
+export function resolveArtworkDownloadUrl(
+  fileRecordId: string | null | undefined,
+  ...legacyUrls: Array<string | null | undefined>
+): string | null {
+  const canonicalUrl = buildArtworkAccessUrl(fileRecordId, "original");
+  if (canonicalUrl) return canonicalUrl;
+  return legacyUrls.find((url): url is string => typeof url === "string" && url.trim().length > 0) ?? null;
+}
+
 async function fetchArtworkBlob(fileRecordId: string, variant: ArtworkAccessVariant): Promise<Blob> {
   const url = buildArtworkAccessUrl(fileRecordId, variant);
   if (!url) throw new Error("Artwork file is unavailable.");

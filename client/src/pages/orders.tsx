@@ -32,6 +32,7 @@ import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { formatOrderDate } from "@/lib/orderDate";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import BackNavControls from "@/components/BackNavControls";
@@ -1527,7 +1528,7 @@ export default function Orders() {
               {attachmentsDialogItems.map((att: any) => {
                 const filename = att?.filename || att?.originalFilename || att?.fileName || "Attachment";
                 const thumbUrl = getThumbSrc(att);
-                const downloadUrl = att?.downloadUrl || att?.originalUrl || null;
+                const downloadUrl = resolveArtworkDownloadUrl(att?.fileRecordId, att?.downloadUrl, att?.originalUrl);
                 const originalUrl = att?.originalUrl || null;
                 const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
 

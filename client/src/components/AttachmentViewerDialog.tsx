@@ -11,7 +11,7 @@ import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfDownloadUrl, buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
-import { buildArtworkAccessUrl, openArtworkPreview } from "@/lib/artworkAccess";
+import { buildArtworkAccessUrl, openArtworkPreview, resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { cn } from "@/lib/utils";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
@@ -250,9 +250,11 @@ export function AttachmentViewerDialog({
             ? "fileUrl"
             : "missing"
     : null;
-  const genericDownloadUrl = !isPdf ? canonicalOriginalUrl ?? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
+  const genericDownloadUrl = !isPdf
+    ? resolveArtworkDownloadUrl(currentAttachment?.fileRecordId, currentAttachment?.downloadUrl, currentAttachment?.originalUrl, currentAttachment?.fileUrl)
+    : null;
   const downloadUrl = isPdf
-    ? canonicalOriginalUrl ?? currentAttachment?.downloadUrl ?? pdfDownloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null
+    ? resolveArtworkDownloadUrl(currentAttachment?.fileRecordId, currentAttachment?.downloadUrl, pdfDownloadUrl, currentAttachment?.originalUrl, currentAttachment?.fileUrl)
     : genericDownloadUrl;
   const canGoPrev = !!galleryAttachments && selectedIndex > 0;
   const canGoNext = !!galleryAttachments && selectedIndex < galleryAttachments.length - 1;
