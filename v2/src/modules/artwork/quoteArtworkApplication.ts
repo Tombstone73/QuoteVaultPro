@@ -55,7 +55,6 @@ export interface QuoteArtworkTransactionRunner { transaction<T>(action: (tx: Quo
 
 const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 const actor = (context: OperationContext) => ({ principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
-const validPurpose = (value: string): value is ArtworkPurpose => ["customer_supplied", "production", "proof", "reference"].includes(value);
 
 const validateUsage = (usage: QuoteArtworkUsage): QuoteArtworkUsage => {
   if (!usage.quoteId || !usage.quoteLineId) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork requires a real Quote line.");

@@ -416,58 +416,6 @@ export class PostgresFinancialRead implements FinancialReadPort {
     });
     return [...native, ...legacyItems].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.source.localeCompare(a.source) || b.recordId.localeCompare(a.recordId)).slice(0, 50);
   }
-  async listLedger(
-    organizationId: OrganizationId,
-  ): Promise<readonly FinancialLedgerEntry[]> {
-    const result = await this.client.query<FactRow>(
-      `SELECT f.*,i.sales_order_document_id source_order_id,d.display_number source_order_number,i.customer_id,COALESCE(c.display_name,c.company_name) customer_name,i.total_cents gross_cents
-       FROM (
-        SELECT 'payment'::text kind,p.id,p.id payment_id,p.invoice_id,p.amount_cents,p.currency,p.method,p.source,p.occurred_at,p.recorded_at FROM v2_billing_payments p WHERE p.organization_id=$1
-        UNION ALL
-        SELECT 'refund'::text kind,r.id,a.payment_id,r.invoice_id,r.amount_cents,r.currency,p.method,r.source,r.occurred_at,r.recorded_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=a.payment_id WHERE r.organization_id=$1
-       ) f JOIN v2_billing_invoices i ON i.organization_id=$1 AND i.id=f.invoice_id JOIN v2_sales_documents d ON d.organization_id=$1 AND d.id=i.sales_order_document_id LEFT JOIN customers c ON c.organization_id=$1 AND c.id=i.customer_id
-       ORDER BY f.occurred_at DESC,f.recorded_at DESC,f.id DESC`,
-      [organizationId],
-    );
-    const perInvoice = new Map<string, readonly FactRow[]>();
-    for (const row of result.rows)
-      perInvoice.set(row.invoice_id, [
-        ...(perInvoice.get(row.invoice_id) ?? []),
-        row,
-      ]);
-    const balances = new Map<string, Map<string, FinancialHistoryEntry>>();
-    for (const [invoiceId, rows] of perInvoice) {
-      const chronological = [...rows].sort(
-        (a, b) =>
-          a.occurred_at.getTime() - b.occurred_at.getTime() ||
-          a.recorded_at.getTime() - b.recorded_at.getTime() ||
-          a.id.localeCompare(b.id),
-      );
-      balances.set(
-        invoiceId,
-        new Map(
-          history(chronological, cents(chronological[0]!.gross_cents!)).map(
-            (entry) => [String(entry.id), entry],
-          ),
-        ),
-      );
-    }
-    const native = result.rows.map((row) => ({
-      ...balances.get(row.invoice_id)!.get(row.id)!,
-      recordSource: "v2" as const,
-      recordId: row.id,
-      invoiceId: brandedId<"InvoiceId">(row.invoice_id),
-      sourceOrderId: row.source_order_id!,
-      sourceOrderNumber: row.source_order_number!,
-      ...(row.customer_id ? { customerId: row.customer_id } : {}),
-      ...(row.customer_name ? { customerName: row.customer_name } : {}),
-    }));
-    const legacy = await this.client.query<{
-      id: string; invoice_id: string; amount_cents: string; currency: string; method: string | null; occurred_at: Date; recorded_at: Date; order_id: string | null; order_number: string | null; customer_id: string | null; customer_name: string | null; balance_due_cents: string;
-    }>(`SELECT p.id,p.invoice_id,COALESCE(NULLIF(p.amount_cents,0),ROUND(p.amount*100)::int)::text amount_cents,p.currency,p.method,COALESCE(p.paid_at,p.applied_at,p.created_at AT TIME ZONE 'UTC') occurred_at,p.created_at recorded_at,i.order_id,COALESCE(o.display_number,o.order_number,'Order unavailable') order_number,i.customer_id,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,ROUND(COALESCE(i.balance_due,0)*100)::int::text balance_due_cents FROM payments p JOIN invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id LEFT JOIN orders o ON o.organization_id=i.organization_id AND o.id=i.order_id LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE p.organization_id=$1 ORDER BY COALESCE(p.paid_at,p.applied_at,p.created_at AT TIME ZONE 'UTC') DESC,p.id DESC LIMIT 50`, [organizationId]);
-    const legacyEntries: FinancialLedgerEntry[] = legacy.rows.map((row) => ({ kind: "payment", id: brandedId<"PaymentId">(row.id), paymentId: brandedId<"PaymentId">(row.id), amount: money(currencyCode(row.currency || "USD"), cents(row.amount_cents)), ...(row.method ? { method: row.method as PaymentMethod } : {}), source: "legacy", occurredAt: row.occurred_at.toISOString(), recordedAt: row.recorded_at.toISOString(), balanceAfter: money(currencyCode(row.currency || "USD"), cents(row.balance_due_cents)), recordSource: "legacy", recordId: row.id, invoiceId: brandedId<"InvoiceId">(row.invoice_id), sourceOrderId: row.order_id ?? "", sourceOrderNumber: row.order_number ?? "Order unavailable", ...(row.customer_id ? { customerId: row.customer_id } : {}), ...(row.customer_name ? { customerName: row.customer_name } : {}) }));
-    return [...native, ...legacyEntries].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || b.recordSource.localeCompare(a.recordSource) || b.recordId.localeCompare(a.recordId)).slice(0, 50);
-  }
   async pageFinancialLedger(organizationId: OrganizationId, request: FinancialLedgerPageRequest): Promise<FinancialLedgerPage> {
     const page = financialPage(request.page), pageSize = financialPageSize(request.pageSize), offset = (page - 1) * pageSize;
     const search = financialSearch(request.search), kind = request.kind ?? null, recordSource = request.recordSource ?? null;

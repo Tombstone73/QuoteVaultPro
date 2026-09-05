@@ -400,7 +400,6 @@ export const resolveActivePbv2PricingInput = (
   ];
   const matrix = extractProductOptionPricingMatrix(tree);
   const matrixRows: PricingMatrixRow[] = (matrix?.rows ?? []).map((row, index) => {
-    const variables = row.variables ?? row.values ?? {};
     const unit = pricingV2.optionMatrixPricingUnit === "per_piece" ? "piece" : "area";
     const baseRate = resolveProductOptionPricingMatrixBaseRateCents(row);
     const rowTiers = Array.isArray(row.qtyTiers) ? row.qtyTiers.map((entry, tierIndex) => tier(entry, `matrix-${index}-tier-${tierIndex}`)) : undefined;

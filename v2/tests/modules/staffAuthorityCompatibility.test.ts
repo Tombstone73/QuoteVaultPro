@@ -24,9 +24,9 @@ const issue = async (reader: MutableMembershipReader, organizationId = "org-a") 
   new TemporaryStaffCompatibilityPrincipalIssuer(reader).issueStaff({ identity, requestedOrganizationId: organizationId });
 
 const expected = {
-  owner: ["artwork.adopt", "artwork.assign", "artwork.view", "customer.view", "invoice.editDraft", "invoice.issue", "invoice.view", "order.cancel", "order.create", "order.edit", "order.view", "pricing.preview", "product.edit", "product.view", "quote.convert", "quote.create", "quote.edit", "quote.send", "quote.view"],
-  admin: ["artwork.adopt", "artwork.assign", "artwork.view", "customer.view", "invoice.editDraft", "invoice.issue", "invoice.view", "order.cancel", "order.create", "order.edit", "order.view", "pricing.preview", "product.edit", "product.view", "quote.convert", "quote.create", "quote.edit", "quote.send", "quote.view"],
-  manager: ["customer.view", "invoice.editDraft", "invoice.view", "order.create", "order.edit", "order.view", "pricing.preview", "product.view", "quote.convert", "quote.create", "quote.edit", "quote.send", "quote.view"],
+  owner: ["artwork.adopt", "artwork.assign", "artwork.view", "customer.edit", "customer.view", "invoice.editDraft", "invoice.issue", "invoice.view", "order.cancel", "order.create", "order.edit", "order.view", "pricing.preview", "product.edit", "product.view", "quote.convert", "quote.create", "quote.edit", "quote.send", "quote.view"],
+  admin: ["artwork.adopt", "artwork.assign", "artwork.view", "customer.edit", "customer.view", "invoice.editDraft", "invoice.issue", "invoice.view", "order.cancel", "order.create", "order.edit", "order.view", "pricing.preview", "product.edit", "product.view", "quote.convert", "quote.create", "quote.edit", "quote.send", "quote.view"],
+  manager: ["customer.edit", "customer.view", "invoice.editDraft", "invoice.view", "order.create", "order.edit", "order.view", "pricing.preview", "product.view", "quote.convert", "quote.create", "quote.edit", "quote.send", "quote.view"],
   member: ["customer.view", "invoice.view", "order.view", "pricing.preview", "product.view", "quote.view"],
 } as const;
 

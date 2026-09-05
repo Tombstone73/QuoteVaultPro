@@ -80,9 +80,6 @@ export const enqueueV2QuickBooksAutoSync = async (client: QuickBooksQueueClient,
 
 export class PostgresQuickBooksSyncNow {
   constructor(private readonly pool: Pool) {}
-  async enqueueInvoice(organizationId: string, invoiceId: string): Promise<void> {
-    await this.enqueueInvoices(organizationId, [invoiceId]);
-  }
   async policy(organizationId:string):Promise<{autoSync:boolean}> { const result=await this.pool.query<{ enabled:boolean }>("SELECT COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled FROM organizations WHERE id=$1",[organizationId]); return {autoSync:result.rows[0]?.enabled===true}; }
   async setPolicy(organizationId:string,autoSync:boolean):Promise<{autoSync:boolean}> { const result=await this.pool.query<{ enabled:boolean }>("UPDATE organizations SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{preferences,quickBooks,autoSync}',to_jsonb($2::boolean),true),updated_at=now() WHERE id=$1 RETURNING COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled",[organizationId,autoSync]); if(!result.rows[0])throw new Error("Organization is unavailable for QuickBooks configuration."); return {autoSync:result.rows[0].enabled}; }
   /** Explicit operator selection uses the same durable queue as Sync Now. */
@@ -135,23 +132,6 @@ export class PostgresQuickBooksSyncNow {
       }
       await client.query("COMMIT");
       return unique;
-    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
-  }
-  /** An explicit operator recovery keeps one logical Payment job and never replays uncertainty blindly. */
-  async retryPayment(organizationId: string, invoiceId: string, paymentId: string): Promise<{ state: "queued"; attemptCount: number }> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const payment = await client.query<{ id: string }>("SELECT p.id FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND p.id=$2 AND p.invoice_id=$3 AND i.invoice_state <> 'void'", [organizationId, paymentId, invoiceId]);
-      if (!payment.rows[0]) throw new Error("The V2 Payment is unavailable for QuickBooks recovery.");
-      const recovered = await client.query<{ attempt_count: number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId, paymentId]);
-      if (recovered.rows[0]) { await client.query("COMMIT"); return { state: "queued", attemptCount: recovered.rows[0].attempt_count }; }
-      const job = await client.query<{ state: JobState }>("SELECT state FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 FOR UPDATE", [organizationId, paymentId]);
-      const state = job.rows[0]?.state;
-      if (state === "succeeded") throw new Error("This QuickBooks Payment is already synchronized.");
-      if (state === "uncertain") throw new Error("This QuickBooks Payment requires provider reconciliation before it can be retried.");
-      if (state === "processing") throw new Error("This QuickBooks Payment is currently being processed.");
-      throw new Error("This QuickBooks Payment is not eligible for recovery.");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
   /** Accounting Settings is the sole operator console. It reads only V2 facts

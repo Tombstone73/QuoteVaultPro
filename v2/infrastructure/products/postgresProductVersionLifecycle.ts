@@ -850,9 +850,6 @@ const matrixFromTree = (
     meta = record(tree.meta),
     matrix = extractProductOptionPricingMatrix(tree),
     availableDimensions = matrixDimensions(tree),
-    formula =
-      typeof meta.pricingFormula === "string" ||
-      Boolean(row.product_formula_id),
     unit =
       record(meta.pricingV2).optionMatrixPricingUnit === "per_piece"
         ? "per_piece"

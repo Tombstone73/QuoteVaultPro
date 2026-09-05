@@ -155,9 +155,9 @@ const hasAreaRate = (tier: PricingTierRule | undefined): boolean => tier?.perSqu
 
 /**
  * Calculation-only V2 boundary around characterized PBV2 pricing semantics.
- * A future compatibility reader resolves Product/PBV2 state into `rules` before
- * this adapter is called. It intentionally accepts a caller-supplied Nesting
- * estimate rather than reaching into production or inventory behavior.
+ * The Product/PBV2 compatibility resolver supplies canonical `rules` before
+ * Draft preview, Quote, and Order callers invoke this adapter. It accepts a
+ * caller-supplied Nesting estimate without reaching into production or inventory.
  */
 export class V2PricingParityAdapter implements PricingPort {
   async calculate(request: PricingCalculationRequest): Promise<PricingResult> {

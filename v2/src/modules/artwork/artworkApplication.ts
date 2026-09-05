@@ -32,7 +32,6 @@ export interface ArtworkTransaction {
 export interface ArtworkTransactionRunner { transaction<T>(action: (transaction: ArtworkTransaction) => Promise<T>): Promise<T>; }
 
 const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
-const identity = (value: unknown): string => fingerprint(value);
 
 const validateFile = (file: ArtworkFileInput): ArtworkFileInput => {
   validateArtworkObjectReference(file.objectReference);

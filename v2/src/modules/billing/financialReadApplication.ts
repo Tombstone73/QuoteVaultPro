@@ -143,9 +143,6 @@ export interface FinancialReadPort {
     organizationId: OrganizationId,
     request: Omit<FinancialInvoicePageRequest, "page" | "pageSize" | "sort" | "direction">,
   ): Promise<FinancialArSummary>;
-  listLedger(
-    organizationId: OrganizationId,
-  ): Promise<readonly FinancialLedgerEntry[]>;
   pageFinancialLedger(
     organizationId: OrganizationId,
     request: FinancialLedgerPageRequest,
@@ -274,44 +271,6 @@ export class FinancialReadApplicationService {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError(
         "INTERNAL_ERROR", "Financial A/R totals could not be read.",
       ));
-    }
-  }
-
-  async ledger(
-    context: OperationContext,
-  ): Promise<ApplicationResult<readonly FinancialLedgerEntry[]>> {
-    try {
-      requireOperationPrincipalScope(context);
-      const entries = await this.runner.read((port) =>
-        port.listLedger(brandedId<"OrganizationId">(context.organizationId)),
-      );
-      const visible = entries.filter(
-        (entry) =>
-          this.authority.decide(context.principal, {
-            capability: "payment.view",
-            resource: {
-              organizationId: context.organizationId,
-              customerId: entry.customerId,
-            },
-          }).allowed,
-      );
-      if (!visible.length)
-        this.assertFinancialView(
-          context,
-          context.principal.kind === "portal"
-            ? context.principal.customerId
-            : undefined,
-        );
-      return success(visible);
-    } catch (error) {
-      return failure(
-        error instanceof V2ApplicationError
-          ? error
-          : new V2ApplicationError(
-              "INTERNAL_ERROR",
-              "Financial ledger could not be read.",
-            ),
-      );
     }
   }
 

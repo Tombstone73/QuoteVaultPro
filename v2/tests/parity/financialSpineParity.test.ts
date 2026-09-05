@@ -218,7 +218,7 @@ describe("M5 financial spine parity baseline", () => {
     expect(fixture.providerOperations.get(begun.providerOperationId)).toMatchObject({ reconciliationState: "succeeded", providerTransactionId: "provider-transaction-1" });
     const overpayment = await service.beginProviderOperation(context("provider-overpayment"), { organizationId, invoiceId, kind: "payment", amount: money(usd, 1), provider: "fixture-pay", providerIdempotencyKey: "provider-key-overpayment", businessRequestId: brandedId<"BusinessRequestId">("provider-overpayment") });
     expect(overpayment).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
-    expect(fixture.providerOperations).toHaveLength(1);
+    expect(fixture.providerOperations.size).toBe(1);
     const providerArchitecture = compareParity({
       domain: "Provider recovery",
       fixture: "uncertain-then-reconciled-payment",

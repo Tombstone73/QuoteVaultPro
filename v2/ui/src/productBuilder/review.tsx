@@ -49,16 +49,6 @@ export type ReviewSummaryProps = Readonly<{
   validation?: ReviewValidation;
   /** Navigation is owned by the Builder shell; Review only requests it. */
   onJump?: (section: string) => void;
-  /**
-   * Transitional compatibility for the original adapter. It supplies no
-   * validation provenance, so a zero count is shown as unverified rather
-   * than being presented as a server-ready result.
-   */
-  errors?: number;
-  /** @deprecated Supply lifecycle.activeVersion instead. */
-  activeVersion?: string;
-  /** @deprecated Supply lifecycle.draftVersion instead. */
-  draftVersion?: string;
 }>;
 
 /** Direct port of the Lovable ReviewSummary presentation. V2 supplies every
@@ -70,14 +60,10 @@ export function ReviewSummary({
   findings,
   validation,
   onJump,
-  errors,
-  activeVersion,
-  draftVersion,
 }: ReviewSummaryProps) {
-  const active = lifecycle?.activeVersion ?? (activeVersion ? { label: activeVersion } : undefined);
-  const draft = lifecycle?.draftVersion ?? (draftVersion ? { label: draftVersion } : undefined);
-  const canonicalErrors = findings?.filter((finding) => finding.severity === "error").length;
-  const errorCount = canonicalErrors ?? errors;
+  const active = lifecycle?.activeVersion;
+  const draft = lifecycle?.draftVersion;
+  const errorCount = findings?.filter((finding) => finding.severity === "error").length;
   const validationStatus = validation?.status ?? (errorCount && errorCount > 0 ? "invalid" : "unknown");
   const validationSummary = validation?.summary
     ?? (validationStatus === "invalid"

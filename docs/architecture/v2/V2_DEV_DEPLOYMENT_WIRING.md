@@ -1,5 +1,12 @@
 # V2 DEV cutover deployment wiring
 
+## Current DEV ownership
+
+M6 completed on `dev` at `555414cbb96de65ef72b7556f78100a1b968ec91`.
+The existing DEV applications below are already cut over to V2. Current work
+starts from reconciled `origin/dev`; the historical reconstruction branch is
+not a source to promote again. MAIN remains V1.
+
 ## Approved topology
 
 DEV is the V1-to-V2 proving ground. At the approved cutover, the existing DEV
@@ -60,7 +67,7 @@ read-only release-verification commands. `npm run v2:migrations:apply` is the
 deployment lifecycle command; do not use it as an ad hoc substitute for a
 normal DEV deployment.
 
-The current checked-in journal ends at `0222_v2_product_version_routing_authoring`.
+The current migration list is the checked-in `server/db/migrations_v2/meta/_journal.json`; this deployment note does not pin a historical journal endpoint.
 The migration guard validates the exact DEV Railway context first. No reset,
 clone, recreation, or production migration is authorised.
 
@@ -106,7 +113,7 @@ rooted at `.`) to use root directory `v2/ui`, build command
 can never become V2 HTML. The root `vercel.json` remains the V1/MAIN
 configuration and is not changed by this cutover plumbing.
 
-## Cutover sequence and boundaries
+## Original cutover sequence (historical)
 
 1. Validate the authoritative `v2/reconstruction` source.
 2. Fast-forward `dev` from that exact source; never force, squash, or

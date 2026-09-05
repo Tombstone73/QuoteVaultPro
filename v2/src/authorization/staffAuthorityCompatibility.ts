@@ -3,9 +3,9 @@ import type { Capability } from "./capabilities.js";
 /**
  * TEMPORARY COMPATIBILITY INFRASTRUCTURE ONLY.
  *
- * This narrow map exists until M1.5 replaces it with organization-scoped,
- * configurable permission sets. Do not import it from domain/application/UI
- * code; TemporaryStaffCompatibilityPrincipalIssuer is its only runtime user.
+ * Retained for the M1.4 compatibility rehearsal and its regression tests.
+ * Production issuance now uses organization-scoped permission sets. Do not
+ * import this historical map from current domain/application/UI code.
  */
 export const TEMPORARY_STAFF_AUTHORITY_SOURCE = "temporary_staff_membership_compatibility" as const;
 export const TEMPORARY_STAFF_AUTHORITY_REPLACEMENT_MILESTONE = "M1.5 — Permission-Set Foundation" as const;
@@ -33,7 +33,7 @@ const ownerAdminCommercial: readonly Capability[] = [
   "invoice.issue",
   "product.edit",
   // Artwork is an operational Owner/Admin workflow. Keep it explicitly
-  // bounded here until organization-scoped permission sets replace this map.
+  // bounded here to preserve the historical M1.4 compatibility contract.
   "artwork.view", "artwork.adopt", "artwork.assign",
 ];
 

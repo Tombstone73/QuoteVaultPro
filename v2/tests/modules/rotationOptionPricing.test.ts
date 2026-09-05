@@ -114,8 +114,8 @@ describe("ProductVersion option-controlled rotation", () => {
 
     // The configured node identity resolves through its selectionKey; labels never
     // participate in this commercial decision.
-    expect(resolved.resolvedConfiguration.selections).toMatchObject({ flute_direction: fluteDirection, thickness: "4mm" });
-    expect(resolved.resolvedConfiguration.derivedFacts).toMatchObject({
+    expect(resolved.value.resolvedConfiguration.selections).toMatchObject({ flute_direction: fluteDirection, thickness: "4mm" });
+    expect(resolved.value.resolvedConfiguration.derivedFacts).toMatchObject({
       productAllowsRotation: true,
       optionAllowsRotation: expectedRotation,
       effectiveRotation: expectedRotation,
@@ -124,7 +124,7 @@ describe("ProductVersion option-controlled rotation", () => {
       rotationControlSelectedChoiceValues: [fluteDirection],
       rotationControlAllowWhenChoiceValues: ["no"],
     });
-    expect(resolved.nestingEstimate?.facts).toMatchObject({
+    expect(resolved.value.nestingEstimate?.facts).toMatchObject({
       allowRotation: expectedRotation,
       productAllowsRotation: true,
       optionAllowsRotation: expectedRotation,
@@ -133,7 +133,7 @@ describe("ProductVersion option-controlled rotation", () => {
       billedSheetSqft: expectedBillableSqft,
     });
 
-    const priced = await calculate(resolved);
+    const priced = await calculate(resolved.value);
     expect(priced.matrix).toMatchObject({ matrixId: "thickness-rate", rowId: "4mm-sheet-rate" });
     expect(priced.tier).toMatchObject({ source: "computed_sheet", selectedTierId: "computed-sheet-tier", basisValue: decimalText(String(expectedSheets)) });
     expect(priced.calculatedLineAmount.cents).toBe(expectedCents);
@@ -154,7 +154,7 @@ describe("ProductVersion option-controlled rotation", () => {
     const resolved = resolve({ width: 24, height: 36, fluteDirection: "no", allowRotation: false });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
-    expect(resolved.nestingEstimate?.facts).toMatchObject({ allowRotation: false, totalSheetCount: 2, billedSheetSqft: 64 });
+    expect(resolved.value.nestingEstimate?.facts).toMatchObject({ allowRotation: false, totalSheetCount: 2, billedSheetSqft: 64 });
   });
 
   test("existing ProductVersions without a rotation-control option retain their ProductVersion rotation policy", () => {
@@ -163,8 +163,8 @@ describe("ProductVersion option-controlled rotation", () => {
     expect(on.ok).toBe(true);
     expect(off.ok).toBe(true);
     if (!on.ok || !off.ok) return;
-    expect(on.nestingEstimate?.facts).toMatchObject({ allowRotation: true, totalSheetCount: 1 });
-    expect(off.nestingEstimate?.facts).toMatchObject({ allowRotation: false, totalSheetCount: 2 });
+    expect(on.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, totalSheetCount: 1 });
+    expect(off.value.nestingEstimate?.facts).toMatchObject({ allowRotation: false, totalSheetCount: 2 });
   });
 
   test("a stale rotation-control identity fails closed rather than falling back to labels or a product heuristic", () => {

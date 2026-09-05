@@ -43,7 +43,7 @@ assert.match(queue, /async enqueueFinancialFacts/);
 assert.match(queue, /Select between 1 and 100 eligible V2 Payments or Refunds/);
 assert.match(queue, /async unsyncedFinancialFacts/);
 assert.match(queue, /refund_disbursement/);
-assert.match(queue, /async retryPayment\(organizationId: string, invoiceId: string, paymentId: string\)/);
+assert.match(queue, /async retry\(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string\)/);
 assert.match(queue, /state IN \('blocked','retry'\)/);
 assert.match(queue, /requires provider reconciliation before it can be retried/);
 assert.match(queue, /quickBooksCredentialInterruptedRecoveryEligible/);

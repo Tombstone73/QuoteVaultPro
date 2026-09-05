@@ -54,7 +54,7 @@ assert.match(ledgerCalls[1]!.sql, /SELECT count\(\*\)::text total_matching FROM 
 
 const financeUi = readFileSync("v2/ui/src/FinanceWorkspace.tsx", "utf8");
 const commandCenter = readFileSync("v2/ui/src/CommandCenter.tsx", "utf8");
-const invoiceUi = readFileSync("v2/ui/src/InvoiceWorkspace.tsx", "utf8");
+const appUi = readFileSync("v2/ui/src/App.tsx", "utf8");
 assert.match(financeUi, /const invoiceQuery: FinancialInvoiceQuery = \{ page, pageSize, \.\.\.\(search \? \{ q: search \}/u);
 assert.match(financeUi, /"finance", "overview", invoiceQuery/u);
 assert.match(financeUi, /Select visible invoices/u);
@@ -67,8 +67,9 @@ assert.match(financeUi, /aria-label="Ledger source"/u);
 assert.match(financeUi, /serverSorting=\{\{ id: ledgerSort, direction: ledgerSortDirection \}\}/u);
 assert.match(commandCenter, /financeApi\.summary\(organizationId\)/u);
 assert.doesNotMatch(commandCenter, /invoices\.reduce\(/u);
-assert.match(invoiceUi, /financeApi\.overview\(organizationId/u);
-assert.match(invoiceUi, /hasNextPage/u);
+assert.match(financeUi, /financeApi\.overview\(organizationId, invoiceQuery\)/u);
+assert.match(financeUi, /hasNextPage/u);
+assert.match(appUi, /page === "invoices" \|\| page === "payments" \? \(\s*<FinanceWorkspace/u);
 
 const ledgerMigration = readFileSync("server/db/migrations_v2/0257_v2_finance_paged_ledger_read_model.sql", "utf8");
 assert.match(ledgerMigration, /COALESCE\(paid_at,applied_at,created_at AT TIME ZONE 'UTC'\) DESC/u);
