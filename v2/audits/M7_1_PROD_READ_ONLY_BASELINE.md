@@ -1,93 +1,63 @@
 # M7.1 production read-only baseline
 
-**Disposition: BLOCKED.**  This is a factual, no-write baseline record, not a
-cutover approval.  M7.1A ran on 2026-09-04 using clean `dev` /
-`origin/dev` source `d1c25a77104839d7831feb272945cb66d0393003`, which follows
-the Post-M6 starting baseline `e77808b37883051c05a44e33328f923fd99bf179`.
+**Disposition: COMPLETE WITH BLOCKING FINDINGS.** This is a production aggregate-only, no-business-write baseline as of 2026-09-05. It is not a cutover approval. No PII, row payloads, identifiers, provider credentials, or audit passwords are recorded.
 
-## M7.1A production provenance update
+## Provenance, authentication, and read-only proof
 
-Read-only Railway metadata and a direct, explicitly read-only PostgreSQL
-session positively identify the target as Railway project `PrintersHero-
-PRODUCTION`, environment `production`, service `PrintersHero-PRODUCTION`.
-The service has one running replica, serves `api.printershero.com` on port
-8080, and its active deployment is from `main` commit `1326ad1b1bda70e478adc44b3b7ee3ccdf7e5102`.
+The target was Railway `PrintersHero-PRODUCTION` / `production`, configured for Neon `ep-rough-lake-aem3jtto-pooler.c-2.us-east-2.aws.neon.tech`, database `neondb`, PostgreSQL 17.11. Production is one V1 Railway replica from `main` commit `1326ad1b1bda70e478adc44b3b7ee3ccdf7e5102`; DEV V2 evidence is not projected onto this target.
 
-The application connection resolves to Neon host
-`ep-rough-lake-aem3jtto-pooler.c-2.us-east-2.aws.neon.tech`, database
-`neondb`, PostgreSQL 17.  The service exposes `DATABASE_URL`, production
-Stripe, QuickBooks, Google, Supabase and application-origin variable names;
-values were never retrieved or recorded.  This is independently corroborated
-by `https://api.printershero.com/api/health`, which reports production and the
-`www.printershero.com` origin.
+A single controlled Node process generated a strong password in memory, reset only `printershero_m7_audit`, and immediately opened a second connection with that in-memory value. The password was never emitted, persisted, committed, or exported. Two password rotations occurred: the first login attempt stopped on a pooled-backend-address comparison; the final rotation/login succeeded. Both changes were only `ALTER ROLE ... PASSWORD` for this audit role. All audit connections closed, and the current random password is intentionally unknown outside that process.
 
-The live production API is V1, not V2: its `/api/health` is valid V1 JSON,
-whereas `/health`, `/ready`, and `/version` resolve to V1 frontend HTML.  DEV
-V2 remains separately healthy at `api-dev.printershero.com` on `d1c25a77`.
+| Check | Result |
+| --- | --- |
+| Restricted identity | `current_user = printershero_m7_audit`; `current_database = neondb` |
+| Target proof | exact configured verified production Neon endpoint |
+| Transaction | default `transaction_read_only = on`; explicit `REPEATABLE READ READ ONLY` also `on` |
+| Effective privileges | no database/schema `CREATE`; no `INSERT`, `UPDATE`, `DELETE`, or `TRUNCATE` on `organizations`; no `SELECT` on `oauth_connections` |
+| Role attributes | login only; no superuser, role/database creation, replication, BYPASSRLS, or inheritance; connection limit one; expiry 2026-10-04 UTC |
 
-## Safety result
+Every inventory query ran inside the explicit transaction and ended in rollback/connection close. The password was not separately invalidated: it is random and unretained, so a later audit requires another authorized controlled rotation.
 
-Production application credentials were used only for PostgreSQL catalog and
-identity reads after an explicit `REPEATABLE READ READ ONLY` transaction and
-`transaction_read_only=on` proof; every session rolled back and closed.  No
-business-data row was output.  No provider call, email, queue claim, migration,
-webhook replay, or deployment was performed.
+## Migration and physical schema inventory
 
-The target is now positively identified and the application identity was used
-only in verified `REPEATABLE READ READ ONLY` metadata sessions with rollback.
-However, M7.1 remains blocked because the dedicated audit-login password could
-not be stored safely for reuse or used to prove its own connection boundary.
+The `public` schema has 234 tables and extensions `pgcrypto` and `plpgsql`. `__drizzle_migrations_v2` has `id`, `hash`, and `created_at`, with 194 rows. Its latest timestamp maps to repository journal tag `0199_v2_proofing_domain_foundation`.
 
-## Existing tooling assessment
+This does **not** form a coherent M0199 schema. Production has only 15 `v2_*` tables: the M0180 operation/principal/outbox foundation and M0181 permission-set family. Repository SQL through M0199 requires V2 sales, audit, routing, billing, artwork, and proof tables that are absent from the catalog. The repository journal has 259 immutable entries through 0263 and 195 entries through M0199, while PROD's ledger has 194 rows.
 
-| Path | Safe use | M7.1 production result |
-| --- | --- | --- |
-| `scripts/db/auditPhysicalSchema.ts` | Disposable DEV/CI `TEST_DATABASE_URL`; `BEGIN READ ONLY`, verifies `SHOW transaction_read_only`, catalog-only reads, rollback/end | Do not repurpose: it has no production identity allowlist. |
-| `scripts/audit-migration-integrity-0109-0114.ts` | Historical/local inspection | Not a production gate: accepts `DATABASE_URL`, identifies after connect, and does not prove `transaction_read_only`. |
-| `v2/scripts/devHistoricalDataHygienePolicy.ts` | Proven DEV inventory primitive: repeatable-read/read-only verification and guaranteed rollback/release | Correctly hard-gated to `PrintersHero-DEV / Development`; it must remain DEV-only. |
+This is a **P0 ledger/schema-provenance divergence**, not a finding of which historical row was altered or manually applied: DDL definitions and ledger hashes were not read. Do not run ordinary forward V2 migrations, deploy V2, or cut over. First obtain separately authorized DDL and migration-hash reconciliation and an approved repair/rollback plan.
 
-## Migration and schema baseline
+## Aggregate business-state inventory
 
-Production migration journal, highest migration, duplicate/gap state, table
-occupancy, extensions, and V2 schema compatibility are **not observed**.  The
-Post-M6 reports establish only DEV evidence; they cannot be projected onto
-production.
+Counts and status aggregates only:
 
-The next authorized production audit tool must accept only a distinct audit
-role/URL with independently verified production provenance, redact identity
-output, reject ambiguous scope before business reads, execute `BEGIN
-TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`, verify
-`transaction_read_only = on`, allow only bounded `SELECT`/catalog queries, and
-always roll back, release, and close on both success and failure.
+| Domain | Observed production state |
+| --- | --- |
+| Tenancy / CRM | 2 organizations, 528 active customers, 414 contacts |
+| Product / pricing | 48 products; 10 pricing formulas; 0 product variants, product options, and pricing rules |
+| Quotes | 67 all `draft`; 92 lines (90 `active`, 2 `draft`) |
+| Orders | 350: 191 `in_production`, 117 `new`, 33 `ready_for_shipment`, 8 `canceled`, 1 `completed` |
+| Production | 478 jobs: 320 `queued`, 152 `done`, 3 `in_progress`, 2 `canceled`, 1 `void`; 3 runs (2 canceled, 1 completed) |
+| Artwork / proof | 739 artwork (710 current); 972 files (935 active); 38 proof versions; 17 proof approvals |
+| Materials / fulfillment | 77 materials; 10 reservations (1 `RESERVED`, 9 `RELEASED`); 4 draft shipments, 8 shipment items, 2 pickup handoffs |
+| Finance / local provider state | 257 invoices (239 billed); 24 payments (11 refunded, 11 succeeded); 9 successful Stripe attempts; 10 successful refund requests; 39 processed payment webhooks |
+| Accounting / delivery | 1 synced accounting job; 0 QuickBooks leases; 4 delivery jobs (2 `failed`, 2 `needs_review`); 10 sent email-log records |
+| V2 activation evidence | 0 `v2_outbox_messages`, 0 `v2_operation_requests`, 5 V2 permission-audit events |
+| Audit history | 1,903 audit-log and 1,626 order-audit-log records |
 
-## Production service identity observations
+These show live, non-quiescent legacy operations. They are not provider-side reconciliation proof and must not be used to retry, resend, claim, or mutate anything.
 
-Unauthenticated GET-only discovery found `www.printershero.com` on Vercel and
-`api.printershero.com/api/health` on the verified Railway V1 backend.  The
-backend's root `/health`, `/ready`, and `/version` paths return frontend HTML,
-not V2 probes.  Production MCP root returns the default nginx page while its
-`/health` reports version `1.0.0`; DEV MCP `/health` returns 502.  These checks
-do not establish MCP process/tool topology, and no mutation endpoint was
-contacted.
+## Observed production shapes and risks
 
-## DEV comparison baseline
+“Production-only” means observed in PROD, not proven absent in DEV.
 
-Post-M6 DEV is the sole comparable evidence: its final validation records the
-same source/deployed SHA, healthy/ready DEV service, and zero database/provider
-mutations by its read-only inventory.  It records retained history including
-ambiguous delivery attempts, pending financial outbox entries, historical
-ProductVersions, compatibility fields, and routing fixtures.  PROD state shapes
-remain unknown rather than assumed absent or corrupt.
+- Legacy canonical tables use mixed status vocabularies: lower-case order/production states and upper-case inventory/shipment states.
+- Product, quote-line, and order-line metadata includes PBV2 snapshot/version, option-tree, design/proof/prepress, and workflow compatibility fields. Only metadata was inspected; field population was not inferred.
+- V2 permission/portal foundations exist, but no V2 sales/order/billing/routing/artwork/proof family was catalogued and V2 operation/outbox rows were zero.
+- Empty optional subdomains (`product_variants`, `product_options`, `pricing_rules`, `prepress_jobs`, `quickbooks_sync_leases`) require migration adapters to tolerate zero rows.
+- **P0:** 320 queued production jobs and 191 orders in production require an approved reconciliation/resume plan before any authority change.
+- **P1:** assign an owner and non-mutating investigation plan for the failed/needs-review delivery jobs; define explicit V1-to-V2 status, lifecycle, financial, artwork, and fulfillment contracts.
+- **P2:** repeat the controlled in-memory rotation/login pattern before role expiry; never retain a shared audit password.
 
-## Required unblock
+## Scope ledger
 
-An audit role named `printershero_m7_audit` was created with a 2026-10-04 UTC
-expiry, login, connection limit one, no superuser/role/database/replication/
-BYPASSRLS/inheritance privileges, `default_transaction_read_only=on`, and an
-explicit 46-table operational/financial/migration/audit SELECT allowlist.
-It has no schema/database CREATE, INSERT, UPDATE, DELETE, or OAuth-table
-SELECT privilege according to catalog checks.  Its generated password was not
-safely persisted by the local Railway-run context, so it must be reset once by
-a production database administrator and delivered through an approved
-out-of-band secret channel before the dedicated-role connection proof and M7.1
-business inventory can run.  Do not use a generic application `DATABASE_URL`.
+Production mutations: two password rotations of `printershero_m7_audit` only. Application/business-data mutations: none. Provider writes: none. Deployments, migrations, queue claims, email sends, webhook replays, and Vercel/Railway configuration writes: none.
