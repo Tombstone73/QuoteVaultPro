@@ -20,6 +20,11 @@ describe("admin customer merge workflow wiring", () => {
     expect(service).toContain("PRIMARY_CONTACT_RESOLUTION_REQUIRED");
     expect(service).toContain("SOURCE_ALREADY_MERGED");
     expect(service).toContain("customer_merge_completed");
+    expect(service).toContain("selectRetainedQuickBooksCustomerId");
+    expect(service).toContain("lowest_quickbooks_id_retained");
+    expect(service).toContain("retiredQuickBooksCustomerIds");
+    expect(service).toContain("INVALID_QUICKBOOKS_CUSTOMER_ID");
+    expect(service).toContain("Future QuickBooks activity will use customer");
     expect(service).toContain("mergedIntoCustomerId: survivor.id");
     expect(service).toContain("eq(customers.organizationId, input.organizationId)");
     expect(schema).toContain("mergedIntoCustomerId");
@@ -40,7 +45,17 @@ describe("admin customer merge workflow wiring", () => {
     expect(dialog).toContain("/api/customers/merge");
     expect(dialog).toContain("reviewed: true");
     expect(dialog).toContain("primaryContactId");
+    expect(dialog).toContain("quickbooks-merge-warning");
     expect(dialog).not.toContain("/api/orders/");
     expect(dialog).not.toContain("/api/invoices/");
+  });
+
+  it("keeps the local merge free of QuickBooks provider writes and preserves completed provider history", async () => {
+    const service = await source("server/services/customerCanonicalIdentityService.ts");
+    expect(service).not.toContain("quickbooksService");
+    expect(service).not.toContain("syncSingleInvoiceToQuickBooksForOrganization");
+    expect(service).not.toContain("syncSinglePaymentToQuickBooksForOrganization");
+    expect(service).toContain("Completed provider\n    // history stays immutable");
+    expect(service).not.toContain("qbSyncStatus: sql`case when coalesce(${invoices.qbInvoiceId}");
   });
 });

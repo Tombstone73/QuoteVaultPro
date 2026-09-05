@@ -24,6 +24,7 @@ const SAME_QB_A = `cust_same_qb_a_${suffix}`;
 const SAME_QB_B = `cust_same_qb_b_${suffix}`;
 const DIFF_QB_A = `cust_diff_qb_a_${suffix}`;
 const DIFF_QB_B = `cust_diff_qb_b_${suffix}`;
+const SYNCED_INVOICE_ID = `invoice_customer_identity_${suffix}`;
 
 async function insertCustomer(id: string, companyName: string, externalAccountingId: string | null = null) {
   await db.execute(sql`
@@ -51,12 +52,12 @@ beforeAll(async () => {
     on conflict (id) do nothing
   `);
 
-  await insertCustomer(QB_SURVIVOR, "Signs Etc", "QB-SIGNS");
+  await insertCustomer(QB_SURVIVOR, "Signs Etc", "101");
   await insertCustomer(NAME_DUPLICATE, "Signs Etc.", null);
-  await insertCustomer(SAME_QB_A, "Elite Printing", "QB-ELITE");
-  await insertCustomer(SAME_QB_B, "Elite Printing Inc", "QB-ELITE");
-  await insertCustomer(DIFF_QB_A, "Graphic Solutions", "QB-GRAPHIC-1");
-  await insertCustomer(DIFF_QB_B, "Graphic Solutions LLC", "QB-GRAPHIC-2");
+  await insertCustomer(SAME_QB_A, "Elite Printing", "200");
+  await insertCustomer(SAME_QB_B, "Elite Printing Inc", "200");
+  await insertCustomer(DIFF_QB_A, "Graphic Solutions", "300");
+  await insertCustomer(DIFF_QB_B, "Graphic Solutions LLC", "299");
 
   await db.execute(sql`
     insert into external_identity_mappings (
@@ -66,9 +67,25 @@ beforeAll(async () => {
     on conflict (organization_id, source_system, source_entity_type, source_record_id) do update
       set entity_id = excluded.entity_id, updated_at = now()
   `);
+
+  await db.execute(sql`
+    insert into invoices (
+      id, organization_id, invoice_number, customer_id, status, created_by_user_id,
+      subtotal, tax, total, subtotal_cents, tax_cents, shipping_cents, total_cents,
+      external_accounting_id, qb_invoice_id, qb_sync_status, sync_status,
+      invoice_version, accounting_approved_at, accounting_approved_by_user_id, accounting_approved_version
+    ) values (
+      ${SYNCED_INVOICE_ID}, ${ORG_ID}, ${Math.floor(Date.now() / 1000)}, ${DIFF_QB_B}, ${"billed"}, ${USER_ID},
+      ${"10"}, ${"0"}, ${"10"}, ${1000}, ${0}, ${0}, ${1000},
+      ${"qb-invoice-history"}, ${"qb-invoice-history"}, ${"synced"}, ${"synced"},
+      ${7}, now(), ${USER_ID}, ${7}
+    )
+    on conflict (id) do nothing
+  `);
 });
 
 afterAll(async () => {
+  await db.execute(sql`delete from invoices where organization_id = ${ORG_ID}`);
   await db.execute(sql`delete from external_identity_mappings where organization_id = ${ORG_ID}`);
   await db.execute(sql`delete from customer_contact_links where organization_id = ${ORG_ID}`);
   await db.execute(sql`delete from customer_contacts where organization_id = ${ORG_ID}`);
@@ -80,8 +97,8 @@ afterAll(async () => {
 describe("canonical customer identity", () => {
   test("same QuickBooks ID consolidates deterministically", () => {
     const decision = decideCustomerMerge({
-      left: { id: "a", companyName: "Elite Printing", externalAccountingId: "QB-1", status: "active" },
-      right: { id: "b", companyName: "Elite Printing Inc", externalAccountingId: "QB-1", status: "active" },
+      left: { id: "a", companyName: "Elite Printing", externalAccountingId: "200", status: "active" },
+      right: { id: "b", companyName: "Elite Printing Inc", externalAccountingId: "200", status: "active" },
       preferredSurvivorId: "b",
     });
 
@@ -90,35 +107,51 @@ describe("canonical customer identity", () => {
       survivorCustomerId: "b",
       duplicateCustomerId: "a",
       requiresReviewedAction: false,
-      quickBooksCustomerId: "QB-1",
+      quickBooksCustomerId: "200",
     });
   });
 
-  test("different QuickBooks IDs block automatic merge", () => {
+  test("different QuickBooks IDs merge with the lower numeric ID independently of the local survivor", () => {
     const decision = decideCustomerMerge({
-      left: { id: "a", companyName: "Graphic Solutions", externalAccountingId: "QB-1", status: "active" },
-      right: { id: "b", companyName: "Graphic Solutions LLC", externalAccountingId: "QB-2", status: "active" },
-    });
-
-    expect(decision.action).toBe("block");
-    if (decision.action === "block") {
-      expect(decision.code).toBe("QUICKBOOKS_ID_CONFLICT");
-    }
-  });
-
-  test("only one record has QuickBooks ID, and that record survives after review", () => {
-    const decision = decideCustomerMerge({
-      left: { id: "qb", companyName: "Signs Etc", externalAccountingId: "QB-SIGNS", status: "active" },
-      right: { id: "secondary", companyName: "Signs Etc.", externalAccountingId: null, status: "active" },
-      reviewed: true,
+      left: { id: "a", companyName: "Graphic Solutions", externalAccountingId: "300", status: "active" },
+      right: { id: "b", companyName: "Graphic Solutions LLC", externalAccountingId: "299", status: "active" },
+      preferredSurvivorId: "a",
     });
 
     expect(decision).toMatchObject({
       action: "merge",
-      survivorCustomerId: "qb",
-      duplicateCustomerId: "secondary",
-      requiresReviewedAction: true,
+      survivorCustomerId: "a",
+      duplicateCustomerId: "b",
+      reason: "lowest_quickbooks_id_retained",
+      quickBooksCustomerId: "299",
+      retiredQuickBooksCustomerIds: ["300"],
     });
+  });
+
+  test("only one record has a QuickBooks ID and the operator may keep either local customer", () => {
+    const decision = decideCustomerMerge({
+      left: { id: "qb", companyName: "Signs Etc", externalAccountingId: "299", status: "active" },
+      right: { id: "secondary", companyName: "Signs Etc.", externalAccountingId: null, status: "active" },
+      reviewed: true,
+      preferredSurvivorId: "secondary",
+    });
+
+    expect(decision).toMatchObject({
+      action: "merge",
+      survivorCustomerId: "secondary",
+      duplicateCustomerId: "qb",
+      requiresReviewedAction: true,
+      quickBooksCustomerId: "299",
+    });
+  });
+
+  test("malformed QuickBooks customer IDs fail closed with an actionable merge block", () => {
+    const decision = decideCustomerMerge({
+      left: { id: "a", companyName: "Graphic Solutions", externalAccountingId: "299", status: "active" },
+      right: { id: "b", companyName: "Graphic Solutions LLC", externalAccountingId: "QB-300", status: "active" },
+    });
+
+    expect(decision).toMatchObject({ action: "block", code: "INVALID_QUICKBOOKS_CUSTOMER_ID" });
   });
 
   test("reviewed merge preserves InfoFlo identity, moves contact link, and search returns canonical customer", async () => {
@@ -159,14 +192,48 @@ describe("canonical customer identity", () => {
     expect(searchResults[0]?.contacts?.some((row) => row.id === contact.id)).toBe(true);
   });
 
-  test("backend merge rejects different QuickBooks IDs without moving records", async () => {
-    await expect(mergeDuplicateCustomers({
+  test("backend merge retains lower QuickBooks ID on the chosen survivor without invoking a provider", async () => {
+    const result = await mergeDuplicateCustomers({
       organizationId: ORG_ID,
       survivorCustomerId: DIFF_QB_A,
       duplicateCustomerId: DIFF_QB_B,
       actorUserId: USER_ID,
       reviewed: true,
-    })).rejects.toBeInstanceOf(CustomerIdentityConflictError);
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.quickBooksResolution).toMatchObject({
+      survivorOriginalQuickBooksCustomerId: "300",
+      sourceOriginalQuickBooksCustomerId: "299",
+      retainedQuickBooksCustomerId: "299",
+      retiredQuickBooksCustomerIds: ["300"],
+    });
+    const resultRows = await db.execute(sql`
+      select id, external_accounting_id, merged_into_customer_id
+      from customers
+      where id in (${DIFF_QB_A}, ${DIFF_QB_B})
+      order by id
+    `);
+    const rows = (resultRows as any).rows ?? [];
+    expect(rows.find((row: any) => row.external_accounting_id === "299")).toBeTruthy();
+    expect(rows.find((row: any) => row.merged_into_customer_id === DIFF_QB_A)).toBeTruthy();
+
+    const historicalInvoice = await db.execute(sql`
+      select customer_id, external_accounting_id, qb_invoice_id, qb_sync_status, sync_status,
+             invoice_version, accounting_approved_at, accounting_approved_by_user_id, accounting_approved_version
+      from invoices where id = ${SYNCED_INVOICE_ID}
+    `);
+    expect((historicalInvoice as any).rows?.[0]).toMatchObject({
+      customer_id: DIFF_QB_A,
+      external_accounting_id: "qb-invoice-history",
+      qb_invoice_id: "qb-invoice-history",
+      qb_sync_status: "synced",
+      sync_status: "synced",
+      invoice_version: 7,
+      accounting_approved_by_user_id: USER_ID,
+      accounting_approved_version: 7,
+    });
+    expect((historicalInvoice as any).rows?.[0]?.accounting_approved_at).toBeTruthy();
   });
 
   test("same QuickBooks ID merge is idempotent and does not duplicate contact links", async () => {

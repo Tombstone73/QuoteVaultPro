@@ -26,6 +26,7 @@ import {
   type Customer,
   type ExternalIdentityMapping,
 } from "@shared/schema";
+import { InvalidQuickBooksCustomerIdError, selectRetainedQuickBooksCustomerId } from "@shared/quickBooksCustomerIdSelection";
 
 export type CustomerIdentityRecord = Pick<Customer, "id" | "companyName" | "externalAccountingId" | "status">;
 
@@ -34,13 +35,14 @@ export type CustomerMergeDecision =
       action: "merge";
       survivorCustomerId: string;
       duplicateCustomerId: string;
-      reason: "same_quickbooks_id" | "single_quickbooks_survivor" | "explicit_review";
+      reason: "same_quickbooks_id" | "single_quickbooks_id" | "lowest_quickbooks_id_retained" | "explicit_review";
       requiresReviewedAction: boolean;
       quickBooksCustomerId: string | null;
+      retiredQuickBooksCustomerIds: string[];
     }
   | {
       action: "block";
-      code: "QUICKBOOKS_ID_CONFLICT" | "SAME_CUSTOMER";
+      code: "QUICKBOOKS_ID_CONFLICT" | "SAME_CUSTOMER" | "INVALID_QUICKBOOKS_CUSTOMER_ID";
       message: string;
       leftQuickBooksCustomerId: string | null;
       rightQuickBooksCustomerId: string | null;
@@ -112,44 +114,60 @@ export function decideCustomerMerge(input: {
   const leftQb = getQuickBooksCompanyId(left, input.leftIdentities);
   const rightQb = getQuickBooksCompanyId(right, input.rightIdentities);
 
-  if (leftQb && rightQb && leftQb !== rightQb) {
-    return {
-      action: "block",
-      code: "QUICKBOOKS_ID_CONFLICT",
-      message: `Companies have different QuickBooks customer IDs (${leftQb} and ${rightQb}); an automatic merge is blocked.`,
-      leftQuickBooksCustomerId: leftQb,
-      rightQuickBooksCustomerId: rightQb,
-    };
+  const preferred = input.preferredSurvivorId === right.id ? right : left;
+  const duplicate = preferred.id === left.id ? right : left;
+  let quickBooksResolution: ReturnType<typeof selectRetainedQuickBooksCustomerId>;
+  try {
+    quickBooksResolution = selectRetainedQuickBooksCustomerId([leftQb, rightQb]);
+  } catch (error) {
+    if (error instanceof InvalidQuickBooksCustomerIdError) {
+      return {
+        action: "block",
+        code: "INVALID_QUICKBOOKS_CUSTOMER_ID",
+        message: "Customer merge cannot safely resolve a malformed QuickBooks customer ID. Correct the local accounting mapping and retry.",
+        leftQuickBooksCustomerId: leftQb,
+        rightQuickBooksCustomerId: rightQb,
+      };
+    }
+    throw error;
   }
 
   if (leftQb && rightQb && leftQb === rightQb) {
-    const preferred = input.preferredSurvivorId === right.id ? right : left;
-    const duplicate = preferred.id === left.id ? right : left;
     return {
       action: "merge",
       survivorCustomerId: preferred.id,
       duplicateCustomerId: duplicate.id,
       reason: "same_quickbooks_id",
       requiresReviewedAction: false,
-      quickBooksCustomerId: leftQb,
+      quickBooksCustomerId: quickBooksResolution.retainedQuickBooksCustomerId,
+      retiredQuickBooksCustomerIds: [],
+    };
+  }
+
+  if (leftQb && rightQb) {
+    return {
+      action: "merge",
+      survivorCustomerId: preferred.id,
+      duplicateCustomerId: duplicate.id,
+      reason: "lowest_quickbooks_id_retained",
+      requiresReviewedAction: true,
+      quickBooksCustomerId: quickBooksResolution.retainedQuickBooksCustomerId,
+      retiredQuickBooksCustomerIds: quickBooksResolution.retiredQuickBooksCustomerIds,
     };
   }
 
   if (leftQb || rightQb) {
-    const survivor = leftQb ? left : right;
-    const duplicate = leftQb ? right : left;
     return {
       action: "merge",
-      survivorCustomerId: survivor.id,
+      survivorCustomerId: preferred.id,
       duplicateCustomerId: duplicate.id,
-      reason: "single_quickbooks_survivor",
+      reason: "single_quickbooks_id",
       requiresReviewedAction: true,
-      quickBooksCustomerId: leftQb ?? rightQb,
+      quickBooksCustomerId: quickBooksResolution.retainedQuickBooksCustomerId,
+      retiredQuickBooksCustomerIds: [],
     };
   }
 
-  const preferred = input.preferredSurvivorId === right.id ? right : left;
-  const duplicate = preferred.id === left.id ? right : left;
   return {
     action: "merge",
     survivorCustomerId: preferred.id,
@@ -157,7 +175,38 @@ export function decideCustomerMerge(input: {
     reason: "explicit_review",
     requiresReviewedAction: true,
     quickBooksCustomerId: null,
+    retiredQuickBooksCustomerIds: [],
   };
+}
+
+function getQuickBooksMergePreview(
+  selectedCustomers: CustomerIdentityRecord[],
+  identities: Array<Pick<ExternalIdentityMapping, "entityId" | "sourceSystem" | "sourceEntityType" | "sourceRecordId">>,
+) {
+  const quickBooksCustomerIds = selectedCustomers.map((customer) => getQuickBooksCompanyId(
+    customer,
+    identities.filter((identity) => identity.entityId === customer.id),
+  ));
+  try {
+    const resolution = selectRetainedQuickBooksCustomerId(quickBooksCustomerIds);
+    const retainedQuickBooksCustomerId = resolution.retainedQuickBooksCustomerId;
+    return {
+      retainedQuickBooksCustomerId,
+      retiredQuickBooksCustomerIds: resolution.retiredQuickBooksCustomerIds,
+      warning: resolution.retiredQuickBooksCustomerIds.length > 0 && retainedQuickBooksCustomerId
+        ? `QuickBooks duplicate detected. Future QuickBooks activity will use customer ${retainedQuickBooksCustomerId}. Existing QuickBooks history will not be changed.`
+        : null,
+    };
+  } catch (error) {
+    if (error instanceof InvalidQuickBooksCustomerIdError) {
+      throw new CustomerIdentityConflictError(
+        "INVALID_QUICKBOOKS_CUSTOMER_ID",
+        "Customer merge cannot safely resolve a malformed QuickBooks customer ID. Correct the local accounting mapping and retry.",
+        { quickBooksCustomerIds },
+      );
+    }
+    throw error;
+  }
 }
 
 type DbClient = typeof db;
@@ -234,18 +283,6 @@ export async function mergeDuplicateCustomers(input: {
       });
     }
 
-    if (decision.survivorCustomerId !== input.survivorCustomerId) {
-      throw new CustomerIdentityConflictError(
-        "SURVIVOR_MUST_CARRY_QUICKBOOKS_ID",
-        "The QuickBooks-backed company must be selected as the survivor.",
-        {
-          requestedSurvivorCustomerId: input.survivorCustomerId,
-          canonicalSurvivorCustomerId: decision.survivorCustomerId,
-          quickBooksCustomerId: decision.quickBooksCustomerId,
-        },
-      );
-    }
-
     if (decision.requiresReviewedAction && !input.reviewed) {
       throw new CustomerIdentityConflictError(
         "REVIEW_REQUIRED",
@@ -261,8 +298,21 @@ export async function mergeDuplicateCustomers(input: {
 
     const startedAt = Date.now();
     const counts: Record<string, number> = {};
-    const survivorQb = cleanId(survivor.externalAccountingId);
-    const duplicateQb = cleanId(duplicate.externalAccountingId);
+    const survivorQb = getQuickBooksCompanyId(
+      survivor,
+      identities.filter((identity: ExternalIdentityMapping) => identity.entityId === survivor.id),
+    );
+    const duplicateQb = getQuickBooksCompanyId(
+      duplicate,
+      identities.filter((identity: ExternalIdentityMapping) => identity.entityId === duplicate.id),
+    );
+    const survivorDirectQb = cleanId(survivor.externalAccountingId);
+    const quickBooksResolution = {
+      survivorOriginalQuickBooksCustomerId: survivorQb,
+      sourceOriginalQuickBooksCustomerId: duplicateQb,
+      retainedQuickBooksCustomerId: decision.quickBooksCustomerId,
+      retiredQuickBooksCustomerIds: decision.retiredQuickBooksCustomerIds,
+    };
 
     console.info("[CUSTOMER IDENTITY] merge started", {
       organizationId: input.organizationId,
@@ -274,13 +324,13 @@ export async function mergeDuplicateCustomers(input: {
       reason: decision.reason,
     });
 
-    if (!survivorQb && duplicateQb) {
+    if (decision.quickBooksCustomerId && survivorDirectQb !== decision.quickBooksCustomerId) {
       const [updated] = await tx
         .update(customers)
-        .set({ externalAccountingId: duplicateQb, updatedAt: new Date() })
+        .set({ externalAccountingId: decision.quickBooksCustomerId, updatedAt: new Date() })
         .where(and(eq(customers.organizationId, input.organizationId), eq(customers.id, survivor.id)))
         .returning({ id: customers.id });
-      counts.customerQuickBooksIdPromoted = updated ? 1 : 0;
+      counts.customerQuickBooksIdResolved = updated ? 1 : 0;
     }
 
     const duplicateLinks = await tx
@@ -327,20 +377,17 @@ export async function mergeDuplicateCustomers(input: {
 
     counts.quotesMoved = Number((await tx.update(quotes).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(quotes.organizationId, input.organizationId), eq(quotes.customerId, duplicate.id))).returning({ id: quotes.id })).length);
     counts.ordersMoved = Number((await tx.update(orders).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(orders.organizationId, input.organizationId), eq(orders.customerId, duplicate.id))).returning({ id: orders.id })).length);
-    // Customer identity is serialized as QuickBooks CustomerRef, so this is a
-    // commercial/accounting mutation rather than generic merge bookkeeping.
+    // Unsynchronized invoices resolve their CustomerRef at send time and must
+    // be re-approved after their local customer changes. Completed provider
+    // history stays immutable: retain its version, approval and sync state.
     counts.invoicesMoved = Number((await tx.update(invoices).set({
       customerId: survivor.id,
-      accountingUpdatedAt: new Date(),
+      accountingUpdatedAt: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') = '' then now() else ${invoices.accountingUpdatedAt} end`,
       updatedAt: new Date(),
-      // Customer identity is emitted as QuickBooks CustomerRef.  Moving an
-      // invoice to a survivor therefore changes its accounting payload and
-      // requires an explicit re-approval before any future transmission.
-      invoiceVersion: sql`${invoices.invoiceVersion} + 1`,
-      accountingApprovedAt: null,
-      accountingApprovedByUserId: null,
-      accountingApprovalRevokedAt: sql`case when ${invoices.accountingApprovedAt} is not null then now() else ${invoices.accountingApprovalRevokedAt} end`,
-      qbSyncStatus: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') <> '' then 'needs_resync' else ${invoices.qbSyncStatus} end`,
+      invoiceVersion: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') = '' then ${invoices.invoiceVersion} + 1 else ${invoices.invoiceVersion} end`,
+      accountingApprovedAt: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') = '' then null else ${invoices.accountingApprovedAt} end`,
+      accountingApprovedByUserId: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') = '' then null else ${invoices.accountingApprovedByUserId} end`,
+      accountingApprovalRevokedAt: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') = '' and ${invoices.accountingApprovedAt} is not null then now() else ${invoices.accountingApprovalRevokedAt} end`,
     }).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.customerId, duplicate.id))).returning({ id: invoices.id })).length);
     counts.portalAccessMoved = Number((await tx.update(customerPortalAccess).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(customerPortalAccess.organizationId, input.organizationId), eq(customerPortalAccess.customerId, duplicate.id))).returning({ id: customerPortalAccess.id })).length);
     counts.portalBatchItemsMoved = Number((await tx.update(customerPortalOnboardingBatchItems).set({ customerId: survivor.id, updatedAt: new Date() }).where(and(eq(customerPortalOnboardingBatchItems.organizationId, input.organizationId), eq(customerPortalOnboardingBatchItems.customerId, duplicate.id))).returning({ id: customerPortalOnboardingBatchItems.id })).length);
@@ -391,8 +438,18 @@ export async function mergeDuplicateCustomers(input: {
     counts.visibleProductsMoved = visibleProductsMoved;
 
     const duplicateIdentities = identities.filter((identity: ExternalIdentityMapping) => identity.entityId === duplicate.id);
+    const retiredQuickBooksIdentityMappings = identities.filter((identity: ExternalIdentityMapping) =>
+      identity.sourceSystem === "quickbooks" &&
+      identity.sourceEntityType === "customer" &&
+      cleanId(identity.sourceRecordId) !== decision.quickBooksCustomerId,
+    );
     let identitiesMoved = 0;
     for (const identity of duplicateIdentities) {
+      const isNonRetainedQuickBooksCustomerIdentity =
+        identity.sourceSystem === "quickbooks" &&
+        identity.sourceEntityType === "customer" &&
+        cleanId(identity.sourceRecordId) !== decision.quickBooksCustomerId;
+      if (isNonRetainedQuickBooksCustomerIdentity) continue;
       await tx
         .insert(externalIdentityMappings)
         .values({
@@ -434,7 +491,17 @@ export async function mergeDuplicateCustomers(input: {
           eq(externalIdentityMappings.entityId, duplicate.id),
         ));
     }
+    if (retiredQuickBooksIdentityMappings.length > 0) {
+      await tx
+        .delete(externalIdentityMappings)
+        .where(and(
+          eq(externalIdentityMappings.organizationId, input.organizationId),
+          eq(externalIdentityMappings.entityType, "customer"),
+          inArray(externalIdentityMappings.id, retiredQuickBooksIdentityMappings.map((identity) => identity.id)),
+        ));
+    }
     counts.externalIdentitiesMoved = identitiesMoved;
+    counts.retiredQuickBooksIdentityMappingsRemoved = retiredQuickBooksIdentityMappings.length;
 
     counts.notesMoved = Number((await tx.update(customerNotes).set({ customerId: survivor.id, updatedAt: new Date() }).where(eq(customerNotes.customerId, duplicate.id)).returning({ id: customerNotes.id })).length);
     counts.creditTransactionsMoved = Number((await tx.update(customerCreditTransactions).set({ customerId: survivor.id }).where(eq(customerCreditTransactions.customerId, duplicate.id)).returning({ id: customerCreditTransactions.id })).length);
@@ -465,7 +532,7 @@ export async function mergeDuplicateCustomers(input: {
       entityId: duplicate.id,
       entityName: duplicate.companyName,
       description: `Merged customer into ${survivor.companyName}.`,
-      newValues: { survivorCustomerId: survivor.id, mergeOperationId: input.mergeOperationId ?? null, counts } as any,
+      newValues: { survivorCustomerId: survivor.id, mergeOperationId: input.mergeOperationId ?? null, counts, quickBooksResolution } as any,
     } as any);
 
     console.info("[CUSTOMER IDENTITY] merge committed", {
@@ -479,6 +546,7 @@ export async function mergeDuplicateCustomers(input: {
     return {
       success: true,
       decision,
+      quickBooksResolution,
       survivorCustomerId: survivor.id,
       duplicateCustomerId: duplicate.id,
       counts,
@@ -504,6 +572,20 @@ export async function getCustomerMergePreview(input: {
     if (new Set(values.map((entry) => comparableFieldValue(entry.value))).size > 1) conflicts[field] = values;
   }
   const ids = rows.map((row) => row.id);
+  const identities = await db
+    .select({
+      entityId: externalIdentityMappings.entityId,
+      sourceSystem: externalIdentityMappings.sourceSystem,
+      sourceEntityType: externalIdentityMappings.sourceEntityType,
+      sourceRecordId: externalIdentityMappings.sourceRecordId,
+    })
+    .from(externalIdentityMappings)
+    .where(and(
+      eq(externalIdentityMappings.organizationId, input.organizationId),
+      eq(externalIdentityMappings.entityType, "customer"),
+      inArray(externalIdentityMappings.entityId, ids),
+    ));
+  const quickBooksResolution = getQuickBooksMergePreview(rows, identities);
   const count = async (table: any, field: any) => Number((await db.select({ count: sql<number>`count(*)::int` }).from(table).where(and(eq((table as any).organizationId, input.organizationId), inArray(field, ids))))[0]?.count ?? 0);
   const relationshipCounts = {
     contacts: Number((await db.select({ count: sql<number>`count(*)::int` }).from(customerContactLinks).where(and(eq(customerContactLinks.organizationId, input.organizationId), inArray(customerContactLinks.customerId, ids))))[0]?.count ?? 0),
@@ -526,7 +608,7 @@ export async function getCustomerMergePreview(input: {
     eq(customerContactLinks.status, "active"),
     eq(customerContactLinks.isPrimary, true),
   ));
-  return { customers: rows, conflicts, relationshipCounts, primaryContacts };
+  return { customers: rows, conflicts, relationshipCounts, primaryContacts, quickBooksResolution };
 }
 
 /** Multi-source, admin-reviewed canonical customer merge boundary. */
@@ -613,7 +695,11 @@ export async function mergeCustomers(input: {
       await tx.update(customerContactLinks).set({ isPrimary: true, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, survivor.id), eq(customerContactLinks.contactId, primaryContactId), eq(customerContactLinks.status, "active")));
       relationshipCounts.primaryContactNormalized = 1;
     }
-    await tx.update(customerMergeOperations).set({ relationshipCounts } as any).where(eq(customerMergeOperations.id, operation.id));
+    const quickBooksResolutions = results.map((result) => result.quickBooksResolution).filter(Boolean);
+    const warnings = quickBooksResolutions
+      .filter((resolution: any) => resolution.retiredQuickBooksCustomerIds?.length)
+      .map((resolution: any) => `QuickBooks mapping retained ${resolution.retainedQuickBooksCustomerId}; retired local mapping(s): ${resolution.retiredQuickBooksCustomerIds.join(", ")}.`);
+    await tx.update(customerMergeOperations).set({ relationshipCounts, warnings } as any).where(eq(customerMergeOperations.id, operation.id));
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,
       userId: input.actorUserId,
@@ -622,8 +708,8 @@ export async function mergeCustomers(input: {
       entityId: survivor.id,
       entityName: survivor.companyName,
       description: `Merged ${sourceCustomerIds.length} customer record(s) into the canonical customer.`,
-      newValues: { mergeOperationId: operation.id, sourceCustomerIds, fieldChoices: input.fieldChoices, relationshipCounts } as any,
+      newValues: { mergeOperationId: operation.id, sourceCustomerIds, fieldChoices: input.fieldChoices, relationshipCounts, quickBooksResolutions } as any,
     } as any);
-    return { success: true, mergeOperationId: operation.id, survivorCustomerId: survivor.id, sourceCustomerIds, fieldChoices: input.fieldChoices, relationshipCounts };
+    return { success: true, mergeOperationId: operation.id, survivorCustomerId: survivor.id, sourceCustomerIds, fieldChoices: input.fieldChoices, relationshipCounts, quickBooksResolutions };
   });
 }
