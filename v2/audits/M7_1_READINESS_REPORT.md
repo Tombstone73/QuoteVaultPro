@@ -8,11 +8,14 @@ authorized read-only production connection.  This is not an M7 GO/NO-GO.
 
 ## Findings
 
-- **P0 — production database identity/role unavailable.** No PROD database
-  query was attempted; use of the available `TEST_DATABASE_URL` was rejected.
-- **P0 — live production service identity is not established.** Public GET-only
-  checks reached frontend/default-nginx responses, not backend health/version
-  identities; worker/process/routing state remains external and unknown.
+- **P0 — dedicated audit role credential unavailable.** The production target
+  and restricted role are now proven through Railway and PostgreSQL catalog
+  evidence, but the role's generated password could not be safely retained by
+  the local execution context.  A database administrator must reset/deliver it
+  out of band before the role can be connection-tested or used for inventory.
+- **P1 — live production service is confirmed V1.** Railway identifies one
+  V1 production service from `main` at `1326ad1b…`, but worker-gate values and
+  actual process topology remain unread for safety.
 - **P1 — V1 retained writers can collide with V2.** V1 starts broad mutation
   routes, migrations and several workers.  The prepress poller bulk-marks all
   queued jobs running while processing one; it must be stopped, not repaired,
@@ -34,13 +37,15 @@ authorized read-only production connection.  This is not an M7 GO/NO-GO.
 | Static source evidence | PASS: Post-M6 reports, existing audit tooling, V1/V2 writers, deployment wiring and public routing were inspected. |
 | Automated tests | Not run: no executable code/tooling change was safely made. |
 | Local / DEV database validation | Not run for M7.1; existing Post-M6 DEV read-only evidence remains authoritative for DEV only. |
-| PROD read-only validation | BLOCKED before connection/query. |
+| PROD read-only validation | PASS for application-identity metadata sessions: `REPEATABLE READ READ ONLY`, `transaction_read_only=on`, rollback/close, Railway/Neon provenance and role-catalog proof.  BLOCKED for the required dedicated-role connection proof and business inventory. |
 | MAIN validation | Not performed; MAIN untouched. |
 
 ## Next bounded milestone after unblock
 
-Complete the remaining M7.1 production baseline with a separately authorized,
-fail-closed production audit role and verified target provenance.  Once M7.1
-can pass or pass with findings, M7.2 should be the bounded
+Have the production database administrator reset the existing
+`printershero_m7_audit` password and transmit it through the approved
+out-of-band secret channel.  Then prove the dedicated-role connection and run
+the bounded aggregate M7.1 inventory.  Once M7.1 can pass or pass with
+findings, M7.2 should be the bounded
 migration-chain/schema/postcondition/rollback-readiness milestone.  Do not
 start M7.2 automatically.

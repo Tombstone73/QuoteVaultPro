@@ -34,6 +34,22 @@ dispositions, not proof that a process is presently running.
 4. Live process commands, replica counts, worker-gate variables, Vercel/Railway
    routing, and MCP mutation capability are not established by source inspection.
 
+## M7.1A runtime evidence
+
+Railway now proves the production backend is one running V1 service from
+`main`, commit `1326ad1b1bda70e478adc44b3b7ee3ccdf7e5102`, bound to
+`api.printershero.com`.  Its current start command remains provider-default and
+the sensitive worker-gate variable values were intentionally not read.  Thus
+the V1 prepress poller, thumbnail/preview, payment reconciliation, QuickBooks,
+and reminder worker runtime states remain **UNKNOWN / INVESTIGATE**; the unsafe
+prepress poller remains P1 and must be stopped before V2 authority.
+
+`www.printershero.com` is Vercel-served, but authenticated Vercel project/
+deployment/environment inspection was unavailable.  Production MCP `/health`
+reports `1.0.0`; DEV MCP `/health` returns 502.  Neither public check proves
+MCP source root, PM2 topology, tool registry, or whether a DEV MCP can reach a
+production mutation API.  Treat that path as **P0 UNKNOWN / INVESTIGATE**.
+
 The intended normal Order closure owner remains V2 `PostgresOrderAutomaticLifecycle`:
 required Production and Fulfillment completion plus settled canonical Invoice
 balance, with reopening when an obligation reopens.  V1 competing lifecycle
