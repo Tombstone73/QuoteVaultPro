@@ -47,8 +47,13 @@ jest.mock("@/hooks/useContacts", () => ({
 jest.mock("@tanstack/react-query", () => ({
   useQuery: jest.fn(),
   useQueryClient: () => ({ invalidateQueries: jest.fn() }),
-  useMutation: () => ({ mutate: jest.fn(), isPending: false }),
+  useMutation: (options: any) => ({
+    mutate: (variables: any) => void Promise.resolve(options?.mutationFn?.(variables)).then((result) => options?.onSuccess?.(result, variables)).catch((error) => options?.onError?.(error)),
+    isPending: false,
+  }),
 }));
+
+jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
 
 jest.mock("@/components/list/ListViewSettings", () => ({
   ListViewSettings: () => <button type="button">Columns</button>,
@@ -99,7 +104,8 @@ jest.mock("@/components/ui/checkbox", () => ({
   Checkbox: ({ checked, onCheckedChange, ...props }: any) => (
     <input
       type="checkbox"
-      checked={checked}
+      checked={checked === true}
+      data-state={checked === "indeterminate" ? "indeterminate" : checked ? "checked" : "unchecked"}
       onChange={(event) => onCheckedChange?.(event.currentTarget.checked)}
       {...props}
     />
@@ -509,7 +515,7 @@ test("Customer list keeps financial columns hidden by default and persists an ad
   });
 
   expect(container.textContent).toContain("Columns");
-  expect(container.querySelector("th")?.textContent).toContain("Company Name");
+  expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).toContain("Company Name");
   expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).not.toContain("Terms");
   expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).not.toContain("Credit");
 
@@ -540,4 +546,45 @@ test("Customer list does not expose financial columns to lower-permission list u
   expect(container.textContent).toContain("Columns");
   expect(container.textContent).not.toContain("Terms");
   expect(container.textContent).not.toContain("Credit");
+});
+
+test("Customer selection header selects and deselects only the visible enhanced-table rows", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" onMergeCustomers={jest.fn()} canManageCommercialConfiguration />);
+  });
+
+  const headerCheckbox = container.querySelector("input[aria-label='Select visible customers']") as HTMLInputElement;
+  expect(headerCheckbox.checked).toBe(false);
+  act(() => Simulate.change(headerCheckbox, { target: { checked: true } } as any));
+  expect(Array.from(container.querySelectorAll("input[aria-label^='Select Customer']")).every((checkbox: any) => checkbox.checked)).toBe(true);
+  expect(container.textContent).toContain("20 selected");
+
+  act(() => Simulate.change(headerCheckbox, { target: { checked: false } } as any));
+  expect(Array.from(container.querySelectorAll("input[aria-label^='Select Customer']")).some((checkbox: any) => checkbox.checked)).toBe(false);
+  expect(container.textContent).not.toContain("20 selected");
+});
+
+test("Customer selection exposes indeterminate state and restricts Merge to exactly two selected IDs", () => {
+  mockCustomerListQuery();
+  const merge = jest.fn();
+  act(() => {
+    root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" onMergeCustomers={merge} canManageCommercialConfiguration />);
+  });
+
+  const rowCheckboxes = Array.from(container.querySelectorAll("input[aria-label^='Select Customer']")) as HTMLInputElement[];
+  const headerCheckbox = container.querySelector("input[aria-label='Select visible customers']") as HTMLInputElement;
+  act(() => Simulate.change(rowCheckboxes[0], { target: { checked: true } } as any));
+  expect(headerCheckbox.dataset.state).toBe("indeterminate");
+  expect(container.textContent).toContain("1 selected");
+  expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Merge")).toBe(false);
+
+  act(() => Simulate.change(rowCheckboxes[1], { target: { checked: true } } as any));
+  const mergeButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Merge");
+  expect(mergeButton).toBeTruthy();
+  act(() => mergeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(merge).toHaveBeenCalledWith(["customer-1", "customer-2"]);
+
+  act(() => Simulate.change(rowCheckboxes[2], { target: { checked: true } } as any));
+  expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Merge")).toBe(false);
 });

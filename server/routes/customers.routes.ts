@@ -48,6 +48,11 @@ import {
 } from "../services/customers/canonicalCustomerContactOperations";
 import { getCustomerCreditExposure, getCustomerCreditExposures } from "../services/customerCreditExposureService";
 import { canManageCustomerCommercialConfiguration as canManageCustomerCommercialConfigurationAccess } from "../services/customerCommercialConfigurationAccess";
+import {
+  CustomerBulkCommercialConfigurationError,
+  updateCustomersCommercialConfiguration,
+} from "../services/customerBulkCommercialConfiguration.service";
+import { bulkCustomerCommercialConfigurationSchema } from "@shared/customerCommercialConfiguration";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -297,6 +302,26 @@ export function registerCustomerRoutes(
       }
       console.error("Error creating customer:", error);
       res.status(500).json({ message: "Failed to create customer" });
+    }
+  });
+
+  app.post("/api/customers/bulk-commercial-configuration", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ success: false, error: { code: "MISSING_ORGANIZATION_CONTEXT", message: "Missing organization context" } });
+      if (!actorUserId) return res.status(401).json({ success: false, error: { code: "ACTOR_REQUIRED", message: "Authenticated user is required" } });
+      if (!canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole)) {
+        return res.status(403).json({ success: false, error: { code: "CUSTOMER_COMMERCIAL_CONFIGURATION_FORBIDDEN", message: "Organization Owner or Admin permission is required to change customer terms or credit limits." } });
+      }
+      const update = bulkCustomerCommercialConfigurationSchema.parse(req.body ?? {});
+      const result = await updateCustomersCommercialConfiguration({ organizationId, actorUserId, update });
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: fromZodError(error).message } });
+      if (error instanceof CustomerBulkCommercialConfigurationError) return res.status(error.statusCode).json({ success: false, error: { code: error.code, message: error.message } });
+      console.error("Error applying bulk customer commercial configuration:", error);
+      return res.status(500).json({ success: false, error: { code: "CUSTOMER_BULK_COMMERCIAL_UPDATE_FAILED", message: "Unable to update the selected customers." } });
     }
   });
 

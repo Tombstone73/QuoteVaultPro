@@ -32,6 +32,9 @@ import {
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
+import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -54,16 +57,8 @@ const DEFAULT_PAGE_SIZE = 20;
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const CUSTOMER_COLUMN_PREFERENCE_PREFIX = "titanos.customers.listColumns";
 
-const PAYMENT_TERMS = [
-  { value: "due_on_receipt", label: "Due on Receipt" },
-  { value: "net_15", label: "Net 15" },
-  { value: "net_30", label: "Net 30" },
-  { value: "net_45", label: "Net 45" },
-  { value: "custom", label: "Custom" },
-] as const;
-
 const paymentTermsLabel = (value: string | null | undefined) =>
-  PAYMENT_TERMS.find((term) => term.value === value)?.label ?? "Due on Receipt";
+  CUSTOMER_PAYMENT_TERMS.find((term) => term.value === value)?.label ?? "Due on Receipt";
 
 function formatCurrency(value: string | number | null | undefined) {
   const amount = Number(value ?? 0);
@@ -196,6 +191,8 @@ export default function CustomerList({
   preferenceUserId,
 }: CustomerListProps) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const selectionEnabled = Boolean(onMergeCustomers || canManageCommercialConfiguration);
   const [localStatusFilter, setLocalStatusFilter] = useState<string>("all");
   const [localTypeFilter, setLocalTypeFilter] = useState<string>("all");
   const statusFilter = controlledStatusFilter ?? localStatusFilter;
@@ -206,7 +203,12 @@ export default function CustomerList({
   const [sortDir, setSortDir] = useState<CustomerListSortDir>("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
-  const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [bulkDialog, setBulkDialog] = useState<"terms" | "credit" | null>(null);
+  const [bulkPaymentTerms, setBulkPaymentTerms] = useState<CustomerPaymentTerm>("due_on_receipt");
+  const [bulkCreditLimitDraft, setBulkCreditLimitDraft] = useState("");
+  const [bulkCreditLimitNotSet, setBulkCreditLimitNotSet] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
   const [editingCreditCustomerId, setEditingCreditCustomerId] = useState<string | null>(null);
   const [editingTermsCustomerId, setEditingTermsCustomerId] = useState<string | null>(null);
   const [creditLimitDraft, setCreditLimitDraft] = useState("");
@@ -288,6 +290,31 @@ export default function CustomerList({
     onError: (error: Error) => setEditError(error.message),
   });
 
+  const bulkCommercialUpdateMutation = useMutation({
+    mutationFn: async (payload: { operation: "set_payment_terms"; paymentTerms: CustomerPaymentTerm } | { operation: "set_credit_limit"; creditLimit: number | null }) => {
+      const response = await fetch("/api/customers/bulk-commercial-configuration", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerIds: Array.from(selectedCustomerIds), ...payload }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error?.message ?? "Unable to update the selected customers.");
+      return body?.data ?? body;
+    },
+    onSuccess: async (result: { updatedCount?: number }, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
+      setSelectedCustomerIds(new Set());
+      setBulkDialog(null);
+      setBulkError(null);
+      toast({
+        title: variables.operation === "set_payment_terms" ? "Payment terms updated" : "Credit limit updated",
+        description: `${result?.updatedCount ?? 0} customer${result?.updatedCount === 1 ? "" : "s"} updated.`,
+      });
+    },
+    onError: (error: Error) => setBulkError(error.message),
+  });
+
   useEffect(() => {
     setPage(1);
   }, [search, statusFilter, typeFilter, sortBy, sortDir, pageSize]);
@@ -338,11 +365,37 @@ export default function CustomerList({
     setPageSize(Number(value));
   };
 
-  const toggleMergeSelection = (customerId: string) => setSelectedForMerge((current) => {
+  const toggleCustomerSelection = (customerId: string) => setSelectedCustomerIds((current) => {
     const next = new Set(current);
     if (next.has(customerId)) next.delete(customerId); else next.add(customerId);
     return next;
   });
+
+  const visibleCustomerIds = customers.map((customer) => customer.id).filter(Boolean);
+  const selectedVisibleCount = visibleCustomerIds.filter((customerId) => selectedCustomerIds.has(customerId)).length;
+  const allVisibleSelected = visibleCustomerIds.length > 0 && selectedVisibleCount === visibleCustomerIds.length;
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
+  const visibleSelectionState: boolean | "indeterminate" = allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false;
+  const toggleVisibleCustomerSelection = () => setSelectedCustomerIds((current) => {
+    const next = new Set(current);
+    if (allVisibleSelected) visibleCustomerIds.forEach((customerId) => next.delete(customerId));
+    else visibleCustomerIds.forEach((customerId) => next.add(customerId));
+    return next;
+  });
+
+  const openBulkDialog = (dialog: "terms" | "credit") => {
+    setBulkError(null);
+    setBulkDialog(dialog);
+  };
+
+  const applyBulkCreditLimit = () => {
+    const creditLimit = bulkCreditLimitNotSet ? null : parseCurrencyInput(bulkCreditLimitDraft);
+    if (creditLimit === null && !bulkCreditLimitNotSet) {
+      setBulkError("Enter a non-negative amount with no more than two decimal places.");
+      return;
+    }
+    bulkCommercialUpdateMutation.mutate({ operation: "set_credit_limit", creditLimit });
+  };
 
   const renderPaginationFooter = () => {
     if (collapse || !pagination) return null;
@@ -510,7 +563,20 @@ export default function CustomerList({
               : `${pagination.total} customer${pagination.total !== 1 ? "s" : ""}`}
         </p>
       )}
-      {onMergeCustomers && selectedForMerge.size >= 2 && <div className="mt-2 px-2"><Button size="sm" variant="outline" onClick={() => onMergeCustomers(Array.from(selectedForMerge))}><GitMerge className="w-4 h-4 mr-2" />Merge {selectedForMerge.size} customers</Button></div>}
+      {selectionEnabled && <div data-testid="customer-selection-toolbar" className="mt-2 flex flex-wrap items-center gap-2 px-2">
+        <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={toggleVisibleCustomerSelection} disabled={visibleCustomerIds.length === 0}>
+          {allVisibleSelected ? "Deselect page" : "Select page"}
+        </Button>
+        {selectedCustomerIds.size > 0 && <>
+          <span className="text-xs text-muted-foreground">{selectedCustomerIds.size} selected</span>
+          {canManageCommercialConfiguration && <>
+            <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("terms")}>Set Terms</Button>
+            <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("credit")}>Set Credit Limit</Button>
+          </>}
+          {selectedCustomerIds.size === 2 && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onMergeCustomers(Array.from(selectedCustomerIds))}><GitMerge className="w-3.5 h-3.5 mr-1" />Merge</Button>}
+          <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setSelectedCustomerIds(new Set())}>Clear Selection</Button>
+        </>}
+      </div>}
     </>
   );
 
@@ -531,7 +597,7 @@ export default function CustomerList({
             `}
           >
             <div className="flex items-center gap-2">
-              {onMergeCustomers && <span onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName} for merge`} checked={selectedForMerge.has(customer.id)} onCheckedChange={() => toggleMergeSelection(customer.id)} /></span>}
+              {selectionEnabled && <span onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName}`} checked={selectedCustomerIds.has(customer.id)} onCheckedChange={() => toggleCustomerSelection(customer.id)} /></span>}
               <Avatar className="w-8 h-8 flex-shrink-0">
                 <AvatarFallback className="bg-primary/20 text-primary text-xs">
                   {customer.companyName?.[0] || "C"}
@@ -593,7 +659,7 @@ export default function CustomerList({
     <Table data-testid="customer-enhanced-table">
       <TableHeader>
         <TableRow>
-          {onMergeCustomers && <TableHead className="w-10">Merge</TableHead>}
+          {selectionEnabled && <TableHead className="w-10" onClick={(event) => event.stopPropagation()}><Checkbox aria-label="Select visible customers" checked={visibleSelectionState} onCheckedChange={toggleVisibleCustomerSelection} /></TableHead>}
           {isColumnVisible("company") && <TableHead>{sortHeader("Company Name", "name")}</TableHead>}
           {isColumnVisible("primaryContact") && <TableHead>{sortHeader("Primary Contact", "primaryContact")}</TableHead>}
           {isColumnVisible("email") && <TableHead>{sortHeader("Email", "email")}</TableHead>}
@@ -620,7 +686,7 @@ export default function CustomerList({
               onClick={() => onSelectCustomer(customer.id)}
               data-state={selectedCustomerId === customer.id ? "selected" : undefined}
             >
-              {onMergeCustomers && <TableCell onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName} for merge`} checked={selectedForMerge.has(customer.id)} onCheckedChange={() => toggleMergeSelection(customer.id)} /></TableCell>}
+              {selectionEnabled && <TableCell onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName}`} checked={selectedCustomerIds.has(customer.id)} onCheckedChange={() => toggleCustomerSelection(customer.id)} /></TableCell>}
               {isColumnVisible("company") && <TableCell className="font-medium">{customer.companyName}</TableCell>}
               {isColumnVisible("primaryContact") && <TableCell>{contactName || "-"}</TableCell>}
               {isColumnVisible("email") && <TableCell className="max-w-[220px] truncate">{email}</TableCell>}
@@ -647,7 +713,7 @@ export default function CustomerList({
                       <SelectValue>{paymentTermsLabel(customer.paymentTerms)}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      {PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}
+                      {CUSTOMER_PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   {editingTermsCustomerId === customer.id && editError && <p role="alert" className="mt-1 max-w-[180px] text-[10px] text-destructive">{editError}</p>}
@@ -731,6 +797,45 @@ export default function CustomerList({
       )}
 
       {renderPaginationFooter()}
+
+      <Dialog open={bulkDialog === "terms"} onOpenChange={(open) => { if (!open) { setBulkDialog(null); setBulkError(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set payment terms</DialogTitle>
+            <DialogDescription>Set payment terms for {selectedCustomerIds.size} customer{selectedCustomerIds.size === 1 ? "" : "s"}.</DialogDescription>
+          </DialogHeader>
+          <Select value={bulkPaymentTerms} onValueChange={(value) => { setBulkPaymentTerms(value as CustomerPaymentTerm); setBulkError(null); }}>
+            <SelectTrigger aria-label="Bulk payment terms"><SelectValue /></SelectTrigger>
+            <SelectContent>{CUSTOMER_PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}</SelectContent>
+          </Select>
+          {bulkError && <p role="alert" className="text-sm text-destructive">{bulkError}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button type="button" disabled={bulkCommercialUpdateMutation.isPending} onClick={() => bulkCommercialUpdateMutation.mutate({ operation: "set_payment_terms", paymentTerms: bulkPaymentTerms })}>Apply</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDialog === "credit"} onOpenChange={(open) => { if (!open) { setBulkDialog(null); setBulkError(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set credit limit</DialogTitle>
+            <DialogDescription>Set a credit limit for {selectedCustomerIds.size} customer{selectedCustomerIds.size === 1 ? "" : "s"}. This does not change current balances.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input aria-label="Bulk credit limit" value={bulkCreditLimitDraft} inputMode="decimal" disabled={bulkCreditLimitNotSet} onChange={(event) => { setBulkCreditLimitDraft(event.target.value); setBulkError(null); }} placeholder="0.00" />
+            <div className="flex items-center gap-2">
+              <Checkbox id="bulk-credit-limit-not-set" checked={bulkCreditLimitNotSet} onCheckedChange={(checked) => { setBulkCreditLimitNotSet(checked === true); setBulkError(null); }} />
+              <label htmlFor="bulk-credit-limit-not-set" className="text-sm">Set credit limit to Not set</label>
+            </div>
+          </div>
+          {bulkError && <p role="alert" className="text-sm text-destructive">{bulkError}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button type="button" disabled={bulkCommercialUpdateMutation.isPending} onClick={applyBulkCreditLimit}>Apply</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
