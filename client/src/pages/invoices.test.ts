@@ -77,6 +77,13 @@ describe("Invoices List payment entry point", () => {
     expect(listHooks).not.toContain("fetch(`/api/invoices?${params}`");
   });
 
+  it("routes every invoice and payment operation through the canonical API client", () => {
+    expect(invoiceHooksSource).not.toMatch(/\bfetch\(\s*[`'"]\/api\//);
+    expect(invoiceHooksSource).toContain("apiFetch(`/api/invoices/${id}/send`");
+    expect(invoiceHooksSource).toContain("apiFetch('/api/payments'");
+    expect(invoiceHooksSource).toContain("apiRequest(");
+  });
+
   it("uses a compact, responsive totals strip and toolbar", () => {
     expect(invoicesPageSource).toContain("showTotals &&");
     expect(invoicesPageSource).toContain('data-testid="invoice-summary-strip"');

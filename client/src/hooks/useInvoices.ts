@@ -70,7 +70,7 @@ export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 
     queryKey: ['invoices', 'email-queue', view, page], enabled: open,
     refetchInterval: (query) => open && Number(query.state.data?.counts.active || 0) > 0 ? 5_000 : false,
     queryFn: async () => {
-      const response = await fetch(`/api/invoices/email-queue?view=${view}&page=${page}&pageSize=25`, { credentials: 'include' });
+      const response = await apiFetch(`/api/invoices/email-queue?view=${view}&page=${page}&pageSize=25`, { credentials: 'include' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Failed to load invoice email queue');
       return payload.data;
@@ -222,7 +222,7 @@ export function useInvoice(id: string | undefined) {
       if (!id) return null;
       // Invoice financial state must be authoritative after a payment settles.
       // Avoid accepting a browser-cached representation during settlement.
-      const res = await fetch(`/api/invoices/${id}`, { credentials: 'include', cache: 'no-store' });
+      const res = await apiFetch(`/api/invoices/${id}`, { credentials: 'include', cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to fetch invoice');
       const data = await res.json();
       return data.data as InvoiceWithRelations;
@@ -239,7 +239,7 @@ export function useInvoicePayments(id: string | undefined) {
       if (!id) return [] as InvoicePaymentWithCreatedBy[];
       // Keep payment history in lockstep with the invoice detail after Stripe
       // confirmation by requesting a fresh authoritative representation.
-      const res = await fetch(`/api/invoices/${id}/payments`, { credentials: 'include', cache: 'no-store' });
+      const res = await apiFetch(`/api/invoices/${id}/payments`, { credentials: 'include', cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to fetch invoice payments');
       const data = await res.json();
       return (data.data || []) as InvoicePaymentWithCreatedBy[];
@@ -260,7 +260,7 @@ export function useRecordManualInvoicePayment() {
       reference?: string;
       idempotencyKey: string;
     }) => {
-      const res = await fetch(`/api/invoices/${payload.invoiceId}/payments/manual`, {
+      const res = await apiFetch(`/api/invoices/${payload.invoiceId}/payments/manual`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': payload.idempotencyKey },
         body: JSON.stringify({
@@ -291,7 +291,7 @@ export function useVoidInvoicePayment() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: { invoiceId: string; paymentId: string }) => {
-      const res = await fetch(`/api/invoices/${payload.invoiceId}/payments/${payload.paymentId}/void`, {
+      const res = await apiFetch(`/api/invoices/${payload.invoiceId}/payments/${payload.paymentId}/void`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -341,7 +341,7 @@ export function useStripeInvoiceRefundRequests(invoiceId: string | undefined, en
     queryKey: ['stripeInvoiceRefundRequests', invoiceId],
     queryFn: async () => {
       if (!invoiceId) return [];
-      const res = await fetch(`/api/invoices/${encodeURIComponent(invoiceId)}/stripe/refund-requests`, { credentials: 'include' });
+      const res = await apiFetch(`/api/invoices/${encodeURIComponent(invoiceId)}/stripe/refund-requests`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch Stripe refund requests');
       const body = await res.json();
       return (body.data || []) as StripeInvoiceRefundRequest[];
@@ -376,7 +376,7 @@ export function useCreateInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: { orderId: string; terms: string; customDueDate?: string }) => {
-      const res = await fetch('/api/invoices', {
+      const res = await apiFetch('/api/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -399,7 +399,7 @@ export function useCreateOrderInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: { orderId: string; terms?: string; customDueDate?: string }) => {
-      const res = await fetch(`/api/orders/${payload.orderId}/invoices`, {
+      const res = await apiFetch(`/api/orders/${payload.orderId}/invoices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ terms: payload.terms || 'due_on_receipt', customDueDate: payload.customDueDate }),
@@ -436,7 +436,7 @@ export function useUpdateInvoice() {
       shippingCents?: number;
       customerId?: string;
     }) => {
-      const res = await fetch(`/api/invoices/${id}`, {
+      const res = await apiFetch(`/api/invoices/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -460,7 +460,7 @@ export function useRetryInvoiceQbSync() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/invoices/${id}/retry-qb-sync`, {
+      const res = await apiFetch(`/api/invoices/${id}/retry-qb-sync`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -482,7 +482,7 @@ export function useQueueInvoiceQbSync() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/invoices/${id}/qb/queue`, {
+      const res = await apiFetch(`/api/invoices/${id}/qb/queue`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -508,7 +508,7 @@ export function useApproveInvoicesForAccounting() {
       const endpoint = invoiceIds.length === 1
         ? `/api/invoices/${encodeURIComponent(invoiceIds[0])}/approve-for-accounting`
         : '/api/invoices/accounting-approval/bulk';
-      const res = await fetch(endpoint, {
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: invoiceIds.length === 1 ? undefined : JSON.stringify({ invoiceIds }),
@@ -533,7 +533,7 @@ export function useApplyInvoicePayment() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: { invoiceId: string; amount: number; method: string; note?: string }) => {
-      const res = await fetch(`/api/invoices/${payload.invoiceId}/payments`, {
+      const res = await apiFetch(`/api/invoices/${payload.invoiceId}/payments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ amount: payload.amount, method: payload.method, note: payload.note }),
@@ -558,7 +558,7 @@ export function useDeleteInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/invoices/${id}`, {
+      const res = await apiFetch(`/api/invoices/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -579,7 +579,7 @@ export function useMarkInvoiceSent() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, via }: { id: string; via: 'email' | 'manual' | 'portal' }) => {
-      const res = await fetch(`/api/invoices/${id}/mark-sent`, {
+      const res = await apiFetch(`/api/invoices/${id}/mark-sent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ via }),
@@ -602,7 +602,7 @@ export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, toEmail }: { id: string; toEmail?: string }) => {
-      const res = await fetch(`/api/invoices/${id}/send`, {
+      const res = await apiFetch(`/api/invoices/${id}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ toEmail }),
@@ -632,7 +632,7 @@ export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
     queryKey: ['invoices', invoiceId, 'email-recipients'],
     enabled: Boolean(invoiceId) && enabled,
     queryFn: async () => {
-      const response = await fetch(`/api/invoices/${invoiceId}/email-recipients`, { credentials: 'include' });
+      const response = await apiFetch(`/api/invoices/${invoiceId}/email-recipients`, { credentials: 'include' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Failed to load invoice email recipients');
       return payload.data;
@@ -644,7 +644,7 @@ export function useBatchSendInvoices() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ invoiceIds, dryRun = false, idempotencyKey }: { invoiceIds: string[]; dryRun?: boolean; idempotencyKey?: string }) => {
-      const res = await fetch('/api/invoices/batch-send', {
+      const res = await apiFetch('/api/invoices/batch-send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -683,7 +683,7 @@ export function useResolveInvoiceEmailDeliveryReview() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ jobId, retryThroughQueue = false }: { jobId: string; retryThroughQueue?: boolean }) => {
-      const response = await fetch(`/api/invoices/email-queue/${jobId}/resolve`, {
+      const response = await apiFetch(`/api/invoices/email-queue/${jobId}/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resolution: 'verified_not_sent', retryThroughQueue }),
@@ -705,7 +705,7 @@ export function useApplyPayment() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: { invoiceId: string; amount: number; method: string; notes?: string }) => {
-      const res = await fetch('/api/payments', {
+      const res = await apiFetch('/api/payments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify(payload),
@@ -729,7 +729,7 @@ export function useDeletePayment() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, invoiceId }: { id: string; invoiceId: string }) => {
-      const res = await fetch(`/api/payments/${id}`, {
+      const res = await apiFetch(`/api/payments/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -764,7 +764,7 @@ export function useInvoiceReminderHistory(invoiceId: string | undefined) {
     queryKey: ['invoiceReminderHistory', invoiceId],
     queryFn: async () => {
       if (!invoiceId) return [];
-      const res = await fetch(`/api/invoices/${invoiceId}/reminder-history`, { credentials: 'include' });
+      const res = await apiFetch(`/api/invoices/${invoiceId}/reminder-history`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch reminder history');
       const data = await res.json();
       return (data.data || []) as ReminderLogEntry[];
@@ -778,7 +778,7 @@ export function useSendInvoiceReminder() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (invoiceId: string) => {
-      const res = await fetch(`/api/invoices/${invoiceId}/send-reminder`, {
+      const res = await apiFetch(`/api/invoices/${invoiceId}/send-reminder`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -801,7 +801,7 @@ export function useRefreshInvoiceStatus() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/invoices/${id}/refresh-status`, {
+      const res = await apiFetch(`/api/invoices/${id}/refresh-status`, {
         method: 'POST',
         credentials: 'include',
       });

@@ -1,5 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-import { apiUrl } from "./apiConfig";
+import { apiUrl, resolveCanonicalApiRequestUrl } from "./apiConfig";
 import { notifySessionExpired } from "./authUtils";
 
 async function throwIfResNotOk(res: Response) {
@@ -47,7 +47,7 @@ export async function apiRequest(
 }
 
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  const fullUrl = url.startsWith("http") ? url : apiUrl(url);
+  const fullUrl = resolveCanonicalApiRequestUrl(url);
   return fetch(fullUrl, {
     credentials: "include",
     ...init,

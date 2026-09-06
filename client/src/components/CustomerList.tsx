@@ -52,6 +52,7 @@ import {
   type CustomerListSortDir,
   type CustomerListViewMode,
 } from "@/lib/customerListQuery";
+import { apiFetch } from "@/lib/queryClient";
 
 const DEFAULT_PAGE_SIZE = 20;
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
@@ -266,7 +267,7 @@ export default function CustomerList({
 
   const updateCustomerMutation = useMutation({
     mutationFn: async ({ customerId, patch }: { customerId: string; patch: Record<string, unknown> }) => {
-      const response = await fetch(`/api/customers/${customerId}`, {
+      const response = await apiFetch(`/api/customers/${customerId}`, {
         method: "PATCH",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -292,7 +293,7 @@ export default function CustomerList({
 
   const bulkCommercialUpdateMutation = useMutation({
     mutationFn: async (payload: { operation: "set_payment_terms"; paymentTerms: CustomerPaymentTerm } | { operation: "set_credit_limit"; creditLimit: number | null }) => {
-      const response = await fetch("/api/customers/bulk-commercial-configuration", {
+      const response = await apiFetch("/api/customers/bulk-commercial-configuration", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -334,7 +335,7 @@ export default function CustomerList({
     queryKey: buildCustomerListQueryKey(queryState),
     queryFn: async () => {
       const params = buildCustomerListSearchParams(queryState);
-      const response = await fetch(`/api/customers?${params.toString()}`, { credentials: "include" });
+      const response = await apiFetch(`/api/customers?${params.toString()}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch customers");
       return normalizeCustomerListResponse<Customer>(await response.json());
     },

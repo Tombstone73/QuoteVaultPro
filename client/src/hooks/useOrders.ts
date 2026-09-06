@@ -5,6 +5,7 @@ import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@
 import type { CancelOrderRequest } from "@shared/orderCancellation";
 import type { OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
 import type { MediaFitSnapshot } from "@shared/mediaFit";
+import { apiFetch } from "@/lib/queryClient";
 
 // ============================================================
 // QUERY KEY FACTORIES (Single Source of Truth)
@@ -474,7 +475,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
       if (filters?.sortDir) params.append("sortDir", filters.sortDir);
 
       const url = `/api/orders${params.toString() ? `?${params.toString()}` : ""}`;
-      const response = await fetch(url, { credentials: "include" });
+      const response = await apiFetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch orders");
       const data = await response.json();
       
@@ -495,7 +496,7 @@ export function useOrder(id: string | undefined) {
     queryKey: id ? orderDetailQueryKey(id) : ["orders", "detail", "undefined"],
     queryFn: async () => {
       if (!id) throw new Error("Order ID is required");
-      const response = await fetch(`/api/orders/${id}`, { credentials: "include" });
+      const response = await apiFetch(`/api/orders/${id}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch order");
       return response.json();
     },
@@ -531,7 +532,7 @@ export function useOrderWorkflow() {
   return useQuery<OrderWorkflowResponse>({
     queryKey: orderWorkflowQueryKey(),
     queryFn: async () => {
-      const response = await fetch("/api/workflow/order", { credentials: "include" });
+      const response = await apiFetch("/api/workflow/order", { credentials: "include" });
       const data = await response.json();
       if (!response.ok || !data?.success) {
         throw new Error(data?.message || "Failed to load order workflow");
@@ -548,7 +549,7 @@ export function useSaveOrderWorkflowDraft() {
 
   return useMutation({
     mutationFn: async (payload: { name?: string; statuses?: Array<Partial<OrderWorkflowStatus>> }) => {
-      const response = await fetch("/api/workflow/order/draft", {
+      const response = await apiFetch("/api/workflow/order/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -576,7 +577,7 @@ export function usePublishOrderWorkflow() {
 
   return useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/workflow/order/publish", {
+      const response = await apiFetch("/api/workflow/order/publish", {
         method: "POST",
         credentials: "include",
       });
@@ -603,7 +604,7 @@ export function useCreateOrder() {
 
   return useMutation({
     mutationFn: async (data: any) => {
-      const response = await fetch("/api/orders", {
+      const response = await apiFetch("/api/orders", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -642,7 +643,7 @@ export function useUpdateOrder(id: string) {
 
   return useMutation({
     mutationFn: async (data: any) => {
-      const response = await fetch(`/api/orders/${id}`, {
+      const response = await apiFetch(`/api/orders/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -684,7 +685,7 @@ export function useCancelOrder(orderId: string) {
 
   return useMutation({
     mutationFn: async (payload: CancelOrderRequest) => {
-      const response = await fetch(`/api/orders/${orderId}/cancel`, {
+      const response = await apiFetch(`/api/orders/${orderId}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -743,7 +744,7 @@ export function useOrderCancellationEligibility(orderId?: string | null) {
     queryKey: orderCancellationEligibilityQueryKey(orderId || ""),
     enabled: Boolean(orderId),
     queryFn: async () => {
-      const response = await fetch(`/api/orders/${orderId}/cancellation-eligibility`, {
+      const response = await apiFetch(`/api/orders/${orderId}/cancellation-eligibility`, {
         credentials: "include",
       });
       const data = await response.json().catch(() => null);
@@ -761,7 +762,7 @@ export function useDeleteOrder() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/orders/${id}`, {
+      const response = await apiFetch(`/api/orders/${id}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -800,7 +801,7 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
       const targetQuoteId = data.quoteId ?? quoteId;
       if (!targetQuoteId) throw new Error("Missing quote id");
       const { quoteId: _omit, ...rest } = data;
-      const response = await fetch(`/api/quotes/${targetQuoteId}/convert-to-order`, {
+      const response = await apiFetch(`/api/quotes/${targetQuoteId}/convert-to-order`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -902,7 +903,7 @@ export function useUpdateOrderLineItem(
       console.log("useUpdateOrderLineItem - Input data:", data);
       console.log("useUpdateOrderLineItem - Payload to API:", payload);
 
-      const response = await fetch(`/api/order-line-items/${id}`, {
+      const response = await apiFetch(`/api/order-line-items/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -957,7 +958,7 @@ export function useUpdateOrderLineItemCommercialPricing(orderId: string) {
         priceOverrideValuePercent?: number | null;
       };
     }) => {
-      const response = await fetch(`/api/order-line-items/${id}/commercial-pricing`, {
+      const response = await apiFetch(`/api/order-line-items/${id}/commercial-pricing`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -999,7 +1000,7 @@ export function useCreateOrderLineItem(orderId: string) {
       console.log("useCreateOrderLineItem - Input data:", data);
       console.log("useCreateOrderLineItem - Payload to API:", payload);
 
-      const response = await fetch("/api/order-line-items", {
+      const response = await apiFetch("/api/order-line-items", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1036,7 +1037,7 @@ export function useDeleteOrderLineItem(orderId: string) {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/order-line-items/${id}`, {
+      const response = await apiFetch(`/api/order-line-items/${id}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -1070,7 +1071,7 @@ export function useUpdateOrderLineItemStatus(orderId: string) {
 
   return useMutation({
     mutationFn: async ({ lineItemId, status }: { lineItemId: string; status: string }) => {
-      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/status`, {
+      const response = await apiFetch(`/api/orders/${orderId}/line-items/${lineItemId}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
@@ -1109,7 +1110,7 @@ export function useBulkUpdateOrderLineItemStatus(orderId: string) {
 
   return useMutation({
     mutationFn: async ({ status, lineItemIds }: { status: string; lineItemIds?: string[] }) => {
-      const response = await fetch(`/api/orders/${orderId}/line-items/status`, {
+      const response = await apiFetch(`/api/orders/${orderId}/line-items/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, lineItemIds }),
@@ -1163,7 +1164,7 @@ export function useTransitionLineItemWorkflow(orderId: string) {
         ? { note }
         : { toState, note };
 
-      const response = await fetch(endpoint, {
+      const response = await apiFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1192,7 +1193,7 @@ export function useDesignQueue() {
   return useQuery<DesignQueueItem[]>({
     queryKey: ["/api/design/queue"],
     queryFn: async () => {
-      const response = await fetch("/api/design/queue", { credentials: "include" });
+      const response = await apiFetch("/api/design/queue", { credentials: "include" });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || "Failed to fetch design queue");
@@ -1212,7 +1213,7 @@ export function useTransitionOrderStatus(orderId: string) {
 
   return useMutation({
     mutationFn: async ({ toStatus, reason }: { toStatus: string; reason?: string }) => {
-      const response = await fetch(`/api/orders/${orderId}/status`, {
+      const response = await apiFetch(`/api/orders/${orderId}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ toStatus, reason }),
