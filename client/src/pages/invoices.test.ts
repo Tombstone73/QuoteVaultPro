@@ -67,6 +67,16 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).not.toContain("value={filteredInvoices.length}");
   });
 
+  it("uses the configured API origin for both invoice-list reads", () => {
+    const listHooks = invoiceHooksSource.slice(
+      invoiceHooksSource.indexOf("export function useInvoices("),
+      invoiceHooksSource.indexOf("// Get invoice detail"),
+    );
+    expect(invoiceHooksSource).toContain("import { apiFetch, apiRequest }");
+    expect(listHooks).toContain("apiFetch(`/api/invoices?${params}`)");
+    expect(listHooks).not.toContain("fetch(`/api/invoices?${params}`");
+  });
+
   it("uses a compact, responsive totals strip and toolbar", () => {
     expect(invoicesPageSource).toContain("showTotals &&");
     expect(invoicesPageSource).toContain('data-testid="invoice-summary-strip"');

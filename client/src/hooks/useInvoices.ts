@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
 import type { InvoiceAccountingDisplay, QuickBooksLineItemDisplay } from '@shared/invoiceAccountingDisplay';
 import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
-import { apiRequest } from '@/lib/queryClient';
+import { apiFetch, apiRequest } from '@/lib/queryClient';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'needs_review' | 'canceled';
@@ -144,7 +144,7 @@ export function useInvoices(filters?: {
       if (filters?.search) params.append('search', filters.search);
       if (filters?.sortBy) params.append('sortBy', filters.sortBy);
       if (filters?.sortDir) params.append('sortDir', filters.sortDir);
-      const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
+      const res = await apiFetch(`/api/invoices?${params}`);
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
       return data.data as InvoiceListItem[];
@@ -196,7 +196,10 @@ export function useInvoicesPage(filters: {
         if (value) params.append(key, value);
       }
       params.append('includeSummary', '1');
-      const res = await fetch(`/api/invoices?${params}`, { credentials: 'include' });
+      // The production UI has an explicit API origin. Do not bypass it with a
+      // same-origin fetch, which would send this authoritative list read to a
+      // Vercel rewrite instead of the active production backend.
+      const res = await apiFetch(`/api/invoices?${params}`);
       if (!res.ok) throw new Error('Failed to fetch invoices');
       const data = await res.json();
       if (!data.summary || !data.pagination) {
