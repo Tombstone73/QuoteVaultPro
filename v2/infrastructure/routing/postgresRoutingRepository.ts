@@ -31,7 +31,7 @@ type InstanceRow = Readonly<{
   source_template_fingerprint: string; route_state: RouteInstanceState;
   current_step_id: string | null; revision: string;
 }>;
-type InstanceStepRow = Readonly<{ id: string; position: number; step_kind: RouteStepKind }>;
+type InstanceStepRow = Readonly<{ id: string; position: number; step_kind: RouteStepKind; production_destination_station_key: "flatbed" | "roll" | null }>;
 
 export type RoutingPersistenceTestHooks = Readonly<{
   beforeInstanceInsert?: () => Promise<void> | void;
@@ -44,7 +44,7 @@ const templateStep = (row: TemplateStepRow): RouteTemplateStep => ({
 });
 const instanceStep = (row: InstanceStepRow): RouteInstanceStep => ({
   routeInstanceStepId: brandedId<"RouteInstanceStepId">(row.id),
-  position: row.position, kind: row.step_kind,
+  position: row.position, kind: row.step_kind, ...(row.production_destination_station_key ? { productionDestination: row.production_destination_station_key } : {}),
 });
 
 /**
@@ -68,7 +68,7 @@ export class PostgresRoutingRepository {
     const row = result.rows[0];
     if (!row) return null;
     const steps = await this.client.query<InstanceStepRow>(
-      "SELECT id,position,step_kind FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position",
+      "SELECT id,position,step_kind,production_destination_station_key FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position",
       [organizationId, routeInstanceId],
     );
     const routeSteps = steps.rows.map(instanceStep);
@@ -92,6 +92,7 @@ export class PostgresRoutingRepository {
 
     const routeInstanceId = brandedId<"RouteInstanceId">(randomUUID());
     const frozen = definition.steps.map((step) => ({ id: brandedId<"RouteInstanceStepId">(randomUUID()), source: step }));
+    const destinations = await this.productionDestinationSnapshots(input.organizationId, definition);
     const currentStepId = frozen[0]!.id;
     await this.hooks?.beforeInstanceInsert?.();
     const inserted = await this.client.query<{ id: string }>(
@@ -112,8 +113,8 @@ export class PostgresRoutingRepository {
     await this.hooks?.afterInstance?.();
     for (const step of frozen) {
       await this.client.query(
-        "INSERT INTO v2_route_instance_steps(id,organization_id,route_instance_id,position,step_kind) VALUES($1,$2,$3,$4,$5)",
-        [step.id, input.organizationId, routeInstanceId, step.source.position, step.source.kind],
+        "INSERT INTO v2_route_instance_steps(id,organization_id,route_instance_id,position,step_kind,production_destination_station_key) VALUES($1,$2,$3,$4,$5,$6)",
+        [step.id, input.organizationId, routeInstanceId, step.source.position, step.source.kind, destinations.get(step.source.position) ?? null],
       );
       await this.hooks?.afterFrozenStep?.(step.source.position);
     }
@@ -142,6 +143,23 @@ export class PostgresRoutingRepository {
       sourceTemplate: { routeTemplateId: live.routeTemplateId, revision: live.revision, definitionFingerprint: live.definitionFingerprint },
       steps: live.steps.map(({ position, kind }) => ({ position, kind })),
     };
+  }
+
+  /**
+   * A destination is copied only from the exact live template revision that
+   * matches the frozen definition.  A Product-version definition that refers
+   * to an older template revision must not adopt a later template mapping.
+   */
+  private async productionDestinationSnapshots(organizationId: OrganizationId, definition: FrozenRouteDefinition): Promise<ReadonlyMap<number, "flatbed" | "roll">> {
+    const rows = await this.client.query<{ position: number; station_key: "flatbed" | "roll" }>(
+      `SELECT s.position,d.station_key
+       FROM v2_route_templates t
+       JOIN v2_route_template_steps s ON s.organization_id=t.organization_id AND s.route_template_id=t.id AND s.step_kind='production'
+       JOIN v2_route_template_production_destinations d ON d.organization_id=s.organization_id AND d.route_template_step_id=s.id
+       WHERE t.organization_id=$1 AND t.id=$2 AND t.revision::text=$3 AND t.definition_fingerprint=$4`,
+      [organizationId, definition.sourceTemplate.routeTemplateId, definition.sourceTemplate.revision, definition.sourceTemplate.definitionFingerprint],
+    );
+    return new Map(rows.rows.map((row) => [row.position, row.station_key]));
   }
 
   private async template(organizationId: OrganizationId, routeTemplateId: RouteTemplateId, activeOnly: boolean, lockForSnapshot: boolean): Promise<TemplateRow | null> {

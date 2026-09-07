@@ -15,7 +15,7 @@ const markup = renderToStaticMarkup(<RoutingSection
   templates={[{
     routeTemplateId: "route-template-a", name: "Production route", active: true,
     revision: "7", definitionFingerprint: "sha256:template-a",
-    steps: [{ position: 0, kind: "proofing" }, { position: 1, kind: "production" }],
+    steps: [{ routeTemplateStepId: "step-proof", position: 0, kind: "proofing" }, { routeTemplateStepId: "step-production", position: 1, kind: "production" }],
   }]}
   onChange={() => {}}
   onManageRoutes={() => {}}

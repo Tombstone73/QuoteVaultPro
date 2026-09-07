@@ -566,6 +566,7 @@ export const App = ({
           sessionScope={sessionScope}
           canView={bootstrap.data?.capabilities.routeView === true}
           canAdvance={bootstrap.data?.capabilities.routeAdvance === true}
+          canManageTemplates={bootstrap.data?.capabilities.routeManageTemplates === true}
           openOrder={(id) => {
             pushOrderLocation(id);
             setOrderId(id);
@@ -638,8 +639,11 @@ export const App = ({
           sessionScope={sessionScope}
           canView={bootstrap.data?.capabilities.prepressView === true}
           canArtworkAssign={bootstrap.data?.capabilities.artworkAssign === true}
+          canArtworkAdopt={bootstrap.data?.capabilities.artworkAdopt === true}
           canWork={bootstrap.data?.capabilities.prepressWork === true}
           canComplete={bootstrap.data?.capabilities.prepressComplete === true}
+          canRouteAdvance={bootstrap.data?.capabilities.routeAdvance === true}
+          canProductionWork={bootstrap.data?.capabilities.productionWork === true}
           lineId={prepressLineId || undefined}
           prepressUnitId={prepressUnitId || undefined}
           onSelectLine={(lineId) => {

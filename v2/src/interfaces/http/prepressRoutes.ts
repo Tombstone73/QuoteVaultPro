@@ -15,6 +15,7 @@ export interface PrepressHttpService {
   open(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
   start(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
   complete(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
+  sendToProduction(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
 }
 export interface VerifiedV2PrepressPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
 export type PrepressHttpDependencies = Readonly<{ service: PrepressHttpService; principals: VerifiedV2PrepressPrincipalProvider }>;
@@ -39,5 +40,6 @@ export const createPrepressRouter=(deps:PrepressHttpDependencies):Router=>{const
   router.post("/units",(request,response)=>void run(response,async()=>deps.service.open(await context(request,deps,true),body(request.body))));
   router.post("/units/:prepressUnitId/start",(request,response)=>void run(response,async()=>deps.service.start(await context(request,deps,true),{...body(request.body),prepressUnitId:request.params.prepressUnitId as PrepressUnitId})));
   router.post("/units/:prepressUnitId/complete",(request,response)=>void run(response,async()=>deps.service.complete(await context(request,deps,true),{...body(request.body),prepressUnitId:request.params.prepressUnitId as PrepressUnitId})));
+  router.post("/units/:prepressUnitId/send-to-production",(request,response)=>void run(response,async()=>deps.service.sendToProduction(await context(request,deps,true),{...body(request.body),prepressUnitId:request.params.prepressUnitId as PrepressUnitId})));
   return router;
 };

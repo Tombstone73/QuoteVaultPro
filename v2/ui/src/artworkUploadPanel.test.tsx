@@ -50,4 +50,17 @@ assert.equal(body.get("purpose"), "customer_supplied");
 assert.equal(body.get("side"), "front");
 assert.equal(body.get("supersedesArtworkAssignmentId"), "assignment-front");
 assert.equal((body.get("file") as File).name, "qa-artwork.pdf");
+
+const productionFile = new File(["%PDF-1.4\nprint"], "print-ready.pdf", { type: "application/pdf" });
+globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+  seen.url = String(url); seen.headers = init?.headers; seen.body = init?.body;
+  return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200, headers: { "content-type": "application/json" } });
+}) as typeof fetch;
+try {
+  await artworkApi.uploadProductionForPrepress("org a", "request-prepress", { orderId: target.orderId, orderLineId: target.orderLineId, side: "front", supersedesArtworkAssignmentId: "assignment-production-front", file: productionFile });
+} finally { globalThis.fetch = originalFetch; }
+assert.equal(seen.url, "/v2/organizations/org%20a/artwork/prepress/production-uploads");
+const productionBody = seen.body as FormData;
+assert.equal(productionBody.get("purpose"), "production");
+assert.equal(productionBody.get("supersedesArtworkAssignmentId"), "assignment-production-front");
 console.log("Artwork upload panel visual and multipart contracts passed.");

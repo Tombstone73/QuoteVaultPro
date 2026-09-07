@@ -66,6 +66,26 @@ const context = async (request: Request, dependencies: ArtworkHttpDependencies, 
   return { principal: await dependencies.principals.principal(request, organizationId), organizationId, operationId: `http:${request.method}:${request.path}`, ...(mutation ? { businessRequest: { id: businessRequestId as string, payloadFingerprint: "route-fingerprint-is-derived-by-operation" } } : {}) };
 };
 
+/**
+ * Prepress does not own files or assignments.  This narrow transport guard is
+ * deliberately kept beside the canonical Artwork upload transport so a
+ * production-ready upload still traverses the same storage ledger,
+ * idempotency reservation, assignment lineage, and audit path as every other
+ * Artwork upload.
+ */
+const productionArtworkForPrepress = async (request: Request, dependencies: ArtworkHttpDependencies): Promise<MultipartArtworkCommand> => {
+  const input = await multipart(request);
+  if (input.purpose !== "production") throw new V2ApplicationError("VALIDATION_ERROR", "Prepress uploads must declare production Artwork.");
+  const organizationId = request.params.organizationId;
+  if (!organizationId) throw new V2ApplicationError("VALIDATION_ERROR", "organizationId is required.");
+  const principal = await dependencies.principals.principal(request, organizationId);
+  if (!new AuthorityPolicy().decide(principal, { capability: "prepress.work", resource: { organizationId } }).allowed)
+    throw new V2ApplicationError("FORBIDDEN", "Prepress authority is required to upload production Artwork.");
+  if (!new AuthorityPolicy().decide(principal, { capability: "artwork.adopt", resource: { organizationId } }).allowed)
+    throw new V2ApplicationError("FORBIDDEN", "Artwork adoption authority is required to upload production Artwork.");
+  return input;
+};
+
 /** HTTP transport for bounded Artwork reads and safe existing-file usage assignment. */
 export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Router => {
   const router = expressRouter({ mergeParams: true });
@@ -125,6 +145,19 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
         : await dependencies.upload.upload(operationContext, input as never);
       send(response, operation);
     } catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Artwork upload is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }
+  });
+  router.post("/prepress/production-uploads", async (request, response) => {
+    try {
+      if (!dependencies.upload) throw new V2ApplicationError("RETRYABLE_FAILURE", "Artwork upload is unavailable.");
+      const input = await productionArtworkForPrepress(request, dependencies);
+      const organizationId = (request.params as Readonly<{ organizationId?: string }>).organizationId;
+      if (!organizationId) throw new V2ApplicationError("VALIDATION_ERROR", "organizationId is required.");
+      const operationContext = { principal: await dependencies.principals.principal(request, organizationId), organizationId, operationId: `http:${request.method}:${request.path}`, businessRequest: { id: input.businessRequestId, payloadFingerprint: "prepress-production-artwork-upload-fingerprint-is-derived-by-operation" } };
+      const operation = input.supersedesArtworkAssignmentId
+        ? await dependencies.upload.replace(operationContext, input as never)
+        : await dependencies.upload.upload(operationContext, input as never);
+      send(response, operation);
+    } catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Prepress production Artwork upload is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }
   });
   return router;
 };

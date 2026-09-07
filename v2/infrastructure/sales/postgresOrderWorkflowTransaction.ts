@@ -30,7 +30,7 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
       if (line.workflow_intent !== "standard_production" || !line.requires_production || await this.hasProductionWork(organizationId, line.id)) continue;
       const route = await this.client.query<{ id:string;current_step_id:string }>("SELECT id,current_step_id FROM v2_route_instances WHERE organization_id=$1 AND order_line_id=$2 AND route_state IN ('pending','active')", [organizationId,line.id]);
       const frozen = route.rows[0]; if (!frozen) continue;
-      const steps = await this.client.query<{id:string;position:number;step_kind:string;source_template_step_id:string}>("SELECT id,position,step_kind,source_template_step_id FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position",[organizationId,frozen.id]);
+      const steps = await this.client.query<{id:string;position:number;step_kind:string;production_destination_station_key:"flatbed"|"roll"|null}>("SELECT id,position,step_kind,production_destination_station_key FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position",[organizationId,frozen.id]);
       const current = steps.rows.find((step)=>step.id===frozen.current_step_id); if (!current) continue;
       const fulfillment = steps.rows.find((step)=>step.position>current.position&&step.step_kind==='fulfillment');
       if (fulfillment && (current.step_kind==='prepress'||current.step_kind==='production') && !steps.rows.some((step)=>step.position>current.position&&step.position<fulfillment.position&&step.step_kind!=='prepress'&&step.step_kind!=='production')) actions.push({action:"production_not_required",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,reasonRequired:true,eligibilityReason:"No Production work exists and the frozen Route can proceed to Fulfillment without fabricating completion."});
@@ -38,8 +38,7 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
       if (!production || steps.rows.some((step)=>step.position>current.position&&step.position<production.position&&step.step_kind!=='prepress')) continue;
       if (!await this.productionArtworkComplete(organizationId,line.id)) continue;
       if (line.requires_proof && !await this.currentProofApproved(organizationId,line.id)) continue;
-      const destinations = await this.client.query<{station_key:"flatbed"|"roll"}>("SELECT station_key FROM v2_route_template_production_destinations WHERE organization_id=$1 AND route_template_step_id=$2 ORDER BY station_key",[organizationId,production.source_template_step_id]);
-      if (destinations.rows.length) actions.push({action:"direct_production",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,allowedDestinations:destinations.rows.map((row)=>row.station_key),reasonRequired:false,eligibilityReason:"The frozen Route, current Artwork, and required Proof evidence permit a direct Production handoff."});
+      if (production.production_destination_station_key) actions.push({action:"direct_production",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,allowedDestinations:[production.production_destination_station_key],reasonRequired:false,eligibilityReason:"The frozen Route, current Artwork, and required Proof evidence permit a direct Production handoff."});
     }
     return actions;
   }
@@ -108,8 +107,7 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
   private async assertConfiguredDestination(organizationId: string, routeId: string, productionStepId: string, destination: "flatbed" | "roll") {
     const result = await this.client.query<{ configured: boolean }>(`SELECT EXISTS(
       SELECT 1 FROM v2_route_instance_steps step
-      JOIN v2_route_template_production_destinations destination ON destination.organization_id=step.organization_id AND destination.route_template_step_id=step.source_template_step_id
-      WHERE step.organization_id=$1 AND step.route_instance_id=$2 AND step.id=$3 AND step.step_kind='production' AND destination.station_key=$4
+      WHERE step.organization_id=$1 AND step.route_instance_id=$2 AND step.id=$3 AND step.step_kind='production' AND step.production_destination_station_key=$4
     ) configured`, [organizationId, routeId, productionStepId, destination]);
     if (!result.rows[0]?.configured) throw new V2ApplicationError("CONFLICT", "The frozen Route has no configured Production destination matching this station.");
   }

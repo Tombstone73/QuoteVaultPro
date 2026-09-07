@@ -51,6 +51,8 @@ export type RouteInstanceStep = Readonly<{
   routeInstanceStepId: RouteInstanceStepId;
   position: number;
   kind: RouteStepKind;
+  /** Immutable station snapshot captured when the Route Instance is created. */
+  productionDestination?: "flatbed" | "roll";
 }>;
 
 /** A frozen route is the Routing-owned internal position for one legitimate work reference. */

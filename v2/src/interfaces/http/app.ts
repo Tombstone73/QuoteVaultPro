@@ -185,6 +185,7 @@ export const createV2HttpApp = (
                 refundIssue: policy.decide(principal, { capability: "refund.issue", resource: { organizationId } }).allowed,
                 artworkView: policy.decide(principal, { capability: "artwork.view", resource: { organizationId } }).allowed,
                 artworkAssign: policy.decide(principal, { capability: "artwork.assign", resource: { organizationId } }).allowed,
+                artworkAdopt: policy.decide(principal, { capability: "artwork.adopt", resource: { organizationId } }).allowed,
                 proofView: policy.decide(principal, { capability: "proof.view", resource: { organizationId } }).allowed,
                 proofPrepare: policy.decide(principal, { capability: "proof.prepare", resource: { organizationId } }).allowed,
                 proofIssue: policy.decide(principal, { capability: "proof.issue", resource: { organizationId } }).allowed,
@@ -202,6 +203,7 @@ export const createV2HttpApp = (
                 fulfillmentShip: policy.decide(principal, { capability: "fulfillment.ship", resource: { organizationId } }).allowed,
                 routeView: policy.decide(principal, { capability: "route.view", resource: { organizationId } }).allowed,
                 routeAdvance: policy.decide(principal, { capability: "route.advance", resource: { organizationId } }).allowed,
+                routeManageTemplates: policy.decide(principal, { capability: "route.manageTemplates", resource: { organizationId } }).allowed,
               },
             },
           });

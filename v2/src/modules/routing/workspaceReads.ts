@@ -4,7 +4,7 @@ import type { RouteInstanceState, RouteStepKind } from "./contracts.js";
 export type RoutingWorkspaceRead = Readonly<{
   templates: readonly Readonly<{
     routeTemplateId: string; name: string; active: boolean; revision: string;
-    definitionFingerprint: string; steps: readonly Readonly<{ position: number; kind: RouteStepKind }>[];
+    definitionFingerprint: string; steps: readonly Readonly<{ routeTemplateStepId: string; position: number; kind: RouteStepKind; productionDestination?: "flatbed" | "roll" }>[];
   }>[];
   instances: readonly Readonly<{
     routeInstanceId: string; state: RouteInstanceState; revision: string; currentStepId?: string;

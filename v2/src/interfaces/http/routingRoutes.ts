@@ -7,11 +7,13 @@ import type { RoutingLifecycleApplicationService } from "../../modules/routing/r
 import type { RouteInstanceId } from "../../modules/shared/commercialValues.js";
 import type { OperationContext } from "../../application/operation.js";
 import type { RouteTemplateAuthoringApplicationService } from "../../modules/routing/routeTemplateAuthoring.js";
+import type { RouteTemplateProductionDestinationApplicationService } from "../../modules/routing/routeTemplateProductionDestinationAuthoring.js";
 
 export type RoutingHttpDependencies = Readonly<{
   workspace: RoutingWorkspaceReadPort;
   service: RoutingLifecycleApplicationService;
   authoring: RouteTemplateAuthoringApplicationService;
+  destinations: RouteTemplateProductionDestinationApplicationService;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
 }>;
 
@@ -65,6 +67,14 @@ export const createRoutingRouter = (dependencies: RoutingHttpDependencies): Rout
       const result = await dependencies.authoring.update(await context(request, dependencies), { businessRequestId: command.businessRequestId as string, routeTemplateId, expectedRevision: command.expectedRevision, name: command.name, active: command.active, steps: command.steps as never });
       return response.status(result.ok ? 200 : status(result.error.code)).json(result.ok ? { ok: true, data: result.value } : { ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
     } catch (error) { const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Route Template update is unavailable."); return response.status(status(cause.code)).json({ ok:false,error:{code:cause.code,message:cause.publicMessage} }); }
+  });
+  router.put("/templates/:routeTemplateId/production-destinations/:routeTemplateStepId", async (request, response) => {
+    try {
+      const command = body(request.body), routeTemplateId = request.params.routeTemplateId, routeTemplateStepId = request.params.routeTemplateStepId;
+      if (!routeTemplateId?.trim() || !routeTemplateStepId?.trim() || (command.stationKey !== "flatbed" && command.stationKey !== "roll")) throw new V2ApplicationError("VALIDATION_ERROR", "A Route Template production step and supported station are required.");
+      const result = await dependencies.destinations.set(await context(request, dependencies), { businessRequestId: command.businessRequestId as string, routeTemplateId, routeTemplateStepId, stationKey: command.stationKey });
+      return response.status(result.ok ? 200 : status(result.error.code)).json(result.ok ? { ok: true, data: result.value } : { ok: false, error: { code: result.error.code, message: result.error.publicMessage } });
+    } catch (error) { const cause = error instanceof V2ApplicationError ? error : new V2ApplicationError("INTERNAL_ERROR", "Route Template destination is unavailable."); return response.status(status(cause.code)).json({ ok:false,error:{code:cause.code,message:cause.publicMessage} }); }
   });
   return router;
 };

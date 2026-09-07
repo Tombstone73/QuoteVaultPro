@@ -125,6 +125,7 @@ export type UiBootstrap = Readonly<{
     refundIssue?: boolean;
     artworkView?: boolean;
     artworkAssign?: boolean;
+    artworkAdopt?: boolean;
     proofView?: boolean;
     proofPrepare?: boolean;
     proofIssue?: boolean;
@@ -142,6 +143,7 @@ export type UiBootstrap = Readonly<{
     fulfillmentShip?: boolean;
     routeView?: boolean;
     routeAdvance?: boolean;
+    routeManageTemplates?: boolean;
   }>;
 }>;
 export type SalesListPage<T> = Readonly<{
@@ -1227,6 +1229,15 @@ export type PrepressQueueItem = Readonly<{
   requestedDueDate?: string;
   routingStepKind?: "proofing" | "prepress" | "production" | "fulfillment";
   coverage: OrderLinePrepressCoverage;
+  operational?: Readonly<{
+    expectedDimensions?: Readonly<{ width: string; height: string; unit: "in" | "ft" | "mm" }>;
+    materials: readonly string[];
+    sourceArtwork: readonly Readonly<{ artworkAssignmentId: string; artworkFileId: string; filename: string; contentType: string; purpose: "customer_supplied" | "production"; side?: "front" | "back"; sourcePageIndex?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number }>[];
+    productionArtwork: readonly Readonly<{ artworkAssignmentId: string; artworkFileId: string; filename: string; contentType: string; purpose: "customer_supplied" | "production"; side?: "front" | "back"; sourcePageIndex?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number }>[];
+    proof: Readonly<{ required: boolean; state: "not_required" | "pending" | "approved" | "revision_requested" }>;
+    productionDestination?: "flatbed" | "roll";
+    readiness: Readonly<{ ready: boolean; blockers: readonly string[] }>;
+  }>;
 }>;
 export type ProductionAttempt = Readonly<{
   productionAttemptId: string;
@@ -2582,6 +2593,8 @@ export const financeApi = {
   beginStripeRefund: (organizationId: string, invoiceId: string, businessRequestId: string, input: Readonly<{paymentId:string;amountCents:number;currency:string}>) => request<Readonly<{providerOperationId:string;refundId:string}>>(financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/stripe/refunds`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({...input,businessRequestId}) }),
 };
 export const artworkApi = {
+  contentUrl: (organizationId: string, artworkFileId: string) =>
+    `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(artworkFileId)}/content`,
   workspace: (organizationId: string, query = "") =>
     request<{
       items: readonly (ArtworkOrderProjection &
@@ -2648,6 +2661,49 @@ export const artworkApi = {
       }>
     >(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/uploads`,
+      {
+        method: "POST",
+        headers: {
+          "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+        },
+        body,
+      },
+    );
+  },
+  /** A Prepress-only affordance. The server still uses the canonical Artwork
+   * storage, assignment, revision, idempotency, and audit authority. */
+  uploadProductionForPrepress: (
+    organizationId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      orderId: string;
+      orderLineId: string;
+      side?: "front" | "back";
+      sourcePageIndex?: number;
+      layerKey?: string;
+      layerOrder?: number;
+      supersedesArtworkAssignmentId?: string;
+      file: File;
+    }>,
+  ) => {
+    const body = new FormData();
+    body.append("businessRequestId", businessRequestId);
+    body.append("orderId", input.orderId);
+    body.append("orderLineId", input.orderLineId);
+    body.append("purpose", "production");
+    if (input.side) body.append("side", input.side);
+    if (input.sourcePageIndex !== undefined) body.append("sourcePageIndex", String(input.sourcePageIndex));
+    if (input.layerKey !== undefined) body.append("layerKey", input.layerKey);
+    if (input.layerOrder !== undefined) body.append("layerOrder", String(input.layerOrder));
+    if (input.supersedesArtworkAssignmentId) body.append("supersedesArtworkAssignmentId", input.supersedesArtworkAssignmentId);
+    body.append("file", input.file);
+    return request<
+      Readonly<{
+        artworkFile: ArtworkOrderProjection["file"];
+        assignment: ArtworkOrderProjection["assignment"];
+      }>
+    >(
+      `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/prepress/production-uploads`,
       {
         method: "POST",
         headers: {
@@ -2776,6 +2832,13 @@ export const prepressApi = {
     prepressMutation<{ unit: PrepressUnit }>(
       org,
       `/units/${encodeURIComponent(prepressUnitId)}/complete`,
+      businessRequestId,
+      {},
+    ),
+  sendToProduction: (org: string, prepressUnitId: string, businessRequestId: string) =>
+    prepressMutation<Readonly<{ unit: PrepressUnit; destination: "flatbed" | "roll"; productionWorkIds: readonly string[] }>>(
+      org,
+      `/units/${encodeURIComponent(prepressUnitId)}/send-to-production`,
       businessRequestId,
       {},
     ),
@@ -2991,7 +3054,7 @@ export type RoutingWorkspaceRead = Readonly<{
     active: boolean;
     revision: string;
     definitionFingerprint: string;
-    steps: readonly Readonly<{ position: number; kind: string }>[];
+    steps: readonly Readonly<{ routeTemplateStepId: string; position: number; kind: string; productionDestination?: "flatbed" | "roll" }>[];
   }>[];
   instances: readonly Readonly<{
     routeInstanceId: string;
@@ -3077,6 +3140,16 @@ export const routingApi = {
         body: JSON.stringify({ businessRequestId, ...input }),
       },
     ),
+  setProductionDestination: (
+    org: string,
+    routeTemplateId: string,
+    routeTemplateStepId: string,
+    businessRequestId: string,
+    stationKey: "flatbed" | "roll",
+  ) => request<Readonly<{ routeTemplateId: string; routeTemplateStepId: string; stationKey: "flatbed" | "roll" }>>(
+    `/v2/organizations/${encodeURIComponent(org)}/routing/templates/${encodeURIComponent(routeTemplateId)}/production-destinations/${encodeURIComponent(routeTemplateStepId)}`,
+    { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" }, body: JSON.stringify({ businessRequestId, stationKey }) },
+  ),
 };
 export const money = (value: { cents: number; currency: string }) =>
   new Intl.NumberFormat(undefined, {

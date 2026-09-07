@@ -1828,6 +1828,13 @@
       "when": 1788048000112,
       "tag": "0265_v2_route_template_production_destinations",
       "breakpoints": true
+    },
+    {
+      "idx": 267,
+      "version": "7",
+      "when": 1788048000113,
+      "tag": "0266_v2_frozen_route_destination_snapshot",
+      "breakpoints": true
     }
   ]
 }

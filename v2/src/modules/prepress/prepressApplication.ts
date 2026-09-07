@@ -5,7 +5,7 @@ import { principalSubject, staffActorId } from "../../authorization/principals.j
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type ArtworkAssignmentId, type OrganizationId, type OrderLineId, type PrepressUnitId } from "../shared/commercialValues.js";
 import { normalizeOperationalQueuePage, type OperationalQueuePage } from "../shared/operationalQueue.js";
-import type { CompletePrepressUnitInput, OpenPrepressUnitInput, OrderLinePrepressCoverage, PrepressQueueItem, PrepressQueuePageRequest, PrepressUnit, StartPrepressUnitInput } from "./contracts.js";
+import type { CompletePrepressUnitInput, OpenPrepressUnitInput, OrderLinePrepressCoverage, PrepressProductionHandoff, PrepressQueueItem, PrepressQueuePageRequest, PrepressUnit, SendPrepressToProductionInput, StartPrepressUnitInput } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
@@ -15,7 +15,7 @@ export interface PrepressTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string } & Actor>): Promise<Reservation>;
   succeed(organizationId: string, requestId: string, result: PrepressMutationResult): Promise<void>;
   attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string } & Actor>): Promise<void>;
-  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "prepress_unit_opened" | "prepress_unit_started" | "prepress_unit_completed"; resourceId: string; summary: string } & Actor>): Promise<void>;
+  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "prepress_unit_opened" | "prepress_unit_started" | "prepress_unit_completed" | "prepress_unit_handed_to_production"; resourceId: string; summary: string } & Actor>): Promise<void>;
   findUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
   orderLineExists(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<boolean>;
   lockUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
@@ -27,6 +27,7 @@ export interface PrepressTransaction {
   createOrGetUnit(input: Readonly<{ id: PrepressUnitId; organizationId: OrganizationId; artworkAssignmentId: ArtworkAssignmentId } & Actor>): Promise<PrepressUnit>;
   startUnit(input: Readonly<{ organizationId: OrganizationId; prepressUnitId: PrepressUnitId } & Actor>): Promise<PrepressUnit>;
   completeUnit(input: Readonly<{ organizationId: OrganizationId; prepressUnitId: PrepressUnitId } & Actor>): Promise<PrepressUnit>;
+  handoffToProduction(input: Readonly<{ organizationId: OrganizationId; prepressUnitId: PrepressUnitId } & Actor>): Promise<PrepressProductionHandoff>;
 }
 export interface PrepressTransactionRunner { transaction<T>(action: (tx: PrepressTransaction) => Promise<T>): Promise<T>; }
 const actor = (context: OperationContext): Actor => ({ principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
@@ -75,8 +76,23 @@ export class PrepressApplicationService {
       return { unit: await tx.completeUnit({ organizationId: unit.organizationId, prepressUnitId: unit.prepressUnitId, ...actor(context) }) };
     });
   }
+  /** This is deliberately one transaction: completed current production Art,
+   * a frozen mapped Route step, and its Production work move together or not
+   * at all.  It is not a UI-side chain of completion/route/production calls. */
+  async sendToProduction(context: OperationContext, input: SendPrepressToProductionInput): Promise<ApplicationResult<PrepressProductionHandoff>> {
+    try {
+      requireOperationPrincipalScope(context);
+      for (const capability of ["prepress.complete", "route.advance", "production.work"] as const)
+        if (!this.authority.decide(context.principal, { capability, resource: { organizationId: context.organizationId } }).allowed)
+          throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to hand Prepress work to Production.");
+    } catch (error) { return failure(this.error(error)); }
+    return this.mutate(context, "prepress.unit.handoff-to-production.v1", input, "prepress.complete", "prepress_unit_handed_to_production", "Prepress evidence handed to the frozen Production destination.", async (tx) => {
+      const handoff = await tx.handoffToProduction({ organizationId: brandedId<"OrganizationId">(context.organizationId), prepressUnitId: input.prepressUnitId, ...actor(context) });
+      return handoff;
+    }) as Promise<ApplicationResult<PrepressProductionHandoff>>;
+  }
   private async mutate(context: OperationContext, operation: string, input: { businessRequestId: string }, capability: "prepress.work" | "prepress.complete", eventType: Parameters<PrepressTransaction["audit"]>[0]["eventType"], summary: string, work: (tx: PrepressTransaction) => Promise<PrepressMutationResult>): Promise<ApplicationResult<PrepressMutationResult>> {
-    try { requireOperationPrincipalScope(context); this.require(context, capability); if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required."); return success(await this.runner.transaction(async (tx) => { const reserved = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) }); if (reserved.kind === "replay") return reserved.request.resultJson as PrepressMutationResult; const result = await work(tx); await tx.attribute({ organizationId: context.organizationId, requestId: reserved.request.id, operation, resourceId: result.unit.prepressUnitId, ...actor(context) }); await tx.audit({ organizationId: context.organizationId, requestId: reserved.request.id, operation, eventType, resourceId: result.unit.prepressUnitId, summary, ...actor(context) }); await tx.succeed(context.organizationId, reserved.request.id, result); return result; })); } catch (error) { return failure(this.error(error)); }
+    try { requireOperationPrincipalScope(context); this.require(context, capability); if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required."); return success(await this.runner.transaction(async (tx) => { const reserved = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) }); if (reserved.kind === "replay") return reserved.request.resultJson as PrepressMutationResult; const result = await work(tx); const destination="destination" in result&&typeof result.destination==="string"?` Destination: ${result.destination}.`:""; await tx.attribute({ organizationId: context.organizationId, requestId: reserved.request.id, operation, resourceId: result.unit.prepressUnitId, ...actor(context) }); await tx.audit({ organizationId: context.organizationId, requestId: reserved.request.id, operation, eventType, resourceId: result.unit.prepressUnitId, summary:`${summary}${destination}`, ...actor(context) }); await tx.succeed(context.organizationId, reserved.request.id, result); return result; })); } catch (error) { return failure(this.error(error)); }
   }
   private require(context: OperationContext, capability: "prepress.view" | "prepress.work" | "prepress.complete"): void { if (!this.authority.decide(context.principal, { capability, resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Prepress operation."); }
   private error(error: unknown): V2ApplicationError { return error instanceof V2ApplicationError ? error : new V2ApplicationError("VALIDATION_ERROR", error instanceof Error ? error.message : "Prepress operation could not be completed."); }
