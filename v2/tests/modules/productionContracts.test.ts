@@ -3,7 +3,7 @@ import { capabilityIds } from "../../src/authorization/capabilities.js";
 import type { ProductionWorkProjection } from "../../src/modules/production/contracts.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 const work={productionWorkId:brandedId<"ProductionWorkId">("work"),organizationId:brandedId<"OrganizationId">("org"),orderId:brandedId<"OrderId">("order"),orderLineId:brandedId<"OrderLineId">("line"),requirement:{key:"front",side:"front" as const},artworkAssignmentId:brandedId<"ArtworkAssignmentId">("front"),artworkFileId:brandedId<"ArtworkFileId">("file"),orderedQuantity:100,createdAt:"2026-08-16T00:00:00.000Z",createdPrincipalKind:"staff" as const,createdPrincipalSubject:"staff"};
-const projection:ProductionWorkProjection={work,attempts:[],completedGoodQuantity:0,unitQuantitySatisfied:false};
+const projection:ProductionWorkProjection={work,attempts:[],completedGoodQuantity:0,recordedGoodQuantity:0,remainingGoodQuantity:100,unitQuantitySatisfied:false};
 assert.equal(projection.unitQuantitySatisfied,false,"partial/empty Production must not falsely satisfy the unit");
 assert.equal("fulfillableQuantity" in projection,false,"Production never owns a Fulfillment ceiling");
 assert.equal("routeState" in projection.work,false,"Routing remains the route-state owner");

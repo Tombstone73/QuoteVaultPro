@@ -9,6 +9,8 @@ import {
   type ProductionMaterialProjection,
   type ProductionWorkProjection,
 } from "./api";
+import { RollStationPanel } from "./RollStationPanel";
+import { FlatbedStationPanel } from "./FlatbedStationPanel";
 
 type Station = "flatbed" | "roll";
 type ProductionView = "overview" | "board" | "calendar" | "stations";
@@ -508,12 +510,10 @@ export const ProductionWorkspace = ({
   const work = routedProductionWorkId
     ? routedWork.data
     : queue.data?.items.find((item) => item.work.productionWorkId === selectedWorkId);
-  const activeAttempt = work?.attempts.find((attempt) => !attempt.completedAt);
+  const activeAttempt = work?.activeAttempt ?? work?.attempts.find((attempt) => !attempt.completedAt);
   const mostRecentAttempt = work?.attempts[work.attempts.length - 1];
   const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? station;
-  const remainingGoodQuantity = work
-    ? Math.max(0, work.work.orderedQuantity - work.completedGoodQuantity)
-    : 0;
+  const remainingGoodQuantity = work?.remainingGoodQuantity ?? 0;
 
   useEffect(() => {
     if (activeAttempt)
@@ -854,6 +854,26 @@ export const ProductionWorkspace = ({
             ))}
             <small>{activeAttempt ? "In Progress" : "Next up"}</small>
           </div>
+          {station === "flatbed" && !routedProductionWorkId ? (
+            <FlatbedStationPanel
+              organizationId={organizationId}
+              sessionScope={sessionScope}
+              queue={queue.data?.items ?? []}
+              selectedWorkId={selectedWorkId}
+              activeAttempt={activeAttempt}
+              canWork={canWork}
+              canComplete={canComplete}
+              goodQuantity={goodQuantity}
+              busy={start.isPending || output.isPending || complete.isPending}
+              onSelect={setSelectedWorkId}
+              onGoodQuantityChange={setGoodQuantity}
+              onStart={(kind) => start.mutate(kind)}
+              onRecordOutput={(attemptId) => output.mutate(attemptId)}
+              onCompleteAttempt={(attemptId) => complete.mutate(attemptId)}
+              onOpenArtwork={(item) => openArtwork(item.work.artworkFileId)}
+              onOpenTraveler={(item) => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/production/works/${encodeURIComponent(item.work.productionWorkId)}/traveler.pdf`, "_blank", "noopener,noreferrer")}
+            />
+          ) : (
           <section className="v2-production-station">
             <aside className="v2-production-rail">
               {work ? (
@@ -1034,6 +1054,17 @@ export const ProductionWorkspace = ({
                     </div>
                     <footer>Exact frozen Production artwork evidence is retained by the canonical work record.</footer>
                   </section>
+                  {station === "roll" && !routedProductionWorkId && (
+                    <RollStationPanel
+                      organizationId={organizationId}
+                      sessionScope={sessionScope}
+                      queue={queue.data?.items ?? []}
+                      selectedWorkId={work.work.productionWorkId}
+                      compact
+                      onSelectWork={(productionWorkId) => setSelectedWorkId(productionWorkId)}
+                      onOpenArtworkWorkflow={() => openArtwork(work.work.artworkFileId)}
+                    />
+                  )}
                   <ProductionMaterials
                     organizationId={organizationId}
                     sessionScope={sessionScope}
@@ -1126,6 +1157,7 @@ export const ProductionWorkspace = ({
               <OperationalQueuePager page={activeQueueState.page} pageSize={activeQueueState.pageSize} total={queue.data?.pagination.totalCount ?? 0} totalPages={queue.data?.pagination.totalPages ?? 0} onPage={(page) => updateQueueState({ page })} onPageSize={(pageSize) => updateQueueState({ pageSize, page: 1 })} />
             </aside>
           </section>
+          )}
         </>
       ) : null}
     </section>

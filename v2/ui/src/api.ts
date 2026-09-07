@@ -1263,6 +1263,11 @@ export type ProductionWorkProjection = Readonly<{
   }>;
   attempts: readonly ProductionAttempt[];
   completedGoodQuantity: number;
+  /** All recorded output, including an active attempt. */
+  recordedGoodQuantity: number;
+  /** Server-authoritative output still required for this Production unit. */
+  remainingGoodQuantity: number;
+  activeAttempt?: ProductionAttempt;
   unitQuantitySatisfied: boolean;
   operatorContext?: Readonly<{
     orderNumber?: string;

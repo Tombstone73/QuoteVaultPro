@@ -36,7 +36,9 @@ export type ProductionOperatorContext = Readonly<{
 }>;
 
 export type ProductionWorkProjection = Readonly<{
-  work: ProductionWork; attempts: readonly ProductionAttempt[]; completedGoodQuantity: number; unitQuantitySatisfied: boolean;
+  work: ProductionWork; attempts: readonly ProductionAttempt[]; completedGoodQuantity: number;
+  recordedGoodQuantity: number; remainingGoodQuantity: number; activeAttempt?: ProductionAttempt;
+  unitQuantitySatisfied: boolean;
   operatorContext?: ProductionOperatorContext;
 }>;
 /**

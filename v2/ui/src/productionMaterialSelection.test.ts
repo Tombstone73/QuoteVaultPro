@@ -89,7 +89,7 @@ const productionWork = {
     productionWorkId: "work-a", orderId: "order-a", orderLineId: "line-a",
     requirement: { key: "front" }, artworkAssignmentId: "assignment-a", artworkFileId: "file-a", orderedQuantity: 1,
   },
-  attempts: [], completedGoodQuantity: 0, unitQuantitySatisfied: false,
+  attempts: [], completedGoodQuantity: 0, recordedGoodQuantity: 0, remainingGoodQuantity: 1, unitQuantitySatisfied: false,
   operatorContext: {
     orderNumber: "ORD-2042",
     product: { productId: "product-a", displayName: "Frozen order-line product" },

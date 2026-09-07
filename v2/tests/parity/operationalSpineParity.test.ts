@@ -29,7 +29,8 @@ const productionRuntime = () => {
   const projection = (): ProductionWorkProjection => {
     if (!work) throw new Error("Work is not open.");
     const completedGoodQuantity = attempts.filter((attempt) => attempt.completedAt).reduce((total, attempt) => total + attempt.goodQuantity, 0);
-    return { work, attempts: [...attempts], completedGoodQuantity, unitQuantitySatisfied: completedGoodQuantity >= work.orderedQuantity };
+    const recordedGoodQuantity = attempts.reduce((total, attempt) => total + attempt.goodQuantity, 0);
+    return { work, attempts: [...attempts], completedGoodQuantity, recordedGoodQuantity, remainingGoodQuantity: Math.max(0, work.orderedQuantity - recordedGoodQuantity), activeAttempt: attempts.find((attempt) => !attempt.completedAt), unitQuantitySatisfied: completedGoodQuantity >= work.orderedQuantity };
   };
   const tx = {
     reserve: async () => ({ kind: "new" as const, request: { id: "operation", resultJson: null } }),

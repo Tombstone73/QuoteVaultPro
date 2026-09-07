@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import React from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
+import { FlatbedStationPanel, type FlatbedStationItem } from "./FlatbedStationPanel";
+
+const first = { work: { productionWorkId: "work-a", orderId: "order-a", orderLineId: "line-a", requirement: { key: "front", side: "front" as const }, artworkAssignmentId: "assignment-a", artworkFileId: "file-a", orderedQuantity: 12 }, attempts: [], completedGoodQuantity: 0, recordedGoodQuantity: 0, remainingGoodQuantity: 12, unitQuantitySatisfied: false, presentation: { orderNumber: "SO-1042", customerDisplayName: "Titan Graphics", purchaseOrderNumber: "PO-77", lineDescription: "Rigid Coroplast signs", requestedDueDate: "2026-09-10", dimensions: "24 × 36 in", materialName: "4 mm Coroplast", routeLabel: "Flatbed print", artworkLabel: "Front production art" } } as FlatbedStationItem;
+const second = { ...first, work: { ...first.work, productionWorkId: "work-b", orderLineId: "line-b", orderedQuantity: 5 }, presentation: { ...first.presentation, orderNumber: "SO-1043", materialName: "Foam board" } } as FlatbedStationItem;
+const markup = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><FlatbedStationPanel organizationId="org-a" sessionScope="session-a" queue={[second, first]} selectedWorkId="work-a" canWork canComplete goodQuantity="12" onSelect={() => undefined} onGoodQuantityChange={() => undefined} onStart={() => undefined} onRecordOutput={() => undefined} onCompleteAttempt={() => undefined} onOpenArtwork={() => undefined} onOpenTraveler={() => undefined} /></QueryClientProvider>);
+for (const text of ["Flatbed Queue", "Filter Flatbed queue by material", "SO-1042", "Titan Graphics", "4 mm Coroplast", "24 × 36 in", "Production artwork", "Open Artwork", "Open Traveler", "Start production", "12 remaining"]) assert.match(markup, new RegExp(text));
+assert.doesNotMatch(markup, /OrderLine ID|Artwork Assignment ID/);
+console.log("Flatbed station UI contract passed.");
