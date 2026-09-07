@@ -1,8 +1,6 @@
-import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { AuditLine, ReadyChip, Row, SaveBar, Section, SettingsPage } from "@/components/app/settings/shared";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { businessProfile } from "@/lib/mock/settings";
 
 export const Route = createFileRoute("/_shell/settings/business-profile")({
@@ -22,7 +20,7 @@ export const Route = createFileRoute("/_shell/settings/business-profile")({
 const input = "h-8 text-[13px]";
 
 function BusinessProfilePage() {
-  const [samePickup, setSamePickup] = useState(businessProfile.pickupSameAsBusiness);
+
 
   return (
     <SettingsPage
@@ -60,34 +58,25 @@ function BusinessProfilePage() {
         </div>
       </Section>
 
-      <Section
-        title="Pickup location"
-        hint="Pickup workflows and pickup tax use this location."
-      >
-        <div className="space-y-3">
-          <label className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface-2/50 px-3 py-2 text-[13px]">
-            <span>Use the business address for customer pickup</span>
-            <Switch checked={samePickup} onCheckedChange={setSamePickup} />
-          </label>
-          {!samePickup && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Row label="Pickup address" className="sm:col-span-2"><Input className={input} placeholder="Street address" /></Row>
-              <Row label="City"><Input className={input} placeholder="City" /></Row>
-              <Row label="State / region"><Input className={input} placeholder="State" /></Row>
-              <Row label="Postal code"><Input className={`num ${input}`} placeholder="Postal code" /></Row>
-              <Row label="Country"><Input className={input} defaultValue={businessProfile.country} /></Row>
-            </div>
-          )}
+      <Section title="Pickup location" hint="Pickup workflows and pickup tax use this location.">
+        <div className="panel p-3 text-[13px]">
+          <p className="text-muted-foreground">Customer pickup currently uses your business address.</p>
+          <div className="mt-2 leading-relaxed">
+            <div className="font-medium">{businessProfile.displayName}</div>
+            <div>{businessProfile.address1}{businessProfile.address2 ? `, ${businessProfile.address2}` : ""}</div>
+            <div>{businessProfile.city}, {businessProfile.region} {businessProfile.postal}</div>
+            <div>{businessProfile.country}</div>
+          </div>
         </div>
       </Section>
 
       <Section title="Regional">
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Row label="Timezone"><Input className={input} defaultValue={businessProfile.timezone} /></Row>
-          <Row label="Locale"><Input className={input} defaultValue={businessProfile.locale} /></Row>
           <Row label="Currency"><Input className={input} defaultValue={businessProfile.currency} /></Row>
         </div>
       </Section>
+
 
       <AuditLine>Last changed by {businessProfile.updatedBy} · {businessProfile.updatedAt}</AuditLine>
       <SaveBar note="Changes apply to documents created after saving." />

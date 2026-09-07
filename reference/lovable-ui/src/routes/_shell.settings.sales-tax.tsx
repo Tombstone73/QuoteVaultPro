@@ -39,12 +39,12 @@ function SalesTaxPage() {
           <div className="panel p-3">
             <div className="text-[13px] font-semibold">Shipping</div>
             <div className="mt-1.5"><ReadyChip state="not-configured" /></div>
-            <p className="mt-1 text-[12px] text-muted-foreground">Shipped documents cannot be sent until a destination jurisdiction exists.</p>
+            <p className="mt-1 text-[12px] text-muted-foreground">Shipped documents cannot resolve authoritative tax until a matching destination jurisdiction is configured, so they cannot be sent.</p>
           </div>
           <div className="panel p-3">
             <div className="text-[13px] font-semibold">Local delivery</div>
             <div className="mt-1.5"><ReadyChip state="not-configured" /></div>
-            <p className="mt-1 text-[12px] text-muted-foreground">Delivered documents fall back to no tax until configured.</p>
+            <p className="mt-1 text-[12px] text-muted-foreground">Local-delivery documents cannot resolve authoritative tax until a matching destination jurisdiction is configured, so they cannot be sent.</p>
           </div>
         </div>
       </Section>
@@ -76,7 +76,7 @@ function SalesTaxPage() {
         {destinationJurisdictions.length === 0 ? (
           <EmptyBlock
             title="No destination jurisdictions have been added"
-            body="Until a destination jurisdiction exists, quotes and orders that ship or are delivered cannot resolve tax and cannot be sent. Add the states or postal areas you collect tax for."
+            body="Until a destination jurisdiction exists, quotes and orders that ship or are delivered cannot resolve authoritative tax and cannot be sent. There is no silent zero-tax fallback. Add the states or postal areas you collect tax for."
             action={<Button size="sm" className="h-8 gap-1.5 text-[12px]"><Plus className="size-3.5" /> Add jurisdiction</Button>}
           />
         ) : (

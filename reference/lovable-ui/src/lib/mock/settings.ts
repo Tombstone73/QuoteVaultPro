@@ -1,7 +1,7 @@
 /* Sample presentation data for the Settings visual reference.
    Not canonical application data — no persistence, no backend contracts. */
 
-export type Readiness = "ready" | "attention" | "not-configured" | "reconnect" | "error" | "optional";
+export type Readiness = "ready" | "attention" | "not-configured" | "reconnect" | "error" | "optional" | "migration";
 
 export const READINESS_LABEL: Record<Readiness, string> = {
   ready: "Ready",
@@ -10,6 +10,7 @@ export const READINESS_LABEL: Record<Readiness, string> = {
   reconnect: "Reconnect required",
   error: "Error",
   optional: "Optional",
+  migration: "Migration required",
 };
 
 export const businessProfile = {
@@ -24,19 +25,36 @@ export const businessProfile = {
   region: "Indiana",
   postal: "47904",
   country: "United States",
-  pickupSameAsBusiness: true,
   timezone: "America/Indiana/Indianapolis",
-  locale: "English (United States)",
   currency: "USD — US Dollar",
   updatedBy: "Dale Hensley",
   updatedAt: "Aug 12, 2026",
 };
 
-export const numbering = [
-  { id: "quote", label: "Quotes", prefix: "Q-", next: 10461, example: "Q-10461", protected: false, updated: "Jan 4, 2026 · Dale Hensley" },
-  { id: "order", label: "Orders / Jobs", prefix: "", next: 10674, example: "10674", protected: true, updated: "Jan 4, 2026 · Dale Hensley" },
-  { id: "invoice", label: "Invoices", prefix: "INV-", next: 5218, example: "INV-5218", protected: true, updated: "Mar 22, 2026 · Dale Hensley" },
+export type NumberingOwner = "v2" | "legacy";
+
+export const numbering: {
+  id: string; label: string; owner: NumberingOwner; prefix: string; next: number; example: string;
+  note: string; updated: string;
+}[] = [
+  {
+    id: "quote", label: "Quotes", owner: "v2", prefix: "Q-", next: 10461, example: "Q-10461",
+    note: "Managed by PrintersHero V2.", updated: "Jan 4, 2026 · Dale Hensley",
+  },
+  {
+    id: "order", label: "Orders / Jobs", owner: "v2", prefix: "", next: 10674, example: "10674",
+    note: "The order number is the job number. There is no separate job number.", updated: "Jan 4, 2026 · Dale Hensley",
+  },
+  {
+    id: "invoice", label: "Invoices", owner: "legacy", prefix: "INV-", next: 5218, example: "INV-5218",
+    note: "Numbering is compatibility managed until migration is completed.", updated: "Mar 22, 2026",
+  },
+  {
+    id: "po", label: "Purchase Orders", owner: "legacy", prefix: "PO-", next: 3140, example: "PO-3140",
+    note: "Numbering is compatibility managed until migration is completed.", updated: "Mar 22, 2026",
+  },
 ];
+
 
 export type StaffState = "Active" | "Invitation pending" | "Disabled";
 
@@ -100,7 +118,7 @@ export const emailDelivery = {
 export const invoiceDefaults = {
   terms: "Net 30",
   dueBehavior: "Due on terms from issue date",
-  instructions: "Please reference the invoice number with your payment. Checks payable to Hensley Graphics LLC.",
+  memo: "Please reference the invoice number with your payment.",
   updated: "Jun 3, 2026 · Dale Hensley",
 };
 
@@ -123,8 +141,8 @@ export const connections: {
   { category: "Payments", name: "Card & ACH processing", status: "not-configured", detail: "No payment provider is connected.", available: false },
   { category: "Shipping", name: "UPS", status: "optional", detail: "Carrier integration is not available yet.", available: false },
   { category: "Shipping", name: "FedEx", status: "optional", detail: "Carrier integration is not available yet.", available: false },
-  { category: "Production", name: "Local device bridge", status: "error", detail: "Bridge has been offline since 6:04 AM.", available: true },
-  { category: "Production", name: "Onyx RIP hot folders", status: "ready", detail: "4 hot folders in use.", available: true },
+  { category: "Production", name: "Local device bridge", status: "not-configured", detail: "Planned. Not available yet.", available: false },
+  { category: "Production", name: "RIP hot folders", status: "not-configured", detail: "Planned. Not available yet.", available: false },
 ];
 
 export const productRoutingReadiness = {

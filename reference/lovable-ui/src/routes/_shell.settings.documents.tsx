@@ -41,10 +41,11 @@ function DocumentsPage() {
           </div>
           <div className="space-y-2">
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12px]"><Upload className="size-3.5" /> Replace logo</Button>
-              <Button size="sm" variant="ghost" className="h-8 gap-1.5 text-[12px] text-late hover:text-late"><Trash2 className="size-3.5" /> Remove</Button>
+              <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12px]" disabled><Upload className="size-3.5" /> Replace logo</Button>
+              <Button size="sm" variant="ghost" className="h-8 gap-1.5 text-[12px] text-late hover:text-late" disabled><Trash2 className="size-3.5" /> Remove</Button>
             </div>
             <p className="text-[11px] text-muted-foreground">PNG or SVG, at least 400px wide. Removing the logo affects all future documents.</p>
+            <p className="text-[11px] text-muted-foreground">Logo upload will use PrintersHero's secure asset picker. These actions are shown for reference and are not wired up yet.</p>
           </div>
         </div>
       </Section>

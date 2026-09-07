@@ -30,11 +30,11 @@ function PortalAccessPage() {
     <SettingsPage
       title="Customer Portal Access"
       description="These are customers, not employees. Portal access never grants access to your shop's internal workspace."
-      actions={<Button size="sm" className="h-8 gap-1.5 text-[12px]"><Plus className="size-3.5" /> Invite customer contact</Button>}
+      actions={<Button size="sm" className="h-8 gap-1.5 text-[12px]"><Plus className="size-3.5" /> Grant portal access</Button>}
     >
       <div className="flex items-start gap-2 rounded-lg border border-info/40 bg-info/10 px-3 py-2.5 text-[12px]">
         <Users className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
-        <span>Customer contacts are owned by Customers. Portal access only controls whether an existing contact can sign in to the portal.</span>
+        <span>Customer contacts are created and owned in Customers. Granting access here selects an existing customer and contact, chooses their portal access, and sends an invitation if one is needed.</span>
       </div>
 
       <div className="panel overflow-hidden">
@@ -86,8 +86,8 @@ function PortalAccessPage() {
 
       <EmptyBlock
         title="No customer contacts have portal access"
-        body="Portal access lets a customer see their quotes, approve proofs and view invoices without calling the shop. Invite a contact from an existing customer record to get started."
-        action={<div className="flex gap-2"><ReadyChip state="optional" label="Optional" /><Button size="sm" variant="outline" className="h-8 text-[12px]">Invite customer contact</Button></div>}
+        body="Portal access lets a customer see their quotes, approve proofs and view invoices without calling the shop. Grant access to an existing contact on an existing customer record to get started."
+        action={<div className="flex gap-2"><ReadyChip state="optional" label="Optional" /><Button size="sm" variant="outline" className="h-8 text-[12px]">Grant portal access</Button></div>}
       />
     </SettingsPage>
   );

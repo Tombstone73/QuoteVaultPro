@@ -10,6 +10,8 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShellRouteImport } from './routes/_shell'
+import { Route as PortalRouteImport } from './routes/portal'
+import { Route as PortalLoginRouteImport } from './routes/portal-login'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
 import { Route as ShellAppearanceRouteImport } from './routes/_shell.appearance'
 import { Route as ShellArtworkRouteImport } from './routes/_shell.artwork'
@@ -41,6 +43,11 @@ import { Route as ShellRoutingRouteImport } from './routes/_shell.routing'
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellShippingRouteImport } from './routes/_shell.shipping'
 import { Route as ShellUsersRouteImport } from './routes/_shell.users'
+import { Route as PortalIndexRouteImport } from './routes/portal.index'
+import { Route as PortalAccountRouteImport } from './routes/portal.account'
+import { Route as PortalConfirmationRouteImport } from './routes/portal.confirmation'
+import { Route as PortalPayRouteImport } from './routes/portal.pay'
+import { Route as PortalReviewRouteImport } from './routes/portal.review'
 import { Route as StorefrontSlugRouteImport } from './routes/storefront.$slug'
 import { Route as ShellContactsIndexRouteImport } from './routes/_shell.contacts.index'
 import { Route as ShellContactsIdRouteImport } from './routes/_shell.contacts.$id'
@@ -68,9 +75,29 @@ import { Route as ShellSettingsProductionConnectionsRouteImport } from './routes
 import { Route as ShellSettingsSalesTaxRouteImport } from './routes/_shell.settings.sales-tax'
 import { Route as ShellSettingsShippingRouteImport } from './routes/_shell.settings.shipping'
 import { Route as ShellSettingsStaffRouteImport } from './routes/_shell.settings.staff'
+import { Route as PortalInvoicesIndexRouteImport } from './routes/portal.invoices.index'
+import { Route as PortalInvoicesIdRouteImport } from './routes/portal.invoices.$id'
+import { Route as PortalOrdersIndexRouteImport } from './routes/portal.orders.index'
+import { Route as PortalOrdersIdRouteImport } from './routes/portal.orders.$id'
+import { Route as PortalProofsIndexRouteImport } from './routes/portal.proofs.index'
+import { Route as PortalProofsIdRouteImport } from './routes/portal.proofs.$id'
+import { Route as PortalQuotesIndexRouteImport } from './routes/portal.quotes.index'
+import { Route as PortalQuotesIdRouteImport } from './routes/portal.quotes.$id'
+import { Route as PortalShopIndexRouteImport } from './routes/portal.shop.index'
+import { Route as PortalShopProductIdRouteImport } from './routes/portal.shop.$productId'
 
 const ShellRoute = ShellRouteImport.update({
   id: '/_shell',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PortalRoute = PortalRouteImport.update({
+  id: '/portal',
+  path: '/portal',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PortalLoginRoute = PortalLoginRouteImport.update({
+  id: '/portal-login',
+  path: '/portal-login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ShellIndexRoute = ShellIndexRouteImport.update({
@@ -228,6 +255,31 @@ const ShellUsersRoute = ShellUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => ShellRoute,
 } as any)
+const PortalIndexRoute = PortalIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalAccountRoute = PortalAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalConfirmationRoute = PortalConfirmationRouteImport.update({
+  id: '/confirmation',
+  path: '/confirmation',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalPayRoute = PortalPayRouteImport.update({
+  id: '/pay',
+  path: '/pay',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalReviewRoute = PortalReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
+  getParentRoute: () => PortalRoute,
+} as any)
 const StorefrontSlugRoute = StorefrontSlugRouteImport.update({
   id: '/storefront/$slug',
   path: '/storefront/$slug',
@@ -371,9 +423,61 @@ const ShellSettingsStaffRoute = ShellSettingsStaffRouteImport.update({
   path: '/staff',
   getParentRoute: () => ShellSettingsRoute,
 } as any)
+const PortalInvoicesIndexRoute = PortalInvoicesIndexRouteImport.update({
+  id: '/invoices/',
+  path: '/invoices/',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalInvoicesIdRoute = PortalInvoicesIdRouteImport.update({
+  id: '/invoices/$id',
+  path: '/invoices/$id',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalOrdersIndexRoute = PortalOrdersIndexRouteImport.update({
+  id: '/orders/',
+  path: '/orders/',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalOrdersIdRoute = PortalOrdersIdRouteImport.update({
+  id: '/orders/$id',
+  path: '/orders/$id',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalProofsIndexRoute = PortalProofsIndexRouteImport.update({
+  id: '/proofs/',
+  path: '/proofs/',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalProofsIdRoute = PortalProofsIdRouteImport.update({
+  id: '/proofs/$id',
+  path: '/proofs/$id',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalQuotesIndexRoute = PortalQuotesIndexRouteImport.update({
+  id: '/quotes/',
+  path: '/quotes/',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalQuotesIdRoute = PortalQuotesIdRouteImport.update({
+  id: '/quotes/$id',
+  path: '/quotes/$id',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalShopIndexRoute = PortalShopIndexRouteImport.update({
+  id: '/shop/',
+  path: '/shop/',
+  getParentRoute: () => PortalRoute,
+} as any)
+const PortalShopProductIdRoute = PortalShopProductIdRouteImport.update({
+  id: '/shop/$productId',
+  path: '/shop/$productId',
+  getParentRoute: () => PortalRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
+  '/portal': typeof PortalRouteWithChildren
+  '/portal-login': typeof PortalLoginRoute
   '/appearance': typeof ShellAppearanceRoute
   '/artwork': typeof ShellArtworkRoute
   '/assistant': typeof ShellAssistantRoute
@@ -404,7 +508,12 @@ export interface FileRoutesByFullPath {
   '/settings': typeof ShellSettingsRouteWithChildren
   '/shipping': typeof ShellShippingRoute
   '/users': typeof ShellUsersRoute
+  '/portal/account': typeof PortalAccountRoute
+  '/portal/confirmation': typeof PortalConfirmationRoute
+  '/portal/pay': typeof PortalPayRoute
+  '/portal/review': typeof PortalReviewRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
+  '/portal/': typeof PortalIndexRoute
   '/contacts/$id': typeof ShellContactsIdRoute
   '/customers/$id': typeof ShellCustomersIdRoute
   '/formula-library/$id': typeof ShellFormulaLibraryIdRoute
@@ -426,13 +535,24 @@ export interface FileRoutesByFullPath {
   '/settings/sales-tax': typeof ShellSettingsSalesTaxRoute
   '/settings/shipping': typeof ShellSettingsShippingRoute
   '/settings/staff': typeof ShellSettingsStaffRoute
+  '/portal/invoices/$id': typeof PortalInvoicesIdRoute
+  '/portal/orders/$id': typeof PortalOrdersIdRoute
+  '/portal/proofs/$id': typeof PortalProofsIdRoute
+  '/portal/quotes/$id': typeof PortalQuotesIdRoute
+  '/portal/shop/$productId': typeof PortalShopProductIdRoute
   '/contacts/': typeof ShellContactsIndexRoute
   '/customers/': typeof ShellCustomersIndexRoute
   '/formula-library/': typeof ShellFormulaLibraryIndexRoute
   '/invoices/': typeof ShellInvoicesIndexRoute
   '/settings/': typeof ShellSettingsIndexRoute
+  '/portal/invoices/': typeof PortalInvoicesIndexRoute
+  '/portal/orders/': typeof PortalOrdersIndexRoute
+  '/portal/proofs/': typeof PortalProofsIndexRoute
+  '/portal/quotes/': typeof PortalQuotesIndexRoute
+  '/portal/shop/': typeof PortalShopIndexRoute
 }
 export interface FileRoutesByTo {
+  '/portal-login': typeof PortalLoginRoute
   '/appearance': typeof ShellAppearanceRoute
   '/artwork': typeof ShellArtworkRoute
   '/assistant': typeof ShellAssistantRoute
@@ -458,8 +578,13 @@ export interface FileRoutesByTo {
   '/routing': typeof ShellRoutingRoute
   '/shipping': typeof ShellShippingRoute
   '/users': typeof ShellUsersRoute
+  '/portal/account': typeof PortalAccountRoute
+  '/portal/confirmation': typeof PortalConfirmationRoute
+  '/portal/pay': typeof PortalPayRoute
+  '/portal/review': typeof PortalReviewRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
   '/': typeof ShellIndexRoute
+  '/portal': typeof PortalIndexRoute
   '/contacts/$id': typeof ShellContactsIdRoute
   '/customers/$id': typeof ShellCustomersIdRoute
   '/formula-library/$id': typeof ShellFormulaLibraryIdRoute
@@ -481,15 +606,27 @@ export interface FileRoutesByTo {
   '/settings/sales-tax': typeof ShellSettingsSalesTaxRoute
   '/settings/shipping': typeof ShellSettingsShippingRoute
   '/settings/staff': typeof ShellSettingsStaffRoute
+  '/portal/invoices/$id': typeof PortalInvoicesIdRoute
+  '/portal/orders/$id': typeof PortalOrdersIdRoute
+  '/portal/proofs/$id': typeof PortalProofsIdRoute
+  '/portal/quotes/$id': typeof PortalQuotesIdRoute
+  '/portal/shop/$productId': typeof PortalShopProductIdRoute
   '/contacts': typeof ShellContactsIndexRoute
   '/customers': typeof ShellCustomersIndexRoute
   '/formula-library': typeof ShellFormulaLibraryIndexRoute
   '/invoices': typeof ShellInvoicesIndexRoute
   '/settings': typeof ShellSettingsIndexRoute
+  '/portal/invoices': typeof PortalInvoicesIndexRoute
+  '/portal/orders': typeof PortalOrdersIndexRoute
+  '/portal/proofs': typeof PortalProofsIndexRoute
+  '/portal/quotes': typeof PortalQuotesIndexRoute
+  '/portal/shop': typeof PortalShopIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
+  '/portal': typeof PortalRouteWithChildren
+  '/portal-login': typeof PortalLoginRoute
   '/_shell/appearance': typeof ShellAppearanceRoute
   '/_shell/artwork': typeof ShellArtworkRoute
   '/_shell/assistant': typeof ShellAssistantRoute
@@ -520,8 +657,13 @@ export interface FileRoutesById {
   '/_shell/settings': typeof ShellSettingsRouteWithChildren
   '/_shell/shipping': typeof ShellShippingRoute
   '/_shell/users': typeof ShellUsersRoute
+  '/portal/account': typeof PortalAccountRoute
+  '/portal/confirmation': typeof PortalConfirmationRoute
+  '/portal/pay': typeof PortalPayRoute
+  '/portal/review': typeof PortalReviewRoute
   '/storefront/$slug': typeof StorefrontSlugRoute
   '/_shell/': typeof ShellIndexRoute
+  '/portal/': typeof PortalIndexRoute
   '/_shell/contacts/$id': typeof ShellContactsIdRoute
   '/_shell/customers/$id': typeof ShellCustomersIdRoute
   '/_shell/formula-library/$id': typeof ShellFormulaLibraryIdRoute
@@ -543,16 +685,28 @@ export interface FileRoutesById {
   '/_shell/settings/sales-tax': typeof ShellSettingsSalesTaxRoute
   '/_shell/settings/shipping': typeof ShellSettingsShippingRoute
   '/_shell/settings/staff': typeof ShellSettingsStaffRoute
+  '/portal/invoices/$id': typeof PortalInvoicesIdRoute
+  '/portal/orders/$id': typeof PortalOrdersIdRoute
+  '/portal/proofs/$id': typeof PortalProofsIdRoute
+  '/portal/quotes/$id': typeof PortalQuotesIdRoute
+  '/portal/shop/$productId': typeof PortalShopProductIdRoute
   '/_shell/contacts/': typeof ShellContactsIndexRoute
   '/_shell/customers/': typeof ShellCustomersIndexRoute
   '/_shell/formula-library/': typeof ShellFormulaLibraryIndexRoute
   '/_shell/invoices/': typeof ShellInvoicesIndexRoute
   '/_shell/settings/': typeof ShellSettingsIndexRoute
+  '/portal/invoices/': typeof PortalInvoicesIndexRoute
+  '/portal/orders/': typeof PortalOrdersIndexRoute
+  '/portal/proofs/': typeof PortalProofsIndexRoute
+  '/portal/quotes/': typeof PortalQuotesIndexRoute
+  '/portal/shop/': typeof PortalShopIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/portal'
+    | '/portal-login'
     | '/appearance'
     | '/artwork'
     | '/assistant'
@@ -583,7 +737,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/shipping'
     | '/users'
+    | '/portal/account'
+    | '/portal/confirmation'
+    | '/portal/pay'
+    | '/portal/review'
     | '/storefront/$slug'
+    | '/portal/'
     | '/contacts/$id'
     | '/customers/$id'
     | '/formula-library/$id'
@@ -605,13 +764,24 @@ export interface FileRouteTypes {
     | '/settings/sales-tax'
     | '/settings/shipping'
     | '/settings/staff'
+    | '/portal/invoices/$id'
+    | '/portal/orders/$id'
+    | '/portal/proofs/$id'
+    | '/portal/quotes/$id'
+    | '/portal/shop/$productId'
     | '/contacts/'
     | '/customers/'
     | '/formula-library/'
     | '/invoices/'
     | '/settings/'
+    | '/portal/invoices/'
+    | '/portal/orders/'
+    | '/portal/proofs/'
+    | '/portal/quotes/'
+    | '/portal/shop/'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/portal-login'
     | '/appearance'
     | '/artwork'
     | '/assistant'
@@ -637,8 +807,13 @@ export interface FileRouteTypes {
     | '/routing'
     | '/shipping'
     | '/users'
+    | '/portal/account'
+    | '/portal/confirmation'
+    | '/portal/pay'
+    | '/portal/review'
     | '/storefront/$slug'
     | '/'
+    | '/portal'
     | '/contacts/$id'
     | '/customers/$id'
     | '/formula-library/$id'
@@ -660,14 +835,26 @@ export interface FileRouteTypes {
     | '/settings/sales-tax'
     | '/settings/shipping'
     | '/settings/staff'
+    | '/portal/invoices/$id'
+    | '/portal/orders/$id'
+    | '/portal/proofs/$id'
+    | '/portal/quotes/$id'
+    | '/portal/shop/$productId'
     | '/contacts'
     | '/customers'
     | '/formula-library'
     | '/invoices'
     | '/settings'
+    | '/portal/invoices'
+    | '/portal/orders'
+    | '/portal/proofs'
+    | '/portal/quotes'
+    | '/portal/shop'
   id:
     | '__root__'
     | '/_shell'
+    | '/portal'
+    | '/portal-login'
     | '/_shell/appearance'
     | '/_shell/artwork'
     | '/_shell/assistant'
@@ -698,8 +885,13 @@ export interface FileRouteTypes {
     | '/_shell/settings'
     | '/_shell/shipping'
     | '/_shell/users'
+    | '/portal/account'
+    | '/portal/confirmation'
+    | '/portal/pay'
+    | '/portal/review'
     | '/storefront/$slug'
     | '/_shell/'
+    | '/portal/'
     | '/_shell/contacts/$id'
     | '/_shell/customers/$id'
     | '/_shell/formula-library/$id'
@@ -721,15 +913,27 @@ export interface FileRouteTypes {
     | '/_shell/settings/sales-tax'
     | '/_shell/settings/shipping'
     | '/_shell/settings/staff'
+    | '/portal/invoices/$id'
+    | '/portal/orders/$id'
+    | '/portal/proofs/$id'
+    | '/portal/quotes/$id'
+    | '/portal/shop/$productId'
     | '/_shell/contacts/'
     | '/_shell/customers/'
     | '/_shell/formula-library/'
     | '/_shell/invoices/'
     | '/_shell/settings/'
+    | '/portal/invoices/'
+    | '/portal/orders/'
+    | '/portal/proofs/'
+    | '/portal/quotes/'
+    | '/portal/shop/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
+  PortalRoute: typeof PortalRouteWithChildren
+  PortalLoginRoute: typeof PortalLoginRoute
   StorefrontSlugRoute: typeof StorefrontSlugRoute
 }
 
@@ -740,6 +944,20 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof ShellRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/portal': {
+      id: '/portal'
+      path: '/portal'
+      fullPath: '/portal'
+      preLoaderRoute: typeof PortalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/portal-login': {
+      id: '/portal-login'
+      path: '/portal-login'
+      fullPath: '/portal-login'
+      preLoaderRoute: typeof PortalLoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_shell/': {
@@ -959,6 +1177,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellUsersRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/portal/': {
+      id: '/portal/'
+      path: '/'
+      fullPath: '/portal/'
+      preLoaderRoute: typeof PortalIndexRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/account': {
+      id: '/portal/account'
+      path: '/account'
+      fullPath: '/portal/account'
+      preLoaderRoute: typeof PortalAccountRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/confirmation': {
+      id: '/portal/confirmation'
+      path: '/confirmation'
+      fullPath: '/portal/confirmation'
+      preLoaderRoute: typeof PortalConfirmationRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/pay': {
+      id: '/portal/pay'
+      path: '/pay'
+      fullPath: '/portal/pay'
+      preLoaderRoute: typeof PortalPayRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/review': {
+      id: '/portal/review'
+      path: '/review'
+      fullPath: '/portal/review'
+      preLoaderRoute: typeof PortalReviewRouteImport
+      parentRoute: typeof PortalRoute
+    }
     '/storefront/$slug': {
       id: '/storefront/$slug'
       path: '/storefront/$slug'
@@ -1148,6 +1401,76 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellSettingsStaffRouteImport
       parentRoute: typeof ShellSettingsRoute
     }
+    '/portal/invoices/': {
+      id: '/portal/invoices/'
+      path: '/invoices'
+      fullPath: '/portal/invoices/'
+      preLoaderRoute: typeof PortalInvoicesIndexRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/invoices/$id': {
+      id: '/portal/invoices/$id'
+      path: '/invoices/$id'
+      fullPath: '/portal/invoices/$id'
+      preLoaderRoute: typeof PortalInvoicesIdRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/orders/': {
+      id: '/portal/orders/'
+      path: '/orders'
+      fullPath: '/portal/orders/'
+      preLoaderRoute: typeof PortalOrdersIndexRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/orders/$id': {
+      id: '/portal/orders/$id'
+      path: '/orders/$id'
+      fullPath: '/portal/orders/$id'
+      preLoaderRoute: typeof PortalOrdersIdRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/proofs/': {
+      id: '/portal/proofs/'
+      path: '/proofs'
+      fullPath: '/portal/proofs/'
+      preLoaderRoute: typeof PortalProofsIndexRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/proofs/$id': {
+      id: '/portal/proofs/$id'
+      path: '/proofs/$id'
+      fullPath: '/portal/proofs/$id'
+      preLoaderRoute: typeof PortalProofsIdRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/quotes/': {
+      id: '/portal/quotes/'
+      path: '/quotes'
+      fullPath: '/portal/quotes/'
+      preLoaderRoute: typeof PortalQuotesIndexRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/quotes/$id': {
+      id: '/portal/quotes/$id'
+      path: '/quotes/$id'
+      fullPath: '/portal/quotes/$id'
+      preLoaderRoute: typeof PortalQuotesIdRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/shop/': {
+      id: '/portal/shop/'
+      path: '/shop'
+      fullPath: '/portal/shop/'
+      preLoaderRoute: typeof PortalShopIndexRouteImport
+      parentRoute: typeof PortalRoute
+    }
+    '/portal/shop/$productId': {
+      id: '/portal/shop/$productId'
+      path: '/shop/$productId'
+      fullPath: '/portal/shop/$productId'
+      preLoaderRoute: typeof PortalShopProductIdRouteImport
+      parentRoute: typeof PortalRoute
+    }
   }
 }
 
@@ -1333,8 +1656,49 @@ const ShellRouteChildren: ShellRouteChildren = {
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
 
+interface PortalRouteChildren {
+  PortalAccountRoute: typeof PortalAccountRoute
+  PortalConfirmationRoute: typeof PortalConfirmationRoute
+  PortalPayRoute: typeof PortalPayRoute
+  PortalReviewRoute: typeof PortalReviewRoute
+  PortalIndexRoute: typeof PortalIndexRoute
+  PortalInvoicesIdRoute: typeof PortalInvoicesIdRoute
+  PortalOrdersIdRoute: typeof PortalOrdersIdRoute
+  PortalProofsIdRoute: typeof PortalProofsIdRoute
+  PortalQuotesIdRoute: typeof PortalQuotesIdRoute
+  PortalShopProductIdRoute: typeof PortalShopProductIdRoute
+  PortalInvoicesIndexRoute: typeof PortalInvoicesIndexRoute
+  PortalOrdersIndexRoute: typeof PortalOrdersIndexRoute
+  PortalProofsIndexRoute: typeof PortalProofsIndexRoute
+  PortalQuotesIndexRoute: typeof PortalQuotesIndexRoute
+  PortalShopIndexRoute: typeof PortalShopIndexRoute
+}
+
+const PortalRouteChildren: PortalRouteChildren = {
+  PortalAccountRoute: PortalAccountRoute,
+  PortalConfirmationRoute: PortalConfirmationRoute,
+  PortalPayRoute: PortalPayRoute,
+  PortalReviewRoute: PortalReviewRoute,
+  PortalIndexRoute: PortalIndexRoute,
+  PortalInvoicesIdRoute: PortalInvoicesIdRoute,
+  PortalOrdersIdRoute: PortalOrdersIdRoute,
+  PortalProofsIdRoute: PortalProofsIdRoute,
+  PortalQuotesIdRoute: PortalQuotesIdRoute,
+  PortalShopProductIdRoute: PortalShopProductIdRoute,
+  PortalInvoicesIndexRoute: PortalInvoicesIndexRoute,
+  PortalOrdersIndexRoute: PortalOrdersIndexRoute,
+  PortalProofsIndexRoute: PortalProofsIndexRoute,
+  PortalQuotesIndexRoute: PortalQuotesIndexRoute,
+  PortalShopIndexRoute: PortalShopIndexRoute,
+}
+
+const PortalRouteWithChildren =
+  PortalRoute._addFileChildren(PortalRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
+  PortalRoute: PortalRouteWithChildren,
+  PortalLoginRoute: PortalLoginRoute,
   StorefrontSlugRoute: StorefrontSlugRoute,
 }
 export const routeTree = rootRouteImport

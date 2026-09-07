@@ -1,5 +1,7 @@
 import { Outlet, createFileRoute, useNavigate, useRouterState, Link } from "@tanstack/react-router";
+import { UserCog } from "lucide-react";
 import { cn } from "@/lib/utils";
+
 
 export const Route = createFileRoute("/_shell/settings")({
   component: SettingsLayout,
@@ -42,29 +44,39 @@ function SettingsLayout() {
   return (
     <div className="flex min-h-full flex-col lg:flex-row">
       <nav className="hidden w-[212px] shrink-0 border-r border-border bg-surface-2/40 py-3 lg:block">
-        {NAV.map((g) => (
-          <div key={g.group || "root"} className="px-2 pb-2">
-            {g.group && (
-              <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{g.group}</div>
-            )}
-            {g.items.map((it) => {
-              const active = it.to === "/settings" ? pathname === "/settings" : pathname.startsWith(it.to);
-              return (
-                <Link
-                  key={it.to}
-                  to={it.to}
-                  className={cn(
-                    "mb-0.5 block rounded-md px-2 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-                    active && "bg-primary/12 font-medium text-primary",
-                  )}
-                >
-                  {it.label}
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+        {NAV.map((g) => {
+          const personal = g.group === "My Preferences";
+          return (
+            <div key={g.group || "root"} className={cn("px-2 pb-2", personal && "mt-3 border-t-2 border-border pt-1")}>
+              {g.group && (
+                <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {personal && <UserCog className="size-3.5" aria-hidden />}
+                  {g.group}
+                </div>
+              )}
+              {personal && (
+                <p className="px-2 pb-1 text-[10px] leading-snug text-muted-foreground">Applies only to your account.</p>
+              )}
+              {g.items.map((it) => {
+                const active = it.to === "/settings" ? pathname === "/settings" : pathname.startsWith(it.to);
+                return (
+                  <Link
+                    key={it.to}
+                    to={it.to}
+                    className={cn(
+                      "mb-0.5 block rounded-md px-2 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                      active && "bg-primary/12 font-medium text-primary",
+                    )}
+                  >
+                    {it.label}
+                  </Link>
+                );
+              })}
+            </div>
+          );
+        })}
       </nav>
+
 
       <div className="border-b border-border p-3 lg:hidden">
         <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground" htmlFor="settings-nav">Settings section</label>

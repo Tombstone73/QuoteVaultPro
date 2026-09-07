@@ -29,6 +29,10 @@ function InvoiceDefaultsPage() {
         <div>
           <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Next invoice number</div>
           <div className="num text-[13px] font-semibold">{numbering[2]!.example}</div>
+          <div className="mt-1.5 flex flex-col items-start gap-1 text-[11px] text-muted-foreground">
+            <ReadyChip state="migration" />
+            <span>Compatibility managed until numbering migration is completed.</span>
+          </div>
         </div>
         <div>
           <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Document identity</div>
@@ -55,9 +59,13 @@ function InvoiceDefaultsPage() {
         </div>
       </Section>
 
-      <Section title="Customer-facing instructions" hint="Shown on invoices below the totals.">
-        <Textarea className="min-h-[80px] text-[13px]" defaultValue={invoiceDefaults.instructions} />
+      <Section
+        title="Default invoice memo"
+        hint="Invoice-specific note only. Payment instructions, remittance details and who checks are payable to are owned by Documents & Branding."
+      >
+        <Textarea className="min-h-[70px] text-[13px]" defaultValue={invoiceDefaults.memo} />
       </Section>
+
 
       <AuditLine>Last changed {invoiceDefaults.updated}</AuditLine>
       <SaveBar note="Applies to invoices created after saving." />

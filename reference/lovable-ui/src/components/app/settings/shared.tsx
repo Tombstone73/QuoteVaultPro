@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { AlertTriangle, ArrowUpRight, Ban, Check, CheckCircle, Circle, Info, Loader2, Lock, RefreshCw, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Ban, Check, CheckCircle, Circle, Info, Loader2, Lock, RefreshCw, ArrowRightLeft, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -13,7 +13,9 @@ const TONE: Record<Readiness, { cls: string; icon: typeof CheckCircle }> = {
   reconnect: { cls: "text-warn border-warn bg-warn/20", icon: RefreshCw },
   error: { cls: "text-late border-late bg-late/20", icon: XCircle },
   optional: { cls: "text-info border-info bg-info/20", icon: Info },
+  migration: { cls: "text-info border-info bg-info/20", icon: ArrowRightLeft },
 };
+
 
 export function ReadyChip({ state, label, className }: { state: Readiness; label?: string | undefined; className?: string | undefined }) {
   const t = TONE[state];
