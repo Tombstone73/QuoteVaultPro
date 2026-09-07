@@ -55,6 +55,8 @@ import { PostgresCustomerCommercialStore } from "../../infrastructure/products/p
 import { PostgresProductsCompatibilityReader } from "../../infrastructure/compatibility/postgresProductsRead.js";
 import { V2PricingParityAdapter } from "../modules/pricing/v2PricingAdapter.js";
 import { PortalOrderCreationApplicationService } from "../modules/portal/portalOrderCreation.js";
+import { PortalArtworkApplicationService } from "../modules/portal/portalArtwork.js";
+import { PostgresPortalArtworkOwnershipRead } from "../../infrastructure/portal/postgresPortalArtworkOwnership.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -89,6 +91,11 @@ export const createV2DeploymentApp = (
   const inbound = composeAuthenticatedInboundRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, orders: orderService });
   const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, publicWebOrigin: authentication.publicWebOrigin, orderLifecycle });
   const artwork = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  if (!artwork.dependencies.upload) throw new Error("Canonical Artwork upload runtime is unavailable.");
+  const portalArtwork = new PortalArtworkApplicationService(
+    new PostgresPortalArtworkOwnershipRead(pool),
+    artwork.dependencies.upload,
+  );
   const proofing = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const prepress = composeAuthenticatedPrepressRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new ProductionApplicationService(new PostgresProductionTransactionRunner(pool), undefined, orderLifecycle) });
@@ -135,7 +142,7 @@ export const createV2DeploymentApp = (
     emailIntegration,
     quickBooksIntegration,
     { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
-    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}), commercial: new PostgresPortalCommercialRead(pool), orders: portalOrders },
+    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}), commercial: new PostgresPortalCommercialRead(pool), orders: portalOrders, artwork: portalArtwork },
     inbound,
     customerCommercial,
   );

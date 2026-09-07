@@ -70,10 +70,10 @@ const tokenHash = (token: string) => createHash("sha256").update(token).digest("
 const portalCredentialError = (error: unknown, fallback: string) => error instanceof Error && error.message === "Choose a password with at least 12 characters." ? error.message : fallback;
 
 export const safePortalReturnTo = (value: unknown): string => {
-  if (typeof value !== "string") return "/portal/invoices";
+  if (typeof value !== "string") return "/portal";
   const destination = value.trim();
-  if (!destination.startsWith("/") || destination.startsWith("//") || destination.includes("\\")) return "/portal/invoices";
-  return /^\/portal\/(?:invoices|proofs|orders|quotes|catalog)(?:\/[A-Za-z0-9_-]+)?$/.test(destination) ? destination : "/portal/invoices";
+  if (!destination.startsWith("/") || destination.startsWith("//") || destination.includes("\\")) return "/portal";
+  return /^\/portal(?:\/(?:invoices|proofs|orders|quotes|catalog)(?:\/[A-Za-z0-9_-]+)?|\/(?:account|review|confirmation))?$/.test(destination) ? destination : "/portal";
 };
 
 export type V2StandaloneAuthConfig = Readonly<{

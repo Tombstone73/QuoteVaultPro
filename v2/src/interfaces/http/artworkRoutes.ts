@@ -17,9 +17,13 @@ export interface VerifiedV2ArtworkPrincipalProvider { principal(request: Request
 export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]>; get(organizationId: string, artworkFileId: string): Promise<ArtworkWorkspaceDetail | null> }>; delivery?: Readonly<{ file(organizationId: string, artworkFileId: string): Promise<Readonly<{ contentType: string; bytes: Buffer }> | null> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
 
 const maximumUploadBytes = 10 * 1024 * 1024;
-type MultipartArtworkCommand = Readonly<{ businessRequestId: string; orderId: string; orderLineId: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; supersedesArtworkAssignmentId?: string; filename: string; contentType: string; bytes: Buffer }>;
+/**
+ * Parsed once for every canonical Artwork transport.  Portal routes reuse
+ * this bounded parser but impose their own, narrower purpose/ownership rules.
+ */
+export type MultipartArtworkCommand = Readonly<{ businessRequestId: string; orderId: string; orderLineId: string; purpose: string; side?: string; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; supersedesArtworkAssignmentId?: string; filename: string; contentType: string; bytes: Buffer }>;
 
-const multipart = (request: Request): Promise<MultipartArtworkCommand> => new Promise((resolve, reject) => {
+export const parseArtworkMultipart = (request: Request): Promise<MultipartArtworkCommand> => new Promise((resolve, reject) => {
   if (!request.headers["content-type"]?.startsWith("multipart/form-data")) return reject(new V2ApplicationError("VALIDATION_ERROR", "Artwork upload must use multipart/form-data."));
   const fields: Record<string, string> = {};
   let file: Readonly<{ filename: string; contentType: string; bytes: Buffer }> | undefined;
@@ -74,7 +78,7 @@ const context = async (request: Request, dependencies: ArtworkHttpDependencies, 
  * Artwork upload.
  */
 const productionArtworkForPrepress = async (request: Request, dependencies: ArtworkHttpDependencies): Promise<MultipartArtworkCommand> => {
-  const input = await multipart(request);
+  const input = await parseArtworkMultipart(request);
   if (input.purpose !== "production") throw new V2ApplicationError("VALIDATION_ERROR", "Prepress uploads must declare production Artwork.");
   const organizationId = request.params.organizationId;
   if (!organizationId) throw new V2ApplicationError("VALIDATION_ERROR", "organizationId is required.");
@@ -135,7 +139,7 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
   router.post("/uploads", async (request, response) => {
     try {
       if (!dependencies.upload) throw new V2ApplicationError("RETRYABLE_FAILURE", "Artwork upload is unavailable.");
-      const input = await multipart(request);
+      const input = await parseArtworkMultipart(request);
       if (!input.businessRequestId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId is required.");
       const organizationId = (request.params as Readonly<{ organizationId?: string }>).organizationId;
       if (!organizationId) throw new V2ApplicationError("VALIDATION_ERROR", "organizationId is required.");

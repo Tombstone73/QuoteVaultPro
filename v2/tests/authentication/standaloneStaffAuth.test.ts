@@ -42,11 +42,15 @@ const appFor = (verifier = createVerifier(), config = loadV2StandaloneAuthConfig
 
 describe("standalone V2 Staff authentication", () => {
   test("only preserves canonical internal V2 portal destinations", () => {
+    expect(safePortalReturnTo("/portal")).toBe("/portal");
+    expect(safePortalReturnTo("/portal/orders")).toBe("/portal/orders");
+    expect(safePortalReturnTo("/portal/orders/order_1")).toBe("/portal/orders/order_1");
+    expect(safePortalReturnTo("/portal/account")).toBe("/portal/account");
     expect(safePortalReturnTo("/portal/invoices")).toBe("/portal/invoices");
     expect(safePortalReturnTo("/portal/invoices/invoice_1")).toBe("/portal/invoices/invoice_1");
     expect(safePortalReturnTo("/portal/proofs")).toBe("/portal/proofs");
     expect(safePortalReturnTo("/portal/proofs/proof_1")).toBe("/portal/proofs/proof_1");
-    for (const unsafe of ["https://attacker.invalid", "//attacker.invalid", "/\\attacker", "/staff", "/portal/orders/1"]) expect(safePortalReturnTo(unsafe)).toBe("/portal/invoices");
+    for (const unsafe of ["https://attacker.invalid", "//attacker.invalid", "/\\attacker", "/staff", "/portal/orders/1/extra"]) expect(safePortalReturnTo(unsafe)).toBe("/portal");
   });
   test("rejects bad, unknown, inactive, and no-membership login without account enumeration", async () => {
     const { app, verifier } = appFor();
@@ -121,7 +125,7 @@ describe("standalone V2 Customer Portal authentication", () => {
     await request(app()).post("/v2/portal/auth/reset-password").send({ token: "reset-token", password: "correct-password" }).expect(200);
     const agent = request.agent(app());
     const login = await agent.post("/v2/portal/auth/login").send({ email: portal.email, password: "correct-password", returnTo: "//attacker.invalid" }).expect(200);
-    expect(login.body.data.returnTo).toBe("/portal/invoices");
+    expect(login.body.data.returnTo).toBe("/portal");
     await agent.get("/v2/portal/auth/session").expect(200);
   });
 });

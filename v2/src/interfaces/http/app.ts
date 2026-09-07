@@ -40,8 +40,10 @@ import { createStripeWebhookHandler } from "./stripeWebhookRoutes.js";
 import { createPortalInvoiceRouter, type PortalProofRead, type PortalProofResponseService } from "./portalInvoiceRoutes.js";
 import { createCustomerCommercialRouter, createPortalCustomerCommercialRouter, type CustomerCommercialHttpDependencies, type PortalCustomerCommercialHttpDependencies } from "./customerCommercialRoutes.js";
 import { createPortalOrderRouter } from "./portalOrderRoutes.js";
+import { createPortalArtworkRouter } from "./portalArtworkRoutes.js";
 import type { PortalCommercialRead } from "../../modules/portal/commercialReads.js";
 import type { PortalOrderCreationApplicationService } from "../../modules/portal/portalOrderCreation.js";
+import type { PortalArtworkApplicationService } from "../../modules/portal/portalArtwork.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -92,7 +94,7 @@ export const createV2HttpApp = (
   emailIntegration?: EmailIntegrationHttpDependencies,
   quickBooksIntegration?: QuickBooksIntegrationHttpDependencies,
   stripeSettings?: StripeSettingsHttpDependencies,
-  portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService; commercial?:PortalCommercialRead; orders?: PortalOrderCreationApplicationService }>,
+  portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService; commercial?:PortalCommercialRead; orders?: PortalOrderCreationApplicationService; artwork?: PortalArtworkApplicationService }>,
   inbound?: AuthenticatedInboundRouteRuntime,
   customerCommercial?: AuthenticatedCustomerCommercialRouteRuntime,
 ): Express => {
@@ -111,6 +113,7 @@ export const createV2HttpApp = (
   configure?.(app);
   if (billing && portal) app.use("/v2/portal", portal.middleware, createPortalInvoiceRouter({ ...billing.dependencies, portalPrincipal: portal.principal, ...(portal.proofs?{proofs:portal.proofs}:{}), ...(portal.proofing?{proofing:portal.proofing}:{}), ...(portal.commercial?{commercial:portal.commercial}:{}) }));
   if (portal?.orders) app.use("/v2/portal", portal.middleware, requireV2CsrfToken, createPortalOrderRouter({ portalPrincipal: portal.principal, service: portal.orders }));
+  if (portal?.artwork) app.use("/v2/portal", portal.middleware, requireV2CsrfToken, createPortalArtworkRouter({ portalPrincipal: portal.principal, service: portal.artwork }));
   if (portal && customerCommercial) app.use(
     "/v2/portal/catalog",
     portal.middleware,
