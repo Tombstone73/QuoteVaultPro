@@ -1360,8 +1360,15 @@ export async function syncV2InvoiceToQuickBooks(input: Readonly<{ organizationId
   }
 }
 
-export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId: string; paymentId: string; paymentReference?: string; quickBooksPaymentId?: string; quickBooksInvoiceId: string; quickBooksCustomerId: string; amountCents: number; currency: string; occurredAt: string }>): Promise<{ qbPaymentId: string }> {
+/** One V2 Payment remains one QuickBooks Payment.  Its immutable allocation
+ * rows become one linked QuickBooks line per Invoice, rather than forcing a
+ * second provider charge for each allocation. */
+export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId: string; paymentId: string; paymentReference?: string; quickBooksPaymentId?: string; quickBooksCustomerId: string; amountCents: number; currency: string; occurredAt: string; allocations: readonly Readonly<{ quickBooksInvoiceId: string; amountCents: number }>[] }>): Promise<{ qbPaymentId: string }> {
   if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) throw new Error("V2 Payment amount must be a positive exact-cent value.");
+  if (!input.allocations.length || input.allocations.length > 100) throw new Error("V2 Payment requires between one and one hundred Invoice allocations for QuickBooks sync.");
+  const allocationTotal = input.allocations.reduce((total, allocation) => total + allocation.amountCents, 0);
+  if (!Number.isSafeInteger(allocationTotal) || allocationTotal !== input.amountCents || input.allocations.some((allocation) => !allocation.quickBooksInvoiceId || !Number.isSafeInteger(allocation.amountCents) || allocation.amountCents <= 0)) throw new Error("V2 Payment allocations must be positive exact cents and equal the Payment total.");
+  if (new Set(input.allocations.map((allocation) => allocation.quickBooksInvoiceId)).size !== input.allocations.length) throw new Error("V2 Payment may allocate an Invoice only once per QuickBooks Payment.");
   if (input.quickBooksPaymentId) {
     const existing = await makeQBRequest("GET", `/payment/${input.quickBooksPaymentId}`, undefined, input.organizationId);
     if (!existing?.Payment?.Id) throw new Error("QuickBooks Payment link could not be resolved.");
@@ -1373,7 +1380,7 @@ export async function syncV2PaymentToQuickBooks(input: Readonly<{ organizationId
   const query = `SELECT Id FROM Payment WHERE PaymentRefNum = '${escapeQBQueryString(paymentRefNum)}' MAXRESULTS 1`;
   const found = (await makeQBRequest("GET", `/query?query=${encodeURIComponent(query)}`, undefined, input.organizationId))?.QueryResponse?.Payment?.[0];
   if (found?.Id) return { qbPaymentId: String(found.Id) };
-  const payload: any = { CustomerRef: { value: input.quickBooksCustomerId }, TotalAmt: amount, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PaymentRefNum: paymentRefNum, PrivateNote: `PrintersHero V2 payment ${input.paymentId}`, Line: [{ Amount: amount, LinkedTxn: [{ TxnId: input.quickBooksInvoiceId, TxnType: "Invoice" }] }] };
+  const payload: any = { CustomerRef: { value: input.quickBooksCustomerId }, TotalAmt: amount, TxnDate: new Date(input.occurredAt).toISOString().slice(0, 10), CurrencyRef: { value: input.currency }, PaymentRefNum: paymentRefNum, PrivateNote: `PrintersHero V2 payment ${input.paymentId}`, Line: input.allocations.map((allocation) => ({ Amount: Number((allocation.amountCents / 100).toFixed(2)), LinkedTxn: [{ TxnId: allocation.quickBooksInvoiceId, TxnType: "Invoice" }] })) };
   try {
     const created = await makeQBRequest("POST", "/payment", payload, input.organizationId);
     if (!created?.Payment?.Id) throw new Error("QuickBooks payment create returned no Id");

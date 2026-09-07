@@ -34,7 +34,7 @@ export const productionStripeWebhookVerifier = (): StripeWebhookVerifier => ({
  * operation; it never names a legacy invoice or payment record.
  */
 export class V2StripeProviderAdapter {
-  async createPaymentIntent(input: Readonly<{ amountCents: number; currency: string; organizationId: string; invoiceId: string; providerOperationId: string; providerIdempotencyKey: string; stripeAccountId: string; description?: string }>): Promise<Readonly<{ providerTransactionId: string; clientSecret: string }>> {
+  async createPaymentIntent(input: Readonly<{ amountCents: number; currency: string; organizationId: string; invoiceId?: string; providerOperationId: string; providerIdempotencyKey: string; stripeAccountId: string; description?: string }>): Promise<Readonly<{ providerTransactionId: string; clientSecret: string }>> {
     if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) throw new V2ApplicationError("VALIDATION_ERROR", "Stripe payment amount must be positive exact cents.");
     const paymentIntent = await getStripeClient().paymentIntents.create({
       amount: input.amountCents,
@@ -44,7 +44,7 @@ export class V2StripeProviderAdapter {
       metadata: {
         v2ProviderOperationId: input.providerOperationId,
         v2OrganizationId: input.organizationId,
-        v2InvoiceId: input.invoiceId,
+        ...(input.invoiceId ? { v2InvoiceId: input.invoiceId } : {}),
         v2StripeAccountId: input.stripeAccountId,
       },
     }, { idempotencyKey: input.providerIdempotencyKey, stripeAccount: input.stripeAccountId });
@@ -77,7 +77,7 @@ export class V2StripeProviderAdapter {
   }
 }
 
-type ProviderPayments = Pick<BillingPaymentsApplicationService, "confirmProviderPayment" | "confirmProviderRefund">;
+type ProviderPayments = Pick<BillingPaymentsApplicationService, "confirmProviderPayment" | "confirmProviderPaymentAggregate" | "confirmProviderRefund">;
 
 type StripeIngressResult = Readonly<{
   disposition: "applied" | "replayed" | "ignored";
@@ -89,7 +89,7 @@ type StripeIngressResult = Readonly<{
 type V2StripeMetadata = Readonly<{
   operationId: string;
   organizationId: string;
-  invoiceId: string;
+  invoiceId?: string;
   paymentId?: string;
 }>;
 
@@ -104,8 +104,8 @@ export const v2StripeMetadata = (value: unknown, requirePaymentId = false): V2St
   const organizationId = stringValue(source.v2OrganizationId);
   const invoiceId = stringValue(source.v2InvoiceId);
   const paymentId = stringValue(source.v2PaymentId);
-  if (!operationId || !organizationId || !invoiceId || (requirePaymentId && !paymentId)) return null;
-  return { operationId, organizationId, invoiceId, ...(paymentId ? { paymentId } : {}) };
+  if (!operationId || !organizationId || (requirePaymentId && (!paymentId || !invoiceId))) return null;
+  return { operationId, organizationId, ...(invoiceId ? { invoiceId } : {}), ...(paymentId ? { paymentId } : {}) };
 };
 
 const serviceContext = (organizationId: string, eventId: string, operation: string): OperationContext => ({
@@ -140,7 +140,11 @@ export class StripeProviderIngress {
     const declaredAccount=stringValue(metadata(event.data.object.metadata).v2StripeAccountId);
     if (declaredAccount && declaredAccount!==accountId) throw new V2ApplicationError("FORBIDDEN","Stripe event account conflicts with payment metadata.");
     if (accountId) await this.accounts?.assertOperationAccount(contextMetadata.organizationId,contextMetadata.operationId,accountId);
-    const result = await this.payments.confirmProviderPayment(
+    // Historical single-Invoice intents retain their invoice metadata. New
+    // aggregate intents identify only the provider operation; its durable
+    // allocation evidence is the financial authority.
+    if (contextMetadata.invoiceId) {
+      const result = await this.payments.confirmProviderPayment(
       serviceContext(contextMetadata.organizationId, event.id, "payment"),
       {
         organizationId: brandedId<"OrganizationId">(contextMetadata.organizationId),
@@ -151,18 +155,32 @@ export class StripeProviderIngress {
         occurredAt: occurredAt(event),
         businessRequestId: brandedId<"BusinessRequestId">(`stripe-webhook:${event.id}`),
       },
+      );
+      if (!result.ok) throw result.error;
+      return { disposition: "applied", eventId: event.id, kind: "payment", resourceId: result.value.paymentId };
+    }
+    const result = await this.payments.confirmProviderPaymentAggregate(
+      serviceContext(contextMetadata.organizationId, event.id, "payment"),
+      {
+        organizationId: brandedId<"OrganizationId">(contextMetadata.organizationId),
+        providerOperationId: brandedId<"ProviderFinancialOperationId">(contextMetadata.operationId),
+        providerEventId: event.id,
+        providerTransactionId: paymentIntentId,
+        occurredAt: occurredAt(event),
+        businessRequestId: brandedId<"BusinessRequestId">(`stripe-webhook:${event.id}`),
+      },
     );
     if (!result.ok) throw result.error;
     // The application service's durable operation request absorbs exact-event
     // replay before a second immutable payment can be appended.
-    return { disposition: "applied", eventId: event.id, kind: "payment", resourceId: result.value.paymentId };
+    return { disposition: "applied", eventId: event.id, kind: "payment", resourceId: result.value.payment.paymentId };
   }
 
   private async applyRefund(event: VerifiedStripeEvent): Promise<StripeIngressResult> {
     const refundId = stringValue(event.data.object.id);
     const contextMetadata = v2StripeMetadata(event.data.object.metadata, true);
     const accountId=stringValue(event.account);
-    if (!refundId || !contextMetadata?.paymentId || (this.accounts && !accountId)) return { disposition: "ignored", eventId: event.id };
+    if (!refundId || !contextMetadata?.paymentId || !contextMetadata.invoiceId || (this.accounts && !accountId)) return { disposition: "ignored", eventId: event.id };
     const declaredAccount=stringValue(metadata(event.data.object.metadata).v2StripeAccountId);
     if (declaredAccount && declaredAccount!==accountId) throw new V2ApplicationError("FORBIDDEN","Stripe event account conflicts with refund metadata.");
     if (accountId) await this.accounts?.assertOperationAccount(contextMetadata.organizationId,contextMetadata.operationId,accountId);

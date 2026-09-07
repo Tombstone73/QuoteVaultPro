@@ -253,11 +253,12 @@ const financialProjection = `
 /** Finance ledger pages retain derived per-invoice balances without loading every immutable fact into Node. */
 const ledgerProjection = `
   WITH native_facts AS (
-    SELECT 'v2'::text record_source,'payment'::text kind,p.id,p.id payment_id,p.invoice_id,p.amount_cents,p.currency,p.method,p.source,
+    SELECT 'v2'::text record_source,'payment'::text kind,p.id,p.id payment_id,a.invoice_id,a.amount_cents,p.currency,p.method,p.source,
       p.occurred_at,p.recorded_at,i.sales_order_document_id source_order_id,d.display_number source_order_number,
-      i.customer_id,COALESCE(c.display_name,c.company_name) customer_name,i.total_cents gross_cents,p.amount_cents signed_cents
+      i.customer_id,COALESCE(c.display_name,c.company_name) customer_name,i.total_cents gross_cents,a.amount_cents signed_cents
     FROM v2_billing_payments p
-    JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id
+    JOIN v2_billing_payment_allocations a ON a.organization_id=p.organization_id AND a.payment_id=p.id
+    JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id
     JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
     LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
     WHERE p.organization_id=$1
@@ -433,7 +434,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
     invoiceId: InvoiceId,
   ): Promise<readonly FactRow[]> {
     const result = await this.client.query<FactRow>(
-      `SELECT 'payment'::text kind,p.id,p.id payment_id,p.invoice_id,p.amount_cents,p.currency,p.method,p.source,p.occurred_at,p.recorded_at FROM v2_billing_payments p WHERE p.organization_id=$1 AND p.invoice_id=$2
+      `SELECT 'payment'::text kind,p.id,p.id payment_id,a.invoice_id,a.amount_cents,p.currency,p.method,p.source,p.occurred_at,p.recorded_at FROM v2_billing_payments p JOIN v2_billing_payment_allocations a ON a.organization_id=p.organization_id AND a.payment_id=p.id WHERE p.organization_id=$1 AND a.invoice_id=$2
        UNION ALL
        SELECT 'refund'::text kind,r.id,a.payment_id,r.invoice_id,r.amount_cents,r.currency,p.method,r.source,r.occurred_at,r.recorded_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=a.payment_id WHERE r.organization_id=$1 AND r.invoice_id=$2
        ORDER BY occurred_at,recorded_at,id`,

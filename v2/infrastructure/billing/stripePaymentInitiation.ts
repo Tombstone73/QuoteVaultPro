@@ -52,6 +52,47 @@ export class StripePaymentInitiation {
     return { ok: true as const, value: { providerOperationId: operation.value.providerOperationId, paymentIntentId, clientSecret: created.clientSecret, stripeAccountId:account.accountId, amountCents: input.amountCents, currency: input.currency } };
   }
 
+  /** Starts exactly one Stripe PaymentIntent for a bounded, durable set of
+   * Invoice allocations.  Stripe metadata identifies only the provider
+   * operation; the database allocation intent remains canonical. */
+  async beginPaymentAggregate(context: OperationContext, input: Readonly<{ organizationId: string; currency: string; allocations: readonly Readonly<{ invoiceId: string; amountCents: number }> []; businessRequestId: string }>) {
+    if (!input.allocations.length || input.allocations.length > 25) throw new V2ApplicationError("VALIDATION_ERROR", "Choose between one and 25 Invoice allocations.");
+    const account = await this.accounts.requireReadyAccount(input.organizationId);
+    const operation = await this.payments.beginProviderPaymentAggregate(context, {
+      organizationId: brandedId<"OrganizationId">(input.organizationId),
+      allocations: input.allocations.map((allocation) => ({ invoiceId: brandedId<"InvoiceId">(allocation.invoiceId), amount: money(currencyCode(input.currency), allocation.amountCents) })),
+      provider: "stripe",
+      providerIdempotencyKey: `v2:stripe:payment-aggregate:${input.organizationId}:${input.businessRequestId}`,
+      providerAccountId: account.accountId,
+      businessRequestId: brandedId<"BusinessRequestId">(input.businessRequestId),
+    });
+    if (!operation.ok) return operation;
+    const value = operation.value.operation;
+    assertStripeCardPaymentMinimum(value.amount.cents, value.amount.currency);
+    const existing = await this.operation(input.organizationId, value.providerOperationId);
+    if (existing?.provider_transaction_id) {
+      if (!existing.stripe_account_id) throw new V2ApplicationError("CONFLICT", "This provider operation predates tenant Stripe Connect.");
+      const paymentIntent = await this.provider.retrievePaymentIntent(existing.provider_transaction_id, existing.stripe_account_id);
+      return { ok: true as const, value: { providerOperationId: value.providerOperationId, paymentIntentId: existing.provider_transaction_id, clientSecret: paymentIntent.clientSecret, stripeAccountId: existing.stripe_account_id, amountCents: Number(existing.amount_cents), currency: existing.currency, allocations: operation.value.allocations } };
+    }
+    let created: Readonly<{ providerTransactionId: string; clientSecret: string }>;
+    try {
+      created = await this.provider.createPaymentIntent({ amountCents: value.amount.cents, currency: value.amount.currency, organizationId: input.organizationId, providerOperationId: value.providerOperationId, providerIdempotencyKey: value.providerIdempotencyKey, stripeAccountId: account.accountId, description: `PrintersHero payment ${value.providerOperationId}` });
+    } catch (cause) {
+      if (stripeRejectedBeforeCreation(cause)) {
+        await this.markRejectedBeforeCreation(input.organizationId, value.providerOperationId);
+        throw new V2ApplicationError("VALIDATION_ERROR", "Stripe rejected this card payment before it was created. The Invoices remain unpaid; correct the issue and try again.");
+      }
+      throw cause;
+    }
+    const paymentIntentId = await this.persist(input.organizationId, value.providerOperationId, created.providerTransactionId);
+    if (paymentIntentId !== created.providerTransactionId) {
+      const paymentIntent = await this.provider.retrievePaymentIntent(paymentIntentId, account.accountId);
+      return { ok: true as const, value: { providerOperationId: value.providerOperationId, paymentIntentId, clientSecret: paymentIntent.clientSecret, stripeAccountId: account.accountId, amountCents: value.amount.cents, currency: value.amount.currency, allocations: operation.value.allocations } };
+    }
+    return { ok: true as const, value: { providerOperationId: value.providerOperationId, paymentIntentId, clientSecret: created.clientSecret, stripeAccountId: account.accountId, amountCents: value.amount.cents, currency: value.amount.currency, allocations: operation.value.allocations } };
+  }
+
   async beginRefund(context: OperationContext, input: Readonly<{ organizationId: string; invoiceId: string; paymentId: string; amountCents: number; currency: string; businessRequestId: string }>) {
     const original = await this.pool.query<{ provider_transaction_id: string | null; stripe_account_id:string|null; source: string }>("SELECT provider_transaction_id,stripe_account_id,source FROM v2_billing_payments WHERE organization_id=$1 AND id=$2 AND invoice_id=$3", [input.organizationId, input.paymentId, input.invoiceId]);
     const payment = original.rows[0];

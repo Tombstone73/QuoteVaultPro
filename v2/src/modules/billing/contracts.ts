@@ -130,9 +130,36 @@ export interface BillingReadPort {
 export type PaymentMethod = "cash" | "check" | "external" | "card" | "ach" | "other";
 export type ProviderReconciliationState = "pending" | "succeeded" | "failed" | "uncertain";
 export type RecordManualPaymentInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; amount: Money; method: Exclude<PaymentMethod, "card" | "ach">; occurredAt: string; businessRequestId: BusinessRequestId }>;
+/** An immutable portion of one real-world Payment applied to one Invoice. */
+export type PaymentAllocationInput = Readonly<{ invoiceId: InvoiceId; amount: Money }>;
+export type PaymentAllocationFact = Readonly<{ invoiceId: InvoiceId; amount: Money }>;
+/**
+ * A Payment is one tender/provider transaction. `invoiceId` on PaymentFact is
+ * retained only as a deterministic legacy compatibility anchor; the immutable
+ * allocation list is the financial relationship authority.
+ */
+export type PaymentAggregateFact = Readonly<{ payment: PaymentFact; allocations: readonly PaymentAllocationFact[] }>;
+export type RecordManualPaymentAllocationsInput = Readonly<{
+  organizationId: OrganizationId;
+  allocations: readonly PaymentAllocationInput[];
+  method: Exclude<PaymentMethod, "card" | "ach">;
+  occurredAt: string;
+  businessRequestId: BusinessRequestId;
+}>;
 export type RecordRefundInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; paymentId: PaymentId; amount: Money; occurredAt: string; businessRequestId: BusinessRequestId }>;
 export type BeginProviderFinancialOperationInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amount: Money; provider: string; providerIdempotencyKey: string; /** Provider-account context is integration evidence, never V2 billing authority. */ providerAccountId?: string; businessRequestId: BusinessRequestId }>;
 export type ProviderFinancialOperation = Readonly<{ providerOperationId: ProviderFinancialOperationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amount: Money; provider: string; providerIdempotencyKey: string; providerAccountId?: string; providerTransactionId?: string; reconciliationState: ProviderReconciliationState }>;
+export type BeginProviderPaymentAggregateInput = Readonly<{
+  organizationId: OrganizationId;
+  allocations: readonly PaymentAllocationInput[];
+  provider: string;
+  providerIdempotencyKey: string;
+  providerAccountId?: string;
+  businessRequestId: BusinessRequestId;
+}>;
+export type ProviderPaymentAggregateOperation = Readonly<{ operation: ProviderFinancialOperation; allocations: readonly PaymentAllocationFact[] }>;
+export type ConfirmProviderPaymentAggregateInput = Readonly<{ organizationId: OrganizationId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;
+export type ProviderPaymentAggregateConfirmation = Readonly<{ payment: PaymentAggregateFact; materialized: boolean }>;
 export type ConfirmProviderPaymentInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;
 export type ConfirmProviderRefundInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; paymentId: PaymentId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;
 export type PaymentFact = Readonly<{ paymentId: PaymentId; invoiceId: InvoiceId; amount: Money; method: PaymentMethod; source: "manual" | "provider"; providerOperationId?: ProviderFinancialOperationId; providerTransactionId?: string; occurredAt: string }>;

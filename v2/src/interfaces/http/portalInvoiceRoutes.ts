@@ -39,6 +39,32 @@ export const createPortalInvoiceRouter=(dependencies:Dependencies)=>{
     try { if(!dependencies.documents)throw new V2ApplicationError("INTERNAL_ERROR","Invoice document runtime is unavailable."); const actor=await principal(request),invoiceId=brandedId<"InvoiceId">(request.params.invoiceId); const read=await dependencies.service.readInvoice(operation(actor,actor.organizationId,`portal:GET:${request.path}`),invoiceId); if(!read.ok)return fail(response,read.error); const [bytes,filename]=await Promise.all([dependencies.documents.pdf(brandedId<"OrganizationId">(actor.organizationId),invoiceId),dependencies.documents.filename(brandedId<"OrganizationId">(actor.organizationId),invoiceId)]); response.status(200).setHeader("content-type","application/pdf");response.setHeader("content-disposition",`inline; filename="${filename}"`);response.setHeader("cache-control","private, no-store");return response.send(Buffer.from(bytes)); }
     catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("INTERNAL_ERROR","Invoice document is unavailable."));}
   });
+  router.post("/payments/stripe/payment-intents",requireV2CsrfToken,async(request,response)=>{
+    try {
+      const actor=await principal(request),businessRequestId=requestId(request.body?.businessRequestId),raw=request.body?.allocations;
+      if(!businessRequestId)throw new V2ApplicationError("VALIDATION_ERROR","A payment request identity is required.");
+      if(!Array.isArray(raw)||raw.length<1||raw.length>25)throw new V2ApplicationError("VALIDATION_ERROR","Choose between one and 25 Invoice allocations.");
+      const seen=new Set<string>();
+      const allocations=raw.map((value)=>{
+        const invoiceId=typeof value?.invoiceId==="string"?value.invoiceId.trim():"",amountCents=value?.amountCents;
+        if(!invoiceId||seen.has(invoiceId)||!Number.isSafeInteger(amountCents)||amountCents<=0)throw new V2ApplicationError("VALIDATION_ERROR","Each Invoice allocation must be unique and use positive exact cents.");
+        seen.add(invoiceId); return {invoiceId,amountCents};
+      });
+      const invoices=await Promise.all(allocations.map(async(allocation)=>{
+        const result=await dependencies.financialRead.readInvoice(operation(actor,actor.organizationId,`portal:GET:${request.path}:${allocation.invoiceId}`),brandedId<"InvoiceId">(allocation.invoiceId));
+        if(!result.ok)throw result.error;
+        if(result.value.invoice.lifecycle==="void")throw new V2ApplicationError("CONFLICT","A void Invoice cannot accept payment.");
+        if(allocation.amountCents>result.value.settlement.balance.cents)throw new V2ApplicationError("CONFLICT","A Payment allocation exceeds the current Invoice balance.");
+        return result.value;
+      }));
+      const currency=invoices[0]!.settlement.balance.currency;
+      if(invoices.some((invoice)=>invoice.settlement.balance.currency!==currency))throw new V2ApplicationError("VALIDATION_ERROR","One card payment cannot span Invoice currencies.");
+      const readiness=stripeRuntimeReadiness();if(readiness.status!=="ready"||!readiness.publishableKey)throw new V2ApplicationError("CONFLICT","Card payment is not ready for this account.");
+      const result=await dependencies.stripePayments.beginPaymentAggregate(operation(actor,actor.organizationId,`portal:POST:${request.path}`,businessRequestId),{organizationId:actor.organizationId,currency,allocations,businessRequestId});
+      if(!result.ok)return fail(response,result.error);
+      return response.status(200).json({ok:true,data:{...result.value,publishableKey:readiness.publishableKey}});
+    } catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("RETRYABLE_FAILURE","Card payment could not be prepared."));}
+  });
   router.post("/invoices/:invoiceId/stripe/payment-intents",requireV2CsrfToken,async(request,response)=>{
     try { const actor=await principal(request),invoiceId=brandedId<"InvoiceId">(request.params.invoiceId),businessRequestId=requestId(request.body?.businessRequestId); if(!businessRequestId)throw new V2ApplicationError("VALIDATION_ERROR","A payment request identity is required."); const read=await dependencies.financialRead.readInvoice(operation(actor,actor.organizationId,`portal:GET:${request.path}`),invoiceId); if(!read.ok)return fail(response,read.error); const balance=read.value.settlement.balance; if(balance.cents<=0)throw new V2ApplicationError("CONFLICT",balance.cents<0?"This Invoice has a credit due and cannot accept another payment.":"This Invoice is paid."); if(read.value.invoice.lifecycle==="void")throw new V2ApplicationError("CONFLICT","A void Invoice cannot accept payment."); const readiness=stripeRuntimeReadiness();if(readiness.status!=="ready"||!readiness.publishableKey)throw new V2ApplicationError("CONFLICT","Card payment is not ready for this account."); const result=await dependencies.stripePayments.beginPayment(operation(actor,actor.organizationId,`portal:POST:${request.path}`,businessRequestId),{organizationId:actor.organizationId,invoiceId,amountCents:balance.cents,currency:balance.currency,businessRequestId});if(!result.ok)return fail(response,result.error);return response.status(200).json({ok:true,data:{...result.value,publishableKey:readiness.publishableKey}}); }
     catch(error){return fail(response,error instanceof V2ApplicationError?error:new V2ApplicationError("RETRYABLE_FAILURE","Card payment could not be prepared."));}

@@ -238,7 +238,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
       ["Production work exists", "SELECT EXISTS(SELECT 1 FROM v2_production_works WHERE organization_id=$1 AND order_document_id=$2) AS exists"],
       ["Fulfillment handoff exists", "SELECT EXISTS(SELECT 1 FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2) AS exists"],
       ["an Invoice has been issued", "SELECT EXISTS(SELECT 1 FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2 AND invoice_state='issued') AS exists"],
-      ["a Payment has been recorded", "SELECT EXISTS(SELECT 1 FROM v2_billing_payments p JOIN v2_billing_invoices i ON i.organization_id=p.organization_id AND i.id=p.invoice_id WHERE p.organization_id=$1 AND i.sales_order_document_id=$2) AS exists"],
+      ["a Payment has been recorded", "SELECT EXISTS(SELECT 1 FROM v2_billing_payments p JOIN v2_billing_payment_allocations a ON a.organization_id=p.organization_id AND a.payment_id=p.id JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id WHERE p.organization_id=$1 AND i.sales_order_document_id=$2) AS exists"],
     ];
     const results = await Promise.all(checks.map(async ([label, sql]) => ({ label, result: await this.client.query<{ exists: boolean }>(sql, [organizationId, orderId]) })));
     return results.filter(({ result }) => result.rows[0]?.exists).map(({ label }) => label);
