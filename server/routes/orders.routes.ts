@@ -288,6 +288,16 @@ const completeProductionRequestSchema = z.object({
     confirmBypass: z.literal(true).optional(),
 }).strict();
 
+const historicalFulfillmentReconciliationSchema = z.object({
+    reason: z.enum(['historical_backlog_cleanup', 'completed_outside_printershero', 'other']),
+    note: z.string().trim().max(500).optional(),
+    sourceInvoiceId: z.string().uuid().optional(),
+}).superRefine((value, context) => {
+    if (value.reason === 'other' && !value.note) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['note'], message: 'A short note is required when selecting Other.' });
+    }
+});
+
 const stage18PDevUploadFixturesSchema = z.object({
     confirmDevFixtureCreation: z.literal(true),
 });
@@ -3903,6 +3913,68 @@ export async function registerOrderRoutes(
             }
             console.error("[POST /api/orders/:orderId/complete] Error:", error);
             return res.status(500).json({ success: false, message: "Failed to complete order" });
+        }
+    });
+
+    /**
+     * Historical cleanup only. Production remains owned by the existing
+     * complete-production operation; this endpoint reconciles the remaining
+     * fulfillment quantities without fabricating a shipment or pickup event.
+     */
+    app.get("/api/orders/:orderId/historical-fulfillment-reconciliation", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            if (!hasAdminOrOwnerOperationalRole(req)) {
+                return res.status(403).json({ success: false, code: 'HISTORICAL_RECONCILIATION_FORBIDDEN', message: 'Only an owner or administrator may review historical fulfillment reconciliation.' });
+            }
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(401).json({ success: false, message: 'Missing organization context' });
+            const result = await canonicalFulfillmentOperations.getHistoricalFulfillmentReconciliationPreview(organizationId, String(req.params.orderId));
+            return res.json({ success: true, data: result });
+        } catch (error: any) {
+            if (error instanceof FulfillmentHttpError) {
+                return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            }
+            console.error('[HistoricalFulfillmentReconciliationPreview] Error:', error);
+            return res.status(500).json({ success: false, code: 'HISTORICAL_RECONCILIATION_PREVIEW_FAILED', message: 'Failed to prepare historical fulfillment reconciliation.' });
+        }
+    });
+
+    app.post("/api/orders/:orderId/reconcile-historical-fulfillment", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            if (!hasAdminOrOwnerOperationalRole(req)) {
+                return res.status(403).json({ success: false, code: 'HISTORICAL_RECONCILIATION_FORBIDDEN', message: 'Only an owner or administrator may reconcile historical fulfillment.' });
+            }
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId || !userId) return res.status(401).json({ success: false, message: 'Missing organization or user context' });
+            const parsed = historicalFulfillmentReconciliationSchema.parse(req.body ?? {});
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email || null;
+            const result = await canonicalFulfillmentOperations.reconcileHistoricalFulfillment(organizationId, {
+                orderId: String(req.params.orderId),
+                actorUserId: userId,
+                actorUserName: userName,
+                reason: parsed.reason,
+                note: parsed.note ?? null,
+                sourceInvoiceId: parsed.sourceInvoiceId ?? null,
+            });
+            return res.json({
+                success: true,
+                data: result,
+                message: result.alreadyCompleted
+                    ? 'Order fulfillment was already operationally complete.'
+                    : 'Historical fulfillment reconciled. Invoice and payment state were not changed.',
+            });
+        } catch (error: any) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: fromZodError(error).message });
+            }
+            if (error instanceof FulfillmentHttpError) {
+                return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            }
+            console.error('[HistoricalFulfillmentReconciliation] Error:', error);
+            return res.status(500).json({ success: false, code: 'HISTORICAL_RECONCILIATION_FAILED', message: 'Failed to reconcile historical fulfillment.' });
         }
     });
 

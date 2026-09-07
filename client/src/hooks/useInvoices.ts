@@ -25,6 +25,10 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAcc
   orderName: string | null;
   jobName: string | null;
   purchaseOrderNumber: string | null;
+  orderState: string | null;
+  orderStatus: string | null;
+  orderStatusPillValue: string | null;
+  orderFulfillmentStatus: string | null;
   // Email send tracking (original invoice send only — reminders excluded)
   lastSentAt: string | null;
   lastInvoiceEmailRecipient: string | null;

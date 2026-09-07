@@ -237,6 +237,10 @@ export type EnrichedInvoiceListItem = Invoice & {
   orderName: string | null;
   jobName: string | null;
   purchaseOrderNumber: string | null;
+  orderState: string | null;
+  orderStatus: string | null;
+  orderStatusPillValue: string | null;
+  orderFulfillmentStatus: string | null;
 };
 
 export type InvoiceListPage = {
@@ -321,7 +325,7 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
     case 'orderNumber':
       return sql`coalesce(${orders.displayNumber}, ${orders.orderNumber}, ${invoices.sourceOrderNumber}::text, '')`;
     case 'purchaseOrderNumber':
-      return sql`lower(coalesce(${orders.poNumber}, ${invoices.customerPoNumber}, ''))`;
+      return sql`lower(coalesce(${invoices.customerPoNumber}, ${orders.poNumber}, ''))`;
     case 'dueDate':
       return sql`coalesce(${invoices.dueDate}, '9999-12-31'::timestamptz)`;
     case 'lastSentAt':
@@ -395,7 +399,7 @@ export async function listInvoicesPageForOrganization(
   const jobPattern = contains(columnFilters.jobName);
   if (jobPattern) whereClauses.push(ilike(orders.label, jobPattern));
   const poPattern = contains(columnFilters.purchaseOrderNumber);
-  if (poPattern) whereClauses.push(or(ilike(orders.poNumber, poPattern), ilike(invoices.customerPoNumber, poPattern)));
+  if (poPattern) whereClauses.push(or(ilike(invoices.customerPoNumber, poPattern), ilike(orders.poNumber, poPattern)));
   const orderPattern = contains(columnFilters.orderNumber);
   if (orderPattern) whereClauses.push(or(
     ilike(orders.displayNumber, orderPattern),
@@ -472,7 +476,11 @@ export async function listInvoicesPageForOrganization(
       orderNumber: sql<string | null>`coalesce(${orders.displayNumber}, ${orders.orderNumber}, ${invoices.sourceOrderNumber}::text)`,
       orderName: orders.label,
       jobName: orders.label,
-      purchaseOrderNumber: sql<string | null>`coalesce(${orders.poNumber}, ${invoices.customerPoNumber})`,
+      purchaseOrderNumber: sql<string | null>`coalesce(${invoices.customerPoNumber}, ${orders.poNumber})`,
+      orderState: orders.state,
+      orderStatus: orders.status,
+      orderStatusPillValue: orders.statusPillValue,
+      orderFulfillmentStatus: orders.fulfillmentStatus,
     })
     .from(invoices)
     .leftJoin(customers, and(
@@ -525,6 +533,10 @@ export async function listInvoicesPageForOrganization(
     orderName: row.orderName ?? null,
     jobName: row.jobName ?? null,
     purchaseOrderNumber: row.purchaseOrderNumber ?? null,
+    orderState: row.orderState ?? null,
+    orderStatus: row.orderStatus ?? null,
+    orderStatusPillValue: row.orderStatusPillValue ?? null,
+    orderFulfillmentStatus: row.orderFulfillmentStatus ?? null,
     })),
     page: Math.floor(offset / limit) + 1,
     pageSize: limit,

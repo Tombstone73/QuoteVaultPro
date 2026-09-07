@@ -26,6 +26,8 @@ export class CanonicalFulfillmentOperations {
   markPickupReady(...args: Parameters<typeof fulfillmentServiceV2.markPickupReady>) { return fulfillmentServiceV2.markPickupReady(...args); }
   markPickupPickedUp(...args: Parameters<typeof fulfillmentServiceV2.markPickupPickedUp>) { return fulfillmentServiceV2.markPickupPickedUp(...args); }
   recordPickupHandoff(...args: Parameters<typeof fulfillmentServiceV2.recordPickupHandoff>) { return fulfillmentServiceV2.recordPickupHandoff(...args); }
+  getHistoricalFulfillmentReconciliationPreview(...args: Parameters<typeof fulfillmentServiceV2.getHistoricalFulfillmentReconciliationPreview>) { return fulfillmentServiceV2.getHistoricalFulfillmentReconciliationPreview(...args); }
+  reconcileHistoricalFulfillment(...args: Parameters<typeof fulfillmentServiceV2.reconcileHistoricalFulfillment>) { return fulfillmentServiceV2.reconcileHistoricalFulfillment(...args); }
   reconcileTerminalBilling(...args: Parameters<typeof fulfillmentServiceV2.reconcileTerminalBilling>) { return fulfillmentServiceV2.reconcileTerminalBilling(...args); }
 }
 

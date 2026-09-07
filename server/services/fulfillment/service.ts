@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
-import { auditLogs, customers, fulfillmentChecklistItems, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
+import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
@@ -72,6 +72,183 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(409, 'Billing reconciliation is available after terminal fulfillment only.', 'FULFILLMENT_NOT_TERMINAL');
     }
     return this.ensureTerminalBilling({ organizationId: orgId, orderId, trigger: 'picked_up_or_shipped', sourceEvent: 'FULFILLMENT_BILLING_RECONCILILED', actorUserId });
+  }
+
+  /** Read-only preview used by the Close Job Override confirmation. */
+  async getHistoricalFulfillmentReconciliationPreview(orgId: string, orderId: string) {
+    const [order] = await this.dbInstance
+      .select({
+        id: orders.id,
+        state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
+        fulfillmentStatus: orders.fulfillmentStatus,
+      })
+      .from(orders)
+      .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
+      .limit(1);
+    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+
+    const physicalLines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] }))
+      .filter((line) => line.projection.requiresFulfillment);
+    const remainingProductionQuantity = physicalLines.reduce(
+      (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.productionCompleteQuantity),
+      0,
+    );
+    const remainingFulfillmentQuantity = physicalLines.reduce(
+      (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.fulfilledQuantity),
+      0,
+    );
+
+    return {
+      orderState: order.state,
+      orderStatus: order.status,
+      fulfillmentStatus: order.fulfillmentStatus,
+      canceled: isCanceledOrder(order),
+      physicalLineCount: physicalLines.length,
+      remainingProductionQuantity,
+      remainingFulfillmentQuantity,
+      productionComplete: order.state === 'production_complete',
+      alreadyOperationallyComplete: ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase()),
+    };
+  }
+
+  /**
+   * Reconciles historical work that was physically fulfilled before it was
+   * entered into PrintersHero. This is intentionally distinct from shipment
+   * and pickup actions: it creates no shipment, pickup ticket, handoff, or
+   * customer notification, and it never invokes terminal billing automation.
+   */
+  async reconcileHistoricalFulfillment(orgId: string, input: {
+    orderId: string;
+    actorUserId?: string | null;
+    actorUserName?: string | null;
+    reason: 'historical_backlog_cleanup' | 'completed_outside_printershero' | 'other';
+    note?: string | null;
+    sourceInvoiceId?: string | null;
+  }) {
+    const [order] = await this.dbInstance
+      .select({
+        id: orders.id,
+        state: orders.state,
+        status: orders.status,
+        canceledAt: orders.canceledAt,
+        fulfillmentStatus: orders.fulfillmentStatus,
+        routingTarget: orders.routingTarget,
+      })
+      .from(orders)
+      .where(and(eq(orders.organizationId, orgId), eq(orders.id, input.orderId)))
+      .limit(1);
+
+    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+    if (isCanceledOrder(order)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
+    if (order.state !== 'production_complete') {
+      throw new FulfillmentHttpError(409, 'Complete canonical production before reconciling historical fulfillment.', 'PRODUCTION_NOT_COMPLETE');
+    }
+    if (['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
+      return { alreadyCompleted: true, remainingFulfillmentQuantity: 0 };
+    }
+
+    // Preflight every physical line before writing any checklist state. The
+    // dashboard projection is the same production/fulfillment quantity source
+    // used by normal fulfillment operations.
+    const eligibleLines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [input.orderId] }))
+      .filter((line) => line.projection.requiresFulfillment);
+    const incompleteProduction = eligibleLines.find((line) =>
+      line.projection.productionCompleteQuantity < line.projection.orderedQuantity,
+    );
+    if (incompleteProduction) {
+      throw new FulfillmentHttpError(409, 'Every physical line must be production-complete before historical fulfillment can be reconciled.', 'PRODUCTION_NOT_COMPLETE');
+    }
+
+    const remainingFulfillmentQuantity = eligibleLines.reduce(
+      (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.fulfilledQuantity),
+      0,
+    );
+    const reconciliationNote = [
+      'Administrative historical fulfillment reconciliation.',
+      input.note?.trim() || null,
+    ].filter(Boolean).join(' ');
+
+    for (const line of eligibleLines) {
+      const result = await this.dashboardRepo.updateChecklistItem(orgId, input.orderId, line.id, {
+        checked: true,
+        fulfilledQuantity: line.projection.productionCompleteQuantity,
+      }, input.actorUserId);
+      if (!result.ok) throw new FulfillmentHttpError(409, result.message, result.code);
+    }
+
+    if (eligibleLines.length > 0) {
+      const checklist = await this.dashboardRepo.assertOrderChecklistComplete(orgId, input.orderId);
+      if (!checklist.ok) throw new FulfillmentHttpError(409, checklist.message, checklist.code);
+    }
+
+    const now = new Date();
+    const safeActorUserId = await resolveExistingActorUserId(this.dbInstance, input.actorUserId);
+    await this.dbInstance.transaction(async (tx) => {
+      const [lockedOrder] = await tx
+        .select({ state: orders.state, status: orders.status, canceledAt: orders.canceledAt, fulfillmentStatus: orders.fulfillmentStatus, routingTarget: orders.routingTarget })
+        .from(orders)
+        .where(and(eq(orders.organizationId, orgId), eq(orders.id, input.orderId)))
+        .for('update')
+        .limit(1);
+      if (!lockedOrder) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+      if (isCanceledOrder(lockedOrder)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
+      if (lockedOrder.state !== 'production_complete') throw new FulfillmentHttpError(409, 'Production state changed before fulfillment reconciliation completed.', 'PRODUCTION_STATE_CHANGED');
+
+      await tx.update(orders).set({
+        fulfillmentStatus: 'delivered',
+        routingTarget: null,
+        updatedAt: now.toISOString(),
+      }).where(and(eq(orders.organizationId, orgId), eq(orders.id, input.orderId)));
+      await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId,
+        actorUserId: safeActorUserId,
+        entityType: 'ORDER',
+        entityId: input.orderId,
+        eventType: 'FULFILLMENT_HISTORICAL_RECONCILED',
+        payloadJson: {
+          source: 'administrative_historical_reconciliation',
+          reason: input.reason,
+          note: input.note?.trim() || null,
+          sourceInvoiceId: input.sourceInvoiceId ?? null,
+          remainingFulfillmentQuantity,
+          reconciliationTimestamp: now.toISOString(),
+          shipmentOrPickupEvidenceCreated: false,
+          billingAutomationSuppressed: true,
+        },
+      } as any);
+      await tx.insert(auditLogs).values({
+        organizationId: orgId,
+        userId: safeActorUserId,
+        userName: input.actorUserName ?? null,
+        actionType: 'ORDER_HISTORICAL_FULFILLMENT_RECONCILED',
+        entityType: 'order',
+        entityId: input.orderId,
+        entityName: null,
+        description: 'Historical fulfillment reconciled by administrative Close Job Override.',
+        oldValues: {
+          state: lockedOrder.state,
+          status: lockedOrder.status,
+          fulfillmentStatus: lockedOrder.fulfillmentStatus,
+          routingTarget: lockedOrder.routingTarget,
+        },
+        newValues: {
+          state: 'production_complete',
+          fulfillmentStatus: 'delivered',
+          routingTarget: null,
+          reason: input.reason,
+          note: input.note?.trim() || null,
+          remainingFulfillmentQuantity,
+          source: 'administrative_historical_reconciliation',
+          sourceInvoiceId: input.sourceInvoiceId ?? null,
+          shipmentOrPickupEvidenceCreated: false,
+          billingAutomationSuppressed: true,
+        },
+      } as any);
+    });
+
+    return { alreadyCompleted: false, remainingFulfillmentQuantity, reconciliationNote };
   }
 
   private isOrderProductionComplete(order: {
