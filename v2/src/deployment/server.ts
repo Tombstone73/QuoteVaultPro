@@ -36,6 +36,7 @@ import { composeAuthenticatedFulfillmentRuntime } from "../../infrastructure/ful
 import { composeAuthenticatedRoutingRuntime } from "../../infrastructure/routing/authenticatedRoutingRuntime.js";
 import { composeAuthenticatedInventoryRuntime } from "../../infrastructure/inventory/authenticatedInventoryRuntime.js";
 import { composeAuthenticatedFormulaRuntime } from "../../infrastructure/pricing/authenticatedFormulaRuntime.js";
+import { composeAuthenticatedInboundRuntime } from "../../infrastructure/inbound/authenticatedInboundRuntime.js";
 import { composeAuthenticatedEmailIntegrationRuntime } from "../../infrastructure/communications/authenticatedEmailIntegrationRuntime.js";
 import { composeAuthenticatedQuickBooksIntegrationRuntime } from "../../infrastructure/accounting/authenticatedQuickBooksIntegrationRuntime.js";
 import { startV2QuickBooksBillingWorker } from "../../infrastructure/accounting/quickBooksBillingQueue.js";
@@ -56,12 +57,14 @@ export const createV2DeploymentApp = (
   const { trustedHostIdentity, trustedHostMiddleware } = authentication;
   const orderLifecycle = new PostgresOrderAutomaticLifecycle(pool);
   const quote = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const orderService = new OrderApplicationService(new PostgresOrderTransactionRunner(pool), undefined, orderLifecycle);
   const order = composeAuthenticatedOrderRuntime({
     pool,
     trustedHostIdentity,
     trustedHostMiddleware,
-    service: new OrderApplicationService(new PostgresOrderTransactionRunner(pool), undefined, orderLifecycle),
+    service: orderService,
   });
+  const inbound = composeAuthenticatedInboundRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, orders: orderService });
   const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, publicWebOrigin: authentication.publicWebOrigin, orderLifecycle });
   const artwork = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const proofing = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
@@ -101,6 +104,7 @@ export const createV2DeploymentApp = (
     quickBooksIntegration,
     { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
     { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}) },
+    inbound,
   );
 };
 

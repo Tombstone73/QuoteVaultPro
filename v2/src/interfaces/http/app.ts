@@ -22,6 +22,7 @@ import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressR
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
 import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
 import { createShipmentContainerRouter } from "./shipmentContainerRoutes.js";
+import { createInboundRouter, type InboundHttpDependencies } from "./inboundRoutes.js";
 import { createCustomerRouter, type CustomerHttpDependencies } from "./customerRoutes.js";
 import { createContactRouter, type ContactHttpDependencies } from "./contactRoutes.js";
 import { createProductRouter, type ProductHttpDependencies } from "./productRoutes.js";
@@ -62,6 +63,7 @@ export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: Proofin
 export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProductionRouteRuntime = Readonly<{ dependencies: ProductionHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedFulfillmentRouteRuntime = Readonly<{ dependencies: FulfillmentHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedInboundRouteRuntime = Readonly<{ dependencies: InboundHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedRoutingRouteRuntime = Readonly<{ dependencies: RoutingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedInventoryRouteRuntime = Readonly<{ dependencies: InventoryHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedFormulaRouteRuntime = Readonly<{ dependencies: FormulaHttpDependencies; trustedHostMiddleware: RequestHandler }>;
@@ -86,6 +88,7 @@ export const createV2HttpApp = (
   quickBooksIntegration?: QuickBooksIntegrationHttpDependencies,
   stripeSettings?: StripeSettingsHttpDependencies,
   portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService }>,
+  inbound?: AuthenticatedInboundRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -145,7 +148,7 @@ export const createV2HttpApp = (
           const policy = new AuthorityPolicy();
           const quoteView = policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed;
           const productView = policy.decide(principal, { capability: "product.view", resource: { organizationId } }).allowed;
-          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view", "communications.configure"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
+          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view", "inbound.view", "communications.configure"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
           if (!anyWorkspaceView)
             return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "V2 workspace access is unavailable." } });
           return response.status(200).json({
@@ -178,6 +181,8 @@ export const createV2HttpApp = (
                 orderEdit: policy.decide(principal, { capability: "order.edit", resource: { organizationId } }).allowed,
                 orderCancel: policy.decide(principal, { capability: "order.cancel", resource: { organizationId } }).allowed,
                 orderOverridePrice: policy.decide(principal, { capability: "order.overridePrice", resource: { organizationId } }).allowed,
+                inboundView: policy.decide(principal, { capability: "inbound.view", resource: { organizationId } }).allowed,
+                inboundReview: policy.decide(principal, { capability: "inbound.review", resource: { organizationId } }).allowed,
                 invoiceView: policy.decide(principal, { capability: "invoice.view", resource: { organizationId } }).allowed,
                 invoiceIssue: policy.decide(principal, { capability: "invoice.issue", resource: { organizationId } }).allowed,
                 invoiceSend: policy.decide(principal, { capability: "invoice.send", resource: { organizationId } }).allowed,
@@ -377,6 +382,8 @@ export const createV2HttpApp = (
     app.use("/v2/organizations/:organizationId/inventory",inventory.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createInventoryRouter(inventory.dependencies));
   if (fulfillment)
     app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createShipmentContainerRouter(fulfillment.dependencies),createFulfillmentRouter(fulfillment.dependencies));
+  if (inbound)
+    app.use("/v2/organizations/:organizationId/inbound-orders",inbound.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createInboundRouter(inbound.dependencies));
   if (routing)
     app.use("/v2/organizations/:organizationId/routing",routing.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createRoutingRouter(routing.dependencies));
   if (formulas)

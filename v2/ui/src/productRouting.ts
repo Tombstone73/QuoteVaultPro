@@ -22,7 +22,7 @@ export type CustomerLocation = Readonly<{ customerId?: string }>;
 export type ContactLocation = Readonly<{ contactId?: string }>;
 export type QuoteLocation = Readonly<{ quoteId?: string; newQuote?: true }>;
 export type SalesLocation = QuoteLocation | Readonly<{ orderId?: string }>;
-export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string; newQuote?: true }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll"; productionWorkId?: string }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" | "settings" }>;
+export type WorkspaceLocation = Readonly<{ page: "home" }> | Readonly<{ page: "products"; productId?: string }> | Readonly<{ page: "productBuilder"; productId?: string; newProduct?: true }> | Readonly<{ page: "customers"; customerId?: string }> | Readonly<{ page: "contacts"; contactId?: string }> | Readonly<{ page: "quotes"; quoteId?: string; newQuote?: true }> | Readonly<{ page: "orders"; orderId?: string }> | Readonly<{ page: "inboundOrders" }> | Readonly<{ page: "invoices"; invoiceId?: string }> | Readonly<{ page: "fulfillment"; orderId?: string }> | Readonly<{ page: "production"; station?: "flatbed" | "roll"; productionWorkId?: string }> | Readonly<{ page: "artwork"; artworkFileId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "proofing"; proofWorkId?: string; orderId?: string; lineId?: string }> | Readonly<{ page: "prepress"; lineId?: string; prepressUnitId?: string }> | Readonly<{ page: "appearance" | "routing" | "payments" | "formulas" | "settings" }>;
 
 const productId = (value: string): string | undefined => {
   try {
@@ -155,6 +155,8 @@ export const readInvoiceLocation = (pathname = window.location.pathname): Readon
   if (parts.length === 2 && parts[0] === "invoices") return productId(parts[1]) ? { invoiceId: productId(parts[1]) } : null;
   return null;
 };
+export const readInboundOrdersLocation = (pathname = window.location.pathname): Readonly<Record<string, never>> | null =>
+  pathname.replace(/^\/+|\/+$/gu, "") === "inbound-orders" ? {} : null;
 export const readFulfillmentLocation = (pathname = window.location.pathname): Readonly<{ orderId?: string }> | null => {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "fulfillment") return {};
@@ -228,6 +230,8 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   if (order) return { page: "orders", ...order };
   const invoice = readInvoiceLocation(pathname);
   if (invoice) return { page: "invoices", ...invoice };
+  const inboundOrders = readInboundOrdersLocation(pathname);
+  if (inboundOrders) return { page: "inboundOrders" };
   const fulfillment = readFulfillmentLocation(pathname);
   if (fulfillment) return { page: "fulfillment", ...fulfillment };
   const production = readProductionLocation(pathname);
@@ -253,6 +257,8 @@ export const orderPath = (id?: string) => id ? `/orders/${encodeURIComponent(id)
 export const pushOrderLocation = (id?: string) => window.history.pushState({}, "", orderPath(id));
 export const invoicePath = (id?: string) => id ? `/invoices/${encodeURIComponent(id)}` : "/invoices";
 export const pushInvoiceLocation = (id?: string) => window.history.pushState({}, "", invoicePath(id));
+export const inboundOrdersPath = () => "/inbound-orders";
+export const pushInboundOrdersLocation = () => window.history.pushState({}, "", inboundOrdersPath());
 export const fulfillmentPath = (orderId?: string) => orderId ? `/fulfillment/orders/${encodeURIComponent(orderId)}` : "/fulfillment";
 export const pushFulfillmentLocation = (orderId?: string) => window.history.pushState({}, "", fulfillmentPath(orderId));
 export const productionPath = (station?: "flatbed" | "roll") => station ? `/production/${station}` : "/production";

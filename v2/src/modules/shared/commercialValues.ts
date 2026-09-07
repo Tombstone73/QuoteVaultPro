@@ -44,6 +44,10 @@ export type OrderLineMaterialRequirementId = Brand<string, "OrderLineMaterialReq
 /** Fulfillment owns a completed customer-handoff identity, never a Sales status. */
 export type FulfillmentHandoffId = Brand<string, "FulfillmentHandoffId">;
 export type FulfillmentHandoffLineId = Brand<string, "FulfillmentHandoffLineId">;
+/** Durable source-work intake identity; it is never an Order identity. */
+export type InboundIntakeId = Brand<string, "InboundIntakeId">;
+/** Immutable source attachment evidence owned by an inbound intake. */
+export type InboundAttachmentId = Brand<string, "InboundAttachmentId">;
 export type CommercialCheckpointId = Brand<string, "CommercialCheckpointId">;
 
 export type CurrencyCode = Brand<string, "CurrencyCode">;

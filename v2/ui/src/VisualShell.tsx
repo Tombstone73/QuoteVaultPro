@@ -48,7 +48,7 @@ import type { VisualAppearance, VisualTheme } from "./appearance";
 import { InventoryWorkspace } from "./InventoryWorkspace";
 import { useAuthSessionControls } from "./AuthGate";
 
-export type V2VisualPage = "home" | "quotes" | "orders" | "customers" | "contacts" | "products" | "productBuilder" | "formulas" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "settings" | "appearance";
+export type V2VisualPage = "home" | "quotes" | "orders" | "inboundOrders" | "customers" | "contacts" | "products" | "productBuilder" | "formulas" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "settings" | "appearance";
 
 type NavigationItem = Readonly<{
   page?: V2VisualPage;
@@ -73,7 +73,7 @@ const sections: readonly NavigationSection[] = [
       { page: "orders", label: "Orders", icon: ShoppingCart },
       { page: "customers", label: "Customers", icon: Building2 },
       { page: "contacts", label: "Contacts", icon: Users },
-      { label: "Inbound Orders", icon: Bell },
+      { page: "inboundOrders", label: "Inbound Orders", icon: Bell },
     ],
   },
   {

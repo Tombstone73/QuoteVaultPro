@@ -141,6 +141,8 @@ export type UiBootstrap = Readonly<{
     fulfillmentView?: boolean;
     fulfillmentPickup?: boolean;
     fulfillmentShip?: boolean;
+    inboundView?: boolean;
+    inboundReview?: boolean;
     routeView?: boolean;
     routeAdvance?: boolean;
     routeManageTemplates?: boolean;
@@ -161,6 +163,78 @@ export type OperationalQueuePage<T> = Readonly<{
   pagination: Readonly<{ page: number; pageSize: 25 | 50 | 100; totalCount: number; totalPages: number }>;
 }>;
 export type OperationalQueuePageRequest = Readonly<{ page?: number; pageSize?: 25 | 50 | 100; search?: string }>;
+/**
+ * Inbound work is source evidence plus an operator-owned draft.  It is never
+ * an Order until the canonical conversion service records the resulting Order.
+ */
+export type InboundOrderStatus = "received" | "needs_review" | "ready" | "converting" | "converted" | "rejected" | "duplicate" | "failed" | "action_required";
+export type InboundAttachment = Readonly<{
+  attachmentId: string;
+  filename: string;
+  contentType?: string;
+  sizeBytes?: number;
+  role?: "source" | "reference" | "artwork";
+  artworkFileId?: string;
+  adoptionState?: "pending" | "adopted" | "failed";
+}>;
+export type InboundOrderLineDraft = Readonly<{
+  draftLineId: string;
+  description: string;
+  quantity?: number;
+  productId?: string;
+  productVersionId?: string;
+  dimensions?: Readonly<{ width?: string; height?: string; unit?: "in" | "ft" | "mm" }>;
+  configuration?: Readonly<Record<string, unknown>>;
+  notes?: string;
+  validation?: readonly string[];
+}>;
+export type InboundOrderQueueItem = Readonly<{
+  inboundOrderId: string;
+  status: InboundOrderStatus;
+  sourceProvider: string;
+  sourceMessageId: string;
+  senderEmail?: string;
+  senderName?: string;
+  recipientEmail?: string;
+  subject?: string;
+  receivedAt: string;
+  customerId?: string;
+  customerDisplayName?: string;
+  contactId?: string;
+  contactDisplayName?: string;
+  attachmentCount: number;
+  extractedPurchaseOrderNumber?: string;
+  actionRequired?: string;
+  duplicateOfInboundOrderId?: string;
+  convertedOrderId?: string;
+  convertedOrderNumber?: string;
+}>;
+export type InboundOrderDetail = InboundOrderQueueItem & Readonly<{
+  source: Readonly<{
+    provider: string;
+    messageId: string;
+    senderEmail?: string;
+    senderName?: string;
+    recipientEmail?: string;
+    subject?: string;
+    receivedAt: string;
+    bodyText?: string;
+  }>;
+  attachments: readonly InboundAttachment[];
+  customerCandidates: readonly Readonly<{ customerId: string; displayName: string; confidence?: "strong" | "possible"; contactCandidates?: readonly Readonly<{ contactId: string; displayName: string; email?: string; confidence?: "strong" | "possible" }>[] }>[];
+  draft: Readonly<{
+    customerId?: string;
+    contactId?: string;
+    purchaseOrderNumber?: string;
+    requestedDueDate?: string;
+    notes?: string;
+    requestedFulfillment?: unknown;
+    lines: readonly InboundOrderLineDraft[];
+    blockers?: readonly string[];
+  }>;
+  decision?: Readonly<{ reason?: string; actor?: string; decidedAt?: string }>;
+  conversion?: Readonly<{ orderId: string; orderNumber?: string; convertedAt: string; convertedBy?: string }>;
+}>;
 export type ProductLifecycle =
   "active" | "inactive" | "draft" | "active_with_draft";
 export type ProductCatalogItem = Readonly<{
@@ -3113,6 +3187,84 @@ export const fulfillmentApi = {
     headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
     body: JSON.stringify({ businessRequestId, handoffIds }),
   }),
+};
+const inboundOrdersEndpoint = (org: string, suffix = "") =>
+  `/v2/organizations/${encodeURIComponent(org)}/inbound-orders${suffix}`;
+type InboundRaw = Readonly<{
+  id: string; state: InboundOrderStatus; sourceProvider: string; sourceMessageId?: string; senderName?: string; senderEmail?: string; recipientEmail?: string; subject?: string; receivedAt: string; normalizedBody?: string;
+  reviewDraft: Readonly<{ purchaseOrderNumber?: string; requestedDueDate?: string; requestedFulfillment?: unknown; notes?: string; lines?: readonly Readonly<{ productId: string; description?: string; quantity: number; selections?: Readonly<Record<string, unknown>>; dimensions?: InboundOrderLineDraft["dimensions"] }>[] }>;
+  matchedCustomerId?: string; matchedContactId?: string; convertedOrderId?: string; convertedAt?: string; updatedAt?: string; decisionReason?: string; failureMessage?: string;
+}>;
+type InboundRawDetail = Readonly<{ intake: InboundRaw; attachments: readonly Readonly<{ id: string; filename: string; contentType?: string; byteSize?: number; canonicalArtworkFileId?: string }>[] }>;
+const inboundQueueItem = (intake: InboundRaw): InboundOrderQueueItem => ({
+  inboundOrderId: intake.id, status: intake.state, sourceProvider: intake.sourceProvider, sourceMessageId: intake.sourceMessageId ?? intake.id,
+  ...(intake.senderEmail ? { senderEmail: intake.senderEmail } : {}), ...(intake.senderName ? { senderName: intake.senderName } : {}), ...(intake.recipientEmail ? { recipientEmail: intake.recipientEmail } : {}),
+  ...(intake.subject ? { subject: intake.subject } : {}), receivedAt: intake.receivedAt, attachmentCount: 0,
+  ...(intake.matchedCustomerId ? { customerId: intake.matchedCustomerId } : {}), ...(intake.matchedContactId ? { contactId: intake.matchedContactId } : {}),
+  ...(intake.reviewDraft.purchaseOrderNumber ? { extractedPurchaseOrderNumber: intake.reviewDraft.purchaseOrderNumber } : {}),
+  ...(intake.failureMessage ? { actionRequired: intake.failureMessage } : {}), ...(intake.convertedOrderId ? { convertedOrderId: intake.convertedOrderId } : {}),
+});
+const inboundDetail = (raw: InboundRawDetail): InboundOrderDetail => {
+  const item = inboundQueueItem(raw.intake);
+  return {
+    ...item,
+    source: { provider: raw.intake.sourceProvider, messageId: raw.intake.sourceMessageId ?? raw.intake.id, ...(raw.intake.senderEmail ? { senderEmail: raw.intake.senderEmail } : {}), ...(raw.intake.senderName ? { senderName: raw.intake.senderName } : {}), ...(raw.intake.recipientEmail ? { recipientEmail: raw.intake.recipientEmail } : {}), ...(raw.intake.subject ? { subject: raw.intake.subject } : {}), receivedAt: raw.intake.receivedAt, ...(raw.intake.normalizedBody ? { bodyText: raw.intake.normalizedBody } : {}) },
+    attachments: raw.attachments.map((attachment) => ({ attachmentId: attachment.id, filename: attachment.filename, ...(attachment.contentType ? { contentType: attachment.contentType } : {}), ...(attachment.byteSize === undefined ? {} : { sizeBytes: attachment.byteSize }), ...(attachment.canonicalArtworkFileId ? { role: "artwork" as const, artworkFileId: attachment.canonicalArtworkFileId, adoptionState: "adopted" as const } : { role: "source" as const, adoptionState: "pending" as const }) })),
+    customerCandidates: [],
+    draft: { ...(raw.intake.matchedCustomerId ? { customerId: raw.intake.matchedCustomerId } : {}), ...(raw.intake.matchedContactId ? { contactId: raw.intake.matchedContactId } : {}), ...(raw.intake.reviewDraft.purchaseOrderNumber ? { purchaseOrderNumber: raw.intake.reviewDraft.purchaseOrderNumber } : {}), ...(raw.intake.reviewDraft.requestedDueDate ? { requestedDueDate: raw.intake.reviewDraft.requestedDueDate } : {}), ...(raw.intake.reviewDraft.requestedFulfillment ? { requestedFulfillment: raw.intake.reviewDraft.requestedFulfillment } : {}), ...(raw.intake.reviewDraft.notes ? { notes: raw.intake.reviewDraft.notes } : {}), lines: (raw.intake.reviewDraft.lines ?? []).map((line, index) => ({ draftLineId: raw.intake.id + "-line-" + index, productId: line.productId, description: line.description ?? line.productId, quantity: line.quantity, ...(line.dimensions ? { dimensions: line.dimensions } : {}), ...(line.selections ? { configuration: line.selections } : {}) })) },
+    ...(raw.intake.decisionReason ? { decision: { reason: raw.intake.decisionReason } } : {}), ...(raw.intake.convertedOrderId ? { conversion: { orderId: raw.intake.convertedOrderId, convertedAt: raw.intake.convertedAt ?? raw.intake.updatedAt ?? raw.intake.receivedAt } } : {}),
+  };
+};
+const inboundMutation = <T>(
+  org: string,
+  inboundOrderId: string,
+  suffix: string,
+  businessRequestId: string,
+  input: Record<string, unknown> = {},
+) =>
+  request<T>(
+    inboundOrdersEndpoint(
+      org,
+      `/${encodeURIComponent(inboundOrderId)}${suffix}`,
+    ),
+    {
+      method: suffix === "/review" ? "PATCH" : "POST",
+      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+      body: JSON.stringify({ businessRequestId, ...input }),
+    },
+  );
+export const inboundOrdersApi = {
+  list: (
+    org: string,
+    query: Readonly<{ q?: string; status?: InboundOrderStatus | "all"; cursor?: string; limit?: number }> = {},
+  ) => request<Readonly<{ records: readonly InboundRaw[]; nextCursor?: string }>>(withSearch(inboundOrdersEndpoint(org), query)).then((page) => ({ items: page.records.map(inboundQueueItem), totalMatching: page.records.length, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) })),
+  get: (org: string, inboundOrderId: string) =>
+    request<InboundRawDetail>(inboundOrdersEndpoint(org, `/${encodeURIComponent(inboundOrderId)}`)).then(inboundDetail),
+  review: (
+    org: string,
+    inboundOrderId: string,
+    businessRequestId: string,
+    input: Readonly<{ draft: InboundOrderDetail["draft"]; state: "needs_review" | "ready" }>,
+  ) => inboundMutation<InboundRaw>(org, inboundOrderId, "/review", businessRequestId, {
+    reviewDraft: {
+      ...(input.draft.purchaseOrderNumber ? { purchaseOrderNumber: input.draft.purchaseOrderNumber } : {}),
+      ...(input.draft.requestedDueDate ? { requestedDueDate: input.draft.requestedDueDate } : {}),
+      ...(input.draft.requestedFulfillment ? { requestedFulfillment: input.draft.requestedFulfillment } : {}),
+      ...(input.draft.notes ? { notes: input.draft.notes } : {}),
+      lines: input.draft.lines.map((line) => ({ productId: line.productId ?? "", ...(line.description ? { description: line.description } : {}), quantity: line.quantity ?? 0, ...(line.dimensions ? { dimensions: line.dimensions } : {}), ...(line.configuration ? { selections: line.configuration } : {}) })),
+    },
+    ...(input.draft.customerId ? { matchedCustomerId: input.draft.customerId } : {}),
+    ...(input.draft.contactId ? { matchedContactId: input.draft.contactId } : {}),
+    state: input.state,
+  }),
+  convert: (org: string, inboundOrderId: string, businessRequestId: string) =>
+    inboundMutation<Readonly<{ intake: InboundRaw; orderId: string; replayed: boolean }>>(org, inboundOrderId, "/convert", businessRequestId),
+  markDuplicate: (org: string, inboundOrderId: string, businessRequestId: string, reason?: string) =>
+    inboundMutation<InboundRaw>(org, inboundOrderId, "/mark-duplicate", businessRequestId, reason ? { reason } : {}),
+  reject: (org: string, inboundOrderId: string, businessRequestId: string, reason: string) =>
+    inboundMutation<InboundRaw>(org, inboundOrderId, "/reject", businessRequestId, { reason }),
+  retry: (org: string, inboundOrderId: string, businessRequestId: string) =>
+    inboundMutation<InboundRaw>(org, inboundOrderId, "/retry", businessRequestId),
 };
 export type RoutingWorkspaceRead = Readonly<{
   templates: readonly Readonly<{

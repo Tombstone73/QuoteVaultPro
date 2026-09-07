@@ -51,6 +51,7 @@ import { ProofingWorkspace } from "./ProofingWorkspace";
 import { PrepressWorkspace } from "./PrepressWorkspace";
 import { ProductionWorkspace } from "./ProductionWorkspace";
 import { FulfillmentWorkspace } from "./FulfillmentWorkspace";
+import { InboundOrdersWorkspace } from "./InboundOrdersWorkspace";
 import { FinanceWorkspace } from "./FinanceWorkspace";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import { ContactsWorkspace } from "./ContactsWorkspace";
@@ -82,6 +83,7 @@ import {
   pushContactLocation,
   pushCustomerLocation,
   pushFulfillmentLocation,
+  pushInboundOrdersLocation,
   pushInvoiceLocation,
   pushNewProductBuilderLocation,
   pushOrderLocation,
@@ -388,6 +390,9 @@ export const App = ({
     if (nextPage === "invoices") {
       pushInvoiceLocation();
       setInvoiceId("");
+    }
+    if (nextPage === "inboundOrders") {
+      pushInboundOrdersLocation();
     }
     if (nextPage === "fulfillment") {
       pushFulfillmentLocation();
@@ -728,6 +733,25 @@ export const App = ({
           onSelectOrder={(id) => {
             pushFulfillmentLocation(id);
             setFulfillmentOrderId(id);
+          }}
+        />
+      ) : page === "inboundOrders" ? (
+        <InboundOrdersWorkspace
+          organizationId={organizationId}
+          sessionScope={sessionScope}
+          canView={bootstrap.data?.capabilities.inboundView === true}
+          canReview={bootstrap.data?.capabilities.inboundReview === true}
+          canConvert={bootstrap.data?.capabilities.inboundReview === true && bootstrap.data?.capabilities.orderCreate === true}
+          csrfReady={Boolean(bootstrap)}
+          openOrder={(id) => {
+            pushOrderLocation(id);
+            setOrderId(id);
+            setPage("orders");
+          }}
+          openCustomer={(id) => {
+            pushCustomerLocation(id);
+            setCustomerId(id);
+            setPage("customers");
           }}
         />
       ) : page === "invoices" || page === "payments" ? (
