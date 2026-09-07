@@ -48,6 +48,7 @@ import { getHostedCardUnavailableReason, resolveInvoiceAutoPaymentAction } from 
 import { InvoiceEmailSendDialog } from "@/components/invoices/InvoiceEmailSendDialog";
 import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
+import { resolveInvoiceDetailJobContext } from "@/lib/invoiceDetailJobContext";
 import { hasReconciledStripePayment } from "@shared/stripePaymentSettlement";
 
 type StripeIntegrationStatusEnvelope = {
@@ -280,6 +281,7 @@ export default function InvoiceDetailPage() {
   const completeOrder = useCompleteOrder(orderId || '');
   const { data: orderRaw } = useOrder(orderId || undefined);
   const order: any = orderRaw as any;
+  const invoiceJobContext = resolveInvoiceDetailJobContext(invoice, order);
   const isServiceFeeOnlyOrder = Array.isArray(order?.lineItems) && order.lineItems.length > 0 && order.lineItems.every(
     (lineItem: any) => lineItem.product?.workflowIntent === 'service_fee',
   );
@@ -3236,6 +3238,21 @@ export default function InvoiceDetailPage() {
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-sm text-muted-foreground">Invoice #</span>
                     <span className="text-sm font-medium">{invoice.invoiceNumber}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Order #</span>
+                    <span className="text-sm font-medium text-right">{invoiceJobContext.orderNumber ?? "—"}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">PO #</span>
+                    <span className="text-sm font-medium text-right">{invoiceJobContext.purchaseOrderNumber ?? "—"}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Job</span>
+                    <span className="text-sm font-medium text-right">{invoiceJobContext.jobLabel ?? "—"}</span>
                   </div>
 
                   <div className="flex items-center justify-between gap-4">
