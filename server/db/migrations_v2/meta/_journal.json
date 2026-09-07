@@ -1835,6 +1835,13 @@
       "when": 1788048000113,
       "tag": "0266_v2_frozen_route_destination_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 268,
+      "version": "7",
+      "when": 1788048000114,
+      "tag": "0267_v2_fulfillment_shipment_containers",
+      "breakpoints": true
     }
   ]
 }

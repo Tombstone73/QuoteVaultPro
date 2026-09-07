@@ -21,6 +21,7 @@ import { createProofingRouter, type ProofingHttpDependencies } from "./proofingR
 import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
 import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
+import { createShipmentContainerRouter } from "./shipmentContainerRoutes.js";
 import { createCustomerRouter, type CustomerHttpDependencies } from "./customerRoutes.js";
 import { createContactRouter, type ContactHttpDependencies } from "./contactRoutes.js";
 import { createProductRouter, type ProductHttpDependencies } from "./productRoutes.js";
@@ -375,7 +376,7 @@ export const createV2HttpApp = (
   if (inventory)
     app.use("/v2/organizations/:organizationId/inventory",inventory.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createInventoryRouter(inventory.dependencies));
   if (fulfillment)
-    app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFulfillmentRouter(fulfillment.dependencies));
+    app.use("/v2/organizations/:organizationId/fulfillment",fulfillment.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createShipmentContainerRouter(fulfillment.dependencies),createFulfillmentRouter(fulfillment.dependencies));
   if (routing)
     app.use("/v2/organizations/:organizationId/routing",routing.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createRoutingRouter(routing.dependencies));
   if (formulas)

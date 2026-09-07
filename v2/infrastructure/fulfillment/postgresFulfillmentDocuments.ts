@@ -22,13 +22,20 @@ export class PostgresFulfillmentDocumentService {
   async customerId(organizationId: OrganizationId, handoffId: FulfillmentHandoffId) { return (await this.row(organizationId, handoffId)).customer_id ?? undefined; }
   async document(organizationId: OrganizationId, handoffId: FulfillmentHandoffId): Promise<OwnerPdfDocument> {
     const [branding, row] = await Promise.all([readTenantBranding(this.pool, organizationId), this.row(organizationId, handoffId)]);
-    const snapshot = record(row.snapshot), method = string(snapshot.method) ?? "shipment", destination = record(snapshot.destination), lines = Array.isArray(snapshot.lines) ? snapshot.lines.map(record) : [];
+    const snapshot = record(row.snapshot), method = string(snapshot.method) ?? "shipment", destination = record(snapshot.destination), shipment = record(snapshot.shipment), lines = Array.isArray(snapshot.lines) ? snapshot.lines.map(record) : [];
     if (!lines.length) throw new V2ApplicationError("CONFLICT", "Fulfillment handoff document evidence is incomplete.");
     const destinationText = [string(destination.recipient), string(destination.company), string(destination.addressLine1), string(destination.addressLine2), [string(destination.city), string(destination.region)].filter(Boolean).join(", "), string(destination.postalCode), string(destination.country)].filter(Boolean).join(" · ");
     return { kind: method === "pickup" ? "pickup-receipt" : "packing-slip", title: `${methodLabel(method)} · ${string(snapshot.orderNumber) ?? "Order"}`, number: string(snapshot.orderNumber) ?? "Order", issuedAt: string(snapshot.completedAt)?.slice(0, 10) ?? new Date().toISOString().slice(0, 10), organization: branding, sections: [
       { heading: "Handoff", entries: [{ label: "Order", value: string(snapshot.orderNumber) ?? "Unavailable" }, { label: "Customer", value: string(snapshot.customer) ?? "Customer unavailable" }, ...(string(snapshot.purchaseOrder) ? [{ label: "Customer PO", value: string(snapshot.purchaseOrder)! }] : []), { label: "Actual handoff method", value: method === "pickup" ? "Customer pickup" : "Shipment" }, ...(string(snapshot.completedAt) ? [{ label: "Completed", value: string(snapshot.completedAt)! }] : [])] },
       { heading: "Items in this handoff", entries: lines.map((line) => ({ value: `${string(line.description) ?? "Line item"} · Qty ${integer(line.quantity)}` })) },
       ...(method === "shipment" && destinationText ? [{ heading: "Requested destination", entries: [{ value: destinationText }] }] : []),
+      ...(method === "shipment" && (string(shipment.carrierName) || string(shipment.carrierService) || string(shipment.trackingNumber) || string(shipment.shippedAt) || integer(shipment.packageCount)) ? [{ heading: "Shipment", entries: [
+        ...(string(shipment.carrierName) ? [{ label: "Manual carrier", value: string(shipment.carrierName)! }] : []),
+        ...(string(shipment.carrierService) ? [{ label: "Service", value: string(shipment.carrierService)! }] : []),
+        ...(string(shipment.trackingNumber) ? [{ label: "Tracking", value: string(shipment.trackingNumber)! }] : []),
+        ...(integer(shipment.packageCount) ? [{ label: "Packages", value: String(integer(shipment.packageCount)) }] : []),
+        ...(string(shipment.shippedAt) ? [{ label: "Shipped", value: string(shipment.shippedAt)! }] : []),
+      ] }] : []),
       ...(string(snapshot.instructions) ? [{ heading: "Instructions", entries: [{ value: string(snapshot.instructions)! }] }] : []),
     ] };
   }

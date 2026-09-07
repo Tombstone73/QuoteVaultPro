@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FulfillmentWorkspace } from "./FulfillmentWorkspace";
+import { FulfillmentWorkspace, preferredHandoffMethod } from "./FulfillmentWorkspace";
 
 const order={orderId:"order-anomaly",number:"ORD-1000",commercialState:"open" as const,customerName:"3 Alarm Graphics",customerId:"customer-a",lines:[{orderId:"order-anomaly",orderLineId:"line-anomaly",description:"Retractable Banner",orderedQuantity:1,completedPickupQuantity:1,completedShipmentQuantity:0,completedFulfillmentQuantity:1,completedProductionQuantity:0,productionRequired:true,availableFulfillmentQuantity:0,remainingProductionQuantity:1,remainingFulfillmentQuantity:0,physicalIntegrityAnomaly:{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION" as const,completedProductionQuantity:0,completedFulfillmentQuantity:1,excessFulfillmentQuantity:1}}],handoffs:[{handoff:{handoffId:"handoff-a",method:"pickup" as const,completedAt:"2026-08-20T16:32:52.000Z",completedPrincipalSubject:"operator"},allocations:[{orderLineId:"line-anomaly",quantity:1}]}]};
 const client=new QueryClient();
@@ -25,4 +25,18 @@ completedClient.setQueryData(["v2","scope-a","org-a","fulfillment","order","orde
 const completedMarkup=renderToStaticMarkup(<QueryClientProvider client={completedClient}><FulfillmentWorkspace organizationId="org-a" sessionScope="scope-a" canView canPickup canShip csrfReady orderId="order-completed" onSelectOrder={()=>{}} openOrder={()=>{}} openCustomer={()=>{}} /></QueryClientProvider>);
 assert.match(completedMarkup,/This terminal Order is read-only/);
 assert.doesNotMatch(completedMarkup,/Record partial|Hand off available|Fulfillment quantity/);
+
+const shippingOrder={...order,orderId:"order-shipping",requestedFulfillment:{method:"shipping" as const,destination:{addressLine1:"10 Print Way",city:"Tampa",region:"FL",country:"US"}},lines:[{...order.lines[0]!,orderId:"order-shipping",physicalIntegrityAnomaly:undefined,completedProductionQuantity:8,completedPickupQuantity:2,completedShipmentQuantity:3,completedFulfillmentQuantity:5,availableFulfillmentQuantity:3,remainingProductionQuantity:0,remainingFulfillmentQuantity:3}]};
+const shippingClient=new QueryClient();
+shippingClient.setQueryData(["v2","scope-a","org-a","fulfillment","workspace",""],{items:[shippingOrder]});
+shippingClient.setQueryData(["v2","scope-a","org-a","fulfillment","order","order-shipping"],shippingOrder);
+const shippingMarkup=renderToStaticMarkup(<QueryClientProvider client={shippingClient}><FulfillmentWorkspace organizationId="org-a" sessionScope="scope-a" canView canPickup canShip csrfReady orderId="order-shipping" onSelectOrder={()=>{}} openOrder={()=>{}} openCustomer={()=>{}} /></QueryClientProvider>);
+assert.equal(preferredHandoffMethod(shippingOrder),"shipment");
+assert.equal(preferredHandoffMethod({...shippingOrder,requestedFulfillment:{method:"pickup"}}),"pickup");
+assert.match(shippingMarkup,/Picked up/);
+assert.match(shippingMarkup,/Shipped/);
+assert.match(shippingMarkup,/Requested by Sales:.*shipping/i);
+assert.match(shippingMarkup,/Record partial handoff/);
+assert.match(shippingMarkup,/Hand off all available on this line/);
+assert.match(shippingMarkup,/shipment tracking is not represented by the current V2 handoff API/);
 console.log("Fulfillment integrity-anomaly presentation tests passed.");
