@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { capabilityIds } from "../../src/authorization/capabilities.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
-import { fulfillmentPhysicalIntegrityAnomaly, fulfillmentSupplyQuantity, type FulfillmentAvailability, type FulfillmentHandoff } from "../../src/modules/fulfillment/contracts.js";
+import { fulfillmentPhysicalIntegrityAnomaly, fulfillmentSupplyQuantity, type FulfillmentAvailability, type FulfillmentHandoff, type FulfillmentShipmentHistory } from "../../src/modules/fulfillment/contracts.js";
 
 const handoff:FulfillmentHandoff={handoffId:brandedId<"FulfillmentHandoffId">("handoff"),organizationId:brandedId<"OrganizationId">("org"),orderId:brandedId<"OrderId">("order"),method:"pickup",completedAt:"2026-08-16T00:00:00.000Z",completedPrincipalKind:"staff",completedPrincipalSubject:"staff"};
+const shipmentHistory:FulfillmentShipmentHistory={shipmentId:"shipment",status:"shipped",createdAt:"2026-08-16T00:00:00.000Z",createdPrincipalSubject:"operator",carrierName:"Manual carrier",trackingNumber:"TRACK-1",packageCount:2,shippedAt:"2026-08-16T01:00:00.000Z",shippedPrincipalSubject:"operator"};
 const availability:FulfillmentAvailability={orderId:brandedId<"OrderId">("order"),orderLineId:brandedId<"OrderLineId">("line"),orderedQuantity:100,completedPickupQuantity:20,completedShipmentQuantity:20,completedFulfillmentQuantity:40,completedProductionQuantity:60,productionRequired:true,availableFulfillmentQuantity:20,remainingProductionQuantity:40,remainingFulfillmentQuantity:60};
 assert.equal(availability.orderedQuantity-availability.completedFulfillmentQuantity,availability.remainingFulfillmentQuantity,"availability derives only from ordered and completed handoff quantities");
 assert.equal(availability.completedPickupQuantity+availability.completedShipmentQuantity,availability.completedFulfillmentQuantity,"mixed pickup and shipment share one line quantity truth");
@@ -21,5 +22,7 @@ assert.equal(fulfillmentPhysicalIntegrityAnomaly(40,20),undefined,"partial Fulfi
 assert.equal(fulfillmentPhysicalIntegrityAnomaly(40,40),undefined,"reconciled history does not gain an anomaly");
 assert.equal("routeState" in handoff,false,"Routing state is not duplicated in a customer handoff");
 assert.equal("invoiceId" in handoff,false,"Billing state is not owned by Fulfillment");
+assert.equal("allocations" in shipmentHistory,false,"shipment history remains a read-only container projection rather than a second allocation authority");
+assert.equal(shipmentHistory.trackingNumber,"TRACK-1","operator history can expose manual tracking without a carrier-provider integration");
 assert.deepEqual(["fulfillment.view","fulfillment.pickup","fulfillment.ship"].every(x=>capabilityIds.includes(x as typeof capabilityIds[number])),true,"Fulfillment capabilities are reviewed vocabulary");
 console.log("[m6] Fulfillment contract tests passed (17 assertions).");

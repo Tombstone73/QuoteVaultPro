@@ -46,11 +46,9 @@ changes allocation quantity. Prepared shipment editing is intentionally not
 an allocation correction path. The new container commands are protected by the
 existing trusted-host, CSRF, and `fulfillment.ship` authority boundary.
 
-The backend/API plumbing is complete for manual shipment metadata and combined
-handoff attachment. The current V2 operator screen continues to make
-per-Order partial handoffs operational, but does not yet expose the new
-container creation/attachment/tracking controls. This is a **P1 launch UI
-gap** and keeps M7.5G at **PASS WITH FINDINGS**, not live-validated.
+The backend/API plumbing and bounded V2 operator controls for manual shipment
+metadata and combined handoff attachment are complete. See M7.5G.1 for the
+operator workflow and remaining document-rendering limitation.
 
 No temporary M7.5G agent worktrees or branches were created; all work was
 integrated in the sole `dev` recovery worktree.

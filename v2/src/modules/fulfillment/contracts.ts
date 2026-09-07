@@ -59,13 +59,40 @@ export type FulfillmentTerminalResult = Readonly<{
   handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; availability: readonly FulfillmentAvailability[];
 }>;
 
+/**
+ * Read-only physical-shipment context for an immutable shipment handoff. The
+ * handoff and its line allocations remain the completion authority; this is
+ * deliberately only an operator/history projection of the container that
+ * carried it.
+ */
+export type FulfillmentShipmentHistory = Readonly<{
+  shipmentId: string;
+  status: "prepared" | "shipped";
+  createdAt: string;
+  createdPrincipalSubject: string;
+  carrierName?: string;
+  carrierService?: string;
+  trackingNumber?: string;
+  notes?: string;
+  packageCount?: number;
+  shippedAt?: string;
+  shippedPrincipalSubject?: string;
+}>;
+
 /** Bounded operator projection; Sales supplies commercial context, Fulfillment supplies quantities/history. */
 export type FulfillmentOrderWorkspace = Readonly<{
   orderId: OrderId; number: string; commercialState: "open" | "completed" | "cancelled"; customerName: string; customerId?: CustomerId; contactId?: ContactId;
   requestedDueDate?: string; lines: readonly Readonly<{ orderLineId: OrderLineId; description: string } & FulfillmentAvailability>[];
   /** Sales-owned plan, projected read-only. It is not an actual handoff method. */
   requestedFulfillment?: Readonly<{ method: "pickup" | "shipping" | "local_delivery"; destination?: Readonly<{ recipient?: string; company?: string; addressLine1: string; addressLine2?: string; city: string; region?: string; postalCode?: string; country?: string; phone?: string }>; instructions?: string }>;
-  handoffs: readonly Readonly<{ handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; /** Present only when the immutable handoff snapshot exists. */ documentAvailable?: boolean }> [];
+  handoffs: readonly Readonly<{
+    handoff: FulfillmentHandoff;
+    allocations: readonly FulfillmentHandoffLine[];
+    /** Present only when the immutable handoff snapshot exists. */
+    documentAvailable?: boolean;
+    /** Present when this shipment handoff was attached to a physical shipment container. */
+    shipment?: FulfillmentShipmentHistory;
+  }> [];
 }>;
 
 export type FulfillmentWorkspacePage = Readonly<{ items: readonly FulfillmentOrderWorkspace[]; nextCursor?: string }>;

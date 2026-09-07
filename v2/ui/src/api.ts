@@ -724,6 +724,25 @@ export type CreatedProductWithInitialDraft = Readonly<{
   draftUpdatedAt: string;
 }>;
 export type FulfillmentMethod = "pickup" | "shipment";
+/** Provider-free shipment-container facts. Carrier integrations remain optional. */
+export type FulfillmentShipmentCarrierInput = Readonly<{
+  carrierName?: string;
+  carrierService?: string;
+  trackingNumber?: string;
+  notes?: string;
+  packageCount?: number;
+}>;
+export type FulfillmentShipmentContainer = Readonly<{
+  shipmentId: string;
+  status: "prepared" | "shipped";
+  customerId?: string;
+  destination?: unknown;
+  carrier: Readonly<{ status: "prepared" | "shipped" } & FulfillmentShipmentCarrierInput>;
+  createdAt: string;
+  createdPrincipalSubject: string;
+  shippedAt?: string;
+  shippedPrincipalSubject?: string;
+}>;
 export type FulfillmentPhysicalIntegrityAnomaly = Readonly<{
   code: "FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION";
   completedProductionQuantity: number;
@@ -764,6 +783,20 @@ export type FulfillmentWorkspaceOrder = Readonly<{
     allocations: readonly Readonly<{ orderLineId: string; quantity: number }>[];
     /** Only immutable handoffs created after document snapshots were introduced can be previewed. */
     documentAvailable?: boolean;
+    /** Read-only shipment-container history; allocations remain the fulfillment authority. */
+    shipment?: Readonly<{
+      shipmentId: string;
+      status: "prepared" | "shipped";
+      createdAt: string;
+      createdPrincipalSubject: string;
+      carrierName?: string;
+      carrierService?: string;
+      trackingNumber?: string;
+      notes?: string;
+      packageCount?: number;
+      shippedAt?: string;
+      shippedPrincipalSubject?: string;
+    }>;
   }>[];
 }>;
 export type FulfillmentTerminalResult = Readonly<{
@@ -3051,6 +3084,35 @@ export const fulfillmentApi = {
     allocations: readonly { orderLineId: string; quantity: number }[],
   ) =>
     fulfillmentMutation(org, orderId, method, businessRequestId, allocations),
+  createShipment: (
+    org: string,
+    businessRequestId: string,
+    input: Readonly<{ customerId?: string; destination?: unknown; carrier?: FulfillmentShipmentCarrierInput }>,
+  ) => request<FulfillmentShipmentContainer>(fulfillmentEndpoint(org, "/shipments"), {
+    method: "POST",
+    headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+    body: JSON.stringify({ businessRequestId, ...input }),
+  }),
+  markShipmentShipped: (
+    org: string,
+    shipmentId: string,
+    businessRequestId: string,
+    carrier?: FulfillmentShipmentCarrierInput,
+  ) => request<FulfillmentShipmentContainer>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/ship`), {
+    method: "POST",
+    headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+    body: JSON.stringify({ businessRequestId, ...(carrier ? { carrier } : {}) }),
+  }),
+  attachShipmentHandoffs: (
+    org: string,
+    shipmentId: string,
+    businessRequestId: string,
+    handoffIds: readonly string[],
+  ) => request<void>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/handoffs`), {
+    method: "POST",
+    headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+    body: JSON.stringify({ businessRequestId, handoffIds }),
+  }),
 };
 export type RoutingWorkspaceRead = Readonly<{
   templates: readonly Readonly<{

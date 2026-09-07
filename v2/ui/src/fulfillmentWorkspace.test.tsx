@@ -36,7 +36,8 @@ assert.equal(preferredHandoffMethod({...shippingOrder,requestedFulfillment:{meth
 assert.match(shippingMarkup,/Picked up/);
 assert.match(shippingMarkup,/Shipped/);
 assert.match(shippingMarkup,/Requested by Sales:.*shipping/i);
-assert.match(shippingMarkup,/Record partial handoff/);
-assert.match(shippingMarkup,/Hand off all available on this line/);
-assert.match(shippingMarkup,/shipment tracking is not represented by the current V2 handoff API/);
+assert.match(shippingMarkup,/Record partial pickup/);
+assert.match(shippingMarkup,/Pick up all available on this line/);
+assert.match(shippingMarkup,/Create shipment/);
+assert.match(shippingMarkup,/Pickup creates an immutable handoff/);
 console.log("Fulfillment integrity-anomaly presentation tests passed.");
