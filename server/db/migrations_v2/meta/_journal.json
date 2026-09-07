@@ -1849,6 +1849,13 @@
       "when": 1788048000115,
       "tag": "0268_v2_inbound_intake_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 270,
+      "version": "7",
+      "when": 1788048000116,
+      "tag": "0269_v2_customer_product_commercial_policy",
+      "breakpoints": true
     }
   ]
 }

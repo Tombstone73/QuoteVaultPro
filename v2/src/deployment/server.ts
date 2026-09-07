@@ -44,9 +44,17 @@ import { startV2InvoiceEmailDeliveryWorker } from "../../infrastructure/communic
 import { startV2ProofEmailDeliveryWorker } from "../../infrastructure/communications/proofEmailDeliveryQueue.js";
 import { resolveV2MutationWorkerStartup } from "./mutationWorkerStartup.js";
 import { PostgresPortalProofRead } from "../../infrastructure/proofing/postgresPortalProofRead.js";
+import { PostgresPortalCommercialRead } from "../../infrastructure/portal/postgresPortalCommercialRead.js";
+import { PostgresPortalOrderIdentityRead } from "../../infrastructure/portal/postgresPortalOrderIdentity.js";
 import { V2ApplicationError } from "../errors/applicationError.js";
 import { PermissionSetPrincipalIssuer } from "../authorization/permissionSets.js";
 import { PostgresPermissionAuthorityReader } from "../../infrastructure/authorization/postgresPermissionAuthorityRead.js";
+import { AuthorityPolicy } from "../authorization/authorityPolicy.js";
+import { CustomerCommercialApplicationService, CustomerCommercialPricingAdapter } from "../modules/products/customerCommercial.js";
+import { PostgresCustomerCommercialStore } from "../../infrastructure/products/postgresCustomerCommercialStore.js";
+import { PostgresProductsCompatibilityReader } from "../../infrastructure/compatibility/postgresProductsRead.js";
+import { V2PricingParityAdapter } from "../modules/pricing/v2PricingAdapter.js";
+import { PortalOrderCreationApplicationService } from "../modules/portal/portalOrderCreation.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -56,14 +64,28 @@ export const createV2DeploymentApp = (
 ) => {
   const { trustedHostIdentity, trustedHostMiddleware } = authentication;
   const orderLifecycle = new PostgresOrderAutomaticLifecycle(pool);
+  const customerCommercialStore = new PostgresCustomerCommercialStore(pool);
+  const customerPricing = new CustomerCommercialPricingAdapter(new V2PricingParityAdapter(), customerCommercialStore);
   const quote = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
-  const orderService = new OrderApplicationService(new PostgresOrderTransactionRunner(pool), undefined, orderLifecycle);
+  const orderService = new OrderApplicationService(
+    new PostgresOrderTransactionRunner(
+      pool,
+      undefined,
+      (client) => new CustomerCommercialPricingAdapter(new V2PricingParityAdapter(), new PostgresCustomerCommercialStore(client)),
+    ),
+    undefined,
+    orderLifecycle,
+  );
   const order = composeAuthenticatedOrderRuntime({
     pool,
     trustedHostIdentity,
     trustedHostMiddleware,
     service: orderService,
   });
+  const portalOrders = new PortalOrderCreationApplicationService(
+    new PostgresPortalOrderIdentityRead(pool),
+    orderService,
+  );
   const inbound = composeAuthenticatedInboundRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, orders: orderService });
   const billing = composeAuthenticatedBillingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, publicWebOrigin: authentication.publicWebOrigin, orderLifecycle });
   const artwork = composeAuthenticatedArtworkRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
@@ -74,6 +96,16 @@ export const createV2DeploymentApp = (
   const routing = composeAuthenticatedRoutingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new RoutingLifecycleApplicationService(new PostgresRoutingLifecycleTransactionRunner(pool), undefined, orderLifecycle) });
   const inventory = composeAuthenticatedInventoryRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const formulas = composeAuthenticatedFormulaRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const customerCommercial = {
+    dependencies: {
+      service: new CustomerCommercialApplicationService(customerCommercialStore, new AuthorityPolicy()),
+      store: customerCommercialStore,
+      pricing: customerPricing,
+      products: new PostgresProductsCompatibilityReader(pool),
+      principals: billing.dependencies.principals,
+    },
+    trustedHostMiddleware,
+  };
   const emailIntegration = composeAuthenticatedEmailIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
   const quickBooksIntegration = composeAuthenticatedQuickBooksIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
 
@@ -103,8 +135,9 @@ export const createV2DeploymentApp = (
     emailIntegration,
     quickBooksIntegration,
     { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
-    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}) },
+    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}), commercial: new PostgresPortalCommercialRead(pool), orders: portalOrders },
     inbound,
+    customerCommercial,
   );
 };
 

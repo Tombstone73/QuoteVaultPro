@@ -1,0 +1,24 @@
+import assert from "node:assert/strict";
+import express from "express";
+import request from "supertest";
+import { requireV2CsrfToken } from "../../infrastructure/authentication/sessionCsrf.js";
+import { createPortalOrderRouter } from "../../src/interfaces/http/portalOrderRoutes.js";
+import { PortalOrderCreationApplicationService, portalCustomerContact } from "../../src/modules/portal/portalOrderCreation.js";
+
+const portal:any={kind:"portal",organizationId:"org-a",customerId:"customer-a",subjectId:"portal-user-a",capabilities:["order.create"]};
+const calls:any[]=[];
+const service=new PortalOrderCreationApplicationService({customerContact:async()=>portalCustomerContact("org-a","customer-a","contact-a")},{create:async(context,input)=>{calls.push({context,input});return{ok:true,value:{order:{order:{orderId:"order-a"}},routeInstances:[]}} as any;}});
+const app=(principal:any=portal)=>express().use(express.json()).use((request,_response,next)=>{(request as any).session={v2CsrfToken:"csrf-portal-order"};next();}).use("/v2/portal",requireV2CsrfToken,createPortalOrderRouter({portalPrincipal:{principal:async()=>principal},service}));
+const body={businessRequestId:"portal-order-1",organizationId:"org-b",customerId:"customer-b",contactId:"contact-b",purchaseOrderNumber:"PO-1",notes:"Customer note",lines:[{productId:"product-a",quantity:2,selling:{kind:"unit_override",unitCents:1,reason:"forged"}}]};
+await request(app()).post("/v2/portal/orders").send(body).expect(403);
+await request(app()).post("/v2/portal/orders").set("x-v2-csrf-token","csrf-portal-order").send(body).expect(201);
+assert.equal(calls.length,1);
+assert.deepEqual(calls[0].input.customerContact,{organizationId:"org-a",customerId:"customer-a",contactId:"contact-a"});
+assert.equal(calls[0].input.lines[0].productId,"product-a");
+assert.deepEqual(calls[0].input.lines[0].selling,{kind:"calculated"});
+assert.equal(Object.hasOwn(calls[0].input,"customerId"),false);
+await request(app({...portal,capabilities:[]})).post("/v2/portal/orders").set("x-v2-csrf-token","csrf-portal-order").send(body).expect(403);
+const brokenService=new PortalOrderCreationApplicationService({customerContact:async()=>portalCustomerContact("org-a","customer-b","contact-b")},{create:async()=>{throw new Error("must not run");}});
+const broken=express().use(express.json()).use((request,_response,next)=>{(request as any).session={v2CsrfToken:"csrf-portal-order"};next();}).use("/v2/portal",requireV2CsrfToken,createPortalOrderRouter({portalPrincipal:{principal:async()=>portal},service:brokenService}));
+await request(broken).post("/v2/portal/orders").set("x-v2-csrf-token","csrf-portal-order").send(body).expect(403);
+console.log("Portal order scope and CSRF tests passed.");

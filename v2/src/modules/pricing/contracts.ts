@@ -102,7 +102,7 @@ export const assertPricingCalculationRequest = (request: PricingCalculationReque
   return request;
 };
 
-export type PricingComponent = Readonly<{ kind: "base" | "option" | "minimum_charge" | "tier_adjustment" | "matrix_adjustment" | "formula_adjustment"; label: string; amount: Money }>;
+export type PricingComponent = Readonly<{ kind: "base" | "option" | "minimum_charge" | "tier_adjustment" | "matrix_adjustment" | "formula_adjustment" | "customer_agreement"; label: string; amount: Money }>;
 export type PricingOptionImpact = Readonly<{
   selectionKey: string;
   effectId: string;
@@ -140,6 +140,8 @@ export type PricingResult = Readonly<{
   calculationDimensions?: Readonly<{ source: DimensionInput; widthIn: DecimalText; heightIn: DecimalText }>;
   evaluator: Readonly<{ id: string; version: string }>;
   rounding: RoundingEvidence;
+  /** An immutable customer-agreement reference applied by the server pricing boundary, if any. */
+  customerPricing?: Readonly<{ agreementId: string; mode: "fixed_unit" | "percent_adjustment"; value: number; productVersionId?: string }>;
   normalizedInput: ResolvedProductConfiguration;
   warnings: readonly Readonly<{ code: string; message: string }>[];
 }>;

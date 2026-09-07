@@ -16,11 +16,12 @@ import type {
   DraftInvoiceSynchronizationResult,
 } from "../billing/contracts.js";
 import type { CustomerContactReference, CustomersReadPort } from "../customers/contracts.js";
-import type { PricingPort } from "../pricing/contracts.js";
+import type { PricingCalculationRequest, PricingPort } from "../pricing/contracts.js";
 import type {
   ProductPricingCompatibilityPort,
   ResolveActivePricingInput,
 } from "../products/contracts.js";
+import type { CustomerScopedPricingPort } from "../products/customerCommercial.js";
 import type { InstantiateRouteResult, RouteInstance, RoutingPort } from "../routing/contracts.js";
 import type { RoutePrerequisite } from "../routing/routingLifecycle.js";
 import {
@@ -187,6 +188,8 @@ export interface OrderTransaction {
   readonly customers: CustomersReadPort;
   readonly products: ProductPricingCompatibilityPort;
   readonly pricing: PricingPort;
+  /** Customer-aware pricing composed around this exact transaction. */
+  readonly customerPricing?: CustomerScopedPricingPort;
   readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder" | "readInvoiceForOrder">;
   readonly routing: RoutingPort;
   readonly materialRequirements: Readonly<{
@@ -449,7 +452,7 @@ export class OrderApplicationService {
           throw new V2ApplicationError("VALIDATION_ERROR", "Order line correlations must be unique.");
         clientLineKeys.add(line.clientLineKey);
       }
-      const lines = await this.buildLines(tx, context, input.lines);
+      const lines = await this.buildLines(tx, context, input.customerContact, input.lines);
       if (!lines.length)
         throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
 
@@ -838,6 +841,7 @@ export class OrderApplicationService {
   private async buildLines(
     tx: OrderTransaction,
     context: OperationContext,
+    customerContact: CustomerContactReference,
     inputs: readonly OrderLineInput[],
     existing: readonly SalesLineSnapshot[] = [],
   ): Promise<SalesLineSnapshot[]> {
@@ -860,7 +864,7 @@ export class OrderApplicationService {
         resolved.value.sellableProduct.productId,
       );
       if (!taxability) throw new V2ApplicationError("NOT_FOUND", "The Product taxability policy is unavailable.");
-      const pricing = await tx.pricing.calculate({
+      const pricingRequest: PricingCalculationRequest = {
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         sellableProduct: resolved.value.sellableProduct,
         resolvedConfiguration: resolved.value.resolvedConfiguration,
@@ -870,7 +874,17 @@ export class OrderApplicationService {
         },
         rules: resolved.value.rules,
         ...(resolved.value.nestingEstimate ? { nestingEstimate: resolved.value.nestingEstimate } : {}),
-      });
+      };
+      // Customer commercial terms are one canonical Sales boundary.  The
+      // transaction-local PricingPort remains the backwards-compatible base
+      // evaluator for tests/rehearsals that do not compose commercial policy.
+      const customerId = customerContact.customerId
+        ?? (customerContact.contactId
+          ? (await tx.customers.getContact(brandedId<"OrganizationId">(context.organizationId), customerContact.contactId))?.customerId
+          : undefined);
+      const pricing = tx.customerPricing && customerId
+        ? await tx.customerPricing.calculateForCustomer(customerId, pricingRequest)
+        : await tx.pricing.calculate(pricingRequest);
       const prior = existing[index];
       const inherited = !input.selling && prior && prior.sellingPriceDecision.kind !== "calculated"
         ? this.sellingInstruction(prior.sellingPriceDecision)
@@ -922,7 +936,7 @@ export class OrderApplicationService {
         continue;
       }
       if (change.kind === "add") {
-        lines.push((await this.buildLines(tx, context, [change.line]))[0]!);
+        lines.push((await this.buildLines(tx, context, current.order.customerContact, [change.line]))[0]!);
         continue;
       }
       const index = lines.findIndex((line) => line.lineId === change.lineId);
@@ -951,7 +965,7 @@ export class OrderApplicationService {
         selections: change.line.selections ?? prior.resolvedConfiguration.selections,
         dimensions: change.line.dimensions ?? prior.resolvedConfiguration.dimensions,
       };
-      const replacement = (await this.buildLines(tx, context, [intended], [prior]))[0]!;
+      const replacement = (await this.buildLines(tx, context, current.order.customerContact, [intended], [prior]))[0]!;
       if (materialFrozen && canonicalJson(replacement) !== canonicalJson(prior))
         throw new V2ApplicationError("CONFLICT", "A line with frozen material requirements cannot be changed.");
       if (replacement.productId !== prior.productId)

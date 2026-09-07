@@ -8,6 +8,7 @@ import { readRoutePrerequisite } from "../routing/postgresRoutePrerequisites.js"
 import { PostgresOrderMaterialRequirements } from "./postgresOrderMaterialRequirements.js";
 import { PostgresSalesDocumentNumberAllocator } from "./postgresCommercialPrimitives.js";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter.js";
+import type { CustomerScopedPricingPort } from "../../src/modules/products/customerCommercial.js";
 import { summarizeOrderTotals, type OrderOperationResult, type OrderReadModel, type OrderReservation, type OrderTransaction, type OrderTransactionRunner } from "../../src/modules/sales/orderApplication.js";
 import { toSalesDocumentTermsPersistence, toSalesLinePersistenceEnvelope } from "../../src/modules/sales/persistenceContracts.js";
 import { removeProductionRequirementsForAbsentLines, synchronizeProductionRequirements } from "./postgresProductionRequirements.js";
@@ -74,14 +75,20 @@ export class PostgresOrderTransaction implements OrderTransaction {
   readonly customers;
   readonly products;
   readonly pricing = new V2PricingParityAdapter();
+  readonly customerPricing?: CustomerScopedPricingPort;
   readonly billing: BillingPort & Pick<BillingReadPort, "readDraftForOrder" | "readInvoiceForOrder">;
   readonly routing: RoutingPort;
   readonly materialRequirements: OrderTransaction["materialRequirements"];
   private readonly requests = new PostgresOperationRequestRepository();
   private readonly numbers = new PostgresSalesDocumentNumberAllocator();
-  constructor(private readonly client: PoolClient, private readonly hooks?: OrderPersistenceTestHooks) {
+  constructor(
+    private readonly client: PoolClient,
+    private readonly hooks?: OrderPersistenceTestHooks,
+    customerPricing?: CustomerScopedPricingPort,
+  ) {
     this.customers = new PostgresCustomersCompatibilityReader(client);
     this.products = new PostgresProductsCompatibilityReader(client);
+    this.customerPricing = customerPricing;
     const billing = new PostgresBillingDraftInvoiceTransaction(client);
     this.billing = {
       createDraftInvoice: async (input) => { const result = await billing.createDraftInvoice(input); await hooks?.afterBilling?.(); return result; },
@@ -329,10 +336,15 @@ export class PostgresOrderTransaction implements OrderTransaction {
 }
 
 export class PostgresOrderTransactionRunner implements OrderTransactionRunner {
-  constructor(private readonly pool: Pool, private readonly hooks?: OrderPersistenceTestHooks) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly hooks?: OrderPersistenceTestHooks,
+    /** Omitted by legacy/rehearsal composition until M0269 is present. */
+    private readonly customerPricing?: (client: PoolClient) => CustomerScopedPricingPort,
+  ) {}
   async transaction<T>(action: (transaction: OrderTransaction) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
-    try { await client.query("BEGIN"); const result = await action(new PostgresOrderTransaction(client, this.hooks)); await client.query("COMMIT"); return result; }
+    try { await client.query("BEGIN"); const result = await action(new PostgresOrderTransaction(client, this.hooks, this.customerPricing?.(client))); await client.query("COMMIT"); return result; }
     catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
   }

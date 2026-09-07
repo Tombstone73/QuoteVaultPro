@@ -38,6 +38,10 @@ import { createQuickBooksIntegrationCallback, createQuickBooksIntegrationRouter,
 import { createStripeSettingsRouter, type StripeSettingsHttpDependencies } from "./stripeSettingsRoutes.js";
 import { createStripeWebhookHandler } from "./stripeWebhookRoutes.js";
 import { createPortalInvoiceRouter, type PortalProofRead, type PortalProofResponseService } from "./portalInvoiceRoutes.js";
+import { createCustomerCommercialRouter, createPortalCustomerCommercialRouter, type CustomerCommercialHttpDependencies, type PortalCustomerCommercialHttpDependencies } from "./customerCommercialRoutes.js";
+import { createPortalOrderRouter } from "./portalOrderRoutes.js";
+import type { PortalCommercialRead } from "../../modules/portal/commercialReads.js";
+import type { PortalOrderCreationApplicationService } from "../../modules/portal/portalOrderCreation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
@@ -67,6 +71,7 @@ export type AuthenticatedInboundRouteRuntime = Readonly<{ dependencies: InboundH
 export type AuthenticatedRoutingRouteRuntime = Readonly<{ dependencies: RoutingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedInventoryRouteRuntime = Readonly<{ dependencies: InventoryHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedFormulaRouteRuntime = Readonly<{ dependencies: FormulaHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedCustomerCommercialRouteRuntime = Readonly<{ dependencies: CustomerCommercialHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -87,8 +92,9 @@ export const createV2HttpApp = (
   emailIntegration?: EmailIntegrationHttpDependencies,
   quickBooksIntegration?: QuickBooksIntegrationHttpDependencies,
   stripeSettings?: StripeSettingsHttpDependencies,
-  portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService }>,
+  portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService; commercial?:PortalCommercialRead; orders?: PortalOrderCreationApplicationService }>,
   inbound?: AuthenticatedInboundRouteRuntime,
+  customerCommercial?: AuthenticatedCustomerCommercialRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -103,7 +109,18 @@ export const createV2HttpApp = (
     );
   app.use(express.json({ limit: "1mb" }));
   configure?.(app);
-  if (billing && portal) app.use("/v2/portal", portal.middleware, createPortalInvoiceRouter({ ...billing.dependencies, portalPrincipal: portal.principal, ...(portal.proofs?{proofs:portal.proofs}:{}), ...(portal.proofing?{proofing:portal.proofing}:{}) }));
+  if (billing && portal) app.use("/v2/portal", portal.middleware, createPortalInvoiceRouter({ ...billing.dependencies, portalPrincipal: portal.principal, ...(portal.proofs?{proofs:portal.proofs}:{}), ...(portal.proofing?{proofing:portal.proofing}:{}), ...(portal.commercial?{commercial:portal.commercial}:{}) }));
+  if (portal?.orders) app.use("/v2/portal", portal.middleware, requireV2CsrfToken, createPortalOrderRouter({ portalPrincipal: portal.principal, service: portal.orders }));
+  if (portal && customerCommercial) app.use(
+    "/v2/portal/catalog",
+    portal.middleware,
+    // Catalog reads must remain available to a valid portal session.  Only
+    // the price-preview mutation boundary requires CSRF protection.
+    (request, response, next) => request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS"
+      ? next()
+      : requireV2CsrfToken(request, response, next),
+    createPortalCustomerCommercialRouter({ ...customerCommercial.dependencies, portalPrincipal: portal.principal } satisfies PortalCustomerCommercialHttpDependencies),
+  );
 
   app.get("/health", (_request: Request, response: Response) => {
     response.status(200).json({ status: "ok", service: config.serviceName });
@@ -388,9 +405,17 @@ export const createV2HttpApp = (
     app.use("/v2/organizations/:organizationId/routing",routing.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createRoutingRouter(routing.dependencies));
   if (formulas)
     app.use("/v2/organizations/:organizationId/formulas",formulas.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createFormulaRouter(formulas.dependencies));
+  if (customerCommercial)
+    app.use(
+      "/v2/organizations/:organizationId/customer-commercial",
+      customerCommercial.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createCustomerCommercialRouter(customerCommercial.dependencies),
+    );
 
   app.use((_request, response) =>
     response.status(404).json({ code: "NOT_FOUND" }),
-  );
+    );
   return app;
 };
