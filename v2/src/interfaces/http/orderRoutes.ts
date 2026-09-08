@@ -250,7 +250,7 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
       // The client receives only the stable V2 error envelope. Keep a bounded
       // server-side diagnostic for the DEV reconciliation validation without
       // logging request data, identities, SQL, or database credentials.
-      console.error("[V2 Orders read] failed", cause instanceof Error ? { name: cause.name, message: cause.message.slice(0, 500) } : { name: "unknown" });
+      console.error(JSON.stringify({ event: "v2.orders.read.failed", ...(cause instanceof Error ? { name: cause.name, message: cause.message.slice(0, 500), ...("code" in cause && typeof cause.code === "string" ? { code: cause.code } : {}) } : { name: "unknown" }) }));
       error(response, cause);
     }
   });
