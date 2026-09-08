@@ -36,6 +36,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  RotateCcw,
   GripVertical,
   Settings2,
   Plus,

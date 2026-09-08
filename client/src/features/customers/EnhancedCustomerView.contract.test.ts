@@ -30,6 +30,13 @@ test('the rendered Customer Detail invoice table owns its persistent layout and 
   expect(invoiceTable).toContain('pageSize');
 });
 
+test('the actual Customer Detail reset control imports the supported Lucide RotateCcw icon', () => {
+  const lucideImport = source.slice(source.indexOf('from "lucide-react"') - 800, source.indexOf('from "lucide-react"'));
+  expect(lucideImport).toContain('RotateCcw');
+  expect(invoiceTable).toContain('<RotateCcw');
+  expect(source).not.toContain(['Rotated', 'Ccw'].join(''));
+});
+
 test('the actual Customer Detail orders table uses the same visible Close Job Override action', () => {
   expect(ordersTable).toContain('CloseJobOverrideDialog');
   expect(ordersTable).toContain('canCloseJobOverride');
