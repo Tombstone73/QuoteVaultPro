@@ -2,7 +2,7 @@ import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
 import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
-import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo } from './repository';
+import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo, resolveExistingActorUserId } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';

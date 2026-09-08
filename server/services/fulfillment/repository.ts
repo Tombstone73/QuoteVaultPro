@@ -185,7 +185,7 @@ export function summarizeFulfillmentChecklist(items: Array<{ checked?: boolean |
   };
 }
 
-async function resolveExistingActorUserId(dbRunner: any, actorUserId?: string | null): Promise<string | null> {
+export async function resolveExistingActorUserId(dbRunner: any, actorUserId?: string | null): Promise<string | null> {
   const cleanActorUserId = cleanText(actorUserId);
   if (!cleanActorUserId) return null;
   if (typeof dbRunner?.select !== 'function') return null;
