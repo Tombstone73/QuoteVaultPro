@@ -225,6 +225,10 @@ function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListCo
   if (lastSent && lastSent !== 'sent' && lastSent !== 'not_sent') {
     throw Object.assign(new Error('Invalid Last Sent filter'), { statusCode: 400 });
   }
+  const sendStatus = invoiceListQueryText(query.sendStatus);
+  if (sendStatus && !['never_sent', 'sent', 'updated_after_sent'].includes(sendStatus)) {
+    throw Object.assign(new Error('Invalid Send Status filter'), { statusCode: 400 });
+  }
   return {
     accountingApproval: accountingApproval as InvoiceListColumnFilters['accountingApproval'],
     customer: invoiceListQueryText(query.customer),
@@ -237,6 +241,7 @@ function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListCo
     issueDateToExclusive: invoiceListQueryDate(query.issueDateTo, 'endExclusive'),
     dueDateFrom: invoiceListQueryDate(query.dueDateFrom, 'start'),
     dueDateToExclusive: invoiceListQueryDate(query.dueDateTo, 'endExclusive'),
+    sendStatus: sendStatus as InvoiceListColumnFilters['sendStatus'],
     lastSent: lastSent as InvoiceListColumnFilters['lastSent'],
     totalMinCents: invoiceListQueryCents(query.totalMin),
     totalMaxCents: invoiceListQueryCents(query.totalMax),

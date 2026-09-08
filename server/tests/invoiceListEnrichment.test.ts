@@ -353,6 +353,43 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
     expect(page).toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: target.id })] });
   });
 
+  test('filters canonical email send state and selected customer in the same tenant-scoped query', async () => {
+    const org = await createTestOrg('send-status');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'send-status');
+    const selectedCustomer = await createTestCustomer(org.id);
+    const otherCustomer = await createTestCustomer(org.id);
+    const current = await createTestInvoice({
+      orgId: org.id, customerId: selectedCustomer.id, userId: user.id, invoiceNumber: 840001,
+      updatedAt: new Date('2026-08-15T10:00:00.000Z'),
+    });
+    const outdated = await createTestInvoice({
+      orgId: org.id, customerId: selectedCustomer.id, userId: user.id, invoiceNumber: 840002,
+      updatedAt: new Date('2026-08-17T10:00:00.000Z'),
+    });
+    const neverSent = await createTestInvoice({
+      orgId: org.id, customerId: selectedCustomer.id, userId: user.id, invoiceNumber: 840003,
+      updatedAt: new Date('2026-08-15T10:00:00.000Z'),
+    });
+    const otherCustomerNeverSent = await createTestInvoice({
+      orgId: org.id, customerId: otherCustomer.id, userId: user.id, invoiceNumber: 840004,
+      updatedAt: new Date('2026-08-15T10:00:00.000Z'),
+    });
+    await writeEmailLog({ orgId: org.id, invoiceId: current.id, status: 'sent', type: 'invoice_send', sentAt: new Date('2026-08-16T10:00:00.000Z') });
+    await writeEmailLog({ orgId: org.id, invoiceId: outdated.id, status: 'sent', type: 'invoice_send', sentAt: new Date('2026-08-16T10:00:00.000Z') });
+    // Reminder delivery must not make a never-sent invoice look sent.
+    await writeEmailLog({ orgId: org.id, invoiceId: neverSent.id, status: 'sent', type: 'reminder_send', sentAt: new Date('2026-08-18T10:00:00.000Z') });
+
+    await expect(listInvoicesPageForOrganization({ organizationId: org.id, limit: 50, columnFilters: { sendStatus: 'sent' } }))
+      .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: current.id })] });
+    await expect(listInvoicesPageForOrganization({ organizationId: org.id, limit: 50, columnFilters: { sendStatus: 'updated_after_sent' } }))
+      .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: outdated.id })] });
+    await expect(listInvoicesPageForOrganization({ organizationId: org.id, customerId: selectedCustomer.id, limit: 50, columnFilters: { sendStatus: 'never_sent' } }))
+      .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: neverSent.id })] });
+    await expect(listInvoicesPageForOrganization({ organizationId: org.id, customerId: otherCustomer.id, limit: 50, columnFilters: { sendStatus: 'never_sent' } }))
+      .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: otherCustomerNeverSent.id })] });
+  });
+
   test('derives tenant-wide dashboard facts from canonical payment and QuickBooks balance rules', async () => {
     const org = await createTestOrg('dashboard-summary');
     cleanupOrgIds.push(org.id);

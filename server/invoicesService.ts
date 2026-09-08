@@ -198,6 +198,9 @@ export type InvoiceListColumnFilters = {
   issueDateToExclusive?: Date;
   dueDateFrom?: Date;
   dueDateToExclusive?: Date;
+  /** Mirrors deriveInvoiceEmailStatus using successful original invoice sends only. */
+  sendStatus?: 'never_sent' | 'sent' | 'updated_after_sent';
+  /** Legacy two-state filter retained for existing callers. */
   lastSent?: 'sent' | 'not_sent';
   totalMinCents?: number;
   totalMaxCents?: number;
@@ -417,6 +420,26 @@ export async function listInvoicesPageForOrganization(
   if (columnFilters.issueDateToExclusive) whereClauses.push(sql`${invoices.issueDate} < ${columnFilters.issueDateToExclusive}`);
   if (columnFilters.dueDateFrom) whereClauses.push(sql`${invoices.dueDate} >= ${columnFilters.dueDateFrom}`);
   if (columnFilters.dueDateToExclusive) whereClauses.push(sql`${invoices.dueDate} < ${columnFilters.dueDateToExclusive}`);
+  // Keep SQL filtering exactly aligned with deriveInvoiceEmailStatus() and the
+  // Last Sent badge: only successful original invoice sends count; reminders
+  // and in-progress/failed delivery records do not.
+  const lastSuccessfulInvoiceSendAt = sql<Date | null>`(
+    select max(${invoiceEmailLogs.sentAt})
+    from ${invoiceEmailLogs}
+    where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+      and ${invoiceEmailLogs.organizationId} = ${opts.organizationId}
+      and ${invoiceEmailLogs.type} = 'invoice_send'
+      and ${invoiceEmailLogs.status} = 'sent'
+  )`;
+  if (columnFilters.sendStatus === 'never_sent') {
+    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is null`);
+  }
+  if (columnFilters.sendStatus === 'sent') {
+    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.updatedAt}, 'epoch'::timestamptz) <= ${lastSuccessfulInvoiceSendAt}`);
+  }
+  if (columnFilters.sendStatus === 'updated_after_sent') {
+    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.updatedAt}, 'epoch'::timestamptz) > ${lastSuccessfulInvoiceSendAt}`);
+  }
   if (columnFilters.lastSent === 'sent') whereClauses.push(sql`exists (
     select 1 from ${invoiceEmailLogs}
     where ${invoiceEmailLogs.invoiceId} = ${invoices.id}

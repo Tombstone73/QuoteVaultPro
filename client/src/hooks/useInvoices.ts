@@ -94,6 +94,7 @@ export type InvoiceListColumnFilterQuery = {
   issueDateTo?: string;
   dueDateFrom?: string;
   dueDateTo?: string;
+  sendStatus?: 'never_sent' | 'sent' | 'updated_after_sent';
   lastSent?: 'sent' | 'not_sent';
   totalMin?: string;
   totalMax?: string;
@@ -192,7 +193,7 @@ export function useInvoicesPage(filters: {
       const columnKeys: Array<keyof InvoiceListColumnFilterQuery> = [
         'customer', 'contact', 'jobName', 'purchaseOrderNumber', 'columnOrderNumber', 'invoiceNumber',
         'accountingApproval',
-        'issueDateFrom', 'issueDateTo', 'dueDateFrom', 'dueDateTo', 'lastSent',
+        'issueDateFrom', 'issueDateTo', 'dueDateFrom', 'dueDateTo', 'sendStatus', 'lastSent',
         'totalMin', 'totalMax', 'paidMin', 'paidMax', 'balanceMin', 'balanceMax',
       ];
       for (const key of columnKeys) {

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,14 @@ import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye,
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
-import { format } from "date-fns";
+import { endOfMonth, format, startOfMonth, subDays, subMonths } from "date-fns";
 import { ROUTES } from "@/config/routes";
 import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { getNextInvoiceSortState, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
+import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
+import { INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { CustomerSelect } from "@/components/CustomerSelect";
 import {
   Page,
   PageHeader,
@@ -68,8 +70,6 @@ const deliveryStatusMeta = {
   canceled: { label: "Delivery Canceled", variant: "muted" },
 } as const;
 
-const EMPTY_COLUMN_FILTERS: InvoiceListColumnFilterQuery = {};
-
 const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
   customer: "Customer",
   contact: "Contact",
@@ -81,6 +81,7 @@ const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
   issueDateTo: "Issue to",
   dueDateFrom: "Due from",
   dueDateTo: "Due to",
+  sendStatus: "Send Status",
   lastSent: "Last sent",
   totalMin: "Total min",
   totalMax: "Total max",
@@ -93,14 +94,20 @@ const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
 export default function InvoicesListPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [sortKey, setSortKey] = useState<InvoiceSortKey>("issueDate");
-  const [sortDir, setSortDir] = useState<InvoiceSortDir>("desc");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [columnFilters, setColumnFilters] = useState<InvoiceListColumnFilterQuery>(EMPTY_COLUMN_FILTERS);
+  const listState = useMemo(() => parseInvoiceListUrlState(searchParams), [searchParams]);
+  const { search, status: statusFilter, customerId, customerName, issueDatePreset: storedIssueDatePreset, sortKey, sortDir, page, pageSize, columnFilters } = listState;
+  const updateListState = (changes: Record<string, string | undefined>, resetPage = false) => {
+    setSearchParams((current) => updateInvoiceListUrlState(current, changes, resetPage), { replace: true });
+  };
+  const setPage = (nextPage: number | ((current: number) => number)) => {
+    const resolved = typeof nextPage === "function" ? nextPage(page) : nextPage;
+    updateListState({ page: resolved > 1 ? String(resolved) : undefined });
+  };
+  const setPageSize = (nextPageSize: number) => updateListState({ pageSize: String(nextPageSize) }, true);
+  const setSearch = (nextSearch: string) => updateListState({ search: nextSearch }, true);
+  const setStatusFilter = (nextStatus: string) => updateListState({ status: nextStatus === "all" ? undefined : nextStatus }, true);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
@@ -159,15 +166,79 @@ export default function InvoicesListPage() {
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleApprovableSelected = accountingApprovableInvoices.length > 0 && accountingApprovableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
   const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>).filter(([, value]) => Boolean(value));
+  const activeFilters = [
+    search ? { key: "search", label: "Search", value: search } : null,
+    statusFilter !== "all" ? { key: "status", label: "Status", value: statusLabels[statusFilter] || statusFilter } : null,
+    customerId ? { key: "customerId", label: "Customer", value: customerName || "Selected customer" } : null,
+    ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: String(value) })),
+  ].filter(Boolean) as Array<{ key: string; label: string; value: string }>;
 
   const setColumnFilter = (key: keyof InvoiceListColumnFilterQuery, value: string) => {
-    setColumnFilters((current) => ({ ...current, [key]: value || undefined }));
-    setPage(1);
+    updateListState({
+      [key]: value || undefined,
+      ...(key === "issueDateFrom" || key === "issueDateTo" ? { issueDatePreset: undefined } : {}),
+    }, true);
   };
 
-  const clearColumnFilters = () => {
-    setColumnFilters(EMPTY_COLUMN_FILTERS);
-    setPage(1);
+  const clearAllFilters = () => {
+    updateListState({
+      search: undefined,
+      status: undefined,
+      customerId: undefined,
+      customerName: undefined,
+      issueDatePreset: undefined,
+      ...Object.fromEntries(INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.map((key) => [key, undefined])),
+    }, true);
+  };
+
+  const clearActiveFilter = (key: string) => {
+    if (key === "search") return updateListState({ search: undefined }, true);
+    if (key === "status") return updateListState({ status: undefined }, true);
+    if (key === "customerId") return updateListState({ customerId: undefined, customerName: undefined }, true);
+    setColumnFilter(key as keyof InvoiceListColumnFilterQuery, "");
+  };
+
+  const setCustomerFilter = (nextCustomerId: string | null, customer?: { companyName?: string | null; email?: string | null }) => {
+    updateListState({
+      customerId: nextCustomerId || undefined,
+      customerName: nextCustomerId ? customer?.companyName || customer?.email || "Selected customer" : undefined,
+    }, true);
+  };
+
+  const issueDatePreset = (() => {
+    if (storedIssueDatePreset === "custom") return "custom";
+    const today = new Date();
+    const matches = (from?: string, to?: string) => columnFilters.issueDateFrom === from && columnFilters.issueDateTo === to;
+    if (!columnFilters.issueDateFrom && !columnFilters.issueDateTo) return "all";
+    if (matches(format(today, "yyyy-MM-dd"), format(today, "yyyy-MM-dd"))) return "today";
+    if (matches(format(subDays(today, 6), "yyyy-MM-dd"), format(today, "yyyy-MM-dd"))) return "last_7_days";
+    if (matches(format(subDays(today, 29), "yyyy-MM-dd"), format(today, "yyyy-MM-dd"))) return "last_30_days";
+    if (matches(format(startOfMonth(today), "yyyy-MM-dd"), format(endOfMonth(today), "yyyy-MM-dd"))) return "this_month";
+    const previousMonth = subMonths(today, 1);
+    if (matches(format(startOfMonth(previousMonth), "yyyy-MM-dd"), format(endOfMonth(previousMonth), "yyyy-MM-dd"))) return "last_month";
+    return "custom";
+  })();
+
+  const setIssueDatePreset = (preset: string) => {
+    const today = new Date();
+    const dateRange = (from?: Date, to?: Date) => updateListState({
+      issueDateFrom: from ? format(from, "yyyy-MM-dd") : undefined,
+      issueDateTo: to ? format(to, "yyyy-MM-dd") : undefined,
+      issueDatePreset: undefined,
+    }, true);
+    if (preset === "custom") {
+      updateListState({ issueDatePreset: "custom" });
+      return;
+    }
+    if (preset === "all") dateRange();
+    if (preset === "today") dateRange(today, today);
+    if (preset === "last_7_days") dateRange(subDays(today, 6), today);
+    if (preset === "last_30_days") dateRange(subDays(today, 29), today);
+    if (preset === "this_month") dateRange(startOfMonth(today), endOfMonth(today));
+    if (preset === "last_month") {
+      const previousMonth = subMonths(today, 1);
+      dateRange(startOfMonth(previousMonth), endOfMonth(previousMonth));
+    }
   };
 
   const toggleTotals = () => {
@@ -180,9 +251,7 @@ export default function InvoicesListPage() {
 
   const handleSort = (key: InvoiceSortKey) => {
     const next = getNextInvoiceSortState({ sortKey, sortDir }, key);
-    setSortKey(next.sortKey);
-    setSortDir(next.sortDir);
-    setPage(1);
+    updateListState({ sortBy: next.sortKey, sortDir: next.sortDir }, true);
   };
 
   const renderSortIcon = (key: InvoiceSortKey) => {
@@ -338,7 +407,7 @@ export default function InvoicesListPage() {
         {totalCount === 0 ? "0 invoices" : `${(currentPage - 1) * (pagination?.pageSize ?? pageSize) + 1}–${Math.min(currentPage * (pagination?.pageSize ?? pageSize), totalCount)} of ${totalCount} invoices`}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}>
+        <Select value={String(pageSize)} onValueChange={(value) => setPageSize(Number(value))}>
           <SelectTrigger className="w-[132px]" aria-label={`Invoices per page (${position})`}><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="25">25 per page</SelectItem><SelectItem value="50">50 per page</SelectItem><SelectItem value="100">100 per page</SelectItem></SelectContent>
         </Select>
@@ -403,13 +472,11 @@ export default function InvoicesListPage() {
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
-                setPage(1);
               }}
               containerClassName="min-w-[16rem] max-w-xl flex-1 basis-[22rem]"
             />
             <Select value={statusFilter} onValueChange={(nextStatus) => {
               setStatusFilter(nextStatus);
-              setPage(1);
             }}>
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="Filter by status" />
@@ -431,7 +498,7 @@ export default function InvoicesListPage() {
               <PopoverTrigger asChild>
                 <Button type="button" variant="outline" className="gap-2">
                   <Filter className="h-4 w-4" />
-                  Filters{activeColumnFilters.length ? ` (${activeColumnFilters.length})` : ""}
+                  Filters{activeFilters.length ? ` (${activeFilters.length})` : ""}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[min(680px,calc(100vw-2rem))] max-h-[calc(100vh-8rem)] overflow-y-auto" align="end">
@@ -440,20 +507,22 @@ export default function InvoicesListPage() {
                     <div className="font-medium">Column filters</div>
                     <p className="text-xs text-muted-foreground">Filters compose with global search and apply across every invoice page.</p>
                   </div>
-                  <Button type="button" variant="ghost" size="sm" onClick={clearColumnFilters} disabled={activeColumnFilters.length === 0}>Clear all</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={clearAllFilters} disabled={activeFilters.length === 0}>Clear all</Button>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-1 text-sm"><span>Customer / Company</span><Input value={columnFilters.customer || ""} onChange={(event) => setColumnFilter("customer", event.target.value)} placeholder="e.g. Acme" /></label>
+                  <CustomerSelect value={customerId || null} onChange={setCustomerFilter} autoFocus={false} label="Customer / Company" placeholder="All customers" />
+                  <label className="grid gap-1 text-sm"><span>Customer / Company contains</span><Input value={columnFilters.customer || ""} onChange={(event) => setColumnFilter("customer", event.target.value)} placeholder="e.g. Acme" /></label>
                   <label className="grid gap-1 text-sm"><span>Contact</span><Input value={columnFilters.contact || ""} onChange={(event) => setColumnFilter("contact", event.target.value)} placeholder="Name or email" /></label>
                   <label className="grid gap-1 text-sm"><span>Job / Order Name</span><Input value={columnFilters.jobName || ""} onChange={(event) => setColumnFilter("jobName", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>PO #</span><Input value={columnFilters.purchaseOrderNumber || ""} onChange={(event) => setColumnFilter("purchaseOrderNumber", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Order #</span><Input value={columnFilters.columnOrderNumber || ""} onChange={(event) => setColumnFilter("columnOrderNumber", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Invoice #</span><Input value={columnFilters.invoiceNumber || ""} onChange={(event) => setColumnFilter("invoiceNumber", event.target.value)} /></label>
+                  <label className="grid gap-1 text-sm"><span>Issue date</span><Select value={issueDatePreset} onValueChange={setIssueDatePreset}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Dates</SelectItem><SelectItem value="today">Today</SelectItem><SelectItem value="last_7_days">Last 7 Days</SelectItem><SelectItem value="last_30_days">Last 30 Days</SelectItem><SelectItem value="this_month">This Month</SelectItem><SelectItem value="last_month">Last Month</SelectItem><SelectItem value="custom">Custom Range</SelectItem></SelectContent></Select></label>
                   <label className="grid gap-1 text-sm"><span>Issue date from</span><Input type="date" value={columnFilters.issueDateFrom || ""} onChange={(event) => setColumnFilter("issueDateFrom", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Issue date to</span><Input type="date" value={columnFilters.issueDateTo || ""} onChange={(event) => setColumnFilter("issueDateTo", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Due date from</span><Input type="date" value={columnFilters.dueDateFrom || ""} onChange={(event) => setColumnFilter("dueDateFrom", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Due date to</span><Input type="date" value={columnFilters.dueDateTo || ""} onChange={(event) => setColumnFilter("dueDateTo", event.target.value)} /></label>
-                  <label className="grid gap-1 text-sm"><span>Last sent</span><Select value={columnFilters.lastSent || "all"} onValueChange={(value) => setColumnFilter("lastSent", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Any</SelectItem><SelectItem value="sent">Sent</SelectItem><SelectItem value="not_sent">Not sent</SelectItem></SelectContent></Select></label>
+                  <label className="grid gap-1 text-sm"><span>Send Status</span><Select value={columnFilters.sendStatus || "all"} onValueChange={(value) => setColumnFilter("sendStatus", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All</SelectItem><SelectItem value="never_sent">Never Sent</SelectItem><SelectItem value="sent">Sent</SelectItem><SelectItem value="updated_after_sent">Updated After Sent</SelectItem></SelectContent></Select></label>
                 </div>
                 <div className="mt-4 border-t pt-4">
                   <div className="mb-2 text-sm font-medium">Amount ranges</div>
@@ -490,13 +559,14 @@ export default function InvoicesListPage() {
               {renderPaginationControls("top")}
             </div>
           </div>
-          {activeColumnFilters.length > 0 && (
+          {activeFilters.length > 0 && (
             <div className="flex flex-wrap gap-2 border-t border-titan-border-subtle px-3 pb-3 pt-2" aria-label="Active invoice column filters">
-              {activeColumnFilters.map(([key, value]) => (
-                <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => setColumnFilter(key, "")}>
-                  {columnFilterLabels[key]}: {value} <X className="h-3 w-3" />
+              {activeFilters.map(({ key, label, value }) => (
+                <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => clearActiveFilter(key)}>
+                  {label}: {value} <X className="h-3 w-3" />
                 </Button>
               ))}
+              <Button type="button" variant="ghost" size="sm" className="h-7" onClick={clearAllFilters}>Clear all</Button>
             </div>
           )}
         </DataCard>

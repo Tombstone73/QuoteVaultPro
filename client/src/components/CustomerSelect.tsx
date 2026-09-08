@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImper
 import { useQuery } from "@tanstack/react-query";
 import { Building2, User, X, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -68,7 +69,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
         params.set("search", debouncedSearch);
       }
       const url = `/api/customers${params.toString() ? `?${params.toString()}` : ""}`;
-      const response = await fetch(url, { credentials: "include" });
+      const response = await apiFetch(url);
       if (!response.ok) throw new Error("Failed to fetch customers");
       const payload = await response.json();
       const rows = payload?.data?.customers;
@@ -82,7 +83,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
     queryKey: ["/api/customers", value],
     queryFn: async () => {
       if (!value) throw new Error("No customer ID");
-      const response = await fetch(`/api/customers/${value}`, { credentials: "include" });
+      const response = await apiFetch(`/api/customers/${value}`);
       if (!response.ok) throw new Error("Failed to fetch customer");
       return response.json();
     },

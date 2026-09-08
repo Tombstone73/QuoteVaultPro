@@ -52,12 +52,22 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain('data-testid="invoice-pagination-top"');
   });
 
-  it("keeps compact column filters server-driven and individually clearable", () => {
+  it("keeps compact backlog filters server-driven, URL-persistent, and individually clearable", () => {
     expect(invoicesPageSource).toContain("Column filters");
     expect(invoicesPageSource).toContain("Customer / Company");
+    expect(invoicesPageSource).toContain("CustomerSelect");
+    expect(invoicesPageSource).toContain("Send Status");
+    expect(invoicesPageSource).toContain("Never Sent");
+    expect(invoicesPageSource).toContain("Updated After Sent");
+    expect(invoicesPageSource).toContain("All Dates");
+    expect(invoicesPageSource).toContain("Custom Range");
+    expect(invoicesPageSource).toContain("useSearchParams");
+    expect(invoicesPageSource).toContain("parseInvoiceListUrlState");
+    expect(invoicesPageSource).toContain("clearActiveFilter");
+    expect(invoicesPageSource).toContain("clearAllFilters");
     expect(invoicesPageSource).toContain("setColumnFilter");
-    expect(invoicesPageSource).toContain("clearColumnFilters");
     expect(invoicesPageSource).toContain("...columnFilters");
+    expect(invoiceHooksSource).toContain("sendStatus");
   });
 
   it("keeps the hardened summary and pagination contract instead of rendering fallback zero totals", () => {
