@@ -35,4 +35,6 @@ The two financial stages deliberately abort on ambiguous historic allocation evi
 
 ## Execution status
 
-At report creation, the target-fingerprint preflight deployment was pending. This report is updated only with sanitized fingerprints, stage outcomes, relation-level attestation, and no credentials or business data.
+DEV execution succeeded on 2026-09-08 after two intentionally non-mutating preflight refusals established the endpoint fingerprint and the actual ledger shape (`268` rows, maximum id `269`, maximum timestamp `1788048000120`). D0270 was already physically present and was adopted only after its postconditions passed; D0271--D0273 executed forward in separate transactions and were attested. The subsequent normal migration runner passed the D0273 gate and all 86 existing release verification checks. Drizzle history remained unchanged at maximum id `269`.
+
+The temporary acknowledgement is set back to `0` after completion. Later DEV deployments verify the D0273 attestation through the normal gate but do not re-run the executor.

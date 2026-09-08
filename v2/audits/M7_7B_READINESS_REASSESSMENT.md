@@ -2,13 +2,13 @@
 
 ## Current disposition
 
-**BLOCKED pending DEV target attestation and guarded reconciliation execution.**
+**PASS WITH FINDINGS for DEV schema reconciliation; BLOCKED for full authenticated workflow validation.**
 
 The remediation code is DEV-specific, append-only, and fail-closed; it is not authorization for production schema work, a M8 cutover, provider operations, or worker release. Production remains independently **NO-GO** pending its established control-plane and cutover gates.
 
 ## P0
 
-1. The DEV physical schema must pass D0270--D0273 attestation before the deployed application can be considered current or authenticated workflow results can be trusted.
+1. The authenticated Orders workboard still returns HTTP 500 after schema attestation; identify and repair its bounded read-query failure before calling the operational validation matrix complete.
 2. No production reconciliation/cutover authority is created by this milestone.
 
 ## P1

@@ -16,4 +16,6 @@ No durable DEV fixture IDs cover every domain. Existing immutable QA records may
 
 ## Execution status
 
-Blocked pending DEV schema attestation. The pre-reconciliation authenticated Orders workboard returns HTTP 500 because its allocation-aware read requires a missing current physical surface. No conclusion about business workflow behavior is drawn from that schema failure.
+The schema attestation is complete and an authenticated staff session passed `ui-bootstrap`, Finance Overview, and Payment Ledger read routes. The Payment Ledger rendered current V2 and legacy read-only entries.
+
+The authenticated Orders list still returned HTTP 500 after the D0273 attestation. This is a separate, read-only application/query defect, not evidence to broaden the DEV schema executor. No write workflow, provider, or fixture was invoked. Its safe error envelope remains generic; a bounded server diagnostic was added for the next DEV investigation, but the deployment log stream did not expose a query-level cause during this milestone.
