@@ -199,7 +199,7 @@ const financialProjection = `
     GROUP BY organization_id,invoice_id
   ), refund_totals AS (
     SELECT organization_id,invoice_id,COALESCE(sum(amount_cents),0)::bigint refunded_cents
-    FROM v2_billing_refunds
+    FROM v2_billing_refund_allocation_evidence
     WHERE organization_id=$1
     GROUP BY organization_id,invoice_id
   ), native_rows AS (
@@ -263,13 +263,14 @@ const ledgerProjection = `
     LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
     WHERE p.organization_id=$1
     UNION ALL
-    SELECT 'v2'::text,'refund'::text,r.id,a.payment_id,r.invoice_id,r.amount_cents,r.currency,p.method,r.source,
+    SELECT 'v2'::text,'refund'::text,r.id,e.payment_id,e.invoice_id,e.amount_cents,r.currency,p.method,r.source,
       r.occurred_at,r.recorded_at,i.sales_order_document_id,d.display_number,i.customer_id,
-      COALESCE(c.display_name,c.company_name),i.total_cents,-r.amount_cents
+      COALESCE(c.display_name,c.company_name),i.total_cents,-e.amount_cents
     FROM v2_billing_refunds r
     JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id
     JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=a.payment_id
-    JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id
+    JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=r.organization_id AND e.refund_allocation_id=a.id
+    JOIN v2_billing_invoices i ON i.organization_id=e.organization_id AND i.id=e.invoice_id
     JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
     LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
     WHERE r.organization_id=$1
@@ -372,7 +373,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
     }>(
       `SELECT i.id,i.sales_order_document_id,d.display_number,i.customer_id,COALESCE(c.display_name,c.company_name) customer_name,i.invoice_state,i.currency,i.total_cents,
         COALESCE((SELECT sum(a.amount_cents) FROM v2_billing_payment_allocations a WHERE a.organization_id=i.organization_id AND a.invoice_id=i.id),0)::text paid,
-        COALESCE((SELECT sum(r.amount_cents) FROM v2_billing_refunds r WHERE r.organization_id=i.organization_id AND r.invoice_id=i.id),0)::text refunded,
+        COALESCE((SELECT sum(e.amount_cents) FROM v2_billing_refund_allocation_evidence e WHERE e.organization_id=i.organization_id AND e.invoice_id=i.id),0)::text refunded,
         i.issued_at,i.updated_at
        FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
        LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id
@@ -436,7 +437,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
     const result = await this.client.query<FactRow>(
       `SELECT 'payment'::text kind,p.id,p.id payment_id,a.invoice_id,a.amount_cents,p.currency,p.method,p.source,p.occurred_at,p.recorded_at FROM v2_billing_payments p JOIN v2_billing_payment_allocations a ON a.organization_id=p.organization_id AND a.payment_id=p.id WHERE p.organization_id=$1 AND a.invoice_id=$2
        UNION ALL
-       SELECT 'refund'::text kind,r.id,a.payment_id,r.invoice_id,r.amount_cents,r.currency,p.method,r.source,r.occurred_at,r.recorded_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=a.payment_id WHERE r.organization_id=$1 AND r.invoice_id=$2
+       SELECT 'refund'::text kind,r.id,e.payment_id,e.invoice_id,e.amount_cents,r.currency,p.method,r.source,r.occurred_at,r.recorded_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=e.payment_id WHERE r.organization_id=$1 AND e.invoice_id=$2
        ORDER BY occurred_at,recorded_at,id`,
       [organizationId, invoiceId],
     );

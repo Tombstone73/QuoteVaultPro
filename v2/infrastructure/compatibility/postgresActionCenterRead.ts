@@ -57,7 +57,7 @@ const definitions: Readonly<Record<ActionCenterKind, Readonly<{ label: string; h
             SELECT invoice_id,sum(amount_cents)::bigint AS amount FROM v2_billing_payment_allocations
             WHERE organization_id=$1 GROUP BY invoice_id
           ), refunds AS (
-            SELECT invoice_id,sum(amount_cents)::bigint AS amount FROM v2_billing_refunds
+            SELECT invoice_id,sum(amount_cents)::bigint AS amount FROM v2_billing_refund_allocation_evidence
             WHERE organization_id=$1 GROUP BY invoice_id
           )
           SELECT count(*)::text AS count FROM v2_billing_invoices i

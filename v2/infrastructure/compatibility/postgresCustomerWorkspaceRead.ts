@@ -169,8 +169,12 @@ const customerActivityEvents = `
   UNION ALL
   SELECT 'refund'::text,r.id,r.recorded_at,'Refund',r.source || ' · ' || r.currency || ' ' || (r.amount_cents::text)
   FROM v2_billing_refunds r
-  JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id
-  WHERE r.organization_id=$1 AND i.customer_id=$2
+  WHERE r.organization_id=$1 AND EXISTS (
+    SELECT 1 FROM v2_billing_refund_allocations a
+    JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id
+    JOIN v2_billing_invoices i ON i.organization_id=e.organization_id AND i.id=e.invoice_id
+    WHERE a.organization_id=r.organization_id AND a.refund_id=r.id AND i.customer_id=$2
+  )
   UNION ALL
   SELECT 'proof'::text,pv.id,COALESCE(pv.issued_at,pv.created_at),'Proof v' || pv.sequence::text,
     CASE WHEN pv.issued_at IS NULL THEN 'prepared' ELSE 'issued' END

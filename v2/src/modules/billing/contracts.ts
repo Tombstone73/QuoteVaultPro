@@ -146,6 +146,28 @@ export type RecordManualPaymentAllocationsInput = Readonly<{
   occurredAt: string;
   businessRequestId: BusinessRequestId;
 }>;
+/** A requested reversal of one immutable portion of a Payment.  The server
+ * derives the Payment and Invoice from `paymentAllocationId`; callers never
+ * nominate an Invoice for a refund. */
+export type RefundAllocationInput = Readonly<{ paymentAllocationId: string; amount: Money }>;
+/** Immutable, allocation-aware refund evidence. */
+export type RefundAllocationFact = Readonly<{
+  paymentAllocationId: string;
+  paymentId: PaymentId;
+  invoiceId: InvoiceId;
+  amount: Money;
+}>;
+/** One business/provider Refund against one original Payment. */
+export type RefundAggregateFact = Readonly<{ refund: RefundFact; allocations: readonly RefundAllocationFact[] }>;
+export type RecordRefundAllocationsInput = Readonly<{
+  organizationId: OrganizationId;
+  paymentId: PaymentId;
+  allocations: readonly RefundAllocationInput[];
+  occurredAt: string;
+  businessRequestId: BusinessRequestId;
+}>;
+/** Legacy one-Invoice compatibility input. New callers use
+ * `RecordRefundAllocationsInput` so allocation ownership is server-derived. */
 export type RecordRefundInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; paymentId: PaymentId; amount: Money; occurredAt: string; businessRequestId: BusinessRequestId }>;
 export type BeginProviderFinancialOperationInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amount: Money; provider: string; providerIdempotencyKey: string; /** Provider-account context is integration evidence, never V2 billing authority. */ providerAccountId?: string; businessRequestId: BusinessRequestId }>;
 export type ProviderFinancialOperation = Readonly<{ providerOperationId: ProviderFinancialOperationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amount: Money; provider: string; providerIdempotencyKey: string; providerAccountId?: string; providerTransactionId?: string; reconciliationState: ProviderReconciliationState }>;

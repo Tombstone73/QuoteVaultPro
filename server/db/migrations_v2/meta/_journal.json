@@ -1863,6 +1863,13 @@
       "when": 1788048000117,
       "tag": "0270_v2_payment_allocation_aggregate",
       "breakpoints": true
+    },
+    {
+      "idx": 272,
+      "version": "7",
+      "when": 1788048000118,
+      "tag": "0271_v2_refund_allocation_aggregate",
+      "breakpoints": true
     }
   ]
 }

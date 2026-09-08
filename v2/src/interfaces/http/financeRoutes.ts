@@ -15,6 +15,9 @@ const requestId = (value: unknown) => typeof value === "string" ? value.trim() :
 const cents = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 const occurredAt = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
 const currency = (value: unknown) => typeof value === "string" && /^[A-Z]{3}$/.test(value) ? value : null;
+const refundAllocations = (value: unknown) => Array.isArray(value) && value.length > 0 && value.length <= 25
+  ? value.map((entry) => ({ paymentAllocationId: requestId((entry as Record<string, unknown>)?.paymentAllocationId), amountCents: cents((entry as Record<string, unknown>)?.amountCents) }))
+  : null;
 const context = (principal: Principal, organizationId: string, operationId: string, businessRequestId?: string): OperationContext => ({ principal, organizationId, operationId, ...(businessRequestId ? { businessRequest: { id: businessRequestId, payloadFingerprint: "http-boundary" } } : {}) });
 const organization = (request: Request) => (request.params as Record<string, string>).organizationId!;
 const positiveInt = (value: unknown, fallback: number) => typeof value === "string" && /^\d+$/.test(value) ? Math.max(1, Number(value)) : fallback;
@@ -80,6 +83,19 @@ export const createFinanceRouter = (dependencies: FinanceHttpDependencies) => {
       if (!result.ok) return fail(response, result.error);
       return response.status(200).json({ ok: true, data: result.value });
     } catch { return fail(response, new V2ApplicationError("FORBIDDEN", "Authenticated refund access is required.")); }
+  });
+  /** The aggregate endpoint intentionally accepts Payment allocation ids, not
+   * caller-nominated Invoice ids.  The billing service derives and locks every
+   * affected Invoice before it records immutable Refund evidence. */
+  router.post("/refunds", async (request, response) => {
+    try {
+      const organizationId=organization(request), businessRequestId=requestId(request.body?.businessRequestId), paymentId=requestId(request.body?.paymentId), code=currency(request.body?.currency), when=occurredAt(request.body?.occurredAt), allocations=refundAllocations(request.body?.allocations);
+      if(!businessRequestId||!paymentId||!code||!when||!allocations||allocations.some((allocation)=>!allocation.paymentAllocationId||!allocation.amountCents)) return fail(response,new V2ApplicationError("VALIDATION_ERROR","A Payment, one or more allocation ids, positive exact-cent amounts, currency, time, and business request identity are required."));
+      const principal=await dependencies.principals.principal(request,organizationId);
+      const result=await dependencies.payments.recordRefundAllocations(context(principal,organizationId,`http:POST:${request.path}`,businessRequestId),{organizationId:brandedId<"OrganizationId">(organizationId),paymentId:brandedId<"PaymentId">(paymentId),allocations:allocations.map((allocation)=>({paymentAllocationId:allocation.paymentAllocationId,amount:money(currencyCode(code),allocation.amountCents!)})),occurredAt:when,businessRequestId:brandedId<"BusinessRequestId">(businessRequestId)});
+      if(!result.ok)return fail(response,result.error);
+      return response.status(200).json({ok:true,data:result.value});
+    } catch { return fail(response,new V2ApplicationError("FORBIDDEN","Authenticated refund access is required.")); }
   });
   router.post("/invoices/:invoiceId/stripe/payment-intents", async (request, response) => {
     try {

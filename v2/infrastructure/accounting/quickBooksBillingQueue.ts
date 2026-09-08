@@ -126,7 +126,7 @@ export class PostgresQuickBooksSyncNow {
       for (const fact of unique) {
         const valid = await client.query<{ id:string }>(fact.subjectKind === "payment"
           ? `SELECT p.id FROM v2_billing_payments p WHERE p.organization_id=$1 AND p.id=$2 AND EXISTS (SELECT 1 FROM v2_billing_payment_allocations a WHERE a.organization_id=p.organization_id AND a.payment_id=p.id) AND NOT EXISTS (SELECT 1 FROM v2_billing_payment_allocations a JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id AND l.projection_version=i.synchronization_version::varchar WHERE a.organization_id=p.organization_id AND a.payment_id=p.id AND (i.invoice_state='void' OR l.provider_id IS NULL))`
-          : `SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id AND l.projection_version=i.synchronization_version::varchar WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_sync_links payment_link WHERE payment_link.organization_id=a.organization_id AND payment_link.entity_kind='payment' AND payment_link.entity_id=a.payment_id)`, [organizationId, fact.subjectId]);
+          : `SELECT r.id FROM v2_billing_refunds r WHERE r.organization_id=$1 AND r.id=$2 AND EXISTS (SELECT 1 FROM v2_billing_refund_allocations a JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id JOIN v2_billing_invoices i ON i.organization_id=e.organization_id AND i.id=e.invoice_id JOIN v2_quickbooks_sync_links l ON l.organization_id=i.organization_id AND l.entity_kind='invoice' AND l.entity_id=i.id AND l.projection_version=i.synchronization_version::varchar JOIN v2_quickbooks_sync_links payment_link ON payment_link.organization_id=a.organization_id AND payment_link.entity_kind='payment' AND payment_link.entity_id=a.payment_id WHERE a.organization_id=r.organization_id AND a.refund_id=r.id AND i.invoice_state <> 'void')`, [organizationId, fact.subjectId]);
         if (!valid.rows[0]) throw new Error(`The V2 ${fact.subjectKind} is not eligible for manual QuickBooks sync.`);
         await enqueueV2QuickBooksSync(client, organizationId, fact.subjectKind, fact.subjectId);
       }
@@ -183,7 +183,7 @@ export class PostgresQuickBooksSyncNow {
         ? "SELECT i.id FROM v2_billing_invoices i JOIN v2_quickbooks_invoice_approvals a ON a.organization_id=i.organization_id AND a.invoice_id=i.id AND a.synchronization_version=i.synchronization_version WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void'"
         : subjectKind === "payment"
           ? "SELECT p.id FROM v2_billing_payments p WHERE p.organization_id=$1 AND p.id=$2 AND EXISTS (SELECT 1 FROM v2_billing_payment_allocations a JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id WHERE a.organization_id=p.organization_id AND a.payment_id=p.id AND i.invoice_state <> 'void')"
-          : "SELECT r.id FROM v2_billing_refunds r JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void'", [organizationId, subjectId]);
+          : "SELECT r.id FROM v2_billing_refunds r WHERE r.organization_id=$1 AND r.id=$2 AND EXISTS (SELECT 1 FROM v2_billing_refund_allocations a JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id JOIN v2_billing_invoices i ON i.organization_id=e.organization_id AND i.id=e.invoice_id WHERE a.organization_id=r.organization_id AND a.refund_id=r.id AND i.invoice_state <> 'void')", [organizationId, subjectId]);
       if (!valid.rows[0]) throw new Error(`The V2 ${subjectKind} is unavailable for QuickBooks recovery.`);
       const recovered = await client.query<{ attempt_count:number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId,subjectKind,subjectId]);
       if (recovered.rows[0]) { await client.query("COMMIT"); return { state:"queued",attemptCount:recovered.rows[0].attempt_count }; }
@@ -363,12 +363,17 @@ export class V2QuickBooksBillingWorker {
     const client = await this.pool.connect();
     try {
       const refund = await client.query<{ invoice_id:string; payment_id:string; amount_cents:string; currency:string; occurred_at:Date; customer_id:string|null; display_number:string; synchronization_version:string }>(
-        `SELECT r.invoice_id,a.payment_id,r.amount_cents,r.currency,r.occurred_at,i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.synchronization_version
+        `SELECT e.invoice_id,e.payment_id,e.amount_cents,r.currency,r.occurred_at,i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.synchronization_version
            FROM v2_billing_refunds r
            JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id
-           JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id
+           JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id
+           JOIN v2_billing_invoices i ON i.organization_id=e.organization_id AND i.id=e.invoice_id
            JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
           WHERE r.organization_id=$1 AND r.id=$2 AND i.invoice_state <> 'void'`, [job.organizationId, job.subjectId]);
+      // The existing QuickBooks CreditMemo -> Disbursement projection can only
+      // represent one Invoice allocation.  Multi-allocation refunds are held
+      // before any provider call until their dedicated QBO projection exists.
+      if (refund.rows.length !== 1) throw new Error("QUICKBOOKS_REFUND_ALLOCATION_EXPORT_UNSUPPORTED: multi-invoice Refund export requires an allocation-aware CreditMemo/disbursement projection.");
       const row = refund.rows[0];
       if (!row?.customer_id || !row.payment_id) throw new Error("V2 Refund lacks its Order-backed Invoice or original Payment projection facts.");
       const customerQuickBooksId = await this.link(job.organizationId, "customer", row.customer_id);

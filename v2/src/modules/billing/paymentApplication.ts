@@ -6,11 +6,20 @@ import { principalSubject, staffActorId } from "../../authorization/principals.j
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, money, type InvoiceId, type OrganizationId, type PaymentId, type ProviderFinancialOperationId } from "../shared/commercialValues.js";
 import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
-import type { BeginProviderFinancialOperationInput, BeginProviderPaymentAggregateInput, ConfirmProviderPaymentAggregateInput, ConfirmProviderPaymentInput, ConfirmProviderRefundInput, InvoiceSettlement, PaymentAggregateFact, PaymentAllocationFact, PaymentAllocationInput, PaymentFact, ProviderFinancialOperation, ProviderPaymentAggregateConfirmation, ProviderPaymentAggregateOperation, RecordManualPaymentAllocationsInput, RecordManualPaymentInput, RecordRefundInput, RefundFact } from "./contracts.js";
+import type { BeginProviderFinancialOperationInput, BeginProviderPaymentAggregateInput, ConfirmProviderPaymentAggregateInput, ConfirmProviderPaymentInput, ConfirmProviderRefundInput, InvoiceSettlement, PaymentAggregateFact, PaymentAllocationFact, PaymentAllocationInput, PaymentFact, ProviderFinancialOperation, ProviderPaymentAggregateConfirmation, ProviderPaymentAggregateOperation, RecordManualPaymentAllocationsInput, RecordManualPaymentInput, RecordRefundAllocationsInput, RecordRefundInput, RefundAggregateFact, RefundAllocationFact, RefundAllocationInput, RefundFact } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
 export type FinancialLockedInvoice = Readonly<{ invoiceId: InvoiceId; customerId?: string; currency: string; totalCents: number; lifecycle: "draft" | "issued" | "void" }>;
+/** A locked, server-derived payment allocation that can safely be reversed. */
+export type FinancialLockedRefundAllocation = Readonly<{
+  paymentAllocationId: string;
+  paymentId: PaymentId;
+  invoice: FinancialLockedInvoice;
+  allocatedCents: number;
+  alreadyRefundedCents: number;
+  remainingRefundableCents: number;
+}>;
 export type ProviderPaymentConfirmation = Readonly<{ payment: PaymentFact; materialized: boolean }>;
 export type ProviderRefundConfirmation = Readonly<{ refund: RefundFact; materialized: boolean }>;
 export interface BillingFinancialTransaction {
@@ -26,6 +35,10 @@ export interface BillingFinancialTransaction {
   /** One immutable Payment plus one-or-many immutable Invoice allocations. */
   recordPaymentAggregate?(input: Readonly<{ organizationId: OrganizationId; allocations: readonly PaymentAllocationFact[]; currency: string; method: string; occurredAt: string; operationRequestId: string }> & Actor): Promise<PaymentAggregateFact>;
   recordRefund(input: Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; paymentId: PaymentId; amountCents: number; currency: string; occurredAt: string; operationRequestId: string }> & Actor): Promise<RefundFact>;
+  /** Locks allocation facts and their Invoice rows in deterministic order. */
+  lockRefundAllocations?(input: Readonly<{ organizationId: OrganizationId; paymentId: PaymentId; paymentAllocationIds: readonly string[] }>): Promise<readonly FinancialLockedRefundAllocation[]>;
+  /** One Refund may reverse several allocations of its original Payment. */
+  recordRefundAggregate?(input: Readonly<{ organizationId: OrganizationId; paymentId: PaymentId; allocations: readonly RefundAllocationFact[]; currency: string; occurredAt: string; operationRequestId: string }> & Actor): Promise<RefundAggregateFact>;
   beginProvider(input: Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amountCents: number; currency: string; provider: string; providerIdempotencyKey: string; providerAccountId?: string; operationRequestId: string }>): Promise<ProviderFinancialOperation>;
   beginProviderPaymentAggregate?(input: Readonly<{ organizationId: OrganizationId; allocations: readonly PaymentAllocationFact[]; currency: string; provider: string; providerIdempotencyKey: string; providerAccountId?: string; operationRequestId: string }>): Promise<ProviderPaymentAggregateOperation>;
   loadProviderPaymentAggregate?(input: Readonly<{ organizationId: OrganizationId; providerOperationId: ProviderFinancialOperationId }>): Promise<ProviderPaymentAggregateOperation | null>;
@@ -129,6 +142,48 @@ export class BillingPaymentsApplicationService {
   }
   async recordRefund(context: OperationContext, input: RecordRefundInput): Promise<ApplicationResult<Readonly<{ refund: RefundFact; settlement: InvoiceSettlement }>>>
   { return this.withSettlementReconciliation(input, this.withInvoice(context, input, "billing.refund.record.v1", "refund.issue", async (tx, invoice, requestId) => { this.assertFinanciallyActive(invoice, input.amount); const refund = await tx.recordRefund({ organizationId: input.organizationId, invoiceId: input.invoiceId, paymentId: input.paymentId, amountCents: input.amount.cents, currency: input.amount.currency, occurredAt: input.occurredAt, operationRequestId: requestId, ...actor(context) }); const settlement = await tx.settlement(input.organizationId, input.invoiceId, invoice.currency, invoice.totalCents); await this.finish(tx, context, requestId, "billing.refund.record.v1", "refund_recorded", "refund", refund.refundId, { paymentId: input.paymentId, amountCents: input.amount.cents }, { refund, settlement }); return { refund, settlement }; })); }
+  /**
+   * Reverses one real Payment across one-or-many of its immutable allocations.
+   * Invoice identity, currency, and refundable capacity are loaded while the
+   * allocation rows are locked; a caller cannot redirect a refund by posting
+   * an Invoice id alongside an allocation id.
+   */
+  async recordRefundAllocations(context: OperationContext, input: RecordRefundAllocationsInput): Promise<ApplicationResult<RefundAggregateFact>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      const requested = this.normalizeRefundAllocations(input.allocations);
+      const result = await this.runner.transaction(async (tx) => {
+        const lock = tx.lockRefundAllocations;
+        const record = tx.recordRefundAggregate;
+        if (!lock || !record) throw new V2ApplicationError("CONFLICT", "This billing persistence runtime does not support allocation-aware refunds.");
+        const locked = await lock({ organizationId: input.organizationId, paymentId: input.paymentId, paymentAllocationIds: requested.map((allocation) => allocation.paymentAllocationId) });
+        if (locked.length !== requested.length || new Set(locked.map((allocation) => allocation.paymentAllocationId)).size !== requested.length) throw new V2ApplicationError("NOT_FOUND", "One or more Payment allocations were not found.");
+        const firstCustomerId = locked[0]?.invoice.customerId;
+        const currency = locked[0]?.invoice.currency;
+        if (!firstCustomerId || !currency || locked.some((allocation) => allocation.paymentId !== input.paymentId || allocation.invoice.customerId !== firstCustomerId)) throw new V2ApplicationError("CONFLICT", "All Refund allocations must belong to one Customer account.");
+        if (locked.some((allocation) => allocation.invoice.currency !== currency || allocation.invoice.lifecycle === "void")) throw new V2ApplicationError("CONFLICT", "A Refund allocation references an inactive or currency-incompatible Invoice.");
+        const byId = new Map(locked.map((allocation) => [allocation.paymentAllocationId, allocation]));
+        const allocations = requested.map((allocation): RefundAllocationFact => {
+          const source = byId.get(allocation.paymentAllocationId);
+          if (!source) throw new V2ApplicationError("NOT_FOUND", "Payment allocation was not found.");
+          if (allocation.amount.cents > source.remainingRefundableCents) throw new V2ApplicationError("CONFLICT", "Refund exceeds the remaining refundable Payment allocation.");
+          const decision = this.authority.decide(context.principal, { capability: "refund.issue", resource: { organizationId: context.organizationId, customerId: source.invoice.customerId } });
+          if (!decision.allowed) throw new V2ApplicationError("FORBIDDEN", "The principal is not authorized for this financial operation.");
+          return Object.freeze({ paymentAllocationId: source.paymentAllocationId, paymentId: source.paymentId, invoiceId: source.invoice.invoiceId, amount: allocation.amount });
+        });
+        const reservation = await tx.reserve({ organizationId: input.organizationId, operation: "billing.refund.aggregate.record.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) });
+        if (reservation.kind === "replay") return reservation.request.resultJson as RefundAggregateFact;
+        const refund = await record({ organizationId: input.organizationId, paymentId: input.paymentId, allocations, currency, occurredAt: input.occurredAt, operationRequestId: reservation.request.id, ...actor(context) });
+        await this.finish(tx, context, reservation.request.id, "billing.refund.aggregate.record.v1", "refund_aggregate_recorded", "refund", refund.refund.refundId, { paymentId: input.paymentId, allocationCount: refund.allocations.length, amountCents: refund.refund.amount.cents }, refund);
+        return refund;
+      });
+      await Promise.all(result.allocations.map((allocation) => this.orderLifecycle?.reconcileInvoice(input.organizationId, allocation.invoiceId)));
+      return success(result);
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Financial operation conflicts with the immutable ledger."));
+    }
+  }
   async beginProviderOperation(context: OperationContext, input: BeginProviderFinancialOperationInput): Promise<ApplicationResult<ProviderFinancialOperation>>
   { return this.withInvoice(context, input, `billing.provider.${input.kind}.begin.v1`, input.kind === "payment" ? "payment.record" : "refund.issue", async (tx, invoice, requestId) => { this.assertFinanciallyActive(invoice, input.amount); if (input.kind === "payment") { const settlement = await tx.settlement(input.organizationId, input.invoiceId, invoice.currency, invoice.totalCents); if (input.amount.cents > settlement.collectibleBalance.cents) throw new V2ApplicationError("CONFLICT", "Payment exceeds the collectible Invoice balance."); } const operation = await tx.beginProvider({ organizationId: input.organizationId, invoiceId: input.invoiceId, kind: input.kind, ...(input.paymentId ? { paymentId: input.paymentId } : {}), amountCents: input.amount.cents, currency: input.amount.currency, provider: input.provider, providerIdempotencyKey: input.providerIdempotencyKey, ...(input.providerAccountId ? { providerAccountId: input.providerAccountId } : {}), operationRequestId: requestId }); await tx.attribute({ organizationId: input.organizationId, operationRequestId: requestId, operation: `billing.provider.${input.kind}.begin.v1`, resourceType: "provider_financial_operation", resourceId: operation.providerOperationId, ...actor(context) }); await tx.audit({ organizationId: input.organizationId, operationRequestId: requestId, operation: `billing.provider.${input.kind}.begin.v1`, eventType: "provider_financial_reconciliation_required", resourceType: "provider_financial_operation", resourceId: operation.providerOperationId, changes: [{ kind: input.kind, provider: input.provider, reconciliationState: "pending" }], ...actor(context) }); await tx.succeed(input.organizationId, requestId, "provider_financial_operation", operation.providerOperationId, operation); return operation; }); }
   async confirmProviderPayment(context: OperationContext, input: ConfirmProviderPaymentInput): Promise<ApplicationResult<PaymentFact>> { return this.withSettlementReconciliation(input, this.withInvoice(context, input, "billing.provider.payment.confirm.v1", "payment.record", async (tx, invoice, requestId) => { const confirmation = await tx.confirmProviderPayment({ organizationId: input.organizationId, invoiceId: input.invoiceId, providerOperationId: input.providerOperationId, providerEventId: input.providerEventId, providerTransactionId: input.providerTransactionId, occurredAt: input.occurredAt, operationRequestId: requestId, ...actor(context) }); if (confirmation.materialized) await this.finish(tx, context, requestId, "billing.provider.payment.confirm.v1", "provider_payment_succeeded", "payment", confirmation.payment.paymentId, { providerOperationId: input.providerOperationId }, confirmation.payment); else await tx.succeed(context.organizationId, requestId, "payment", confirmation.payment.paymentId, confirmation.payment); return confirmation.payment; })); }
@@ -165,6 +220,17 @@ export class BillingPaymentsApplicationService {
       return Object.freeze({ invoiceId: allocation.invoiceId, amount: allocation.amount });
     });
     return Object.freeze(allocations.sort((left, right) => left.invoiceId.localeCompare(right.invoiceId)));
+  }
+  private normalizeRefundAllocations(input: readonly RefundAllocationInput[]): readonly RefundAllocationInput[] {
+    if (!Array.isArray(input) || input.length === 0 || input.length > 25) throw new V2ApplicationError("VALIDATION_ERROR", "A Refund must contain between one and 25 Payment allocations.");
+    const seen = new Set<string>();
+    const allocations = input.map((allocation) => {
+      if (!allocation?.paymentAllocationId || seen.has(allocation.paymentAllocationId)) throw new V2ApplicationError("VALIDATION_ERROR", "A Refund may reverse a Payment allocation only once.");
+      seen.add(allocation.paymentAllocationId);
+      assertMoney(allocation.amount);
+      return Object.freeze({ paymentAllocationId: allocation.paymentAllocationId, amount: allocation.amount });
+    });
+    return Object.freeze(allocations.sort((left, right) => left.paymentAllocationId.localeCompare(right.paymentAllocationId)));
   }
   private async withInvoices<T extends { businessRequestId: string; organizationId: OrganizationId; allocations: readonly PaymentAllocationFact[] }>(context: OperationContext, input: T, operation: string, capability: "payment.record", action: (tx: BillingFinancialTransaction, invoices: readonly FinancialLockedInvoice[], requestId: string) => Promise<any>): Promise<ApplicationResult<any>> {
     try {
