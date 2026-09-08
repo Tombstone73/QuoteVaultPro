@@ -50,6 +50,7 @@ import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestrat
 import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
 import { resolveInvoiceDetailJobContext } from "@/lib/invoiceDetailJobContext";
 import { hasReconciledStripePayment } from "@shared/stripePaymentSettlement";
+import { isNestedInvoiceLineItem } from "@shared/invoiceLinePresentation";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -262,6 +263,7 @@ export default function InvoiceDetailPage() {
 
   const invoice = data?.invoice;
   const lineItems = data?.lineItems ?? [];
+  const invoiceLineItems = useMemo(() => lineItems as Array<{ id?: string | null; parentLineItemId?: string | null }>, [lineItems]);
   const payments = data?.payments ?? [];
   const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
   const pendingRefundRequestByPaymentId = useMemo(() => new Map(
@@ -2380,9 +2382,11 @@ export default function InvoiceDetailPage() {
                             {isImportedFromQuickBooks ? 'No Printers Hero production line items for this imported invoice.' : 'No line items recorded.'}
                           </TableCell>
                         </TableRow>
-                      ) : lineItems.map((item) => (
-                        <TableRow key={item.id}>
-                          <TableCell>
+                      ) : lineItems.map((item) => {
+                        const isNestedChild = isNestedInvoiceLineItem(item, invoiceLineItems);
+                        return (
+                        <TableRow key={item.id} className={isNestedChild ? "bg-muted/20" : undefined}>
+                          <TableCell className={isNestedChild ? "pl-8" : undefined}>
                             <div className="font-medium">{item.description}</div>
                             {item.width && item.height && (
                               <div className="text-sm text-muted-foreground">
@@ -2396,7 +2400,8 @@ export default function InvoiceDetailPage() {
                             {formatCurrency(item.totalPrice)}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>

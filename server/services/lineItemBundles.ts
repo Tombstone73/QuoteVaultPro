@@ -57,6 +57,12 @@ export function getCustomerVisibleBundleLines<T extends BundleMembership>(lineIt
   return lineItems.filter((line) => {
     if (line.lineItemRole !== "child" && !line.parentLineItemId) return true;
     const parent = line.parentLineItemId ? byId.get(line.parentLineItemId) : undefined;
+    // A normal sales line can have operationally linked child lines without
+    // becoming a synthetic bundle wrapper. Those children remain separately
+    // billable (and therefore customer-visible) even when the historical
+    // bundle display default is hidden. Hiding them would make document line
+    // amounts disagree with the commercial subtotal.
+    if (!parent || parent.lineItemRole !== "parent") return true;
     return Boolean(parent && parent.childDisplayMode !== "hidden");
   });
 }

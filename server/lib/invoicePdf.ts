@@ -14,6 +14,7 @@ import {
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 import { getCustomerVisibleBundleLines } from '../services/lineItemBundles';
+import { isNestedInvoiceLineItem } from '../../shared/invoiceLinePresentation';
 import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';
 
 type CompanySettingsLike = CompanyDocumentBrandingInput & {
@@ -60,6 +61,7 @@ type InvoiceLike = {
 } | null;
 
 type InvoiceLineItemLike = {
+  id?: string | null;
   description?: string | null;
   quantity?: number | null;
   unitPriceCents?: number | null;
@@ -782,9 +784,12 @@ export async function generateInvoicePdfBytes(
     const unitLine = unitCents > 0 ? `${hourlyTerms ? "Rate" : "Unit"}: ${fmtMoney(unitCents, currency)}${hourlyTerms ? "/hr" : ""}` : '';
     const baseDesc = sku ? `${descRaw}\nSKU: ${sku}${unitLine ? `\n${unitLine}` : ''}` : `${descRaw}${unitLine ? `\n${unitLine}` : ''}`;
 
+    const childIndent = isNestedInvoiceLineItem(li, lineItems) ? 14 : 0;
+    const descriptionX = xDesc + childIndent;
+    const descriptionWidth = Math.max(24, descW - childIndent);
     const descLines = wrapText({
       text: baseDesc,
-      maxWidth: descW,
+      maxWidth: descriptionWidth,
       font,
       fontSize: theme.fontSizes.body,
       maxLines: 3,
@@ -840,7 +845,7 @@ export async function generateInvoicePdfBytes(
       const line = descLines[i];
       const isMeta = line.startsWith('SKU:') || line.startsWith('Unit:') || line.startsWith('Rate:');
       drawText(line, {
-        x: xDesc,
+        x: descriptionX,
         y: descY,
         size: isMeta ? theme.fontSizes.small : theme.fontSizes.body,
         color: isMeta ? theme.colors.mutedText : theme.colors.text,

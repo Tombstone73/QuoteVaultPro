@@ -46,6 +46,9 @@ describe("line item bundles", () => {
     expect(calculateQuoteAggregateTotals({ lineItems: [parent, child], taxRate: 0 }))
       .toMatchObject({ subtotal: 180, totalPrice: 180 });
     expect(child.linePrice).toBe("57.00");
+    const customerVisible = getCustomerVisibleBundleLines([parent, child]);
+    expect(customerVisible.map((line) => line.id)).toEqual(["parent", "child"]);
+    expect(customerVisible.reduce((total, line) => total + Number(line.linePrice), 0)).toBe(180);
   });
 
   it("preserves linked prices when unlinking or changing a normal parent", () => {
@@ -72,6 +75,7 @@ describe("line item bundles", () => {
     const childB = { id: "child-b", lineItemRole: "child", parentLineItemId: "parent", linePrice: "20.00" };
 
     expect(getBillableBundleRoots([parent, childA, childB]).map((line) => line.id)).toEqual(["parent", "child-a", "child-b"]);
+    expect(getCustomerVisibleBundleLines([parent, childA, childB]).map((line) => line.id)).toEqual(["parent", "child-a", "child-b"]);
     expect(calculateQuoteAggregateTotals({ lineItems: [parent, childA, childB], taxRate: 0 }))
       .toMatchObject({ subtotal: 200, totalPrice: 200 });
     expect(parent.linePrice).toBe("123.00");
@@ -98,6 +102,11 @@ describe("line item bundles", () => {
     const parent = { id: "parent", lineItemRole: "parent", childDisplayMode: "visible_detail", linePrice: "19.75" };
     expect(getCustomerVisibleBundleLines([parent, ...children]).map((line) => line.id)).toEqual(["parent", "child-a", "child-b"]);
     expect(getBillableBundleRoots([parent, ...children]).map((line) => line.id)).toEqual(["parent"]);
+  });
+
+  it("does not expose a hidden synthetic bundle child as an independent customer charge", () => {
+    const parent = { id: "parent", lineItemRole: "parent", childDisplayMode: "hidden", linePrice: "19.75" };
+    expect(getCustomerVisibleBundleLines([parent, ...children]).map((line) => line.id)).toEqual(["parent"]);
   });
 
   it("keeps standalone behavior and never schedules a parent wrapper", () => {

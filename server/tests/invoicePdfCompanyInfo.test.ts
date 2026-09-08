@@ -58,6 +58,50 @@ function extractDecodedPdfContent(bytes: Uint8Array): string {
 }
 
 describe("invoice PDF company info and remittance data", () => {
+  test("renders each independently billable child line and keeps visible amounts aligned with the subtotal", async () => {
+    const bytes = await generateInvoicePdfBytes({
+      ...baseInvoiceParams,
+      invoice: {
+        ...baseInvoiceParams.invoice,
+        invoiceNumber: 20137,
+        subtotalCents: 18_000,
+        totalCents: 18_000,
+      },
+      paymentSummary: {
+        totalCents: 18_000,
+        amountPaidCents: 0,
+        amountDueCents: 18_000,
+        statusLabel: 'Unpaid',
+      },
+      lineItems: [
+        {
+          id: 'parent-line',
+          description: 'Substance 2755 - Sign Vinyl',
+          quantity: 8,
+          lineTotalCents: 12_300,
+          lineItemRole: 'standalone',
+          childDisplayMode: 'hidden',
+        },
+        {
+          id: 'child-line',
+          parentLineItemId: 'parent-line',
+          lineItemRole: 'child',
+          description: 'ACM / Dibond / Max Metal / Aluminum Composite Material',
+          quantity: 4,
+          unitPriceCents: 1_425,
+          lineTotalCents: 5_700,
+        },
+      ],
+    } as any);
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text).toContain('Substance 2755 - Sign Vinyl');
+    expect(text).toContain('ACM / Dibond / Max Metal / Aluminum Composite Material');
+    expect(text).toContain('$123.00');
+    expect(text).toContain('$57.00');
+    expect(text).toContain('$180.00');
+  });
+
   test("renders order PO and wraps a long job label in the invoice metadata area", async () => {
     const bytes = await generateInvoicePdfBytes({
       ...baseInvoiceParams,
