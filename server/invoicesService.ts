@@ -180,6 +180,8 @@ export type InvoiceListSortBy =
   | 'issueDate'
   | 'dueDate'
   | 'lastSentAt'
+  | 'approval'
+  | 'jobStatus'
   | 'status'
   | 'total'
   | 'balance';
@@ -256,7 +258,7 @@ export type InvoiceListPage = {
 
 export type { InvoiceDashboardSummary } from './lib/invoiceDashboardSummary';
 
-function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
+export function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
   const raw = String(sortBy || '').trim();
   switch (raw) {
     case 'invoiceNumber':
@@ -267,6 +269,9 @@ function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
     case 'purchaseOrderNumber':
     case 'issueDate':
     case 'dueDate':
+    case 'lastSentAt':
+    case 'approval':
+    case 'jobStatus':
     case 'status':
     case 'total':
     case 'balance':
@@ -276,7 +281,7 @@ function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
   }
 }
 
-function normalizeInvoiceListSortDir(sortDir: unknown): InvoiceListSortDir {
+export function normalizeInvoiceListSortDir(sortDir: unknown): InvoiceListSortDir {
   return String(sortDir || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
 }
 
@@ -340,6 +345,26 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
           and ${invoiceEmailLogs.type} = 'invoice_send'
           and ${invoiceEmailLogs.status} = 'sent'
       ), 'epoch'::timestamptz)`;
+    case 'approval':
+      return sql`case
+        when ${invoices.accountingApprovedAt} is not null
+          and ${invoices.accountingApprovalRevokedAt} is null
+          and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 0
+        when ${invoices.accountingApprovalRevokedAt} is not null
+          or (${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovedVersion} is distinct from ${invoices.invoiceVersion}) then 1
+        else 2
+      end`;
+    case 'jobStatus':
+      // Keep the database ordering aligned with getOrderJobStatus(), while
+      // retaining a stable string sort for ordinary order-state values.
+      return sql`case
+        when ${invoices.orderId} is null then 'no linked order'
+        when lower(coalesce(${orders.state}, '')) = 'canceled' then 'cancelled'
+        when lower(coalesce(${orders.state}, '')) = 'closed' then 'operationally complete'
+        when lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered') then 'fulfillment complete'
+        when lower(coalesce(${orders.state}, '')) = 'production_complete' then 'production complete'
+        else lower(coalesce(${orders.statusPillValue}, ${orders.status}, ${orders.state}, 'open'))
+      end`;
     case 'status':
       return sql`lower(coalesce(${invoices.status}, ''))`;
     case 'total':

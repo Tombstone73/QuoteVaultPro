@@ -87,7 +87,18 @@ import { useCustomer, type CustomerWithRelations } from "@/hooks/useCustomer";
 import { useAuth } from "@/hooks/useAuth";
 import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { useOrders, type Order } from "@/hooks/useOrders";
-import { useApproveInvoicesForAccounting, useInvoices } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useInvoices, useInvoicesPage, type InvoiceListItem } from "@/hooks/useInvoices";
+import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
+import {
+  CUSTOMER_INVOICE_SORT_FIELDS,
+  DEFAULT_CUSTOMER_INVOICE_TABLE_SORT,
+  clearCustomerInvoiceTableSortPreference,
+  customerInvoiceSortApiField,
+  persistCustomerInvoiceTableSortPreference,
+  readCustomerInvoiceTableSortPreference,
+  type CustomerInvoiceSortField,
+  type CustomerInvoiceTableSortPreference,
+} from "@/lib/customerInvoiceTablePreferences";
 import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
@@ -2563,13 +2574,29 @@ function QuotesTable({
   );
 }
 
+const CUSTOMER_INVOICE_COLUMNS: ColumnConfig[] = [
+  { id: "invoiceNumber", label: "Invoice #", visible: true, order: 0, locked: true },
+  { id: "jobOrder", label: "Job / Order", visible: true, order: 1 },
+  { id: "poNumber", label: "PO #", visible: true, order: 2 },
+  { id: "orderNumber", label: "Order #", visible: true, order: 3 },
+  { id: "invoiceDate", label: "Invoice Date", visible: true, order: 4 },
+  { id: "lastSent", label: "Last Sent", visible: true, order: 5 },
+  { id: "dueDate", label: "Due Date", visible: true, order: 6 },
+  { id: "approval", label: "Approval", visible: true, order: 7 },
+  { id: "jobStatus", label: "Job Status", visible: true, order: 8 },
+  { id: "total", label: "Total", visible: true, order: 9 },
+  { id: "balance", label: "Balance", visible: true, order: 10 },
+  { id: "invoiceStatus", label: "Invoice Status", visible: true, order: 11 },
+  { id: "actions", label: "Actions", visible: true, order: 12, locked: true },
+];
+
 function InvoicesTable({
-  invoices,
+  customerId,
   searchQuery,
   statusFilter,
   customerName,
 }: {
-  invoices: any[];
+  customerId: string;
   searchQuery: string;
   statusFilter: string;
   customerName?: string;
@@ -2578,8 +2605,56 @@ function InvoicesTable({
   const { user, isAdmin } = useAuth();
   const { toast } = useToast();
   const approveInvoices = useApproveInvoicesForAccounting();
+  const organizationId = user?.lastActiveOrgId;
+  const columnConfig = useTableColumnConfig(`customer_detail_invoices:org_${organizationId || "unknown"}:user_${user?.id || "anonymous"}`, CUSTOMER_INVOICE_COLUMNS);
+  const [columnsOpen, setColumnsOpen] = useState(false);
   const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [sortPreference, setSortPreference] = useState<CustomerInvoiceTableSortPreference>(() => readCustomerInvoiceTableSortPreference(user?.id, organizationId));
   const isAdminOrOwner = Boolean(isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()));
+
+  // Layout and sort settings are personal operator preferences. They are
+  // deliberately keyed without a customer id so a backlog workflow carries
+  // across Customer A, Customer B, and browser navigation.
+  useEffect(() => {
+    setSortPreference(readCustomerInvoiceTableSortPreference(user?.id, organizationId));
+  }, [organizationId, user?.id]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [customerId, searchQuery, statusFilter]);
+
+  const updateSort = (sortBy: CustomerInvoiceSortField) => {
+    const next: CustomerInvoiceTableSortPreference = {
+      version: 1,
+      sortBy,
+      sortDir: sortPreference.sortBy === sortBy && sortPreference.sortDir === "asc" ? "desc" : "asc",
+    };
+    setSortPreference(next);
+    persistCustomerInvoiceTableSortPreference(user?.id, organizationId, next);
+    setPage(1);
+  };
+
+  const resetTable = () => {
+    columnConfig.reset();
+    clearCustomerInvoiceTableSortPreference(user?.id, organizationId);
+    setSortPreference(DEFAULT_CUSTOMER_INVOICE_TABLE_SORT);
+    setPage(1);
+  };
+
+  const invoicePage = useInvoicesPage({
+    customerId,
+    status: statusFilter === "all" ? undefined : statusFilter,
+    search: searchQuery || undefined,
+    sortBy: customerInvoiceSortApiField(sortPreference.sortBy),
+    sortDir: sortPreference.sortDir,
+    page,
+    pageSize,
+  });
+  const invoices = invoicePage.data?.items ?? [];
+  const pagination = invoicePage.data?.pagination;
+  const visibleColumns = columnConfig.columns.filter((column) => column.visible);
 
   const approvalLabel = (invoice: any) => {
     const currentVersion = Number(invoice.invoiceVersion || 1);
@@ -2600,23 +2675,7 @@ function InvoicesTable({
     }
   };
 
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((inv) => {
-      const matchesSearch =
-        !searchQuery ||
-        documentNumberMatchesSearch({
-          query: searchQuery,
-          displayNumber: inv.displayNumber,
-          numberCore: inv.numberCore,
-          legacyNumber: inv.invoiceNumber,
-        });
-      const matchesStatus =
-        statusFilter === "all" || inv.status === statusFilter;
-      return matchesSearch && matchesStatus;
-    });
-  }, [invoices, searchQuery, statusFilter]);
-
-  if (filteredInvoices.length === 0) {
+  if (!invoicePage.isLoading && invoices.length === 0) {
     const isFiltered = searchQuery || statusFilter !== "all";
     return (
       <div className="py-12 text-center text-titan-text-secondary">
@@ -2633,66 +2692,58 @@ function InvoicesTable({
 
   return (
     <>
+    <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-3">
+      <p className="text-sm text-titan-text-secondary">Invoice layout and sorting apply across all customers.</p>
+      <Button variant="outline" size="sm" onClick={() => setColumnsOpen(true)}><Settings2 className="mr-1.5 h-4 w-4" aria-hidden="true" />Columns</Button>
+    </div>
     <div className="overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
-      <table className="min-w-[1540px] w-full">
+      <table className="min-w-max w-full">
         <thead>
           <tr className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
-            {["Invoice #", "Job / Order", "PO #", "Order #", "Invoice Date", "Last Sent", "Due Date", "Approval", "Job Status", "Total", "Balance", "Invoice Status", "Actions"].map((label) => <th key={label} className="whitespace-nowrap px-3 py-3 text-left text-titan-xs font-semibold uppercase tracking-wider text-titan-text-muted">{label}</th>)}
+            {visibleColumns.map((column) => {
+              const sortable = (CUSTOMER_INVOICE_SORT_FIELDS as readonly string[]).includes(column.id);
+              const active = sortPreference.sortBy === column.id;
+              return <th key={column.id} className={cn("whitespace-nowrap px-3 py-3 text-left text-titan-xs font-semibold uppercase tracking-wider text-titan-text-muted", column.id === "actions" && "sticky right-0 z-10 bg-titan-bg-card-elevated")}>
+                {sortable ? <Button variant="ghost" size="sm" className="h-auto px-0 py-0 text-titan-xs font-semibold uppercase tracking-wider text-titan-text-muted hover:text-titan-text-primary" onClick={() => updateSort(column.id as CustomerInvoiceSortField)} aria-label={`Sort by ${column.label}`}>
+                  {column.label}{active ? (sortPreference.sortDir === "asc" ? <ArrowUp className="ml-1 h-3.5 w-3.5" aria-hidden="true" /> : <ArrowDown className="ml-1 h-3.5 w-3.5" aria-hidden="true" />) : <ArrowUpDown className="ml-1 h-3.5 w-3.5 opacity-50" aria-hidden="true" />}
+                </Button> : column.label}
+              </th>;
+            })}
           </tr>
         </thead>
         <tbody>
-          {filteredInvoices.map((inv: any) => (
+          {invoicePage.isLoading ? <tr><td className="px-3 py-8 text-center text-titan-text-secondary" colSpan={visibleColumns.length}>Loading invoices…</td></tr> : null}
+          {invoices.map((inv: InvoiceListItem) => (
             <tr
               key={inv.id}
               className="border-b border-titan-border-subtle last:border-0 hover:bg-titan-bg-table-row transition-colors cursor-pointer"
               onClick={() => navigate(ROUTES.invoices.detail(inv.id))}
             >
-              <td className="whitespace-nowrap px-3 py-3">
-                <span className="text-titan-sm font-medium text-titan-accent">
-                  {resolveDocumentDisplayNumber({
-                    displayNumber: inv.displayNumber,
-                    numberCore: inv.numberCore,
-                    legacyNumber: inv.invoiceNumber,
-                  }) || inv.invoiceNumber}
-                </span>
-              </td>
-              <td className="max-w-56 px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.jobName || inv.orderName || inv.orderNumber || "—"}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.purchaseOrderNumber || "—"}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.orderNumber || "—"}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">
-                {formatDate(inv.createdAt)}
-              </td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.lastSentAt ? formatDate(inv.lastSentAt) : "Not sent"}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.dueDate)}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{approvalLabel(inv)}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{getOrderJobStatus(inv)}</td>
-              <td className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">
-                {formatCurrency(inv.displayTotal || inv.total)}
-              </td>
-              <td className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-warning">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? inv.total)}</td>
-              <td className="whitespace-nowrap px-3 py-3">
-                <span
-                  className={cn(
-                    "inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border",
-                    getStatusStyle(inv.status)
-                  )}
-                >
-                  {inv.displayStatus || formatStatusLabel(inv.status)}
-                </span>
-              </td>
-              <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                <div className="flex min-w-max flex-wrap items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.invoices.detail(inv.id))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>
-                  {isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}
-                  {isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}
-                  {canCloseJobOverride(inv, isAdminOrOwner) ? <Button variant="outline" size="sm" onClick={() => setOverrideTarget({ orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) })}><ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override</Button> : null}
-                </div>
-              </td>
+              {visibleColumns.map((column) => {
+                switch (column.id) {
+                  case "invoiceNumber": return <td key={column.id} className="whitespace-nowrap px-3 py-3"><span className="text-titan-sm font-medium text-titan-accent">{resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber }) || inv.invoiceNumber}</span></td>;
+                  case "jobOrder": return <td key={column.id} className="max-w-56 px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.jobName || inv.orderName || inv.orderNumber || "—"}</td>;
+                  case "poNumber": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.purchaseOrderNumber || "—"}</td>;
+                  case "orderNumber": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.orderNumber || "—"}</td>;
+                  case "invoiceDate": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.issueDate || inv.createdAt)}</td>;
+                  case "lastSent": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.lastSentAt ? formatDate(inv.lastSentAt) : "Not sent"}</td>;
+                  case "dueDate": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.dueDate)}</td>;
+                  case "approval": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{approvalLabel(inv)}</td>;
+                  case "jobStatus": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{getOrderJobStatus(inv)}</td>;
+                  case "total": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">{formatCurrency(inv.displayTotal || inv.total)}</td>;
+                  case "balance": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-warning">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? inv.total)}</td>;
+                  case "invoiceStatus": return <td key={column.id} className="whitespace-nowrap px-3 py-3"><span className={cn("inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border", getStatusStyle(inv.status))}>{inv.displayStatus || formatStatusLabel(inv.status)}</span></td>;
+                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(ROUTES.invoices.detail(inv.id))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}{canCloseJobOverride(inv, isAdminOrOwner) ? <Button variant="outline" size="sm" onClick={() => setOverrideTarget({ orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) })}><ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override</Button> : null}</div></td>;
+                  default: return null;
+                }
+              })}
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+    {pagination ? <div className="flex flex-wrap items-center justify-between gap-3 px-1 pt-3 text-sm text-titan-text-secondary"><span>{pagination.totalCount === 0 ? "0 invoices" : `${(pagination.page - 1) * pagination.pageSize + 1}-${Math.min(pagination.page * pagination.pageSize, pagination.totalCount)} of ${pagination.totalCount} invoices`}</span><div className="flex items-center gap-2"><Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-8 w-[118px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25 per page</SelectItem><SelectItem value="50">50 per page</SelectItem><SelectItem value="100">100 per page</SelectItem></SelectContent></Select><Button variant="outline" size="sm" disabled={pagination.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</Button><span>Page {pagination.page} of {pagination.totalPages}</span><Button variant="outline" size="sm" disabled={pagination.page >= pagination.totalPages} onClick={() => setPage((current) => Math.min(pagination.totalPages, current + 1))}>Next</Button></div></div> : null}
+    <Dialog open={columnsOpen} onOpenChange={setColumnsOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg"><DialogHeader><DialogTitle>Configure Invoice Columns</DialogTitle><DialogDescription>Changes apply to Customer → Invoices for every customer you open.</DialogDescription></DialogHeader><div className="space-y-2 py-2">{columnConfig.columns.map((column) => <div key={column.id} className="flex items-center gap-3"><Checkbox id={`customer-invoice-column-${column.id}`} checked={column.visible} disabled={column.locked} onCheckedChange={(value) => columnConfig.setColumnVisibility(column.id, Boolean(value))} /><Label htmlFor={`customer-invoice-column-${column.id}`} className="text-sm">{column.label}{column.locked ? " (required)" : ""}{sortPreference.sortBy === column.id ? ` · sorted ${sortPreference.sortDir}` : ""}</Label><div className="ml-auto flex items-center gap-1"><Button variant="outline" size="icon" className="h-8 w-8" disabled={!columnConfig.canMoveColumn(column.id, "up")} onClick={() => columnConfig.moveColumn(column.id, "up")} aria-label={`Move ${column.label} up`}><ArrowUp className="h-4 w-4" /></Button><Button variant="outline" size="icon" className="h-8 w-8" disabled={!columnConfig.canMoveColumn(column.id, "down")} onClick={() => columnConfig.moveColumn(column.id, "down")} aria-label={`Move ${column.label} down`}><ArrowDown className="h-4 w-4" /></Button></div></div>)}</div><DialogFooter><Button variant="outline" onClick={resetTable}><RotateCcw className="mr-1.5 h-4 w-4" aria-hidden="true" />Reset to default</Button><Button onClick={() => setColumnsOpen(false)}>Close</Button></DialogFooter></DialogContent></Dialog>
     <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(open) => !open && setOverrideTarget(null)} />
     </>
   );
@@ -3012,7 +3063,7 @@ export default function EnhancedCustomerView({
                 </div>
               ) : (
                 <InvoicesTable
-                  invoices={invoices}
+                  customerId={customer.id}
                   searchQuery={searchQuery}
                   statusFilter={statusFilter}
                   customerName={customer.companyName}
