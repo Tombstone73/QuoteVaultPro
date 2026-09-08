@@ -1796,6 +1796,13 @@ export class FulfillmentDashboardRepo {
     checked: boolean;
     fulfilledQuantity?: number;
     notes?: string | null;
+    /**
+     * Administrative historical reconciliation may verify a line which has
+     * completed Production but predates the Fulfillment ready-pool record.
+     * It remains bounded by the canonical production-complete quantity and is
+     * used only after service-level physical-line preflight.
+     */
+    administrativeReconciliation?: boolean;
   }, actorUserId?: string | null) {
     const [lineItem] = await this.dbInstance
       .select({ id: orderLineItems.id, quantity: orderLineItems.quantity, workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status })
@@ -1825,7 +1832,9 @@ export class FulfillmentDashboardRepo {
     if (fulfilledQuantity < minimumVerified) {
       return { ok: false as const, code: 'QTY_BELOW_SHIPPED', message: 'Verified quantity cannot be lower than the quantity already shipped.' };
     }
-    if ((input.checked || fulfilledQuantity > minimumVerified) && eligibility.projection.eligibleQuantity <= 0) {
+    if ((input.checked || fulfilledQuantity > minimumVerified)
+      && eligibility.projection.eligibleQuantity <= 0
+      && input.administrativeReconciliation !== true) {
       return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'This line item has no production-ready quantity available for verification.' };
     }
 

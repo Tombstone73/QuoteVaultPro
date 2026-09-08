@@ -46,6 +46,9 @@ import {
   Loader2,
   Save,
   Filter,
+  Check,
+  ShieldCheck,
+  Ticket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,14 +84,17 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useCustomer, type CustomerWithRelations } from "@/hooks/useCustomer";
+import { useAuth } from "@/hooks/useAuth";
 import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { useOrders, type Order } from "@/hooks/useOrders";
-import { useInvoices } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useInvoices } from "@/hooks/useInvoices";
 import { ROUTES } from "@/config/routes";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { apiRequest } from "@/lib/queryClient";
+import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
+import { canCloseJobOverride, CloseJobOverrideDialog, getOrderJobStatus, type CloseJobOverrideTarget } from "@/components/orders/CloseJobOverrideDialog";
 import {
   buildLinkExistingContactPayload,
   canSubmitLinkContact,
@@ -1814,6 +1820,9 @@ function OrdersTable({
   quoteCount?: number;
 }) {
   const navigate = useNavigate();
+  const { user, isAdmin } = useAuth();
+  const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
+  const isAdminOrOwner = Boolean(isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()));
   const [showColumnSettings, setShowColumnSettings] = useState(false);
   
   // Column visibility configuration
@@ -1824,7 +1833,7 @@ function OrdersTable({
     { id: "product", label: "Product", defaultVisible: true, sortable: true, resizable: true, minWidth: 150 },
     { id: "amount", label: "Amount", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
     { id: "status", label: "Status", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
-    { id: "actions", label: "Actions", defaultVisible: true, sortable: false, resizable: false, minWidth: 120 },
+    { id: "actions", label: "Actions", defaultVisible: true, sortable: false, resizable: false, minWidth: 320 },
   ];
   
   const defaultVisibleColumns = allColumns
@@ -2296,34 +2305,30 @@ function OrdersTable({
                 case "actions":
                   return (
                     <td key={columnId} className="px-4 py-3" onClick={(e) => e.stopPropagation()} style={{ width: `${width}px` }}>
-                      <div className="flex items-center gap-1">
+                      <div className="flex min-w-max flex-wrap items-center gap-2">
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+                          variant="outline"
+                          size="sm"
                           onClick={() => navigate(ROUTES.orders.detail(order.id))}
+                          aria-label={`View order ${order.orderNumber}`}
                         >
-                          <Eye className="w-4 h-4" />
+                          <Eye className="mr-1.5 h-4 w-4" />View Order
                         </Button>
-                        {!compact && (
-                          <>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated">
-                              <Download className="w-4 h-4" />
-                            </Button>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated">
-                                  <MoreHorizontal className="w-4 h-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end" className="bg-titan-bg-card border-titan-border">
-                                <DropdownMenuItem className="text-titan-text-primary hover:bg-titan-bg-card-elevated">Send Email</DropdownMenuItem>
-                                <DropdownMenuItem className="text-titan-text-primary hover:bg-titan-bg-card-elevated">Duplicate</DropdownMenuItem>
-                                <DropdownMenuItem className="text-titan-text-primary hover:bg-titan-bg-card-elevated">Print</DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </>
-                        )}
+                        <Button variant="outline" size="sm" onClick={() => window.open(ROUTES.orders.traveler(order.id), "_blank", "noopener,noreferrer")} aria-label={`Open traveler for order ${order.orderNumber}`}>
+                          <Ticket className="mr-1.5 h-4 w-4" />Traveler
+                        </Button>
+                        {canCloseJobOverride({ orderId: order.id, orderState: order.state, orderFulfillmentStatus: order.fulfillmentStatus }, isAdminOrOwner) ? (
+                          <Button variant="outline" size="sm" onClick={() => setOverrideTarget({
+                            orderId: order.id,
+                            orderNumber: order.orderNumber,
+                            jobName: order.label,
+                            purchaseOrderNumber: order.poNumber,
+                            customerName: customerName || null,
+                            jobStatus: getOrderJobStatus({ orderId: order.id, orderState: order.state, orderStatus: order.status, orderStatusPillValue: order.statusPillValue, orderFulfillmentStatus: order.fulfillmentStatus }),
+                          })}>
+                            <ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override
+                          </Button>
+                        ) : null}
                       </div>
                     </td>
                   );
@@ -2393,6 +2398,7 @@ function OrdersTable({
         </div>
       </DialogContent>
     </Dialog>
+    <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(open) => !open && setOverrideTarget(null)} />
   </>
   );
 }
@@ -2561,16 +2567,38 @@ function InvoicesTable({
   invoices,
   searchQuery,
   statusFilter,
-  compact,
   customerName,
 }: {
   invoices: any[];
   searchQuery: string;
   statusFilter: string;
-  compact?: boolean;
   customerName?: string;
 }) {
   const navigate = useNavigate();
+  const { user, isAdmin } = useAuth();
+  const { toast } = useToast();
+  const approveInvoices = useApproveInvoicesForAccounting();
+  const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
+  const isAdminOrOwner = Boolean(isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()));
+
+  const approvalLabel = (invoice: any) => {
+    const currentVersion = Number(invoice.invoiceVersion || 1);
+    if (invoice.accountingApprovedAt && !invoice.accountingApprovalRevokedAt && Number(invoice.accountingApprovedVersion || 0) === currentVersion) return "Approved for Accounting";
+    if (invoice.accountingApprovalRevokedAt || (invoice.accountingApprovedAt && Number(invoice.accountingApprovedVersion || 0) !== currentVersion)) return "Needs Reapproval";
+    return "Not Approved";
+  };
+  const canApprove = (invoice: any) => !["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase())
+    && String(invoice.importSource || "").toLowerCase() !== "quickbooks"
+    && !invoice.isHistorical
+    && approvalLabel(invoice) !== "Approved for Accounting";
+  const approve = async (invoice: any) => {
+    try {
+      await approveInvoices.mutateAsync([invoice.id]);
+      toast({ title: "Approved for Accounting" });
+    } catch (error) {
+      toast({ variant: "destructive", title: "Accounting approval failed", description: error instanceof Error ? error.message : "Unable to approve the invoice." });
+    }
+  };
 
   const filteredInvoices = useMemo(() => {
     return invoices.filter((inv) => {
@@ -2604,30 +2632,12 @@ function InvoicesTable({
   }
 
   return (
-    <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl overflow-hidden">
-      <table className="w-full">
+    <>
+    <div className="overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
+      <table className="min-w-[1540px] w-full">
         <thead>
           <tr className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
-            <th className="px-4 py-3 text-left text-titan-xs font-semibold text-titan-text-muted uppercase tracking-wider">
-              Invoice #
-            </th>
-            <th className="px-4 py-3 text-left text-titan-xs font-semibold text-titan-text-muted uppercase tracking-wider">
-              Date
-            </th>
-            <th className="px-4 py-3 text-left text-titan-xs font-semibold text-titan-text-muted uppercase tracking-wider">
-              Total
-            </th>
-            {!compact && (
-              <th className="px-4 py-3 text-left text-titan-xs font-semibold text-titan-text-muted uppercase tracking-wider">
-                Balance
-              </th>
-            )}
-            <th className="px-4 py-3 text-left text-titan-xs font-semibold text-titan-text-muted uppercase tracking-wider">
-              Status
-            </th>
-            <th className="px-4 py-3 text-left text-titan-xs font-semibold text-titan-text-muted uppercase tracking-wider">
-              Actions
-            </th>
+            {["Invoice #", "Job / Order", "PO #", "Order #", "Invoice Date", "Last Sent", "Due Date", "Approval", "Job Status", "Total", "Balance", "Invoice Status", "Actions"].map((label) => <th key={label} className="whitespace-nowrap px-3 py-3 text-left text-titan-xs font-semibold uppercase tracking-wider text-titan-text-muted">{label}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -2637,7 +2647,7 @@ function InvoicesTable({
               className="border-b border-titan-border-subtle last:border-0 hover:bg-titan-bg-table-row transition-colors cursor-pointer"
               onClick={() => navigate(ROUTES.invoices.detail(inv.id))}
             >
-              <td className="px-4 py-3">
+              <td className="whitespace-nowrap px-3 py-3">
                 <span className="text-titan-sm font-medium text-titan-accent">
                   {resolveDocumentDisplayNumber({
                     displayNumber: inv.displayNumber,
@@ -2646,18 +2656,21 @@ function InvoicesTable({
                   }) || inv.invoiceNumber}
                 </span>
               </td>
-              <td className="px-4 py-3 text-titan-sm text-titan-text-secondary">
+              <td className="max-w-56 px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.jobName || inv.orderName || inv.orderNumber || "—"}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.purchaseOrderNumber || "—"}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.orderNumber || "—"}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">
                 {formatDate(inv.createdAt)}
               </td>
-              <td className="px-4 py-3 text-titan-sm font-medium text-titan-text-primary">
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.lastSentAt ? formatDate(inv.lastSentAt) : "Not sent"}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.dueDate)}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{approvalLabel(inv)}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{getOrderJobStatus(inv)}</td>
+              <td className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">
                 {formatCurrency(inv.displayTotal || inv.total)}
               </td>
-              {!compact && (
-                <td className="px-4 py-3 text-titan-sm font-medium text-titan-warning">
-                  {formatCurrency(inv.displayRemaining || inv.balanceDue || inv.total)}
-                </td>
-              )}
-              <td className="px-4 py-3">
+              <td className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-warning">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? inv.total)}</td>
+              <td className="whitespace-nowrap px-3 py-3">
                 <span
                   className={cn(
                     "inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border",
@@ -2667,35 +2680,12 @@ function InvoicesTable({
                   {inv.displayStatus || formatStatusLabel(inv.status)}
                 </span>
               </td>
-              <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
-                    onClick={() => navigate(ROUTES.invoices.detail(inv.id))}
-                  >
-                    <Eye className="w-4 h-4" />
-                  </Button>
-                  {!compact && (
-                    <>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated">
-                        <Download className="w-4 h-4" />
-                      </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated">
-                            <MoreHorizontal className="w-4 h-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="bg-titan-bg-card border-titan-border">
-                          <DropdownMenuItem className="text-titan-text-primary hover:bg-titan-bg-card-elevated">Apply Payment</DropdownMenuItem>
-                          <DropdownMenuItem className="text-titan-text-primary hover:bg-titan-bg-card-elevated">Send Email</DropdownMenuItem>
-                          <DropdownMenuItem className="text-titan-text-primary hover:bg-titan-bg-card-elevated">Print</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </>
-                  )}
+              <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                <div className="flex min-w-max flex-wrap items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.invoices.detail(inv.id))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>
+                  {isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}
+                  {isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}
+                  {canCloseJobOverride(inv, isAdminOrOwner) ? <Button variant="outline" size="sm" onClick={() => setOverrideTarget({ orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) })}><ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override</Button> : null}
                 </div>
               </td>
             </tr>
@@ -2703,6 +2693,8 @@ function InvoicesTable({
         </tbody>
       </table>
     </div>
+    <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(open) => !open && setOverrideTarget(null)} />
+    </>
   );
 }
 
@@ -3023,7 +3015,6 @@ export default function EnhancedCustomerView({
                   invoices={invoices}
                   searchQuery={searchQuery}
                   statusFilter={statusFilter}
-                  compact={isEmbedded}
                   customerName={customer.companyName}
                 />
               )

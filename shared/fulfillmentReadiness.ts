@@ -152,11 +152,18 @@ export function resolveFulfillmentLineQuantity(input: {
 
   const productionRequired = workflowIntent !== "fulfillment_only" && input.requiresProductionJob !== false && input.productionBypassed !== true;
   const lifecycleReadiness = resolveFulfillmentLineReadiness(input);
-  const productionCompleteQuantity = productionRequired
-    // Production is informative to Fulfillment. It never authorizes or caps a
-    // physical handoff; only the Fulfillment-owned ready pool can do that.
-    ? Math.min(orderedQuantity, quantity(input.productionCompleteQuantity))
-    : orderedQuantity;
+  // A completed line lifecycle (including a queued Fulfillment handoff) is
+  // canonical evidence that its whole ordered quantity has completed
+  // Production. Production Run members add useful partial-quantity detail,
+  // but are not the only production path: normal standalone job completion
+  // deliberately does not create a Production Run member. Counting run
+  // members alone would therefore make a completed two-item job appear to
+  // have zero production quantity and block its Fulfillment reconciliation.
+  const productionCompleteQuantity = !productionRequired
+    ? orderedQuantity
+    : lifecycleReadiness.status === "production_complete"
+      ? orderedQuantity
+      : Math.min(orderedQuantity, quantity(input.productionCompleteQuantity));
   const readyWaitingQuantity = Math.min(remainingQuantity, quantity(input.readyWaitingQuantity));
   const notReadyQuantity = Math.max(0, remainingQuantity - readyWaitingQuantity);
   const eligibleQuantity = readyWaitingQuantity;

@@ -31,6 +31,23 @@ type HistoricalFulfillmentPreview = {
   alreadyOperationallyComplete: boolean;
 };
 
+function overrideErrorDescription(error: unknown): string {
+  const raw = error instanceof Error ? error.message : "Unable to reconcile this job safely.";
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const payload = JSON.parse(raw.slice(jsonStart));
+      if (payload?.code === "PRODUCTION_NOT_COMPLETE") {
+        return "Could not close job: one or more physical line items still need production completion.";
+      }
+      if (typeof payload?.message === "string" && payload.message.trim()) return payload.message;
+    } catch {
+      // Keep the safe plain-text fallback below.
+    }
+  }
+  return raw.replace(/^\d{3}:\s*/, "") || "Unable to reconcile this job safely.";
+}
+
 const terminalOrderStates = new Set(["closed", "canceled"]);
 const terminalFulfillmentStates = new Set(["shipped", "delivered"]);
 
@@ -115,7 +132,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
       toast({ title: "Job operationally completed", description: "Production and fulfillment were reconciled. Invoice and payment status were not changed." });
       resetAndClose();
     } catch (error) {
-      toast({ variant: "destructive", title: "Close Job Override failed", description: error instanceof Error ? error.message : "Unable to reconcile this job safely." });
+      toast({ variant: "destructive", title: "Close Job Override failed", description: overrideErrorDescription(error) });
     } finally {
       setIsSubmitting(false);
     }

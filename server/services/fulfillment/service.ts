@@ -108,7 +108,10 @@ export class FulfillmentService {
       physicalLineCount: physicalLines.length,
       remainingProductionQuantity,
       remainingFulfillmentQuantity,
-      productionComplete: order.state === 'production_complete',
+      // The line projection is the canonical quantity source used by the
+      // reconciliation itself. Do not make the dialog choose a different
+      // answer from a possibly stale aggregate Order state.
+      productionComplete: remainingProductionQuantity === 0,
       alreadyOperationallyComplete: ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase()),
     };
   }
@@ -142,9 +145,6 @@ export class FulfillmentService {
 
     if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
     if (isCanceledOrder(order)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
-    if (order.state !== 'production_complete') {
-      throw new FulfillmentHttpError(409, 'Complete canonical production before reconciling historical fulfillment.', 'PRODUCTION_NOT_COMPLETE');
-    }
     if (['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
       return { alreadyCompleted: true, remainingFulfillmentQuantity: 0 };
     }
@@ -174,6 +174,7 @@ export class FulfillmentService {
       const result = await this.dashboardRepo.updateChecklistItem(orgId, input.orderId, line.id, {
         checked: true,
         fulfilledQuantity: line.projection.productionCompleteQuantity,
+        administrativeReconciliation: true,
       }, input.actorUserId);
       if (!result.ok) throw new FulfillmentHttpError(409, result.message, result.code);
     }
@@ -194,8 +195,6 @@ export class FulfillmentService {
         .limit(1);
       if (!lockedOrder) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
       if (isCanceledOrder(lockedOrder)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
-      if (lockedOrder.state !== 'production_complete') throw new FulfillmentHttpError(409, 'Production state changed before fulfillment reconciliation completed.', 'PRODUCTION_STATE_CHANGED');
-
       await tx.update(orders).set({
         fulfillmentStatus: 'delivered',
         routingTarget: null,
@@ -234,7 +233,9 @@ export class FulfillmentService {
           routingTarget: lockedOrder.routingTarget,
         },
         newValues: {
-          state: 'production_complete',
+          // This override reconciles fulfillment from already-complete line
+          // facts; it must not fabricate an Order production-state mutation.
+          state: lockedOrder.state,
           fulfillmentStatus: 'delivered',
           routingTarget: null,
           reason: input.reason,

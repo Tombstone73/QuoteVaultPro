@@ -48,7 +48,7 @@ describe("canonical fulfillment quantity projection", () => {
     });
   });
 
-  test("keeps production reporting informational for a lifecycle-complete line", () => {
+  test("treats a lifecycle-complete physical line as fully produced even without a Production Run member", () => {
     expect(resolveFulfillmentLineQuantity({
       workflowIntent: "standard_production",
       requiresProductionJob: true,
@@ -58,8 +58,41 @@ describe("canonical fulfillment quantity projection", () => {
       productionCompleteQuantity: 600,
       readyWaitingQuantity: 1000,
     })).toMatchObject({
-      productionCompleteQuantity: 600, readyWaitingQuantity: 1000, notReadyQuantity: 0, status: "ready",
+      productionCompleteQuantity: 1000, readyWaitingQuantity: 1000, notReadyQuantity: 0, status: "ready",
     });
+  });
+
+  test("keeps a genuinely active production line incomplete and preserves its actual remaining quantity", () => {
+    const line = resolveFulfillmentLineQuantity({
+      workflowIntent: "standard_production",
+      requiresProductionJob: true,
+      workflowState: "in_production",
+      lifecycleStatus: "in_production",
+      activeOwnerStationKey: "flatbed",
+      activeOwnerStatus: "in_progress",
+      orderedQuantity: 2,
+      productionCompleteQuantity: 0,
+    });
+    expect(line.productionCompleteQuantity).toBe(0);
+    expect(line.orderedQuantity - line.productionCompleteQuantity).toBe(2);
+  });
+
+  test("distinguishes completed production from unfulfilled quantity for historical reconciliation", () => {
+    const line = resolveFulfillmentLineQuantity({
+      workflowIntent: "standard_production",
+      requiresProductionJob: true,
+      workflowState: "completed",
+      lifecycleStatus: "complete",
+      activeOwnerStationKey: "fulfillment",
+      activeOwnerStatus: "queued",
+      orderedQuantity: 2,
+      productionCompleteQuantity: 0,
+      shippedQuantity: 0,
+      pickedUpQuantity: 0,
+    });
+    expect(line).toMatchObject({ orderedQuantity: 2, productionCompleteQuantity: 2, fulfilledQuantity: 0 });
+    expect(line.orderedQuantity - line.productionCompleteQuantity).toBe(0);
+    expect(line.orderedQuantity - line.fulfilledQuantity).toBe(2);
   });
 
   test("keeps legacy readiness data informational beside immutable fulfillment", () => {

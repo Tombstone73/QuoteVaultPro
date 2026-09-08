@@ -13,9 +13,9 @@ test('historical fulfillment reconciliation uses canonical quantities without te
     service.indexOf('private isOrderProductionComplete'),
   );
 
-  expect(reconciliation).toContain("order.state !== 'production_complete'");
   expect(reconciliation).toContain('productionCompleteQuantity < line.projection.orderedQuantity');
   expect(reconciliation).toContain('fulfilledQuantity: line.projection.productionCompleteQuantity');
+  expect(reconciliation).toContain('administrativeReconciliation: true');
   expect(reconciliation).toContain("fulfillmentStatus: 'delivered'");
   expect(reconciliation).toContain("eventType: 'FULFILLMENT_HISTORICAL_RECONCILED'");
   expect(reconciliation).toContain("source: 'administrative_historical_reconciliation'");
@@ -42,7 +42,7 @@ test('the reconciliation preview reports live quantity deltas before confirmatio
   expect(preview).toContain('remainingProductionQuantity');
   expect(preview).toContain('remainingFulfillmentQuantity');
   expect(preview).toContain('listLineEligibility');
-  expect(preview).toContain("productionComplete: order.state === 'production_complete'");
+  expect(preview).toContain('productionComplete: remainingProductionQuantity === 0');
 });
 
 test('invoice list enriches Customer Detail with invoice snapshot PO and linked Order state', () => {
