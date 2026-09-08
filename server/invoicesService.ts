@@ -39,14 +39,19 @@ const TERM_OFFSETS: Record<string, number> = {
 // rows in invoice_email_logs should be queried here.
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 
-export function deriveInvoiceEmailStatus(updatedAt: Date | string | null | undefined, lastSentAt: Date | string | null | undefined): InvoiceEmailStatus {
-  if (!lastSentAt) {
+export function deriveInvoiceEmailStatus(
+  invoice: { invoiceVersion?: number | null; lastSentVersion?: number | null; lastSentAt?: Date | string | null },
+): InvoiceEmailStatus {
+  if (!invoice.lastSentAt) {
     return 'not_sent';
   }
 
-  const updatedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
-  const lastSentAtMs = new Date(lastSentAt).getTime();
-  return updatedAtMs > lastSentAtMs ? 'sent_outdated' : 'sent_current';
+  const revision = Math.max(1, Number(invoice.invoiceVersion || 1));
+  // Historical sends that predate lastSentVersion cannot be reconstructed
+  // safely. Treat their current persisted document revision as the sent
+  // revision rather than making unrelated operational updates look stale.
+  const sentRevision = Math.max(1, Number(invoice.lastSentVersion || revision));
+  return revision > sentRevision ? 'sent_outdated' : 'sent_current';
 }
 
 export async function createInvoiceEmailLog(input: InsertInvoiceEmailLog): Promise<void> {
@@ -59,7 +64,7 @@ export async function getInvoiceEmailStatus(invoiceId: string): Promise<{
   emailStatus: InvoiceEmailStatus;
 }> {
   const [invoice] = await db
-    .select({ updatedAt: invoices.updatedAt })
+    .select({ invoiceVersion: invoices.invoiceVersion, lastSentVersion: invoices.lastSentVersion })
     .from(invoices)
     .where(eq(invoices.id, invoiceId))
     .limit(1);
@@ -101,12 +106,12 @@ export async function getInvoiceEmailStatus(invoiceId: string): Promise<{
   return {
     lastSentAt,
     lastInvoiceEmailRecipient,
-    emailStatus: deriveInvoiceEmailStatus(invoice.updatedAt, lastSentAt),
+    emailStatus: deriveInvoiceEmailStatus({ ...invoice, lastSentAt }),
   };
 }
 
 export async function getInvoiceEmailStatuses(
-  invoiceRows: Array<{ id: string; updatedAt: Date | string | null | undefined }>,
+  invoiceRows: Array<{ id: string; invoiceVersion?: number | null; lastSentVersion?: number | null }>,
   organizationId?: string,
 ): Promise<Map<string, { lastSentAt: Date | null; lastInvoiceEmailRecipient: string | null; emailStatus: InvoiceEmailStatus }>> {
   const result = new Map<string, { lastSentAt: Date | null; lastInvoiceEmailRecipient: string | null; emailStatus: InvoiceEmailStatus }>();
@@ -164,7 +169,7 @@ export async function getInvoiceEmailStatuses(
     result.set(row.id, {
       lastSentAt,
       lastInvoiceEmailRecipient,
-      emailStatus: deriveInvoiceEmailStatus(row.updatedAt, lastSentAt),
+      emailStatus: deriveInvoiceEmailStatus({ ...row, lastSentAt }),
     });
   }
 
@@ -471,8 +476,9 @@ export async function listInvoicesPageForOrganization(
   if (columnFilters.dueDateFrom) whereClauses.push(sql`${invoices.dueDate} >= ${columnFilters.dueDateFrom}`);
   if (columnFilters.dueDateToExclusive) whereClauses.push(sql`${invoices.dueDate} < ${columnFilters.dueDateToExclusive}`);
   // Keep SQL filtering exactly aligned with deriveInvoiceEmailStatus() and the
-  // Last Sent badge: only successful original invoice sends count; reminders
-  // and in-progress/failed delivery records do not.
+  // Last Sent badge: a customer-visible invoice revision is stale only when it
+  // is newer than the revision that was sent. Operational updates such as
+  // accounting approval intentionally do not affect this state.
   const lastSuccessfulInvoiceSendAt = sql<Date | null>`(
     select max(${invoiceEmailLogs.sentAt})
     from ${invoiceEmailLogs}
@@ -485,10 +491,10 @@ export async function listInvoicesPageForOrganization(
     whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is null`);
   }
   if (columnFilters.sendStatus === 'sent') {
-    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.updatedAt}, 'epoch'::timestamptz) <= ${lastSuccessfulInvoiceSendAt}`);
+    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) <= coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`);
   }
   if (columnFilters.sendStatus === 'updated_after_sent') {
-    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.updatedAt}, 'epoch'::timestamptz) > ${lastSuccessfulInvoiceSendAt}`);
+    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) > coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`);
   }
   if (columnFilters.lastSent === 'sent') whereClauses.push(sql`exists (
     select 1 from ${invoiceEmailLogs}

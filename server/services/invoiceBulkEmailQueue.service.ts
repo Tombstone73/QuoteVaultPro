@@ -39,12 +39,14 @@ type CanonicalInvoiceEmailSender = (input: {
   userName?: string | null;
   toEmail?: string | null;
   deliveryJobId?: string | null;
+  allowUnapproved?: boolean;
 }) => Promise<{ messageId?: string | null }>;
 
 export type BulkInvoiceEmailCandidate = {
   invoiceId: string;
   invoiceVersion: number;
   recipientEmail: string;
+  allowUnapproved?: boolean;
 };
 
 export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
@@ -322,6 +324,7 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
         deliveryMode: "individual_invoice_messages",
         createdByUserId: input.reviewedByUserId || null,
         retryOfNeedsReviewJobId: original.id,
+        allowUnapproved: originalMetadata.allowUnapproved === true,
       },
     } as any).returning({
       id: invoiceEmailDeliveryJobs.id,
@@ -417,6 +420,7 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
         metadata: {
           deliveryMode: "individual_invoice_message",
           createdByUserId: input.createdByUserId || null,
+          allowUnapproved: Boolean(candidate.allowUnapproved),
         },
       } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
       if (job) {
@@ -481,7 +485,7 @@ export type ClaimedBulkInvoiceEmailJob = {
   maxAttempts: number;
   createdAt: Date;
   campaignId: string;
-  metadata?: { createdByUserId?: string | null };
+  metadata?: { createdByUserId?: string | null; allowUnapproved?: boolean };
 };
 
 function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail: Record<string, unknown> = {}): void {
@@ -595,6 +599,7 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       userId: job.metadata?.createdByUserId || null,
       toEmail: job.recipientEmail,
       deliveryJobId: job.id,
+      allowUnapproved: job.metadata?.allowUnapproved === true,
     });
     await db.update(invoiceEmailDeliveryJobs).set({
       status: "sent",

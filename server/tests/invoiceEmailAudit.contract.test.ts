@@ -29,6 +29,16 @@ describe('invoice email audit contract', () => {
     expect((entry.newValues as any).recipientEmail).toBe('override@example.com');
   });
 
+  it('records an explicit unapproved-send override without changing approval state', () => {
+    const entry = buildInvoiceEmailSentAudit({
+      organizationId: 'org-1', invoiceId: 'invoice-1', invoiceNumber: 'INV-1001',
+      actorUserId: 'user-1', actorName: 'Dale', recipientEmail: 'override@example.com',
+      invoiceVersion: 3, messageId: null, sentAt, sentWithUnapprovedOverride: true,
+    });
+
+    expect((entry.newValues as any).sentWithUnapprovedOverride).toBe(true);
+  });
+
   it('builds a successful audit only after the delivery call path', () => {
     const source = readFileSync('server/routes/mvpInvoicing.routes.ts', 'utf8');
     expect(source.indexOf('messageId = await emailService.sendEmail')).toBeGreaterThan(-1);

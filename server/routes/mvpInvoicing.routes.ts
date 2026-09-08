@@ -353,6 +353,7 @@ export async function registerMvpInvoicingRoutes(
     userName?: string | null;
     toEmail?: string | null;
     deliveryJobId?: string | null;
+    allowUnapproved?: boolean;
   }) {
     const logQueueDeliveryStage = (stage: string, detail: Record<string, unknown> = {}) => {
       if (!input.deliveryJobId) return;
@@ -399,6 +400,13 @@ export async function registerMvpInvoicingRoutes(
     const startingStatus = String(inv.status || "").toLowerCase();
     if (startingStatus === "void") throw Object.assign(new Error("Void invoices cannot be sent"), { statusCode: 400 });
     if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
+    const sentWithUnapprovedOverride = !isInvoiceApprovedForAccounting(inv);
+    if (sentWithUnapprovedOverride && !input.allowUnapproved) {
+      throw Object.assign(new Error("Approve this invoice before sending, or explicitly choose Send Anyway."), {
+        statusCode: 409,
+        code: "INVOICE_APPROVAL_REQUIRED",
+      });
+    }
     // An Order-backed invoice is already a live receivable. Sending it is a
     // delivery action, not an implicit financial finalization transition.
     const [[orgCompany], [organization]] = await Promise.all([
@@ -584,6 +592,7 @@ export async function registerMvpInvoicingRoutes(
         organizationId: input.organizationId,
         invoiceId: input.invoiceId,
         successfulSentAt: now,
+        suppressAutomaticAccountingApproval: sentWithUnapprovedOverride,
       });
       logQueueDeliveryStage("post_send_lifecycle_completed", {
         firstSuccessfulCustomerDelivery: lifecycle.isFirstSuccessfulCustomerDelivery,
@@ -621,6 +630,7 @@ export async function registerMvpInvoicingRoutes(
         invoiceVersion,
         messageId,
         sentAt: now,
+        sentWithUnapprovedOverride,
       }) as any);
     } catch (auditError) {
       console.error("Audit log failed:", auditError);
@@ -2069,7 +2079,11 @@ export async function registerMvpInvoicingRoutes(
       const invoiceIds = rows.map((row) => row.id);
       const [emailStatuses, emailDeliveryStates] = await Promise.all([
         getInvoiceEmailStatuses(
-          rows.map((row) => ({ id: row.id, updatedAt: row.updatedAt })),
+          rows.map((row) => ({
+            id: row.id,
+            invoiceVersion: (row as any).invoiceVersion,
+            lastSentVersion: (row as any).lastSentVersion,
+          })),
           organizationId,
         ),
         getInvoiceEmailDeliveryStates({ organizationId, invoiceIds }),
@@ -3104,7 +3118,7 @@ export async function registerMvpInvoicingRoutes(
 
       const userId = getUserId(req.user);
       const { id } = req.params;
-      const { toEmail } = req.body || {};
+      const { toEmail, allowUnapproved } = req.body || {};
       const userName = String(req.user?.firstName && req.user?.lastName
         ? `${req.user.firstName} ${req.user.lastName}`
         : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
@@ -3114,6 +3128,7 @@ export async function registerMvpInvoicingRoutes(
         userId: userId || null,
         userName,
         toEmail: toEmail == null ? null : String(toEmail),
+        allowUnapproved: allowUnapproved === true,
       });
       return res.json({ success: true, data: result, message: "Invoice sent" });
     } catch (error: any) {
@@ -3127,6 +3142,7 @@ export async function registerMvpInvoicingRoutes(
       const uncertain = getInvoiceEmailDeliveryFailureKind(error) === "needs_review";
       return res.status(Number(error.statusCode || error.status || 500)).json({
         success: false,
+        code: error.code || undefined,
         error: uncertain
           ? "The email provider outcome is uncertain. Check Gmail Sent before trying again to avoid a duplicate email."
           : errorMessage.includes("Email settings not configured")
@@ -3161,6 +3177,7 @@ export async function registerMvpInvoicingRoutes(
 
       const candidates: BulkInvoiceEmailCandidate[] = [];
       const skipped: BulkInvoiceEmailSkip[] = [];
+      let unapprovedCount = 0;
 
       for (const invoiceId of invoiceIds) {
         try {
@@ -3177,11 +3194,14 @@ export async function registerMvpInvoicingRoutes(
           } else if (recipientEmails.length === 0) {
             skipped.push({ invoiceId, reason: "No recipient email is available" });
           } else {
+            const allowUnapproved = !isInvoiceApprovedForAccounting(resolution.invoice as any);
+            if (allowUnapproved) unapprovedCount += 1;
             for (const recipientEmail of recipientEmails) {
               candidates.push({
                 invoiceId,
                 invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
                 recipientEmail,
+                allowUnapproved,
               });
             }
           }
@@ -3195,11 +3215,21 @@ export async function registerMvpInvoicingRoutes(
         selected: invoiceIds.length,
         eligible: candidates.length,
         recipientGroups: new Set(candidates.map((candidate) => candidate.recipientEmail.trim().toLowerCase())).size,
+        unapprovedCount,
+        requiresUnapprovedOverride: unapprovedCount > 0,
         skipped,
         deliveryMode: "individual_invoice_messages",
       };
       if (req.body?.dryRun === true) {
         return res.json({ success: true, data: preview, message: `${preview.eligible} invoice emails are ready to queue` });
+      }
+      if (unapprovedCount > 0 && req.body?.allowUnapproved !== true) {
+        return res.status(409).json({
+          success: false,
+          code: "INVOICE_APPROVAL_REQUIRED",
+          error: `${unapprovedCount} selected invoice${unapprovedCount === 1 ? " is" : "s are"} not approved for accounting. Review the preview and explicitly choose Send Anyway to queue them.`,
+          data: preview,
+        });
       }
 
       const idempotencyKey = buildBulkInvoiceEmailRequestKey({

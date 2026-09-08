@@ -609,16 +609,18 @@ export function useMarkInvoiceSent() {
 export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, toEmail }: { id: string; toEmail?: string }) => {
+    mutationFn: async ({ id, toEmail, allowUnapproved = false }: { id: string; toEmail?: string; allowUnapproved?: boolean }) => {
       const res = await apiFetch(`/api/invoices/${id}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ toEmail }),
+        body: JSON.stringify({ toEmail, allowUnapproved }),
         credentials: 'include',
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to send invoice');
+        const error = new Error(err.error || 'Failed to send invoice') as Error & { code?: string };
+        error.code = err.code;
+        throw error;
       }
       return res.json();
     },
@@ -651,19 +653,22 @@ export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
 export function useBatchSendInvoices() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ invoiceIds, dryRun = false, idempotencyKey }: { invoiceIds: string[]; dryRun?: boolean; idempotencyKey?: string }) => {
+    mutationFn: async ({ invoiceIds, dryRun = false, idempotencyKey, allowUnapproved = false }: { invoiceIds: string[]; dryRun?: boolean; idempotencyKey?: string; allowUnapproved?: boolean }) => {
       const res = await apiFetch('/api/invoices/batch-send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         },
-        body: JSON.stringify({ invoiceIds, dryRun }),
+        body: JSON.stringify({ invoiceIds, dryRun, allowUnapproved }),
         credentials: 'include',
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error((payload as any).error || (payload as any).message || 'Failed to send selected invoices');
+        const error = new Error((payload as any).error || (payload as any).message || 'Failed to send selected invoices') as Error & { code?: string; data?: unknown };
+        error.code = (payload as any).code;
+        error.data = (payload as any).data;
+        throw error;
       }
       return payload as {
         success: boolean;
@@ -674,6 +679,8 @@ export function useBatchSendInvoices() {
           alreadyQueued?: number;
           blocked?: Array<{ invoiceId: string; recipientEmail: string; status: 'queued' | 'processing' | 'retrying' | 'needs_review' }>;
           recipientGroups: number;
+          unapprovedCount: number;
+          requiresUnapprovedOverride: boolean;
           skipped: Array<{ invoiceId: string; reason: string }>;
           deliveryMode: 'individual_invoice_messages';
           campaignId?: string | null;

@@ -718,7 +718,7 @@ describe('getInvoiceEmailStatuses — type filtering', () => {
     const customer = await createTestCustomer(org.id);
     const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id });
 
-    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, updatedAt: inv.updatedAt }], org.id);
+    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, invoiceVersion: inv.invoiceVersion, lastSentVersion: inv.lastSentVersion }], org.id);
     const s = statuses.get(inv.id)!;
     expect(s.emailStatus).toBe('not_sent');
     expect(s.lastSentAt).toBeNull();
@@ -735,7 +735,7 @@ describe('getInvoiceEmailStatuses — type filtering', () => {
     const sentAt = new Date(Date.now() + 5000); // sent after updatedAt
     await writeEmailLog({ orgId: org.id, invoiceId: inv.id, status: 'sent', type: 'invoice_send', sentAt, recipientEmail: 'customer@test.com' });
 
-    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, updatedAt: inv.updatedAt }], org.id);
+    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, invoiceVersion: inv.invoiceVersion, lastSentVersion: inv.lastSentVersion }], org.id);
     const s = statuses.get(inv.id)!;
     expect(s.emailStatus).toBe('sent_current');
     expect(s.lastSentAt).not.toBeNull();
@@ -753,7 +753,7 @@ describe('getInvoiceEmailStatuses — type filtering', () => {
     const sentAt = new Date(Date.now() + 5000);
     await writeEmailLog({ orgId: org.id, invoiceId: inv.id, status: 'sent', type: 'reminder_send', sentAt });
 
-    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, updatedAt: inv.updatedAt }], org.id);
+    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, invoiceVersion: inv.invoiceVersion, lastSentVersion: inv.lastSentVersion }], org.id);
     const s = statuses.get(inv.id)!;
     // Must still be not_sent — reminder did not count
     expect(s.emailStatus).toBe('not_sent');
@@ -769,7 +769,7 @@ describe('getInvoiceEmailStatuses — type filtering', () => {
 
     await writeEmailLog({ orgId: org.id, invoiceId: inv.id, status: 'failed', type: 'invoice_send', sentAt: new Date() });
 
-    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, updatedAt: inv.updatedAt }], org.id);
+    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, invoiceVersion: inv.invoiceVersion, lastSentVersion: inv.lastSentVersion }], org.id);
     const s = statuses.get(inv.id)!;
     expect(s.emailStatus).toBe('not_sent');
     expect(s.lastSentAt).toBeNull();
@@ -787,7 +787,7 @@ describe('getInvoiceEmailStatuses — type filtering', () => {
     const inv = await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id, updatedAt });
     await writeEmailLog({ orgId: org.id, invoiceId: inv.id, status: 'sent', type: 'invoice_send', sentAt });
 
-    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, updatedAt }], org.id);
+    const statuses = await getInvoiceEmailStatuses([{ id: inv.id, invoiceVersion: 2, lastSentVersion: 1 }], org.id);
     const s = statuses.get(inv.id)!;
     expect(s.emailStatus).toBe('sent_outdated');
   });

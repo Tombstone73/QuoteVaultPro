@@ -26,6 +26,8 @@ export async function applyInvoiceSendSuccessLifecycle(input: {
   organizationId: string;
   invoiceId: string;
   successfulSentAt: Date;
+  /** An explicit unapproved-send override must not silently approve accounting. */
+  suppressAutomaticAccountingApproval?: boolean;
 }): Promise<InvoiceSendLifecycleResult> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-send-lifecycle:${input.organizationId}:${input.invoiceId}`}))`);
@@ -97,7 +99,7 @@ export async function applyInvoiceSendSuccessLifecycle(input: {
     }
 
     let accountingApproved = false;
-    if (automation.approveForAccountingAfterSuccessfulSend) {
+    if (automation.approveForAccountingAfterSuccessfulSend && !input.suppressAutomaticAccountingApproval) {
       const approval = await approveInvoicesForAccounting({
         organizationId: input.organizationId,
         invoiceIds: [invoice.id],

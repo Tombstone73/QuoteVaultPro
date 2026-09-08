@@ -16,6 +16,7 @@ test("direct and bulk invoice delivery share the provider-success lifecycle hand
   expect(routes).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
   expect(queue).toContain("await canonicalInvoiceEmailSender(");
   expect(lifecycle).toContain("approveInvoicesForAccounting");
+  expect(lifecycle).toContain("suppressAutomaticAccountingApproval");
   expect(lifecycle).toContain("source: \"invoice_delivery_automation\"");
 });
 

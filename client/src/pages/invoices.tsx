@@ -383,12 +383,13 @@ export default function InvoicesListPage() {
       const confirmation = [
         `${preview.selected} selected; ${preview.eligible} eligible for delivery.`,
         preview.recipientGroups ? `${preview.recipientGroups} recipient group${preview.recipientGroups === 1 ? '' : 's'} resolved.` : 'No recipient email is available for the selected invoices.',
+        preview.unapprovedCount ? `${preview.unapprovedCount} invoice${preview.unapprovedCount === 1 ? ' is' : 's are'} not approved for accounting. Choosing OK will queue those invoices with an explicit Send Anyway override; they will remain Not Approved.` : '',
         preview.skipped.length ? `${preview.skipped.length} will be skipped by the normal invoice email rules.` : '',
         'Emails will be added to the Email Queue and sent approximately 1 minute apart.',
       ].filter(Boolean).join('\n\n');
       if (!window.confirm(confirmation)) return;
 
-      const result = await batchSendInvoices.mutateAsync({ invoiceIds, idempotencyKey });
+      const result = await batchSendInvoices.mutateAsync({ invoiceIds, idempotencyKey, allowUnapproved: preview.unapprovedCount > 0 });
       const summary = result.data;
       toast({
         title: "Invoice delivery queued",

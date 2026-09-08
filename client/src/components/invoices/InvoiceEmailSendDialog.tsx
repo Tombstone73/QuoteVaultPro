@@ -28,6 +28,7 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
   const [selectedRecipientEmail, setSelectedRecipientEmail] = useState("");
   const [manualRecipientEmail, setManualRecipientEmail] = useState("");
   const [recipientEmailError, setRecipientEmailError] = useState<string | null>(null);
+  const [unapprovedOverrideRequired, setUnapprovedOverrideRequired] = useState(false);
 
   const recipientOptions = invoiceEmailRecipients.data?.recipients ?? [];
   const defaultRecipient = invoiceEmailRecipients.data?.defaultRecipient ?? null;
@@ -56,10 +57,11 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
       setSelectedRecipientEmail("");
       setManualRecipientEmail("");
       setRecipientEmailError(null);
+      setUnapprovedOverrideRequired(false);
     }
   };
 
-  const handleSend = async () => {
+  const handleSend = async (allowUnapproved = false) => {
     if (!resolvedRecipientEmail || manualRecipientInvalid) {
       setRecipientEmailError(
         manualRecipientInvalid
@@ -70,8 +72,8 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
     }
     try {
       await sendInvoice.mutateAsync(usingConfiguredRecipients
-        ? { id: invoiceId }
-        : { id: invoiceId, toEmail: resolvedRecipientEmail });
+        ? { id: invoiceId, allowUnapproved }
+        : { id: invoiceId, toEmail: resolvedRecipientEmail, allowUnapproved });
       toast({ title: "Invoice sent", description: "The invoice email was accepted for delivery." });
       onOpenChange(false);
       setSelectedRecipientEmail("");
@@ -79,6 +81,10 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
       setRecipientEmailError(null);
       onSent?.();
     } catch (error: any) {
+      if (error?.code === "INVOICE_APPROVAL_REQUIRED" && !allowUnapproved) {
+        setUnapprovedOverrideRequired(true);
+        return;
+      }
       toast({ title: "Invoice send failed", description: error.message || "Unable to send the invoice email.", variant: "destructive" });
     }
   };
@@ -87,8 +93,11 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
     <Dialog open={open} onOpenChange={handleOpenChange}>
       {trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
       <DialogContent className="sm:max-w-md">
-        <DialogHeader><DialogTitle>Send Invoice</DialogTitle></DialogHeader>
-        <div className="space-y-4">
+        <DialogHeader><DialogTitle>{unapprovedOverrideRequired ? "Send Unapproved Invoice?" : "Send Invoice"}</DialogTitle></DialogHeader>
+        {unapprovedOverrideRequired ? <div className="space-y-3 text-sm">
+          <p>This invoice is not approved for accounting.</p>
+          <p>Send Anyway will email the invoice but will not approve it for accounting. The invoice will remain Not Approved.</p>
+        </div> : <div className="space-y-4">
           <div className="rounded-md border bg-muted/30 px-3 py-2.5">
             <div className="text-xs font-medium text-muted-foreground">Sending to</div>
             {invoiceEmailRecipients.isLoading ? (
@@ -115,10 +124,15 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
             <Input id="invoice-other-email" type="email" value={manualRecipientEmail} onChange={(event) => { setManualRecipientEmail(event.target.value); setRecipientEmailError(null); }} placeholder="email@example.com" aria-invalid={manualRecipientInvalid || Boolean(recipientEmailError)} />
             {manualRecipientInvalid || recipientEmailError ? <p className="text-xs text-destructive">{manualRecipientInvalid ? "Enter a valid email address." : recipientEmailError}</p> : <p className="text-xs text-muted-foreground">This is a one-time recipient override and will not change customer records.</p>}
           </div>
-        </div>
+        </div>}
         <DialogFooter>
-          <DialogClose asChild><Button variant="outline" disabled={sendInvoice.isPending}>Cancel</Button></DialogClose>
-          <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || !resolvedRecipientEmail || manualRecipientInvalid}>{sendInvoice.isPending ? "Sending..." : "Send"}</Button>
+          {unapprovedOverrideRequired ? <>
+            <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={sendInvoice.isPending}>Cancel</Button>
+            <Button variant="destructive" onClick={() => void handleSend(true)} disabled={sendInvoice.isPending}>{sendInvoice.isPending ? "Sending..." : "Send Anyway"}</Button>
+          </> : <>
+            <DialogClose asChild><Button variant="outline" disabled={sendInvoice.isPending}>Cancel</Button></DialogClose>
+            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || !resolvedRecipientEmail || manualRecipientInvalid}>{sendInvoice.isPending ? "Sending..." : "Send"}</Button>
+          </>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

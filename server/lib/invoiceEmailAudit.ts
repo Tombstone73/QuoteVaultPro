@@ -8,6 +8,7 @@ export type InvoiceEmailSentAuditInput = {
   invoiceVersion: number;
   messageId: string | null;
   sentAt: Date;
+  sentWithUnapprovedOverride?: boolean;
 };
 
 /** A durable, operator-readable audit record created only after email delivery succeeds. */
@@ -26,6 +27,7 @@ export function buildInvoiceEmailSentAudit(input: InvoiceEmailSentAuditInput) {
       invoiceVersion: input.invoiceVersion,
       recipientEmail: input.recipientEmail,
       messageId: input.messageId,
+      sentWithUnapprovedOverride: Boolean(input.sentWithUnapprovedOverride),
     },
     createdAt: input.sentAt,
   };
