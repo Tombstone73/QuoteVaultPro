@@ -42,6 +42,7 @@ import { createPortalInvoiceRouter, type PortalProofRead, type PortalProofRespon
 import { createCustomerCommercialRouter, createPortalCustomerCommercialRouter, type CustomerCommercialHttpDependencies, type PortalCustomerCommercialHttpDependencies } from "./customerCommercialRoutes.js";
 import { createPortalOrderRouter } from "./portalOrderRoutes.js";
 import { createPortalArtworkRouter } from "./portalArtworkRoutes.js";
+import { createAiAssistantRouter, type AiAssistantHttpDependencies } from "./aiAssistantRoutes.js";
 import type { PortalCommercialRead } from "../../modules/portal/commercialReads.js";
 import type { PortalOrderCreationApplicationService } from "../../modules/portal/portalOrderCreation.js";
 import type { PortalArtworkApplicationService } from "../../modules/portal/portalArtwork.js";
@@ -76,6 +77,7 @@ export type AuthenticatedRoutingRouteRuntime = Readonly<{ dependencies: RoutingH
 export type AuthenticatedInventoryRouteRuntime = Readonly<{ dependencies: InventoryHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedFormulaRouteRuntime = Readonly<{ dependencies: FormulaHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedCustomerCommercialRouteRuntime = Readonly<{ dependencies: CustomerCommercialHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedAiAssistantRouteRuntime = Readonly<{ dependencies: AiAssistantHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 
 export const createV2HttpApp = (
   config: V2RuntimeConfig,
@@ -99,6 +101,7 @@ export const createV2HttpApp = (
   portal?: Readonly<{ middleware: RequestHandler; principal: Readonly<{ principal(request: Request): Promise<import("../../authorization/principals.js").Principal> }>; proofs?:PortalProofRead; proofing?:PortalProofResponseService; commercial?:PortalCommercialRead; orders?: PortalOrderCreationApplicationService; artwork?: PortalArtworkApplicationService }>,
   inbound?: AuthenticatedInboundRouteRuntime,
   customerCommercial?: AuthenticatedCustomerCommercialRouteRuntime,
+  aiAssistant?: AuthenticatedAiAssistantRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -424,6 +427,13 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createCustomerCommercialRouter(customerCommercial.dependencies),
+    );
+  if (aiAssistant)
+    app.use(
+      "/v2/organizations/:organizationId/ai",
+      aiAssistant.trustedHostMiddleware,
+      requireV2CsrfToken,
+      createAiAssistantRouter(aiAssistant.dependencies),
     );
 
   app.use((_request, response) =>
