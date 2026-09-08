@@ -22,6 +22,8 @@
     "v2:start": "node dist-v2/main.js",
     "v2:migrations:status": "tsx v2/scripts/v2MigrationStatus.ts",
     "v2:migrations:apply": "tsx v2/scripts/applyV2Migrations.ts",
+    "v2:m7_7b:dev-reconcile": "tsx v2/scripts/runM77BDevSchemaReconciliation.ts",
+    "v2:m7_7b:dev-reconcile:pure": "tsx v2/tests/infrastructure/m77bDevReconciliation.pure.ts",
     "v2:m7_2c:reconcile": "tsx v2/scripts/runM72CReconciliation.ts",
     "v2:m7_2c:drizzle-follow-on": "tsx v2/scripts/runM72CDrizzleFollowOn.ts",
     "v2:m7_2c:stages:pure": "tsx v2/tests/salesRoutingReconciliationStages.pure.ts && tsx v2/tests/modules/handoffManifest.pure.ts",

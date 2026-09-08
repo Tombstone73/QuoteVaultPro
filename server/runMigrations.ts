@@ -28,6 +28,11 @@ const MIGRATIONS_SCHEMA = "public";
 // on at M0200, leaving a structurally impossible schema.
 const M0199_JOURNAL_TIMESTAMP = 1788048000046;
 const RECONCILIATION_ATTESTATION_STAGE = "R0269";
+// DEV's audited journal claims through M0273 while its physical schema lacks
+// those migrations. Its timestamp cannot be repaired by Drizzle: all four
+// entries sort at or below the current historical maximum.
+const DEV_RECONCILIATION_JOURNAL_TIMESTAMP = 1788048000120;
+const DEV_RECONCILIATION_ATTESTATION_STAGE = "D0273";
 
 type MigrationRuntime = {
   pool: Pool;
@@ -47,7 +52,9 @@ async function assertPreDrizzleReconciliationAttested(client: any): Promise<void
       SELECT
         to_regclass('public.__drizzle_migrations_v2') IS NOT NULL AS has_drizzle_ledger,
         to_regclass('public.v2_sales_documents') IS NOT NULL AS has_sales_foundation,
-        to_regclass('public.v2_proof_works') IS NOT NULL AS has_proof_foundation
+        to_regclass('public.v2_proof_works') IS NOT NULL AS has_proof_foundation,
+        to_regclass('public.v2_billing_refund_allocation_evidence') IS NOT NULL AS has_refund_allocation_evidence,
+        to_regclass('public.v2_ai_conversations') IS NOT NULL AS has_ai_foundation
     `,
   );
   const shape = probe.rows[0] ?? {};
@@ -56,15 +63,27 @@ async function assertPreDrizzleReconciliationAttested(client: any): Promise<void
   }
 
   const ledger = await client.query(
-    `SELECT COALESCE(MAX(created_at), -1) AS max_created_at FROM public.__drizzle_migrations_v2`,
+    `SELECT count(*) AS row_count, COALESCE(MAX(id), -1) AS max_id, COALESCE(MAX(created_at), -1) AS max_created_at FROM public.__drizzle_migrations_v2`,
   );
   // Normal fully migrated DEV-style databases have a newer ledger timestamp
   // and remain on the ordinary migration path. The exact M0199 timestamp is
   // the audited divergent historic shape: physical tables alone cannot prove
   // that its foundation was reconciled rather than hand-created.
-  if (Number(ledger.rows[0]?.max_created_at ?? -1) !== M0199_JOURNAL_TIMESTAMP) {
+  const maximumJournalTimestamp = Number(ledger.rows[0]?.max_created_at ?? -1);
+  const isHistoricalM0199 = maximumJournalTimestamp === M0199_JOURNAL_TIMESTAMP;
+  const isAuditedDevHorizon = maximumJournalTimestamp === DEV_RECONCILIATION_JOURNAL_TIMESTAMP
+    && Number(ledger.rows[0]?.row_count ?? -1) === 268
+    && Number(ledger.rows[0]?.max_id ?? -1) === 269;
+  if (!isHistoricalM0199 && !isAuditedDevHorizon) {
     return;
   }
+
+  const expectedStage = isHistoricalM0199
+    ? RECONCILIATION_ATTESTATION_STAGE
+    : DEV_RECONCILIATION_ATTESTATION_STAGE;
+  const physicalShapeMatches = isHistoricalM0199
+    ? shape.has_sales_foundation && shape.has_proof_foundation
+    : shape.has_refund_allocation_evidence && shape.has_ai_foundation;
 
   const attestation = await client.query(
     `
@@ -75,17 +94,15 @@ async function assertPreDrizzleReconciliationAttested(client: any): Promise<void
         AND postcondition_digest IS NOT NULL
       LIMIT 1
     `,
-    [RECONCILIATION_ATTESTATION_STAGE],
+    [expectedStage],
   ).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "unknown reconciliation-ledger error";
     throw new Error(`Pre-Drizzle reconciliation ledger is unavailable: ${message}`);
   });
 
-  if (attestation.rowCount !== 1) {
+  if (attestation.rowCount !== 1 || !physicalShapeMatches) {
     throw new Error(
-      "Refusing normal Drizzle migration: the ledger claims M0199 but required V2 physical " +
-      "foundation is absent or has not been attested. Run the dedicated pre-Drizzle reconciliation executor through " +
-      "R0269 and its physical postcondition attestation first.",
+      `Refusing normal Drizzle migration: the ledger claims a reconciled horizon but required V2 physical foundation is absent or has not been attested through ${expectedStage}.`,
     );
   }
 }

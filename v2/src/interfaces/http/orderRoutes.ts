@@ -246,7 +246,13 @@ export const createOrderRouter = (dependencies: OrderHttpDependencies): Router =
         ...(request.query.sort === "updated_asc" || request.query.sort === "updated_desc" ? { sort: request.query.sort } : {}),
       });
       response.status(200).json({ ok: true, data });
-    } catch (cause) { error(response, cause); }
+    } catch (cause) {
+      // The client receives only the stable V2 error envelope. Keep a bounded
+      // server-side diagnostic for the DEV reconciliation validation without
+      // logging request data, identities, SQL, or database credentials.
+      console.error("[V2 Orders read] failed", cause instanceof Error ? { name: cause.name, message: cause.message.slice(0, 500) } : { name: "unknown" });
+      error(response, cause);
+    }
   });
 
   router.get("/legacy/:recordId", async (request, response) => {
