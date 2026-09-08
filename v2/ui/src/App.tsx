@@ -427,18 +427,12 @@ export const App = ({
       onNavigate={navigate}
       appearance={appearance}
       setAppearance={setAppearance}
+      capabilities={bootstrap.data?.capabilities}
     >
       {page === "home" ? (
         <CommandCenter
           organizationId={organizationId}
           sessionScope={sessionScope}
-          canQuoteView={
-            bootstrap.data?.capabilities.quoteCreate === true ||
-            bootstrap.data?.capabilities.quoteEdit === true
-          }
-          canOrderView={bootstrap.data?.capabilities.orderView === true}
-          canFinanceView={bootstrap.data?.capabilities.invoiceView === true}
-          navigate={navigate}
         />
       ) : page === "appearance" ? (
         <AppearanceWorkspace

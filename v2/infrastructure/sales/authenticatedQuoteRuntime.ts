@@ -51,6 +51,8 @@ import { PostgresQuoteArtworkTransactionRunner } from "../artwork/postgresQuoteA
 import { QuoteArtworkUploadService } from "../artwork/quoteArtworkUploadService.js";
 import { SupabaseArtworkBinaryStorage } from "../artwork/artworkBinaryStorage.js";
 import { PostgresArtworkStorageUploadLedger } from "../artwork/artworkStorageUploadLedger.js";
+import { PostgresActionCenterReader } from "../compatibility/postgresActionCenterRead.js";
+import type { ActionCenterHttpDependencies } from "../../src/interfaces/http/actionCenterRoutes.js";
 
 export type AuthenticatedQuoteRuntimeDependencies = Readonly<{
   pool: Pool;
@@ -67,6 +69,7 @@ export type AuthenticatedQuoteRuntime = Readonly<{
   organizationSettingsDependencies: Omit<OrganizationSettingsHttpDependencies, "logger">;
   teamAccessDependencies: TeamAccessHttpDependencies;
   documentNumberingSettingsDependencies: DocumentNumberingSettingsHttpDependencies;
+  actionCenterDependencies: ActionCenterHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 
@@ -112,6 +115,7 @@ export const composeAuthenticatedQuoteRuntime = (
     })(),
     teamAccessDependencies: { teamAccess: new PostgresTeamAccess(input.pool), principals },
     documentNumberingSettingsDependencies: { settings: new PostgresDocumentNumberingSettings(input.pool), principals },
+    actionCenterDependencies: { reader: new PostgresActionCenterReader(input.pool), principals },
     trustedHostMiddleware: input.trustedHostMiddleware,
   };
 };

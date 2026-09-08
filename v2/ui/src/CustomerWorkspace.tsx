@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { contactApi, customerApi, newBusinessRequestId, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
+import { contactApi, customerApi, newBusinessRequestId, type CustomerActivityItem, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
+import { invoicePath, orderPath, quotePath, workspacePath } from "./productRouting";
 
 const keys = {
   list: (scope: string, organizationId: string, search: string, cursor: string) => ["v2", scope, organizationId, "customers", "catalog", search, cursor] as const,
   detail: (scope: string, organizationId: string, customerId: string) => ["v2", scope, organizationId, "customers", "detail", customerId] as const,
+  activity: (scope: string, organizationId: string, customerId: string, cursor: string) => ["v2", scope, organizationId, "customers", "activity", customerId, cursor] as const,
 };
 
 const unavailable = "—";
@@ -118,9 +120,45 @@ const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, openCo
     <div className="v2-customer-overview-grid">
       <SummaryCard title="Account Details"><CustomerEditForm organizationId={organizationId} sessionScope={sessionScope} customer={customer} canEdit={canCreate} /><dl className="v2-customer-detail-facts"><div><dt>Company</dt><dd>{identity.companyName ?? customer.displayName}</dd></div><div><dt>Primary Contact</dt><dd>{primaryName ?? unavailable}</dd></div><div><dt>Billing Address</dt><dd>{address(identity.billingAddress)}</dd></div><div><dt>Shipping Address</dt><dd>{address(identity.shippingAddress)}</dd></div></dl></SummaryCard>
       <SummaryCard title="Contacts" count={String(customer.contacts.length)}>{readiness.status === "needs_attention" && <p className="v2-customer-empty" role="status">Contact attention: {readiness.reasons.map((reason) => reason.replaceAll("_", " ")).join(", ")}.</p>}<ContactCreateForm organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} customerRevision={customer.revision} canCreate={canCreate} />{customer.contacts.length ? <ul className="v2-customer-contact-list">{customer.contacts.map((contact) => <li key={contact.contactId}><div><button type="button" onClick={() => openContact(contact.contactId)}>{contact.displayName}</button>{contact.primary && <em>Primary</em>}{contact.status === "archived" && <em>Inactive</em>}</div><small>{contact.email ?? unavailable}{contact.phone ? ` · ${contact.phone}` : ""}{contact.portalAccessStatus ? ` · Portal ${contact.portalAccessStatus}` : ""}</small>{canCreate && contact.status === "active" && !contact.primary && <PrimaryContactButton organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} customerRevision={customer.revision} contactId={contact.contactId} />}</li>)}</ul> : <p className="v2-customer-empty">No Contacts are linked to this Customer.</p>}</SummaryCard>
-      <SummaryCard title="Commercial Context"><p className="v2-customer-empty">Customer commercial history remains owned by Sales and Billing. A customer-keyed read projection is not available yet.</p></SummaryCard>
+      <CustomerActivity organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} />
     </div>
   </section>;
+};
+
+/** A bounded context hub only: source domains retain all mutations and detail ownership. */
+const CustomerActivity = ({ organizationId, sessionScope, customerId }: Readonly<{ organizationId: string; sessionScope: string; customerId: string }>) => {
+  const [cursor, setCursor] = useState("");
+  const [cursorHistory, setCursorHistory] = useState<readonly string[]>([]);
+  const activity = useQuery({
+    queryKey: keys.activity(sessionScope, organizationId, customerId, cursor),
+    queryFn: () => customerApi.activity(organizationId, customerId, { ...(cursor ? { cursor } : {}), limit: 12 }),
+    enabled: Boolean(organizationId && sessionScope && customerId),
+  });
+  const eventLabel = (value: string) => value.replaceAll("_", " ");
+  const occurredAt = (value: string) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Date unavailable" : date.toLocaleString();
+  };
+  const ownerHref = (item: CustomerActivityItem) => {
+    if (item.kind === "quote") return quotePath(item.entityId);
+    if (item.kind === "order") return orderPath(item.entityId);
+    if (item.kind === "invoice") return invoicePath(item.entityId);
+    if (item.kind === "proof") return workspacePath("proofing");
+    if (item.kind === "fulfillment") return "/fulfillment";
+    return workspacePath("payments");
+  };
+  return <SummaryCard title="Activity" count={activity.data ? String(activity.data.totalMatching) : undefined}>
+    {activity.isLoading && <p className="v2-customer-empty">Loading activity…</p>}
+    {activity.isError && <p className="v2-customer-empty">Customer activity is unavailable.</p>}
+    {activity.data && !activity.data.items.length && <p className="v2-customer-empty">No linked V2 operational activity is available yet.</p>}
+    {activity.data?.items.length ? <ul className="v2-customer-contact-list" aria-label="Customer activity">
+      {activity.data.items.map((item) => <li key={`${item.kind}:${item.entityId}`}><div><a href={ownerHref(item)}>{item.title}</a><em>{item.kind}</em></div><small>{eventLabel(item.detail)} · {occurredAt(item.occurredAt)}</small></li>)}
+    </ul> : null}
+    {activity.data && (cursorHistory.length || activity.data.nextCursor) && <div className="v2-customers-pagination">
+      <button type="button" disabled={!cursorHistory.length || activity.isFetching} onClick={() => { const previous = cursorHistory.at(-1) ?? ""; setCursorHistory((values) => values.slice(0, -1)); setCursor(previous); }}>Previous activity</button>
+      <button type="button" disabled={!activity.data.nextCursor || activity.isFetching} onClick={() => { if (!activity.data?.nextCursor) return; setCursorHistory((values) => [...values, cursor]); setCursor(activity.data.nextCursor!); }}>More activity</button>
+    </div>}
+  </SummaryCard>;
 };
 
 const ContactCreateForm = ({ organizationId, sessionScope, customerId, customerRevision, canCreate }: Readonly<{

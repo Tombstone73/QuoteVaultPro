@@ -1,18 +1,28 @@
 import { useQuery } from "@tanstack/react-query";
-import { financeApi, money, orderApi, quoteApi } from "./api";
+import React from "react";
+import { actionCenterApi } from "./api";
 
-/** Read/navigation dashboard composed from bounded canonical workspace projections. */
-export const CommandCenter = ({ organizationId, sessionScope, canQuoteView, canOrderView, canFinanceView, navigate }: Readonly<{ organizationId: string; sessionScope: string; canQuoteView: boolean; canOrderView: boolean; canFinanceView: boolean; navigate: (page: "quotes" | "orders" | "invoices" | "payments") => void }>) => {
-  const quotes = useQuery({ queryKey: ["v2", sessionScope, organizationId, "command-center", "quotes"], queryFn: () => quoteApi.list(organizationId), enabled: Boolean(organizationId && sessionScope && canQuoteView) });
-  const orders = useQuery({ queryKey: ["v2", sessionScope, organizationId, "command-center", "orders"], queryFn: () => orderApi.list(organizationId), enabled: Boolean(organizationId && sessionScope && canOrderView) });
-  const finance = useQuery({ queryKey: ["v2", sessionScope, organizationId, "command-center", "finance", "attention"], queryFn: () => financeApi.overview(organizationId, { pageSize: 5, sort: "updated", direction: "desc" }), enabled: Boolean(organizationId && sessionScope && canFinanceView) });
-  const financeSummary = useQuery({ queryKey: ["v2", sessionScope, organizationId, "command-center", "finance", "summary"], queryFn: () => financeApi.summary(organizationId), enabled: Boolean(organizationId && sessionScope && canFinanceView) });
-  const invoices = finance.data?.items ?? [];
-  const outstanding = financeSummary.data?.outstanding ?? [];
-  const outstandingLabel = outstanding.length ? outstanding.map((amount) => money(amount)).join(" · ") : "—";
-  if (!organizationId) return <section className="v2-command-center"><p className="v2-proof-empty">Enter an authenticated organization to load its canonical workspace summary.</p></section>;
-  return <section className="v2-command-center"><header><div><p>Workspace overview</p><h1>Command Center</h1><span>Read-only summaries from Sales and Billing projections. Operations remain with their owners.</span></div></header>
-    <div className="v2-command-metrics">{canQuoteView && <button onClick={() => navigate("quotes")}><small>Quotes</small><b>{quotes.data?.items.length ?? "—"}</b><span>bounded current list</span></button>}{canOrderView && <button onClick={() => navigate("orders")}><small>Open orders</small><b>{orders.data?.items.filter((item) => item.lifecycle === "open").length ?? "—"}</b><span>bounded current list</span></button>}{canFinanceView && <button onClick={() => navigate("invoices")}><small>Invoices</small><b>{financeSummary.data?.totalMatching ?? "—"}</b><span>Order-backed and issued documents</span></button>}{canFinanceView && <button onClick={() => navigate("payments")}><small>Outstanding balance</small><b>{outstandingLabel}</b><span>full-tenant settlement projection</span></button>}</div>
-    <div className="v2-command-grid">{canQuoteView && <article><header><h2>Recent quotes</h2><button onClick={() => navigate("quotes")}>Open Quotes</button></header>{quotes.data?.items.slice(0, 5).map((quote) => <p key={quote.quoteId}><b>{quote.number}</b><span>{quote.customerDisplayName}</span><small>{quote.lifecycle}</small></p>)}{quotes.isSuccess && !quotes.data.items.length && <em>No canonical Quotes available.</em>}</article>}{canOrderView && <article><header><h2>Open orders</h2><button onClick={() => navigate("orders")}>Open Orders</button></header>{orders.data?.items.filter((order) => order.lifecycle === "open").slice(0, 5).map((order) => <p key={order.orderId}><b>{order.number}</b><span>{order.customerDisplayName}</span><small>{order.routing === "routed" ? "Routing present" : "No route"}</small></p>)}{orders.isSuccess && !orders.data.items.filter((order) => order.lifecycle === "open").length && <em>No open canonical Orders available.</em>}</article>}{canFinanceView && <article><header><h2>Billing attention</h2><button onClick={() => navigate("invoices")}>Open Invoices</button></header>{invoices.filter((invoice) => invoice.balance.cents > 0).slice(0, 5).map((invoice) => <p key={invoice.invoiceId}><b>Order {invoice.sourceOrderNumber}</b><span>{invoice.customerName ?? "Customer unavailable"}</span><small>{invoice.settlement ?? "Settlement unavailable"}</small></p>)}{finance.isSuccess && !invoices.some((invoice) => invoice.balance.cents > 0) && <em>No outstanding canonical Invoice balances.</em>}</article>}</div>
+/**
+ * Staff landing context is a single server-owned action projection. It does
+ * not derive operational counts from independently fetched React workspaces.
+ */
+export const CommandCenter = ({ organizationId, sessionScope }: Readonly<{ organizationId: string; sessionScope: string }>) => {
+  const actions = useQuery({
+    queryKey: ["v2", sessionScope, organizationId, "action-center"],
+    queryFn: () => actionCenterApi.summary(organizationId),
+    enabled: Boolean(organizationId && sessionScope),
+  });
+  if (!organizationId) return <section className="v2-command-center"><p className="v2-proof-empty">Enter an authenticated organization to load its canonical action summary.</p></section>;
+  return <section className="v2-command-center">
+    <header><div><p>Workspace overview</p><h1>Command Center</h1><span>What needs staff attention now. Counts are bounded, tenant-scoped V2 domain projections.</span></div></header>
+    {actions.isLoading && <p className="v2-proof-empty">Loading action summary…</p>}
+    {actions.isError && <p className="v2-proof-empty">The action summary is unavailable. Open the permitted workspaces from navigation.</p>}
+    {actions.data && <div className="v2-command-grid">
+      {actions.data.items.map((item) => <article key={item.kind}>
+        <header><h2>{item.label}</h2><a href={item.href}>Open workspace</a></header>
+        <p><b>{item.count}</b><span>{item.count === 1 ? "item needs attention" : "items need attention"}</span></p>
+      </article>)}
+      {!actions.data.items.length && <p className="v2-proof-empty">No permitted operational action categories are available for this account.</p>}
+    </div>}
   </section>;
 };

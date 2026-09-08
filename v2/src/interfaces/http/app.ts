@@ -33,6 +33,7 @@ import { createTaxSettingsRouter, type TaxSettingsHttpDependencies } from "./tax
 import { createOrganizationSettingsRouter, type OrganizationSettingsHttpDependencies } from "./organizationSettingsRoutes.js";
 import { createTeamAccessRouter, type TeamAccessHttpDependencies } from "./teamAccessRoutes.js";
 import { createDocumentNumberingSettingsRouter, type DocumentNumberingSettingsHttpDependencies } from "./documentNumberingSettingsRoutes.js";
+import { createActionCenterRouter, type ActionCenterHttpDependencies } from "./actionCenterRoutes.js";
 import { createEmailIntegrationCallback, createEmailIntegrationRouter, type EmailIntegrationHttpDependencies } from "./emailIntegrationRoutes.js";
 import { createQuickBooksIntegrationCallback, createQuickBooksIntegrationRouter, type QuickBooksIntegrationHttpDependencies } from "./quickBooksIntegrationRoutes.js";
 import { createStripeSettingsRouter, type StripeSettingsHttpDependencies } from "./stripeSettingsRoutes.js";
@@ -57,6 +58,7 @@ export type AuthenticatedQuoteRouteRuntime = Readonly<{
   organizationSettingsDependencies: Omit<OrganizationSettingsHttpDependencies, "logger">;
   teamAccessDependencies: TeamAccessHttpDependencies;
   documentNumberingSettingsDependencies: DocumentNumberingSettingsHttpDependencies;
+  actionCenterDependencies: ActionCenterHttpDependencies;
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedOrderRouteRuntime = Readonly<{
@@ -260,6 +262,13 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createCustomerRouter(quote.customerDependencies),
+    );
+  if (quote)
+    app.use(
+      "/v2/organizations/:organizationId/action-center",
+      quote.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      createActionCenterRouter(quote.actionCenterDependencies),
     );
   if (quote)
     app.use(

@@ -18,6 +18,9 @@ const app = (principal: StaffPrincipal) => {
         ? { items: [catalog], totalMatching: 1 }
         : { items: [], totalMatching: 0 },
       read: async (organizationId, customerId) => organizationId === "org-a" && customerId === "customer-a" ? detail : null,
+      activity: async (organizationId, customerId, activityRequest) => organizationId === "org-a" && customerId === "customer-a" && activityRequest?.limit === 20
+        ? { items: [{ kind: "order", entityId: "order-a", occurredAt: "2026-09-07T12:00:00.000Z", title: "Order O-100", detail: "open" }], totalMatching: 1 }
+        : { items: [], totalMatching: 0 },
     },
   };
   return express().use("/v2/organizations/:organizationId/customers", createCustomerRouter(dependencies));
@@ -29,6 +32,14 @@ describe("M4 Customer workspace HTTP projection", () => {
   });
   test("returns only Customer-owned detail and relationship-scoped Contacts", async () => {
     await request(app(staff("org-a"))).get("/v2/organizations/org-a/customers/customer-a").expect(200, { ok: true, data: detail });
+  });
+  test("returns only an existing, tenant-scoped Customer's bounded canonical activity", async () => {
+    await request(app(staff("org-a"))).get("/v2/organizations/org-a/customers/customer-a/activity?limit=20").expect(200, {
+      ok: true,
+      data: { items: [{ kind: "order", entityId: "order-a", occurredAt: "2026-09-07T12:00:00.000Z", title: "Order O-100", detail: "open" }], totalMatching: 1 },
+    });
+    await request(app(staff("org-a"))).get("/v2/organizations/org-a/customers/customer-b/activity").expect(404);
+    await request(app(staff("org-a", []))).get("/v2/organizations/org-a/customers/customer-a/activity").expect(403);
   });
   test("fails closed for foreign organizations, unknown/malformed IDs, and absent customer.view", async () => {
     await request(app(staff("org-a"))).get("/v2/organizations/org-b/customers?q=Acme").expect(403);

@@ -28,4 +28,22 @@ describe("M4 Customer workspace PostgreSQL projection", () => {
     expect(calls[2]!.text).toContain("l.is_primary DESC");
     expect(calls[2]!.values).toEqual(["org-a", "customer-a"]);
   });
+  test("pages a customer-only canonical activity stream without duplicating aggregate Payments", async () => {
+    const calls: { text: string; values?: readonly unknown[] }[] = [];
+    const at = new Date("2026-09-07T12:00:00.000Z");
+    const responses = [[
+      { kind: "payment", entity_id: "payment-a", occurred_at: at, title: "Payment", detail: "provider · USD 5000" },
+      { kind: "invoice", entity_id: "invoice-a", occurred_at: at, title: "Invoice INV-1", detail: "issued" },
+    ], [{ total_matching: "2" }]];
+    const reader = new PostgresCustomerWorkspaceReader({ query: async <T>(text: string, values?: readonly unknown[]) => { calls.push({ text, values }); return { rows: (responses.shift() ?? []) as T[] }; } } as any);
+    const page = await reader.activity("org-a", "customer-a", { limit: 1 });
+    expect(page.items).toEqual([{ kind: "payment", entityId: "payment-a", occurredAt: at.toISOString(), title: "Payment", detail: "provider · USD 5000" }]);
+    expect(page.nextCursor).toBeDefined();
+    expect(calls[0]!.text).toContain("EXISTS (");
+    expect(calls[0]!.text).toContain("a.payment_id=p.id AND i.customer_id=$2");
+    expect(calls[0]!.text).toContain("ORDER BY occurred_at DESC,kind DESC,entity_id DESC");
+    expect(calls[0]!.text).toContain("(occurred_at,kind,entity_id) < ($3::timestamptz,$4::text,$5::text)");
+    expect(calls[0]!.values).toEqual(["org-a", "customer-a", null, null, null, 2]);
+    expect(calls[1]!.values).toEqual(["org-a", "customer-a"]);
+  });
 });

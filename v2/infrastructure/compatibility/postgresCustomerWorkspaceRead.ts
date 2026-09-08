@@ -39,6 +39,25 @@ export type CustomerCatalogPage = Readonly<{
   totalMatching: number;
   nextCursor?: string;
 }>;
+/**
+ * A read-only, customer-keyed operational timeline.  It intentionally points
+ * back to the owning V2 domains rather than copying their mutable state into
+ * CRM.  Provider operations and internal worker diagnostics are excluded.
+ */
+export type CustomerActivityKind = "quote" | "order" | "invoice" | "payment" | "refund" | "proof" | "fulfillment";
+export type CustomerActivityItem = Readonly<{
+  kind: CustomerActivityKind;
+  entityId: string;
+  occurredAt: string;
+  title: string;
+  detail: string;
+}>;
+export type CustomerActivityPageRequest = Readonly<{ limit?: number; cursor?: string }>;
+export type CustomerActivityPage = Readonly<{
+  items: readonly CustomerActivityItem[];
+  totalMatching: number;
+  nextCursor?: string;
+}>;
 
 type CustomerCatalogRow = Readonly<{
   customer_id: string;
@@ -68,6 +87,8 @@ type CustomerContactRow = Readonly<{
   portal_access_status: string | null;
 }>;
 type CustomerDetailRow = Readonly<{ id: string; company_name: string; display_name: string | null; email: string | null; phone: string | null; crm_revision: string; billing_street1: string | null; billing_street2: string | null; billing_city: string | null; billing_state: string | null; billing_postal_code: string | null; billing_country: string | null; shipping_street1: string | null; shipping_street2: string | null; shipping_city: string | null; shipping_state: string | null; shipping_postal_code: string | null; shipping_country: string | null }>;
+type CustomerActivityRow = Readonly<{ kind: CustomerActivityKind; entity_id: string; occurred_at: Date; title: string; detail: string }>;
+type CustomerActivityCursor = Readonly<{ occurredAt: string; kind: CustomerActivityKind; entityId: string }>;
 
 const contact = (row: CustomerContactRow): CustomerWorkspaceContact => ({
   contactId: brandedId<"ContactId">(row.id),
@@ -92,6 +113,8 @@ const catalogContact = (row: CustomerCatalogRow): CustomerPrimaryContact | undef
     : undefined;
 const customerCatalogLimit = (value: number | undefined) =>
   Number.isInteger(value) ? Math.max(1, Math.min(value!, 50)) : 25;
+const customerActivityLimit = (value: number | undefined) =>
+  Number.isInteger(value) ? Math.max(1, Math.min(value!, 50)) : 20;
 const encodeCustomerCursor = (cursor: CustomerCatalogCursor) =>
   Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 const decodeCustomerCursor = (value?: string): CustomerCatalogCursor | undefined => {
@@ -105,6 +128,61 @@ const decodeCustomerCursor = (value?: string): CustomerCatalogCursor | undefined
     return undefined;
   }
 };
+const encodeCustomerActivityCursor = (cursor: CustomerActivityCursor) =>
+  Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+const decodeCustomerActivityCursor = (value?: string): CustomerActivityCursor | undefined => {
+  if (!value) return undefined;
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
+    const kinds: readonly CustomerActivityKind[] = ["quote", "order", "invoice", "payment", "refund", "proof", "fulfillment"];
+    return typeof decoded.occurredAt === "string" && typeof decoded.entityId === "string" && typeof decoded.kind === "string" && kinds.includes(decoded.kind as CustomerActivityKind)
+      ? { occurredAt: decoded.occurredAt, entityId: decoded.entityId, kind: decoded.kind as CustomerActivityKind }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const customerActivityEvents = `
+  SELECT d.document_kind::text AS kind,d.id AS entity_id,d.updated_at AS occurred_at,
+    CASE WHEN d.document_kind='quote' THEN 'Quote ' ELSE 'Order ' END || d.display_number AS title,
+    CASE WHEN d.document_kind='quote' THEN COALESCE(q.acceptance_state,'not_accepted') ELSE COALESCE(o.commercial_state,'open') END AS detail
+  FROM v2_sales_documents d
+  LEFT JOIN v2_sales_quote_details q ON q.organization_id=d.organization_id AND q.document_id=d.id
+  LEFT JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id
+  WHERE d.organization_id=$1 AND d.customer_id=$2
+  UNION ALL
+  SELECT 'invoice'::text,i.id,i.updated_at,
+    'Invoice ' || COALESCE(i.invoice_display_number,d.display_number),i.invoice_state
+  FROM v2_billing_invoices i
+  JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
+  WHERE i.organization_id=$1 AND i.customer_id=$2
+  UNION ALL
+  SELECT 'payment'::text,p.id,p.recorded_at,'Payment',p.source || ' · ' || p.currency || ' ' || (p.amount_cents::text)
+  FROM v2_billing_payments p
+  WHERE p.organization_id=$1 AND EXISTS (
+    SELECT 1
+    FROM v2_billing_payment_allocations a
+    JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id
+    WHERE a.organization_id=p.organization_id AND a.payment_id=p.id AND i.customer_id=$2
+  )
+  UNION ALL
+  SELECT 'refund'::text,r.id,r.recorded_at,'Refund',r.source || ' · ' || r.currency || ' ' || (r.amount_cents::text)
+  FROM v2_billing_refunds r
+  JOIN v2_billing_invoices i ON i.organization_id=r.organization_id AND i.id=r.invoice_id
+  WHERE r.organization_id=$1 AND i.customer_id=$2
+  UNION ALL
+  SELECT 'proof'::text,pv.id,COALESCE(pv.issued_at,pv.created_at),'Proof v' || pv.sequence::text,
+    CASE WHEN pv.issued_at IS NULL THEN 'prepared' ELSE 'issued' END
+  FROM v2_proof_versions pv
+  JOIN v2_proof_works pw ON pw.organization_id=pv.organization_id AND pw.id=pv.proof_work_id
+  JOIN v2_sales_documents d ON d.organization_id=pw.organization_id AND d.id=pw.order_document_id
+  WHERE pv.organization_id=$1 AND d.customer_id=$2
+  UNION ALL
+  SELECT 'fulfillment'::text,h.id,h.completed_at,
+    CASE WHEN h.handoff_method='shipment' THEN 'Shipment' ELSE 'Pickup' END,h.handoff_method
+  FROM v2_fulfillment_handoffs h
+  WHERE h.organization_id=$1 AND h.customer_id=$2`;
 
 /** Read-only Customer workspace projection; CRM remains the source of these facts. */
 export class PostgresCustomerWorkspaceReader {
@@ -207,6 +285,39 @@ export class PostgresCustomerWorkspaceReader {
       presentation: await reader.getPresentationIdentity({ organizationId, customerId }),
       contacts,
       contactReadiness: { status: reasons.length ? "needs_attention" : "ready", reasons },
+    };
+  }
+
+  /**
+   * Keyset-paged, tenant/customer-scoped activity.  Every branch binds both
+   * organization and customer at the database boundary, so the UI never gets
+   * a cross-account activity stream to filter itself.
+   */
+  async activity(organizationId: OrganizationId, customerId: CustomerId, request: CustomerActivityPageRequest = {}): Promise<CustomerActivityPage> {
+    const limit = customerActivityLimit(request.limit);
+    const cursor = decodeCustomerActivityCursor(request.cursor);
+    const baseValues = [organizationId, customerId];
+    const cursorValues = [cursor?.occurredAt ?? null, cursor?.kind ?? null, cursor?.entityId ?? null];
+    const [result, count] = await Promise.all([
+      this.pool.query<CustomerActivityRow>(
+        `WITH events AS (${customerActivityEvents})
+         SELECT kind,entity_id,occurred_at,title,detail FROM events
+         WHERE ($3::timestamptz IS NULL OR (occurred_at,kind,entity_id) < ($3::timestamptz,$4::text,$5::text))
+         ORDER BY occurred_at DESC,kind DESC,entity_id DESC
+         LIMIT $6`,
+        [...baseValues, ...cursorValues, limit + 1],
+      ),
+      this.pool.query<{ total_matching: string }>(
+        `WITH events AS (${customerActivityEvents}) SELECT count(*)::text AS total_matching FROM events`,
+        baseValues,
+      ),
+    ]);
+    const visible = result.rows.slice(0, limit);
+    const last = visible.at(-1);
+    return {
+      items: visible.map((row) => ({ kind: row.kind, entityId: row.entity_id, occurredAt: row.occurred_at.toISOString(), title: row.title, detail: row.detail })),
+      totalMatching: Number(count.rows[0]?.total_matching ?? 0),
+      ...(result.rows.length > limit && last ? { nextCursor: encodeCustomerActivityCursor({ occurredAt: last.occurred_at.toISOString(), kind: last.kind, entityId: last.entity_id }) } : {}),
     };
   }
 

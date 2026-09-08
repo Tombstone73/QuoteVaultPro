@@ -2168,6 +2168,29 @@ export type CustomerCatalogPage = Readonly<{
   totalMatching: number;
   nextCursor?: string;
 }>;
+export type CustomerActivityItem = Readonly<{
+  kind: "quote" | "order" | "invoice" | "payment" | "refund" | "proof" | "fulfillment";
+  entityId: string;
+  occurredAt: string;
+  title: string;
+  detail: string;
+}>;
+export type CustomerActivityPage = Readonly<{
+  items: readonly CustomerActivityItem[];
+  totalMatching: number;
+  nextCursor?: string;
+}>;
+export type ActionCenterItem = Readonly<{
+  kind: "inbound" | "proofs" | "prepress" | "production" | "invoices";
+  label: string;
+  count: number;
+  href: string;
+}>;
+export const actionCenterApi = {
+  summary: (organizationId: string) => request<Readonly<{ items: readonly ActionCenterItem[] }>>(
+    `/v2/organizations/${encodeURIComponent(organizationId)}/action-center`,
+  ),
+};
 export const customerApi = {
   list: (organizationId: string, query = "", options: Readonly<{ cursor?: string; limit?: number }> = {}) => {
     const parameters = new URLSearchParams();
@@ -2181,6 +2204,13 @@ export const customerApi = {
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`,
     ),
+  activity: (organizationId: string, customerId: string, options: Readonly<{ cursor?: string; limit?: number }> = {}) => {
+    const parameters = new URLSearchParams();
+    if (options.cursor) parameters.set("cursor", options.cursor);
+    if (options.limit) parameters.set("limit", String(options.limit));
+    const suffix = parameters.size ? `?${parameters.toString()}` : "";
+    return request<CustomerActivityPage>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}/activity${suffix}`);
+  },
   create: (organizationId: string, input: Readonly<{ companyName: string; displayName?: string; email?: string; phone?: string }>) =>
     request<CustomerWorkspaceRead>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/customers`,

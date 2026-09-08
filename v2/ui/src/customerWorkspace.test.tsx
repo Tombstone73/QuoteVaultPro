@@ -29,12 +29,16 @@ detailClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "cus
     billingAddress: { lines: ["1 Main Street"], city: "Boston", region: "MA", postalCode: "02110" },
   }, contacts: [{ contactId: "contact-a", displayName: "Ada Lovelace", email: "ada@acme.test", phone: "555-0111", primary: true }],
 });
+detailClient.setQueryData(["v2", "scope-a", "org-a", "customers", "activity", "customer-a", ""], {
+  items: [{ kind: "order", entityId: "order-a", occurredAt: "2026-09-07T12:00:00.000Z", title: "Order O-100", detail: "open" }], totalMatching: 1,
+});
 const detail = renderToStaticMarkup(<QueryClientProvider client={detailClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-a" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
-for (const text of ["Account Details", "Contacts", "Commercial Context", "Billing Address", "Ada Lovelace", "Primary", "customer-keyed read projection is not available yet"]) assert.match(detail, new RegExp(text));
+for (const text of ["Account Details", "Contacts", "Activity", "Billing Address", "Ada Lovelace", "Primary", "Order O-100"]) assert.match(detail, new RegExp(text));
+assert.match(detail, /href="\/orders\/order-a"/, "Activity must link to the owning operational workspace.");
 assert.doesNotMatch(detail, /customer-a/);
 assert.doesNotMatch(detail, /contact-a/);
 assert.match(detail, /Add Contact/);
-assert.doesNotMatch(detail, /Available Credit|Log Activity|Account note/);
+assert.doesNotMatch(detail, /Available Credit|Log Activity|Account note|customer-keyed read projection is not available yet/);
 
 const unlinkedPrimaryClient = new QueryClient();
 unlinkedPrimaryClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-b"], {
@@ -48,5 +52,7 @@ assert.doesNotMatch(unlinkedPrimary, /<em>Primary<\/em>/);
 const workspaceSource = readFileSync(new URL("./CustomerWorkspace.tsx", import.meta.url), "utf8");
 assert.match(workspaceSource, /"catalog", search, cursor/, "Customer page/search cursors must have distinct React Query cache keys");
 assert.match(workspaceSource, /setSearch\(event\.target\.value\); setCursor\(""\); setCursorHistory\(\[\]\)/, "changing Customer search must reset paging");
+assert.match(workspaceSource, /"customers", "activity", customerId, cursor/, "Customer activity must be scoped and cursor-paged in its own cache key");
+assert.match(workspaceSource, /workspacePath\("proofing"\)/, "Proof activity must link through the canonical Proofing workspace.");
 
 console.log("Customer workspace visual contract tests passed.");
