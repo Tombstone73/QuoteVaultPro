@@ -52,8 +52,13 @@ import { PermissionSetPrincipalIssuer } from "../authorization/permissionSets.js
 import { PostgresPermissionAuthorityReader } from "../../infrastructure/authorization/postgresPermissionAuthorityRead.js";
 import { AuthorityPolicy } from "../authorization/authorityPolicy.js";
 import { CustomerCommercialApplicationService, CustomerCommercialPricingAdapter } from "../modules/products/customerCommercial.js";
+import { ProductVersionLifecycleApplicationService } from "../modules/products/productVersionLifecycle.js";
 import { PostgresCustomerCommercialStore } from "../../infrastructure/products/postgresCustomerCommercialStore.js";
+import { PostgresProductVersionTransactionRunner } from "../../infrastructure/products/postgresProductVersionLifecycle.js";
 import { PostgresProductsCompatibilityReader } from "../../infrastructure/compatibility/postgresProductsRead.js";
+import { PostgresCustomerWorkspaceReader } from "../../infrastructure/compatibility/postgresCustomerWorkspaceRead.js";
+import { PostgresContactWorkspaceReader } from "../../infrastructure/compatibility/postgresContactWorkspaceRead.js";
+import { PostgresCustomerContactAdministration } from "../../infrastructure/customers/postgresCustomerContactAdministration.js";
 import { V2PricingParityAdapter } from "../modules/pricing/v2PricingAdapter.js";
 import { PortalOrderCreationApplicationService } from "../modules/portal/portalOrderCreation.js";
 import { PortalArtworkApplicationService } from "../modules/portal/portalArtwork.js";
@@ -69,6 +74,10 @@ export const createV2DeploymentApp = (
   const { trustedHostIdentity, trustedHostMiddleware } = authentication;
   const orderLifecycle = new PostgresOrderAutomaticLifecycle(pool);
   const customerCommercialStore = new PostgresCustomerCommercialStore(pool);
+  const customerAdministration = new PostgresCustomerContactAdministration(pool);
+  const customerWorkspace = new PostgresCustomerWorkspaceReader(pool);
+  const contactWorkspace = new PostgresContactWorkspaceReader(pool);
+  const productLifecycle = new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(pool));
   const customerPricing = new CustomerCommercialPricingAdapter(new V2PricingParityAdapter(), customerCommercialStore);
   const quote = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const orderService = new OrderApplicationService(
@@ -125,9 +134,14 @@ export const createV2DeploymentApp = (
     // Each composed runtime holds the concrete canonical application service;
     // the HTTP dependency surface intentionally erases that richer type.
     proofing: proofing.dependencies.service as unknown as import("../modules/proofing/proofingApplication.js").ProofingApplicationService,
+    artwork: artwork.dependencies.service as unknown as import("../modules/artwork/artworkApplication.js").ArtworkApplicationService,
+    productLifecycle,
+    customerAdministration: { administration: customerAdministration, customers: customerWorkspace, contacts: contactWorkspace },
     prepress: prepress.dependencies.service as unknown as import("../modules/prepress/prepressApplication.js").PrepressApplicationService,
     production: production.dependencies.service as unknown as import("../modules/production/productionApplication.js").ProductionApplicationService,
+    fulfillmentService: fulfillment.dependencies.service as unknown as import("../modules/fulfillment/fulfillmentApplication.js").FulfillmentApplicationService,
     financialRead: billing.dependencies.financialRead,
+    payments: billing.dependencies.payments,
     inbound: inbound.dependencies.service as unknown as import("../modules/inbound/inboundIntakeApplication.js").InboundIntakeApplicationService,
     commercial: { service: customerCommercial.dependencies.service, pricing: customerCommercial.dependencies.pricing, products: customerCommercial.dependencies.products },
     environment: process.env,

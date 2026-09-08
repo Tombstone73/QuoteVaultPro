@@ -25,7 +25,11 @@ export type AiAssistantStore = Readonly<{
 
 export type AiCommandHandler = Readonly<{
   name: string;
+  /** The primary capability is persisted for proposal/audit compatibility. */
   capability: import("../../authorization/capabilities.js").Capability;
+  /** Some canonical operations require a deliberate set of capabilities.
+   * Every one is checked at prepare and revalidated at GO. */
+  requiredCapabilities?: readonly import("../../authorization/capabilities.js").Capability[];
   prepare(context: AiExecutionContext, input: unknown): Promise<AiPreparedCommand>;
   execute(context: Readonly<{ organizationId: string; userId: string; conversationId: string; businessRequestId: string; delegatedPrincipal: import("../../authorization/principals.js").DelegatedAiPrincipal }>, input: unknown): Promise<unknown>;
 }>;
@@ -42,6 +46,11 @@ export class AiAssistantApplicationService {
   registerCommand(handler: AiCommandHandler): void {
     if (isAiHardDenied(handler.name) || this.commands.has(handler.name)) throw new V2ApplicationError("VALIDATION_ERROR", "Invalid or duplicate AI command registration.");
     this.commands.set(handler.name, handler);
+  }
+  private commandCapabilities(command: AiCommandHandler): readonly import("../../authorization/capabilities.js").Capability[] {
+    const capabilities = command.requiredCapabilities?.length ? command.requiredCapabilities : [command.capability];
+    if (!capabilities.includes(command.capability)) throw new V2ApplicationError("VALIDATION_ERROR", "AI command primary capability must be required.");
+    return [...new Set(capabilities)];
   }
   listCommands(): readonly Readonly<{ name: string; capability: import("../../authorization/capabilities.js").Capability }>[] {
     return [...this.commands.values()].map((command) => ({ name: command.name, capability: command.capability }));
@@ -65,7 +74,7 @@ export class AiAssistantApplicationService {
     try {
       this.assertAssistantAccess(context.user);
       const command=this.commands.get(commandName); if(!command) throw new V2ApplicationError("NOT_FOUND","This AI command is not supported.");
-      if(!this.authority.decide(context.user,{capability:command.capability,resource:{organizationId:context.organizationId}}).allowed) throw new V2ApplicationError("FORBIDDEN","The signed-in user cannot prepare this action.");
+      for (const capability of this.commandCapabilities(command)) if(!this.authority.decide(context.user,{capability,resource:{organizationId:context.organizationId}}).allowed) throw new V2ApplicationError("FORBIDDEN","The signed-in user cannot prepare this action.");
       const prepared=await command.prepare(context,input);
       if(prepared.commandName!==commandName||prepared.capability!==command.capability||prepared.expiresAt<=new Date()) throw new V2ApplicationError("VALIDATION_ERROR","AI command proposal is invalid.");
       await this.store.cancelOtherPending(context.organizationId,context.user.userId,context.conversationId,"superseded");
@@ -90,8 +99,9 @@ export class AiAssistantApplicationService {
       if(!pending) throw new V2ApplicationError("CONFLICT","There is no pending AI command awaiting GO.");
       executing = pending;
       const command=this.commands.get(pending.commandName); if(!command) throw new V2ApplicationError("CONFLICT","The pending AI command is no longer supported.");
-      const delegated=await revalidateDelegatedAiPrincipal(this.issuer,identity,{kind:"delegated_ai",organizationId:principal.organizationId,staff:principal,delegation:{commandId:pending.id,allowedCapabilities:[pending.capability],planApprovedAt:pending.createdAt,goApprovedAt:new Date(),revalidatedAt:new Date(),expiresAt:pending.expiresAt}});
-      if(!this.authority.decide(delegated,{capability:pending.capability,resource:{organizationId:principal.organizationId}}).allowed) throw new V2ApplicationError("FORBIDDEN","Current user permission no longer permits this AI action.");
+      const requiredCapabilities=this.commandCapabilities(command);
+      const delegated=await revalidateDelegatedAiPrincipal(this.issuer,identity,{kind:"delegated_ai",organizationId:principal.organizationId,staff:principal,delegation:{commandId:pending.id,allowedCapabilities:requiredCapabilities,planApprovedAt:pending.createdAt,goApprovedAt:new Date(),revalidatedAt:new Date(),expiresAt:pending.expiresAt}});
+      for (const capability of requiredCapabilities) if(!this.authority.decide(delegated,{capability,resource:{organizationId:principal.organizationId}}).allowed) throw new V2ApplicationError("FORBIDDEN","Current user permission no longer permits this AI action.");
       const result=await command.execute({organizationId:principal.organizationId,userId:principal.userId,conversationId,businessRequestId:pending.businessRequestId,delegatedPrincipal:delegated},pending.normalizedInput);
       await this.store.complete({id:pending.id,organizationId:principal.organizationId,state:"succeeded",result}); await this.store.audit({organizationId:principal.organizationId,userId:principal.userId,conversationId,pendingCommandId:pending.id,eventType:"ai_command_succeeded",toolName:pending.commandName,capability:pending.capability,result:"succeeded",detail:result}); return success(result);
     } catch(cause) {

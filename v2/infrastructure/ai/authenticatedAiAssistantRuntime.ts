@@ -17,19 +17,28 @@ import { PostgresFulfillmentWorkspaceReads } from "../fulfillment/postgresFulfil
 import { PostgresAiAssistantStore } from "./postgresAiAssistantStore.js";
 import { orderProductionNotRequiredAiCommand } from "./orderWorkflowAiCommand.js";
 import { inboundMarkDuplicateAiCommand } from "./inboundAiCommand.js";
+import { fulfillmentPickupAiCommand, fulfillmentShipmentAiCommand, prepressSendToProductionAiCommand, productionCompleteAiCommand, productionRecordOutputAiCommand, productionStartAiCommand, proofIssueAiCommand, proofRetryDeliveryAiCommand } from "./operationalAiCommands.js";
+import { recordManualPaymentAiCommand, recordManualRefundAiCommand } from "./financialAiCommands.js";
+import { artworkAssignExistingAiCommand } from "./artworkAiCommand.js";
+import { productAbandonDraftAiCommand, productCreateDraftAiCommand } from "./productLifecycleAiCommand.js";
+import { customerAdministrationAiCommandHandlers, type CustomerAdministrationAiCommandDependencies } from "./customerAdministrationAiCommands.js";
 import type { OrderWorkflowApplicationService } from "../../src/modules/sales/workflowApplication.js";
 import type { ProofingApplicationService } from "../../src/modules/proofing/proofingApplication.js";
 import type { PrepressApplicationService } from "../../src/modules/prepress/prepressApplication.js";
 import type { ProductionApplicationService } from "../../src/modules/production/productionApplication.js";
 import type { FinancialReadApplicationService } from "../../src/modules/billing/financialReadApplication.js";
+import type { BillingPaymentsApplicationService } from "../../src/modules/billing/paymentApplication.js";
 import type { InboundIntakeApplicationService } from "../../src/modules/inbound/inboundIntakeApplication.js";
+import type { FulfillmentApplicationService } from "../../src/modules/fulfillment/fulfillmentApplication.js";
+import type { ArtworkApplicationService } from "../../src/modules/artwork/artworkApplication.js";
+import type { ProductVersionLifecycleApplicationService } from "../../src/modules/products/productVersionLifecycle.js";
 import type { CustomerCommercialApplicationService, CustomerCommercialPricingAdapter } from "../../src/modules/products/customerCommercial.js";
 import type { ProductPricingCompatibilityPort } from "../../src/modules/products/contracts.js";
 import type { OperationContext } from "../../src/application/operation.js";
 import type { ApplicationResult } from "../../src/errors/applicationError.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 
-export type AuthenticatedAiAssistantRuntimeDependencies=Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;trustedHostMiddleware:RequestHandler;workflow?:OrderWorkflowApplicationService;proofing?:ProofingApplicationService;prepress?:PrepressApplicationService;production?:ProductionApplicationService;financialRead?:FinancialReadApplicationService;inbound?:InboundIntakeApplicationService;commercial?:Readonly<{service:CustomerCommercialApplicationService;pricing:CustomerCommercialPricingAdapter;products:ProductPricingCompatibilityPort}>;environment?:Readonly<Record<string,string|undefined>>}>;
+export type AuthenticatedAiAssistantRuntimeDependencies=Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;trustedHostMiddleware:RequestHandler;workflow?:OrderWorkflowApplicationService;customerAdministration?:CustomerAdministrationAiCommandDependencies;artwork?:ArtworkApplicationService;productLifecycle?:ProductVersionLifecycleApplicationService;proofing?:ProofingApplicationService;prepress?:PrepressApplicationService;production?:ProductionApplicationService;fulfillmentService?:FulfillmentApplicationService;financialRead?:FinancialReadApplicationService;payments?:BillingPaymentsApplicationService;inbound?:InboundIntakeApplicationService;commercial?:Readonly<{service:CustomerCommercialApplicationService;pricing:CustomerCommercialPricingAdapter;products:ProductPricingCompatibilityPort}>;environment?:Readonly<Record<string,string|undefined>>}>;
 export type AuthenticatedAiAssistantRuntime=Readonly<{dependencies:AiAssistantHttpDependencies;trustedHostMiddleware:RequestHandler}>;
 const summary=(id:string,label:string,status?:string,detail?:string)=>({id,label,...(status?{status}:{}),...(detail?{detail}:{})});
 const operation=(request:Parameters<AiReadPort["search"]>[0],name:string):OperationContext=>({principal:request.context.user,organizationId:request.organizationId,operationId:`ai:read:${name}:${request.context.requestId}`});
@@ -75,6 +84,30 @@ export const composeAuthenticatedAiAssistantRuntime=(input:AuthenticatedAiAssist
   const store=new PostgresAiAssistantStore(input.pool),issuer=new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)),principals=new IssuedV2PrincipalProvider(input.trustedHostIdentity,issuer),service=new AiAssistantApplicationService(store,issuer,registry);
   if (input.workflow) service.registerCommand(orderProductionNotRequiredAiCommand(input.workflow));
   if (input.inbound) service.registerCommand(inboundMarkDuplicateAiCommand(input.inbound));
+  if (input.customerAdministration) for (const command of customerAdministrationAiCommandHandlers(input.customerAdministration)) service.registerCommand(command);
+  if (input.artwork) service.registerCommand(artworkAssignExistingAiCommand(input.artwork));
+  if (input.productLifecycle) {
+    service.registerCommand(productCreateDraftAiCommand(input.productLifecycle));
+    service.registerCommand(productAbandonDraftAiCommand(input.productLifecycle));
+  }
+  if (input.proofing) {
+    service.registerCommand(proofIssueAiCommand(input.proofing));
+    service.registerCommand(proofRetryDeliveryAiCommand(input.proofing));
+  }
+  if (input.prepress) service.registerCommand(prepressSendToProductionAiCommand(input.prepress));
+  if (input.production) {
+    service.registerCommand(productionStartAiCommand(input.production));
+    service.registerCommand(productionRecordOutputAiCommand(input.production));
+    service.registerCommand(productionCompleteAiCommand(input.production));
+  }
+  if (input.fulfillmentService) {
+    service.registerCommand(fulfillmentPickupAiCommand(input.fulfillmentService));
+    service.registerCommand(fulfillmentShipmentAiCommand(input.fulfillmentService));
+  }
+  if (input.payments && input.financialRead) {
+    service.registerCommand(recordManualPaymentAiCommand(input.payments,input.financialRead));
+    service.registerCommand(recordManualRefundAiCommand(input.payments,input.financialRead));
+  }
   const config=loadV2AiProviderConfig(input.environment??process.env);
   const orchestrator=config.enabled?new AiAssistantOrchestrator(service,store,new OpenAiCompatibleAssistantProvider({apiKey:config.apiKey!,apiBaseUrl:config.apiBaseUrl!,model:config.model!,timeoutMs:config.timeoutMs})):undefined;
   return {dependencies:{service,principals,identity:request=>input.trustedHostIdentity.authenticatedIdentity(request),...(orchestrator?{orchestrator}:{})},trustedHostMiddleware:input.trustedHostMiddleware};

@@ -8,10 +8,11 @@ import { AiAssistantOrchestrator } from "../src/modules/ai/orchestrator.js";
 import { loadV2AiProviderConfig, type AiAssistantProvider } from "../src/modules/ai/provider.js";
 import { orderProductionNotRequiredAiCommand } from "../infrastructure/ai/orderWorkflowAiCommand.js";
 import { inboundMarkDuplicateAiCommand } from "../infrastructure/ai/inboundAiCommand.js";
+import { recordManualPaymentAiCommand } from "../infrastructure/ai/financialAiCommands.js";
 import type { PrincipalIssuer } from "../src/authorization/principalIssuer.js";
 import type { StaffPrincipal } from "../src/authorization/principals.js";
 
-const staff: StaffPrincipal={kind:"staff",organizationId:"org-a",userId:"user-a",authority:{membershipId:"m",capabilities:["assistant.use","customer.view","customer.edit","order.view","order.create","workflow.override","pricing.preview","inbound.review"]}};
+const staff: StaffPrincipal={kind:"staff",organizationId:"org-a",userId:"user-a",authority:{membershipId:"m",capabilities:["assistant.use","customer.view","customer.edit","order.view","order.create","workflow.override","pricing.preview","inbound.review","payment.record"]}};
 class MemoryStore implements AiAssistantStore {
   conversations:AiConversation[]=[]; messages_:AiConversationMessage[]=[]; pendings:AiPendingCommand[]=[]; audits:any[]=[];
   async createConversation(i:any){const v={...i,createdAt:new Date(),updatedAt:new Date()} as AiConversation;this.conversations.push(v);return v;}
@@ -44,6 +45,27 @@ async function main(){
   assert.equal((await app.confirmGo(staff,{subjectId:"user-a",authenticatedAt:new Date(),authenticationMethod:"session"},conversation.id,"yes")).ok,false);assert.equal(executions,0);
   assert.equal((await app.confirmGo(staff,{subjectId:"user-a",authenticatedAt:new Date(),authenticationMethod:"session"},conversation.id,"GO")).ok,true);assert.equal(executions,1);
   assert.equal((await app.confirmGo(staff,{subjectId:"user-a",authenticatedAt:new Date(),authenticationMethod:"session"},conversation.id,"GO")).ok,false);assert.equal(executions,1);
+  let multiCapabilityExecutions=0;
+  app.registerCommand({name:"test.multi_capability",capability:"customer.edit",requiredCapabilities:["customer.edit","customer.view"],prepare:async()=>prepared("test.multi_capability","customer.edit"),execute:async()=>{multiCapabilityExecutions++;return {ok:true};}});
+  assert.equal((await app.prepare(context,"test.multi_capability",{})).ok,true,"every required capability present permits a proposal");
+  assert.equal((await app.confirmGo(staff,{subjectId:"user-a",authenticatedAt:new Date(),authenticationMethod:"session"},conversation.id,"GO")).ok,true);assert.equal(multiCapabilityExecutions,1,"GO delegates every canonical capability rather than only the primary one");
+  const missingSecondary={...staff,authority:{...staff.authority,capabilities:["assistant.use","customer.edit"]}};
+  assert.equal((await app.prepare({...context,user:missingSecondary},"test.multi_capability",{})).ok,false,"a missing secondary canonical capability blocks AI preparation");
+  // Planning is not a permission snapshot: losing either required capability
+  // between proposal and GO must fail closed before a canonical service runs.
+  let revokedAtGo=false,revocationExecutions=0;
+  const revocationApp=new AiAssistantApplicationService(new MemoryStore(),{issue:async identity=>revokedAtGo?{...staff,authority:{...staff.authority,capabilities:["assistant.use","customer.edit"]}}:identity.subjectId===staff.userId?staff:{...staff,userId:"wrong"}},new AiToolRegistry());
+  revocationApp.registerCommand({name:"test.capability_revocation",capability:"customer.edit",requiredCapabilities:["customer.edit","customer.view"],prepare:async()=>prepared("test.capability_revocation","customer.edit"),execute:async()=>{revocationExecutions++;return {ok:true};}});
+  const revocationConversation=(await revocationApp.createConversation(staff,"Revocation")).value!;
+  const revocationContext={organizationId:"org-a",user:staff,conversationId:revocationConversation.id,requestId:"request-revocation"};
+  assert.equal((await revocationApp.prepare(revocationContext,"test.capability_revocation",{})).ok,true);
+  revokedAtGo=true;
+  assert.equal((await revocationApp.confirmGo(staff,{subjectId:"user-a",authenticatedAt:new Date(),authenticationMethod:"session"},revocationConversation.id,"GO")).ok,false,"GO revalidates every required capability against freshly issued staff authority");
+  assert.equal(revocationExecutions,0,"a revoked permission never reaches the canonical command");
+  let paymentCalls=0;
+  app.registerCommand(recordManualPaymentAiCommand({recordManualPayment:async (_context:any,input:any)=>{paymentCalls++;assert.equal(input.businessRequestId.startsWith("ai:"),true);assert.equal(input.amount.cents,2500);return {ok:true,value:{payment:{paymentId:"payment-a"},settlement:{}}};}} as any,{readInvoice:async()=>({ok:true,value:{invoice:{currency:"USD"},settlement:{balance:{currency:"USD",cents:3000}},history:[]}})} as any));
+  const paymentPlan=await app.prepare(context,"finance.record_manual_payment",{invoiceId:"invoice-a",amountCents:2500,currency:"USD",method:"check",occurredAt:"2026-09-08T12:00:00.000Z"});assert.equal(paymentPlan.ok,true);assert.equal(paymentCalls,0,"manual payment remains only a proposal before GO");
+  assert.equal((await app.confirmGo(staff,{subjectId:"user-a",authenticatedAt:new Date(),authenticationMethod:"session"},conversation.id,"GO")).ok,true);assert.equal(paymentCalls,1,"GO invokes only the canonical manual payment service");
   const second=await app.prepare(context,"customer.create",{});assert.equal(second.ok,true);
   assert.equal((await app.cancel(staff,conversation.id)).ok,true);
   let duplicateCalls=0;
