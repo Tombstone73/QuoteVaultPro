@@ -91,6 +91,8 @@ export type Order = {
   customerId: string;
   contactId: string | null;
   status: string;
+  state?: string | null;
+  statusPillValue?: string | null;
   workflowStatusId?: string | null;
   canonicalState?: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold" | string | null;
   // Billing readiness (persisted)

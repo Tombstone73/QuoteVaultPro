@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
@@ -36,6 +36,7 @@ import {
 } from "@/components/titan";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { InvoiceEmailSendDialog } from "@/components/invoices/InvoiceEmailSendDialog";
+import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 
 const EMPTY_VALUE = "\u2014";
 
@@ -109,6 +110,7 @@ export default function InvoicesListPage() {
   const [needsReviewPromptJob, setNeedsReviewPromptJob] = useState<{ id: string; invoiceId: string; label: string } | null>(null);
   const [reviewJob, setReviewJob] = useState<{ id: string; invoiceId: string; label: string; source: 'direct' | 'queue' } | null>(null);
   const [approvingInvoiceId, setApprovingInvoiceId] = useState<string | null>(null);
+  const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -521,19 +523,20 @@ export default function InvoicesListPage() {
                 {renderSortableHead("dueDate", "Due Date", "min-w-[120px]")}
                 {renderSortableHead("status", "Status", "min-w-[130px]")}
                 <TitanTableHead className="w-[116px] min-w-[116px]">Approved</TitanTableHead>
+                <TitanTableHead className="min-w-[145px]">Job Status</TitanTableHead>
                 {renderSortableHead("lastSentAt", "Last Sent", "min-w-[140px]")}
                 {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
                 <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
                 {renderSortableHead("balance", "Balance", "min-w-[110px] text-right")}
-                <TitanTableHead className="sticky right-0 z-10 w-[116px] min-w-[116px] bg-background text-center">Actions</TitanTableHead>
+                <TitanTableHead className="sticky right-0 z-10 min-w-[310px] bg-background text-center">Actions</TitanTableHead>
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && <TitanTableLoading colSpan={16} message="Loading invoices..." />}
+              {isLoading && <TitanTableLoading colSpan={17} message="Loading invoices..." />}
               
               {!isLoading && filteredInvoices.length === 0 && (
                 <TitanTableEmpty
-                  colSpan={16}
+                  colSpan={17}
                   icon={<FileText className="w-12 h-12" />}
                   message="No invoices found"
                   action={
@@ -629,12 +632,13 @@ export default function InvoicesListPage() {
                           void handleApproveInvoice(invoice);
                         }}
                       >
-                        {approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Not Approved'}
+                        <Check className="mr-1 h-3.5 w-3.5" aria-hidden="true" />{approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Approve'}
                       </Button>
                     ) : (
                       <StatusPill variant={approvalState(invoice) === 'Needs Reapproval' ? 'warning' : 'muted'}>Not Approved</StatusPill>
                     )}
                   </TitanTableCell>
+                  <TitanTableCell>{getOrderJobStatus(invoice)}</TitanTableCell>
                   <TitanTableCell>
                     <div className="space-y-1">
                       <div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : EMPTY_VALUE}</div>
@@ -650,10 +654,11 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="text-right font-semibold">
                     {formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}
                   </TitanTableCell>
-                  <TitanTableCell className="sticky right-0 w-[116px] min-w-[116px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
+                  <TitanTableCell className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
                     <TooltipProvider delayDuration={250}>
-                    <div className="flex items-center justify-center gap-1">
-                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice)}><Mail className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Send Invoice</TooltipContent></Tooltip> : null}
+                    <div className="flex min-w-max flex-wrap items-center justify-start gap-1">
+                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Button variant="outline" size="sm" className="h-8 px-2" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice)}><Mail className="mr-1 h-4 w-4" aria-hidden="true" />{invoice.lastSentAt ? "Resend" : "Send"}</Button> : null}
+                      {canCloseJobOverride(invoice, Boolean(isAdminOrOwner)) ? <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => setOverrideTarget({ orderId: invoice.orderId!, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) })}><ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}
                       {canTakePaymentFromInvoiceList(invoice) ? (
                         <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
                       ) : null}
@@ -719,6 +724,7 @@ export default function InvoicesListPage() {
         </DialogContent>
       </Dialog>
       {quickSendInvoice ? <InvoiceEmailSendDialog invoiceId={quickSendInvoice.id} open={Boolean(quickSendInvoice)} onOpenChange={(open) => { if (!open) setQuickSendInvoice(null); }} onSent={() => setQuickSendInvoice(null)} /> : null}
+      <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(open) => !open && setOverrideTarget(null)} />
     </Page>
   );
 }

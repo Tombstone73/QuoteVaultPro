@@ -1,12 +1,14 @@
 import * as React from "react";
 import { useOrders } from "@/hooks/useOrders";
+import { useAuth } from "@/hooks/useAuth";
 import { useTableColumnConfig, ColumnConfig } from "@/hooks/useTableColumnConfig";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { Eye, Download, Mail, Edit as EditIcon, Ticket } from "lucide-react";
+import { Eye, ShieldCheck, Ticket } from "lucide-react";
 import { formatOrderDate } from "@/lib/orderDate";
+import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "orderNumber", label: "Order #", visible: true, order: 0 },
@@ -22,10 +24,13 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
 export function CustomerOrdersTable({ customerId }: { customerId: string }) {
   const { data: orders = [], isLoading } = useOrders({ customerId });
   const cfg = useTableColumnConfig("customer_orders", DEFAULT_COLUMNS);
+  const { user, isAdmin } = useAuth();
   const [open, setOpen] = React.useState(false);
+  const [overrideTarget, setOverrideTarget] = React.useState<CloseJobOverrideTarget | null>(null);
 
   const cols = cfg.columns.filter(c => c.visible);
   const ordersAny = orders as any[];
+  const isAdminOrOwner = Boolean(isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()));
 
   const statusPillStyle = (status: string): React.CSSProperties => {
     const s = (status || '').toLowerCase();
@@ -115,47 +120,12 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
                     );
                     case "actions": return (
                       <td className="px-3 py-2" key={c.id}>
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex min-w-max flex-wrap items-center justify-end gap-2">
                           <Link href={`/orders/${o.id}`}>
-                            <button title="View" className="h-7 w-7 rounded-full border flex items-center justify-center"
-                              style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
-                              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}
-                              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </button>
+                            <Button size="sm" variant="outline"><Eye className="mr-1.5 h-4 w-4" aria-hidden="true" />View Order</Button>
                           </Link>
-                          <button title="Print Traveler" className="h-7 w-7 rounded-full border flex items-center justify-center"
-                            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
-                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}
-                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                            onClick={() => window.open(`/orders/${o.id}/traveler`, "_blank")}
-                          >
-                            <Ticket className="h-4 w-4" />
-                          </button>
-                          <button title="Download" className="h-7 w-7 rounded-full border flex items-center justify-center"
-                            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
-                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}
-                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                          >
-                            <Download className="h-4 w-4" />
-                          </button>
-                          <button title="Email" className="h-7 w-7 rounded-full border flex items-center justify-center"
-                            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
-                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}
-                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                          >
-                            <Mail className="h-4 w-4" />
-                          </button>
-                          <Link href={`/orders/${o.id}`}>
-                            <button title="Edit" className="h-7 w-7 rounded-full border flex items-center justify-center"
-                              style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)', backgroundColor: 'transparent' }}
-                              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-surface-soft'))}
-                              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                            >
-                              <EditIcon className="h-4 w-4" />
-                            </button>
-                          </Link>
+                          <Button size="sm" variant="outline" onClick={() => window.open(`/orders/${o.id}/traveler`, "_blank")}><Ticket className="mr-1.5 h-4 w-4" aria-hidden="true" />Traveler</Button>
+                          {canCloseJobOverride({ orderId: o.id, orderState: o.state, orderFulfillmentStatus: o.fulfillmentStatus }, isAdminOrOwner) ? <Button size="sm" variant="outline" onClick={() => setOverrideTarget({ orderId: o.id, orderNumber: o.orderNumber, jobName: o.label, purchaseOrderNumber: o.poNumber, customerName: o.customerName || null, jobStatus: getOrderJobStatus({ orderId: o.id, orderState: o.state, orderStatus: o.status, orderStatusPillValue: o.statusPillValue, orderFulfillmentStatus: o.fulfillmentStatus }) })}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}
                         </div>
                       </td>
                     );
@@ -191,6 +161,7 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
           </div>
         </DialogContent>
       </Dialog>
+      <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(isOpen) => !isOpen && setOverrideTarget(null)} />
     </div>
   );
 }

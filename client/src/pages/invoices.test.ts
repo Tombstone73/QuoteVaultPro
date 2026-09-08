@@ -118,10 +118,11 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("handleQuickSend(invoice)");
     expect(invoicesPageSource).toContain("InvoiceEmailSendDialog");
     expect(invoicesPageSource).toContain("setQuickSendInvoice");
-    expect(invoicesPageSource).toContain("Send Invoice</TooltipContent>");
+    expect(invoicesPageSource).toContain('>{invoice.lastSentAt ? "Resend" : "Send"}</Button>');
     expect(invoicesPageSource).toContain("Take Payment</TooltipContent>");
     expect(invoicesPageSource).toContain("View Invoice</TooltipContent>");
-    expect(invoicesPageSource).toContain('size="icon"');
+    expect(invoicesPageSource).toContain("CloseJobOverrideDialog");
+    expect(invoicesPageSource).toContain("canCloseJobOverride(invoice, Boolean(isAdminOrOwner))");
     expect(invoicesPageSource).toContain(">$</Button>");
     expect(invoicesPageSource).toContain("aria-label={`Send invoice ${invoice.invoiceNumber}`}");
     expect(invoicesPageSource).toContain('isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"');
@@ -134,10 +135,18 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("await approveInvoices.mutateAsync([invoice.id])");
     expect(invoicesPageSource).toContain("if (approveInvoices.isPending) return");
     expect(invoicesPageSource).toContain("aria-label={`Approve invoice ${invoice.invoiceNumber} for accounting`}");
-    expect(invoicesPageSource).toContain("{approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Not Approved'}");
+    expect(invoicesPageSource).toContain("{approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Approve'}");
     expect(invoicesPageSource).toContain("<StatusPill variant=\"info\">Approved</StatusPill>");
     expect(invoicesPageSource).toContain("isAdminOrOwner ? (");
     expect(invoicesPageSource).toContain("event.stopPropagation();\n                          void handleApproveInvoice(invoice);");
+  });
+
+  it("keeps Job Status and all primary backlog-cleanup actions directly visible per row", () => {
+    expect(invoicesPageSource).toContain('<TitanTableHead className="min-w-[145px]">Job Status</TitanTableHead>');
+    expect(invoicesPageSource).toContain('getOrderJobStatus(invoice)');
+    expect(invoicesPageSource).toContain('Close Job Override');
+    expect(invoicesPageSource).toContain('>{invoice.lastSentAt ? "Resend" : "Send"}</Button>');
+    expect(invoicesPageSource).not.toContain('DropdownMenu');
   });
 
   it("detects an uncertain delivery before opening the normal direct-send dialog", () => {

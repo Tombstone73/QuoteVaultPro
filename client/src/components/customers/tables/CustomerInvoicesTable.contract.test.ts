@@ -19,6 +19,8 @@ test('Customer Detail Invoice table exposes the required operational columns', (
 test('Customer Detail actions are visible icon-plus-label controls, not a hidden action menu', () => {
   expect(table).toContain('View Invoice');
   expect(table).toContain('View Order');
+  expect(table).toContain('Approve');
+  expect(table).toContain('InvoiceSendQuickAction');
   expect(table).toContain('Close Job Override');
   expect(table).toContain('<Eye');
   expect(table).toContain('<ExternalLink');
@@ -28,11 +30,6 @@ test('Customer Detail actions are visible icon-plus-label controls, not a hidden
 });
 
 test('Close Job Override confirms live quantities and uses only canonical operations', () => {
-  expect(table).toContain('historical-fulfillment-reconciliation');
-  expect(table).toContain('reconcile-historical-fulfillment');
-  expect(table).toContain('complete-production');
-  expect(table).toContain('sourceInvoiceId: overrideInvoice.id');
-  expect(table).toContain('Remaining production');
-  expect(table).toContain('Remaining fulfillment');
-  expect(table).toContain('invoice and payment status will not be changed');
+  expect(table).toContain('CloseJobOverrideDialog');
+  expect(table).toContain('canCloseJobOverride(invoice, isAdminOrOwner)');
 });
