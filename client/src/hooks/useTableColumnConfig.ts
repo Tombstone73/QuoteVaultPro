@@ -7,6 +7,8 @@ export type ColumnConfig = {
   order: number;
   /** Required identity/action columns must remain available. */
   locked?: boolean;
+  /** Required columns may be reordered, but may never be hidden. */
+  required?: boolean;
 };
 
 function sortByOrder(a: ColumnConfig, b: ColumnConfig) {
@@ -36,7 +38,7 @@ export function mergeTableColumnConfig(defaults: ColumnConfig[], saved: unknown)
     const prior = savedById.get(column.id);
     return {
       ...column,
-      visible: column.locked ? true : typeof prior?.visible === "boolean" ? prior.visible : column.visible,
+      visible: column.locked || column.required ? true : typeof prior?.visible === "boolean" ? prior.visible : column.visible,
       order: index,
     };
   });
@@ -65,7 +67,7 @@ export function useTableColumnConfig(tableKey: string, defaults: ColumnConfig[])
   }, [storageKey]);
 
   const setColumnVisibility = React.useCallback((id: string, visible: boolean) => {
-    persist(columns.map(c => c.id === id ? { ...c, visible: c.locked ? true : visible } : c));
+    persist(columns.map(c => c.id === id ? { ...c, visible: c.locked || c.required ? true : visible } : c));
   }, [columns, persist]);
 
   const moveColumn = React.useCallback((id: string, direction: "up" | "down") => {

@@ -5,11 +5,12 @@ export const INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS: Array<keyof InvoiceListColum
   "customer", "contact", "jobName", "purchaseOrderNumber", "columnOrderNumber", "invoiceNumber",
   "accountingApproval", "issueDateFrom", "issueDateTo", "dueDateFrom", "dueDateTo", "sendStatus",
   "lastSent", "totalMin", "totalMax", "paidMin", "paidMax", "balanceMin", "balanceMax",
+  "jobStatus", "excludeCustomerId",
 ];
 
 const SORT_KEYS: InvoiceSortKey[] = [
   "invoiceNumber", "customer", "contact", "orderNumber", "purchaseOrderNumber", "issueDate", "dueDate",
-  "lastSentAt", "status", "total", "balance",
+  "lastSentAt", "status", "approval", "jobStatus", "total", "paid", "balance", "jobName",
 ];
 
 export type InvoiceListUrlState = {
@@ -17,6 +18,7 @@ export type InvoiceListUrlState = {
   status: string;
   customerId: string | undefined;
   customerName: string | undefined;
+  excludeCustomerName: string | undefined;
   issueDatePreset: "custom" | undefined;
   hasExplicitSort: boolean;
   sortKey: InvoiceSortKey;
@@ -54,6 +56,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     status: read(params, "status") || "all",
     customerId: read(params, "customerId"),
     customerName: read(params, "customerName"),
+    excludeCustomerName: read(params, "excludeCustomerName"),
     issueDatePreset: read(params, "issueDatePreset") === "custom" ? "custom" : undefined,
     hasExplicitSort,
     sortKey,

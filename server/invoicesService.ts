@@ -175,6 +175,7 @@ export type InvoiceListSortBy =
   | 'invoiceNumber'
   | 'customer'
   | 'contact'
+  | 'jobName'
   | 'orderNumber'
   | 'purchaseOrderNumber'
   | 'issueDate'
@@ -184,6 +185,7 @@ export type InvoiceListSortBy =
   | 'jobStatus'
   | 'status'
   | 'total'
+  | 'paid'
   | 'balance';
 
 export type InvoiceListSortDir = 'asc' | 'desc';
@@ -210,6 +212,8 @@ export type InvoiceListColumnFilters = {
   paidMaxCents?: number;
   balanceMinCents?: number;
   balanceMaxCents?: number;
+  jobStatus?: 'open' | 'complete';
+  excludeCustomerId?: string;
 };
 
 export interface ListInvoicesForOrganizationOptions {
@@ -264,6 +268,7 @@ export function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
     case 'invoiceNumber':
     case 'customer':
     case 'contact':
+    case 'jobName':
     case 'orderNumber':
     case 'poNumber':
     case 'purchaseOrderNumber':
@@ -274,6 +279,7 @@ export function normalizeInvoiceListSortBy(sortBy: unknown): InvoiceListSortBy {
     case 'jobStatus':
     case 'status':
     case 'total':
+    case 'paid':
     case 'balance':
       return raw === 'poNumber' ? 'purchaseOrderNumber' : raw;
     default:
@@ -330,6 +336,8 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
       return sql`lower(coalesce(${customers.companyName}, ''))`;
     case 'contact':
       return sql`lower(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')))`;
+    case 'jobName':
+      return sql`lower(coalesce(${orders.label}, ''))`;
     case 'orderNumber':
       return sql`coalesce(${orders.displayNumber}, ${orders.orderNumber}, ${invoices.sourceOrderNumber}::text, '')`;
     case 'purchaseOrderNumber':
@@ -369,6 +377,10 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
       return sql`lower(coalesce(${invoices.status}, ''))`;
     case 'total':
       return sql`coalesce(${invoices.totalCents}, 0)`;
+    case 'paid': {
+      const balanceCents = canonicalInvoiceRemainingCentsExpression(organizationId);
+      return sql`greatest(0, coalesce(${invoices.totalCents}, 0) - ${balanceCents})`;
+    }
     case 'balance':
       return canonicalInvoiceRemainingCentsExpression(organizationId);
     case 'issueDate':
@@ -407,6 +419,19 @@ export async function listInvoicesPageForOrganization(
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
   const columnFilters = opts.columnFilters ?? {};
+  if (columnFilters.excludeCustomerId) whereClauses.push(ne(invoices.customerId, columnFilters.excludeCustomerId));
+  // This is the same order lifecycle boundary shown by Job Status: an open
+  // job is linked to an order that is neither terminally closed/canceled nor
+  // completed through fulfillment. Invoices without an order stay visible in
+  // All Jobs, but never enter an operational backlog view.
+  const terminalJob = sql`lower(coalesce(${orders.state}, '')) in ('closed', 'canceled')
+    or lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered')`;
+  if (columnFilters.jobStatus === 'open') {
+    whereClauses.push(sql`${invoices.orderId} is not null and not (${terminalJob})`);
+  }
+  if (columnFilters.jobStatus === 'complete') {
+    whereClauses.push(sql`${invoices.orderId} is not null and (${terminalJob})`);
+  }
   const currentAccountingApproval = sql`${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}`;
   if (columnFilters.accountingApproval === 'approved') whereClauses.push(currentAccountingApproval);
   if (columnFilters.accountingApproval === 'needs_reapproval') whereClauses.push(sql`${invoices.accountingApprovalRevokedAt} is not null or (${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovedVersion} is distinct from ${invoices.invoiceVersion})`);
@@ -544,7 +569,7 @@ export async function listInvoicesPageForOrganization(
       eq(customerContacts.customerId, customers.id),
     ))
     .where(and(...whereClauses))
-    .orderBy(sortDirection(sortExpression), desc(invoices.issueDate), desc(invoices.createdAt))
+    .orderBy(sortDirection(sortExpression), desc(invoices.issueDate), desc(invoices.createdAt), desc(invoices.id))
     .limit(limit)
     .offset(offset);
 

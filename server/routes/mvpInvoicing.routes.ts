@@ -229,6 +229,10 @@ function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListCo
   if (sendStatus && !['never_sent', 'sent', 'updated_after_sent'].includes(sendStatus)) {
     throw Object.assign(new Error('Invalid Send Status filter'), { statusCode: 400 });
   }
+  const jobStatus = invoiceListQueryText(query.jobStatus);
+  if (jobStatus && !['open', 'complete'].includes(jobStatus)) {
+    throw Object.assign(new Error('Invalid Job Status filter'), { statusCode: 400 });
+  }
   return {
     accountingApproval: accountingApproval as InvoiceListColumnFilters['accountingApproval'],
     customer: invoiceListQueryText(query.customer),
@@ -249,6 +253,8 @@ function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListCo
     paidMaxCents: invoiceListQueryCents(query.paidMax),
     balanceMinCents: invoiceListQueryCents(query.balanceMin),
     balanceMaxCents: invoiceListQueryCents(query.balanceMax),
+    jobStatus: jobStatus as InvoiceListColumnFilters['jobStatus'],
+    excludeCustomerId: invoiceListQueryText(query.excludeCustomerId),
   };
 }
 

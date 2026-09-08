@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, ShieldCheck, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, Settings2, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
@@ -19,6 +19,7 @@ import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceD
 import { INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
 import { DEFAULT_INVOICE_LIST_SORT_PREFERENCES, clearPersistedInvoiceListSortPreferences, persistInvoiceListSortPreferences, readPersistedInvoiceListSortPreferences } from "@/lib/invoiceListSortPreferences";
 import { CustomerSelect } from "@/components/CustomerSelect";
+import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
 import {
   Page,
   PageHeader,
@@ -42,6 +43,26 @@ import { InvoiceEmailSendDialog } from "@/components/invoices/InvoiceEmailSendDi
 import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 
 const EMPTY_VALUE = "\u2014";
+
+const GLOBAL_INVOICE_COLUMNS: ColumnConfig[] = [
+  { id: "select", label: "Select", visible: true, order: 0, locked: true },
+  { id: "customer", label: "Customer", visible: true, order: 1 },
+  { id: "contact", label: "Contact", visible: true, order: 2 },
+  { id: "jobName", label: "Job / Order Name", visible: true, order: 3 },
+  { id: "purchaseOrderNumber", label: "PO #", visible: true, order: 4 },
+  { id: "orderNumber", label: "Order #", visible: true, order: 5 },
+  { id: "invoiceNumber", label: "Invoice #", visible: true, order: 6, required: true },
+  { id: "issueDate", label: "Issue Date", visible: true, order: 7 },
+  { id: "dueDate", label: "Due Date", visible: true, order: 8 },
+  { id: "status", label: "Invoice Status", visible: true, order: 9 },
+  { id: "approval", label: "Approval", visible: true, order: 10 },
+  { id: "jobStatus", label: "Job Status", visible: true, order: 11 },
+  { id: "lastSentAt", label: "Last Sent", visible: true, order: 12 },
+  { id: "total", label: "Total", visible: true, order: 13 },
+  { id: "paid", label: "Paid", visible: true, order: 14 },
+  { id: "balance", label: "Balance", visible: true, order: 15 },
+  { id: "actions", label: "Actions", visible: true, order: 16, locked: true },
+];
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -90,6 +111,8 @@ const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
   paidMax: "Paid max",
   balanceMin: "Balance min",
   balanceMax: "Balance max",
+  jobStatus: "Jobs",
+  excludeCustomerId: "Excluding",
 };
 
 export default function InvoicesListPage() {
@@ -99,7 +122,12 @@ export default function InvoicesListPage() {
   const { toast } = useToast();
   const [sortPreferenceRevision, setSortPreferenceRevision] = useState(0);
   const listState = useMemo(() => parseInvoiceListUrlState(searchParams), [searchParams]);
-  const { search, status: statusFilter, customerId, customerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters } = listState;
+  const { search, status: statusFilter, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters } = listState;
+  const invoiceTableConfig = useTableColumnConfig(
+    `global_invoices:org_${user?.lastActiveOrgId ?? "unknown"}:user_${user?.id ?? "anonymous"}`,
+    GLOBAL_INVOICE_COLUMNS,
+  );
+  const visibleColumns = invoiceTableConfig.columns.filter((column) => column.visible);
   const preferredSort = useMemo(
     () => user?.id
       ? readPersistedInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null)
@@ -123,6 +151,7 @@ export default function InvoicesListPage() {
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
   const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'all'>('active');
   const [emailQueuePage, setEmailQueuePage] = useState(1);
+  const [columnsOpen, setColumnsOpen] = useState(false);
   const [quickSendInvoice, setQuickSendInvoice] = useState<{ id: string; label: string } | null>(null);
   const [needsReviewPromptJob, setNeedsReviewPromptJob] = useState<{ id: string; invoiceId: string; label: string } | null>(null);
   const [reviewJob, setReviewJob] = useState<{ id: string; invoiceId: string; label: string; source: 'direct' | 'queue' } | null>(null);
@@ -175,11 +204,13 @@ export default function InvoicesListPage() {
   });
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleApprovableSelected = accountingApprovableInvoices.length > 0 && accountingApprovableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
-  const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>).filter(([, value]) => Boolean(value));
+  const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>)
+    .filter(([key, value]) => Boolean(value) && key !== "excludeCustomerId");
   const activeFilters = [
     search ? { key: "search", label: "Search", value: search } : null,
     statusFilter !== "all" ? { key: "status", label: "Status", value: statusLabels[statusFilter] || statusFilter } : null,
     customerId ? { key: "customerId", label: "Customer", value: customerName || "Selected customer" } : null,
+    columnFilters.excludeCustomerId ? { key: "excludeCustomerId", label: "Excluding", value: excludeCustomerName || "Selected customer" } : null,
     ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: String(value) })),
   ].filter(Boolean) as Array<{ key: string; label: string; value: string }>;
 
@@ -196,6 +227,7 @@ export default function InvoicesListPage() {
       status: undefined,
       customerId: undefined,
       customerName: undefined,
+      excludeCustomerName: undefined,
       issueDatePreset: undefined,
       ...Object.fromEntries(INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.map((key) => [key, undefined])),
     }, true);
@@ -205,6 +237,7 @@ export default function InvoicesListPage() {
     if (key === "search") return updateListState({ search: undefined }, true);
     if (key === "status") return updateListState({ status: undefined }, true);
     if (key === "customerId") return updateListState({ customerId: undefined, customerName: undefined }, true);
+    if (key === "excludeCustomerId") return updateListState({ excludeCustomerId: undefined, excludeCustomerName: undefined }, true);
     setColumnFilter(key as keyof InvoiceListColumnFilterQuery, "");
   };
 
@@ -212,6 +245,13 @@ export default function InvoicesListPage() {
     updateListState({
       customerId: nextCustomerId || undefined,
       customerName: nextCustomerId ? customer?.companyName || customer?.email || "Selected customer" : undefined,
+    }, true);
+  };
+
+  const setExcludedCustomerFilter = (nextCustomerId: string | null, customer?: { companyName?: string | null; email?: string | null }) => {
+    updateListState({
+      excludeCustomerId: nextCustomerId || undefined,
+      excludeCustomerName: nextCustomerId ? customer?.companyName || customer?.email || "Selected customer" : undefined,
     }, true);
   };
 
@@ -276,6 +316,11 @@ export default function InvoicesListPage() {
     updateListState({ sortBy: undefined, sortDir: undefined }, true);
   };
 
+  const resetTable = () => {
+    invoiceTableConfig.reset();
+    resetSort();
+  };
+
   const hasNonDefaultSort = hasExplicitSort
     || sortKey !== DEFAULT_INVOICE_LIST_SORT_PREFERENCES.sortKey
     || sortDir !== DEFAULT_INVOICE_LIST_SORT_PREFERENCES.sortDir;
@@ -287,12 +332,12 @@ export default function InvoicesListPage() {
 
   const renderSortableHead = (key: InvoiceSortKey, label: string, className = "") => (
     <TitanTableHead
-      className={className}
+      className={`cursor-pointer select-none transition-colors hover:bg-muted/60 focus-within:bg-muted/60 ${className}`}
       aria-sort={sortKey === key ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
     >
       <button
         type="button"
-        className="flex w-full items-center gap-1 text-left font-medium"
+        className="flex min-h-8 w-full items-center gap-1 rounded-sm px-1 py-1 text-left font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label={`Sort by ${label} ${sortKey === key && sortDir === "asc" ? "descending" : "ascending"}`}
         onClick={() => handleSort(key)}
       >
@@ -427,6 +472,53 @@ export default function InvoicesListPage() {
     }
   };
 
+  const renderInvoiceHead = (column: ColumnConfig) => {
+    switch (column.id) {
+      case "select":
+        return <TitanTableHead key={column.id} className="w-[44px]"><Checkbox checked={allVisibleApprovableSelected} onCheckedChange={(checked) => toggleAllVisible(checked === true)} aria-label="Select all visible accounting-approvable invoices" /></TitanTableHead>;
+      case "customer": return <>{renderSortableHead("customer", column.label, "min-w-[180px] max-w-[220px]")}</>;
+      case "contact": return <>{renderSortableHead("contact", column.label, "min-w-[150px] max-w-[190px]")}</>;
+      case "jobName": return <>{renderSortableHead("jobName", column.label, "min-w-[180px] max-w-[240px]")}</>;
+      case "purchaseOrderNumber": return <>{renderSortableHead("purchaseOrderNumber", column.label, "min-w-[110px] max-w-[140px]")}</>;
+      case "orderNumber": return <>{renderSortableHead("orderNumber", column.label, "min-w-[110px] max-w-[140px]")}</>;
+      case "invoiceNumber": return <>{renderSortableHead("invoiceNumber", column.label, "min-w-[120px] max-w-[150px]")}</>;
+      case "issueDate": return <>{renderSortableHead("issueDate", column.label, "min-w-[120px]")}</>;
+      case "dueDate": return <>{renderSortableHead("dueDate", column.label, "min-w-[120px]")}</>;
+      case "status": return <>{renderSortableHead("status", column.label, "min-w-[130px]")}</>;
+      case "approval": return <>{renderSortableHead("approval", column.label, "w-[116px] min-w-[116px]")}</>;
+      case "jobStatus": return <>{renderSortableHead("jobStatus", column.label, "min-w-[145px]")}</>;
+      case "lastSentAt": return <>{renderSortableHead("lastSentAt", column.label, "min-w-[140px]")}</>;
+      case "total": return <>{renderSortableHead("total", column.label, "min-w-[110px] text-right")}</>;
+      case "paid": return <>{renderSortableHead("paid", column.label, "min-w-[100px] text-right")}</>;
+      case "balance": return <>{renderSortableHead("balance", column.label, "min-w-[110px] text-right")}</>;
+      case "actions": return <TitanTableHead key={column.id} className="sticky right-0 z-10 min-w-[310px] bg-background text-center">Actions</TitanTableHead>;
+      default: return null;
+    }
+  };
+
+  const renderInvoiceCell = (invoice: InvoiceListItem, column: ColumnConfig) => {
+    switch (column.id) {
+      case "select": return <TitanTableCell key={column.id} onClick={(event) => event.stopPropagation()}><Checkbox checked={selectedInvoiceIds.has(invoice.id)} disabled={["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()) || String((invoice as any).importSource || "").toLowerCase() === "quickbooks" || Boolean((invoice as any).isHistorical)} onCheckedChange={(checked) => toggleSelected(invoice.id, checked === true)} aria-label={`Select invoice ${invoice.invoiceNumber}`} /></TitanTableCell>;
+      case "customer": return <TitanTableCell key={column.id} className="max-w-[220px]"><div className="truncate font-medium" title={textOrEmpty(invoice.customerName || invoice.companyName)}>{textOrEmpty(invoice.customerName || invoice.companyName)}</div></TitanTableCell>;
+      case "contact": return <TitanTableCell key={column.id} className="max-w-[190px]"><div className="truncate" title={textOrEmpty(invoice.contactName)}>{textOrEmpty(invoice.contactName)}</div>{invoice.contactEmail && <div className="truncate text-xs text-muted-foreground" title={invoice.contactEmail}>{invoice.contactEmail}</div>}</TitanTableCell>;
+      case "jobName": return <TitanTableCell key={column.id} className="max-w-[240px]"><div className="truncate" title={textOrEmpty(invoice.jobName || invoice.orderName)}>{textOrEmpty(invoice.jobName || invoice.orderName)}</div></TitanTableCell>;
+      case "purchaseOrderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.purchaseOrderNumber)}>{textOrEmpty(invoice.purchaseOrderNumber)}</div></TitanTableCell>;
+      case "orderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.orderNumber)}>{textOrEmpty(invoice.orderNumber)}</div></TitanTableCell>;
+      case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={`/invoices/${invoice.id}`} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: (invoice as any).displayNumber, numberCore: (invoice as any).numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
+      case "issueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.issueDate)}</TitanTableCell>;
+      case "dueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.dueDate)}</TitanTableCell>;
+      case "status": return <TitanTableCell key={column.id}><StatusPill variant={getStatusVariant(invoice.status)}>{invoice.displayStatus || statusLabels[invoice.status] || invoice.status}</StatusPill></TitanTableCell>;
+      case "approval": return <TitanTableCell key={column.id} className="w-[116px] min-w-[116px]" onClick={(event) => event.stopPropagation()}>{approvalState(invoice) === "Approved for Accounting" ? <StatusPill variant="info">Approved</StatusPill> : isAdminOrOwner ? <Button type="button" variant="outline" size="sm" className="h-7 whitespace-nowrap px-2 text-xs" aria-label={`Approve invoice ${invoice.invoiceNumber} for accounting`} disabled={approveInvoices.isPending} onClick={(event) => { event.stopPropagation(); void handleApproveInvoice(invoice); }}><Check className="mr-1 h-3.5 w-3.5" aria-hidden="true" />{approvingInvoiceId === invoice.id && approveInvoices.isPending ? "Approving…" : "Approve"}</Button> : <StatusPill variant={approvalState(invoice) === "Needs Reapproval" ? "warning" : "muted"}>Not Approved</StatusPill>}</TitanTableCell>;
+      case "jobStatus": return <TitanTableCell key={column.id}>{getOrderJobStatus(invoice)}</TitanTableCell>;
+      case "lastSentAt": return <TitanTableCell key={column.id}><div className="space-y-1"><div>{invoice.lastSentAt ? formatDate(invoice.lastSentAt) : EMPTY_VALUE}</div><span title={invoice.emailDeliveryStatus === "failed" ? invoice.emailDeliveryFailureReason || "Invoice delivery failed" : undefined}><StatusPill variant={getEmailDeliveryStatus(invoice).variant}>{getEmailDeliveryStatus(invoice).label}</StatusPill></span></div></TitanTableCell>;
+      case "total": return <TitanTableCell key={column.id} className="text-right">{formatCurrency(invoice.displayTotal ?? invoice.total)}</TitanTableCell>;
+      case "paid": return <TitanTableCell key={column.id} className="text-right">{formatCurrency(invoice.displayPaid ?? invoice.amountPaid)}</TitanTableCell>;
+      case "balance": return <TitanTableCell key={column.id} className="text-right font-semibold">{formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}</TitanTableCell>;
+      case "actions": return <TitanTableCell key={column.id} className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(event) => event.stopPropagation()}><TooltipProvider delayDuration={250}><div className="flex min-w-max flex-wrap items-center justify-start gap-1">{isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Button variant="outline" size="sm" className="h-8 px-2" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice)}><Mail className="mr-1 h-4 w-4" aria-hidden="true" />{invoice.lastSentAt ? "Resend" : "Send"}</Button> : null}{canCloseJobOverride(invoice, Boolean(isAdminOrOwner)) ? <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => setOverrideTarget({ orderId: invoice.orderId!, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) })}><ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}{canTakePaymentFromInvoiceList(invoice) ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip> : null}<Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip></div></TooltipProvider></TitanTableCell>;
+      default: return null;
+    }
+  };
+
   const renderPaginationControls = (position: "top" | "bottom") => (
     <>
       <div className="text-sm text-muted-foreground" aria-live="polite">
@@ -541,6 +633,7 @@ export default function InvoicesListPage() {
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <CustomerSelect value={customerId || null} onChange={setCustomerFilter} autoFocus={false} label="Customer / Company" placeholder="All customers" />
+                  <CustomerSelect value={columnFilters.excludeCustomerId || null} onChange={setExcludedCustomerFilter} autoFocus={false} label="Exclude customer" placeholder="Do not exclude a customer" />
                   <label className="grid gap-1 text-sm"><span>Customer / Company contains</span><Input value={columnFilters.customer || ""} onChange={(event) => setColumnFilter("customer", event.target.value)} placeholder="e.g. Acme" /></label>
                   <label className="grid gap-1 text-sm"><span>Contact</span><Input value={columnFilters.contact || ""} onChange={(event) => setColumnFilter("contact", event.target.value)} placeholder="Name or email" /></label>
                   <label className="grid gap-1 text-sm"><span>Job / Order Name</span><Input value={columnFilters.jobName || ""} onChange={(event) => setColumnFilter("jobName", event.target.value)} /></label>
@@ -553,6 +646,7 @@ export default function InvoicesListPage() {
                   <label className="grid gap-1 text-sm"><span>Due date from</span><Input type="date" value={columnFilters.dueDateFrom || ""} onChange={(event) => setColumnFilter("dueDateFrom", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Due date to</span><Input type="date" value={columnFilters.dueDateTo || ""} onChange={(event) => setColumnFilter("dueDateTo", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Send Status</span><Select value={columnFilters.sendStatus || "all"} onValueChange={(value) => setColumnFilter("sendStatus", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All</SelectItem><SelectItem value="never_sent">Never Sent</SelectItem><SelectItem value="sent">Sent</SelectItem><SelectItem value="updated_after_sent">Updated After Sent</SelectItem></SelectContent></Select></label>
+                  <label className="grid gap-1 text-sm"><span>Jobs</span><Select value={columnFilters.jobStatus || "all"} onValueChange={(value) => setColumnFilter("jobStatus", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Jobs</SelectItem><SelectItem value="open">Open Jobs</SelectItem><SelectItem value="complete">Complete Jobs</SelectItem></SelectContent></Select></label>
                 </div>
                 <div className="mt-4 border-t pt-4">
                   <div className="mb-2 text-sm font-medium">Amount ranges</div>
@@ -571,6 +665,9 @@ export default function InvoicesListPage() {
             </Popover>
             <Button type="button" variant="outline" size="sm" className="gap-2" onClick={resetSort} disabled={!hasNonDefaultSort} aria-label="Reset global Invoice sort preference">
               <RotateCcw className="h-4 w-4" />Reset sort
+            </Button>
+            <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => setColumnsOpen(true)} aria-label="Configure global Invoice columns">
+              <Settings2 className="h-4 w-4" />Columns
             </Button>
             <Button
               type="button"
@@ -607,6 +704,15 @@ export default function InvoicesListPage() {
         {/* Invoices Table */}
         <TitanTableContainer>
           <TitanTable>
+            <TitanTableHeader>
+              <TitanTableRow>{visibleColumns.map((column) => <Fragment key={column.id}>{renderInvoiceHead(column)}</Fragment>)}</TitanTableRow>
+            </TitanTableHeader>
+            <TitanTableBody>
+              {isLoading && <TitanTableLoading colSpan={visibleColumns.length} message="Loading invoices..." />}
+              {!isLoading && filteredInvoices.length === 0 && <TitanTableEmpty colSpan={visibleColumns.length} icon={<FileText className="h-12 w-12" />} message="No invoices found" action={isAdminOrOwner ? <Button variant="outline" size="sm" asChild><Link to={ROUTES.orders.list}><Plus className="mr-2 h-4 w-4" />Create from Order</Link></Button> : undefined} />}
+              {!isLoading && filteredInvoices.map((invoice) => <TitanTableRow key={invoice.id} clickable onClick={() => navigate(`/invoices/${invoice.id}`)}>{visibleColumns.map((column) => renderInvoiceCell(invoice, column))}</TitanTableRow>)}
+            </TitanTableBody>
+            {false && <>
             <TitanTableHeader>
               <TitanTableRow>
                 <TitanTableHead className="w-[44px]">
@@ -772,11 +878,28 @@ export default function InvoicesListPage() {
                 </TitanTableRow>
               ))}
             </TitanTableBody>
+            </>}
           </TitanTable>
         </TitanTableContainer>
 
         {renderPagination("bottom")}
       </ContentLayout>
+      <Dialog open={columnsOpen} onOpenChange={setColumnsOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Global Invoice Columns</DialogTitle><DialogDescription>Choose the columns and order used by the Global Invoice backlog. This does not affect Customer Detail tables.</DialogDescription></DialogHeader>
+          <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+            {invoiceTableConfig.columns.map((column) => (
+              <div key={column.id} className="flex items-center gap-2 rounded border p-2">
+                <Checkbox checked={column.visible} disabled={column.locked || column.required} onCheckedChange={(checked) => invoiceTableConfig.setColumnVisibility(column.id, checked === true)} aria-label={`Show ${column.label}`} />
+                <span className="min-w-0 flex-1 truncate text-sm">{column.label}{column.locked || column.required ? " (required)" : ""}</span>
+                <Button type="button" size="icon" variant="ghost" className="h-7 w-7" disabled={!invoiceTableConfig.canMoveColumn(column.id, "up")} onClick={() => invoiceTableConfig.moveColumn(column.id, "up")} aria-label={`Move ${column.label} up`}><ArrowUp className="h-4 w-4" /></Button>
+                <Button type="button" size="icon" variant="ghost" className="h-7 w-7" disabled={!invoiceTableConfig.canMoveColumn(column.id, "down")} onClick={() => invoiceTableConfig.moveColumn(column.id, "down")} aria-label={`Move ${column.label} down`}><ArrowDown className="h-4 w-4" /></Button>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={resetTable}>Reset Table</Button><Button type="button" onClick={() => setColumnsOpen(false)}>Done</Button></div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={emailQueueOpen} onOpenChange={setEmailQueueOpen}>
         <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
           <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Authoritative delivery jobs. Last Sent updates only after provider acceptance.</DialogDescription></DialogHeader>

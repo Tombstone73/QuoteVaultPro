@@ -102,6 +102,8 @@ export type InvoiceListColumnFilterQuery = {
   paidMax?: string;
   balanceMin?: string;
   balanceMax?: string;
+  jobStatus?: 'open' | 'complete';
+  excludeCustomerId?: string;
 };
 
 export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
@@ -195,6 +197,7 @@ export function useInvoicesPage(filters: {
         'accountingApproval',
         'issueDateFrom', 'issueDateTo', 'dueDateFrom', 'dueDateTo', 'sendStatus', 'lastSent',
         'totalMin', 'totalMax', 'paidMin', 'paidMax', 'balanceMin', 'balanceMax',
+        'jobStatus', 'excludeCustomerId',
       ];
       for (const key of columnKeys) {
         const value = filters[key];

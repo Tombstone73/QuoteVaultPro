@@ -2,12 +2,12 @@ import { parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoi
 
 describe("Invoice list URL state", () => {
   it("restores the complete backlog working set from the URL", () => {
-    const state = parseInvoiceListUrlState(new URLSearchParams("customerId=customer-1&customerName=Brainstorm+Print&sendStatus=never_sent&accountingApproval=not_approved&issueDateFrom=2026-08-01&issueDateTo=2026-09-07&issueDatePreset=custom&page=3&pageSize=100&search=ACM&sortBy=customer&sortDir=asc"));
+    const state = parseInvoiceListUrlState(new URLSearchParams("customerId=customer-1&customerName=Brainstorm+Print&excludeCustomerId=customer-2&excludeCustomerName=Graphic+Solutions&jobStatus=open&sendStatus=never_sent&accountingApproval=not_approved&issueDateFrom=2026-08-01&issueDateTo=2026-09-07&issueDatePreset=custom&page=3&pageSize=100&search=ACM&sortBy=customer&sortDir=asc"));
 
     expect(state).toMatchObject({
-      customerId: "customer-1", customerName: "Brainstorm Print", issueDatePreset: "custom", search: "ACM", page: 3, pageSize: 100,
+      customerId: "customer-1", customerName: "Brainstorm Print", excludeCustomerName: "Graphic Solutions", issueDatePreset: "custom", search: "ACM", page: 3, pageSize: 100,
       sortKey: "customer", sortDir: "asc",
-      columnFilters: { sendStatus: "never_sent", accountingApproval: "not_approved", issueDateFrom: "2026-08-01", issueDateTo: "2026-09-07" },
+      columnFilters: { excludeCustomerId: "customer-2", jobStatus: "open", sendStatus: "never_sent", accountingApproval: "not_approved", issueDateFrom: "2026-08-01", issueDateTo: "2026-09-07" },
     });
   });
 
@@ -28,5 +28,10 @@ describe("Invoice list URL state", () => {
     expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=not-real&sortDir=asc"))).toMatchObject({
       hasExplicitSort: false, sortKey: "issueDate", sortDir: "desc",
     });
+  });
+
+  it("accepts every configurable Global Invoice sort field", () => {
+    expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=jobName&sortDir=asc"))).toMatchObject({ hasExplicitSort: true, sortKey: "jobName" });
+    expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=paid&sortDir=desc"))).toMatchObject({ hasExplicitSort: true, sortKey: "paid" });
   });
 });

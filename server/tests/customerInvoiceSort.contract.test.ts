@@ -8,8 +8,19 @@ test('Customer Detail invoice sort fields remain explicitly allowlisted and serv
   expect(invoiceService).toContain("case 'lastSentAt':");
   expect(invoiceService).toContain("case 'approval':");
   expect(invoiceService).toContain("case 'jobStatus':");
+  expect(invoiceService).toContain("case 'jobName':");
+  expect(invoiceService).toContain("case 'paid':");
   expect(invoiceService).toContain("case 'balance':");
   expect(invoiceService).toContain("when ${invoices.accountingApprovedAt} is not null");
   expect(invoiceService).toContain("when ${invoices.orderId} is null then 'no linked order'");
   expect(invoiceService).toContain("return 'issueDate';");
+});
+
+test('Global Invoice backlog filters compose on the tenant-scoped query before pagination', () => {
+  expect(invoiceService).toContain("columnFilters.excludeCustomerId");
+  expect(invoiceService).toContain("columnFilters.jobStatus === 'open'");
+  expect(invoiceService).toContain("columnFilters.jobStatus === 'complete'");
+  expect(invoiceService).toContain("invoices.orderId} is not null");
+  expect(invoiceService).toContain(".where(and(...whereClauses))");
+  expect(invoiceService).toContain("desc(invoices.createdAt), desc(invoices.id)");
 });

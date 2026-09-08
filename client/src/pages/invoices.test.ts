@@ -68,6 +68,27 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("setColumnFilter");
     expect(invoicesPageSource).toContain("...columnFilters");
     expect(invoiceHooksSource).toContain("sendStatus");
+    expect(invoicesPageSource).toContain("Exclude customer");
+    expect(invoicesPageSource).toContain("Open Jobs");
+    expect(invoicesPageSource).toContain("Complete Jobs");
+    expect(invoiceHooksSource).toContain("excludeCustomerId");
+    expect(invoiceHooksSource).toContain("jobStatus");
+  });
+
+  it("uses a separate persisted Global Invoice column layout with required Invoice and Actions columns", () => {
+    expect(invoicesPageSource).toContain("GLOBAL_INVOICE_COLUMNS");
+    expect(invoicesPageSource).toContain("global_invoices:org_");
+    expect(invoicesPageSource).toContain("Global Invoice Columns");
+    expect(invoicesPageSource).toContain("Reset Table");
+    expect(invoicesPageSource).toContain('id: "invoiceNumber"');
+    expect(invoicesPageSource).toContain('id: "actions"');
+    expect(invoicesPageSource).toContain("visibleColumns.map");
+  });
+
+  it("routes every visible data header through the canonical server-sort state", () => {
+    ["customer", "contact", "jobName", "purchaseOrderNumber", "orderNumber", "invoiceNumber", "issueDate", "dueDate", "status", "approval", "jobStatus", "lastSentAt", "total", "paid", "balance"].forEach((key) => {
+      expect(invoicesPageSource).toContain(`renderSortableHead(\"${key}\"`);
+    });
   });
 
   it("keeps a user-scoped global Invoice sort preference while allowing an explicit URL override", () => {
