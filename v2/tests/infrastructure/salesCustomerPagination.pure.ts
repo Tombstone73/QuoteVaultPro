@@ -133,6 +133,7 @@ assert.equal(operationalOrder.operational.notes.hasOrderNotes, true);
 assert.ok(salesSql.some((sql) => sql.includes("$6::timestamptz") && sql.includes("LIMIT $9")), "Sales cursors must be applied by each bounded SQL source query");
 assert.ok(salesSql.some((sql) => sql.includes("$6::text='archived'") && sql.includes("$7::timestamptz") && sql.includes("LIMIT $10")), "Order archive scope must remain server-backed before bounded pagination");
 assert.ok(salesSql.some((sql) => sql.includes("$11::text IN ('flatbed','roll')") && sql.includes("LIMIT $10")), "operational filtering must be part of the source SQL before the keyset page limit");
+assert.ok(salesSql.some((sql) => sql.includes("l.quantity AND NOT EXISTS") && sql.includes("WHERE r.organization_id=l.organization_id")), "ready-for-fulfillment keeps the line alias inside its correlated eligibility subquery");
 assert.ok(salesSql.every((sql) => !sql.includes("COALESCE(q.created_at,now())") && !sql.includes("COALESCE(o.updated_at,o.created_at,now())")), "resumable sort keys must not use now()");
 const balanced = (sql: string) => {
   let depth = 0;
