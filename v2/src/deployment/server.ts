@@ -120,7 +120,18 @@ export const createV2DeploymentApp = (
   const quickBooksIntegration = composeAuthenticatedQuickBooksIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
   // AI is optional at runtime: its provider configuration can be disabled
   // without preventing core PrintersHero startup or exposing a fallback path.
-  const aiAssistant = composeAuthenticatedAiAssistantRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, workflow: order.dependencies.workflow, environment: process.env });
+  const aiAssistant = composeAuthenticatedAiAssistantRuntime({
+    pool, trustedHostIdentity, trustedHostMiddleware, workflow: order.dependencies.workflow,
+    // Each composed runtime holds the concrete canonical application service;
+    // the HTTP dependency surface intentionally erases that richer type.
+    proofing: proofing.dependencies.service as unknown as import("../modules/proofing/proofingApplication.js").ProofingApplicationService,
+    prepress: prepress.dependencies.service as unknown as import("../modules/prepress/prepressApplication.js").PrepressApplicationService,
+    production: production.dependencies.service as unknown as import("../modules/production/productionApplication.js").ProductionApplicationService,
+    financialRead: billing.dependencies.financialRead,
+    inbound: inbound.dependencies.service as unknown as import("../modules/inbound/inboundIntakeApplication.js").InboundIntakeApplicationService,
+    commercial: { service: customerCommercial.dependencies.service, pricing: customerCommercial.dependencies.pricing, products: customerCommercial.dependencies.products },
+    environment: process.env,
+  });
 
   return createV2HttpApp(
     config,
