@@ -18,6 +18,16 @@ assert.match(application, /All Refund allocations must belong to one Customer ac
 assert.match(persistence, /lockRefundAllocations/);
 assert.match(persistence, /v2_billing_refund_allocation_evidence/);
 assert.match(persistence, /refund exceeds the original payment allocation/i);
+for (const sourcePath of [
+  "v2/infrastructure/sales/postgresSalesWorkspaceReads.ts",
+  "v2/infrastructure/sales/postgresOrderAutomaticLifecycle.ts",
+  "v2/infrastructure/billing/postgresInvoiceDocuments.ts",
+  "v2/infrastructure/communications/invoiceEmailSender.ts",
+]) {
+  const sourceText = source(sourcePath);
+  assert.match(sourceText, /v2_billing_refund_allocation_evidence/);
+  assert.doesNotMatch(sourceText, /v2_billing_refund_allocations\s+\w+\s+WHERE\s+\w+\.organization_id=[^\n]+\w+\.invoice_id/is);
+}
 assert.match(routes, /router\.post\("\/refunds"/);
 assert.match(routes, /paymentAllocationId/);
 assert.match(quickBooks, /QUICKBOOKS_REFUND_ALLOCATION_EXPORT_UNSUPPORTED/);

@@ -21,7 +21,7 @@ export class PostgresInvoiceDocumentService {
   async document(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<OwnerPdfDocument> {
     const [branding, invoice, settlement] = await Promise.all([
       readTenantBranding(this.pool, organizationId), this.invoice(organizationId, invoiceId),
-      this.pool.query<SettlementRow>(`SELECT COALESCE((SELECT sum(amount_cents) FROM v2_billing_payment_allocations WHERE organization_id=$1 AND invoice_id=$2),0)::text paid,COALESCE((SELECT sum(a.amount_cents) FROM v2_billing_refund_allocations a WHERE a.organization_id=$1 AND a.invoice_id=$2),0)::text refunded`, [organizationId, invoiceId]),
+      this.pool.query<SettlementRow>(`SELECT COALESCE((SELECT sum(amount_cents) FROM v2_billing_payment_allocations WHERE organization_id=$1 AND invoice_id=$2),0)::text paid,COALESCE((SELECT sum(e.amount_cents) FROM v2_billing_refund_allocation_evidence e WHERE e.organization_id=$1 AND e.invoice_id=$2),0)::text refunded`, [organizationId, invoiceId]),
     ]);
     const issued = invoice.lifecycle === "issued" ? invoice.issuedCheckpoint : undefined;
     if (invoice.lifecycle === "issued" && !issued) throw new V2ApplicationError("CONFLICT", "Issued Invoice checkpoint is unavailable.");
