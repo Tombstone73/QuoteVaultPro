@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Checkbox } from "@/components/ui/checkbox";
 import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
 import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
+import { OrderNumberLink } from "@/components/orders/OrderNumberLink";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "invoiceNumber", label: "Invoice #", visible: true, order: 0 },
@@ -106,7 +107,7 @@ export function CustomerInvoicesTable({ customerId }: { customerId: string }) {
                 case "invoiceNumber": return <td className="whitespace-nowrap px-3 py-2 font-mono" key={column.id}>{invoice.invoiceNumber || "—"}</td>;
                 case "jobOrder": return <td className="max-w-56 px-3 py-2" key={column.id}>{invoice.jobName || invoice.orderName || invoice.orderNumber || "—"}</td>;
                 case "poNumber": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{invoice.purchaseOrderNumber || "—"}</td>;
-                case "orderNumber": return <td className="whitespace-nowrap px-3 py-2 font-mono" key={column.id}>{invoice.orderNumber || "—"}</td>;
+                case "orderNumber": return <td className="whitespace-nowrap px-3 py-2 font-mono" key={column.id}><OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} /></td>;
                 case "invoiceDate": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{formatDate(invoice.issueDate || invoice.createdAt)}</td>;
                 case "lastSent": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{invoice.lastSentAt ? `${formatDate(invoice.lastSentAt)}${invoice.emailStatus === "sent_outdated" ? " (updated)" : ""}` : "Not sent"}</td>;
                 case "dueDate": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{formatDate(invoice.dueDate)}</td>;

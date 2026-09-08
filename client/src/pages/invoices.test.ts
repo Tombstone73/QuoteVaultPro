@@ -160,6 +160,12 @@ describe("Invoices List payment entry point", () => {
     expect(canTakePaymentFromInvoiceList(invoice({ status: "paid", displayRemaining: 100, balanceDue: "100.00" }))).toBe(true);
   });
 
+  it("links a linked Order number through the shared canonical Order Detail helper", () => {
+    expect(invoicesPageSource).toContain('import { OrderNumberLink }');
+    expect(invoicesPageSource).toContain('<OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} />');
+    expect(invoicesPageSource).toContain('to={`/invoices/${invoice.id}`}');
+  });
+
   it("uses compact accessible quick actions and opens the canonical direct-send dialog", () => {
     expect(invoicesPageSource).toContain("handleQuickSend(invoice)");
     expect(invoicesPageSource).toContain("InvoiceEmailSendDialog");

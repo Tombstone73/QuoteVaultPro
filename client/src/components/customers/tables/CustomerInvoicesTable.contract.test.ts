@@ -14,6 +14,8 @@ test('Customer Detail Invoice table exposes the required operational columns', (
   }
   expect(table).toContain('customer_invoices_v2');
   expect(table).toContain('invoice.purchaseOrderNumber || "—"');
+  expect(table).toContain('import { OrderNumberLink }');
+  expect(table).toContain('<OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} />');
 });
 
 test('Customer Detail actions are visible icon-plus-label controls, not a hidden action menu', () => {

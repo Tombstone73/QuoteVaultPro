@@ -41,6 +41,7 @@ import {
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { InvoiceEmailSendDialog } from "@/components/invoices/InvoiceEmailSendDialog";
 import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
+import { OrderNumberLink } from "@/components/orders/OrderNumberLink";
 
 const EMPTY_VALUE = "\u2014";
 
@@ -503,7 +504,7 @@ export default function InvoicesListPage() {
       case "contact": return <TitanTableCell key={column.id} className="max-w-[190px]"><div className="truncate" title={textOrEmpty(invoice.contactName)}>{textOrEmpty(invoice.contactName)}</div>{invoice.contactEmail && <div className="truncate text-xs text-muted-foreground" title={invoice.contactEmail}>{invoice.contactEmail}</div>}</TitanTableCell>;
       case "jobName": return <TitanTableCell key={column.id} className="max-w-[240px]"><div className="truncate" title={textOrEmpty(invoice.jobName || invoice.orderName)}>{textOrEmpty(invoice.jobName || invoice.orderName)}</div></TitanTableCell>;
       case "purchaseOrderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.purchaseOrderNumber)}>{textOrEmpty(invoice.purchaseOrderNumber)}</div></TitanTableCell>;
-      case "orderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.orderNumber)}>{textOrEmpty(invoice.orderNumber)}</div></TitanTableCell>;
+      case "orderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.orderNumber)}><OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} /></div></TitanTableCell>;
       case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={`/invoices/${invoice.id}`} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: (invoice as any).displayNumber, numberCore: (invoice as any).numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
       case "issueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.issueDate)}</TitanTableCell>;
       case "dueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.dueDate)}</TitanTableCell>;
