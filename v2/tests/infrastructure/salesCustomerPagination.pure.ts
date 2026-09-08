@@ -134,6 +134,16 @@ assert.ok(salesSql.some((sql) => sql.includes("$6::timestamptz") && sql.includes
 assert.ok(salesSql.some((sql) => sql.includes("$6::text='archived'") && sql.includes("$7::timestamptz") && sql.includes("LIMIT $10")), "Order archive scope must remain server-backed before bounded pagination");
 assert.ok(salesSql.some((sql) => sql.includes("$11::text IN ('flatbed','roll')") && sql.includes("LIMIT $10")), "operational filtering must be part of the source SQL before the keyset page limit");
 assert.ok(salesSql.every((sql) => !sql.includes("COALESCE(q.created_at,now())") && !sql.includes("COALESCE(o.updated_at,o.created_at,now())")), "resumable sort keys must not use now()");
+const balanced = (sql: string) => {
+  let depth = 0;
+  for (const character of sql) {
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+};
+assert.ok(salesSql.every(balanced), "every emitted Orders workspace query must be syntactically balanced before it reaches PostgreSQL");
 
 const directProduction = projectOrderOperationalSummary({
   id: "order-direct", contact_id: null, contact_display_name: null, sales_representative_id: null,
