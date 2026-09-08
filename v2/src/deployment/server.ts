@@ -58,6 +58,7 @@ import { V2PricingParityAdapter } from "../modules/pricing/v2PricingAdapter.js";
 import { PortalOrderCreationApplicationService } from "../modules/portal/portalOrderCreation.js";
 import { PortalArtworkApplicationService } from "../modules/portal/portalArtwork.js";
 import { PostgresPortalArtworkOwnershipRead } from "../../infrastructure/portal/postgresPortalArtworkOwnership.js";
+import { composeAuthenticatedAiAssistantRuntime } from "../../infrastructure/ai/authenticatedAiAssistantRuntime.js";
 
 export const createV2DeploymentApp = (
   config: V2RuntimeConfig,
@@ -117,6 +118,9 @@ export const createV2DeploymentApp = (
   };
   const emailIntegration = composeAuthenticatedEmailIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
   const quickBooksIntegration = composeAuthenticatedQuickBooksIntegrationRuntime({ pool, trustedHostIdentity, publicWebOrigin: authentication.publicWebOrigin });
+  // AI is optional at runtime: its provider configuration can be disabled
+  // without preventing core PrintersHero startup or exposing a fallback path.
+  const aiAssistant = composeAuthenticatedAiAssistantRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, workflow: order.dependencies.workflow, environment: process.env });
 
   return createV2HttpApp(
     config,
@@ -147,6 +151,7 @@ export const createV2DeploymentApp = (
     { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}), commercial: new PostgresPortalCommercialRead(pool), orders: portalOrders, artwork: portalArtwork },
     inbound,
     customerCommercial,
+    aiAssistant,
   );
 };
 

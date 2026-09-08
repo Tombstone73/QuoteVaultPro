@@ -143,6 +143,7 @@ export type UiBootstrap = Readonly<{
     fulfillmentShip?: boolean;
     inboundView?: boolean;
     inboundReview?: boolean;
+    assistantUse?: boolean;
     routeView?: boolean;
     routeAdvance?: boolean;
     routeManageTemplates?: boolean;
@@ -1554,6 +1555,21 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
 export const clearV2ApiSessionState = (): void => {
   csrfTokens.clear();
   sessionScope = undefined;
+};
+export type AiConversation = Readonly<{ id: string; title?: string; createdAt: string; updatedAt: string }>;
+export type AiConversationMessage = Readonly<{ id: string; role: "user" | "assistant" | "tool" | "system"; content: string; toolName?: string; createdAt: string }>;
+export type AiPendingCommand = Readonly<{ id: string; commandName: string; capability: string; proposal: string; state: "pending_confirmation" | "confirmed" | "executing" | "succeeded" | "failed" | "expired" | "cancelled"; expiresAt: string }>;
+export type AiTurn = Readonly<{ kind: "reply" | "proposal"; text: string; toolResults: readonly Readonly<{ toolName: string; result: unknown }>[]; pending?: AiPendingCommand; usage?: Readonly<{ model: string; inputTokens?: number; outputTokens?: number; durationMs: number }> }>;
+const aiEndpoint = (organizationId: string, suffix = "") => `/v2/organizations/${encodeURIComponent(organizationId)}/ai${suffix}`;
+const aiMutation = <T>(organizationId: string, suffix: string, body: unknown) => request<T>(aiEndpoint(organizationId, suffix), { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(body) });
+export const aiAssistantApi = {
+  list: (organizationId: string) => request<readonly AiConversation[]>(aiEndpoint(organizationId, "/conversations")),
+  create: (organizationId: string, title?: string) => aiMutation<AiConversation>(organizationId, "/conversations", title?.trim() ? { title: title.trim() } : {}),
+  messages: (organizationId: string, conversationId: string) => request<readonly AiConversationMessage[]>(aiEndpoint(organizationId, `/conversations/${encodeURIComponent(conversationId)}/messages`)),
+  pending: (organizationId: string, conversationId: string) => request<AiPendingCommand | null>(aiEndpoint(organizationId, `/conversations/${encodeURIComponent(conversationId)}/pending`)),
+  turn: (organizationId: string, conversationId: string, message: string) => aiMutation<AiTurn>(organizationId, `/conversations/${encodeURIComponent(conversationId)}/turn`, { message }),
+  confirm: (organizationId: string, conversationId: string) => aiMutation<unknown>(organizationId, `/conversations/${encodeURIComponent(conversationId)}/confirm`, { confirmation: "GO" }),
+  cancel: (organizationId: string, conversationId: string) => aiMutation<AiPendingCommand>(organizationId, `/conversations/${encodeURIComponent(conversationId)}/cancel`, {}),
 };
 export const taxSettingsApi = {
   get: (organizationId: string) => request<SalesTaxSettings>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/sales-tax`),

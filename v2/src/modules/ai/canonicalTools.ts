@@ -51,7 +51,7 @@ export const canonicalAiReadDefinitions = (ports: CanonicalAiReadPorts): readonl
   read("invoice.search", "Inspect invoice balance and settlement state.", "invoice.view", ports.invoices),
   read("payment.search", "Inspect payment and refund history; this remains read-only.", "payment.view", ports.payments),
   read("inbound.search", "Inspect bounded inbound-intake queue status.", "inbound.view", ports.inbound),
-  read("pricing.preview", "Request canonical customer/product pricing evidence; never calculate a price.", "product.view", ports.pricingPreview),
+  read("pricing.preview", "Request canonical customer/product pricing evidence; never calculate a price.", "pricing.preview", ports.pricingPreview),
 ]);
 
 export type CanonicalAiCommandPort = Readonly<{

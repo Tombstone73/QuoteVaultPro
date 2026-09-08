@@ -1877,6 +1877,13 @@
       "when": 1788048000119,
       "tag": "0272_v2_ai_safe_tool_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 274,
+      "version": "7",
+      "when": 1788048000120,
+      "tag": "0273_v2_ai_assistant_access_capability",
+      "breakpoints": true
     }
   ]
 }

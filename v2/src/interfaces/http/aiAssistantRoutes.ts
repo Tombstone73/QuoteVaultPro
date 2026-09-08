@@ -3,10 +3,12 @@ import type { AuthenticatedIdentity } from "../../authorization/principalIssuer.
 import type { StaffPrincipal } from "../../authorization/principals.js";
 import type { AiAssistantApplicationService } from "../../modules/ai/assistantApplication.js";
 import type { ApplicationResult } from "../../errors/applicationError.js";
+import type { AiAssistantOrchestrator } from "../../modules/ai/orchestrator.js";
 import type { VerifiedV2PrincipalProvider } from "./quoteRoutes.js";
 
 export type AiAssistantHttpDependencies = Readonly<{
   service: AiAssistantApplicationService;
+  orchestrator?: AiAssistantOrchestrator;
   principals: VerifiedV2PrincipalProvider;
   /** Same trusted server session source used to issue a fresh GO-time principal. */
   identity(request: import("express").Request): Promise<AuthenticatedIdentity | null>;
@@ -23,7 +25,14 @@ export const createAiAssistantRouter = (dependencies: AiAssistantHttpDependencie
   router.get("/conversations",async(req,res)=>{try{return reply(res,await dependencies.service.listConversations(await staff(dependencies,req)));}catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
   router.post("/conversations",async(req,res)=>{try{const r=await dependencies.service.createConversation(await staff(dependencies,req),typeof req.body?.title==="string"?req.body.title:undefined);return reply(res,r);}catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
   router.get("/conversations/:conversationId/messages",async(req,res)=>{try{return reply(res,await dependencies.service.messages(await staff(dependencies,req),req.params.conversationId));}catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
+  router.get("/conversations/:conversationId/pending",async(req,res)=>{try{return reply(res,await dependencies.service.pending(await staff(dependencies,req),req.params.conversationId));}catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
   router.post("/conversations/:conversationId/confirm",async(req,res)=>{try{const identity=await dependencies.identity(req);if(!identity)return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authentication is required."}});return reply(res,await dependencies.service.confirmGo(await staff(dependencies,req),identity,req.params.conversationId,typeof req.body?.confirmation==="string"?req.body.confirmation:""));}catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
   router.post("/conversations/:conversationId/cancel",async(req,res)=>{try{return reply(res,await dependencies.service.cancel(await staff(dependencies,req),req.params.conversationId));}catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
+  router.post("/conversations/:conversationId/turn",async(req,res)=>{try{
+    if(!dependencies.orchestrator)return res.status(503).json({ok:false,error:{code:"RETRYABLE_FAILURE",message:"AI Assistant is not configured for this environment."}});
+    const identity=await dependencies.identity(req);if(!identity)return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authentication is required."}});
+    const message=typeof req.body?.message==="string"?req.body.message:"";
+    return reply(res,await dependencies.orchestrator.turn(await staff(dependencies,req),identity,req.params.conversationId,message));
+  }catch{return res.status(403).json({ok:false,error:{code:"FORBIDDEN",message:"Authenticated staff access is required."}});}});
   return router;
 };

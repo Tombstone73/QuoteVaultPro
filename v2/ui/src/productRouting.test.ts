@@ -104,6 +104,8 @@ assert.deepEqual(readWorkspaceLocation("/routing"), { page: "routing" });
 assert.equal(workspacePath("routing"), "/routing");
 assert.deepEqual(readWorkspaceLocation("/formulas"), { page: "formulas" });
 assert.equal(workspacePath("formulas"), "/formulas");
+assert.deepEqual(readWorkspaceLocation("/assistant"), { page: "assistant" });
+assert.equal(workspacePath("assistant"), "/assistant");
 assert.deepEqual(readWorkspaceLocation("/"), { page: "home" });
 assert.deepEqual(readWorkspaceLocation("/appearance"), { page: "appearance" });
 assert.deepEqual(readWorkspaceLocation("/settings"), { page: "settings" });

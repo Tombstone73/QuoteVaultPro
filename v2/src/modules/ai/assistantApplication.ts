@@ -13,6 +13,7 @@ export type AiAssistantStore = Readonly<{
   listConversations(organizationId: string, userId: string, limit: number): Promise<readonly AiConversation[]>;
   messages(organizationId: string, userId: string, conversationId: string, limit: number): Promise<readonly AiConversationMessage[]>;
   appendMessage(input: Omit<AiConversationMessage, "id" | "createdAt">): Promise<AiConversationMessage>;
+  setTitleIfMissing(organizationId: string, userId: string, conversationId: string, title: string): Promise<void>;
   cancelOtherPending(organizationId: string, userId: string, conversationId: string, reason: string): Promise<void>;
   createPending(input: AiPendingCommand): Promise<AiPendingCommand>;
   pending(organizationId: string, userId: string, conversationId: string): Promise<AiPendingCommand | null>;
@@ -42,18 +43,27 @@ export class AiAssistantApplicationService {
     if (isAiHardDenied(handler.name) || this.commands.has(handler.name)) throw new V2ApplicationError("VALIDATION_ERROR", "Invalid or duplicate AI command registration.");
     this.commands.set(handler.name, handler);
   }
+  listCommands(): readonly Readonly<{ name: string; capability: import("../../authorization/capabilities.js").Capability }>[] {
+    return [...this.commands.values()].map((command) => ({ name: command.name, capability: command.capability }));
+  }
+  private assertAssistantAccess(principal: StaffPrincipal): void {
+    if (!this.authority.decide(principal, { capability: "assistant.use", resource: { organizationId: principal.organizationId } }).allowed)
+      throw new V2ApplicationError("FORBIDDEN", "The signed-in user does not have AI Assistant access.");
+  }
   async createConversation(principal: StaffPrincipal, title?: string): Promise<ApplicationResult<AiConversation>> {
-    try { return success(await this.store.createConversation({ id: randomUUID(), organizationId: principal.organizationId, userId: principal.userId, ...(title?.trim()?{title:title.trim().slice(0,160)}:{}) })); }
+    try { this.assertAssistantAccess(principal); return success(await this.store.createConversation({ id: randomUUID(), organizationId: principal.organizationId, userId: principal.userId, ...(title?.trim()?{title:title.trim().slice(0,160)}:{}) })); }
     catch { return failure(new V2ApplicationError("INTERNAL_ERROR", "AI conversation could not be created.")); }
   }
-  async listConversations(principal: StaffPrincipal): Promise<ApplicationResult<readonly AiConversation[]>> { try { return success(await this.store.listConversations(principal.organizationId, principal.userId, 100)); } catch { return failure(new V2ApplicationError("INTERNAL_ERROR", "AI conversations are unavailable.")); } }
-  async messages(principal: StaffPrincipal, conversationId: string): Promise<ApplicationResult<readonly AiConversationMessage[]>> { try { return success(await this.store.messages(principal.organizationId, principal.userId, conversationId, 200)); } catch { return failure(new V2ApplicationError("INTERNAL_ERROR", "AI conversation messages are unavailable.")); } }
+  async listConversations(principal: StaffPrincipal): Promise<ApplicationResult<readonly AiConversation[]>> { try { this.assertAssistantAccess(principal); return success(await this.store.listConversations(principal.organizationId, principal.userId, 100)); } catch (cause) { return failure(cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "AI conversations are unavailable.")); } }
+  async messages(principal: StaffPrincipal, conversationId: string): Promise<ApplicationResult<readonly AiConversationMessage[]>> { try { this.assertAssistantAccess(principal); return success(await this.store.messages(principal.organizationId, principal.userId, conversationId, 200)); } catch (cause) { return failure(cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "AI conversation messages are unavailable.")); } }
+  async pending(principal: StaffPrincipal, conversationId: string): Promise<ApplicationResult<AiPendingCommand | null>> { try { this.assertAssistantAccess(principal); return success(await this.store.pending(principal.organizationId, principal.userId, conversationId)); } catch (cause) { return failure(cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "AI command state is unavailable.")); } }
   async read(context: AiExecutionContext, toolName: string, input: unknown): Promise<ApplicationResult<unknown>> {
-    try { const result=await this.tools.executeRead(context,toolName,input); await this.store.audit({organizationId:context.organizationId,userId:context.user.userId,conversationId:context.conversationId,eventType:"ai_tool_read",toolName,result:"succeeded",detail:{requestId:context.requestId}}); return success(result); }
+    try { this.assertAssistantAccess(context.user); const result=await this.tools.executeRead(context,toolName,input); await this.store.audit({organizationId:context.organizationId,userId:context.user.userId,conversationId:context.conversationId,eventType:"ai_tool_read",toolName,result:"succeeded",detail:{requestId:context.requestId}}); return success(result); }
     catch (cause) { const error=cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","AI read failed."); await this.store.audit({organizationId:context.organizationId,userId:context.user.userId,conversationId:context.conversationId,eventType:"ai_tool_read",toolName,result:error.code==="FORBIDDEN"?"denied":"failed",detail:{code:error.code}}); return failure(error); }
   }
   async prepare(context: AiExecutionContext, commandName: string, input: unknown): Promise<ApplicationResult<AiPendingCommand>> {
     try {
+      this.assertAssistantAccess(context.user);
       const command=this.commands.get(commandName); if(!command) throw new V2ApplicationError("NOT_FOUND","This AI command is not supported.");
       if(!this.authority.decide(context.user,{capability:command.capability,resource:{organizationId:context.organizationId}}).allowed) throw new V2ApplicationError("FORBIDDEN","The signed-in user cannot prepare this action.");
       const prepared=await command.prepare(context,input);
@@ -72,6 +82,7 @@ export class AiAssistantApplicationService {
   async confirmGo(principal: StaffPrincipal, identity: AuthenticatedIdentity, conversationId: string, confirmation: string): Promise<ApplicationResult<unknown>> {
     let executing: AiPendingCommand | undefined;
     try {
+      this.assertAssistantAccess(principal);
       if (identity.subjectId !== principal.userId)
         throw new V2ApplicationError("FORBIDDEN", "The verified session does not match the AI command owner.");
       if(!isGo(confirmation)) throw new V2ApplicationError("VALIDATION_ERROR","Reply exactly GO to execute the displayed action.");
@@ -98,5 +109,5 @@ export class AiAssistantApplicationService {
       return failure(error);
     }
   }
-  async cancel(principal: StaffPrincipal, conversationId: string): Promise<ApplicationResult<AiPendingCommand>> { try { const pending=await this.store.cancel({organizationId:principal.organizationId,userId:principal.userId,conversationId,now:new Date()}); if(!pending) throw new V2ApplicationError("CONFLICT","There is no pending AI command to cancel."); await this.store.audit({organizationId:principal.organizationId,userId:principal.userId,conversationId,pendingCommandId:pending.id,eventType:"ai_command_cancelled",toolName:pending.commandName,capability:pending.capability,result:"succeeded",detail:{}}); return success(pending); } catch(cause){return failure(cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","AI command could not be cancelled."));} }
+  async cancel(principal: StaffPrincipal, conversationId: string): Promise<ApplicationResult<AiPendingCommand>> { try { this.assertAssistantAccess(principal); const pending=await this.store.cancel({organizationId:principal.organizationId,userId:principal.userId,conversationId,now:new Date()}); if(!pending) throw new V2ApplicationError("CONFLICT","There is no pending AI command to cancel."); await this.store.audit({organizationId:principal.organizationId,userId:principal.userId,conversationId,pendingCommandId:pending.id,eventType:"ai_command_cancelled",toolName:pending.commandName,capability:pending.capability,result:"succeeded",detail:{}}); return success(pending); } catch(cause){return failure(cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","AI command could not be cancelled."));} }
 }

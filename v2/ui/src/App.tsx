@@ -52,6 +52,7 @@ import { PrepressWorkspace } from "./PrepressWorkspace";
 import { ProductionWorkspace } from "./ProductionWorkspace";
 import { FulfillmentWorkspace } from "./FulfillmentWorkspace";
 import { InboundOrdersWorkspace } from "./InboundOrdersWorkspace";
+import { AiAssistantWorkspace } from "./AiAssistantWorkspace";
 import { FinanceWorkspace } from "./FinanceWorkspace";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import { ContactsWorkspace } from "./ContactsWorkspace";
@@ -414,7 +415,7 @@ export const App = ({
       nextPage === "artwork" ||
       nextPage === "proofing" ||
       nextPage === "prepress" ||
-      nextPage === "formulas" || nextPage === "settings"
+      nextPage === "formulas" || nextPage === "assistant" || nextPage === "settings"
     )
       pushWorkspaceLocation(nextPage);
     setPage(nextPage);
@@ -754,6 +755,13 @@ export const App = ({
             setCustomerId(id);
             setPage("customers");
           }}
+        />
+      ) : page === "assistant" ? (
+        <AiAssistantWorkspace
+          organizationId={organizationId}
+          sessionScope={sessionScope}
+          canUse={bootstrap.data?.capabilities.assistantUse === true}
+          csrfReady={Boolean(bootstrap)}
         />
       ) : page === "invoices" || page === "payments" ? (
         <FinanceWorkspace

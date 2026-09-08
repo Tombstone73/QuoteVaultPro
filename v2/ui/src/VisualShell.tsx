@@ -1,6 +1,7 @@
 import React, { type ReactNode, useState } from "react";
 import {
   Activity,
+  Bot,
   Bell,
   Building2,
   ChevronDown,
@@ -38,7 +39,7 @@ import type { UiBootstrap } from "./api";
 import { InventoryWorkspace } from "./InventoryWorkspace";
 import { useAuthSessionControls } from "./AuthGate";
 
-export type V2VisualPage = "home" | "quotes" | "orders" | "inboundOrders" | "customers" | "contacts" | "products" | "productBuilder" | "formulas" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "settings" | "appearance";
+export type V2VisualPage = "home" | "quotes" | "orders" | "inboundOrders" | "customers" | "contacts" | "products" | "productBuilder" | "formulas" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "assistant" | "settings" | "appearance";
 
 type ShellCapabilities = UiBootstrap["capabilities"];
 
@@ -106,6 +107,7 @@ const sections: readonly NavigationSection[] = [
     id: "admin",
     label: "Administration",
     items: [
+      { page: "assistant", label: "AI Assistant", icon: Bot, requiresAny: ["assistantUse"] },
       { href: "/settings?section=staff", label: "Users & Permissions", icon: ShieldCheck, requiresAny: ["permissionsView"] },
       { page: "settings", label: "Settings", icon: Settings, requiresAny: ["pricingConfigure", "organizationConfigure", "numberingConfigure", "communicationsConfigure", "permissionsView"] },
       { page: "appearance", label: "Themes / Appearance", icon: Palette },
