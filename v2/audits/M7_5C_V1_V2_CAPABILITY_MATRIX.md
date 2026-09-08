@@ -17,7 +17,7 @@
 | Pricing | formulas, matrices, route ownership | mutable/global tooling | revisions, typed inputs, server preview, separate route ownership | V2 IMPROVEMENT — KEEP V2 | P1/S-M |
 | Artwork | upload/assign/history | V1 upload/view tooling | canonical PDF upload/assignment/history; no preview/download | PARTIAL — COMPLETE V2 | P1/M |
 | Proofing | issue, send/retry, approval/revision evidence | mutable proof queue/actions | immutable exact-artifact proof versions and durable delivery | V2 IMPROVEMENT — KEEP V2 | P1/M |
-| Proofing | visual review/revision handoff | thumbnail/viewer/batch actions | no authoritative viewer; weak artwork replacement handoff | PARTIAL — COMPLETE V2 | P1/M |
+| Proofing | visual review/revision handoff | thumbnail/viewer/batch actions | private exact-version artifact viewer; canonical Artwork revision handoff; immutable history remains visible | V2 IMPROVEMENT — KEEP V2 | P1 live validation |
 | Prepress | prepare artwork and complete required unit | active prepress workspace | queue/start/complete/assign existing art; no preview, upload/revise, material context, or handoff clarity | PARTIAL — COMPLETE V2 | P0/L |
 | Production | Flatbed/Roll station execution | separate station boards/runs | routed station queue, attempts, material facts, traveler; weak preview/context/batching/touch UX | PARTIAL — COMPLETE V2 | P0/L |
 | Production | calendar/Kanban scheduling | V1 boards/calendar | V2 marks calendar non-authoritative | V1 BEHAVIOR SHOULD NOT RETURN without canonical scheduling model | DEFER |

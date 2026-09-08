@@ -2850,6 +2850,8 @@ export const proofingApi = {
     request<ProofWorkProjection>(
       proofEndpoint(org, `/works/${encodeURIComponent(proofWorkId)}`),
     ),
+  artifactUrl: (org: string, proofVersionId: string, artworkFileId: string) =>
+    proofEndpoint(org, `/versions/${encodeURIComponent(proofVersionId)}/artifacts/${encodeURIComponent(artworkFileId)}/content`),
   start: (
     org: string,
     businessRequestId: string,

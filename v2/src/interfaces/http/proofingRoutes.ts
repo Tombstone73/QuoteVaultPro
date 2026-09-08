@@ -6,6 +6,7 @@ import { type ApplicationResult, V2ApplicationError } from "../../errors/applica
 import type { ProofingMutationResult } from "../../modules/proofing/proofingApplication.js";
 import { brandedId, type OrderId, type ProofWorkId } from "../../modules/shared/commercialValues.js";
 import type { OperationalQueuePageRequest } from "../../modules/shared/operationalQueue.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 
 export interface ProofingHttpService {
   listWorkQueue(context: OperationContext, request?: OperationalQueuePageRequest): Promise<ApplicationResult<unknown>>;
@@ -18,7 +19,7 @@ export interface ProofingHttpService {
   respond(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<ProofingMutationResult>>;
 }
 export interface VerifiedV2ProofingPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
-export type ProofingHttpDependencies = Readonly<{ service: ProofingHttpService; principals: VerifiedV2ProofingPrincipalProvider }>;
+export type ProofingHttpDependencies = Readonly<{ service: ProofingHttpService; principals: VerifiedV2ProofingPrincipalProvider; artifacts?: Readonly<{ file(organizationId: string, proofVersionId: string, artworkFileId: string): Promise<Readonly<{ filename: string; contentType: string; bytes: Buffer }>> }> }>;
 const status=(code:string)=>code==="VALIDATION_ERROR"?400:code==="FORBIDDEN"?403:code==="NOT_FOUND"||code==="WRONG_TENANT"?404:code==="CONFLICT"||code==="STALE_STATE"||code==="IDEMPOTENCY_CONFLICT"?409:code==="RETRYABLE_FAILURE"?503:500;
 const send=(response:Response,result:ApplicationResult<unknown>)=>{if(!result.ok)return response.status(status(result.error.code)).json({ok:false,error:{code:result.error.code,message:result.error.publicMessage}});return response.status(200).json({ok:true,data:result.value});};
 const body=(value:unknown):Readonly<Record<string,unknown>>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new V2ApplicationError("VALIDATION_ERROR","A Proofing command object is required.");return value as Readonly<Record<string,unknown>>;};
@@ -32,6 +33,13 @@ export const createProofingRouter=(dependencies:ProofingHttpDependencies):Router
   router.get("/orders/:orderId/works",(request,response)=>void run(response,async()=>dependencies.service.listOrderWorks(await context(request,dependencies),brandedId<"OrderId">(request.params.orderId))));
   router.get("/works",(request,response)=>void run(response,async()=>dependencies.service.listWorkQueue(await context(request,dependencies),pageRequest(request))));
   router.get("/works/:proofWorkId",(request,response)=>void run(response,async()=>dependencies.service.getWork(await context(request,dependencies),request.params.proofWorkId as ProofWorkId)));
+  router.get("/versions/:proofVersionId/artifacts/:artworkFileId/content",async(request,response)=>{try{
+    if(!dependencies.artifacts)throw new V2ApplicationError("NOT_FOUND","Proof artifact delivery is unavailable.");
+    const organizationId=(request.params as Record<string,string>).organizationId,principal=await dependencies.principals.principal(request,organizationId);
+    if(!new AuthorityPolicy().decide(principal,{capability:"proof.view",resource:{organizationId}}).allowed)throw new V2ApplicationError("FORBIDDEN","Proof artifact access is unavailable.");
+    const artifact=await dependencies.artifacts.file(organizationId,request.params.proofVersionId,request.params.artworkFileId),filename=artifact.filename.replace(/["\\\r\n]/gu,"");
+    response.status(200).setHeader("content-type",artifact.contentType);response.setHeader("content-disposition",`inline; filename="${filename}"`);response.setHeader("cache-control","private, no-store");response.send(artifact.bytes);
+  }catch(cause){const error=cause instanceof V2ApplicationError?cause:new V2ApplicationError("INTERNAL_ERROR","Proof artifact is unavailable.");response.status(status(error.code)).json({ok:false,error:{code:error.code,message:error.publicMessage}});}});
   router.post("/works",(request,response)=>void run(response,async()=>dependencies.service.start(await context(request,dependencies,true),body(request.body))));
   router.post("/works/:proofWorkId/versions", (request,response) => void run(response, async () => dependencies.service.createVersion(await context(request,dependencies,true), {...body(request.body),proofWorkId:request.params.proofWorkId})));
   router.post("/versions/:proofVersionId/issue", (request,response) => void run(response, async () => dependencies.service.issue(await context(request,dependencies,true), {...body(request.body),proofVersionId:request.params.proofVersionId})));

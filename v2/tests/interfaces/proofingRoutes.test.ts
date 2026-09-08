@@ -54,6 +54,11 @@ const app = (principal: StaffPrincipal, calls: unknown[] = []) => express().use(
         return { ok: true as const, value: { work, response: { proofResponseId: "response-a" } } };
       },
     },
+    artifacts: { file: async (organizationId, proofVersionId, artworkFileId) => {
+      calls.push({ kind: "artifact", organizationId, proofVersionId, artworkFileId });
+      if (proofVersionId !== "version-a" || artworkFileId !== "file-a") throw new V2ApplicationError("NOT_FOUND", "Proof artifact was not found.");
+      return { filename: "proof.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") };
+    } },
   } satisfies ProofingHttpDependencies),
 );
 
@@ -95,5 +100,15 @@ describe("Proofing HTTP transport", () => {
     });
     await request(server).post("/v2/organizations/org-a/proofing/versions/version-a/delivery/retry").send({businessRequestId:"retry-a"}).expect(200);
     expect(calls.find((call)=>call.kind==="retryDelivery")).toMatchObject({input:{businessRequestId:"retry-a",proofVersionId:"version-a"}});
+  });
+
+  test("streams only the immutable artifact bound to the requested Proof Version", async () => {
+    const calls: any[] = [];
+    const server = app(staff("org-a"), calls);
+    const response = await request(server).get("/v2/organizations/org-a/proofing/versions/version-a/artifacts/file-a/content").expect(200);
+    expect(response.headers["content-type"]).toMatch(/application\/pdf/u);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(calls.find((call) => call.kind === "artifact")).toMatchObject({ organizationId: "org-a", proofVersionId: "version-a", artworkFileId: "file-a" });
+    await request(server).get("/v2/organizations/org-a/proofing/versions/version-a/artifacts/foreign/content").expect(404);
   });
 });

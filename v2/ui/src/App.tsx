@@ -637,6 +637,13 @@ export const App = ({
             setArtworkLineId("");
             setPage("artwork");
           }}
+          openArtworkContext={(id, selectedLineId) => {
+            pushArtworkLocation(id, selectedLineId);
+            setArtworkFileId("");
+            setArtworkOrderId(id);
+            setArtworkLineId(selectedLineId);
+            setPage("artwork");
+          }}
         />
       ) : page === "prepress" ? (
         <PrepressWorkspace

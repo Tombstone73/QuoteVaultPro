@@ -44,6 +44,7 @@ import { startV2InvoiceEmailDeliveryWorker } from "../../infrastructure/communic
 import { startV2ProofEmailDeliveryWorker } from "../../infrastructure/communications/proofEmailDeliveryQueue.js";
 import { resolveV2MutationWorkerStartup } from "./mutationWorkerStartup.js";
 import { PostgresPortalProofRead } from "../../infrastructure/proofing/postgresPortalProofRead.js";
+import { PostgresProofArtifactRead } from "../../infrastructure/proofing/postgresProofArtifactRead.js";
 import { PostgresPortalCommercialRead } from "../../infrastructure/portal/postgresPortalCommercialRead.js";
 import { PostgresPortalOrderIdentityRead } from "../../infrastructure/portal/postgresPortalOrderIdentity.js";
 import { V2ApplicationError } from "../errors/applicationError.js";
@@ -96,7 +97,8 @@ export const createV2DeploymentApp = (
     new PostgresPortalArtworkOwnershipRead(pool),
     artwork.dependencies.upload,
   );
-  const proofing = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const proofingRuntime = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const proofing = { ...proofingRuntime, dependencies: { ...proofingRuntime.dependencies, artifacts: new PostgresProofArtifactRead(pool, { file: async (organizationId, artworkFileId) => artwork.dependencies.delivery?.file(organizationId, artworkFileId) ?? null }) } };
   const prepress = composeAuthenticatedPrepressRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new ProductionApplicationService(new PostgresProductionTransactionRunner(pool), undefined, orderLifecycle) });
   const fulfillment = composeAuthenticatedFulfillmentRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new FulfillmentApplicationService(new PostgresFulfillmentTransactionRunner(pool), undefined, orderLifecycle) });
