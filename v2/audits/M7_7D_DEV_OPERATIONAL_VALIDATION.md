@@ -2,7 +2,7 @@
 
 ## Scope and safety
 
-Starting source was `03a8628d2a9b8a5c38d9832621610b6a74d3b49f` on `dev`. The active Railway DEV deployment at validation start was successful and served that commit. An authenticated staff session loaded the DEV Orders workboard with paging and operational projections.
+Starting source was `03a8628d2a9b8a5c38d9832621610b6a74d3b49f` on `dev`. The active Railway DEV deployment at validation start was successful and served that commit. After the repair, Railway deployment `57787bed-e6b1-4bc6-83e7-c922609f8edb` successfully served source commit `e9c441cf93aa89815299b9473abb14de3584104d`. An authenticated staff session loaded the DEV Orders workboard with paging and operational projections.
 
 No production resource was contacted or mutated. No provider write was attempted. No M7.7D business fixture was created: the deployed dedicated-QA provisioner requires explicit environment-only enablement and an expected QA organization/credentials, and no safe fixture creator for the wider Product/Order workflow matrix exists. Existing historical QA records were observed but not modified, deleted, or repurposed.
 

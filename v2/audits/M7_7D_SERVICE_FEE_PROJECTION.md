@@ -20,4 +20,4 @@ No lifecycle, commercial, financial, migration, or Fulfillment mutation authorit
 - Existing Fulfillment supply, Order lifecycle, and anomaly-presentation tests passed.
 - V2 server/UI type checks, import boundaries, and production UI build passed.
 
-DEV source deployment/revalidation is recorded separately. A live service-fee fixture was not created because the dedicated DEV QA provisioner is not configured for this session; no existing QA record was repurposed.
+Railway DEV deployment `57787bed-e6b1-4bc6-83e7-c922609f8edb` successfully served the repair commit `e9c441cf93aa89815299b9473abb14de3584104d`. A live service-fee fixture was not created because the dedicated DEV QA provisioner is not configured for this session; no existing QA record was repurposed.
