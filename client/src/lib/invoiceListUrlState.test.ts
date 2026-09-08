@@ -20,4 +20,13 @@ describe("Invoice list URL state", () => {
     const next = updateInvoiceListUrlState(new URLSearchParams("customerId=customer-1&sendStatus=never_sent&accountingApproval=not_approved"), { sendStatus: undefined });
     expect(next.toString()).toBe("customerId=customer-1&accountingApproval=not_approved");
   });
+
+  it("uses an explicit valid URL sort but marks an absent or invalid sort for preference fallback", () => {
+    expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=balance&sortDir=asc"))).toMatchObject({
+      hasExplicitSort: true, sortKey: "balance", sortDir: "asc",
+    });
+    expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=not-real&sortDir=asc"))).toMatchObject({
+      hasExplicitSort: false, sortKey: "issueDate", sortDir: "desc",
+    });
+  });
 });

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, ShieldCheck, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import { INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { DEFAULT_INVOICE_LIST_SORT_PREFERENCES, clearPersistedInvoiceListSortPreferences, persistInvoiceListSortPreferences, readPersistedInvoiceListSortPreferences } from "@/lib/invoiceListSortPreferences";
 import { CustomerSelect } from "@/components/CustomerSelect";
 import {
   Page,
@@ -96,8 +97,17 @@ export default function InvoicesListPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
+  const [sortPreferenceRevision, setSortPreferenceRevision] = useState(0);
   const listState = useMemo(() => parseInvoiceListUrlState(searchParams), [searchParams]);
-  const { search, status: statusFilter, customerId, customerName, issueDatePreset: storedIssueDatePreset, sortKey, sortDir, page, pageSize, columnFilters } = listState;
+  const { search, status: statusFilter, customerId, customerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters } = listState;
+  const preferredSort = useMemo(
+    () => user?.id
+      ? readPersistedInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null)
+      : DEFAULT_INVOICE_LIST_SORT_PREFERENCES,
+    [sortPreferenceRevision, user?.id, user?.lastActiveOrgId],
+  );
+  const sortKey = hasExplicitSort ? listState.sortKey : preferredSort.sortKey;
+  const sortDir = hasExplicitSort ? listState.sortDir : preferredSort.sortDir;
   const updateListState = (changes: Record<string, string | undefined>, resetPage = false) => {
     setSearchParams((current) => updateInvoiceListUrlState(current, changes, resetPage), { replace: true });
   };
@@ -251,8 +261,24 @@ export default function InvoicesListPage() {
 
   const handleSort = (key: InvoiceSortKey) => {
     const next = getNextInvoiceSortState({ sortKey, sortDir }, key);
+    if (user?.id) {
+      persistInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null, { version: 1, sortKey: next.sortKey, sortDir: next.sortDir });
+      setSortPreferenceRevision((current) => current + 1);
+    }
     updateListState({ sortBy: next.sortKey, sortDir: next.sortDir }, true);
   };
+
+  const resetSort = () => {
+    if (user?.id) {
+      clearPersistedInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null);
+      setSortPreferenceRevision((current) => current + 1);
+    }
+    updateListState({ sortBy: undefined, sortDir: undefined }, true);
+  };
+
+  const hasNonDefaultSort = hasExplicitSort
+    || sortKey !== DEFAULT_INVOICE_LIST_SORT_PREFERENCES.sortKey
+    || sortDir !== DEFAULT_INVOICE_LIST_SORT_PREFERENCES.sortDir;
 
   const renderSortIcon = (key: InvoiceSortKey) => {
     if (sortKey !== key) return <ArrowUpDown className="h-3.5 w-3.5 opacity-50" />;
@@ -501,7 +527,11 @@ export default function InvoicesListPage() {
                   Filters{activeFilters.length ? ` (${activeFilters.length})` : ""}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-[min(680px,calc(100vw-2rem))] max-h-[calc(100vh-8rem)] overflow-y-auto" align="end">
+              <PopoverContent
+                className="w-[min(680px,calc(100vw-2rem))] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto overscroll-contain"
+                align="end"
+                collisionPadding={16}
+              >
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
                     <div className="font-medium">Column filters</div>
@@ -539,6 +569,9 @@ export default function InvoicesListPage() {
                 </div>
               </PopoverContent>
             </Popover>
+            <Button type="button" variant="outline" size="sm" className="gap-2" onClick={resetSort} disabled={!hasNonDefaultSort} aria-label="Reset global Invoice sort preference">
+              <RotateCcw className="h-4 w-4" />Reset sort
+            </Button>
             <Button
               type="button"
               variant={showTotals ? "secondary" : "outline"}

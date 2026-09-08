@@ -70,6 +70,21 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("sendStatus");
   });
 
+  it("keeps a user-scoped global Invoice sort preference while allowing an explicit URL override", () => {
+    expect(invoicesPageSource).toContain("readPersistedInvoiceListSortPreferences");
+    expect(invoicesPageSource).toContain("persistInvoiceListSortPreferences");
+    expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortKey : preferredSort.sortKey");
+    expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortDir : preferredSort.sortDir");
+    expect(invoicesPageSource).toContain("Reset sort");
+    expect(invoicesPageSource).toContain("clearPersistedInvoiceListSortPreferences");
+  });
+
+  it("keeps the global filter popover within Radix's available viewport height", () => {
+    expect(invoicesPageSource).toContain("--radix-popover-content-available-height");
+    expect(invoicesPageSource).toContain("overflow-y-auto overscroll-contain");
+    expect(invoicesPageSource).toContain("collisionPadding={16}");
+  });
+
   it("keeps the hardened summary and pagination contract instead of rendering fallback zero totals", () => {
     expect(invoiceHooksSource).toContain("if (!data.summary || !data.pagination)");
     expect(invoiceHooksSource).toContain("Invoice dashboard data is unavailable");

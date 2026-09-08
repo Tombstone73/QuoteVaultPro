@@ -1,5 +1,5 @@
 import type { InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
-import type { InvoiceSortDir, InvoiceSortKey } from "@/lib/invoiceListSort";
+import { getDefaultInvoiceSortDir, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
 
 export const INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS: Array<keyof InvoiceListColumnFilterQuery> = [
   "customer", "contact", "jobName", "purchaseOrderNumber", "columnOrderNumber", "invoiceNumber",
@@ -18,6 +18,7 @@ export type InvoiceListUrlState = {
   customerId: string | undefined;
   customerName: string | undefined;
   issueDatePreset: "custom" | undefined;
+  hasExplicitSort: boolean;
   sortKey: InvoiceSortKey;
   sortDir: InvoiceSortDir;
   page: number;
@@ -44,6 +45,8 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     return result;
   }, {});
   const requestedSort = read(params, "sortBy");
+  const hasExplicitSort = SORT_KEYS.includes(requestedSort as InvoiceSortKey);
+  const sortKey = hasExplicitSort ? requestedSort as InvoiceSortKey : "issueDate";
   const requestedPageSize = positiveInteger(read(params, "pageSize"), 50);
 
   return {
@@ -52,8 +55,11 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     customerId: read(params, "customerId"),
     customerName: read(params, "customerName"),
     issueDatePreset: read(params, "issueDatePreset") === "custom" ? "custom" : undefined,
-    sortKey: SORT_KEYS.includes(requestedSort as InvoiceSortKey) ? requestedSort as InvoiceSortKey : "issueDate",
-    sortDir: read(params, "sortDir") === "asc" ? "asc" : "desc",
+    hasExplicitSort,
+    sortKey,
+    sortDir: hasExplicitSort && (read(params, "sortDir") === "asc" || read(params, "sortDir") === "desc")
+      ? read(params, "sortDir") as InvoiceSortDir
+      : getDefaultInvoiceSortDir(sortKey),
     page: positiveInteger(read(params, "page"), 1),
     pageSize: [25, 50, 100].includes(requestedPageSize) ? requestedPageSize : 50,
     columnFilters,
