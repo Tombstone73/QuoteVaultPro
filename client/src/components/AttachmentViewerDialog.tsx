@@ -170,7 +170,9 @@ export function AttachmentViewerDialog({
   hideFilmstrip = true,
   showMetaPanel = false,
 }: AttachmentViewerDialogProps) {
-  const isDev = import.meta.env.DEV;
+  // Avoid coupling PDF rendering to Vite's `import.meta` in non-browser test
+  // environments; this only controls optional diagnostic logging.
+  const isDev = typeof process !== "undefined" && process.env.NODE_ENV !== "production";
   const [selectedIndex, setSelectedIndex] = useState(initialIndex);
   const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
   const [imagePreviewLoading, setImagePreviewLoading] = useState(false);
@@ -414,8 +416,16 @@ export function AttachmentViewerDialog({
 
         pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
+        const pdfBytes = new Uint8Array(await pdfBlob.arrayBuffer());
+        // Do not pass a successful-but-wrong authenticated response (for
+        // example HTML or JSON) into PDF.js and leave the viewer ambiguous.
+        const pdfHeader = new TextDecoder("ascii").decode(pdfBytes.slice(0, Math.min(pdfBytes.length, 1024)));
+        if (!pdfHeader.includes("%PDF-")) {
+          throw new Error("The artwork response did not contain a valid PDF.");
+        }
+
         const loadingTask = pdfjs.getDocument({
-          data: new Uint8Array(await pdfBlob.arrayBuffer()),
+          data: pdfBytes,
           cMapUrl: pdfCMapUrl,
           cMapPacked: true,
           standardFontDataUrl: pdfStandardFontDataUrl,
@@ -609,7 +619,10 @@ export function AttachmentViewerDialog({
         pdfRenderTaskRef.current = null;
       }
     };
-  }, [currentAttachment?.id, fileName, isPdf, open, pdfDocument, pdfFitMode, pdfPageCount, pdfPageNumber, pdfRenderedScale, pdfRotation, pdfSourceKind, pdfSourceUrl, pdfStageSize, pdfZoomLevel]);
+  // `pdfLoading` is deliberately a dependency: while it is true the canvas
+  // is not mounted. Without this, the first render exits with a null canvas
+  // and never retries after the loading placeholder is replaced by canvas.
+  }, [currentAttachment?.id, fileName, isPdf, open, pdfDocument, pdfFitMode, pdfLoading, pdfPageCount, pdfPageNumber, pdfRotation, pdfSourceKind, pdfSourceUrl, pdfStageSize, pdfZoomLevel]);
 
   if (!currentAttachment) return null;
 
@@ -766,7 +779,7 @@ export function AttachmentViewerDialog({
         <p className="text-sm font-medium">{pdfError ? "PDF preview unavailable" : !pdfViewUrl ? "PDF preview unavailable" : "Preview may be disabled by your browser"}</p>
         <p className="max-w-md text-xs text-muted-foreground">
           {pdfError
-            ? pdfError
+            ? "Unable to render PDF preview. Download the original file to view it."
             : !pdfViewUrl
             ? "Missing file reference. Download the file to view it."
             : "Some browsers block embedded PDFs. Download the file or open it in a new tab instead."}
@@ -854,7 +867,7 @@ export function AttachmentViewerDialog({
             {pdfLoading ? (
               <div className="text-sm text-muted-foreground">Loading PDF…</div>
             ) : (
-              <canvas ref={pdfCanvasRef} className="block shrink-0 rounded-md bg-white shadow-2xl" />
+              <canvas ref={pdfCanvasRef} data-testid="attachment-viewer-pdf-canvas" className="block shrink-0 rounded-md bg-white shadow-2xl" />
             )}
           </div>
         </div>

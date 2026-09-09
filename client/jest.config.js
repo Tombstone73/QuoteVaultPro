@@ -47,6 +47,9 @@ export default {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/client/src/$1',
     '^@shared/(.*)$': '<rootDir>/shared/$1',
+    '^pdfjs-dist/legacy/build/pdf\\.worker\\.min\\.mjs\\?url$': '<rootDir>/client/test/pdfWorkerUrl.ts',
+    '^pdfjs-dist/cmaps/78-EUC-H\\.bcmap\\?url$': '<rootDir>/client/test/pdfCMapUrl.ts',
+    '^pdfjs-dist/standard_fonts/FoxitFixed\\.pfb\\?url$': '<rootDir>/client/test/pdfStandardFontUrl.ts',
 
     // Support TS "nodeNext" style relative imports that end in .js
     '^(\\.{1,2}/.*)\\.js$': '$1',
