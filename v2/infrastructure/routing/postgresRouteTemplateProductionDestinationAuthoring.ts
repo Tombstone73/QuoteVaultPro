@@ -29,7 +29,7 @@ class Transaction implements RouteTemplateProductionDestinationTransaction {
   attribute(input: Parameters<RouteTemplateProductionDestinationTransaction["attribute"]>[0]) { return this.requests.recordAttribution(this.client, { organizationId: input.organizationId, operationRequestId: input.requestId, operation: input.operation, resourceType: "route_template_production_destination", resourceId: input.resourceId, principalKind: input.principalKind, principalSubject: input.principalSubject, staffActorUserId: input.staffActorUserId }); }
   async audit(input: Parameters<RouteTemplateProductionDestinationTransaction["audit"]>[0]) {
     await this.client.query(
-      "INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,'route_template_production_destination_set','route_template_production_destination',$4,$5,$6,$7,$8,$9::jsonb)",
+      "INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,'route_template_production_destination_set','route_template_production_destination',$4,$5,$6,$7,$8::jsonb)",
       [input.organizationId, input.requestId, input.operation, input.resourceId, input.principalKind, input.principalSubject, input.staffActorUserId ?? null, JSON.stringify([{ routeTemplateId: input.destination.routeTemplateId, routeTemplateStepId: input.destination.routeTemplateStepId, stationKey: input.destination.stationKey, ...(input.previousStationKey ? { previousStationKey: input.previousStationKey } : {}) }])],
     );
   }
