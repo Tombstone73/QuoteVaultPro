@@ -134,6 +134,7 @@ assert.ok(salesSql.some((sql) => sql.includes("$6::timestamptz") && sql.includes
 assert.ok(salesSql.some((sql) => sql.includes("$6::text='archived'") && sql.includes("$7::timestamptz") && sql.includes("LIMIT $10")), "Order archive scope must remain server-backed before bounded pagination");
 assert.ok(salesSql.some((sql) => sql.includes("$11::text IN ('flatbed','roll')") && sql.includes("LIMIT $10")), "operational filtering must be part of the source SQL before the keyset page limit");
 assert.ok(salesSql.some((sql) => sql.includes("l.quantity AND NOT EXISTS") && sql.includes("WHERE r.organization_id=l.organization_id")), "ready-for-fulfillment keeps the line alias inside its correlated eligibility subquery");
+assert.ok(salesSql.some((sql) => sql.includes("fulfillment_line_count") && sql.includes("IS DISTINCT FROM 'service_fee'")), "service-fee lines are excluded from Orders Workspace fulfillment obligations");
 assert.ok(salesSql.some((sql) => !sql.includes("cursor_updated_at") && sql.includes("$7::text='all'") && !sql.includes("$11::text")), "summary queries renumber the operational filter against their contiguous parameter set");
 assert.ok(salesSql.every((sql) => !sql.includes("COALESCE(q.created_at,now())") && !sql.includes("COALESCE(o.updated_at,o.created_at,now())")), "resumable sort keys must not use now()");
 const balanced = (sql: string) => {
