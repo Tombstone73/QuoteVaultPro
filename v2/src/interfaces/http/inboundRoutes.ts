@@ -12,6 +12,7 @@ import {
   type ReviewInboundIntake,
 } from "../../modules/inbound/contracts.js";
 import { brandedId, type InboundIntakeId } from "../../modules/shared/commercialValues.js";
+import { isM77fQaDevTarget } from "../../../infrastructure/communications/m77fQaProofDeliverySafety.js";
 
 export interface InboundHttpService {
   ingest(context: OperationContext, input: import("../../modules/inbound/contracts.js").IngestInboundIntake): Promise<ApplicationResult<InboundIntake>>;
@@ -103,16 +104,13 @@ const listQuery = (request: Request) => {
   if (state && state !== "all" && !(inboundIntakeStates as readonly string[]).includes(state)) throw new V2ApplicationError("VALIDATION_ERROR", "Inbound status is invalid.");
   return { limit: Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 100)) : 25, ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}), ...(state && state !== "all" ? { status: state as (typeof inboundIntakeStates)[number] } : {}), ...(typeof request.query.q === "string" ? { search: request.query.q } : {}) };
 };
-const M77F_QA_ORG = "b6f969b2-dda3-4133-9d75-c417dabb8f3a";
 const asIsoTimestamp = (value: unknown, label: string): string => {
   const parsed = asString(value, label, true)!;
   if (Number.isNaN(Date.parse(parsed))) throw new V2ApplicationError("VALIDATION_ERROR", label + " is invalid.");
   return parsed;
 };
 const assertSyntheticQaIngress = (organizationId:string):void => {
-  const env=process.env;
-  const allowed=env.NODE_ENV === "test" || (env.NODE_ENV === "production" && env.APP_ENV?.toLowerCase() === "development" && env.RAILWAY_PROJECT_NAME === "PrintersHero-DEV" && env.RAILWAY_ENVIRONMENT_NAME === "Development");
-  if (!allowed || organizationId !== M77F_QA_ORG) throw new V2ApplicationError("FORBIDDEN","Synthetic inbound is restricted to M7 QA DEV validation.");
+  if (!isM77fQaDevTarget(organizationId)) throw new V2ApplicationError("FORBIDDEN","Synthetic inbound is restricted to M7 QA DEV validation.");
 };
 
 /** Mounted only by the V2 authenticated host. Source ingestion is deliberately not a browser route. */

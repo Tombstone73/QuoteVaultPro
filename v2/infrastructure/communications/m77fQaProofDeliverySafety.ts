@@ -17,8 +17,12 @@ const databaseIsVerifiedDev = (environment: Environment): boolean => {
   }
 };
 
-/** Fail closed for local, PROD, unknown Railway targets, and every non-QA org. */
-export const shouldSuppressM77fQaProofDelivery = (
+/**
+ * The one exact deployment/tenant identity that is allowed to use M7.7F QA
+ * seams.  Keep this predicate small and reusable so every seam proves the
+ * same database target rather than relying on deployment labels alone.
+ */
+export const isM77fQaDevTarget = (
   organizationId: string,
   environment: Environment = process.env,
 ): boolean =>
@@ -28,6 +32,12 @@ export const shouldSuppressM77fQaProofDelivery = (
   environment.RAILWAY_PROJECT_NAME === "PrintersHero-DEV" &&
   environment.RAILWAY_ENVIRONMENT_NAME === "Development" &&
   databaseIsVerifiedDev(environment);
+
+/** Fail closed for local, PROD, unknown Railway targets, and every non-QA org. */
+export const shouldSuppressM77fQaProofDelivery = (
+  organizationId: string,
+  environment: Environment = process.env,
+): boolean => isM77fQaDevTarget(organizationId, environment);
 
 /** The Portal setup seam shares the exact deployment and tenant boundary as
  * the Proof delivery seam.  It is intentionally a predicate only: the Team

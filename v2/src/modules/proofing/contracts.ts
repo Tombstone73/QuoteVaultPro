@@ -1,10 +1,11 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, ProofResponseId, ProofVersionId, ProofWorkId } from "../shared/commercialValues.js";
+import type { SuppressedDeliveryState } from "../shared/deliveryStates.js";
 
 /** Proofing owns review history, never Artwork identity or Route state. */
 export type ProofOutcome = "approved" | "revision_requested";
 export type ProofResponseOrigin = "direct" | "staff_recorded_customer";
-export type ProofDeliveryState = "queued" | "processing" | "retry_wait" | "sent" | "failed" | "ambiguous";
+export type ProofDeliveryState = "queued" | "processing" | "retry_wait" | "sent" | "failed" | "ambiguous" | SuppressedDeliveryState;
 export type ProofRecipient = Readonly<{ contactId: string; displayName: string; email: string }>;
 export type ProofDelivery = Readonly<{
   jobId: string; recipient: ProofRecipient; state: ProofDeliveryState; attemptCount: number;

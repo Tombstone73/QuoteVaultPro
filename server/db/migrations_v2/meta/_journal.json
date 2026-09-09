@@ -1884,6 +1884,13 @@
       "when": 1788048000120,
       "tag": "0273_v2_ai_assistant_access_capability",
       "breakpoints": true
+    },
+    {
+      "idx": 275,
+      "version": "7",
+      "when": 1788048000121,
+      "tag": "0274_v2_suppressed_delivery_evidence",
+      "breakpoints": true
     }
   ]
 }

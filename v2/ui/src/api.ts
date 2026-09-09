@@ -1271,7 +1271,7 @@ export type ProofWorkProjection = Readonly<{
   versions: readonly Readonly<{
     version: ProofVersion;
     response?: ProofResponse;
-    delivery?: Readonly<{ jobId:string;recipient:Readonly<{contactId:string;displayName:string;email:string}>;state:"queued"|"processing"|"retry_wait"|"sent"|"failed"|"ambiguous";attemptCount:number;providerMessageId?:string;deliveredAt?:string;lastError?:string }>;
+    delivery?: Readonly<{ jobId:string;recipient:Readonly<{contactId:string;displayName:string;email:string}>;state:"queued"|"processing"|"retry_wait"|"sent"|"failed"|"ambiguous"|"suppressed";attemptCount:number;providerMessageId?:string;deliveredAt?:string;lastError?:string }>;
   }>[];
   recipients: readonly Readonly<{contactId:string;displayName:string;email:string}>[];
 }>;
@@ -1289,7 +1289,7 @@ export type ProofQueueItem = Readonly<{
     sequence: number;
     issuedAt?: string;
     outcome?: "approved" | "revision_requested";
-    deliveryState?:"queued"|"processing"|"retry_wait"|"sent"|"failed"|"ambiguous";
+    deliveryState?:"queued"|"processing"|"retry_wait"|"sent"|"failed"|"ambiguous"|"suppressed";
   }>;
 }>;
 export type PrepressUnit = Readonly<{
