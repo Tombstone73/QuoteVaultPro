@@ -2,13 +2,13 @@ import type { Express } from "express";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
+import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
 import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
-import { recomputeOrderBillingStatus, resolveInvoiceFinancialEligibility } from "../services/orderBillingService";
+import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
 import { getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
@@ -20,7 +20,6 @@ import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "../../shared/paymentProviderResolution";
 import { emailService } from "../emailService";
 import { storage } from "../storage";
-import { isCanceledOrder } from "../../shared/operationalState";
 import { getPaymentSettings } from "../services/payments/paymentProvider.service";
 import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.service";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
@@ -2362,40 +2361,17 @@ export async function registerMvpInvoicingRoutes(
       const { orderId } = req.params;
       const { terms, customDueDate } = req.body || {};
 
-      const [order] = await db
-        .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
-        .from(orders)
-        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-        .limit(1);
-      if (!order) return res.status(404).json({ error: "Order not found" });
-      if (isCanceledOrder(order)) {
-        return res.status(409).json({ error: "Cannot create an invoice from a cancelled order", code: "ORDER_CANCELLED" });
-      }
+      const result = await canonicalInvoiceOperations.createFirstOrderBackedInvoice({
+        organizationId,
+        actorUserId: userId,
+        orderId,
+        terms: terms || "due_on_receipt",
+        customDueDate: customDueDate ? new Date(customDueDate) : null,
+      });
 
-      // Keep the displayed readiness state synchronized, but never use production
-      // or fulfillment progress as an invoice gate.
-      await recomputeOrderBillingStatus({ organizationId, orderId });
-
-      const invoiceLines = await db
-        .select({
-          totalPrice: orderLineItems.totalPrice,
-          workflowIntent: products.workflowIntent,
-          allowZeroPrice: products.allowZeroPrice,
-        })
-        .from(orderLineItems)
-        .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
-        .where(eq(orderLineItems.orderId, orderId));
-      const financialEligibility = resolveInvoiceFinancialEligibility(invoiceLines);
-      if (!financialEligibility.canCreateInvoice) {
-        return res.status(409).json({
-          error: financialEligibility.message,
-          code: financialEligibility.code,
-        });
-      }
-
-      const [invoice] = await canonicalInvoiceOperations.createOrderBackedInvoicesFromOrders({ organizationId, actorUserId: userId, orderIds: [orderId], terms: terms || "due_on_receipt", customDueDate: customDueDate ? new Date(customDueDate) : null, auditSource: "ui" });
-
-      res.json({ success: true, data: invoice });
+      // A stale screen or concurrent click receives the linked Invoice rather
+      // than creating another first Invoice. The client refreshes its row.
+      res.json({ success: true, data: result.invoice, created: result.created });
     } catch (error: any) {
       console.error("Error creating invoice from order:", error);
       const statusCode = Number(error?.statusCode || 500);

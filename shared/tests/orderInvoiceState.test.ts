@@ -7,6 +7,16 @@ describe("order invoice state", () => {
     expect(deriveOrderInvoiceState({ billingStatus: "ready", invoices: [] }).key).toBe("ready_to_invoice");
   });
 
+  test("retains the canonical linked-invoice count for zero, one, and multiple invoices", () => {
+    expect(deriveOrderInvoiceState({ invoices: [] })).toMatchObject({ invoiceCount: 0, activeInvoiceCount: 0 });
+    expect(deriveOrderInvoiceState({ invoices: [{ status: "billed", total: 10, balanceDue: 10 }] }))
+      .toMatchObject({ invoiceCount: 1, activeInvoiceCount: 1 });
+    expect(deriveOrderInvoiceState({ invoices: [
+      { status: "billed", total: 10, balanceDue: 10 },
+      { status: "void", total: 10, balanceDue: 10 },
+    ] })).toMatchObject({ invoiceCount: 2, activeInvoiceCount: 1 });
+  });
+
   test("reports draft, sent, partial, paid, and overdue states", () => {
     const now = new Date("2026-07-19T12:00:00.000Z");
     expect(deriveOrderInvoiceState({ invoices: [{ status: "draft", total: 25, balanceDue: 25 }], now }).key).toBe("invoice_draft");

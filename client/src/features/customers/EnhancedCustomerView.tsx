@@ -1823,6 +1823,7 @@ function OrdersTable({
   compact,
   customerName,
   quoteCount,
+  invoiceFilter,
 }: {
   orders: Order[];
   searchQuery: string;
@@ -1830,8 +1831,11 @@ function OrdersTable({
   compact?: boolean;
   customerName?: string;
   quoteCount?: number;
+  invoiceFilter?: "all" | "no_invoice" | "has_invoice";
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { user, isAdmin } = useAuth();
   const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
   const isAdminOrOwner = Boolean(isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()));
@@ -1845,6 +1849,7 @@ function OrdersTable({
     { id: "product", label: "Product", defaultVisible: true, sortable: true, resizable: true, minWidth: 150 },
     { id: "amount", label: "Amount", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
     { id: "status", label: "Status", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
+    { id: "invoice", label: "Invoice", defaultVisible: true, sortable: false, resizable: true, minWidth: 130 },
     { id: "actions", label: "Actions", defaultVisible: true, sortable: false, resizable: false, minWidth: 320 },
   ];
   
@@ -1861,7 +1866,7 @@ function OrdersTable({
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          return Array.from(new Set([...parsed, "invoice"]));
         }
       }
     } catch (e) {
@@ -1877,7 +1882,7 @@ function OrdersTable({
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          return Array.from(new Set([...parsed, ...defaultColumnOrder]));
         }
       }
     } catch (e) {
@@ -2115,8 +2120,35 @@ function OrdersTable({
     return result;
   }, [orders, searchQuery, statusFilter, sorting]);
 
+  const createFirstInvoiceMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const response = await fetch(`/api/orders/${orderId}/invoices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || data.message || "Failed to create invoice");
+      return data as { data?: { displayNumber?: string | null; invoiceNumber?: string | number | null }; created?: boolean };
+    },
+    onSuccess: (result, orderId) => {
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      const invoiceNumber = result.data?.displayNumber || result.data?.invoiceNumber;
+      toast({
+        title: result.created === false ? "Invoice already exists" : "Invoice created",
+        description: invoiceNumber
+          ? `${result.created === false ? "Using existing" : "Created"} invoice ${invoiceNumber}.`
+          : result.created === false ? "The Order was refreshed with its existing invoice." : "The first invoice was created from the Order.",
+      });
+    },
+    onError: (error: Error) => toast({ title: "Invoice not created", description: error.message, variant: "destructive" }),
+  });
+
   if (filteredOrders.length === 0) {
-    const isFiltered = searchQuery || statusFilter !== "all";
+    const isFiltered = searchQuery || statusFilter !== "all" || invoiceFilter !== "all";
     return (
       <div className="py-12 text-center text-titan-text-secondary">
         {isFiltered ? (
@@ -2313,11 +2345,22 @@ function OrdersTable({
                       </span>
                     </td>
                   );
+
+                case "invoice": {
+                  const linkedInvoices = order.invoiceSummary?.invoices ?? [];
+                  const primaryInvoice = linkedInvoices[0];
+                  if (!primaryInvoice) {
+                    return <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}><span className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-titan-xs font-medium text-slate-700">No Invoice</span></td>;
+                  }
+                  const invoiceLabel = primaryInvoice.displayNumber || String(primaryInvoice.invoiceNumber ?? "Invoice");
+                  return <td key={columnId} className="px-4 py-3" onClick={(event) => event.stopPropagation()} style={{ width: `${width}px` }}><div className="flex items-center gap-1.5"><button type="button" className="text-titan-sm font-medium text-titan-accent hover:underline" onClick={() => navigate(ROUTES.invoices.detail(primaryInvoice.id))}>{invoiceLabel}</button>{linkedInvoices.length > 1 ? <span className="text-xs text-titan-text-secondary">+{linkedInvoices.length - 1}</span> : null}</div></td>;
+                }
                   
                 case "actions":
                   return (
                     <td key={columnId} className="px-4 py-3" onClick={(e) => e.stopPropagation()} style={{ width: `${width}px` }}>
                       <div className="flex min-w-max flex-wrap items-center gap-2">
+                        {(order.invoiceSummary?.invoiceCount ?? 0) === 0 ? <Button variant="outline" size="sm" disabled={!order.invoiceCreationEligibility?.canCreate || createFirstInvoiceMutation.isPending} title={order.invoiceCreationEligibility?.canCreate ? "Create the first linked invoice" : order.invoiceCreationEligibility?.reason || "This Order cannot create an invoice."} onClick={() => createFirstInvoiceMutation.mutate(order.id)}>{createFirstInvoiceMutation.isPending ? "Creating…" : "Create Invoice"}</Button> : null}
                         <Button
                           variant="outline"
                           size="sm"
@@ -2820,6 +2863,7 @@ export default function EnhancedCustomerView({
   const [period, setPeriod] = useState<TimePeriod>("month");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [invoiceFilter, setInvoiceFilter] = useState<"all" | "no_invoice" | "has_invoice">("all");
 
   const isEmbedded = layoutMode === "embedded";
 
@@ -2827,6 +2871,7 @@ export default function EnhancedCustomerView({
   const { data: customer, isLoading: isLoadingCustomer } = useCustomer(customerId);
   const { data: orders = [], isLoading: isLoadingOrders } = useOrders({
     customerId,
+    invoice: invoiceFilter === "all" ? undefined : invoiceFilter,
   });
   const { data: invoices = [], isLoading: isLoadingInvoices } = useInvoices({
     customerId,
@@ -2964,6 +3009,7 @@ export default function EnhancedCustomerView({
                     setActiveTab(tab.key);
                     setSearchQuery("");
                     setStatusFilter("all");
+                    setInvoiceFilter("all");
                   }}
                   className={cn(
                     "px-3 py-1 text-sm font-medium rounded-full flex items-center gap-2 transition-colors",
@@ -2993,38 +3039,20 @@ export default function EnhancedCustomerView({
           {/* Right: Status Filter */}
           <div className="flex items-center">
             {activeTab !== "transactions" && activeTab !== "statement" && (
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[140px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg">
-                  <SelectValue placeholder="All Status" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-700">
-                  <SelectItem value="all" className="text-white">All Status</SelectItem>
-                  {activeTab === "orders" && (
-                    <>
-                      <SelectItem value="new" className="text-white">New</SelectItem>
-                      <SelectItem value="in_production" className="text-white">In Production</SelectItem>
-                      <SelectItem value="completed" className="text-white">Completed</SelectItem>
-                      <SelectItem value="shipped" className="text-white">Shipped</SelectItem>
-                    </>
-                  )}
-                  {activeTab === "quotes" && (
-                    <>
-                      <SelectItem value="draft" className="text-white">Draft</SelectItem>
-                      <SelectItem value="pending_approval" className="text-white">Pending</SelectItem>
-                      <SelectItem value="approved" className="text-white">Approved</SelectItem>
-                      <SelectItem value="rejected" className="text-white">Rejected</SelectItem>
-                    </>
-                  )}
-                  {activeTab === "invoices" && (
-                    <>
-                      <SelectItem value="draft" className="text-white">Draft</SelectItem>
-                      <SelectItem value="sent" className="text-white">Sent</SelectItem>
-                      <SelectItem value="paid" className="text-white">Paid</SelectItem>
-                      <SelectItem value="overdue" className="text-white">Overdue</SelectItem>
-                    </>
-                  )}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                {activeTab === "orders" ? <Select value={invoiceFilter} onValueChange={(value) => setInvoiceFilter(value as "all" | "no_invoice" | "has_invoice")}><SelectTrigger className="w-[165px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg"><SelectValue placeholder="Invoice: All" /></SelectTrigger><SelectContent className="bg-slate-900 border-slate-700"><SelectItem value="all" className="text-white">Invoice: All</SelectItem><SelectItem value="no_invoice" className="text-white">Invoice: No Invoice</SelectItem><SelectItem value="has_invoice" className="text-white">Invoice: Has Invoice</SelectItem></SelectContent></Select> : null}
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-[140px] h-9 text-sm bg-slate-900/50 border-slate-700 text-white rounded-lg">
+                    <SelectValue placeholder="All Status" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-900 border-slate-700">
+                    <SelectItem value="all" className="text-white">All Status</SelectItem>
+                    {activeTab === "orders" && <><SelectItem value="new" className="text-white">New</SelectItem><SelectItem value="in_production" className="text-white">In Production</SelectItem><SelectItem value="completed" className="text-white">Completed</SelectItem><SelectItem value="shipped" className="text-white">Shipped</SelectItem></>}
+                    {activeTab === "quotes" && <><SelectItem value="draft" className="text-white">Draft</SelectItem><SelectItem value="pending_approval" className="text-white">Pending</SelectItem><SelectItem value="approved" className="text-white">Approved</SelectItem><SelectItem value="rejected" className="text-white">Rejected</SelectItem></>}
+                    {activeTab === "invoices" && <><SelectItem value="draft" className="text-white">Draft</SelectItem><SelectItem value="sent" className="text-white">Sent</SelectItem><SelectItem value="paid" className="text-white">Paid</SelectItem><SelectItem value="overdue" className="text-white">Overdue</SelectItem></>}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
           </div>
         </div>
@@ -3045,6 +3073,7 @@ export default function EnhancedCustomerView({
                   compact={isEmbedded}
                   customerName={customer.companyName}
                   quoteCount={quotes.length}
+                  invoiceFilter={invoiceFilter}
                 />
               )
             )}

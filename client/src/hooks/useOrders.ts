@@ -403,6 +403,11 @@ export type OrderRow = Order & {
   statusPillAssignedByUserId?: string | null;
   paymentStatus?: string;
   invoiceState?: OrderInvoiceStateSummary;
+  invoiceSummary?: {
+    invoiceCount: number;
+    invoices: Array<{ id: string; invoiceNumber?: number | string | null; displayNumber?: string | null }>;
+  };
+  invoiceCreationEligibility?: { canCreate: boolean; reason?: string | null };
   routingTarget?: string | null;
 };
 
@@ -430,6 +435,8 @@ export interface OrdersFilterParams {
   endDate?: string;
   /** Server-authoritative Order due-date window in the tenant timezone. */
   due?: "today" | "tomorrow" | "overdue";
+  /** Relationship-aware Invoice filter; never inferred from document numbers. */
+  invoice?: "no_invoice" | "has_invoice";
 }
 
 // Query params type for paginated queries (includes pagination fields)
@@ -468,6 +475,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
       if (filters?.startDate) params.append("startDate", filters.startDate);
       if (filters?.endDate) params.append("endDate", filters.endDate);
       if (filters?.due) params.append("due", filters.due);
+      if (filters?.invoice) params.append("invoice", filters.invoice);
       
       // Pagination params
       if (filters?.page !== undefined) params.append("page", String(filters.page));

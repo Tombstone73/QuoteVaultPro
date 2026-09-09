@@ -1642,6 +1642,11 @@ export async function registerOrderRoutes(
             const includeThumbnailsRaw = req.query.includeThumbnails as string | undefined;
             const sortBy = req.query.sortBy as string | undefined;
             const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
+            const invoiceFilterRaw = req.query.invoice as string | undefined;
+            if (invoiceFilterRaw !== undefined && invoiceFilterRaw !== "no_invoice" && invoiceFilterRaw !== "has_invoice") {
+                return res.status(400).json({ message: "invoice must be one of: no_invoice, has_invoice" });
+            }
+            const invoiceFilter = invoiceFilterRaw as "no_invoice" | "has_invoice" | undefined;
             const dueFilterRaw = req.query.due as string | undefined;
             if (dueFilterRaw !== undefined && !isOrderDueFilter(dueFilterRaw)) {
                 return res.status(400).json({ message: "due must be one of: today, tomorrow, overdue" });
@@ -1673,6 +1678,7 @@ export async function registerOrderRoutes(
                     endDate: req.query.endDate as string | undefined,
                     dueFilter,
                     dueDatePart,
+                    invoice: invoiceFilter,
                     sortBy,
                     sortDir,
                     page,
@@ -1930,6 +1936,7 @@ export async function registerOrderRoutes(
                 customerId: req.query.customerId as string | undefined,
                 startDate: req.query.startDate ? new Date(req.query.startDate as string) : undefined,
                 endDate: req.query.endDate ? new Date(req.query.endDate as string) : undefined,
+                invoice: invoiceFilter,
             };
             const ordersList = await storage.getAllOrders(organizationId, filters);
             res.json(ordersList);

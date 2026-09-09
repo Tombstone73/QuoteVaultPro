@@ -26,7 +26,7 @@ describe("canonical CRM, Invoice, and Payment operation wiring", () => {
       source("server/routes/mvpInvoicing.routes.ts"),
       source("server/services/assistant/billingInvoiceOperationsService.ts"),
     ]);
-    expect(route).toContain("canonicalInvoiceOperations.createOrderBackedInvoicesFromOrders");
+    expect(route).toContain("canonicalInvoiceOperations.createFirstOrderBackedInvoice");
     expect(route).not.toContain("canonicalInvoiceOperations.finalize");
     expect(route).not.toContain('app.post("/api/invoices/:id/bill"');
     expect(route).toContain("canonicalInvoiceOperations.markSent");

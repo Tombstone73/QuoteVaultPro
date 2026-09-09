@@ -54,6 +54,8 @@ import {
 import { eq, and, or, ilike, gte, lte, asc, desc, sql, isNull, inArray, ne } from "drizzle-orm";
 import { deriveLineItemProofSummary, deriveOrderProofSummary, type LineItemProofSummary, type OrderProofSummary } from "@shared/orderProofStatus";
 import { deriveOrderInvoiceState, type OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
+import { isCanceledOrder } from "@shared/operationalState";
+import { resolveInvoiceFinancialEligibility } from "../services/orderBillingService";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
@@ -828,6 +830,7 @@ export class OrdersRepository {
         endDate?: string;
         dueFilter?: "today" | "tomorrow" | "overdue";
         dueDatePart?: string;
+        invoice?: "no_invoice" | "has_invoice";
         sortBy?: string;
         sortDir?: 'asc' | 'desc';
         page: number;
@@ -875,6 +878,20 @@ export class OrdersRepository {
         if (opts.endDate) conditions.push(lte(orders.createdAt, opts.endDate));
         if (opts.dueFilter && opts.dueDatePart) {
             conditions.push(...activeOrderDuePredicates(opts.dueFilter, opts.dueDatePart));
+        }
+        if (opts.invoice === "no_invoice") {
+            conditions.push(sql`not exists (
+                select 1 from ${invoices}
+                where ${invoices.organizationId} = ${organizationId}
+                  and ${invoices.orderId} = ${orders.id}
+            )`);
+        }
+        if (opts.invoice === "has_invoice") {
+            conditions.push(sql`exists (
+                select 1 from ${invoices}
+                where ${invoices.organizationId} = ${organizationId}
+                  and ${invoices.orderId} = ${orders.id}
+            )`);
         }
 
         const whereClause = and(...conditions);
@@ -1032,7 +1049,11 @@ export class OrdersRepository {
         const { orderSummaries } = await this.buildProofSummaries(organizationId, orderIds);
         const invoiceRows = orderIds.length > 0
             ? await this.dbInstance.select({
+                id: invoices.id,
                 orderId: invoices.orderId,
+                invoiceNumber: invoices.invoiceNumber,
+                displayNumber: invoices.displayNumber,
+                createdAt: invoices.createdAt,
                 status: invoices.status,
                 dueDate: invoices.dueDate,
                 lastSentAt: invoices.lastSentAt,
@@ -1050,6 +1071,25 @@ export class OrdersRepository {
             const existing = invoicesByOrderId.get(invoice.orderId) ?? [];
             existing.push(invoice);
             invoicesByOrderId.set(invoice.orderId, existing);
+        }
+        const invoiceEligibilityRows = orderIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    orderId: orderLineItems.orderId,
+                    totalPrice: orderLineItems.totalPrice,
+                    workflowIntent: products.workflowIntent,
+                    allowZeroPrice: products.allowZeroPrice,
+                })
+                .from(orderLineItems)
+                .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+                .where(inArray(orderLineItems.orderId, orderIds))
+            : [];
+        const invoiceEligibilityLinesByOrderId = new Map<string, typeof invoiceEligibilityRows>();
+        for (const line of invoiceEligibilityRows) {
+            if (!line.orderId) continue;
+            const existing = invoiceEligibilityLinesByOrderId.get(line.orderId) ?? [];
+            existing.push(line);
+            invoiceEligibilityLinesByOrderId.set(line.orderId, existing);
         }
         let previewData = new Map<string, {
             thumbnails: string[];
@@ -1069,25 +1109,35 @@ export class OrdersRepository {
 
         // Fetch list notes for all orders in this page
         const { orderListNotes } = await import("@shared/schema");
-        const listNotesResult = await this.dbInstance
-            .select({
-                orderId: orderListNotes.orderId,
-                listLabel: orderListNotes.listLabel,
-            })
-            .from(orderListNotes)
-            .where(
-                and(
-                    eq(orderListNotes.organizationId, organizationId),
-                    inArray(orderListNotes.orderId, orderIds)
+        const listNotesResult = orderIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    orderId: orderListNotes.orderId,
+                    listLabel: orderListNotes.listLabel,
+                })
+                .from(orderListNotes)
+                .where(
+                    and(
+                        eq(orderListNotes.organizationId, organizationId),
+                        inArray(orderListNotes.orderId, orderIds)
+                    )
                 )
-            );
+            : [];
 
         const listNotesMap = new Map<string, string | null>();
         for (const note of listNotesResult) {
             listNotesMap.set(note.orderId, note.listLabel);
         }
 
-        const items = rows.map(({ order, customer, contact, lineItemsCount }) => ({
+        const items = rows.map(({ order, customer, contact, lineItemsCount }) => {
+            const linkedInvoices = invoicesByOrderId.get(order.id) ?? [];
+            const financialEligibility = resolveInvoiceFinancialEligibility(invoiceEligibilityLinesByOrderId.get(order.id) ?? []);
+            const invoiceCreationEligibility = linkedInvoices.length > 0
+                ? { canCreate: false, reason: "An invoice is already linked to this Order." }
+                : isCanceledOrder(order)
+                    ? { canCreate: false, reason: "Cancelled Orders cannot create invoices." }
+                    : { canCreate: financialEligibility.canCreateInvoice, reason: financialEligibility.message ?? null };
+            return {
             ...order,
             customer,
             contact,
@@ -1114,8 +1164,17 @@ export class OrdersRepository {
             listLabel: listNotesMap.get(order.id) || null,
             invoiceState: deriveOrderInvoiceState({
                 billingStatus: order.billingStatus,
-                invoices: invoicesByOrderId.get(order.id) ?? [],
+                invoices: linkedInvoices,
             }),
+            invoiceSummary: {
+                invoiceCount: linkedInvoices.length,
+                invoices: linkedInvoices.map((invoice) => ({
+                    id: invoice.id,
+                    invoiceNumber: invoice.invoiceNumber,
+                    displayNumber: invoice.displayNumber,
+                })),
+            },
+            invoiceCreationEligibility,
             proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
             proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",
             proofActionRequired: orderSummaries.get(order.id)?.proofActionRequired ?? false,
@@ -1128,7 +1187,7 @@ export class OrdersRepository {
                 issue: 0,
             },
             proofLineItemId: orderSummaries.get(order.id)?.proofLineItemId ?? null,
-        }));
+        }});
 
         const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
         return {
@@ -1149,6 +1208,7 @@ export class OrdersRepository {
         customerId?: string;
         startDate?: Date;
         endDate?: Date;
+        invoice?: "no_invoice" | "has_invoice";
     }): Promise<Array<OrderWithProofSummary & { productionSummary?: OrderProductionSummary }>> {
         const conditions = [eq(orders.organizationId, organizationId)] as any[];
         if (filters?.search) {
@@ -1165,11 +1225,69 @@ export class OrdersRepository {
         if (filters?.customerId) conditions.push(eq(orders.customerId, filters.customerId));
         if (filters?.startDate) conditions.push(gte(orders.createdAt, filters.startDate.toISOString()));
         if (filters?.endDate) conditions.push(lte(orders.createdAt, filters.endDate.toISOString()));
+        if (filters?.invoice === "no_invoice") {
+            conditions.push(sql`not exists (
+                select 1 from ${invoices}
+                where ${invoices.organizationId} = ${organizationId}
+                  and ${invoices.orderId} = ${orders.id}
+            )`);
+        }
+        if (filters?.invoice === "has_invoice") {
+            conditions.push(sql`exists (
+                select 1 from ${invoices}
+                where ${invoices.organizationId} = ${organizationId}
+                  and ${invoices.orderId} = ${orders.id}
+            )`);
+        }
 
         let query = this.dbInstance.select().from(orders) as any;
         query = query.where(and(...conditions));
         query = query.orderBy(desc(orders.createdAt));
         const rows = await query;
+        const orderIds = rows.map((order: Order) => order.id);
+        const invoiceRows = orderIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    id: invoices.id,
+                    orderId: invoices.orderId,
+                    invoiceNumber: invoices.invoiceNumber,
+                    displayNumber: invoices.displayNumber,
+                    status: invoices.status,
+                    dueDate: invoices.dueDate,
+                    lastSentAt: invoices.lastSentAt,
+                    amountPaid: invoices.amountPaid,
+                    balanceDue: invoices.balanceDue,
+                    total: invoices.total,
+                })
+                .from(invoices)
+                .where(and(eq(invoices.organizationId, organizationId), inArray(invoices.orderId, orderIds)))
+            : [];
+        const invoicesByOrderId = new Map<string, typeof invoiceRows>();
+        for (const invoice of invoiceRows) {
+            if (!invoice.orderId) continue;
+            const existing = invoicesByOrderId.get(invoice.orderId) ?? [];
+            existing.push(invoice);
+            invoicesByOrderId.set(invoice.orderId, existing);
+        }
+        const invoiceEligibilityRows = orderIds.length > 0
+            ? await this.dbInstance
+                .select({
+                    orderId: orderLineItems.orderId,
+                    totalPrice: orderLineItems.totalPrice,
+                    workflowIntent: products.workflowIntent,
+                    allowZeroPrice: products.allowZeroPrice,
+                })
+                .from(orderLineItems)
+                .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+                .where(inArray(orderLineItems.orderId, orderIds))
+            : [];
+        const invoiceEligibilityLinesByOrderId = new Map<string, typeof invoiceEligibilityRows>();
+        for (const line of invoiceEligibilityRows) {
+            if (!line.orderId) continue;
+            const existing = invoiceEligibilityLinesByOrderId.get(line.orderId) ?? [];
+            existing.push(line);
+            invoiceEligibilityLinesByOrderId.set(line.orderId, existing);
+        }
         const productionSummaries = await this.buildProductionSummaries(
             organizationId,
             rows.map((order: Order) => order.id),
@@ -1189,6 +1307,13 @@ export class OrdersRepository {
                 ? await this.dbInstance.select().from(customerContacts).where(and(eq(customerContacts.id, order.contactId), eq(customerContacts.organizationId, organizationId)))
                 : [undefined];
 
+            const linkedInvoices = invoicesByOrderId.get(order.id) ?? [];
+            const financialEligibility = resolveInvoiceFinancialEligibility(invoiceEligibilityLinesByOrderId.get(order.id) ?? []);
+            const invoiceCreationEligibility = linkedInvoices.length > 0
+                ? { canCreate: false, reason: "An invoice is already linked to this Order." }
+                : isCanceledOrder(order)
+                    ? { canCreate: false, reason: "Cancelled Orders cannot create invoices." }
+                    : { canCreate: financialEligibility.canCreateInvoice, reason: financialEligibility.message ?? null };
             return {
                 ...order,
                 customer,
@@ -1204,6 +1329,16 @@ export class OrdersRepository {
                     stationKeys: [],
                     stationLabel: "Unassigned",
                 },
+                invoiceState: deriveOrderInvoiceState({ billingStatus: order.billingStatus, invoices: linkedInvoices }),
+                invoiceSummary: {
+                    invoiceCount: linkedInvoices.length,
+                    invoices: linkedInvoices.map((invoice) => ({
+                        id: invoice.id,
+                        invoiceNumber: invoice.invoiceNumber,
+                        displayNumber: invoice.displayNumber,
+                    })),
+                },
+                invoiceCreationEligibility,
                 proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
                 proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",
                 proofActionRequired: orderSummaries.get(order.id)?.proofActionRequired ?? false,

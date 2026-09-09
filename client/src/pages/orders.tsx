@@ -62,6 +62,7 @@ import { hasHorizontalOverflow, syncHorizontalScroll } from "@/lib/ordersHorizon
 type SortKey = OrdersListSortKey;
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
 type ProofFilterValue = "all" | "needs_action";
+type InvoiceFilterValue = "all" | "no_invoice" | "has_invoice";
 
 function useDebouncedValue<T>(value: T, delayMs = 300): T {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -214,6 +215,16 @@ export default function Orders() {
     const value = new URLSearchParams(location.search).get("due");
     return value === "today" || value === "tomorrow" || value === "overdue" ? value : undefined;
   }, [location.search]);
+  const invoiceFilter = useMemo<InvoiceFilterValue>(() => {
+    const value = new URLSearchParams(location.search).get("invoice");
+    return value === "no_invoice" || value === "has_invoice" ? value : "all";
+  }, [location.search]);
+  const setInvoiceFilter = (value: InvoiceFilterValue) => {
+    const params = new URLSearchParams(location.search);
+    if (value === "all") params.delete("invoice");
+    else params.set("invoice", value);
+    navigate({ pathname: location.pathname, search: params.toString() ? `?${params.toString()}` : "" }, { replace: true });
+  };
   // Dashboard links must show the exact server-authoritative due window, not
   // a user's sticky list filters from a prior visit.
   const isDashboardDueDrilldown = dueFilter !== undefined;
@@ -403,17 +414,18 @@ export default function Orders() {
     statusPillIds: statusPillIdsForQuery,
     priority: isDashboardDueDrilldown || priorityFilter === "all" ? undefined : priorityFilter,
     due: dueFilter,
+    invoice: invoiceFilter === "all" ? undefined : invoiceFilter,
     page,
     pageSize,
     includeThumbnails,
     sortBy: sortKey,
     sortDir: sortDirection,
-  }), [debouncedSearch, dueFilter, isDashboardDueDrilldown, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
+  }), [debouncedSearch, dueFilter, invoiceFilter, isDashboardDueDrilldown, stateFilter, statusPillIdsForQuery, priorityFilter, page, pageSize, includeThumbnails, sortKey, sortDirection]);
 
   // Every change to the server query shape starts at the first matching page.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, dueFilter, stateFilter, statusPillIdsForQuery, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
+  }, [debouncedSearch, dueFilter, invoiceFilter, stateFilter, statusPillIdsForQuery, priorityFilter, productionFilter, proofFilter, pageSize, sortKey, sortDirection]);
 
   // Fetch orders with pagination support
   const { data: ordersData, isLoading, error } = useOrders(ordersFilters);
@@ -638,6 +650,33 @@ export default function Orders() {
       toast({ title: "Order updated", description: `Order ${variables.action === "complete" ? "completed" : variables.action === "close" ? "closed" : variables.action === "reopen" ? "reopened" : "cancelled"}.` });
     },
     onError: (error: Error) => toast({ title: "Status update failed", description: error.message, variant: "destructive" }),
+  });
+
+  const createFirstInvoiceMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const response = await fetch(`/api/orders/${orderId}/invoices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || data.message || "Failed to create invoice");
+      return data as { data?: { displayNumber?: string | null; invoiceNumber?: number | string | null }; created?: boolean };
+    },
+    onSuccess: (result, orderId) => {
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      const number = result.data?.displayNumber || result.data?.invoiceNumber;
+      toast({
+        title: result.created === false ? "Invoice already exists" : "Invoice created",
+        description: number
+          ? `${result.created === false ? "Using existing" : "Created"} invoice ${number}.`
+          : result.created === false ? "The Order was refreshed with its existing invoice." : "The first invoice was created from the Order.",
+      });
+    },
+    onError: (error: Error) => toast({ title: "Invoice not created", description: error.message, variant: "destructive" }),
   });
 
   // Open attachments dialog - fetch current stabilized order file rows in one call
@@ -926,26 +965,24 @@ export default function Orders() {
       }
 
       case "invoiceStatus": {
-        const invoiceState = row.invoiceState;
-        const statusKey = invoiceState?.key || "not_invoiced";
-        const statusColors: Record<string, string> = {
-          not_invoiced: "bg-slate-100 text-slate-700 border-slate-300",
-          ready_to_invoice: "bg-blue-100 text-blue-800 border-blue-300",
-          invoice_draft: "bg-amber-100 text-amber-800 border-amber-300",
-          invoice_finalized: "bg-indigo-100 text-indigo-800 border-indigo-300",
-          invoice_sent: "bg-sky-100 text-sky-800 border-sky-300",
-          partially_paid: "bg-yellow-100 text-yellow-800 border-yellow-300",
-          paid: "bg-green-100 text-green-800 border-green-300",
-          overdue: "bg-red-100 text-red-800 border-red-300",
-        };
+        const linkedInvoices = row.invoiceSummary?.invoices ?? [];
+        const primaryInvoice = linkedInvoices[0];
+        if (!primaryInvoice) {
+          return <Badge variant="outline" className="text-xs bg-slate-100 text-slate-700 border-slate-300">No Invoice</Badge>;
+        }
+        const invoiceLabel = primaryInvoice.displayNumber || String(primaryInvoice.invoiceNumber ?? "Invoice");
         return (
-          <Badge
-            variant="outline"
-            className={`text-xs ${statusColors[statusKey] || statusColors.not_invoiced}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {invoiceState?.label || "Not invoiced"}
-          </Badge>
+          <div className="flex items-center gap-1.5" data-stop-row-nav="true">
+            <Link
+              to={ROUTES.invoices.detail(primaryInvoice.id)}
+              state={{ referrer: buildReferrer(location) }}
+              onClick={(event) => event.stopPropagation()}
+              className="text-xs font-medium text-blue-600 hover:underline"
+            >
+              {invoiceLabel}
+            </Link>
+            {linkedInvoices.length > 1 ? <span className="text-xs text-muted-foreground">+{linkedInvoices.length - 1}</span> : null}
+          </div>
         );
       }
 
@@ -1048,6 +1085,18 @@ export default function Orders() {
       case "actions":
         return (
           <div className="flex items-center gap-0.5 whitespace-nowrap" data-stop-row-nav="true">
+            {(row.invoiceSummary?.invoiceCount ?? 0) === 0 ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                disabled={!row.invoiceCreationEligibility?.canCreate || createFirstInvoiceMutation.isPending}
+                title={row.invoiceCreationEligibility?.canCreate ? "Create the first linked invoice" : row.invoiceCreationEligibility?.reason || "This Order cannot create an invoice."}
+                onClick={() => createFirstInvoiceMutation.mutate(row.id)}
+              >
+                {createFirstInvoiceMutation.isPending ? "Creating…" : "Create Invoice"}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
@@ -1249,6 +1298,16 @@ export default function Orders() {
               <SelectItem value="low">Low</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={invoiceFilter} onValueChange={(value) => setInvoiceFilter(value as InvoiceFilterValue)}>
+            <SelectTrigger className="w-[150px] h-9" aria-label="Filter orders by invoice">
+              <SelectValue placeholder="All Invoices" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Invoice: All</SelectItem>
+              <SelectItem value="no_invoice">Invoice: No Invoice</SelectItem>
+              <SelectItem value="has_invoice">Invoice: Has Invoice</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={productionFilter} onValueChange={(value) => setProductionFilter(value as ProductionFilterValue)}>
             <SelectTrigger className="w-[170px] h-9">
               <SelectValue placeholder="All Production" />
@@ -1403,8 +1462,8 @@ export default function Orders() {
                     <TableCell colSpan={visibleColumnCount} className="text-center py-6 text-muted-foreground">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="w-8 h-8 text-muted-foreground" />
-                        <p>{debouncedSearch || stateFilter !== "all" || statusPillIdsForQuery !== undefined || priorityFilter !== "all" || productionFilter !== "all" || proofFilter !== "all" ? "No orders match your search" : "No orders yet"}</p>
-                        {!debouncedSearch && stateFilter === "all" && statusPillIdsForQuery === undefined && priorityFilter === "all" && productionFilter === "all" && proofFilter === "all" ? (
+                        <p>{debouncedSearch || stateFilter !== "all" || statusPillIdsForQuery !== undefined || priorityFilter !== "all" || invoiceFilter !== "all" || productionFilter !== "all" || proofFilter !== "all" ? "No orders match your search" : "No orders yet"}</p>
+                        {!debouncedSearch && stateFilter === "all" && statusPillIdsForQuery === undefined && priorityFilter === "all" && invoiceFilter === "all" && productionFilter === "all" && proofFilter === "all" ? (
                           <Link to={ROUTES.orders.new}>
                             <Button variant="outline" size="sm">
                               <Plus className="w-4 h-4 mr-2" />
