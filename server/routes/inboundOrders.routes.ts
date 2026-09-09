@@ -28,6 +28,7 @@ import {
   inboundOrderListQuerySchema,
   inboundOrderReviewDraftSaveSchema,
   inboundOrderStatusUpdateSchema,
+  devQaSyntheticInboundCreateSchema,
   manualInboundOrderCreateSchema,
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
@@ -58,6 +59,8 @@ import { storageProviderConfigRepository } from "../storage/storageProviderConfi
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { inboundPdfSizeAnalysisService } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
 import { getRequestOrganizationId } from "../tenantContext";
+import { assertDevQaSyntheticInboundAccess, DevQaSyntheticInboundAccessError } from "../lib/devQaSyntheticInboundGuard";
+import { devQaSyntheticInboundIntakeService } from "../services/inboundOrders/DevQaSyntheticInboundIntakeService";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 
 function getUserId(user: any): string | undefined {
@@ -365,6 +368,7 @@ export function registerInboundOrderRoutes(
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
     inboundEmailMailboxSettingsService?: typeof inboundEmailMailboxSettingsService;
+    devQaSyntheticInboundIntakeService?: typeof devQaSyntheticInboundIntakeService;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
@@ -374,6 +378,7 @@ export function registerInboundOrderRoutes(
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
   const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
   const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
+  const syntheticInboundService = middleware.devQaSyntheticInboundIntakeService ?? devQaSyntheticInboundIntakeService;
 
   app.get("/api/inbound-orders/email-settings", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -2362,6 +2367,26 @@ export function registerInboundOrderRoutes(
 
       console.error("Error creating manual inbound order:", error);
       res.status(500).json({ message: "Failed to create manual inbound order" });
+    }
+  });
+
+  app.post("/api/inbound-orders/dev-qa-synthetic", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success:false, message:"Missing organization context" });
+      assertDevQaSyntheticInboundAccess(organizationId);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success:false, message:"User ID not found" });
+      const input = devQaSyntheticInboundCreateSchema.parse(req.body ?? {});
+      const result = await syntheticInboundService.ingest({ organizationId, actorUserId, input });
+      res.status(result.replayed ? 200 : 201).json({ success:true, data:result });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success:false, message:fromZodError(error).message });
+      if (error instanceof DevQaSyntheticInboundAccessError) return res.status(403).json({ success:false, code:"DEV_QA_SYNTHETIC_INBOUND_FORBIDDEN", message:error.message });
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      console.error("Error creating DEV QA synthetic inbound record:", error);
+      res.status(500).json({ success:false, message:"Failed to create DEV QA synthetic inbound record" });
     }
   });
 }

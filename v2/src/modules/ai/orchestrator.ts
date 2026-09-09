@@ -14,11 +14,12 @@ const safeConversationTitle=(message:string):string=>/\binvoice|payment|balance\
  * durable and non-mutating until the separately authenticated literal GO. */
 export class AiAssistantOrchestrator {
   private readonly turnTimes=new Map<string,number[]>();
-  constructor(private readonly app:AiAssistantApplicationService,private readonly store:AiAssistantStore,private readonly provider:AiAssistantProvider,private readonly maxToolCalls=5,private readonly maxTurnsPerMinute=12){}
+  constructor(private readonly app:AiAssistantApplicationService,private readonly store:AiAssistantStore,private readonly provider:AiAssistantProvider,private readonly maxToolCalls=5,private readonly maxTurnsPerMinute=12,private readonly allowedOrganizationId?:string){}
   private admitTurn(principal:StaffPrincipal):void { const now=Date.now(),key=`${principal.organizationId}:${principal.userId}`,recent=(this.turnTimes.get(key)??[]).filter(time=>time>now-60_000);if(recent.length>=this.maxTurnsPerMinute)throw new V2ApplicationError("RETRYABLE_FAILURE","AI turn limit reached. Please wait a moment before sending another request.");recent.push(now);this.turnTimes.set(key,recent); }
   async turn(principal:StaffPrincipal,identity:AuthenticatedIdentity,conversationId:string,userMessage:string):Promise<ApplicationResult<AiTurnResult>>{
     try{
       if(identity.subjectId!==principal.userId)throw new V2ApplicationError("FORBIDDEN","The verified session does not match the AI conversation owner.");
+      if(this.allowedOrganizationId&&principal.organizationId!==this.allowedOrganizationId)throw new V2ApplicationError("FORBIDDEN","AI QA validation is restricted to its dedicated organization.");
       this.admitTurn(principal);
       const text=userMessage.trim();if(!text||text.length>4000)throw new V2ApplicationError("VALIDATION_ERROR","AI messages must contain at most 4,000 characters.");
       await this.store.appendMessage({organizationId:principal.organizationId,userId:principal.userId,conversationId,role:"user",content:text});

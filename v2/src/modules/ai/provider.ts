@@ -18,10 +18,19 @@ export type AiProviderUsage = Readonly<{ model: string; inputTokens?: number; ou
 export type AiProviderResponse = Readonly<{ decision: AiProviderDecision; usage: AiProviderUsage }>;
 export interface AiAssistantProvider { respond(turn: AiProviderTurn, signal?: AbortSignal): Promise<AiProviderResponse>; }
 
-export type V2AiProviderConfig = Readonly<{ enabled: boolean; provider?: "openai_compatible"; apiKey?: string; apiBaseUrl?: string; model?: string; timeoutMs: number; configurationError?: string }>;
+export type V2AiProviderConfig = Readonly<{ enabled: boolean; provider?: "openai_compatible"|"qa_deterministic"; apiKey?: string; apiBaseUrl?: string; model?: string; qaOrganizationId?: string; timeoutMs: number; configurationError?: string }>;
 export const loadV2AiProviderConfig = (environment: Readonly<Record<string,string|undefined>>): V2AiProviderConfig => {
   const enabled=environment.V2_AI_ENABLED?.trim()==="true";
   if(!enabled)return {enabled:false,timeoutMs:20_000};
+  // This is intentionally a sealed DEV-QA test seam, never a general
+  // fallback.  It has no network/provider capability and needs both an
+  // explicit opt-in and the exact approved Railway development identity.
+  if(environment.V2_AI_QA_DETERMINISTIC_MODE?.trim()==="true") {
+    const qaOrganizationId=environment.PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID?.trim();
+    if(environment.RAILWAY_PROJECT_NAME!=="PrintersHero-DEV"||environment.RAILWAY_ENVIRONMENT_NAME!=="Development"||!qaOrganizationId)
+      return {enabled:false,timeoutMs:20_000,configurationError:"QA deterministic AI mode is restricted to the configured PrintersHero DEV QA organization."};
+    return {enabled:true,provider:"qa_deterministic",qaOrganizationId,timeoutMs:20_000};
+  }
   const provider=environment.V2_AI_PROVIDER?.trim();const apiKey=environment.V2_AI_API_KEY?.trim();const apiBaseUrl=environment.V2_AI_API_BASE_URL?.trim();const model=environment.V2_AI_MODEL?.trim();
   const configuredTimeout=Number(environment.V2_AI_TIMEOUT_MS??20_000);
   const timeoutMs=Number.isFinite(configuredTimeout)?Math.min(60_000,Math.max(1_000,configuredTimeout)):20_000;
@@ -30,6 +39,25 @@ export const loadV2AiProviderConfig = (environment: Readonly<Record<string,strin
   if(provider!=="openai_compatible"||!apiKey||!apiBaseUrl||!model) return {enabled:false,timeoutMs,configurationError:"AI is enabled but its server-side provider configuration is incomplete."};
   return {enabled:true,provider,apiKey,apiBaseUrl:apiBaseUrl.replace(/\/+$/u,""),model,timeoutMs};
 };
+
+/** A network-free, deliberately tiny QA harness.  It accepts only named
+ * M7.7F validation phrases; arbitrary text (including prompt injection) can
+ * never select a tool or command.  The runtime additionally constrains this
+ * provider to its configured QA organization before it is invoked. */
+export class QaDeterministicAssistantProvider implements AiAssistantProvider {
+  async respond(turn:AiProviderTurn):Promise<AiProviderResponse>{
+    const message=turn.userMessage.trim();
+    const usage={model:"qa-deterministic",durationMs:0};
+    if(message==="M7.7F QA READ CUSTOMERS") {
+      return turn.observations.length===0
+        ? {decision:{kind:"read_tools",calls:[{toolName:"customer.search",input:{query:"M7 QA",limit:5}}]},usage}
+        : {decision:{kind:"reply",text:"QA deterministic customer read completed."},usage};
+    }
+    const duplicate=/^M7\.7F QA PREPARE INBOUND DUPLICATE ([0-9a-f-]{36})$/iu.exec(message);
+    if(duplicate)return {decision:{kind:"prepare_command",commandName:"inbound.mark_duplicate",input:{intakeId:duplicate[1],reason:"M7.7F QA deterministic duplicate validation."}},usage};
+    return {decision:{kind:"reply",text:"QA deterministic mode accepted no action. Use an exact M7.7F QA validation phrase."},usage};
+  }
+}
 
 const parseDecision=(raw:unknown):AiProviderDecision=>{
   if(!raw||typeof raw!=="object"||Array.isArray(raw))throw new V2ApplicationError("RETRYABLE_FAILURE","AI returned an invalid structured response.");

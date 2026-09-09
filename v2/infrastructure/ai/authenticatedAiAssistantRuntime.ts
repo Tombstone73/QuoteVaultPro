@@ -4,7 +4,7 @@ import { PermissionSetPrincipalIssuer } from "../../src/authorization/permission
 import { AiAssistantApplicationService } from "../../src/modules/ai/assistantApplication.js";
 import { canonicalAiReadDefinitions, type AiPricingPreviewPort, type AiReadPort } from "../../src/modules/ai/canonicalTools.js";
 import { AiAssistantOrchestrator } from "../../src/modules/ai/orchestrator.js";
-import { loadV2AiProviderConfig, OpenAiCompatibleAssistantProvider } from "../../src/modules/ai/provider.js";
+import { loadV2AiProviderConfig, OpenAiCompatibleAssistantProvider, QaDeterministicAssistantProvider } from "../../src/modules/ai/provider.js";
 import { AiToolRegistry } from "../../src/modules/ai/toolRegistry.js";
 import type { AiAssistantHttpDependencies } from "../../src/interfaces/http/aiAssistantRoutes.js";
 import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
@@ -109,6 +109,7 @@ export const composeAuthenticatedAiAssistantRuntime=(input:AuthenticatedAiAssist
     service.registerCommand(recordManualRefundAiCommand(input.payments,input.financialRead));
   }
   const config=loadV2AiProviderConfig(input.environment??process.env);
-  const orchestrator=config.enabled?new AiAssistantOrchestrator(service,store,new OpenAiCompatibleAssistantProvider({apiKey:config.apiKey!,apiBaseUrl:config.apiBaseUrl!,model:config.model!,timeoutMs:config.timeoutMs})):undefined;
+  const provider=config.provider==="qa_deterministic" ? new QaDeterministicAssistantProvider() : config.provider==="openai_compatible" ? new OpenAiCompatibleAssistantProvider({apiKey:config.apiKey!,apiBaseUrl:config.apiBaseUrl!,model:config.model!,timeoutMs:config.timeoutMs}) : undefined;
+  const orchestrator=provider?new AiAssistantOrchestrator(service,store,provider,5,12,config.qaOrganizationId):undefined;
   return {dependencies:{service,principals,identity:request=>input.trustedHostIdentity.authenticatedIdentity(request),...(orchestrator?{orchestrator}:{})},trustedHostMiddleware:input.trustedHostMiddleware};
 };
