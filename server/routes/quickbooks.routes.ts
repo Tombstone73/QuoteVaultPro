@@ -62,7 +62,7 @@ export function registerQuickBooksRoutes(
    * GET /api/integrations/quickbooks/status
    * Check QuickBooks connection status for current organization
    */
-  app.get('/api/integrations/quickbooks/status', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/status', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const status = await quickbooksService.getQuickBooksCustomerMigrationSourceStatus(organizationId);
@@ -105,7 +105,7 @@ export function registerQuickBooksRoutes(
    * GET /api/integrations/quickbooks/queue
    * Derived outbox-like queue (no QuickBooks API calls)
    */
-  app.get('/api/integrations/quickbooks/queue', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/queue', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
@@ -122,7 +122,7 @@ export function registerQuickBooksRoutes(
   // Discovery is read-only local accounting data, so it intentionally has the
   // same authenticated tenant access policy as the summary counts above.
   // Queueing and transmitting remain Admin/Owner-only mutations below.
-  app.get('/api/integrations/quickbooks/queue/items', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/queue/items', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
@@ -193,7 +193,7 @@ export function registerQuickBooksRoutes(
    * Manually starts one bounded automatic worker pass.  The worker always
    * observes stability; record-level force sync is the authorized endpoint above.
    */
-  app.post('/api/integrations/quickbooks/flush', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post('/api/integrations/quickbooks/flush', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
@@ -502,7 +502,7 @@ export function registerQuickBooksRoutes(
    * GET /api/integrations/quickbooks/jobs
    * Get list of sync jobs with status for current organization
    */
-  app.get('/api/integrations/quickbooks/jobs', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/jobs', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const { status, limit = 50 } = req.query;
@@ -531,7 +531,7 @@ export function registerQuickBooksRoutes(
    * GET /api/integrations/quickbooks/jobs/:id
    * Get specific sync job details (verifies organization ownership)
    */
-  app.get('/api/integrations/quickbooks/jobs/:id', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/jobs/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const [job] = await db

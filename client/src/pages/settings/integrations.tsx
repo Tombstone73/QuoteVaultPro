@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { usePaymentSettings, useUpdatePaymentSettings, type PaymentProvider } from "@/hooks/usePaymentSettings";
 import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
@@ -307,7 +308,8 @@ type QBInvoicePayloadInspection = {
 };
 
 export default function SettingsIntegrations() {
-  const { user, isAdmin } = useAuth();
+  const { user } = useAuth();
+  const { isAdminOrOwner, isLoading: isLoadingOrganizationRole } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { toast } = useToast();
   const isPageVisible = usePageVisible();
   const queryClient = useQueryClient();
@@ -868,7 +870,7 @@ export default function SettingsIntegrations() {
     },
   });
 
-  if (!isAdmin) {
+  if (!isLoadingOrganizationRole && !isAdminOrOwner) {
     return (
       <div className="container mx-auto p-6">
         <Card>
@@ -1080,7 +1082,7 @@ export default function SettingsIntegrations() {
                 </p>
 
                 {/* Admin diagnostic toggle — only shown to admin/owner users */}
-                {isAdmin && (
+                {isAdminOrOwner && (
                   <label className="flex items-center gap-2 mb-3 cursor-pointer select-none w-fit">
                     <input
                       type="checkbox"

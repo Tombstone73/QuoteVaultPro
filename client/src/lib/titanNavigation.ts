@@ -14,6 +14,7 @@ import {
   BarChart3,
   Receipt,
   CreditCard,
+  BookOpen,
   Settings,
   UserCog,
   LayoutGrid,
@@ -120,6 +121,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     items: [
       { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list, badge: true },
       { id: "payments", name: "Finance", icon: CreditCard, path: "/payments" },
+      { id: "quickbooks", name: "QuickBooks", icon: BookOpen, path: ROUTES.settings.integrations, roles: ["admin", "owner"] },
     ],
   },
   {

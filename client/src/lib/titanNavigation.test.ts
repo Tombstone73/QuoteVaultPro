@@ -11,6 +11,15 @@ function itemIds(sectionKey: string, role: string, isPlatformAdmin = false, isPl
 }
 
 describe("Titan navigation platform placement", () => {
+  test("shows QuickBooks under Accounting for organization Admin and Owner only", () => {
+    const adminAccounting = visibleSection("accounting", "admin");
+    const ownerAccounting = visibleSection("accounting", "owner");
+    const memberAccounting = visibleSection("accounting", "member");
+
+    expect(adminAccounting?.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: "quickbooks", path: "/settings/integrations" })]));
+    expect(ownerAccounting?.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: "quickbooks", path: "/settings/integrations" })]));
+    expect(memberAccounting?.items).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "quickbooks" })]));
+  });
   test("shows the Admin Settings entries for the organization Admin role", () => {
     expect(itemIds("system", "admin")).toEqual(expect.arrayContaining(["settings", "users", "customer-portal"]));
   });

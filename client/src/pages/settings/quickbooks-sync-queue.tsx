@@ -62,7 +62,7 @@ export default function QuickBooksSyncQueuePage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const { activeOrgId } = useActiveOrganizationRole({ enabled: Boolean(user) });
+  const { activeOrgId, isAdminOrOwner, isLoading: isLoadingOrganizationRole } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<QuickBooksSyncPageSize>(25);
   const [hydratedPageSizeKey, setHydratedPageSizeKey] = useState<string | null>(null);
@@ -71,6 +71,9 @@ export default function QuickBooksSyncQueuePage() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [eligibilityFilter, setEligibilityFilter] = useState<EligibilityFilter>('all');
   const [errorFilter, setErrorFilter] = useState<ErrorFilter>('all');
+  if (!isLoadingOrganizationRole && !isAdminOrOwner) {
+    return <div className="container mx-auto p-6">You don't have permission to view this page.</div>;
+  }
   const [sortBy, setSortBy] = useState<QuickBooksSyncSort>('updatedAt');
   const [sortDir, setSortDir] = useState<QuickBooksSyncSortDirection>('desc');
   const [selected, setSelected] = useState<Map<string, QueueItem>>(new Map());
