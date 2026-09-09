@@ -47,6 +47,7 @@ import {
 import { canonicalProofingOperations } from "../services/canonicalProofingOperations";
 import { createProofAccessToken } from "../services/proofAccessTokenService";
 import { emailService } from "../emailService";
+import { shouldSuppressM77fQaExternalDelivery } from "../lib/m77fQaProviderSafety";
 
 /** Matches the pattern used in platform.ts for invite link generation. */
 function getBaseUrl(req: any): string {
@@ -133,6 +134,72 @@ function buildProofEmailHtml(args: {
   </p>
 </body>
 </html>`;
+}
+
+type ProofEmailPayload = {
+  to: string;
+  rawToken: string;
+  versionNumber: number;
+  sentToName: string | null;
+  customerMessage: string | null;
+  subject: string | null;
+};
+
+/**
+ * The proof version, access token, and state transition are committed before
+ * this boundary. The exact M7 QA tenant receives an explicit auditable hold;
+ * all other contexts retain the normal email authority unchanged.
+ */
+async function deliverProofEmailOrSuppressForM77fQa(input: {
+  organizationId: string;
+  proofVersionId: string;
+  actorUserId: string;
+  payload: ProofEmailPayload;
+  req: any;
+}) {
+  if (shouldSuppressM77fQaExternalDelivery({
+    organizationId: input.organizationId,
+    requestHost: input.req.get("host"),
+    requestOrigin: input.req.get("origin"),
+  })) {
+    await db.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      userName: input.req.user?.email || input.req.user?.name || null,
+      actionType: "PROOF_DELIVERY_SUPPRESSED_FOR_M77F_QA",
+      entityType: "line_item_proof_version",
+      entityId: input.proofVersionId,
+      entityName: `Proof v${input.payload.versionNumber}`,
+      description: "Proof delivery suppressed for isolated M7.7F DEV QA validation.",
+      newValues: {
+        deliveryMode: "suppressed",
+        providerCall: "not_attempted",
+        proofVersionId: input.proofVersionId,
+        versionNumber: input.payload.versionNumber,
+      },
+      ipAddress: input.req.ip || null,
+      userAgent: input.req.headers["user-agent"] || null,
+    } as any);
+    return;
+  }
+
+  const baseUrl = getBaseUrl(input.req);
+  const proofLink = `${baseUrl}/portal/proof/${input.payload.rawToken}`;
+  emailService
+    .sendEmail(input.organizationId, {
+      to: input.payload.to,
+      subject: sanitizeEmailSubject(input.payload.subject || buildDefaultProofEmailSubject(input.payload.versionNumber)),
+      html: buildProofEmailHtml({
+        proofLink,
+        versionNumber: input.payload.versionNumber,
+        sentToName: input.payload.sentToName,
+        customerMessage: input.payload.customerMessage,
+        fromName: input.req.user?.name || input.req.user?.email || "Your account manager",
+      }),
+    })
+    .catch((err: any) => {
+      console.error("[Proofing] Failed to send proof email:", err?.message ?? err);
+    });
 }
 
 function getUserId(user: any): string | undefined {
@@ -606,23 +673,13 @@ export function registerProofingRoutes(
 
       // Send email after transaction commits — failure is logged but does not roll back.
       if (proofEmailPayload) {
-        const baseUrl = getBaseUrl(req);
-        const proofLink = `${baseUrl}/portal/proof/${proofEmailPayload.rawToken}`;
-        emailService
-          .sendEmail(organizationId, {
-            to: proofEmailPayload.to,
-            subject: sanitizeEmailSubject(proofEmailPayload.subject || buildDefaultProofEmailSubject(proofEmailPayload.versionNumber)),
-            html: buildProofEmailHtml({
-              proofLink,
-              versionNumber: proofEmailPayload.versionNumber,
-              sentToName: proofEmailPayload.sentToName,
-              customerMessage: proofEmailPayload.customerMessage,
-              fromName: req.user?.name || req.user?.email || "Your account manager",
-            }),
-          })
-          .catch((err: any) => {
-            console.error("[Proofing] Failed to send proof email after send-proof:", err?.message ?? err);
-          });
+        await deliverProofEmailOrSuppressForM77fQa({
+          organizationId,
+          proofVersionId: result.proofVersion.id,
+          actorUserId: userId,
+          payload: proofEmailPayload,
+          req,
+        });
       }
 
       return res.json({ success: true, data: result });
@@ -726,23 +783,13 @@ export function registerProofingRoutes(
       });
 
       if (sendEmailPayload) {
-        const baseUrl = getBaseUrl(req);
-        const proofLink = `${baseUrl}/portal/proof/${sendEmailPayload.rawToken}`;
-        emailService
-          .sendEmail(organizationId, {
-            to: sendEmailPayload.to,
-            subject: sanitizeEmailSubject(sendEmailPayload.subject || buildDefaultProofEmailSubject(sendEmailPayload.versionNumber)),
-            html: buildProofEmailHtml({
-              proofLink,
-              versionNumber: sendEmailPayload.versionNumber,
-              sentToName: sendEmailPayload.sentToName,
-              customerMessage: sendEmailPayload.customerMessage,
-              fromName: req.user?.name || req.user?.email || "Your account manager",
-            }),
-          })
-          .catch((err: any) => {
-            console.error("[Proofing] Failed to send proof email after versions/send:", err?.message ?? err);
-          });
+        await deliverProofEmailOrSuppressForM77fQa({
+          organizationId,
+          proofVersionId: result.proofVersion.id,
+          actorUserId: userId,
+          payload: sendEmailPayload,
+          req,
+        });
       }
 
       return res.json({ success: true, data: result });
@@ -841,23 +888,13 @@ export function registerProofingRoutes(
       });
 
       if (resendEmailPayload) {
-        const baseUrl = getBaseUrl(req);
-        const proofLink = `${baseUrl}/portal/proof/${resendEmailPayload.rawToken}`;
-        emailService
-          .sendEmail(organizationId, {
-            to: resendEmailPayload.to,
-            subject: sanitizeEmailSubject(resendEmailPayload.subject || buildDefaultProofEmailSubject(resendEmailPayload.versionNumber)),
-            html: buildProofEmailHtml({
-              proofLink,
-              versionNumber: resendEmailPayload.versionNumber,
-              sentToName: resendEmailPayload.sentToName,
-              customerMessage: resendEmailPayload.customerMessage,
-              fromName: req.user?.name || req.user?.email || "Your account manager",
-            }),
-          })
-          .catch((err: any) => {
-            console.error("[Proofing] Failed to send resend proof email:", err?.message ?? err);
-          });
+        await deliverProofEmailOrSuppressForM77fQa({
+          organizationId,
+          proofVersionId: result.proofVersion.id,
+          actorUserId: userId,
+          payload: resendEmailPayload,
+          req,
+        });
       }
 
       return res.json({ success: true, data: result });

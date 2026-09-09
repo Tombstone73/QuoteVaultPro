@@ -2,11 +2,12 @@ import type { Express, RequestHandler } from "express";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
-import { customerContacts, customers } from "../../shared/schema";
+import { auditLogs, customerContacts, customers } from "../../shared/schema";
 import {
   assertStage18PDevFixtureAccess,
   isStage18PDevFixtureCustomer,
 } from "../lib/stage18pDevFixtureAccess";
+import { assertM77fQaProviderSafety } from "../lib/m77fQaProviderSafety";
 import {
   acceptCustomerPortalInvite,
   activateCustomerPortalAccess,
@@ -265,6 +266,99 @@ export function registerCustomerPortalAccessAdminRoutes(app: Express, deps: Admi
           contactId: fixtureContact.contactId,
           accessId: access.id,
           email: fixtureContact.email,
+          portalSetupUrl,
+        },
+      });
+    } catch (err) {
+      return sendRouteError(res, err);
+    }
+  });
+
+  // This is an isolated QA activation seam, not a general DEV email bypass.
+  // It preserves the canonical invite/token flow and returns the one-time URL
+  // only to an authenticated owner/admin on the exact QA organization.
+  app.post("/api/customers/:customerId/contacts/:contactId/dev-m77f-qa-portal-setup", ...adminGuards, async (req, res) => {
+    const parsed = z.object({ confirmQaPortalSetup: z.literal(true) }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        code: "M77F_QA_PORTAL_SETUP_CONFIRMATION_REQUIRED",
+        message: "confirmQaPortalSetup: true is required.",
+      });
+    }
+
+    try {
+      assertM77fQaProviderSafety({
+        organizationId: req.organizationId!,
+        requestHost: req.get("host"),
+        requestOrigin: req.get("origin"),
+      });
+
+      const [qaContact] = await db
+        .select({
+          customerId: customers.id,
+          contactId: customerContacts.id,
+          email: customerContacts.email,
+        })
+        .from(customers)
+        .innerJoin(customerContacts, eq(customerContacts.customerId, customers.id))
+        .where(and(
+          eq(customers.id, req.params.customerId),
+          eq(customers.organizationId, req.organizationId!),
+          eq(customerContacts.id, req.params.contactId),
+        ))
+        .limit(1);
+
+      if (!qaContact || !qaContact.email) {
+        return res.status(404).json({
+          success: false,
+          code: "M77F_QA_PORTAL_CONTACT_NOT_FOUND",
+          message: "A portal contact in the dedicated QA organization is required.",
+        });
+      }
+
+      const actorUserId = getActorUserId(req);
+      const access = await createCustomerPortalAccess({
+        organizationId: req.organizationId!,
+        customerId: qaContact.customerId,
+        contactId: qaContact.contactId,
+        actorUserId,
+        accessRole: "VIEWER",
+        sendEmail: false,
+        req,
+      });
+      const portalSetupUrl = (access as { portalSetupUrl?: string }).portalSetupUrl;
+      if (!portalSetupUrl) {
+        throw Object.assign(new Error("M7.7F QA portal setup link was not created."), {
+          status: 500,
+          code: "M77F_QA_PORTAL_SETUP_FAILED",
+        });
+      }
+
+      await db.insert(auditLogs).values({
+        organizationId: req.organizationId!,
+        userId: actorUserId,
+        actionType: "PORTAL_INVITE_DELIVERY_SUPPRESSED_FOR_M77F_QA",
+        entityType: "customer_portal_access",
+        entityId: access.id,
+        description: "Portal invite delivery suppressed for isolated M7.7F DEV QA activation.",
+        newValues: {
+          customerId: qaContact.customerId,
+          contactId: qaContact.contactId,
+          deliveryMode: "suppressed",
+          providerCall: "not_attempted",
+        },
+        ipAddress: req.ip ?? null,
+        userAgent: req.get("user-agent") ?? null,
+      } as any);
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          customerId: qaContact.customerId,
+          contactId: qaContact.contactId,
+          accessId: access.id,
+          email: qaContact.email,
           portalSetupUrl,
         },
       });
