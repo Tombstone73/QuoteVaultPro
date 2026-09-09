@@ -176,7 +176,13 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
     ]);
   }
 
-  if (meta.pricingProfileKey === "fee" && hasFlatFeeFormula(meta)) {
+  // Older fee profiles express their price as a formula.  Current V2 service
+  // products instead persist an exact cent value in pricingV2.base.flatFeeCents.
+  // Both are complete, once-per-line pricing sources and must not require an
+  // unrelated per-piece, area, or minimum rate merely to pass publication.
+  const feeWorkflow =
+    meta.pricingProfileKey === "fee" || meta.workflowIntent === "service_fee";
+  if (feeWorkflow && hasFlatFeeFormula(meta)) {
     return toResult([]);
   }
 
@@ -192,6 +198,10 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   }
 
   const base = asRecord((pricingV2 as any).base);
+  const flatFeeCents = typeof base?.flatFeeCents === "number" ? base.flatFeeCents : 0;
+  if (feeWorkflow && Number.isFinite(flatFeeCents) && flatFeeCents > 0) {
+    return toResult([]);
+  }
   const perSqftCents = typeof base?.perSqftCents === "number" ? base.perSqftCents : 0;
   const perPieceCents = typeof base?.perPieceCents === "number" ? base.perPieceCents : 0;
   const minimumChargeCents = typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : 0;

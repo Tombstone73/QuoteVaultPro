@@ -67,6 +67,30 @@ describe("quantity-only PBV2 tier pricing validation", () => {
     expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
   });
 
+  test("accepts the canonical flat fee for a service-fee workflow without inventing a base rate", () => {
+    const tree = tierOnlyTree([]) as any;
+    tree.meta = {
+      workflowIntent: "service_fee",
+      pricingV2: {
+        base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null, flatFeeCents: 250 },
+      },
+    };
+
+    expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
+  });
+
+  test("still rejects a service-fee workflow with no positive flat fee", () => {
+    const tree = tierOnlyTree([]) as any;
+    tree.meta = {
+      workflowIntent: "service_fee",
+      pricingV2: {
+        base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null, flatFeeCents: 0 },
+      },
+    };
+
+    expect(validateTreeHasBasePrice(tree).errors[0]?.code).toBe("PBV2_E_BASE_PRICE_MISSING");
+  });
+
   test("accepts multiple direct base-price matrix rows without quantity tiers, including qty_only profile metadata", () => {
     const tree = tierOnlyTree([]) as any;
     tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
