@@ -14,6 +14,7 @@ import {
 import { brandedId, type InboundIntakeId } from "../../modules/shared/commercialValues.js";
 
 export interface InboundHttpService {
+  ingest(context: OperationContext, input: import("../../modules/inbound/contracts.js").IngestInboundIntake): Promise<ApplicationResult<InboundIntake>>;
   list(context: OperationContext, query: Readonly<{ limit: number; cursor?: string; status?: (typeof inboundIntakeStates)[number]; search?: string }>): Promise<ApplicationResult<InboundIntakePage>>;
   detail(context: OperationContext, intakeId: InboundIntakeId): Promise<ApplicationResult<InboundIntakeDetail>>;
   review(context: OperationContext, intakeId: InboundIntakeId, review: ReviewInboundIntake): Promise<ApplicationResult<InboundIntake>>;
@@ -102,10 +103,23 @@ const listQuery = (request: Request) => {
   if (state && state !== "all" && !(inboundIntakeStates as readonly string[]).includes(state)) throw new V2ApplicationError("VALIDATION_ERROR", "Inbound status is invalid.");
   return { limit: Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 100)) : 25, ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}), ...(state && state !== "all" ? { status: state as (typeof inboundIntakeStates)[number] } : {}), ...(typeof request.query.q === "string" ? { search: request.query.q } : {}) };
 };
+const M77F_QA_ORG = "b6f969b2-dda3-4133-9d75-c417dabb8f3a";
+const assertSyntheticQaIngress = (organizationId:string):void => {
+  const env=process.env;
+  const allowed=env.NODE_ENV === "test" || (env.NODE_ENV === "production" && env.APP_ENV?.toLowerCase() === "development" && env.RAILWAY_PROJECT_NAME === "PrintersHero-DEV" && env.RAILWAY_ENVIRONMENT_NAME === "Development");
+  if (!allowed || organizationId !== M77F_QA_ORG) throw new V2ApplicationError("FORBIDDEN","Synthetic inbound is restricted to M7 QA DEV validation.");
+};
 
 /** Mounted only by the V2 authenticated host. Source ingestion is deliberately not a browser route. */
 export const createInboundRouter = (dependencies: InboundHttpDependencies): Router => {
   const router = expressRouter({ mergeParams: true });
+  router.post("/dev-qa-synthetic", (request,response) => void run(response,async()=>{
+    const body=object(request.body); const operation=await context(request,dependencies,true); assertSyntheticQaIngress(operation.organizationId);
+    const sourceMessageId=asString(body.sourceMessageId,"sourceMessageId",true)!;
+    const receivedAt=asString(body.receivedAt,"receivedAt",true)!;
+    const result=await dependencies.service.ingest(operation,{sourceProvider:"imported",sourceMessageId:`m77f:${sourceMessageId}`,sourceMailbox:"m77f-qa-synthetic",senderName:asString(body.senderName,"senderName"),senderEmail:asString(body.senderEmail,"senderEmail"),recipientEmail:asString(body.recipientEmail,"recipientEmail"),subject:asString(body.subject,"subject"),receivedAt,rawSource:{mode:"M77F_QA_SYNTHETIC",sourceMessageId,attachments:Array.isArray(body.attachments)?body.attachments:[]},normalizedBody:asString(body.body,"body"),extractedDraft:{}});
+    send(response,result);
+  }));
   router.get("/", (request, response) => void run(response, async () => send(response, await dependencies.service.list(await context(request, dependencies), listQuery(request)))));
   router.get("/:id", (request, response) => void run(response, async () => send(response, await dependencies.service.detail(await context(request, dependencies), intakeId(request)))));
   router.patch("/:id/review", (request, response) => void run(response, async () => {
