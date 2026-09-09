@@ -18,6 +18,14 @@ test('Customer Detail Invoice table exposes the required operational columns', (
   expect(table).toContain('<OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} />');
 });
 
+test('Customer Detail Invoice approval labels stay compact', () => {
+  const approvalMapping = table.slice(table.indexOf('function approvalLabel'), table.indexOf('function canApproveInvoice'));
+  expect(approvalMapping).toContain('return "Approved"');
+  expect(approvalMapping).toContain('return "Not Approved"');
+  expect(approvalMapping).not.toContain('Approved for Accounting');
+  expect(approvalMapping).not.toContain('Needs Reapproval');
+});
+
 test('Customer Detail actions are visible icon-plus-label controls, not a hidden action menu', () => {
   expect(table).toContain('View Invoice');
   expect(table).toContain('View Order');

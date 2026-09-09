@@ -19,6 +19,14 @@ test('the actual Customer Detail invoice table renders the operational invoice f
   expect(invoiceTable).not.toContain('DropdownMenu');
 });
 
+test('the actual Customer Detail invoice table uses compact approval labels', () => {
+  const approvalMapping = invoiceTable.slice(invoiceTable.indexOf('const approvalLabel'), invoiceTable.indexOf('const canApprove'));
+  expect(approvalMapping).toContain('return "Approved"');
+  expect(approvalMapping).toContain('return "Not Approved"');
+  expect(approvalMapping).not.toContain('Approved for Accounting');
+  expect(approvalMapping).not.toContain('Needs Reapproval');
+});
+
 test('the rendered Customer Detail invoice table owns its persistent layout and server-backed sort state', () => {
   expect(invoiceTable).toContain('useInvoicesPage');
   expect(invoiceTable).toContain('customer_detail_invoices');

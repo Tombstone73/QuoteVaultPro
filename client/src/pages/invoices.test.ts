@@ -85,6 +85,11 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("visibleColumns.map");
   });
 
+  it("renders compact accounting approval labels in the Global Invoices table", () => {
+    expect(invoicesPageSource).toContain('<StatusPill variant="info">Approved</StatusPill>');
+    expect(invoicesPageSource).toContain('>Not Approved</StatusPill>');
+  });
+
   it("routes every visible data header through the canonical server-sort state", () => {
     ["customer", "contact", "jobName", "purchaseOrderNumber", "orderNumber", "invoiceNumber", "issueDate", "dueDate", "status", "approval", "jobStatus", "lastSentAt", "total", "paid", "balance"].forEach((key) => {
       expect(invoicesPageSource).toContain(`renderSortableHead(\"${key}\"`);

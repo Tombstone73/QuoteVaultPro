@@ -44,8 +44,7 @@ function titleCase(value: string | null | undefined) {
 
 function approvalLabel(invoice: InvoiceListItem) {
   const currentVersion = Number(invoice.invoiceVersion || 1);
-  if (invoice.accountingApprovedAt && !invoice.accountingApprovalRevokedAt && Number(invoice.accountingApprovedVersion || 0) === currentVersion) return "Approved for Accounting";
-  if (invoice.accountingApprovalRevokedAt || (invoice.accountingApprovedAt && Number(invoice.accountingApprovedVersion || 0) !== currentVersion)) return "Needs Reapproval";
+  if (invoice.accountingApprovedAt && !invoice.accountingApprovalRevokedAt && Number(invoice.accountingApprovedVersion || 0) === currentVersion) return "Approved";
   return "Not Approved";
 }
 
@@ -53,7 +52,7 @@ function canApproveInvoice(invoice: InvoiceListItem) {
   return !["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase())
     && String(invoice.importSource || "").toLowerCase() !== "quickbooks"
     && !invoice.isHistorical
-    && approvalLabel(invoice) !== "Approved for Accounting";
+    && approvalLabel(invoice) !== "Approved";
 }
 
 function toOverrideTarget(invoice: InvoiceListItem): CloseJobOverrideTarget | null {
