@@ -34,7 +34,8 @@ try {
   assert.equal(calls.length,2);
   assert.equal(calls[0]?.parameters.at(-1),false);
   assert.equal(calls[0]?.parameters[2],"suppressed");
-  assert.match(calls[0]?.sql??"",/\$3 IN \('sent','failed','ambiguous','suppressed'\)/);
+  assert.match(calls[0]?.sql??"",/SET state=\$3::varchar/);
+  assert.match(calls[0]?.sql??"",/\$3::varchar IN \('sent','failed','ambiguous','suppressed'\)/);
   assert.match(calls[0]?.sql??"",/\$8::boolean AND f\.state='sent'/);
   assert.match(String(calls[1]?.parameters[2]),/providerCall/);
   assert.match(String(calls[1]?.parameters[2]),/dev_qa/);
