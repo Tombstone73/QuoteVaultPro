@@ -22,6 +22,7 @@ assert.deepEqual(result, { unit:{ prepressUnitId:"unit-a",organizationId:"org-a"
 assert.ok(queries.some(sql=>sql.includes("FOR UPDATE OF ri,o")), "handoff locks the open Order Route");
 assert.ok(queries.some(sql=>sql.includes("production_destination_station_key")), "handoff uses frozen station mapping, not live template labels");
 assert.ok(queries.some(sql=>sql.includes("v2_proof_works")), "proof approval is rechecked by the server");
+assert.ok(queries.some(sql=>sql.includes("FOR SHARE OF l")), "handoff locks the Order line without trying to lock the nullable Product Version outer-join side");
 assert.ok(queries.some(sql=>sql.includes("NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor")), "only current production artwork is eligible");
 assert.ok(queries.some(sql=>sql.startsWith("UPDATE v2_route_instances")), "route moves only inside the same handoff transaction");
 assert.ok(queries.some(sql=>sql.startsWith("INSERT INTO v2_production_works")), "canonical Production work is created, never a Prepress shadow job");
