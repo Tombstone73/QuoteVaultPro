@@ -45,12 +45,16 @@ export type JobFileWithDetails = JobFile & {
 /**
  * Fetch all files for an order with enriched user metadata
  */
-export function useOrderFiles(orderId: string | undefined) {
+export function useOrderFiles(orderId: string | undefined, options: { includeLineItems?: boolean } = {}) {
+  const includeLineItems = options.includeLineItems === true;
   return useQuery<OrderFileWithUser[]>({
-    queryKey: ['/api/orders', orderId, 'files'],
+    queryKey: ['/api/orders', orderId, 'files', { includeLineItems }],
     queryFn: async () => {
       if (!orderId) return [];
-      const res = await fetch(`/api/orders/${orderId}/files`, {
+      const endpoint = includeLineItems
+        ? `/api/orders/${orderId}/attachments?includeLineItems=true`
+        : `/api/orders/${orderId}/files`;
+      const res = await fetch(endpoint, {
         credentials: 'include',
       });
       if (!res.ok) throw new Error('Failed to fetch order files');

@@ -681,7 +681,9 @@ export default function Orders() {
     setLoadingAttachments(orderId);
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/files?includeLineItems=true`, {
+      // The list summary includes line-item artwork. Fetch the corresponding
+      // unified collection rather than the legacy order-level-only /files route.
+      const response = await fetch(`/api/orders/${orderId}/attachments?includeLineItems=true`, {
         credentials: "include",
       });
       if (!response.ok) throw new Error("Failed to fetch artwork");
@@ -689,7 +691,7 @@ export default function Orders() {
       const result = await response.json();
       const attachments = normalizeOrderFileRows(
         Array.isArray(result?.data) ? result.data : [],
-        Array.isArray(result?.assets) ? result.assets : [],
+        [],
       );
       const viewerAttachments = toAttachmentViewerAttachments(attachments) as AttachmentData[];
       if (!viewerAttachments.length) {

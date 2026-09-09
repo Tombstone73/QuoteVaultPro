@@ -32,8 +32,8 @@ describe("OrdersArtworkPreviewCell", () => {
                 attachmentsSummary: {
                   totalCount: 2,
                   previews: [
-                    { id: "attachment-a", filename: "front.pdf", thumbnailUrl: "/objects/front-thumb.png" },
-                    { id: "attachment-b", filename: "back.pdf", thumbnailUrl: "/objects/back-thumb.png" },
+                    { id: "attachment-a", fileRecordId: "file-front", filename: "front.pdf", thumbnailUrl: "/objects/front-thumb.png" },
+                    { id: "attachment-b", fileRecordId: "file-back", filename: "back.pdf", thumbnailUrl: "/objects/back-thumb.png" },
                   ],
                 },
               } as any}
@@ -53,6 +53,7 @@ describe("OrdersArtworkPreviewCell", () => {
       });
 
       expect(openArtwork).toHaveBeenCalledWith("order-1", {
+        fileRecordId: "file-back",
         attachmentId: "attachment-b",
         thumbnailUrl: "/objects/back-thumb.png",
       });

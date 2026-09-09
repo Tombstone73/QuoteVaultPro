@@ -123,7 +123,11 @@ export function OrdersArtworkPreviewCell({
             key={preview.id}
             type="button"
             className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
-            onClick={(event) => openArtwork(event, { attachmentId: preview.id, thumbnailUrl })}
+            onClick={(event) => openArtwork(event, {
+              fileRecordId: preview.fileRecordId,
+              attachmentId: preview.id,
+              thumbnailUrl,
+            })}
             onPointerDown={stopPointerPropagation}
             disabled={loading}
             aria-label={`Open artwork viewer for ${preview.filename}`}

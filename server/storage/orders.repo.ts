@@ -740,7 +740,7 @@ export class OrdersRepository {
         const previewData: Map<string, {
             thumbnails: string[];
             totalCount: number;
-            previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+            previews: Array<{ id: string; fileRecordId?: string | null; orderLineItemId?: string | null; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
         }> = new Map();
         if (!orderIds.length) return previewData;
 
@@ -766,12 +766,14 @@ export class OrdersRepository {
             .orderBy(orderAttachments.createdAt);
 
         const groupedAttachments = new Map<string, string[]>();
-        const groupedPreviews = new Map<string, Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>>();
+        const groupedPreviews = new Map<string, Array<{ id: string; fileRecordId?: string | null; orderLineItemId?: string | null; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>>();
         const countMap = new Map<string, number>();
 
         const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
             return {
                 id: String(att.id),
+                fileRecordId: att.fileRecordId ?? null,
+                orderLineItemId: att.orderLineItemId ?? null,
                 orderId: att.orderId,
                 filename: String(att.originalFilename ?? att.fileName ?? "Attachment"),
                 mimeType: att.mimeType ?? null,
@@ -797,6 +799,8 @@ export class OrdersRepository {
             if (previewGroup.length < 3) {
                 previewGroup.push({
                     id: att.id,
+                    fileRecordId: att.fileRecordId,
+                    orderLineItemId: att.orderLineItemId,
                     filename: att.filename,
                     mimeType: att.mimeType,
                     thumbnailUrl: att.thumbnailUrl,
@@ -846,7 +850,7 @@ export class OrdersRepository {
             thumbsCount?: number;
             attachmentsSummary?: {
                 totalCount: number;
-                previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+                previews: Array<{ id: string; fileRecordId?: string | null; orderLineItemId?: string | null; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
             };
             listLabel?: string | null;
             invoiceState?: OrderInvoiceStateSummary;
@@ -1094,7 +1098,7 @@ export class OrdersRepository {
         let previewData = new Map<string, {
             thumbnails: string[];
             totalCount: number;
-            previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
+            previews: Array<{ id: string; fileRecordId?: string | null; orderLineItemId?: string | null; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
         }>();
         
         if (opts.includeThumbnails) {

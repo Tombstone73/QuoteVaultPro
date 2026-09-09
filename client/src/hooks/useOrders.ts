@@ -388,6 +388,8 @@ export type OrderRow = Order & {
     totalCount: number;
     previews: Array<{
       id: string;
+      fileRecordId?: string | null;
+      orderLineItemId?: string | null;
       filename: string;
       mimeType?: string | null;
       thumbnailUrl?: string | null;

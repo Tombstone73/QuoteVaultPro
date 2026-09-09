@@ -46,6 +46,8 @@ import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel"
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
+import { OrderLineItemArtworkPreview } from "@/components/orders/OrderLineItemArtworkPreview";
+import { resolveOrdersArtworkViewerIndex, type OrdersArtworkViewerTarget } from "@/lib/ordersArtworkViewer";
 import { deriveLineItemPricingDisplay, deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { buildQuoteCalculatePayload } from "@/components/orders/quoteCalculatePayload";
 import { filterAndPrioritizeProductsForMaterial } from "@/components/orders/productSuggestionPriority";
@@ -821,7 +823,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const products = (productsResponse?.data || productsResponse || []) as Product[];
 
-  const orderFilesQuery = useOrderFiles(orderId);
+  const orderFilesQuery = useOrderFiles(orderId, { includeLineItems: true });
   const allOrderFiles = orderFilesQuery.data ?? [];
   const orderFilesAssociationKnown = orderFilesQuery.isSuccess;
 
@@ -1515,7 +1517,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     return null;
   }, [expandedItem, expandedProduct]);
 
-  const [artworkViewerLineItemId, setArtworkViewerLineItemId] = useState<string | null>(null);
+  const [artworkViewerTarget, setArtworkViewerTarget] = useState<(OrdersArtworkViewerTarget & { lineItemId: string }) | null>(null);
 
   const [missingArtworkSuppressReason, setMissingArtworkSuppressReason] = useState<string>("");
   const [savingFlagLineItemId, setSavingFlagLineItemId] = useState<string | null>(null);
@@ -1526,22 +1528,29 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const artworkViewerAttachments = useMemo(() => {
     const attachedFiles = (allOrderFiles as any[]).filter(
-      (file) => String(file?.orderLineItemId ?? "") === String(artworkViewerLineItemId ?? ""),
+      (file) => String(file?.orderLineItemId ?? file?.parentLineItemId ?? "") === String(artworkViewerTarget?.lineItemId ?? ""),
     );
     if (attachedFiles.length > 0) return toAttachmentViewerAttachments(attachedFiles);
-    const previewUrl = artworkViewerLineItemId
-      ? lineItemPreviews[String(artworkViewerLineItemId)]?.thumbUrls?.[0]
+    const preview = artworkViewerTarget
+      ? lineItemPreviews[String(artworkViewerTarget.lineItemId)]?.previews?.[0]
       : null;
-    return previewUrl
+    return preview
       ? toAttachmentViewerAttachments([{
-          id: `line-item-preview-${artworkViewerLineItemId}`,
+          id: preview.artworkId,
+          artworkId: preview.artworkId,
+          fileRecordId: preview.fileRecordId,
           fileName: "Artwork preview",
           mimeType: "image/jpeg",
-          previewUrl,
-          thumbnailUrl: previewUrl,
+          previewUrl: preview.thumbnailUrl,
+          thumbnailUrl: preview.thumbnailUrl,
         }])
       : [];
-  }, [allOrderFiles, artworkViewerLineItemId, lineItemPreviews]);
+  }, [allOrderFiles, artworkViewerTarget, lineItemPreviews]);
+
+  const artworkViewerInitialIndex = useMemo(
+    () => resolveOrdersArtworkViewerIndex(artworkViewerAttachments, artworkViewerTarget ?? {}),
+    [artworkViewerAttachments, artworkViewerTarget],
+  );
 
   const filteredProducts = useMemo(() => {
     return filterAndPrioritizeProductsForMaterial(products as any[], searchQuery, knownMaterialIdForSuggestions) as Product[];
@@ -2901,14 +2910,20 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const commercialPricingOnly = readOnly && canEditLineItemCommercialPricing(item);
                   const canEditPrice = !readOnly || commercialPricingOnly;
 
-                  const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
+                  const attachmentsForThumb = (allOrderFiles as any[]).filter(
+                    (file) => String(file?.orderLineItemId ?? file?.parentLineItemId ?? "") === String(item.id),
+                  ) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
                     orderFilesAssociationKnown &&
                     ((allOrderFiles as any[]).length === 0 ||
                       (allOrderFiles as any[]).some((f) => Object.prototype.hasOwnProperty.call(f ?? {}, "orderLineItemId")));
 
                   const previewForLineItem = (lineItemPreviews as any)?.[String(item.id)] as
-                    | { thumbUrls?: string[]; thumbCount?: number }
+                    | {
+                      thumbUrls?: string[];
+                      thumbCount?: number;
+                      previews?: Array<{ artworkId: string; fileRecordId: string; thumbnailUrl: string }>;
+                    }
                     | undefined;
                   const lineItemAssetsKnownForItem =
                     lineItemAssetsAssociationKnown &&
@@ -2923,6 +2938,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const fulfillmentOnly = (productForPolicy as any)?.workflowIntent === "fulfillment_only";
                   const serviceFee = (productForPolicy as any)?.workflowIntent === "service_fee";
 
+                  const previewTargets = Array.isArray(previewForLineItem?.previews) ? previewForLineItem!.previews! : [];
                   const previewThumbUrls = Array.isArray(previewForLineItem?.thumbUrls) ? previewForLineItem!.thumbUrls! : [];
                   const heroThumbUrls = Array.from(
                     new Set(
@@ -2933,7 +2949,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   ).slice(0, 1);
 
                   const heroTotalCount = Number(previewForLineItem?.thumbCount) || previewThumbUrls.length;
-                  const heroOverflowCount = Math.max(0, heroTotalCount - 1);
                   const lineNumber = lineNumberById.get(String(item.id)) ?? (Number((item as any).lineNumber) || 1);
 
                   const reorderDisabled = readOnly || productionPriorityLineItemIds.length > 0;
@@ -2942,36 +2957,18 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     : undefined;
 
                   const thumbnailNode = heroThumbUrls.length ? (
-                    <button
-                      type="button"
-                      className="w-11 h-11 relative rounded overflow-hidden"
-                      data-li-interactive="true"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setArtworkViewerLineItemId(String(item.id));
+                    <OrderLineItemArtworkPreview
+                      lineNumber={lineNumber}
+                      thumbnailUrl={heroThumbUrls[0]}
+                      totalCount={heroTotalCount}
+                      target={{
+                        fileRecordId: previewTargets[0]?.fileRecordId ?? (attachmentsForThumb[0] as any)?.fileRecordId ?? null,
+                        artworkId: previewTargets[0]?.artworkId ?? null,
+                        attachmentId: (attachmentsForThumb[0] as any)?.id ?? null,
+                        thumbnailUrl: heroThumbUrls[0],
                       }}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      aria-label={`View artwork for Line ${lineNumber}`}
-                      title={`View artwork for Line ${lineNumber}`}
-                    >
-                      <img
-                        src={heroThumbUrls[0]}
-                        alt=""
-                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                      />
-
-                      {heroOverflowCount > 0 && (
-                        <div
-                          className="absolute -top-1 -right-1 h-5 min-w-5 px-1 rounded-full bg-background/90 border border-border text-[11px] text-foreground flex items-center justify-center"
-                          aria-hidden
-                        >
-                          +{heroOverflowCount}
-                        </div>
-                      )}
-                    </button>
+                      onOpenArtwork={(target) => setArtworkViewerTarget({ ...target, lineItemId: String(item.id) })}
+                    />
                   ) : attachmentsForThumb.length > 0 ? (
                     <button
                       type="button"
@@ -2979,7 +2976,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        setArtworkViewerLineItemId(String(item.id));
+                        setArtworkViewerTarget({
+                          lineItemId: String(item.id),
+                          fileRecordId: (attachmentsForThumb[0] as any)?.fileRecordId ?? null,
+                          attachmentId: (attachmentsForThumb[0] as any)?.id ?? null,
+                          thumbnailUrl: getThumbSrc(attachmentsForThumb[0] as any),
+                        });
                       }}
                       onPointerDown={(event) => event.stopPropagation()}
                       aria-label={`View artwork for Line ${lineNumber}`}
@@ -4336,9 +4338,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       <AttachmentViewerDialog
         attachments={artworkViewerAttachments}
-        open={!!artworkViewerLineItemId && artworkViewerAttachments.length > 0}
+        initialIndex={Math.max(0, artworkViewerInitialIndex)}
+        open={!!artworkViewerTarget && artworkViewerAttachments.length > 0 && artworkViewerInitialIndex >= 0}
         onOpenChange={(open) => {
-          if (!open) setArtworkViewerLineItemId(null);
+          if (!open) setArtworkViewerTarget(null);
         }}
       />
       <Dialog open={productionBypassTarget !== null} onOpenChange={(open) => { if (!open && !productionBypass.isPending) setProductionBypassTarget(null); }}>

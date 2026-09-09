@@ -5,6 +5,11 @@ export type OrderLineItemPreviewsResponse = Record<
   {
     thumbUrls: string[];
     thumbCount: number;
+    previews: Array<{
+      artworkId: string;
+      fileRecordId: string;
+      thumbnailUrl: string;
+    }>;
   }
 >;
 

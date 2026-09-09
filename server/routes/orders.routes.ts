@@ -4439,6 +4439,7 @@ export async function registerOrderRoutes(
 
                                 return {
                                     id: String(link.assetId),
+                                    fileRecordId: (enriched as any).fileRecordId ?? (asset as any).fileRecordId ?? null,
                                     filename,
                                     fileName: filename,
                                     displayFilename: filename,
@@ -4452,6 +4453,7 @@ export async function registerOrderRoutes(
                                     previewThumbnailUrl,
                                     createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
                                     source: 'line_item' as const,
+                                    orderLineItemId: String(link.lineItemId),
                                     parentLineItemId: String(link.lineItemId),
                                     role: String(link.role ?? 'other'),
                                 };
@@ -5164,8 +5166,12 @@ export async function registerOrderRoutes(
             }
 
             // Seed output map so callers can safely access missing line items
-            const out: Record<string, { thumbUrls: string[]; thumbCount: number }> = {};
-            for (const id of lineItemIds) out[String(id)] = { thumbUrls: [], thumbCount: 0 };
+            const out: Record<string, {
+                thumbUrls: string[];
+                thumbCount: number;
+                previews: Array<{ artworkId: string; fileRecordId: string; thumbnailUrl: string }>;
+            }> = {};
+            for (const id of lineItemIds) out[String(id)] = { thumbUrls: [], thumbCount: 0, previews: [] };
 
             const resolutions = await lineItemArtworkReadResolver.resolveForLineItems({
                 organizationId,
@@ -5174,13 +5180,18 @@ export async function registerOrderRoutes(
             });
             for (const lineItemId of lineItemIds) {
                 const resolution = resolutions.get(lineItemId);
-                const thumbnailIds = resolution?.artwork
-                    .map((artwork) => artwork.fileRecordId)
-                    .filter((id): id is string => !!id)
-                    .slice(0, 3) ?? [];
+                const previews = resolution?.artwork
+                    .filter((artwork) => !!artwork.fileRecordId)
+                    .slice(0, 3)
+                    .map((artwork) => ({
+                        artworkId: artwork.id,
+                        fileRecordId: artwork.fileRecordId,
+                        thumbnailUrl: `/api/artwork/file-records/${encodeURIComponent(artwork.fileRecordId)}/content?variant=thumbnail`,
+                    })) ?? [];
                 out[lineItemId] = {
-                    thumbUrls: Array.from(new Set(thumbnailIds)).map((id) => `/api/artwork/file-records/${encodeURIComponent(id)}/content?variant=thumbnail`),
+                    thumbUrls: previews.map((preview) => preview.thumbnailUrl),
                     thumbCount: resolution?.artwork.length ?? 0,
+                    previews,
                 };
             }
 

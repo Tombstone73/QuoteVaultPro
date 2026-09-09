@@ -8,6 +8,7 @@ const attachments: any[] = [
 
 describe("resolveOrdersArtworkViewerIndex", () => {
   test("opens the exact attachment selected by a thumbnail", () => {
+    expect(resolveOrdersArtworkViewerIndex(attachments, { fileRecordId: "file-b", attachmentId: "attachment-a" })).toBe(1);
     expect(resolveOrdersArtworkViewerIndex(attachments, { attachmentId: "attachment-b" })).toBe(1);
     expect(resolveOrdersArtworkViewerIndex(attachments, {
       thumbnailUrl: "/api/artwork/file-records/file-a/content?variant=thumbnail",
@@ -20,5 +21,6 @@ describe("resolveOrdersArtworkViewerIndex", () => {
     })).toBe(1);
     expect(resolveOrdersArtworkViewerIndex([], { attachmentId: "missing" })).toBe(0);
     expect(resolveOrdersArtworkViewerIndex(attachments, { attachmentId: "missing" })).toBe(-1);
+    expect(resolveOrdersArtworkViewerIndex(attachments, { fileRecordId: "missing" })).toBe(-1);
   });
 });
