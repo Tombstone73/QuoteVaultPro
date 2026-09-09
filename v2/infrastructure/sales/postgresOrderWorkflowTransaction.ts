@@ -70,7 +70,7 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
       COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') workflow_intent
       FROM v2_sales_document_lines l JOIN v2_sales_order_details o ON o.organization_id=l.organization_id AND o.document_id=l.document_id AND o.commercial_state='open'
       LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId'
-      WHERE l.organization_id=$1 AND l.document_id=$2 AND l.id=$3 FOR UPDATE`, [organizationId, orderId, lineId]);
+      WHERE l.organization_id=$1 AND l.document_id=$2 AND l.id=$3 FOR UPDATE OF l,o`, [organizationId, orderId, lineId]);
     const line = result.rows[0];
     if (!line) throw new V2ApplicationError("NOT_FOUND", "Open Order line was not found.");
     if (line.workflow_intent !== "standard_production") throw new V2ApplicationError("CONFLICT", "Only a standard-production Order line can use this workflow exception.");
