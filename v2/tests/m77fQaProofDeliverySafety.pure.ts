@@ -7,7 +7,7 @@ const deployedDev = {
   APP_ENV: "development",
   RAILWAY_PROJECT_NAME: "PrintersHero-DEV",
   RAILWAY_ENVIRONMENT_NAME: "Development",
-  DATABASE_URL: "postgres://safe@ep-wandering-band-aebq1qcx-pooler.c-2.us-east-2.aws.neon.tech/neondb",
+  DATABASE_URL: "postgres://safe@ep-soft-frost-aef6c2jb-pooler.c-2.us-east-2.aws.neon.tech/neondb",
 };
 
 assert.equal(shouldSuppressM77fQaProofDelivery(M77F_QA_ORGANIZATION_ID, deployedDev), true);

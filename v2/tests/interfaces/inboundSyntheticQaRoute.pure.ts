@@ -22,7 +22,7 @@ async function run() {
     APP_ENV: "development",
     RAILWAY_PROJECT_NAME: "PrintersHero-DEV",
     RAILWAY_ENVIRONMENT_NAME: "Development",
-    DATABASE_URL: "postgres://safe@ep-wandering-band-aebq1qcx-pooler.c-2.us-east-2.aws.neon.tech/neondb",
+    DATABASE_URL: "postgres://safe@ep-soft-frost-aef6c2jb-pooler.c-2.us-east-2.aws.neon.tech/neondb",
   });
   let result = await request(app()).post(`/v2/organizations/${qa}/inbound-orders/dev-qa-synthetic`).send(payload);
   assert.equal(result.status, 200); assert.equal(serviceCalls.length, 1); assert.equal((serviceCalls[0] as any).sourceMessageId, "m77f:message-1");
@@ -31,7 +31,7 @@ async function run() {
   process.env.DATABASE_URL = "postgres://safe@prod.example/neondb";
   result = await request(app()).post(`/v2/organizations/${qa}/inbound-orders/dev-qa-synthetic`).send(payload);
   assert.equal(result.status, 403); assert.equal(serviceCalls.length, 1);
-  process.env.DATABASE_URL = "postgres://safe@ep-wandering-band-aebq1qcx-pooler.c-2.us-east-2.aws.neon.tech/neondb";
+  process.env.DATABASE_URL = "postgres://safe@ep-soft-frost-aef6c2jb-pooler.c-2.us-east-2.aws.neon.tech/neondb";
   process.env.APP_ENV = "production";
   result = await request(app()).post(`/v2/organizations/${qa}/inbound-orders/dev-qa-synthetic`).send(payload);
   assert.equal(result.status, 403); assert.equal(serviceCalls.length, 1);

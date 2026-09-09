@@ -5,7 +5,10 @@
  * immutable Proof evidence remain canonical.
  */
 export const M77F_QA_ORGANIZATION_ID = "b6f969b2-dda3-4133-9d75-c417dabb8f3a";
-const DEV_NEON_HOST = "ep-wandering-band-aebq1qcx-pooler.c-2.us-east-2.aws.neon.tech";
+// Bound to the live PrintersHero DEV Neon endpoint verified from the deployed
+// DEV service. This is intentionally an exact host comparison: a generic
+// "looks like DEV" database must not unlock provider-suppression QA seams.
+const DEV_NEON_HOST = "ep-soft-frost-aef6c2jb-pooler.c-2.us-east-2.aws.neon.tech";
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
