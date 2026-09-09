@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type {
   InboundIntakeStore,
   InboundIntakeTransaction,
@@ -22,6 +23,26 @@ type IntakeRow = Record<string, unknown>;
 const text = (value: unknown): string | undefined => typeof value === "string" && value.length ? value : undefined;
 const timestamp = (value: unknown): string => value instanceof Date ? value.toISOString() : String(value);
 const object = (value: unknown): Readonly<Record<string, unknown>> => value && typeof value === "object" && !Array.isArray(value) ? value as Readonly<Record<string, unknown>> : {};
+/** JSONB discards member order, so replay comparison must do the same. */
+const canonicalJson = (value: unknown): string => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  return "{" + Object.keys(value as Record<string, unknown>).sort().map((key) => JSON.stringify(key) + ":" + canonicalJson((value as Record<string, unknown>)[key])).join(",") + "}";
+};
+const inputTimestamp = (value: string): string => new Date(value).toISOString();
+/** Source evidence is immutable: a source identity can only be replayed byte-for-byte semantically. */
+export const inboundSourceEvidenceMatches = (existing: InboundIntake, input: IngestInboundIntake): boolean =>
+  existing.sourceProvider === input.sourceProvider
+  && existing.sourceMessageId === input.sourceMessageId
+  && existing.sourceMailbox === input.sourceMailbox
+  && existing.senderName === input.senderName
+  && existing.senderEmail === input.senderEmail
+  && existing.recipientEmail === input.recipientEmail
+  && existing.subject === input.subject
+  && existing.receivedAt === inputTimestamp(input.receivedAt)
+  && existing.normalizedBody === input.normalizedBody
+  && canonicalJson(existing.rawSource) === canonicalJson(input.rawSource)
+  && canonicalJson(existing.extractedDraft) === canonicalJson(input.extractedDraft ?? {});
 const intake = (row: IntakeRow): InboundIntake => ({
   id: brandedId<"InboundIntakeId">(String(row.id)),
   organizationId: brandedId<"OrganizationId">(String(row.organization_id)),
@@ -186,13 +207,26 @@ export class PostgresInboundIntakeStore implements InboundIntakeStore {
   async ingest(organizationId: OrganizationId, input: IngestInboundIntake, actor: Actor): Promise<InboundIntake> {
     return this.transaction(async (transaction) => {
       const client = (transaction as PostgresInboundIntakeTransaction as { client: PoolClient }).client;
-      const result = await client.query<IntakeRow>(
-        "INSERT INTO v2_inbound_intakes(id,organization_id,source_provider,source_message_id,source_mailbox,sender_name,sender_email,recipient_email,subject,received_at,raw_source,normalized_body,extracted_draft,intake_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::jsonb,'received') ON CONFLICT(organization_id,source_provider,source_message_id) WHERE source_message_id IS NOT NULL DO UPDATE SET updated_at=now() RETURNING *",
+      const inserted = await client.query<IntakeRow>(
+        "INSERT INTO v2_inbound_intakes(id,organization_id,source_provider,source_message_id,source_mailbox,sender_name,sender_email,recipient_email,subject,received_at,raw_source,normalized_body,extracted_draft,intake_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::jsonb,'received') ON CONFLICT(organization_id,source_provider,source_message_id) WHERE source_message_id IS NOT NULL DO NOTHING RETURNING *",
         [randomUUID(), organizationId, input.sourceProvider, input.sourceMessageId ?? null, input.sourceMailbox ?? null, input.senderName ?? null, input.senderEmail ?? null, input.recipientEmail ?? null, input.subject ?? null, input.receivedAt, JSON.stringify(input.rawSource), input.normalizedBody ?? null, JSON.stringify(input.extractedDraft ?? {})],
       );
-      const created = intake(result.rows[0]!);
-      await transaction.recordEvent({ organizationId, intakeId: created.id, type: "ingested", detail: { sourceProvider: input.sourceProvider }, actor });
-      return created;
+      if (inserted.rows[0]) {
+        const created = intake(inserted.rows[0]);
+        await transaction.recordEvent({ organizationId, intakeId: created.id, type: "ingested", detail: { sourceProvider: input.sourceProvider }, actor });
+        return created;
+      }
+      // The partial unique index only conflicts when a provider supplied a stable source ID.
+      if (!input.sourceMessageId) throw new V2ApplicationError("CONFLICT", "Inbound source replay could not be resolved.");
+      const existing = await client.query<IntakeRow>(
+        "SELECT * FROM v2_inbound_intakes WHERE organization_id=$1 AND source_provider=$2 AND source_message_id=$3 FOR UPDATE",
+        [organizationId, input.sourceProvider, input.sourceMessageId],
+      );
+      if (!existing.rows[0]) throw new V2ApplicationError("CONFLICT", "Inbound source replay could not be resolved.");
+      const replay = intake(existing.rows[0]);
+      if (!inboundSourceEvidenceMatches(replay, input))
+        throw new V2ApplicationError("CONFLICT", "Inbound source identity already exists with different source evidence.");
+      return replay;
     });
   }
 }
