@@ -1,8 +1,9 @@
 import { and, eq } from 'drizzle-orm';
-import { auditLogs, invoices } from '@shared/schema';
+import { auditLogs, invoices, organizations } from '@shared/schema';
 import { db } from '../db';
 export { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
+import { resolveQuickBooksPreferencesFromOrgPreferences } from '@shared/quickBooksPreferences';
 
 export async function approveInvoicesForAccounting(input: {
   organizationId: string;
@@ -13,6 +14,13 @@ export async function approveInvoicesForAccounting(input: {
 }, options?: { tx?: any }) {
   const uniqueIds = [...new Set(input.invoiceIds.map(String).filter(Boolean))];
   const approve = async (tx: any) => {
+    const [organization] = await tx
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, input.organizationId))
+      .limit(1);
+    const preferences = (organization?.settings as any)?.preferences;
+    const { autoQueueApprovedInvoices } = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
     const results: Array<{ id: string; outcome: 'approved' | 'skipped' | 'failed'; reason: string | null }> = [];
     for (const invoiceId of uniqueIds) {
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
@@ -28,16 +36,20 @@ export async function approveInvoicesForAccounting(input: {
       }
       const now = new Date();
       const approvedVersion = Number(invoice.invoiceVersion || 1);
+      const hasProviderInvoiceLink = Boolean(String(invoice.qbInvoiceId || invoice.externalAccountingId || '').trim());
+      const shouldQueueInitialSync = autoQueueApprovedInvoices && !hasProviderInvoiceLink;
       await tx.update(invoices).set({
         accountingApprovedAt: now,
         accountingApprovedByUserId: input.actorUserId,
         accountingApprovedVersion: approvedVersion,
         accountingApprovalRevokedAt: null,
-        // Approval changes eligibility only. A stale pending row from the
-        // former policy must not become queued merely by being approved.
-        ...(String(invoice.qbSyncStatus || '').toLowerCase() === 'pending'
-          ? { qbSyncStatus: 'not_synced', qbLastError: null, syncStatus: 'pending', syncError: null }
-          : {}),
+        // Approval changes only local queue state. Existing provider-linked
+        // invoices retain their established update/resync behavior.
+        ...(shouldQueueInitialSync
+          ? { qbSyncStatus: 'pending', qbLastError: null, syncStatus: 'pending', syncError: null }
+          : String(invoice.qbSyncStatus || '').toLowerCase() === 'pending'
+            ? { qbSyncStatus: 'not_synced', qbLastError: null, syncStatus: 'pending', syncError: null }
+            : {}),
         updatedAt: now,
       } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId)));
       await tx.insert(auditLogs).values({
@@ -55,6 +67,7 @@ export async function approveInvoicesForAccounting(input: {
           approvedAccountingVersion: approvedVersion,
           approvedAt: now.toISOString(),
           source: input.source || 'manual',
+          quickBooksAutoQueued: shouldQueueInitialSync,
         } as any,
       } as any);
       results.push({ id: invoiceId, outcome: 'approved', reason: null });

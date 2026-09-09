@@ -33,6 +33,8 @@ test('unapproved invoices never have visible or executable QuickBooks queue work
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
   const invoicesService = read('server/invoicesService.ts');
   const approval = read('server/lib/invoiceAccountingApproval.ts');
+  const approvalService = read('server/services/invoiceAccountingApproval.service.ts');
+  const quickBooksPreferences = read('shared/quickBooksPreferences.ts');
   const invoiceDetail = read('client/src/pages/invoice-detail.tsx');
 
   expect(invoicesService).toContain("qbSyncStatus: 'not_synced' as any");
@@ -45,6 +47,8 @@ test('unapproved invoices never have visible or executable QuickBooks queue work
   expect(worker).toContain('i.accounting_approved_at is not null');
   expect(worker).toContain("p.external_accounting_id is not null");
   expect(invoiceDetail).toContain("qbSyncStatusRaw === 'pending' && accountingApprovalState === 'approved'");
+  expect(approvalService).toContain('autoQueueApprovedInvoices');
+  expect(quickBooksPreferences).toContain('autoQueueApprovedInvoices: true');
 });
 
 test('invoice UI exposes approval list/detail controls and server-side filter', () => {

@@ -55,6 +55,7 @@ export interface OrgPreferences {
 
   quickBooks?: {
     syncPolicy?: QuickBooksSyncPolicy;
+    autoQueueApprovedInvoices?: boolean;
   };
 
   inboundEmail?: InboundEmailIntakeSettings;

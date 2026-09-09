@@ -8,6 +8,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences, type OrgPreferences } from "@/hooks/useOrgPreferences";
 import { BILLING_INVOICE_TRIGGER_POLICIES, type BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
 import { DEFAULT_INVOICE_SEND_AUTOMATION_PREFERENCES, type InvoiceDueDateOnCustomerSend } from "@shared/invoiceSendAutomation";
+import { DEFAULT_QUICKBOOKS_PREFERENCES } from "@shared/quickBooksPreferences";
 import { fetchMyOrgs } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
 import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
@@ -2042,6 +2043,16 @@ export function PreferencesSettings() {
       },
     });
   };
+  const quickBooksPreferences = preferences.quickBooks ?? DEFAULT_QUICKBOOKS_PREFERENCES;
+  const handleQuickBooksPreferenceChange = async (patch: Partial<typeof quickBooksPreferences>) => {
+    await updatePreferences({
+      ...preferences,
+      quickBooks: {
+        ...quickBooksPreferences,
+        ...patch,
+      },
+    });
+  };
 
   const materialsOverrideInProductionEnabled = (preferences as any)?.production?.materialsOverrideMode !== "prepress_only";
   const productionDocumentNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
@@ -2333,6 +2344,25 @@ export function PreferencesSettings() {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="quickbooks-auto-queue-approved-invoices" className="cursor-pointer text-titan-sm font-medium text-titan-text-primary">
+                  Automatically queue approved invoices for QuickBooks
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  On: accounting approval creates local QuickBooks queue work for the bounded worker. Off: approved invoices remain unsynced until staff queues them manually. Approval never calls QuickBooks directly.
+                </p>
+              </div>
+              <Switch
+                id="quickbooks-auto-queue-approved-invoices"
+                checked={quickBooksPreferences.autoQueueApprovedInvoices}
+                onCheckedChange={(checked) => handleQuickBooksPreferenceChange({ autoQueueApprovedInvoices: checked })}
+                disabled={isUpdating}
+              />
+            </div>
           </div>
 
           <div className="space-y-4 rounded-titan-lg border border-titan-border-subtle p-4">

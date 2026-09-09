@@ -235,6 +235,10 @@ export const organizations = pgTable("organizations", {
         approveForAccountingAfterSuccessfulSend?: boolean;
         dueDateOnFirstSuccessfulCustomerSend?: 'keep_existing' | 'recalculate_from_terms';
       };
+      quickBooks?: {
+        syncPolicy?: 'queue_only' | 'immediate';
+        autoQueueApprovedInvoices?: boolean;
+      };
     };
     branding?: {
       logoUrl?: string;
