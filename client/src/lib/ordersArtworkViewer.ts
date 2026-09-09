@@ -52,5 +52,7 @@ export function resolveOrdersArtworkViewerIndex(
     if (matchingThumbnail >= 0) return matchingThumbnail;
   }
 
-  return 0;
+  // A thumbnail with a specific identity must never open a different file.
+  // The caller can surface a safe stale/missing-artwork message instead.
+  return requestedId || requestedThumbnail ? -1 : 0;
 }

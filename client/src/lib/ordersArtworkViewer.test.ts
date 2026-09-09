@@ -19,6 +19,6 @@ describe("resolveOrdersArtworkViewerIndex", () => {
       thumbnailUrl: "https://example.test/api/artwork/file-records/file-b/content?variant=thumbnail&signature=old-token",
     })).toBe(1);
     expect(resolveOrdersArtworkViewerIndex([], { attachmentId: "missing" })).toBe(0);
-    expect(resolveOrdersArtworkViewerIndex(attachments, { attachmentId: "missing" })).toBe(0);
+    expect(resolveOrdersArtworkViewerIndex(attachments, { attachmentId: "missing" })).toBe(-1);
   });
 });

@@ -740,8 +740,14 @@ export default function Orders() {
         return;
       }
 
+      const selectedIndex = resolveOrdersArtworkViewerIndex(viewerAttachments, target);
+      if (selectedIndex < 0) {
+        toast({ title: "Artwork unavailable", description: "That artwork is no longer available on this order.", variant: "destructive" });
+        return;
+      }
+
       setAttachmentsDialogItems(attachments);
-      setSelectedAttachmentIndex(resolveOrdersArtworkViewerIndex(viewerAttachments, target));
+      setSelectedAttachmentIndex(selectedIndex);
       setAttachmentViewerOpen(true);
     } catch (error: any) {
       console.error("[openArtworkViewer] Error:", error);

@@ -31,6 +31,7 @@ describe("Orders artwork thumbnail viewer", () => {
   test("fails safely when no artwork rows remain", () => {
     const orders = source("client/src/pages/orders.tsx");
     expect(orders).toContain('This order no longer has a viewable artwork file.');
+    expect(orders).toContain('That artwork is no longer available on this order.');
     expect(orders).toContain('Failed to open artwork viewer');
   });
 });
