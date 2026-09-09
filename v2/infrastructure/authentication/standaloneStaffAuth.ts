@@ -15,7 +15,7 @@ import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "./ses
 
 export type V2StaffOrganization = Readonly<{ id: string; name: string }>;
 export type V2AuthenticatedStaff = Readonly<{ id: string; email: string; displayName: string }>;
-export type V2AuthenticatedPortal = Readonly<{ id: string; email: string; displayName: string; organizationId: string; customerId: string }>;
+export type V2AuthenticatedPortal = Readonly<{ id: string; email: string; displayName: string; organizationId: string; customerId: string; credentialVersion: string }>;
 
 export interface V2StaffCredentialVerifier {
   authenticate(email: string, password: string): Promise<V2AuthenticatedStaff | null>;
@@ -34,7 +34,7 @@ export interface V2PortalCredentialLifecycle {
 
 export type V2Session = session.Session & {
   v2Auth?: { subjectId: string; activeOrganizationId?: string };
-  v2PortalAuth?: { subjectId: string; organizationId: string; returnTo: string };
+  v2PortalAuth?: { subjectId: string; organizationId: string; returnTo: string; credentialVersion: string };
   v2CsrfToken?: string;
   v2SessionScope?: string;
 };
@@ -163,8 +163,8 @@ export class PostgresStandaloneStaffCredentialVerifier implements V2StaffCredent
 export class PostgresStandalonePortalCredentialVerifier implements V2PortalCredentialVerifier {
   constructor(private readonly pool: Pool) {}
   private async find(where: string, values: readonly string[]): Promise<(V2AuthenticatedPortal & { passwordHash?: string }) | null> {
-    const result = await this.pool.query<{ id:string; email:string; first_name:string|null; last_name:string|null; password_hash:string|null; organization_id:string; customer_id:string; display_name:string|null }>(
-      `SELECT u.id,u.email,u.first_name,u.last_name,ai.password_hash,cpa.organization_id,cpa.customer_id,cpa.display_name
+    const result = await this.pool.query<{ id:string; email:string; first_name:string|null; last_name:string|null; password_hash:string|null; password_set_at:Date; organization_id:string; customer_id:string; display_name:string|null }>(
+      `SELECT u.id,u.email,u.first_name,u.last_name,ai.password_hash,ai.password_set_at,cpa.organization_id,cpa.customer_id,cpa.display_name
        FROM users u JOIN customer_portal_access cpa ON cpa.user_id=u.id AND cpa.status='ACTIVE'
        JOIN auth_identities ai ON ai.user_id=u.id AND ai.provider='password'
        JOIN customers c ON c.id=cpa.customer_id AND c.organization_id=cpa.organization_id
@@ -176,10 +176,10 @@ export class PostgresStandalonePortalCredentialVerifier implements V2PortalCrede
       [...values],
     );
     const row=result.rows[0]; if(!row?.email) return null;
-    return { id:row.id,email:row.email,displayName:row.display_name?.trim() || [row.first_name,row.last_name].filter(Boolean).join(" ") || row.email,organizationId:row.organization_id,customerId:row.customer_id,...(row.password_hash?{passwordHash:row.password_hash}:{}) };
+    return { id:row.id,email:row.email,displayName:row.display_name?.trim() || [row.first_name,row.last_name].filter(Boolean).join(" ") || row.email,organizationId:row.organization_id,customerId:row.customer_id,credentialVersion:row.password_set_at.toISOString(),...(row.password_hash?{passwordHash:row.password_hash}:{}) };
   }
-  async authenticatePortal(email:string,password:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("lower(u.email)=lower($1)",[email]); if(!portal?.passwordHash || !(await bcrypt.compare(password,portal.passwordHash))) return null; return {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId}; }
-  async currentPortal(userId:string,organizationId:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("u.id=$1 AND cpa.organization_id=$2",[userId,organizationId]); return portal && {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId}; }
+  async authenticatePortal(email:string,password:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("lower(u.email)=lower($1)",[email]); if(!portal?.passwordHash || !(await bcrypt.compare(password,portal.passwordHash))) return null; return {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId,credentialVersion:portal.credentialVersion}; }
+  async currentPortal(userId:string,organizationId:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("u.id=$1 AND cpa.organization_id=$2",[userId,organizationId]); return portal && {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId,credentialVersion:portal.credentialVersion}; }
 }
 
 /** Owns only the one-time credential handoff for a canonical portal-access
@@ -341,7 +341,7 @@ export const createStandaloneStaffAuthentication = (input: Readonly<{
       const auth=(request as V2SessionRequest).session?.v2PortalAuth;
       if(!auth || !input.portalVerifier || !input.portalIssuer) throw new Error("Portal authentication is required.");
       const portal=await input.portalVerifier.currentPortal(auth.subjectId,auth.organizationId);
-      if(!portal) throw new Error("Portal access is unavailable.");
+      if(!portal || auth.credentialVersion !== portal.credentialVersion) throw new Error("Portal access is unavailable.");
       return input.portalIssuer.issue({subjectId:portal.id,authenticatedAt:new Date(),authenticationMethod:"portal_session"},{organizationId:portal.organizationId});
     },
   };
@@ -400,7 +400,7 @@ export const createStandaloneStaffAuthentication = (input: Readonly<{
       const sessionRequest=request as V2SessionRequest;
       await new Promise<void>((resolve,reject)=>sessionRequest.session.regenerate((error)=>error?reject(error):resolve()));
       const returnTo=safePortalReturnTo(returnToInput);
-      sessionRequest.session.v2PortalAuth={subjectId:portal.id,organizationId:portal.organizationId,returnTo};
+      sessionRequest.session.v2PortalAuth={subjectId:portal.id,organizationId:portal.organizationId,returnTo,credentialVersion:portal.credentialVersion};
       await new Promise<void>((resolve,reject)=>sessionRequest.session.save((error)=>error?reject(error):resolve()));
       response.status(200).json({ok:true,data:{portal:{displayName:portal.displayName,customerId:portal.customerId},returnTo,csrfToken:issueV2CsrfToken(sessionRequest),sessionScope:issueV2SessionScope(sessionRequest)}});
     };

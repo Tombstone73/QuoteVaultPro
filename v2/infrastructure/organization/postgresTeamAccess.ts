@@ -23,6 +23,28 @@ export class PostgresTeamAccess {
   private readonly requests = new PostgresOperationRequestRepository();
   constructor(private readonly pool: Pool, private readonly communications = new PostgresEmailIntegrationService(pool)) {}
 
+  /** DEV-QA-only recovery seam. It shares the canonical reset-token table and
+   * completion flow; only the provider delivery boundary is suppressed. */
+  async captureM77fQaPortalReset(actor: StaffPrincipal, organizationId: string, input: { portalAccessId: string; customerId: string; contactId: string }, context: Context): Promise<{ portalResetUrl: string; deliveryState: typeof SUPPRESSED_DELIVERY_STATE }> {
+    if (!shouldCaptureM77fQaPortalSetup(organizationId)) throw new V2ApplicationError("FORBIDDEN", "QA Portal reset capture is unavailable.");
+    if (actor.organizationId !== organizationId || actor.authority.source !== "permission_set" || !actor.authority.capabilities.includes("permissions.assignPortal")) throw new V2ApplicationError("FORBIDDEN", "You do not have permission to recover Customer Portal access.");
+    if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
+    const client=await this.pool.connect(); let token="";
+    try { await client.query("BEGIN");
+      const state=await client.query<{authority_revision:string}>("SELECT authority_revision FROM v2_permission_organization_state WHERE organization_id=$1 FOR UPDATE",[organizationId]);
+      if(!state.rows[0]||String(state.rows[0].authority_revision)!==context.expectedAuthorityRevision||actor.authority.authorityRevision!==context.expectedAuthorityRevision) throw new V2ApplicationError("STALE_STATE","Team authority changed elsewhere. Reload and try again.");
+      const access=await client.query<{id:string}>("SELECT a.id FROM customer_portal_access a JOIN customers c ON c.id=a.customer_id AND c.organization_id=a.organization_id JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id WHERE a.organization_id=$1 AND a.id=$2 AND a.customer_id=$3 AND a.contact_id=$4 AND a.status='ACTIVE' AND l.status='active' AND c.is_active IS DISTINCT FROM false FOR UPDATE OF a",[organizationId,input.portalAccessId,input.customerId,input.contactId]);
+      if(!access.rows[0]) throw new V2ApplicationError("NOT_FOUND","An active matching Customer Portal access was not found.");
+      token=randomBytes(32).toString("hex");
+      await client.query("UPDATE v2_portal_password_reset_tokens SET revoked_at=now() WHERE access_id=$1 AND used_at IS NULL AND revoked_at IS NULL",[input.portalAccessId]);
+      await client.query("INSERT INTO v2_portal_password_reset_tokens(access_id,organization_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '2 hours')",[input.portalAccessId,organizationId,createHash("sha256").update(token).digest("hex")]);
+      await client.query("INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,staff_actor_user_id,portal_access_id,customer_id,detail) VALUES($1,'portal_password_reset_delivery_suppressed','staff',$2,$2,$3,$4,$5::jsonb)",[organizationId,actor.userId,input.portalAccessId,input.customerId,JSON.stringify({contactId:input.contactId,businessRequestId:context.businessRequestId,deliveryMode:SUPPRESSED_DELIVERY_STATE,providerCall:"not_attempted",environment:"dev_qa",scope:"m77f_qa_dev_only"})]);
+      await client.query("COMMIT");
+    } catch(error){await client.query("ROLLBACK");throw error;} finally{client.release();}
+    const origin=(process.env.APP_PUBLIC_WEB_ORIGIN??process.env.APP_URL??"").replace(/\/$/u,""); if(!origin) throw new V2ApplicationError("RETRYABLE_FAILURE","The portal public origin is unavailable.");
+    return {portalResetUrl:`${origin}/portal/reset-password?token=${encodeURIComponent(token)}`,deliveryState:SUPPRESSED_DELIVERY_STATE};
+  }
+
   async read(organizationId: string, includePortalCandidates = false): Promise<TeamAccessSnapshot> {
     const [state, staff, invitations, permissionSets, portalAccess, portalCandidates, audit] = await Promise.all([
       this.pool.query<{ authority_revision: string }>("SELECT authority_revision FROM v2_permission_organization_state WHERE organization_id=$1", [organizationId]),
