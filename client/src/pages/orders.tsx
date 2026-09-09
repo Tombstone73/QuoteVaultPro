@@ -35,6 +35,7 @@ import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
+import { resolveOrdersArtworkViewerIndex, type OrdersArtworkViewerTarget } from "@/lib/ordersArtworkViewer";
 import BackNavControls from "@/components/BackNavControls";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
@@ -716,6 +717,44 @@ export default function Orders() {
     }
   };
 
+  // The list thumbnails open the established AttachmentViewerDialog directly.
+  // Keep the file rows and their canonical fileRecordId values intact so the
+  // viewer/download resolver remains the single artwork access path.
+  const openArtworkViewer = async (orderId: string, target: OrdersArtworkViewerTarget = {}) => {
+    setLoadingAttachments(orderId);
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/files?includeLineItems=true`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to fetch artwork");
+
+      const result = await response.json();
+      const attachments = normalizeOrderFileRows(
+        Array.isArray(result?.data) ? result.data : [],
+        Array.isArray(result?.assets) ? result.assets : [],
+      );
+      const viewerAttachments = toAttachmentViewerAttachments(attachments) as AttachmentData[];
+      if (!viewerAttachments.length) {
+        toast({ title: "Artwork unavailable", description: "This order no longer has a viewable artwork file.", variant: "destructive" });
+        return;
+      }
+
+      setAttachmentsDialogItems(attachments);
+      setSelectedAttachmentIndex(resolveOrdersArtworkViewerIndex(viewerAttachments, target));
+      setAttachmentViewerOpen(true);
+    } catch (error: any) {
+      console.error("[openArtworkViewer] Error:", error);
+      toast({
+        title: "Failed to open artwork viewer",
+        description: error?.message || "Could not fetch artwork details.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingAttachments(null);
+    }
+  };
+
   // List-Label Inline Edit Cell Component (extracted to use hooks properly)
   const ListLabelCell = ({ row }: { row: OrderRow }) => {
     const [isEditing, setIsEditing] = useState(false);
@@ -839,11 +878,13 @@ export default function Orders() {
                   type="button"
                   className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
                   onClick={(e) => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    openAttachmentsDialog(row.id);
+                    void openArtworkViewer(row.id, { thumbnailUrl: src });
                   }}
+                  onPointerDown={(e) => e.stopPropagation()}
                   disabled={loadingAttachments === row.id}
-                  aria-label="Open attachments"
+                  aria-label="Open artwork viewer"
                 >
                   {loadingAttachments === row.id ? (
                     <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
@@ -867,11 +908,13 @@ export default function Orders() {
                   type="button"
                   className="h-8 px-2 rounded border border-border text-xs text-muted-foreground hover:text-foreground"
                   onClick={(e) => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    openAttachmentsDialog(row.id);
+                    void openArtworkViewer(row.id);
                   }}
+                  onPointerDown={(e) => e.stopPropagation()}
                   disabled={loadingAttachments === row.id}
-                  aria-label={`View ${extra} more attachments`}
+                  aria-label={`Open artwork viewer with ${extra} more files`}
                 >
                   +{extra}
                 </button>
@@ -887,12 +930,14 @@ export default function Orders() {
               type="button"
               className="flex items-center h-8"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
-                openAttachmentsDialog(row.id);
+                void openArtworkViewer(row.id, { thumbnailUrl: rowThumbSrc });
               }}
+              onPointerDown={(e) => e.stopPropagation()}
               disabled={loadingAttachments === row.id}
               data-stop-row-nav="true"
-              aria-label="Open attachments"
+              aria-label="Open artwork viewer"
             >
               {loadingAttachments === row.id ? (
                 <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
@@ -918,11 +963,13 @@ export default function Orders() {
                 type="button"
                 className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
                 onClick={(e) => {
+                  e.preventDefault();
                   e.stopPropagation();
-                  openAttachmentsDialog(row.id);
+                  void openArtworkViewer(row.id, { attachmentId: p.id, thumbnailUrl: getThumbSrc(p) });
                 }}
+                onPointerDown={(e) => e.stopPropagation()}
                 disabled={loadingAttachments === row.id}
-                aria-label={`View attachment ${p.filename}`}
+                aria-label={`Open artwork viewer for ${p.filename}`}
               >
                 {getThumbSrc(p) ? (
                   <img
@@ -941,11 +988,13 @@ export default function Orders() {
                 type="button"
                 className="h-8 px-2 rounded border border-border text-xs text-muted-foreground hover:text-foreground"
                 onClick={(e) => {
+                  e.preventDefault();
                   e.stopPropagation();
-                  openAttachmentsDialog(row.id);
+                  void openArtworkViewer(row.id);
                 }}
+                onPointerDown={(e) => e.stopPropagation()}
                 disabled={loadingAttachments === row.id}
-                aria-label={`View ${extraCount} more attachments`}
+                aria-label={`Open artwork viewer with ${extraCount} more files`}
               >
                 +{extraCount}
               </button>
