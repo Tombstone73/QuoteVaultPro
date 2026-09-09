@@ -1,8 +1,11 @@
 import type { Express, RequestHandler } from "express";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { db } from "../db";
 import { customerContacts, customers } from "../../shared/schema";
+import { sha256Hex } from "../lib/tokenHash";
+import { DEFAULT_ORGANIZATION_ID } from "../tenantContext";
 import {
   assertStage18PDevFixtureAccess,
   isStage18PDevFixtureCustomer,
@@ -14,7 +17,9 @@ import {
   createCustomerPortalAccess,
   disableCustomerPortalAccess,
   listCustomerPortalAccess,
+  normalizePortalEmail,
   previewCustomerPortalInvite,
+  requestCustomerPortalAccess,
   resendCustomerPortalInvite,
   resetCustomerPortalPassword,
   suspendCustomerPortalAccess,
@@ -47,6 +52,33 @@ const portalOnboardingActionSchema = z.object({
   accessRoles: z.record(z.enum(["COMPANY_ADMIN", "BUYER", "BILLING", "VIEWER"])).optional(),
 });
 
+const GENERIC_PORTAL_ACCESS_RESPONSE = {
+  success: true,
+  message: "If this email is associated with a customer account, we'll send an access link.",
+};
+
+// The public V1 portal hostname is tenant-bound to its configured organization.
+// Do not infer a tenant by globally searching contact email addresses.
+const PUBLIC_PORTAL_ORGANIZATION_ID = process.env.PORTAL_PUBLIC_ORGANIZATION_ID || DEFAULT_ORGANIZATION_ID;
+
+const portalAccessIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? "unknown"),
+  message: GENERIC_PORTAL_ACCESS_RESPONSE,
+});
+
+const portalAccessEmailLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => sha256Hex(normalizePortalEmail(req.body?.email) ?? "invalid"),
+  message: GENERIC_PORTAL_ACCESS_RESPONSE,
+});
+
 function getActorUserId(req: any): string {
   const userId = req.user?.claims?.sub || req.user?.id;
   if (!userId) {
@@ -66,6 +98,28 @@ function sendRouteError(res: any, err: unknown) {
 }
 
 export function registerCustomerPortalInvitePublicRoutes(app: Express): void {
+  app.post("/api/customer-portal/request-access", portalAccessIpLimiter, portalAccessEmailLimiter, async (req, res) => {
+    const email = typeof req.body?.email === "string" ? req.body.email : "";
+
+    // Send the identical response before eligibility work so the browser cannot
+    // distinguish unknown, disabled, pending, active, or ambiguous records.
+    res.status(200).json(GENERIC_PORTAL_ACCESS_RESPONSE);
+
+    setImmediate(() => {
+      requestCustomerPortalAccess({
+        organizationId: PUBLIC_PORTAL_ORGANIZATION_ID,
+        email,
+        req,
+      }).catch((error) => {
+        // Never include a submitted email or a raw token in public-request logs.
+        console.error("[CustomerPortalAccessRequest] background processing failed", {
+          code: error?.code ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+  });
+
   app.get("/api/customer-portal/invites/preview", async (req, res) => {
     const parse = z.object({ token: z.string().min(1) }).safeParse(req.query);
     if (!parse.success) {

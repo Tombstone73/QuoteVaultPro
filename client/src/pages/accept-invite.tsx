@@ -223,6 +223,9 @@ export default function AcceptInvitePage() {
         title="Invite unavailable"
         description={state.message}
       >
+        <Button asChild className="w-full mb-2">
+          <a href="/request-portal-access">Request a new access link</a>
+        </Button>
         <Button asChild variant="outline" className="w-full">
           <a href="/login">Go to login</a>
         </Button>

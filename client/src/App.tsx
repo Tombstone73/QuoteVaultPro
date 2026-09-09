@@ -13,6 +13,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { ROUTES } from "@/config/routes";
 import Login from "@/pages/login";
+import RequestPortalAccessPage from "@/pages/request-portal-access";
 import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import SetPasswordPage from "@/pages/set-password";
@@ -147,6 +148,7 @@ function Router() {
         <Route path="/" element={<Landing />} />
         <Route path="/byos" element={<ByosPage />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/request-portal-access" element={<RequestPortalAccessPage />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
@@ -235,6 +237,7 @@ function Router() {
 
       {/* Redirect login to dashboard if already authenticated */}
       <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/request-portal-access" element={<RequestPortalAccessPage />} />
 
       {/* All authenticated routes share the AppLayout */}
       <Route element={<AppLayout />}>

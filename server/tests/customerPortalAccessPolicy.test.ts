@@ -15,12 +15,16 @@ jest.unstable_mockModule("../lib/appRuntimeConfig", () => ({
 let assertCustomerPortalTransition: any;
 let isAllowedPortalCustomerApiPath: any;
 let isPortalCustomerIdentity: any;
+let getPortalInviteExpiry: any;
+let normalizePortalEmail: any;
 
 beforeAll(async () => {
   const service = await import("../services/customerPortalAccessService");
   assertCustomerPortalTransition = service.assertCustomerPortalTransition;
   isAllowedPortalCustomerApiPath = service.isAllowedPortalCustomerApiPath;
   isPortalCustomerIdentity = service.isPortalCustomerIdentity;
+  getPortalInviteExpiry = service.getPortalInviteExpiry;
+  normalizePortalEmail = service.normalizePortalEmail;
 });
 
 describe("customer portal access policy", () => {
@@ -45,6 +49,7 @@ describe("customer portal access policy", () => {
   test("deny-by-default API allowlist excludes internal APIs", () => {
     expect(isAllowedPortalCustomerApiPath("/api/portal/orders")).toBe(true);
     expect(isAllowedPortalCustomerApiPath("/api/auth/session")).toBe(true);
+    expect(isAllowedPortalCustomerApiPath("/api/customer-portal/request-access")).toBe(true);
 
     expect(isAllowedPortalCustomerApiPath("/api/portal/preview/start")).toBe(false);
     expect(isAllowedPortalCustomerApiPath("/api/portal/preview/session")).toBe(false);
@@ -52,5 +57,12 @@ describe("customer portal access policy", () => {
     expect(isAllowedPortalCustomerApiPath("/api/customers")).toBe(false);
     expect(isAllowedPortalCustomerApiPath("/api/settings/company")).toBe(false);
     expect(isAllowedPortalCustomerApiPath("/api/production/jobs")).toBe(false);
+  });
+
+  test("uses one seven-day expiration calculation and canonical email normalization", () => {
+    const issuedAt = new Date("2026-09-09T12:00:00.000Z");
+    expect(getPortalInviteExpiry(issuedAt).toISOString()).toBe("2026-09-16T12:00:00.000Z");
+    expect(normalizePortalEmail("  Contact@Example.test ")).toBe("contact@example.test");
+    expect(normalizePortalEmail("not-an-email")).toBeNull();
   });
 });

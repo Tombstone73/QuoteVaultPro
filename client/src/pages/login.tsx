@@ -176,6 +176,14 @@ export default function Login() {
                     Forgot password?
                   </a>
                 </div>
+                <div className="text-right">
+                  <a
+                    href="/request-portal-access"
+                    className="text-sm text-slate-400 transition-colors hover:text-[#00a9e0]"
+                  >
+                    Request Portal Access
+                  </a>
+                </div>
               </div>
 
               <Button

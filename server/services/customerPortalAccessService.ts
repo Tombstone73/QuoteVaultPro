@@ -21,7 +21,19 @@ import {
   type CustomerPortalAccessStatus,
 } from "@shared/schema";
 
-export const PORTAL_INVITE_TTL_HOURS = 72;
+/** Canonical lifetime for every customer-portal activation invitation. */
+export const PORTAL_INVITE_TTL_HOURS = 7 * 24;
+export const PORTAL_INVITE_TTL_MS = PORTAL_INVITE_TTL_HOURS * 60 * 60 * 1000;
+
+export function getPortalInviteExpiry(now = new Date()): Date {
+  return new Date(now.getTime() + PORTAL_INVITE_TTL_MS);
+}
+
+/** Matches the canonical contact-email normalization used by portal onboarding. */
+export function normalizePortalEmail(value: unknown): string | null {
+  const email = String(value ?? "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
 
 const VALID_TRANSITIONS: Record<CustomerPortalAccessStatus, CustomerPortalAccessStatus[]> = {
   DISABLED: ["PENDING_INVITE"],
@@ -57,6 +69,7 @@ export function isAllowedPortalCustomerApiPath(path: string): boolean {
     path === "/api/auth/logout" ||
     path === "/api/auth/forgot-password" ||
     path === "/api/auth/reset-password" ||
+    path === "/api/customer-portal/request-access" ||
     path === "/api/customer-portal/invites/preview" ||
     path === "/api/customer-portal/invites/accept" ||
     path === "/api/portal" ||
@@ -128,7 +141,7 @@ async function createInviteToken(input: {
   actorUserId?: string | null;
 }) {
   const rawToken = makeInviteToken();
-  const expiresAt = new Date(Date.now() + PORTAL_INVITE_TTL_HOURS * 60 * 60 * 1000);
+  const expiresAt = getPortalInviteExpiry();
 
   await db
     .update(customerPortalInviteTokens)
@@ -156,16 +169,21 @@ async function createInviteToken(input: {
   return { rawToken, token };
 }
 
-async function sendPortalInviteEmail(access: typeof customerPortalAccess.$inferSelect, rawToken: string) {
+async function sendPortalInviteEmail(
+  access: typeof customerPortalAccess.$inferSelect,
+  rawToken: string,
+  options: { selfService?: boolean } = {},
+) {
   const inviteUrl = getPortalInviteUrl(rawToken);
   await emailService.sendEmail(access.organizationId, {
     to: access.email,
     subject: "Your PrintersHero customer portal invite",
     html: `
       <p>Hello${access.displayName ? ` ${access.displayName}` : ""},</p>
-      <p>You have been invited to access your PrintersHero customer portal.</p>
+      <p>${options.selfService ? "You requested access to your PrintersHero customer portal." : "You have been invited to access your PrintersHero customer portal."}</p>
       <p><a href="${inviteUrl}">Accept your invite and set your password</a></p>
-      <p>This invite expires in ${PORTAL_INVITE_TTL_HOURS} hours and can only be used once.</p>
+      <p>This link is valid for 7 days and can only be used once.</p>
+      ${options.selfService ? "<p>If you did not request this access link, you can safely ignore this email.</p>" : ""}
     `,
   });
 }
@@ -235,6 +253,7 @@ export async function createCustomerPortalAccess(input: {
   actorUserId?: string | null;
   accessRole?: "COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER";
   sendEmail?: boolean;
+  emailPurpose?: "staff_invite" | "self_service";
   returnTo?: string;
   req?: Request;
 }) {
@@ -332,7 +351,7 @@ export async function createCustomerPortalAccess(input: {
 
   if (input.sendEmail !== false) {
     try {
-      await sendPortalInviteEmail(access, rawToken);
+      await sendPortalInviteEmail(access, rawToken, { selfService: input.emailPurpose === "self_service" });
     } catch (error) {
       await handlePortalInviteSendFailure({
         access,
@@ -456,7 +475,7 @@ export async function resolveInvoiceEmailPortalDestination(input: {
 }
 
 export async function startDefaultPortalPasswordSetup(input: { email: string; req?: Request }): Promise<boolean> {
-  const email = input.email.trim().toLowerCase();
+  const email = normalizePortalEmail(input.email);
   if (!email) return false;
   const matches = await db.select({
     organizationId: customerContactLinks.organizationId,
@@ -478,6 +497,145 @@ export async function startDefaultPortalPasswordSetup(input: { email: string; re
   if (existing?.status === "ACTIVE" || existing?.userId) return false;
   await createCustomerPortalAccess({ organizationId: match.organizationId, customerId: match.customerId, contactId: match.contactId, accessRole: "VIEWER", sendEmail: true, req: input.req });
   return true;
+}
+
+/**
+ * Public self-service is intentionally scoped to the portal's configured
+ * organization. It never searches other tenants to find an email address.
+ */
+export async function requestCustomerPortalAccess(input: {
+  organizationId: string;
+  email: string;
+  req?: Request;
+}): Promise<"issued" | "recovery" | "disabled" | "ineligible" | "ambiguous"> {
+  const email = normalizePortalEmail(input.email);
+  if (!email) return "ineligible";
+
+  const rawMatches = await db
+    .select({
+      organizationId: customerContactLinks.organizationId,
+      customerId: customerContactLinks.customerId,
+      contactId: customerContactLinks.contactId,
+      relationshipStatus: customerContactLinks.status,
+      contactStatus: customerContacts.status,
+      customerStatus: customers.status,
+      isPrimary: customerContactLinks.isPrimary,
+    })
+    .from(customerContactLinks)
+    .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+    .innerJoin(customers, and(
+      eq(customerContactLinks.customerId, customers.id),
+      eq(customerContactLinks.organizationId, customers.organizationId),
+    ))
+    .where(and(
+      eq(customerContactLinks.organizationId, input.organizationId),
+      eq(customerContactLinks.status, "active"),
+      sql`lower(${customerContacts.email}) = ${email}`,
+    ));
+
+  // A repeated relationship row for the same identity is harmless. Any
+  // distinct customer/contact relationship is ambiguous and fails closed.
+  const matches = Array.from(new Map(
+    rawMatches.map((match) => [`${match.customerId}:${match.contactId}`, match]),
+  ).values());
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      await writePortalAudit({
+        organizationId: input.organizationId,
+        actionType: "PORTAL_ACCESS_REQUEST_AMBIGUOUS",
+        description: "Ambiguous self-service portal access request.",
+        req: input.req,
+        metadata: { matchCount: matches.length },
+      });
+    }
+    return matches.length > 1 ? "ambiguous" : "ineligible";
+  }
+
+  const match = matches[0];
+  if (
+    String(match.contactStatus || "active").toLowerCase() !== "active" ||
+    String(match.customerStatus || "active").toLowerCase() !== "active"
+  ) {
+    return "ineligible";
+  }
+
+  const [company] = await db
+    .select({ state: customerPortalCompanySettings.state })
+    .from(customerPortalCompanySettings)
+    .where(and(
+      eq(customerPortalCompanySettings.organizationId, input.organizationId),
+      eq(customerPortalCompanySettings.customerId, match.customerId),
+    ))
+    .limit(1);
+  if (company?.state === "suspended" || company?.state === "disabled") return "ineligible";
+
+  const [existing] = await db
+    .select()
+    .from(customerPortalAccess)
+    .where(and(
+      eq(customerPortalAccess.organizationId, input.organizationId),
+      eq(customerPortalAccess.contactId, match.contactId),
+    ))
+    .limit(1);
+
+  if (existing?.status === "DISABLED" || existing?.status === "SUSPENDED") {
+    await writePortalAudit({
+      organizationId: input.organizationId,
+      actionType: "PORTAL_ACCESS_REQUEST_DISABLED",
+      description: "Self-service portal access requested for disabled access.",
+      accessId: existing.id,
+      customerId: existing.customerId,
+      contactId: existing.contactId,
+      targetUserId: existing.userId,
+      req: input.req,
+    });
+    return "disabled";
+  }
+
+  if (existing?.status === "ACTIVE" || existing?.userId) {
+    await issueCustomerPortalPasswordReset({ access: existing, req: input.req, selfService: true });
+    await writePortalAudit({
+      organizationId: input.organizationId,
+      actionType: "PORTAL_ACCESS_REQUEST_RECOVERY",
+      description: "Self-service portal account recovery requested.",
+      accessId: existing.id,
+      customerId: existing.customerId,
+      contactId: existing.contactId,
+      targetUserId: existing.userId,
+      req: input.req,
+    });
+    return "recovery";
+  }
+
+  if (existing?.status === "PENDING_INVITE") {
+    await resendCustomerPortalInvite({
+      organizationId: input.organizationId,
+      accessId: existing.id,
+      req: input.req,
+      emailPurpose: "self_service",
+    });
+  } else {
+    await createCustomerPortalAccess({
+      organizationId: input.organizationId,
+      customerId: match.customerId,
+      contactId: match.contactId,
+      accessRole: match.isPrimary ? "COMPANY_ADMIN" : "VIEWER",
+      sendEmail: true,
+      emailPurpose: "self_service",
+      req: input.req,
+    });
+  }
+
+  await writePortalAudit({
+    organizationId: input.organizationId,
+    actionType: "PORTAL_ACCESS_REQUEST_ISSUED",
+    description: "Self-service portal access invitation issued.",
+    accessId: existing?.id,
+    customerId: match.customerId,
+    contactId: match.contactId,
+    req: input.req,
+  });
+  return "issued";
 }
 
 /**
@@ -514,7 +672,8 @@ async function getAccessForAdmin(organizationId: string, accessId: string) {
 export async function resendCustomerPortalInvite(input: {
   organizationId: string;
   accessId: string;
-  actorUserId: string;
+  actorUserId?: string | null;
+  emailPurpose?: "staff_invite" | "self_service";
   req?: Request;
 }) {
   const access = await getAccessForAdmin(input.organizationId, input.accessId);
@@ -537,7 +696,7 @@ export async function resendCustomerPortalInvite(input: {
     .returning();
 
   try {
-    await sendPortalInviteEmail(updated, rawToken);
+    await sendPortalInviteEmail(updated, rawToken, { selfService: input.emailPurpose === "self_service" });
   } catch (error) {
     await handlePortalInviteSendFailure({
       access: updated,
@@ -715,13 +874,13 @@ export async function activateCustomerPortalAccess(input: {
   return updated;
 }
 
-export async function resetCustomerPortalPassword(input: {
-  organizationId: string;
-  accessId: string;
-  actorUserId: string;
+async function issueCustomerPortalPasswordReset(input: {
+  access: typeof customerPortalAccess.$inferSelect;
+  actorUserId?: string | null;
   req?: Request;
+  selfService?: boolean;
 }) {
-  const access = await getAccessForAdmin(input.organizationId, input.accessId);
+  const access = input.access;
   if (!access.userId || access.status === "DISABLED" || access.status === "PENDING_INVITE") {
     throw Object.assign(new Error("Portal password reset requires an active or suspended portal user."), {
       status: 409,
@@ -742,9 +901,10 @@ export async function resetCustomerPortalPassword(input: {
     subject: "Reset your PrintersHero customer portal password",
     html: `
       <p>Hello${access.displayName ? ` ${access.displayName}` : ""},</p>
-      <p>An administrator started a password reset for your customer portal account.</p>
+      <p>${input.selfService ? "You requested access to your PrintersHero customer portal." : "An administrator started a password reset for your customer portal account."}</p>
       <p><a href="${getResetUrl(resetToken)}">Reset your password</a></p>
       <p>This link expires in 1 hour.</p>
+      ${input.selfService ? "<p>If you did not request this link, you can safely ignore this email.</p>" : ""}
     `,
   });
 
@@ -760,6 +920,20 @@ export async function resetCustomerPortalPassword(input: {
     req: input.req,
   });
   return { success: true };
+}
+
+export async function resetCustomerPortalPassword(input: {
+  organizationId: string;
+  accessId: string;
+  actorUserId: string;
+  req?: Request;
+}) {
+  const access = await getAccessForAdmin(input.organizationId, input.accessId);
+  return issueCustomerPortalPasswordReset({
+    access,
+    actorUserId: input.actorUserId,
+    req: input.req,
+  });
 }
 
 export async function previewCustomerPortalInvite(rawToken: string) {
