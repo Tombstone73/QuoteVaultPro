@@ -20,12 +20,21 @@ describe("Orders artwork thumbnail viewer", () => {
 
   test("contains a localized accessible thumbnail event boundary without changing row navigation", () => {
     const orders = source("client/src/pages/orders.tsx");
+    const previewCell = source("client/src/components/orders/OrdersArtworkPreviewCell.tsx");
 
-    expect(orders).toContain('e.preventDefault();\n                    e.stopPropagation();\n                    void openArtworkViewer');
-    expect(orders).toContain('onPointerDown={(e) => e.stopPropagation()}');
-    expect(orders).toContain('type="button"');
-    expect(orders).toContain('aria-label="Open artwork viewer"');
+    expect(orders).toContain("<OrdersArtworkPreviewCell");
+    expect(previewCell).toContain("event.preventDefault();");
+    expect(previewCell).toContain("event.stopPropagation();");
+    expect(previewCell).toContain('type="button"');
+    expect(previewCell).toContain('aria-label="Open artwork viewer"');
     expect(orders).toContain('navigate(ROUTES.orders.detail(order.id)');
+  });
+
+  test("does not retain the generic Attachments modal path in the Orders list", () => {
+    const orders = source("client/src/pages/orders.tsx");
+    expect(orders).not.toContain("openAttachmentsDialog");
+    expect(orders).not.toContain("No attachments");
+    expect(orders).not.toContain("Attachments Dialog");
   });
 
   test("fails safely when no artwork rows remain", () => {

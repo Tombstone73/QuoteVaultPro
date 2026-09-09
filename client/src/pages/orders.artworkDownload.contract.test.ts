@@ -5,12 +5,12 @@ import path from "node:path";
 const source = (file: string) => readFileSync(path.resolve(process.cwd(), file), "utf8");
 
 describe("Orders artwork download", () => {
-  test("resolves a canonical original file URL before requesting a direct Orders download", () => {
+  test("uses the canonical viewer download resolver after the list opens artwork directly", () => {
     const orders = source("client/src/pages/orders.tsx");
-    expect(orders).toContain('import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess"');
-    expect(orders).toContain("resolveArtworkDownloadUrl(att?.fileRecordId, att?.downloadUrl, att?.originalUrl)");
-    expect(orders).toContain("void downloadFileFromUrl(downloadUrl, filename)");
-    expect(orders).not.toContain("const downloadUrl = att?.downloadUrl || att?.originalUrl || null");
+    const viewer = source("client/src/components/AttachmentViewerDialog.tsx");
+    expect(orders).toContain("<AttachmentViewerDialog");
+    expect(orders).not.toContain("openAttachmentsDialog");
+    expect(viewer).toContain("resolveArtworkDownloadUrl(currentAttachment?.fileRecordId");
   });
 
   test("keeps viewer downloads on the same canonical resolver", () => {

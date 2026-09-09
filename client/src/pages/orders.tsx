@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download, RotateCcw, Ban } from "lucide-react";
+import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, Download, RotateCcw, Ban } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -27,12 +27,8 @@ import { Badge } from "@/components/ui/badge";
 import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useOrderStatusPills } from "@/hooks/useOrderStatusPills";
-import { getThumbSrc } from "@/lib/getThumbSrc";
-import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { formatOrderDate } from "@/lib/orderDate";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
-import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { resolveOrdersArtworkViewerIndex, type OrdersArtworkViewerTarget } from "@/lib/ordersArtworkViewer";
@@ -41,6 +37,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
+import { OrdersArtworkPreviewCell } from "@/components/orders/OrdersArtworkPreviewCell";
 import { isOrdersRowNavigationExcluded } from "@/lib/ordersRowNavigation";
 import {
   activeOrderStatusPills,
@@ -244,11 +241,8 @@ export default function Orders() {
   const [pageSize, setPageSize] = useState(25);
   const [includeThumbnails, setIncludeThumbnails] = useState(false);
   
-  // Attachments dialog state (list of files for an order)
-  const [attachmentsDialogOpen, setAttachmentsDialogOpen] = useState(false);
-  const [attachmentsDialogOrderId, setAttachmentsDialogOrderId] = useState<string | null>(null);
-  const [attachmentsDialogItems, setAttachmentsDialogItems] = useState<any[]>([]);
-  const [attachmentsDialogLoading, setAttachmentsDialogLoading] = useState(false);
+  // Artwork viewer state. The Preview column never opens the generic Attachments modal.
+  const [artworkViewerItems, setArtworkViewerItems] = useState<any[]>([]);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
   const [pendingStateAction, setPendingStateAction] = useState<{ order: OrderRow; action: "complete" | "close" | "reopen" | "cancel" } | null>(null);
   const [stateActionNote, setStateActionNote] = useState("");
@@ -257,8 +251,8 @@ export default function Orders() {
   const [selectedAttachmentIndex, setSelectedAttachmentIndex] = useState(0);
 
   const normalizedAttachmentViewerItems = useMemo(
-    () => toAttachmentViewerAttachments(attachmentsDialogItems),
-    [attachmentsDialogItems]
+    () => toAttachmentViewerAttachments(artworkViewerItems),
+    [artworkViewerItems]
   ) as AttachmentData[];
 
   // Inline editing state
@@ -680,43 +674,6 @@ export default function Orders() {
     onError: (error: Error) => toast({ title: "Invoice not created", description: error.message, variant: "destructive" }),
   });
 
-  // Open attachments dialog - fetch current stabilized order file rows in one call
-  const openAttachmentsDialog = async (orderId: string) => {
-    setAttachmentsDialogOrderId(orderId);
-    setAttachmentsDialogOpen(true);
-    setAttachmentsDialogItems([]);
-    setAttachmentsDialogLoading(true);
-    setLoadingAttachments(orderId);
-
-    try {
-      const response = await fetch(`/api/orders/${orderId}/files`, {
-        credentials: "include",
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch attachments");
-      }
-
-      const result = await response.json();
-      const attachments = normalizeOrderFileRows(
-        Array.isArray(result?.data) ? result.data : [],
-        Array.isArray(result?.assets) ? result.assets : [],
-      );
-      setAttachmentsDialogItems(Array.isArray(attachments) ? attachments : []);
-    } catch (error: any) {
-      console.error("[openAttachmentsDialog] Error:", error);
-      toast({
-        title: "Failed to load attachments",
-        description: error?.message || "Could not fetch attachment details.",
-        variant: "destructive",
-      });
-      setAttachmentsDialogItems([]);
-    } finally {
-      setLoadingAttachments(null);
-      setAttachmentsDialogLoading(false);
-    }
-  };
-
   // The list thumbnails open the established AttachmentViewerDialog directly.
   // Keep the file rows and their canonical fileRecordId values intact so the
   // viewer/download resolver remains the single artwork access path.
@@ -746,7 +703,7 @@ export default function Orders() {
         return;
       }
 
-      setAttachmentsDialogItems(attachments);
+      setArtworkViewerItems(attachments);
       setSelectedAttachmentIndex(selectedIndex);
       setAttachmentViewerOpen(true);
     } catch (error: any) {
@@ -837,177 +794,15 @@ export default function Orders() {
       case "label":
         return row.label || <span className="text-muted-foreground italic">—</span>;
 
-      case "thumbnails": {
-        const summary = row.attachmentsSummary;
-        const previews = summary?.previews ?? [];
-        const totalCount = summary?.totalCount ?? 0;
-
-        const rowPreviewThumbnailUrls = Array.isArray((row as any).previewThumbnailUrls)
-          ? ((row as any).previewThumbnailUrls as any[])
-              .map((u) => getThumbSrc({ thumbnailUrl: u }))
-              .filter((u): u is string => typeof u === 'string' && u.length > 0)
-              .slice(0, 3)
-          : [];
-
-        const rowThumbSrc = getThumbSrc(row);
-
-        if (!includeThumbnails) {
-          return (
-            <div className="flex items-center h-8">
-              <span className="text-muted-foreground">—</span>
-            </div>
-          );
-        }
-
-        if ((!summary || totalCount === 0) && !rowThumbSrc) {
-          return (
-            <div className="flex items-center h-8">
-              <span className="text-muted-foreground">—</span>
-            </div>
-          );
-        }
-
-        // If we have explicit preview thumbnails (attachments or line-item assets), show up to 3.
-        // Keep the existing attachmentsSummary UI when attachments exist (it includes +N count).
-        if ((!summary || totalCount === 0) && rowPreviewThumbnailUrls.length > 0) {
-          const totalForOverflow =
-            typeof (row as any).previewThumbnailCount === 'number'
-              ? ((row as any).previewThumbnailCount as number)
-              : rowPreviewThumbnailUrls.length;
-          const extra = Math.max(0, totalForOverflow - rowPreviewThumbnailUrls.length);
-
-          return (
-            <div className="flex items-center gap-1.5 h-8" data-stop-row-nav="true">
-              {rowPreviewThumbnailUrls.map((src, idx) => (
-                <button
-                  key={`${row.id}-preview-${idx}`}
-                  type="button"
-                  className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    void openArtworkViewer(row.id, { thumbnailUrl: src });
-                  }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  disabled={loadingAttachments === row.id}
-                  aria-label="Open artwork viewer"
-                >
-                  {loadingAttachments === row.id ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                  ) : (
-                    <img
-                      src={resolveObjectsPublicUrl(src) ?? src}
-                      alt="Preview"
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        if (import.meta.env.DEV) {
-                          console.info(`[thumb] failed url=${e.currentTarget.src}`);
-                        }
-                      }}
-                    />
-                  )}
-                </button>
-              ))}
-
-              {extra > 0 && (
-                <button
-                  type="button"
-                  className="h-8 px-2 rounded border border-border text-xs text-muted-foreground hover:text-foreground"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    void openArtworkViewer(row.id);
-                  }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  disabled={loadingAttachments === row.id}
-                  aria-label={`Open artwork viewer with ${extra} more files`}
-                >
-                  +{extra}
-                </button>
-              )}
-            </div>
-          );
-        }
-
-        // If we only have a single preview thumbnail URL, keep the compact UI.
-        if ((!summary || totalCount === 0) && rowThumbSrc) {
-          return (
-            <button
-              type="button"
-              className="flex items-center h-8"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void openArtworkViewer(row.id, { thumbnailUrl: rowThumbSrc });
-              }}
-              onPointerDown={(e) => e.stopPropagation()}
-              disabled={loadingAttachments === row.id}
-              data-stop-row-nav="true"
-              aria-label="Open artwork viewer"
-            >
-              {loadingAttachments === row.id ? (
-                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-              ) : (
-                <img
-                  src={rowThumbSrc}
-                  alt="Preview"
-                  className="w-8 h-8 rounded object-cover"
-                />
-              )}
-            </button>
-          );
-        }
-
-        const shown = previews.slice(0, 3);
-        const extraCount = Math.max(0, totalCount - shown.length);
-
+      case "thumbnails":
         return (
-          <div className="flex items-center gap-1.5 h-8" data-stop-row-nav="true">
-            {shown.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  void openArtworkViewer(row.id, { attachmentId: p.id, thumbnailUrl: getThumbSrc(p) });
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-                disabled={loadingAttachments === row.id}
-                aria-label={`Open artwork viewer for ${p.filename}`}
-              >
-                {getThumbSrc(p) ? (
-                  <img
-                    src={getThumbSrc(p) as string}
-                    alt={p.filename}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <FileText className="w-4 h-4 text-muted-foreground" />
-                )}
-              </button>
-            ))}
-
-            {extraCount > 0 && (
-              <button
-                type="button"
-                className="h-8 px-2 rounded border border-border text-xs text-muted-foreground hover:text-foreground"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  void openArtworkViewer(row.id);
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-                disabled={loadingAttachments === row.id}
-                aria-label={`Open artwork viewer with ${extraCount} more files`}
-              >
-                +{extraCount}
-              </button>
-            )}
-          </div>
+          <OrdersArtworkPreviewCell
+            row={row}
+            includeThumbnails={includeThumbnails}
+            loading={loadingAttachments === row.id}
+            onOpenArtwork={(orderId, target) => void openArtworkViewer(orderId, target)}
+          />
         );
-      }
 
       case "poNumber":
         return row.poNumber || <span className="text-muted-foreground italic">—</span>;
@@ -1610,102 +1405,6 @@ export default function Orders() {
           )}
         </DataCard>
       </ContentLayout>
-
-      {/* Attachments Dialog (reuses existing /api/orders/:orderId/attachments endpoint) */}
-      <Dialog
-        open={attachmentsDialogOpen}
-        onOpenChange={(open) => {
-          setAttachmentsDialogOpen(open);
-          if (!open) {
-            setAttachmentsDialogOrderId(null);
-            setAttachmentsDialogItems([]);
-            setAttachmentsDialogLoading(false);
-            setAttachmentViewerOpen(false);
-            setSelectedAttachmentIndex(0);
-          }
-        }}
-      >
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Attachments</DialogTitle>
-          </DialogHeader>
-
-          {attachmentsDialogLoading ? (
-            <div className="flex items-center justify-center py-10 text-muted-foreground">
-              <Loader2 className="w-5 h-5 animate-spin mr-2" />
-              Loading…
-            </div>
-          ) : attachmentsDialogOrderId && attachmentsDialogItems.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">No attachments</div>
-          ) : (
-            <div className="space-y-2">
-              {attachmentsDialogItems.map((att: any) => {
-                const filename = att?.filename || att?.originalFilename || att?.fileName || "Attachment";
-                const thumbUrl = getThumbSrc(att);
-                const downloadUrl = resolveArtworkDownloadUrl(att?.fileRecordId, att?.downloadUrl, att?.originalUrl);
-                const originalUrl = att?.originalUrl || null;
-                const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
-
-                return (
-                  <button
-                    key={att?.id || filename}
-                    type="button"
-                    className="w-full text-left flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 hover:bg-muted/20"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const clickedIndex = normalizedAttachmentViewerItems.findIndex((item) => item.id === String(att?.id || filename));
-                      setSelectedAttachmentIndex(clickedIndex >= 0 ? clickedIndex : 0);
-                      setAttachmentViewerOpen(true);
-                    }}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center shrink-0">
-                        {hasThumb ? (
-                          <img
-                            src={resolveObjectsPublicUrl(thumbUrl as string) ?? (thumbUrl as string)}
-                            alt={filename}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              if (import.meta.env.DEV) {
-                                console.info(`[thumb] failed url=${e.currentTarget.src}`);
-                              }
-                            }}
-                          />
-                        ) : (
-                          <FileText className="w-5 h-5 text-muted-foreground" />
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium truncate">{filename}</div>
-                        {att?.mimeType ? (
-                          <div className="text-xs text-muted-foreground truncate">{att.mimeType}</div>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="shrink-0">
-                      {typeof downloadUrl === "string" && (downloadUrl.startsWith("http") || downloadUrl.startsWith("/")) ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void downloadFileFromUrl(downloadUrl, filename);
-                          }}
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          Download
-                        </Button>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
 
       <AttachmentViewerDialog
         attachments={normalizedAttachmentViewerItems}
