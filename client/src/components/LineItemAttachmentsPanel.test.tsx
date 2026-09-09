@@ -9,6 +9,10 @@ import { createRoot } from "react-dom/client";
 import { LineItemAttachmentsPanel } from "./LineItemAttachmentsPanel";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
+
+const mockAttachmentViewerDialog = jest.fn();
 
 jest.mock("@/lib/uploads/chunkedAttachmentUpload", () => ({
   uploadAttachmentViaChunked: jest.fn(),
@@ -16,6 +20,16 @@ jest.mock("@/lib/uploads/chunkedAttachmentUpload", () => ({
 
 jest.mock("@/lib/authenticatedFileDownload", () => ({
   downloadAuthenticatedFile: jest.fn(),
+}));
+
+jest.mock("@/lib/downloadFile", () => ({
+  downloadFileFromUrl: jest.fn(),
+}));
+
+jest.mock("@/lib/artworkAccess", () => ({
+  resolveArtworkDownloadUrl: jest.fn((fileRecordId: string | null | undefined, ...legacyUrls: Array<string | null | undefined>) => (
+    fileRecordId ? `/api/artwork/file-records/${fileRecordId}/content?variant=original` : legacyUrls.find(Boolean) ?? null
+  )),
 }));
 
 jest.mock("@/lib/apiConfig", () => ({
@@ -30,7 +44,11 @@ jest.mock("@/hooks/useAuth", () => ({
 jest.mock("@/lib/getThumbSrc", () => ({ getThumbSrc: () => null }));
 
 jest.mock("@/components/AttachmentViewerDialog", () => ({
-  AttachmentViewerDialog: () => null,
+  AttachmentViewerDialog: (props: any) => {
+    mockAttachmentViewerDialog(props);
+    const current = props.attachments?.[props.initialIndex ?? 0];
+    return <div data-testid="order-artwork-viewer" data-open={String(props.open)} data-file-record-id={current?.fileRecordId ?? ""} />;
+  },
 }));
 
 (globalThis as any).TextEncoder = TextEncoder;
@@ -179,15 +197,16 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(quoteBranch).not.toContain("linkBody");
   });
 
-  test("Order artwork downloads use the authenticated canonical proxy instead of a persisted URL", () => {
+  test("Order artwork downloads resolve the same canonical original as the viewer", () => {
     const panel = readFileSync(path.join(process.cwd(), "client/src/components/LineItemAttachmentsPanel.tsx"), "utf8");
-    expect(panel).toContain('/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/download/proxy');
+    expect(panel).toContain("resolveArtworkDownloadUrl(");
+    expect(panel).toContain("await downloadFileFromUrl(canonicalUrl, fileName)");
+    expect(panel).toContain('/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/download/proxy');
     expect(panel).toContain("await downloadAuthenticatedFile(proxyUrl, fileName)");
     expect(panel).not.toContain("downloadFileFromUrl(proxyUrl, fileName)");
-    expect(panel).not.toContain('This file does not have a downloadable URL.');
   });
 
-  test("one Order artwork download click makes one credential-aware proxy request", async () => {
+  test("one Order artwork row uses the same fileRecordId for View and Download", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const filesPath = "/api/orders/order-1/line-items/line-1/files";
     client.setQueryData([filesPath], [{
@@ -214,18 +233,117 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
         </QueryClientProvider>,
       ));
       const downloadButton = host.querySelector("button[title='Download original file']") as HTMLButtonElement;
+      const previewButton = host.querySelector("button[aria-label='Preview saved-art.pdf']") as HTMLButtonElement;
+      await act(async () => previewButton.click());
+      expect(host.querySelector("[data-testid='order-artwork-viewer']")?.getAttribute("data-open")).toBe("true");
+      expect(host.querySelector("[data-testid='order-artwork-viewer']")?.getAttribute("data-file-record-id")).toBe("record-1");
+
       await act(async () => downloadButton.click());
 
-      expect(downloadAuthenticatedFile).toHaveBeenCalledTimes(1);
-      expect(downloadAuthenticatedFile).toHaveBeenCalledWith(
-        "/api/orders/order-1/line-items/line-1/files/saved-1/download/proxy",
+      expect(resolveArtworkDownloadUrl).toHaveBeenCalledWith(
+        "record-1",
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(downloadFileFromUrl).toHaveBeenCalledWith(
+        "/api/artwork/file-records/record-1/content?variant=original",
         "saved-art.pdf",
       );
+      expect(downloadAuthenticatedFile).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
       host.remove();
       globalThis.fetch = previousFetch;
       jest.mocked(downloadAuthenticatedFile).mockReset();
+      jest.mocked(downloadFileFromUrl).mockReset();
+      jest.mocked(resolveArtworkDownloadUrl).mockClear();
+      mockAttachmentViewerDialog.mockClear();
+    }
+  });
+
+  test("legacy Order artwork without a fileRecordId retains the authenticated relationship proxy", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    client.setQueryData([filesPath], [{
+      id: "legacy-relationship",
+      fileName: "legacy-art.png",
+      originalFilename: "legacy-art.png",
+      fileUrl: "/objects/legacy-art.png",
+      mimeType: "image/png",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      side: "na",
+    }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ data: [], assets: [] }) })) as unknown as typeof fetch;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+        </QueryClientProvider>,
+      ));
+      const downloadButton = host.querySelector("button[title='Download original file']") as HTMLButtonElement;
+      await act(async () => downloadButton.click());
+
+      expect(downloadAuthenticatedFile).toHaveBeenCalledWith(
+        "/api/orders/order-1/line-items/line-1/files/legacy-relationship/download/proxy",
+        "legacy-art.png",
+      );
+      expect(downloadFileFromUrl).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      globalThis.fetch = previousFetch;
+      jest.mocked(downloadAuthenticatedFile).mockReset();
+      jest.mocked(downloadFileFromUrl).mockReset();
+    }
+  });
+
+  test("canonical image artwork downloads its original filename through the same resolver", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    client.setQueryData([filesPath], [{
+      id: "image-relationship",
+      fileRecordId: "image-record",
+      fileName: "proof.png",
+      originalFilename: "customer proof.png",
+      fileUrl: "/objects/ignored-for-canonical.png",
+      mimeType: "image/png",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      side: "na",
+    }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ data: [], assets: [] }) })) as unknown as typeof fetch;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+        </QueryClientProvider>,
+      ));
+      const downloadButton = host.querySelector("button[title='Download original file']") as HTMLButtonElement;
+      await act(async () => downloadButton.click());
+
+      expect(downloadFileFromUrl).toHaveBeenCalledWith(
+        "/api/artwork/file-records/image-record/content?variant=original",
+        "customer proof.png",
+      );
+      expect(downloadAuthenticatedFile).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      globalThis.fetch = previousFetch;
+      jest.mocked(downloadAuthenticatedFile).mockReset();
+      jest.mocked(downloadFileFromUrl).mockReset();
     }
   });
 

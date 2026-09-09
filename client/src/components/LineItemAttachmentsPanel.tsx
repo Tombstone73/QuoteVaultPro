@@ -12,6 +12,8 @@ import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
@@ -69,6 +71,7 @@ type LineItemAttachment = {
   thumbError?: string | null;
   // Server-generated signed URLs (added for proper image rendering)
   originalUrl?: string | null;
+  downloadUrl?: string | null;
   thumbUrl?: string | null;
   previewUrl?: string | null;
   // Object path for constructing /objects URLs (same-origin proxy)
@@ -777,24 +780,37 @@ export function LineItemAttachmentsPanel({
     }
   };
 
-  // Handle file download - downloads the ORIGINAL file via proxy endpoint
-  // The proxy endpoint uses attachment.fileUrl (original storage key), not thumbKey/previewKey
-  const handleDownloadFile = async (fileId: string, fileName: string) => {
+  // Canonical artwork rows use the same record identity and original-download
+  // resolver as AttachmentViewerDialog. The relationship proxy remains only
+  // for legacy rows that do not have a canonical file record.
+  const handleDownloadFile = async (file: LineItemAttachment) => {
     if (!filesApiPath) return;
+
+    const fileName = file.originalFilename || file.fileName;
 
     try {
       if (parentType === "order") {
         if (!orderId || !lineItemId) return;
-        // Match Quote behavior: download through an authenticated route that
-        // resolves the canonical file record at click time.  URLs are not
-        // durable attachment state and may legitimately be absent.
-        const proxyUrl = `/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/download/proxy`;
+
+        const canonicalUrl = resolveArtworkDownloadUrl(
+          file.fileRecordId,
+          file.downloadUrl,
+          file.originalUrl,
+          file.fileUrl,
+        );
+        if (file.fileRecordId) {
+          if (!canonicalUrl) throw new Error("Artwork file is unavailable.");
+          await downloadFileFromUrl(canonicalUrl, fileName);
+          return;
+        }
+
+        const proxyUrl = `/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/download/proxy`;
         await downloadAuthenticatedFile(proxyUrl, fileName);
         return;
       }
 
       // Quote behavior: proxy endpoint streams file with correct filename
-      const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
+      const proxyUrl = `${filesApiPath}/${file.id}/download/proxy`;
 
       await downloadAuthenticatedFile(proxyUrl, fileName);
     } catch (error: any) {
@@ -1496,7 +1512,7 @@ export function LineItemAttachmentsPanel({
                           onPointerDownCapture={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleDownloadFile(file.id, file.originalFilename || file.fileName);
+                            void handleDownloadFile(file);
                           }}
                           title="Download original file"
                         >
