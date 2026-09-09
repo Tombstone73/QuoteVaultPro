@@ -7,11 +7,12 @@ import { PortalOrderCreationApplicationService, portalCustomerContact } from "..
 
 const portal:any={kind:"portal",organizationId:"org-a",customerId:"customer-a",subjectId:"portal-user-a",capabilities:["order.create"]};
 const calls:any[]=[];
-const service=new PortalOrderCreationApplicationService({customerContact:async()=>portalCustomerContact("org-a","customer-a","contact-a")},{create:async(context,input)=>{calls.push({context,input});return{ok:true,value:{order:{order:{orderId:"order-a"}},routeInstances:[]}} as any;}});
+const service=new PortalOrderCreationApplicationService({customerContact:async()=>portalCustomerContact("org-a","customer-a","contact-a")},{create:async(context,input)=>{calls.push({context,input});return{ok:true,value:{order:{order:{orderId:"order-a"},number:{core:42n}},routeInstances:[]}} as any;}});
 const app=(principal:any=portal)=>express().use(express.json()).use((request,_response,next)=>{(request as any).session={v2CsrfToken:"csrf-portal-order"};next();}).use("/v2/portal",requireV2CsrfToken,createPortalOrderRouter({portalPrincipal:{principal:async()=>principal},service}));
 const body={businessRequestId:"portal-order-1",organizationId:"org-b",customerId:"customer-b",contactId:"contact-b",purchaseOrderNumber:"PO-1",notes:"Customer note",lines:[{productId:"product-a",quantity:2,selling:{kind:"unit_override",unitCents:1,reason:"forged"}}]};
 await request(app()).post("/v2/portal/orders").send(body).expect(403);
-await request(app()).post("/v2/portal/orders").set("x-v2-csrf-token","csrf-portal-order").send(body).expect(201);
+const created=await request(app()).post("/v2/portal/orders").set("x-v2-csrf-token","csrf-portal-order").send(body).expect(201);
+assert.equal(created.body.data.order.number.core,"42");
 assert.equal(calls.length,1);
 assert.deepEqual(calls[0].input.customerContact,{organizationId:"org-a",customerId:"customer-a",contactId:"contact-a"});
 assert.equal(calls[0].input.lines[0].productId,"product-a");
