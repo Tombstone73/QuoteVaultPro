@@ -1019,8 +1019,10 @@ export default function InvoiceDetailPage() {
         ? 'Not Synced'
         : qbUpToDate
         ? 'Synced'
-        : (qbSyncStatusRaw === 'pending'
+        : (qbSyncStatusRaw === 'pending' && accountingApprovalState === 'approved'
           ? 'Queued'
+          : qbSyncStatusRaw === 'pending'
+            ? 'Approval Required'
           : qbSyncStatusRaw === 'needs_resync'
             ? 'Not Synced'
             : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Not Synced'))));
@@ -2859,7 +2861,7 @@ export default function InvoiceDetailPage() {
                         </Alert>
                       ) : null}
 
-                      {isStaffUser && qbConnected && !isImportedFromQuickBooks ? (
+                      {isStaffUser && qbConnected && !isImportedFromQuickBooks && qbSyncStatusRaw === 'pending' && accountingApprovalState === 'approved' ? (
                         <div className="text-xs text-muted-foreground">
                           Queued for QuickBooks — run “Process Pending Jobs / Sync now” to push now.
                         </div>

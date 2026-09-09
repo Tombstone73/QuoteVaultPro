@@ -16,17 +16,35 @@ test('accounting approval is persisted, audited, and version-specific', () => {
   expect(migration).toContain('accounting_approved_by_user_id');
 });
 
-test('QuickBooks, Force Sync, and payments retain the accounting approval gate', () => {
+test('QuickBooks, Force Sync, and payments retain the canonical accounting approval gate', () => {
   const qbService = read('server/quickbooksService.ts');
   const worker = read('server/services/quickbooksSyncQueueWorker.ts');
   const routes = read('server/routes/mvpInvoicing.routes.ts');
   expect(qbService).toContain('Approve invoice for accounting before syncing.');
+  expect(qbService).toContain('getInvoiceQuickBooksApprovalEligibility');
   expect(qbService).toContain('Approve the invoice for accounting before syncing its payment.');
-  expect(worker).toContain('Awaiting accounting approval.');
-  expect(worker).toContain("if (!isInvoiceApprovedForAccounting(invoice as any))");
+  expect(worker).toContain('getInvoiceQuickBooksApprovalEligibility');
   expect(worker).toContain("if (!isInvoiceApprovedForAccounting(payment as any))");
   expect(routes).toContain('/api/invoices/:id/approve-for-accounting');
   expect(routes).toContain('/api/invoices/accounting-approval/bulk');
+});
+
+test('unapproved invoices never have visible or executable QuickBooks queue work', () => {
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const invoicesService = read('server/invoicesService.ts');
+  const approval = read('server/lib/invoiceAccountingApproval.ts');
+  const invoiceDetail = read('client/src/pages/invoice-detail.tsx');
+
+  expect(invoicesService).toContain("qbSyncStatus: 'not_synced' as any");
+  expect(approval).toContain("code: 'INVOICE_NOT_APPROVED'");
+  expect(worker).toContain('dequeueUnapprovedInitialInvoiceSyncs');
+  expect(worker).toContain("actionType: 'quickbooks_invoice_queue_dequeued_unapproved'");
+  expect(worker).toContain("eq(invoices.qbSyncStatus, 'pending')");
+  expect(worker).toContain("qbSyncStatus: 'not_synced'");
+  expect(worker).toContain("i.qb_sync_status = 'synced'");
+  expect(worker).toContain('i.accounting_approved_at is not null');
+  expect(worker).toContain("p.external_accounting_id is not null");
+  expect(invoiceDetail).toContain("qbSyncStatusRaw === 'pending' && accountingApprovalState === 'approved'");
 });
 
 test('invoice UI exposes approval list/detail controls and server-side filter', () => {

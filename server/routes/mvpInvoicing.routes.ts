@@ -31,7 +31,7 @@ import { hydrateInvoicePdfLineItemsWithArtwork } from "../services/invoicePdfArt
 import { issueGuestInvoicePaymentToken } from "../services/guestInvoicePayment.service";
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { approveInvoicesForAccounting } from "../services/invoiceAccountingApproval.service";
-import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
+import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
@@ -2436,7 +2436,8 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
-      if (!isInvoiceApprovedForAccounting(inv)) return res.status(409).json({ error: 'Approve invoice for accounting before syncing.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
+      const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(inv);
+      if (!approvalEligibility.eligible) return res.status(409).json({ error: approvalEligibility.reason, code: approvalEligibility.code });
 
       await db.update(invoices).set({ qbSyncStatus: "pending", updatedAt: new Date() } as any).where(eq(invoices.id, inv.id));
 
@@ -2505,7 +2506,8 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
-      if (!isInvoiceApprovedForAccounting(inv)) return res.status(409).json({ success: false, error: 'Approve invoice for accounting before syncing.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
+      const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(inv);
+      if (!approvalEligibility.eligible) return res.status(409).json({ success: false, error: approvalEligibility.reason, code: approvalEligibility.code });
       const status = String(inv.status || "").toLowerCase();
       if (status === "void") {
         return res.status(400).json({ success: false, error: "Void invoices cannot be queued for QuickBooks" });
@@ -2550,7 +2552,8 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
-      if (!isInvoiceApprovedForAccounting(inv)) return res.status(409).json({ success: false, error: 'Approve invoice for accounting before syncing.', code: 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED' });
+      const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(inv);
+      if (!approvalEligibility.eligible) return res.status(409).json({ success: false, error: approvalEligibility.reason, code: approvalEligibility.code });
 
       await db.update(invoices).set({ qbSyncStatus: "pending", updatedAt: new Date() } as any).where(eq(invoices.id, inv.id));
 

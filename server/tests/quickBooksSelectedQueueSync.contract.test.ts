@@ -74,7 +74,7 @@ test('local discovery includes unsynced native invoices and keeps it independent
   expect(state).toContain("INVOICE_UNSYNCED_STATUSES = ['not_synced', 'needs_resync']");
   expect(worker).toContain("i.qb_sync_status in ('not_synced', 'needs_resync')");
   expect(worker).toContain("deferred org=${organizationId} not-connected; retained local queue work");
-  expect(invoicesService).toContain("qbSyncStatus: 'pending' as any");
+  expect(invoicesService).toContain("qbSyncStatus: 'not_synced' as any");
 });
 
 test('enqueue selected is bounded, tenant scoped, idempotent, and makes no Intuit call', () => {

@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { auditLogs, invoices } from '@shared/schema';
 import { db } from '../db';
-export { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
+export { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
 
 export async function approveInvoicesForAccounting(input: {
@@ -33,6 +33,11 @@ export async function approveInvoicesForAccounting(input: {
         accountingApprovedByUserId: input.actorUserId,
         accountingApprovedVersion: approvedVersion,
         accountingApprovalRevokedAt: null,
+        // Approval changes eligibility only. A stale pending row from the
+        // former policy must not become queued merely by being approved.
+        ...(String(invoice.qbSyncStatus || '').toLowerCase() === 'pending'
+          ? { qbSyncStatus: 'not_synced', qbLastError: null, syncStatus: 'pending', syncError: null }
+          : {}),
         updatedAt: now,
       } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId)));
       await tx.insert(auditLogs).values({

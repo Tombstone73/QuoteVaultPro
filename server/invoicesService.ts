@@ -984,11 +984,9 @@ export async function createInvoiceFromOrderInTransaction(
       notesInternal: undefined,
       createdByUserId: userId,
       syncStatus: 'pending',
-      // Queue-only is an outbox policy: create local accounting work now and
-      // let the bounded worker or an explicit Sync now action transmit it.
-      // Imported QuickBooks invoices use their separate import path and are
-      // never created through this native Order-backed flow.
-      qbSyncStatus: 'pending' as any,
+      // Invoice creation is deliberately not QuickBooks queueing. Explicit
+      // accounting approval is required before local accounting work exists.
+      qbSyncStatus: 'not_synced' as any,
       modifiedAfterBilling: false as any,
       invoiceCreationSource: opts.invoiceCreationSource ?? 'manual',
       billingMilestone: opts.billingMilestone ?? null,

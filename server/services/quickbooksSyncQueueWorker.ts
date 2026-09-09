@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-o
 import { randomUUID } from "node:crypto";
 import { db } from "../db";
 import { auditLogs, customers, invoices, oauthConnections, payments } from "../../shared/schema";
-import { isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
+import { getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import {
   getValidAccessTokenForOrganization,
   isQuickBooksReauthRequiredForOrganization,
@@ -87,6 +87,40 @@ function isQuickBooksInvoiceExportableStatus(status: unknown): boolean {
   return !TERMINAL_INVOICE_STATUSES.includes(String(status ?? '').trim().toLowerCase());
 }
 
+/**
+ * Retire pre-policy/stale local queue state without touching QuickBooks. A
+ * pending initial sync is meaningful only while its Invoice remains approved.
+ */
+async function dequeueUnapprovedInitialInvoiceSyncs(organizationId: string): Promise<number> {
+  const retired = await db
+    .update(invoices)
+    .set({ qbSyncStatus: 'not_synced', qbLastError: null, syncStatus: 'pending', syncError: null, updatedAt: new Date() } as any)
+    .where(and(
+      eq(invoices.organizationId, organizationId),
+      eq(invoices.qbSyncStatus, 'pending'),
+      sql`coalesce(${invoices.qbInvoiceId}, '') = ''`,
+      sql`coalesce(${invoices.externalAccountingId}, '') = ''`,
+      sql`(${invoices.accountingApprovedAt} is null or ${invoices.accountingApprovalRevokedAt} is not null or ${invoices.accountingApprovedVersion} is distinct from ${invoices.invoiceVersion})`,
+    ))
+    .returning({ id: invoices.id, displayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber });
+
+  if (retired.length) {
+    await db.insert(auditLogs).values(retired.map((invoice) => ({
+      organizationId,
+      userId: null,
+      userName: 'qb_queue_worker',
+      actionType: 'quickbooks_invoice_queue_dequeued_unapproved',
+      entityType: 'invoice',
+      entityId: invoice.id,
+      entityName: String(invoice.displayNumber || invoice.invoiceNumber),
+      description: 'Removed unapproved initial Invoice sync work from the local QuickBooks queue without provider activity.',
+      newValues: { reason: 'INVOICE_NOT_APPROVED', queueState: 'unsynced' } as any,
+      createdAt: new Date(),
+    } as any)));
+  }
+  return retired.length;
+}
+
 function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
   const text = String(input || "")
     .replace(/\s+/g, " ")
@@ -148,6 +182,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
   const invoiceUnsynced = and(
     inArray(invoices.qbSyncStatus, INVOICE_UNSYNCED_STATUSES as any),
     sql`lower(${invoices.status}) not in ('void', 'canceled', 'cancelled')`,
+    sql`${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}`,
   );
   const paymentUnsynced = and(
     isNull(payments.externalAccountingId),
@@ -161,8 +196,8 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
   const [invoiceCounts] = await db
     .select({
       unsynced: sql<number>`coalesce(sum(case when ${invoiceUnsynced} then 1 else 0 end), 0)::int`,
-      pending: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'pending')} then 1 else 0 end), 0)::int`,
-      failed: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'failed')} then 1 else 0 end), 0)::int`,
+      pending: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'pending')} and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end), 0)::int`,
+      failed: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'failed')} and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end), 0)::int`,
       synced: sql<number>`coalesce(sum(case when ${eq(invoices.qbSyncStatus, 'synced')} then 1 else 0 end), 0)::int`,
       eligible: sql<number>`sum(case when ${invoices.qbSyncStatus} in ('pending','failed') and lower(${invoices.status}) not in ('void', 'canceled', 'cancelled') and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} and ${invoices.accountingUpdatedAt} <= ${cutoff} then 1 else 0 end)::int`,
     })
@@ -176,8 +211,8 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
   const [paymentCounts] = await db
     .select({
       unsynced: sql<number>`coalesce(sum(case when ${paymentUnsynced} then 1 else 0 end), 0)::int`,
-      pending: sql<number>`coalesce(sum(case when ${paymentQueued} then 1 else 0 end), 0)::int`,
-      failed: sql<number>`coalesce(sum(case when ${paymentFailed} then 1 else 0 end), 0)::int`,
+      pending: sql<number>`coalesce(sum(case when ${paymentQueued} and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end), 0)::int`,
+      failed: sql<number>`coalesce(sum(case when ${paymentFailed} and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end), 0)::int`,
       synced: sql<number>`coalesce(sum(case when ${paymentSynced} then 1 else 0 end), 0)::int`,
       eligible: sql<number>`sum(case when ${payments.syncStatus} in ('pending','failed') and ${payments.accountingUpdatedAt} <= ${cutoff} and lower(${payments.status}) in ('succeeded','captured') and coalesce(${invoices.qbInvoiceId}, '') <> '' and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end)::int`,
     })
@@ -224,6 +259,9 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
   const settleWindowMinutes = Math.round(stabilityWindowMs / 60_000);
 
   const now = new Date();
+  // Reconcile any stale local initial-sync work before considering provider
+  // execution. This has no QuickBooks side effect and preserves synced rows.
+  const dequeuedUnapproved = await dequeueUnapprovedInitialInvoiceSyncs(organizationId);
   // A worker run is always automatic.  Manual force-sync has its own bounded
   // endpoint and may not leak into background processing.
   const cutoff = cutoffDate({ now, stabilityWindowMs, ignoreStabilityWindow: false });
@@ -275,7 +313,7 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
   }
 
   if (log) {
-    console.log(`[QB Queue] start org=${organizationId} ignoreStability=${ignoreStabilityWindow} cutoff=${cutoff.toISOString()} inv=${eligibleInvoices.length} pay=${eligiblePayments.length}`);
+    console.log(`[QB Queue] start org=${organizationId} ignoreStability=${ignoreStabilityWindow} cutoff=${cutoff.toISOString()} inv=${eligibleInvoices.length} pay=${eligiblePayments.length} dequeuedUnapproved=${dequeuedUnapproved}`);
   }
 
   const result: QuickBooksSyncWorkerRunResult = {
@@ -541,6 +579,10 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
         and (i.import_source is null or i.import_source <> 'quickbooks')
         and i.is_historical = false
         and (
+          i.qb_sync_status = 'synced'
+          or (i.accounting_approved_at is not null and i.accounting_approval_revoked_at is null and i.accounting_approved_version = i.invoice_version)
+        )
+        and (
           (
             i.qb_sync_status in ('not_synced', 'needs_resync')
             and lower(i.status) not in ('void', 'canceled', 'cancelled')
@@ -597,6 +639,11 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       where p.organization_id = ${params.organizationId}
         and (i.import_source is null or i.import_source <> 'quickbooks')
         and i.is_historical = false
+        and (
+          p.external_accounting_id is not null
+          or p.sync_status = 'synced'
+          or (i.accounting_approved_at is not null and i.accounting_approval_revoked_at is null and i.accounting_approved_version = i.invoice_version)
+        )
         and (
           p.external_accounting_id is not null
           or p.sync_status in ('synced', 'pending', 'failed', 'error')
@@ -735,7 +782,8 @@ export async function runSelectedQuickBooksSyncForOrg(params: {
       const wasStabilityBlocked = !isAccountingUpdatedBeforeQuickBooksStabilityCutoff(new Date(invoice.accountingUpdatedAt), now, stabilityWindowMs);
       if (!['pending', 'failed'].includes(String(invoice.qbSyncStatus))) { const reason = 'Invoice is no longer pending sync.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
       if (!isQuickBooksInvoiceExportableStatus(invoice.status)) { const reason = 'Void or canceled invoices cannot sync.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
-      if (!isInvoiceApprovedForAccounting(invoice as any)) { const reason = 'Approve invoice for accounting before syncing.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
+      const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(invoice as any);
+      if (!approvalEligibility.eligible) { const reason = approvalEligibility.reason || 'Approve invoice for accounting before syncing.'; result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason }); await auditForce(item, 'skipped', reason, wasStabilityBlocked); continue; }
       const leaseOwner = `manual_force:${params.actor.userId || 'unknown'}:${randomUUID()}`;
       if (!await claimQuickBooksSyncLease({ organizationId: params.organizationId, resourceType: 'invoice', resourceId: item.id, leaseOwner })) {
         const reason = 'Another QuickBooks synchronization is already in progress.';
@@ -800,7 +848,8 @@ export async function enqueueSelectedQuickBooksSyncForOrg(params: {
       if (!invoice) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
       if (String(invoice.importSource || '').toLowerCase() === 'quickbooks' || invoice.isHistorical) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'QuickBooks-imported invoices are not exported back to QuickBooks.' }); continue; }
       if (!isQuickBooksInvoiceExportableStatus(invoice.status)) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Void or canceled invoices cannot sync.' }); continue; }
-      if (!isInvoiceApprovedForAccounting(invoice as any)) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Approve invoice for accounting before syncing.' }); continue; }
+      const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(invoice as any);
+      if (!approvalEligibility.eligible) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: approvalEligibility.reason || 'Approve invoice for accounting before syncing.' }); continue; }
       const state = invoiceQueueState(invoice.qbSyncStatus);
       if (state === 'synced') { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice is already synchronized.' }); continue; }
       await db.update(invoices).set({ qbSyncStatus: 'pending', qbLastError: null, syncStatus: 'pending', syncError: null, updatedAt: new Date() } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, params.organizationId)));

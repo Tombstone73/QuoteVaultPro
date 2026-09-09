@@ -7,7 +7,7 @@ import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
-import { isInvoiceApprovedForAccounting } from './lib/invoiceAccountingApproval';
+import { getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from './lib/invoiceAccountingApproval';
 import {
   assertQuickBooksDocumentNumber,
   formatQuickBooksPaymentReference,
@@ -1283,9 +1283,10 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found');
-  if (!isInvoiceApprovedForAccounting(invoice as any)) {
-    const error: any = new Error('Approve invoice for accounting before syncing.');
-    error.code = 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED';
+  const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(invoice as any);
+  if (!approvalEligibility.eligible) {
+    const error: any = new Error(approvalEligibility.reason || 'Approve invoice for accounting before syncing.');
+    error.code = approvalEligibility.code;
     error.statusCode = 409;
     throw error;
   }
