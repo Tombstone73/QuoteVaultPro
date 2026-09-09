@@ -875,6 +875,8 @@ export class QuickBooksCredentialManager {
     const orgId = requireOrganizationId(organizationId, "recordSuccessfulRequest");
     const connection = await this.loadCredentials(orgId);
     if (!connection) return;
+    // Do not allow a provider request that began with an older credential
+    // snapshot to overwrite metadata from a concurrent token rotation.
     await db.update(oauthConnections)
       .set({
         metadata: buildMetadata(connection, {
@@ -887,7 +889,11 @@ export class QuickBooksCredentialManager {
         }) as any,
         updatedAt: new Date(),
       })
-      .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, orgId)));
+      .where(and(
+        eq(oauthConnections.id, connection.id),
+        eq(oauthConnections.organizationId, orgId),
+        eq(oauthConnections.updatedAt, connection.updatedAt),
+      ));
   }
 
   async recordTransientFailure(organizationId: string, category: QuickBooksCredentialErrorCategory, error: unknown): Promise<void> {
@@ -937,7 +943,11 @@ export class QuickBooksCredentialManager {
         } as any,
         updatedAt: new Date(),
       })
-      .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, orgId)));
+      .where(and(
+        eq(oauthConnections.id, connection.id),
+        eq(oauthConnections.organizationId, orgId),
+        eq(oauthConnections.updatedAt, connection.updatedAt),
+      ));
   }
 
   private async markRefreshing(organizationId: string, connection: OAuthConnection): Promise<void> {
@@ -946,7 +956,11 @@ export class QuickBooksCredentialManager {
         metadata: buildMetadata(connection, { state: "refreshing", refreshingAt: new Date().toISOString() }) as any,
         updatedAt: new Date(),
       })
-      .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+      .where(and(
+        eq(oauthConnections.id, connection.id),
+        eq(oauthConnections.organizationId, organizationId),
+        eq(oauthConnections.updatedAt, connection.updatedAt),
+      ));
   }
 
   private async markDegraded(organizationId: string, connection: OAuthConnection, category: QuickBooksCredentialErrorCategory, error: unknown, stage = "unknown"): Promise<void> {
@@ -973,7 +987,11 @@ export class QuickBooksCredentialManager {
         }) as any,
         updatedAt: new Date(),
       })
-      .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+      .where(and(
+        eq(oauthConnections.id, connection.id),
+        eq(oauthConnections.organizationId, organizationId),
+        eq(oauthConnections.updatedAt, connection.updatedAt),
+      ));
   }
 
   private async persistCredentials(args: {

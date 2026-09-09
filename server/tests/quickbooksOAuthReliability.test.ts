@@ -131,6 +131,21 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(makeRequestBody).toContain("replayAttempted: true");
   });
 
+  test("an Accounting API 401 preserves authorization; only the locked OAuth refresh path can latch reauthorization", () => {
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+    const makeRequestBody = serviceSource.slice(serviceSource.indexOf("async function makeQBRequest"), serviceSource.indexOf("async function fetchAllQuickBooksQueryPages"));
+    const refreshBody = readRepoFile("server/services/quickbooksCredentialManager.ts").slice(
+      readRepoFile("server/services/quickbooksCredentialManager.ts").indexOf("async refreshCredentials"),
+      readRepoFile("server/services/quickbooksCredentialManager.ts").indexOf("async recordSuccessfulRequest"),
+    );
+
+    expect(makeRequestBody).toContain("api_access_token_rejected_after_replay");
+    expect(makeRequestBody).toContain("recordTransientFailure(orgId, 'transient_api_failure', err)");
+    expect(makeRequestBody).not.toContain("markNeedsReauth(orgId, latest, err)");
+    expect(refreshBody).toContain("if (category === \"invalid_grant\")");
+    expect(refreshBody).toContain("await this.markNeedsReauth(orgId, latest, error)");
+  });
+
   test("failed access token errors preserve credential manager cause and OAuth fields", () => {
     const serviceSource = readRepoFile("server/quickbooksService.ts");
     const makeRequestBody = serviceSource.slice(serviceSource.indexOf("async function makeQBRequest"), serviceSource.indexOf("async function fetchAllQuickBooksQueryPages"));
@@ -272,6 +287,15 @@ describe("QuickBooks OAuth credential reliability", () => {
 
     expect(loadBody).toContain("Do not opportunistically rewrite legacy plaintext rows here");
     expect(loadBody).not.toContain("plaintextCompatibilityRewriteAt");
+  });
+
+  test("health and request-status writes use an optimistic updated-at guard so stale requests cannot regress rotated metadata", () => {
+    const credentialSource = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    const serviceSource = readRepoFile("server/quickbooksService.ts");
+
+    expect(credentialSource).toContain("eq(oauthConnections.updatedAt, connection.updatedAt)");
+    expect(serviceSource).toContain("const current = await quickBooksCredentialManager.loadCredentials(organizationId)");
+    expect(serviceSource).toContain("eq(oauthConnections.updatedAt, current.updatedAt)");
   });
 
   test("successful reauthorization clears stale needs_reauth and transient metadata", () => {

@@ -181,12 +181,17 @@ async function setQuickBooksTransientHealthError(params: {
   message: string;
 }): Promise<void> {
   const { organizationId, connection, message } = params;
-  const qbAuth = getQuickBooksAuthMetadata(connection);
+  // The request that observed the failure may have started before another
+  // process refreshed and rotated this organization's credentials. Never use
+  // that stale snapshot to replace the current credential metadata.
+  const current = await quickBooksCredentialManager.loadCredentials(organizationId);
+  if (!current || current.id !== connection.id) return;
+  const qbAuth = getQuickBooksAuthMetadata(current);
   if (qbAuth?.state === 'needs_reauth') return;
 
   const nowIso = new Date().toISOString();
   const nextMessage = toOneLineTruncatedMessage(message);
-  const existingMeta = (connection.metadata as any) || {};
+  const existingMeta = (current.metadata as any) || {};
   const existingHealth = (existingMeta?.qbHealth as any) || null;
   const existingAt = existingHealth?.lastErrorAt ? Date.parse(String(existingHealth.lastErrorAt)) : NaN;
 
@@ -215,12 +220,20 @@ async function setQuickBooksTransientHealthError(params: {
       metadata: nextMetadata as any,
       updatedAt: new Date(),
     })
-    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+    .where(and(
+      eq(oauthConnections.id, current.id),
+      eq(oauthConnections.organizationId, organizationId),
+      eq(oauthConnections.updatedAt, current.updatedAt),
+    ));
 }
 
 async function clearQuickBooksTransientHealth(params: { organizationId: string; connection: OAuthConnection }): Promise<void> {
   const { organizationId, connection } = params;
-  const existingMeta = (connection.metadata as any) || {};
+  // As above, do not let completion of an older provider request erase
+  // metadata written by a more recent credential rotation or refresh failure.
+  const current = await quickBooksCredentialManager.loadCredentials(organizationId);
+  if (!current || current.id !== connection.id) return;
+  const existingMeta = (current.metadata as any) || {};
   if (!existingMeta?.qbHealth) return;
 
   const { qbHealth: _qbHealth, ...rest } = existingMeta;
@@ -230,7 +243,11 @@ async function clearQuickBooksTransientHealth(params: { organizationId: string; 
       metadata: rest as any,
       updatedAt: new Date(),
     })
-    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+    .where(and(
+      eq(oauthConnections.id, current.id),
+      eq(oauthConnections.organizationId, organizationId),
+      eq(oauthConnections.updatedAt, current.updatedAt),
+    ));
 }
 
 export async function getQuickBooksAuthStateForOrganization(organizationId: string): Promise<{
@@ -1124,13 +1141,18 @@ async function makeQBRequest(
     err.statusCode = response.status;
 
     if (response.status === 401) {
-      const category = classifyQuickBooksCredentialError(err);
-      if (category === 'invalid_grant') {
-        const latest = await quickBooksCredentialManager.loadCredentials(orgId);
-        if (latest) await quickBooksCredentialManager.markNeedsReauth(orgId, latest, err);
-      } else {
-        await quickBooksCredentialManager.recordTransientFailure(orgId, 'transient_api_failure', err);
-      }
+      // An Accounting API response cannot prove that the stored refresh grant
+      // was revoked. The OAuth token endpoint is the authoritative place to
+      // classify invalid_grant, and its refresh path is lock-protected. This
+      // avoids a stale access-token response from latching a newly refreshed
+      // connection as reconnect-required.
+      console.warn('[QuickBooks] API access token rejected after refresh/replay; preserving OAuth authorization', {
+        organizationId: orgId,
+        connectionId: connection.id,
+        stage: 'api_access_token_rejected_after_replay',
+        finalCredentialState: 'degraded',
+      });
+      await quickBooksCredentialManager.recordTransientFailure(orgId, 'transient_api_failure', err);
     }
 
     if (isTransientQuickBooksHttpStatus(response.status)) {
