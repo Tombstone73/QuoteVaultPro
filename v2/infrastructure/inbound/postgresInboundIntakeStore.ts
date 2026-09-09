@@ -105,7 +105,7 @@ class PostgresInboundIntakeTransaction implements InboundIntakeTransaction {
 
   async transition(input: Readonly<{ organizationId: OrganizationId; intakeId: InboundIntakeId; from: readonly InboundIntakeState[]; to: InboundIntakeState; reason?: string; actor: Actor }>): Promise<InboundIntake | null> {
     const result = await this.client.query<IntakeRow>(
-      "UPDATE v2_inbound_intakes SET intake_state=$4,decision_reason=$5,failure_code=CASE WHEN $4 IN ('failed','action_required') THEN 'INBOUND_ACTION_REQUIRED' ELSE NULL END,failure_message=CASE WHEN $4 IN ('failed','action_required') THEN $5 ELSE NULL END,updated_at=now() WHERE organization_id=$1 AND id=$2 AND intake_state=ANY($3::varchar[]) RETURNING *",
+      "UPDATE v2_inbound_intakes SET intake_state=$4::varchar,decision_reason=$5::text,failure_code=CASE WHEN $4::varchar IN ('failed','action_required') THEN 'INBOUND_ACTION_REQUIRED' ELSE NULL END,failure_message=CASE WHEN $4::varchar IN ('failed','action_required') THEN $5::text ELSE NULL END,updated_at=now() WHERE organization_id=$1 AND id=$2 AND intake_state=ANY($3::varchar[]) RETURNING *",
       [input.organizationId, input.intakeId, input.from, input.to, input.reason ?? null],
     );
     return result.rows[0] ? intake(result.rows[0]) : null;

@@ -104,6 +104,11 @@ const listQuery = (request: Request) => {
   return { limit: Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 100)) : 25, ...(typeof request.query.cursor === "string" ? { cursor: request.query.cursor } : {}), ...(state && state !== "all" ? { status: state as (typeof inboundIntakeStates)[number] } : {}), ...(typeof request.query.q === "string" ? { search: request.query.q } : {}) };
 };
 const M77F_QA_ORG = "b6f969b2-dda3-4133-9d75-c417dabb8f3a";
+const asIsoTimestamp = (value: unknown, label: string): string => {
+  const parsed = asString(value, label, true)!;
+  if (Number.isNaN(Date.parse(parsed))) throw new V2ApplicationError("VALIDATION_ERROR", label + " is invalid.");
+  return parsed;
+};
 const assertSyntheticQaIngress = (organizationId:string):void => {
   const env=process.env;
   const allowed=env.NODE_ENV === "test" || (env.NODE_ENV === "production" && env.APP_ENV?.toLowerCase() === "development" && env.RAILWAY_PROJECT_NAME === "PrintersHero-DEV" && env.RAILWAY_ENVIRONMENT_NAME === "Development");
@@ -116,7 +121,7 @@ export const createInboundRouter = (dependencies: InboundHttpDependencies): Rout
   router.post("/dev-qa-synthetic", (request,response) => void run(response,async()=>{
     const body=object(request.body); const operation=await context(request,dependencies,true); assertSyntheticQaIngress(operation.organizationId);
     const sourceMessageId=asString(body.sourceMessageId,"sourceMessageId",true)!;
-    const receivedAt=asString(body.receivedAt,"receivedAt",true)!;
+    const receivedAt=asIsoTimestamp(body.receivedAt,"receivedAt");
     const result=await dependencies.service.ingest(operation,{sourceProvider:"imported",sourceMessageId:`m77f:${sourceMessageId}`,sourceMailbox:"m77f-qa-synthetic",senderName:asString(body.senderName,"senderName"),senderEmail:asString(body.senderEmail,"senderEmail"),recipientEmail:asString(body.recipientEmail,"recipientEmail"),subject:asString(body.subject,"subject"),receivedAt,rawSource:{mode:"M77F_QA_SYNTHETIC",sourceMessageId,attachments:Array.isArray(body.attachments)?body.attachments:[]},normalizedBody:asString(body.body,"body"),extractedDraft:{}});
     send(response,result);
   }));

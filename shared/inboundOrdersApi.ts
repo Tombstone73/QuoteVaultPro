@@ -71,16 +71,6 @@ export const manualInboundOrderCreateSchema = z.object({
   notes: z.string().trim().max(10000).optional().nullable(),
 });
 
-/** DEV/test-only provider-boundary fixture; source identity remains replay-safe. */
-export const devQaSyntheticInboundCreateSchema = z.object({
-  sourceMessageId: z.string().trim().min(1).max(255),
-  sender: z.object({ name: z.string().trim().max(255).optional().nullable(), email: z.string().trim().email().max(255).optional().nullable() }).default({}),
-  recipient: z.array(z.string().trim().email().max(255)).max(20).default([]),
-  subject: z.string().trim().max(500).optional().nullable(), bodyText: z.string().trim().max(50000).optional().nullable(), receivedAt: z.string().datetime({ offset: true }),
-  attachments: z.array(z.object({ fileName:z.string().trim().min(1).max(512),mimeType:z.string().trim().max(255).optional().nullable(),sizeBytes:z.number().int().min(0).max(50_000_000).optional().nullable(),checksum:z.string().trim().max(128).optional().nullable(),attachmentId:z.string().trim().max(255).optional().nullable(),contentDisposition:z.string().trim().max(100).optional().nullable() })).max(25).default([]),
-});
-export type DevQaSyntheticInboundCreateRequest = z.infer<typeof devQaSyntheticInboundCreateSchema>;
-
 export const inboundOrderStatusUpdateSchema = z.object({
   status: z.union([
     inboundOrderRecordStatusSchema,
