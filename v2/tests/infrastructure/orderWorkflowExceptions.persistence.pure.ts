@@ -12,6 +12,7 @@ assert.match(migration, /workflow\.override/);
 assert.match(migration, /production_requirement.*not_required/s);
 assert.match(repository, /FOR UPDATE/, "line and route state are locked before exception mutation");
 assert.match(repository, /id=\$3 FOR UPDATE OF l,o/, "the workflow lock must exclude the nullable Product Version outer-join side");
+assert.match(repository, /JSON\.stringify\(\[input\.changes\]\)/, "workflow audit evidence must use the audit schema's immutable changes array");
 assert.match(repository, /hasProductionWork/, "no-production rejects started Production history");
 assert.match(repository, /assertProductionArtworkComplete/, "direct Production requires actual current Artwork evidence");
 assert.match(repository, /assertCurrentProofApproved/, "proof-required direct Production requires current approval evidence");
