@@ -67,12 +67,13 @@ describe("quantity-only PBV2 tier pricing validation", () => {
     expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
   });
 
-  test("accepts the canonical flat fee for a service-fee workflow without inventing a base rate", () => {
+  test("accepts the canonical draft flat fee for a service-fee workflow without inventing a base rate", () => {
     const tree = tierOnlyTree([]) as any;
     tree.meta = {
-      workflowIntent: "service_fee",
+      general: { workflowIntent: "service_fee" },
+      pricingFormulaVariables: { flatFee: 2.5 },
       pricingV2: {
-        base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null, flatFeeCents: 250 },
+        base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
       },
     };
 
@@ -82,9 +83,10 @@ describe("quantity-only PBV2 tier pricing validation", () => {
   test("still rejects a service-fee workflow with no positive flat fee", () => {
     const tree = tierOnlyTree([]) as any;
     tree.meta = {
-      workflowIntent: "service_fee",
+      general: { workflowIntent: "service_fee" },
+      pricingFormulaVariables: { flatFee: 0 },
       pricingV2: {
-        base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null, flatFeeCents: 0 },
+        base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: null },
       },
     };
 

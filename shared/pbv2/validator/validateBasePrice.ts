@@ -36,6 +36,14 @@ function hasFlatFeeFormula(meta: AnyRecord): boolean {
   return Number.isFinite(variables.flatFee);
 }
 
+function positiveFlatFee(meta: AnyRecord): boolean {
+  const variables = {
+    ...numericRecord((meta as any).pricingFormulaVariables),
+    ...numericRecord((meta as any).formulaVariables),
+  };
+  return Number.isFinite(variables.flatFee) && variables.flatFee > 0;
+}
+
 /**
  * Formula-priced matrix products deliberately keep the scalar base at zero:
  * the selected matrix row supplies `base_price` at runtime.  A positive row
@@ -181,8 +189,14 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   // Both are complete, once-per-line pricing sources and must not require an
   // unrelated per-piece, area, or minimum rate merely to pass publication.
   const feeWorkflow =
-    meta.pricingProfileKey === "fee" || meta.workflowIntent === "service_fee";
+    meta.pricingProfileKey === "fee" ||
+    meta.workflowIntent === "service_fee" ||
+    asRecord(meta.general)?.workflowIntent === "service_fee";
   if (feeWorkflow && hasFlatFeeFormula(meta)) {
+    return toResult([]);
+  }
+
+  if (feeWorkflow && positiveFlatFee(meta)) {
     return toResult([]);
   }
 
@@ -198,10 +212,6 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   }
 
   const base = asRecord((pricingV2 as any).base);
-  const flatFeeCents = typeof base?.flatFeeCents === "number" ? base.flatFeeCents : 0;
-  if (feeWorkflow && Number.isFinite(flatFeeCents) && flatFeeCents > 0) {
-    return toResult([]);
-  }
   const perSqftCents = typeof base?.perSqftCents === "number" ? base.perSqftCents : 0;
   const perPieceCents = typeof base?.perPieceCents === "number" ? base.perPieceCents : 0;
   const minimumChargeCents = typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : 0;
