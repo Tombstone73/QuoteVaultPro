@@ -215,6 +215,13 @@ function invoiceListQueryCents(value: unknown): number | undefined {
   return cents;
 }
 
+function invoiceListQueryBoolean(value: unknown, label: string): boolean {
+  const raw = invoiceListQueryText(value);
+  if (!raw || raw === '0') return false;
+  if (raw === '1') return true;
+  throw Object.assign(new Error(`${label} must be 0 or 1`), { statusCode: 400 });
+}
+
 function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListColumnFilters {
   const accountingApproval = invoiceListQueryText(query.accountingApproval);
   if (accountingApproval && !['approved', 'not_approved', 'needs_reapproval'].includes(accountingApproval)) {
@@ -2051,6 +2058,7 @@ export async function registerMvpInvoicingRoutes(
       const search = req.query.search as string | undefined;
       const sortBy = req.query.sortBy as string | undefined;
       const sortDir = req.query.sortDir as string | undefined;
+      const includePaidHistorical = invoiceListQueryBoolean(req.query.includePaidHistorical, 'includePaidHistorical');
       const columnFilters = invoiceListColumnFilters(req.query);
       const includeSummary = String(req.query.includeSummary || '') === '1';
       const requestedPageSize = Number.parseInt(String(req.query.pageSize ?? req.query.limit ?? "50"), 10);
@@ -2069,6 +2077,7 @@ export async function registerMvpInvoicingRoutes(
         search,
         sortBy,
         sortDir,
+        includePaidHistorical,
         columnFilters,
         limit,
         offset,

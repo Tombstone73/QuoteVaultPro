@@ -224,6 +224,9 @@ export type InvoiceListColumnFilters = {
 export interface ListInvoicesForOrganizationOptions {
   organizationId: string;
   status?: string;
+  /** Include the canonical QuickBooks historical-paid state in the working list.
+   * An explicit `paid_historical` status always takes precedence. */
+  includePaidHistorical?: boolean;
   /** A bounded allowlist used by analytical consumers. It is still combined
    * with the trusted organization predicate below. */
   statuses?: readonly string[];
@@ -415,8 +418,21 @@ export async function listInvoicesPageForOrganization(
   const sortDir = normalizeInvoiceListSortDir(opts.sortDir);
 
   const whereClauses: any[] = [eq(invoices.organizationId, opts.organizationId)];
-  if (opts.statuses?.length) whereClauses.push(inArray(invoices.status, [...opts.statuses]));
+  // This is the persisted state written by the QuickBooks historical importer
+  // and consumed by normalizeInvoiceAccountingDisplay() for the green
+  // "Paid Historical" badge. Do not infer it from payment totals or dates.
+  const paidHistoricalState = sql`lower(coalesce(${invoices.status}, '')) = 'paid'
+    and lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
+    and coalesce(${invoices.isHistorical}, false)`;
+  const explicitlyFilteringPaidHistorical = opts.status === 'paid_historical';
+  if (explicitlyFilteringPaidHistorical) whereClauses.push(paidHistoricalState);
+  else if (opts.statuses?.length) whereClauses.push(inArray(invoices.status, [...opts.statuses]));
   else if (opts.status) whereClauses.push(eq(invoices.status, opts.status));
+  // The global working list intentionally hides only the canonical
+  // Paid Historical state by default. Ordinary paid invoices remain visible.
+  if (!explicitlyFilteringPaidHistorical && opts.includePaidHistorical === false) {
+    whereClauses.push(sql`not (${paidHistoricalState})`);
+  }
   if (opts.customerId) whereClauses.push(eq(invoices.customerId, opts.customerId));
   if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
   const postedOrIssuedAt = sql<Date>`coalesce(${invoices.issuedAt}, ${invoices.issueDate})`;

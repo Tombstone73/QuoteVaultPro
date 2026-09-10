@@ -16,6 +16,7 @@ const SORT_KEYS: InvoiceSortKey[] = [
 export type InvoiceListUrlState = {
   search: string;
   status: string;
+  includePaidHistorical: boolean;
   customerId: string | undefined;
   customerName: string | undefined;
   excludeCustomerName: string | undefined;
@@ -54,6 +55,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
   return {
     search: read(params, "search") || "",
     status: read(params, "status") || "all",
+    includePaidHistorical: read(params, "includePaidHistorical") === "1",
     customerId: read(params, "customerId"),
     customerName: read(params, "customerName"),
     excludeCustomerName: read(params, "excludeCustomerName"),

@@ -2,11 +2,11 @@ import { parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoi
 
 describe("Invoice list URL state", () => {
   it("restores the complete backlog working set from the URL", () => {
-    const state = parseInvoiceListUrlState(new URLSearchParams("customerId=customer-1&customerName=Brainstorm+Print&excludeCustomerId=customer-2&excludeCustomerName=Graphic+Solutions&jobStatus=open&sendStatus=never_sent&accountingApproval=not_approved&issueDateFrom=2026-08-01&issueDateTo=2026-09-07&issueDatePreset=custom&page=3&pageSize=100&search=ACM&sortBy=customer&sortDir=asc"));
+    const state = parseInvoiceListUrlState(new URLSearchParams("customerId=customer-1&customerName=Brainstorm+Print&excludeCustomerId=customer-2&excludeCustomerName=Graphic+Solutions&jobStatus=open&sendStatus=never_sent&accountingApproval=not_approved&issueDateFrom=2026-08-01&issueDateTo=2026-09-07&issueDatePreset=custom&includePaidHistorical=1&page=3&pageSize=100&search=ACM&sortBy=customer&sortDir=asc"));
 
     expect(state).toMatchObject({
       customerId: "customer-1", customerName: "Brainstorm Print", excludeCustomerName: "Graphic Solutions", issueDatePreset: "custom", search: "ACM", page: 3, pageSize: 100,
-      sortKey: "customer", sortDir: "asc",
+      includePaidHistorical: true, sortKey: "customer", sortDir: "asc",
       columnFilters: { excludeCustomerId: "customer-2", jobStatus: "open", sendStatus: "never_sent", accountingApproval: "not_approved", issueDateFrom: "2026-08-01", issueDateTo: "2026-09-07" },
     });
   });
@@ -33,5 +33,11 @@ describe("Invoice list URL state", () => {
   it("accepts every configurable Global Invoice sort field", () => {
     expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=jobName&sortDir=asc"))).toMatchObject({ hasExplicitSort: true, sortKey: "jobName" });
     expect(parseInvoiceListUrlState(new URLSearchParams("sortBy=paid&sortDir=desc"))).toMatchObject({ hasExplicitSort: true, sortKey: "paid" });
+  });
+
+  it("defaults Paid Historical visibility off while preserving an explicit URL toggle", () => {
+    expect(parseInvoiceListUrlState(new URLSearchParams())).toMatchObject({ includePaidHistorical: false });
+    expect(updateInvoiceListUrlState(new URLSearchParams("page=3&status=paid"), { includePaidHistorical: "1" }, true).toString())
+      .toBe("status=paid&includePaidHistorical=1");
   });
 });

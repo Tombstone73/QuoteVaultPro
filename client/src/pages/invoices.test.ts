@@ -73,6 +73,10 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("Complete Jobs");
     expect(invoiceHooksSource).toContain("excludeCustomerId");
     expect(invoiceHooksSource).toContain("jobStatus");
+    expect(invoicesPageSource).toContain("Show Paid Historical");
+    expect(invoicesPageSource).toContain('value="paid_historical"');
+    expect(invoicesPageSource).toContain("includePaidHistorical");
+    expect(invoiceHooksSource).toContain("includePaidHistorical");
   });
 
   it("uses a separate persisted Global Invoice column layout with required Invoice and Actions columns", () => {
@@ -195,7 +199,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("{approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Approve'}");
     expect(invoicesPageSource).toContain("<StatusPill variant=\"info\">Approved</StatusPill>");
     expect(invoicesPageSource).toContain("isAdminOrOwner ? (");
-    expect(invoicesPageSource).toContain("event.stopPropagation();\n                          void handleApproveInvoice(invoice);");
+    expect(invoicesPageSource).toMatch(/event\.stopPropagation\(\);\s+void handleApproveInvoice\(invoice\);/);
   });
 
   it("keeps Job Status and all primary backlog-cleanup actions directly visible per row", () => {

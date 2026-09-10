@@ -72,6 +72,7 @@ const statusLabels: Record<string, string> = {
   partially_paid: "Partially Paid",
   credit: "Credit / Refund Due",
   paid: "Paid",
+  paid_historical: "Paid Historical",
   overdue: "Overdue",
   billed: "Billed",
   void: "Void",
@@ -123,7 +124,7 @@ export default function InvoicesListPage() {
   const { toast } = useToast();
   const [sortPreferenceRevision, setSortPreferenceRevision] = useState(0);
   const listState = useMemo(() => parseInvoiceListUrlState(searchParams), [searchParams]);
-  const { search, status: statusFilter, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters } = listState;
+  const { search, status: statusFilter, includePaidHistorical, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters } = listState;
   const invoiceTableConfig = useTableColumnConfig(
     `global_invoices:org_${user?.lastActiveOrgId ?? "unknown"}:user_${user?.id ?? "anonymous"}`,
     GLOBAL_INVOICE_COLUMNS,
@@ -147,6 +148,7 @@ export default function InvoicesListPage() {
   const setPageSize = (nextPageSize: number) => updateListState({ pageSize: String(nextPageSize) }, true);
   const setSearch = (nextSearch: string) => updateListState({ search: nextSearch }, true);
   const setStatusFilter = (nextStatus: string) => updateListState({ status: nextStatus === "all" ? undefined : nextStatus }, true);
+  const setIncludePaidHistorical = (nextValue: boolean) => updateListState({ includePaidHistorical: nextValue ? "1" : undefined }, true);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
@@ -161,6 +163,7 @@ export default function InvoicesListPage() {
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
+    includePaidHistorical,
     search: search.trim() || undefined,
     sortBy: sortKey,
     sortDir,
@@ -609,11 +612,16 @@ export default function InvoicesListPage() {
                 <SelectItem value="partially_paid">Partially Paid</SelectItem>
                 <SelectItem value="credit">Credit / Refund Due</SelectItem>
                 <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="paid_historical">Paid Historical</SelectItem>
                 <SelectItem value="overdue">Overdue</SelectItem>
                 <SelectItem value="billed">Billed</SelectItem>
                 <SelectItem value="void">Void</SelectItem>
               </SelectContent>
             </Select>
+            <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include QuickBooks invoices in the canonical Paid Historical state">
+              <Checkbox checked={includePaidHistorical} onCheckedChange={(checked) => setIncludePaidHistorical(checked === true)} aria-label="Show Paid Historical" />
+              <span>Show Paid Historical</span>
+            </label>
             <Popover>
               <PopoverTrigger asChild>
                 <Button type="button" variant="outline" className="gap-2">

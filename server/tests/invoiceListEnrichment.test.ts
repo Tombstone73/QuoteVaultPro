@@ -131,6 +131,9 @@ async function createTestInvoice(opts: {
   amountPaid?: string;
   displayNumber?: string | null;
   numberCore?: number | null;
+  importSource?: string | null;
+  isHistorical?: boolean;
+  qbImportBalanceDue?: string | null;
 }) {
   const {
     orgId, customerId, userId,
@@ -147,6 +150,9 @@ async function createTestInvoice(opts: {
     amountPaid = '0',
     displayNumber = null,
     numberCore = null,
+    importSource = null,
+    isHistorical = false,
+    qbImportBalanceDue = null,
   } = opts;
 
   const dueDate = new Date(Date.now() - daysOverdue * 24 * 60 * 60 * 1000);
@@ -170,6 +176,9 @@ async function createTestInvoice(opts: {
     subtotal: (totalCents / 100).toFixed(2),
     tax: '0',
     amountPaid,
+    importSource,
+    isHistorical,
+    qbImportBalanceDue,
     createdByUserId: userId,
     customerPoNumber,
     invoiceCreationSource,
@@ -307,6 +316,79 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
       .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ invoiceNumber: 810262 })] });
     await expect(listInvoicesPageForOrganization({ organizationId: org.id, status: 'paid', limit: 50 }))
       .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ invoiceNumber: 810200 })] });
+  });
+
+  test('hides only canonical Paid Historical invoices by default across tenant pages and composes with backlog filters', async () => {
+    const org = await createTestOrg('paid-historical-list');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'paid-historical-list');
+    const customer = await createTestCustomer(org.id);
+    const openOrder = await createTestOrder({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderNumber: 'ORD-PAID-HISTORICAL-OPEN',
+    });
+    const historicalPaid = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 811001, status: 'paid', balanceDue: '0.00', amountPaid: '100.00',
+      importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '0.00',
+    });
+    const ordinaryPaid = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id,
+      invoiceNumber: 811002, status: 'paid', balanceDue: '0.00', amountPaid: '100.00',
+    });
+    const currentOpen = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 811003, status: 'billed', balanceDue: '100.00', amountPaid: '0.00',
+    });
+    const pageRows = Array.from({ length: 50 }, (_, index) => ({
+      organizationId: org.id, customerId: customer.id, invoiceNumber: 811100 + index,
+      status: 'billed', terms: 'net_30', totalCents: 10000, subtotalCents: 10000, taxCents: 0, shippingCents: 0,
+      total: '100.00', subtotal: '100.00', tax: '0', amountPaid: '0.00', balanceDue: '100.00', createdByUserId: user.id,
+    }));
+    await db.insert(invoices).values(pageRows as any);
+
+    const otherOrg = await createTestOrg('paid-historical-other-tenant');
+    cleanupOrgIds.push(otherOrg.id);
+    const otherUser = await createTestUser(otherOrg.id, 'paid-historical-other-tenant');
+    const otherCustomer = await createTestCustomer(otherOrg.id);
+    await createTestInvoice({
+      orgId: otherOrg.id, customerId: otherCustomer.id, userId: otherUser.id,
+      invoiceNumber: 811900, status: 'paid', balanceDue: '0.00', amountPaid: '100.00',
+      importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '0.00',
+    });
+
+    const defaultPage = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: false, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 50, offset: 0,
+    });
+    expect(defaultPage).toMatchObject({ totalCount: 52, totalPages: 2 });
+    expect(defaultPage.items).toHaveLength(50);
+    expect(defaultPage.items.map((item) => item.id)).not.toContain(historicalPaid.id);
+    expect(defaultPage.items.map((item) => item.id)).toContain(ordinaryPaid.id);
+
+    const included = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: true, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 100,
+    });
+    expect(included).toMatchObject({ totalCount: 53 });
+    expect(included.items.map((item) => item.id)).toContain(historicalPaid.id);
+
+    const explicitHistorical = await listInvoicesPageForOrganization({
+      organizationId: org.id, status: 'paid_historical', limit: 50,
+    });
+    expect(explicitHistorical).toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: historicalPaid.id })] });
+
+    const customerNeverSent = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: false, customerId: customer.id, limit: 100, columnFilters: { sendStatus: 'never_sent' },
+    });
+    expect(customerNeverSent.items.map((item) => item.id)).toEqual(expect.arrayContaining([ordinaryPaid.id, currentOpen.id]));
+    expect(customerNeverSent.items.map((item) => item.id)).not.toContain(historicalPaid.id);
+
+    const openJobsIncluded = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: true, limit: 100, columnFilters: { jobStatus: 'open' },
+    });
+    expect(openJobsIncluded.items.map((item) => item.id)).toEqual(expect.arrayContaining([historicalPaid.id, currentOpen.id]));
+
+    const [storedHistorical] = await db.select({ status: invoices.status, isHistorical: invoices.isHistorical })
+      .from(invoices).where(eq(invoices.id, historicalPaid.id));
+    expect(storedHistorical).toEqual({ status: 'paid', isHistorical: true });
   });
 
   test('composes customer, contact, order, date, sent-state, and money filters across the full tenant', async () => {

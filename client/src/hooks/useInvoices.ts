@@ -162,6 +162,7 @@ export function useInvoices(filters?: {
 /** Bounded list read for the Invoice dashboard. Legacy consumers retain useInvoices(). */
 export function useInvoicesPage(filters: {
   status?: string;
+  includePaidHistorical?: boolean;
   customerId?: string;
   orderId?: string;
   search?: string;
@@ -185,6 +186,7 @@ export function useInvoicesPage(filters: {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters?.status) params.append('status', filters.status);
+      if (filters?.includePaidHistorical) params.append('includePaidHistorical', '1');
       if (filters?.customerId) params.append('customerId', filters.customerId);
       if (filters?.orderId) params.append('orderId', filters.orderId);
       if (filters?.search) params.append('search', filters.search);
