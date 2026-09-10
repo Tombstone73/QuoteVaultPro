@@ -119,7 +119,15 @@ export class ArtworkApplicationService {
   }
 
   private require(context: OperationContext, capability: "artwork.view" | "artwork.adopt" | "artwork.assign"): void {
-    if (!this.authority.decide(context.principal, { capability, resource: { organizationId: context.organizationId } }).allowed)
+    // A Portal principal is only ever delegated here by the narrow Portal
+    // Artwork boundary after it has verified the Customer-owned open Order
+    // line. Preserve that Customer scope for the generic authority policy;
+    // omitting it turns every otherwise-valid Portal capability into an
+    // artificial CUSTOMER_OUT_OF_SCOPE denial.
+    const resource = context.principal.kind === "portal"
+      ? { organizationId: context.organizationId, customerId: context.principal.customerId }
+      : { organizationId: context.organizationId };
+    if (!this.authority.decide(context.principal, { capability, resource }).allowed)
       throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Artwork operation.");
   }
 

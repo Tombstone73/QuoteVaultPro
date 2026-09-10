@@ -42,6 +42,11 @@ describe("M2.0 Artwork contracts", () => {
   test("permission denial occurs before M0 reservation", async () => {
     const denied=new ArtworkApplicationService(runner);const no={...context("no"),principal:{...principal,authority:{...principal.authority,capabilities:[] as const}}};const before=memory.requests.size;const result=await denied.adopt(no,input("no"));expect(result.ok).toBe(false);expect(before).toBe(memory.requests.size);
   });
+  test("a customer-scoped Portal delegate can adopt source artwork after the Portal boundary grants artwork.adopt", async () => {
+    const portal={kind:"portal" as const,organizationId:org,customerId:"customer-a",subjectId:"portal-user-a",capabilities:["artwork.adopt"] as const};
+    const result=await new ArtworkApplicationService(runner).adopt({principal:portal,organizationId:org,operationId:"portal-adopt",businessRequest:{id:"portal-adopt",payloadFingerprint:"portal"}},input("portal-adopt",{usage:usage({purpose:"customer_supplied"})}));
+    expect(result.ok).toBe(true);
+  });
   test("replacement preserves the inherited assignment and appends one current successor", async () => {
     const inherited=await service.adopt(context("inherited"),input("inherited",{usage:usage({purpose:"customer_supplied"})}));if(!inherited.ok)throw Error("inherited");
     const replacement=await service.replace(context("replacement"),{...input("replacement",{usage:usage({purpose:"customer_supplied"})}),supersedesArtworkAssignmentId:inherited.value.assignment.id});
