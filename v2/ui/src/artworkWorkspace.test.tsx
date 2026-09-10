@@ -13,9 +13,10 @@ client.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", "file-a"], {
   ],
 });
 const markup = renderToStaticMarkup(<QueryClientProvider client={client}><ArtworkWorkspace organizationId="org-a" sessionScope="scope-a" canView artworkFileId="file-a" openArtwork={() => {}} openCustomer={() => {}} openOrder={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
-for (const text of ["front.pdf", "No preview available", "File metadata", "front-original.pdf", "prepress derived", "2 pages", "100.0 × 200.0 mm", "production · front · page 1 · ink 2", "proof · back", "Assignments", "SO-100", "SO-101", "Proofing, Prepress, and Production own their workflow records."]) assert.match(markup, new RegExp(text));
+for (const text of ["front.pdf", "Open file", "Download", "Private preview", "File metadata", "front-original.pdf", "prepress derived", "2 pages", "100.0 × 200.0 mm", "production · front · page 1 · ink 2", "proof · back", "Assignments", "SO-100", "SO-101", "Proofing, Prepress, and Production own their workflow records."]) assert.match(markup, new RegExp(text));
+assert.match(markup, /artwork\/files\/file-a\/content/, "open/download and preview must use the server-authorized private content path");
 assert.doesNotMatch(markup, /Send Proof|Production Ready|Approved|Delete Artwork/);
-assert.doesNotMatch(markup, /file-a|assignment-a|customer-a/);
+assert.doesNotMatch(markup, /assignment-a|customer-a/);
 
 const legacyMetadataClient = new QueryClient();
 legacyMetadataClient.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", "file-b"], {
@@ -27,5 +28,5 @@ legacyMetadataClient.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", 
 });
 const legacyMetadata = renderToStaticMarkup(<QueryClientProvider client={legacyMetadataClient}><ArtworkWorkspace organizationId="org-a" sessionScope="scope-a" canView artworkFileId="file-b" openArtwork={() => {}} openCustomer={() => {}} openOrder={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 for (const text of ["live-like.pdf", "Not recorded", "Original canonical Artwork file.", "production · front", "customer supplied · front", "ORD-1007", "—"]) assert.match(legacyMetadata, new RegExp(text));
-assert.doesNotMatch(legacyMetadata, /file-b|assignment-production|object_key|storageProvider/);
+assert.doesNotMatch(legacyMetadata, /assignment-production|object_key|storageProvider/);
 console.log("Artwork workspace visual contract tests passed.");
