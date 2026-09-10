@@ -135,3 +135,15 @@ test('the selected tab is the sole canonical state predicate and queue discovery
   expect(listFunction).not.toContain('db.insert(');
   expect(listFunction).not.toContain('syncSingle');
 });
+
+test('invoice export reads immutable override metadata and keeps its existing retry idempotency path', () => {
+  const service = read('server/quickbooksService.ts');
+  const pricing = read('server/lib/downstreamEffectivePricing.ts');
+
+  expect(service).toContain('specsJson: invoiceLineItems.specsJson');
+  expect(service).toContain('buildQuickBooksInvoiceLinePayloads(getBillableBundleRoots(lineItems as any[]))');
+  expect(pricing).toContain("'override_total_after_margin'");
+  expect(pricing).toContain('quickBooksUnitPriceForTotalOverride');
+  expect(service).toContain('const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId)');
+  expect(service).toContain("SELECT Id, DocNumber FROM Invoice WHERE DocNumber");
+});

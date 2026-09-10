@@ -72,6 +72,58 @@ describe("downstream effective line item pricing consumers", () => {
     expect(line.SalesItemLineDetail.UnitPrice).toBe(19.8);
   });
 
+  test("QuickBooks preserves an $181 total override using provider precision instead of the displayed $22.63 rate", () => {
+    const [line] = buildQuickBooksInvoiceLinePayloads([{
+      description: "Eight overridden pieces",
+      quantity: 8,
+      unitPriceCents: 2263,
+      lineTotalCents: 18100,
+      specsJson: { priceOverride: { mode: "override_total_after_margin", valueCents: 18100, effectiveTotalCents: 18100 } },
+    }]);
+
+    expect(line.Amount).toBe(181);
+    expect(line.SalesItemLineDetail).toEqual({ Qty: 8, UnitPrice: 22.625 });
+    expect(Math.round(line.SalesItemLineDetail.Qty * line.SalesItemLineDetail.UnitPrice * 100)).toBe(18100);
+    expect(resolveOrderLineItemInvoicePricing({ quantity: 8, unitPriceCents: 2263, lineTotalCents: 18100 }).effectiveTotalCents).toBe(18100);
+  });
+
+  test("QuickBooks preserves a repeating total override without the $2,058.94 display-rate drift", () => {
+    const [line] = buildQuickBooksInvoiceLinePayloads([{
+      description: "Twenty-six overridden pieces",
+      quantity: 26,
+      unitPriceCents: 7919,
+      lineTotalCents: 205900,
+      specsJson: { priceOverride: { mode: "override_total_after_margin", valueCents: 205900, effectiveTotalCents: 205900 } },
+    }]);
+
+    expect(line.Amount).toBe(2059);
+    expect(line.SalesItemLineDetail.UnitPrice).toBe(79.1923077);
+    expect(Math.round(line.SalesItemLineDetail.Qty * line.SalesItemLineDetail.UnitPrice * 100)).toBe(205900);
+    expect(line.Amount).not.toBe(2058.94);
+  });
+
+  test("total overrides use provider precision for clean, half-cent, and repeating rates while preserving each authoritative cent total", () => {
+    const lines = buildQuickBooksInvoiceLinePayloads([
+      { quantity: 8, lineTotalCents: 18000, specsJson: { priceOverride: { mode: "total" } } },
+      { quantity: 8, lineTotalCents: 18100, specsJson: { priceOverride: { mode: "override_total_before_margin" } } },
+      { quantity: 6, lineTotalCents: 100, specsJson: { priceOverride: { mode: "override_total_after_margin" } } },
+    ]);
+
+    expect(lines.map((line) => line.SalesItemLineDetail.UnitPrice)).toEqual([22.5, 22.625, 0.1666667]);
+    expect(lines.map((line) => Math.round(line.SalesItemLineDetail.Qty * line.SalesItemLineDetail.UnitPrice * 100))).toEqual([18000, 18100, 100]);
+    expect(lines.reduce((sum, line) => sum + Math.round(line.Amount * 100), 0)).toBe(36200);
+  });
+
+  test("normal and unit-price override payload rates remain customer-currency rounded", () => {
+    const [normal, unitOverride] = buildQuickBooksInvoiceLinePayloads([
+      { quantity: 2, unitPriceCents: 1980, lineTotalCents: 3960 },
+      { quantity: 2, unitPriceCents: 1980, lineTotalCents: 3960, specsJson: { priceOverride: { mode: "override_unit_after_margin", valueCents: 1980 } } },
+    ]);
+
+    expect(normal).toMatchObject({ Amount: 39.6, SalesItemLineDetail: { Qty: 2, UnitPrice: 19.8 } });
+    expect(unitOverride).toMatchObject({ Amount: 39.6, SalesItemLineDetail: { Qty: 2, UnitPrice: 19.8 } });
+  });
+
   test("hourly PBV2 snapshots retain fractional hours and rate for QuickBooks", () => {
     const snapshot = {
       treeJson: { meta: { billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 }, pricingFormulaVariables: { hourly_rate: 60 } } },

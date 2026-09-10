@@ -1356,6 +1356,7 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
       unitPrice: invoiceLineItems.unitPrice,
       lineTotalCents: invoiceLineItems.lineTotalCents,
       totalPrice: invoiceLineItems.totalPrice,
+      specsJson: invoiceLineItems.specsJson,
       pbv2SnapshotJson: invoiceLineItems.pbv2SnapshotJson,
     })
     .from(invoiceLineItems)
