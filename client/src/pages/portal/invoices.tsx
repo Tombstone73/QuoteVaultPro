@@ -29,6 +29,8 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
 }
 
 function InvoiceRow({ invoice }: { invoice: PortalInvoiceDto }) {
+  const jobOrOrder = invoice.jobLabel || (invoice.orderNumber ? `Order ${invoice.orderNumber}` : "—");
+
   return (
     <div className="grid gap-4 border-b px-4 py-4 last:border-b-0 md:grid-cols-[1fr_auto_auto_auto] md:items-center">
       <div className="min-w-0">
@@ -41,6 +43,13 @@ function InvoiceRow({ invoice }: { invoice: PortalInvoiceDto }) {
         <p className="mt-1 text-sm text-muted-foreground">
           Issued {formatDate(invoice.issueDate)} · Due {formatDate(invoice.dueDate)}
         </p>
+        <div className="mt-2 space-y-1 text-sm">
+          <p className="text-foreground"><span className="text-muted-foreground">Job / Order: </span>{jobOrOrder}</p>
+          <p className="text-muted-foreground">
+            PO # {invoice.customerPoNumber || "—"}
+            {invoice.jobLabel && invoice.orderNumber ? ` · Order ${invoice.orderNumber}` : ""}
+          </p>
+        </div>
       </div>
 
       <div className="text-sm md:text-right">

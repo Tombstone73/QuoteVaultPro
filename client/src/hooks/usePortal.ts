@@ -43,6 +43,9 @@ export type PortalInvoiceDto = {
   amountPaid: number;
   amountDue: number;
   currency: string;
+  customerPoNumber: string | null;
+  jobLabel: string | null;
+  orderNumber: string | null;
   pdfAvailable: boolean;
   paymentStatusLabel: string;
 };

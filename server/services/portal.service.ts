@@ -51,6 +51,7 @@ import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE } from "./proofingS
 import { canonicalProofingOperations } from "./canonicalProofingOperations";
 import { recordPortalFollowUpItem } from "./portalFollowUps";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
+import { resolvePortalInvoiceIdentity } from "../lib/portalInvoiceIdentity";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
 import { resolveStripeRuntimeConfig, type StripeBrowserRuntimeConfig } from "./stripeRuntimeConfig.service";
@@ -91,6 +92,9 @@ export type InvoicePortalDto = {
   amountPaid: number;
   amountDue: number;
   currency: string;
+  customerPoNumber: string | null;
+  jobLabel: string | null;
+  orderNumber: string | null;
   pdfAvailable: boolean;
   paymentStatusLabel: string;
 };
@@ -486,7 +490,16 @@ type InvoicePortalRow = Pick<
   | "taxCents"
   | "totalCents"
   | "currency"
+  | "customerPoNumber"
 >;
+
+type InvoicePortalContextRow = InvoicePortalRow & {
+  linkedOrderPoNumber: string | null;
+  linkedOrderLabel: string | null;
+  linkedOrderNumber: string | null;
+  linkedOrderDisplayNumber: string | null;
+  linkedOrderNumberCore: number | null;
+};
 
 type PaymentRollupRow = Pick<typeof payments.$inferSelect, "id" | "invoiceId" | "status" | "amountCents">;
 
@@ -1499,7 +1512,7 @@ export async function updatePortalProfile(req: Request): Promise<PortalProfileDt
   return buildPortalProfileDto(req, updatedCustomer, updatedContact);
 }
 
-function mapInvoice(row: InvoicePortalRow, paymentRows: PaymentRollupRow[]): InvoicePortalDto {
+function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[]): InvoicePortalDto {
   const rollup = computeInvoicePaymentRollup({
     invoiceTotalCents: Number(row.totalCents || 0),
     payments: paymentRows.map((payment) => ({
@@ -1507,6 +1520,17 @@ function mapInvoice(row: InvoicePortalRow, paymentRows: PaymentRollupRow[]): Inv
       status: payment.status,
       amountCents: Number(payment.amountCents || 0),
     })),
+  });
+
+  const identity = resolvePortalInvoiceIdentity({
+    invoiceCustomerPoNumber: row.customerPoNumber,
+    linkedOrderPoNumber: row.linkedOrderPoNumber,
+    linkedOrderLabel: row.linkedOrderLabel,
+    linkedOrderNumber: resolveDocumentDisplayNumber({
+      displayNumber: row.linkedOrderDisplayNumber,
+      numberCore: row.linkedOrderNumberCore,
+      legacyNumber: row.linkedOrderNumber,
+    }),
   });
 
   return {
@@ -1527,6 +1551,9 @@ function mapInvoice(row: InvoicePortalRow, paymentRows: PaymentRollupRow[]): Inv
     amountPaid: centsToMoney(rollup.amountPaidCents),
     amountDue: centsToMoney(rollup.amountDueCents),
     currency: String(row.currency || "USD"),
+    customerPoNumber: identity.customerPoNumber,
+    jobLabel: identity.jobLabel,
+    orderNumber: identity.orderNumber,
     pdfAvailable: String(row.status || "").toLowerCase() !== "draft",
     paymentStatusLabel: getInvoicePaymentStatusLabel({ invoiceStatus: row.status, rollup }),
   };
@@ -1572,8 +1599,21 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       taxCents: invoices.taxCents,
       totalCents: invoices.totalCents,
       currency: invoices.currency,
+      customerPoNumber: invoices.customerPoNumber,
+      linkedOrderPoNumber: orders.poNumber,
+      linkedOrderLabel: orders.label,
+      linkedOrderNumber: orders.orderNumber,
+      linkedOrderDisplayNumber: orders.displayNumber,
+      linkedOrderNumberCore: orders.numberCore,
     })
     .from(invoices)
+    // The relationship itself is also tenant/customer scoped. A malformed
+    // invoice.orderId can therefore never disclose another customer's Order.
+    .leftJoin(orders, and(
+      eq(orders.id, invoices.orderId),
+      eq(orders.organizationId, scope.organizationId),
+      eq(orders.customerId, scope.customerId),
+    ))
     .where(
       and(
         eq(invoices.organizationId, scope.organizationId),
@@ -1605,8 +1645,19 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
       taxCents: invoices.taxCents,
       totalCents: invoices.totalCents,
       currency: invoices.currency,
+      customerPoNumber: invoices.customerPoNumber,
+      linkedOrderPoNumber: orders.poNumber,
+      linkedOrderLabel: orders.label,
+      linkedOrderNumber: orders.orderNumber,
+      linkedOrderDisplayNumber: orders.displayNumber,
+      linkedOrderNumberCore: orders.numberCore,
     })
     .from(invoices)
+    .leftJoin(orders, and(
+      eq(orders.id, invoices.orderId),
+      eq(orders.organizationId, scope.organizationId),
+      eq(orders.customerId, scope.customerId),
+    ))
     .where(
       and(
         eq(invoices.id, invoiceId),

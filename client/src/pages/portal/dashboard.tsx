@@ -83,6 +83,8 @@ function SummaryTile({
 }
 
 function InvoiceItem({ invoice }: { invoice: PortalInvoiceDto }) {
+  const jobOrOrder = invoice.jobLabel || (invoice.orderNumber ? `Order ${invoice.orderNumber}` : "—");
+
   return (
     <div className="flex flex-col gap-3 rounded-md border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
@@ -93,6 +95,13 @@ function InvoiceItem({ invoice }: { invoice: PortalInvoiceDto }) {
           <Badge variant={invoiceVariant(invoice)}>{invoice.status === "overdue" ? "Past Due" : invoice.paymentStatusLabel}</Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">Due {formatDate(invoice.dueDate)}</p>
+        <div className="mt-2 space-y-1 text-sm">
+          <p className="text-foreground"><span className="text-muted-foreground">Job / Order: </span>{jobOrOrder}</p>
+          <p className="text-muted-foreground">
+            PO # {invoice.customerPoNumber || "—"}
+            {invoice.jobLabel && invoice.orderNumber ? ` · Order ${invoice.orderNumber}` : ""}
+          </p>
+        </div>
       </div>
       <div className="flex items-center gap-3 sm:justify-end">
         <div className="text-right">
