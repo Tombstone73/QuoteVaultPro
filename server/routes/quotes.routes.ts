@@ -2272,6 +2272,8 @@ export function registerQuoteRoutes(
         },
         displayOrder: lineItem.displayOrder || 0,
         isTemporary: false,
+        description: lineItem.description ?? null,
+        productionNotes: lineItem.productionNotes ?? null,
         // Canonical routing intent (migration 0015)
         requiresDesign: requestedRequiresDesign ?? workflowDefaults.requiresDesign ?? false,
         requiresPrepress: requestedRequiresPrepress ?? workflowDefaults.requiresPrepress ?? null,

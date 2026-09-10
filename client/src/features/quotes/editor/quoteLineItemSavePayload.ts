@@ -51,6 +51,8 @@ export function buildQuoteLineItemSavePayload(item: QuoteLineItemDraft, override
     overrideAt: mergedItem.overrideAt ?? null,
     overrideByUserId: mergedItem.overrideByUserId ?? null,
     overrideReason: mergedItem.overrideReason ?? null,
+    description: mergedItem.description ?? null,
+    productionNotes: mergedItem.productionNotes ?? null,
     priceBreakdown: mergedItem.priceBreakdown || {
       basePrice: mergedItem.linePrice ?? 0,
       optionsPrice: 0,

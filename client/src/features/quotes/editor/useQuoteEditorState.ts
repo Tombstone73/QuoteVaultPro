@@ -22,6 +22,7 @@ import {
     resolveLineItemDisplayPriceCents,
 } from "@/components/orders/orderLineItemEditState";
 import { buildQuoteLineItemSavePayload, hasExplicitLineItemPriceOverride } from "./quoteLineItemSavePayload";
+import { cloneQuoteLineItemDraft, createQuoteLineItemTempId } from "./quoteLineItemClone";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
@@ -1668,30 +1669,22 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const handleDuplicateLineItem = (itemId: string) => {
-        const sourceIndex = lineItems.findIndex(i => (i.tempId || i.id) === itemId);
-        const item = sourceIndex >= 0 ? lineItems[sourceIndex] : undefined;
-        if (!item) return;
+        if (!lineItems.some((item) => getStableLineItemKey(item) === itemId)) return;
+        setLineItems((currentLineItems) => {
+            const sourceIndex = currentLineItems.findIndex((item) => getStableLineItemKey(item) === itemId);
+            const source = sourceIndex >= 0 ? currentLineItems[sourceIndex] : undefined;
+            if (!source) return currentLineItems;
 
-        const duplicatedItem: QuoteLineItemDraft = {
-            ...item,
-            tempId: `temp-${Date.now()}`,
-            id: undefined,
-            displayOrder: sourceIndex + 1,
-        };
-
-        const nextLineItems = [
-            ...lineItems.slice(0, sourceIndex + 1),
-            duplicatedItem,
-            ...lineItems.slice(sourceIndex + 1),
-        ].map((lineItem, index) => ({
-            ...lineItem,
-            displayOrder: index,
-        }));
-
-        setLineItems(nextLineItems);
+            const duplicate = cloneQuoteLineItemDraft(source, sourceIndex + 1);
+            return [
+                ...currentLineItems.slice(0, sourceIndex + 1),
+                duplicate,
+                ...currentLineItems.slice(sourceIndex + 1),
+            ].map((lineItem, index) => ({ ...lineItem, displayOrder: index }));
+        });
         toast({
             title: "Line Item Duplicated",
-            description: "Item duplicated successfully",
+            description: "Item duplicated successfully. Artwork remains on the original line.",
         });
     };
 
@@ -2198,7 +2191,7 @@ export function useQuoteEditorState() {
 
             // Default shape
             const base: QuoteLineItemDraft = {
-                tempId: `temp-${Date.now()}`,
+                tempId: createQuoteLineItemTempId(),
                 id: undefined,
                 productId: product.id,
                 productName: product.name,
