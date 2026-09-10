@@ -7,14 +7,12 @@ import {
 test('normalizes supported QuickBooks queue filters and sorting', () => {
   expect(normalizeQuickBooksSyncQueueListFilters({
     type: 'invoice',
-    state: 'queued',
     eligibility: 'syncable',
     error: 'has_error',
     sortBy: 'customer',
     sortDir: 'asc',
   })).toEqual({
     type: 'invoice',
-    state: 'queued',
     eligibility: 'syncable',
     error: 'has_error',
     sortBy: 'customer',
@@ -25,14 +23,12 @@ test('normalizes supported QuickBooks queue filters and sorting', () => {
 test('invalid sort and filter inputs fail closed to deterministic defaults', () => {
   expect(normalizeQuickBooksSyncQueueListFilters({
     type: 'vendor' as any,
-    state: 'broken' as any,
     eligibility: 'anything' as any,
     error: 'maybe' as any,
     sortBy: 'drop table' as any,
     sortDir: 'sideways' as any,
   })).toEqual({
     type: 'all',
-    state: 'all',
     eligibility: 'all',
     error: 'all',
     sortBy: 'updatedAt',

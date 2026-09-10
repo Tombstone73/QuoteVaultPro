@@ -116,3 +116,22 @@ test('console supports state views and server-side searchable, sorted, filtered 
   expect(routes).toContain('listQuickBooksSyncQueueItemsForOrg');
   expect(routes).not.toContain('syncWorker.listQuickBooksSyncQueueItemsForOrg');
 });
+
+test('the selected tab is the sole canonical state predicate and queue discovery stays read-only', () => {
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const routes = read('server/routes/quickbooks.routes.ts');
+  const listFilters = read('server/services/quickbooksSyncQueueList.ts');
+  const listFunction = worker
+    .slice(worker.indexOf('export async function listQuickBooksSyncQueueItemsForOrg'))
+    .split('\nconst QUICKBOOKS_SYNC_LEASE_MS')[0];
+
+  expect(worker).toContain('const effectiveState = view;');
+  expect(worker).toContain('queue_state = ${effectiveState}');
+  expect(worker).toContain("when i.qb_sync_status = 'pending' then 'queued'");
+  expect(worker).toContain("when p.sync_status = 'pending' then 'queued'");
+  expect(routes).not.toContain("state: String(req.query.state || 'all')");
+  expect(listFilters).not.toContain('state?: QuickBooksSyncQueueView');
+  expect(listFunction).not.toContain('db.update(');
+  expect(listFunction).not.toContain('db.insert(');
+  expect(listFunction).not.toContain('syncSingle');
+});

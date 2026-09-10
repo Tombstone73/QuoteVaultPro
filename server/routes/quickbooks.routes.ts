@@ -137,7 +137,6 @@ export function registerQuickBooksRoutes(
         view,
         filters: {
           type: String(req.query.type || 'all') as any,
-          state: String(req.query.state || 'all') as any,
           eligibility: String(req.query.eligibility || 'all') as any,
           error: String(req.query.error || 'all') as any,
           sortBy: String(req.query.sortBy || 'updatedAt') as any,

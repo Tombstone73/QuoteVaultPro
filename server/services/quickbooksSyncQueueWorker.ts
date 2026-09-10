@@ -522,7 +522,10 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   const filters = normalizeQuickBooksSyncQueueListFilters(params.filters ?? {});
   const needle = String(params.search || '').trim();
   const searchPattern = `%${needle}%`;
-  const effectiveState = filters.state === 'all' ? view : filters.state;
+  // The top-level view is the sole state predicate.  Keeping it separate from
+  // eligibility avoids a stale secondary state query parameter changing what a
+  // row's canonical queue_state means in this console.
+  const effectiveState = view;
   const conditions = [sql`true`];
   if (effectiveState !== 'all') conditions.push(sql`queue_state = ${effectiveState}`);
   if (filters.type !== 'all') conditions.push(sql`resource_type = ${filters.type}`);

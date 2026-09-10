@@ -30,4 +30,8 @@ test('selection remains explicit and is not mutated by paging or filtering', () 
 
 test('server query receives all canonical sort, filter, search, and page state', () => {
   expect(source).toContain('new URLSearchParams({ page: String(page), pageSize: String(pageSize), view, search, type: typeFilter, eligibility: eligibilityFilter, error: errorFilter, sortBy, sortDir })');
+  expect(source).toContain("queryKey: ['/api/integrations/quickbooks/queue/items', page, pageSize, search, view, typeFilter, eligibilityFilter, errorFilter, sortBy, sortDir]");
+  expect(source).toContain("{ value: 'queued', label: 'Queued' }");
+  expect(source).toContain("item.queueState.replace('_', ' ')");
+  expect(source).toContain("const changeView = (next: QueueView) => { setView(next); setPage(1); };");
 });
