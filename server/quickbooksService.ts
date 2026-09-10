@@ -10,7 +10,10 @@ import { buildDocumentNumberParts } from './services/documentNumberingService';
 import { getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from './lib/invoiceAccountingApproval';
 import {
   assertQuickBooksDocumentNumber,
+  buildQuickBooksPaymentPayload,
   formatQuickBooksPaymentReference,
+  getExplicitPaymentReference,
+  isQuickBooksDocumentNumberValid,
   resolveQuickBooksPaymentReference,
 } from './lib/quickBooksPaymentReference';
 import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHistoricalNumbering';
@@ -1463,7 +1466,6 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
   const txnDateStr = Number.isNaN(txnDate.getTime()) ? new Date().toISOString().split('T')[0] : txnDate.toISOString().split('T')[0];
 
   let paymentReference = resolveQuickBooksPaymentReference({
-    metadata: (payment as any).metadata,
     canonicalReference: (payment as any).quickbooksPaymentReference,
   });
   if (!paymentReference) {
@@ -1505,28 +1507,26 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
         .from(payments)
         .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
         .limit(1);
-      paymentReference = resolveQuickBooksPaymentReference({ metadata: null, canonicalReference: current?.quickbooksPaymentReference });
+      paymentReference = resolveQuickBooksPaymentReference({ canonicalReference: current?.quickbooksPaymentReference });
       if (!paymentReference) throw new Error('Failed to persist a canonical QuickBooks payment reference');
     }
   }
   const paymentRefNum = assertQuickBooksDocumentNumber(paymentReference.value, 'QuickBooks payment reference');
-  const privateNote = `PrintersHero payment ${paymentRefNum}`;
+  const operatorReference = getExplicitPaymentReference((payment as any).metadata);
+  const privateNote = operatorReference && isQuickBooksDocumentNumberValid(operatorReference) && operatorReference !== paymentRefNum
+    ? `PrintersHero payment ${paymentRefNum}; operator reference ${operatorReference}`
+    : `PrintersHero payment ${paymentRefNum}`;
 
   const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
 
-  const qbPaymentData: any = {
-    CustomerRef: { value: qbCustomerId },
-    TotalAmt: amount,
-    TxnDate: txnDateStr,
-    PaymentRefNum: paymentRefNum,
-    PrivateNote: privateNote,
-    Line: [
-      {
-        Amount: amount,
-        LinkedTxn: [{ TxnId: qbInvoiceId, TxnType: 'Invoice' }],
-      },
-    ],
-  };
+  const qbPaymentData: any = buildQuickBooksPaymentPayload({
+    qbCustomerId,
+    amount,
+    txnDate: txnDateStr,
+    paymentReference: paymentRefNum,
+    privateNote,
+    qbInvoiceId,
+  });
 
   const existingQbPaymentId = String((payment as any).externalAccountingId || '').trim();
   if (existingQbPaymentId) {

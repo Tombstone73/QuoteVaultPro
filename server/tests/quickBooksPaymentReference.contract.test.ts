@@ -11,9 +11,9 @@ test('QuickBooks payment export uses a semantic reference and preserves linked-i
 
   expect(service).toContain('resolveQuickBooksPaymentReference({');
   expect(service).toContain("formatQuickBooksPaymentReference(referenceNumber)");
-  expect(service).toContain("PaymentRefNum: paymentRefNum");
-  expect(service).toContain("PrivateNote: privateNote");
-  expect(service).toContain("LinkedTxn: [{ TxnId: qbInvoiceId, TxnType: 'Invoice' }]");
+  expect(service).toContain('getExplicitPaymentReference((payment as any).metadata)');
+  expect(service).toContain('buildQuickBooksPaymentPayload({');
+  expect(service).toContain('paymentReference: paymentRefNum');
   expect(service).not.toContain('`QVP-${localPaymentId}`');
   expect(service).not.toContain('QVP payment ${localPaymentId}');
   expect(schema).toContain('quickbooksPaymentReference: varchar("quickbooks_payment_reference", { length: 21 })');
@@ -26,6 +26,6 @@ test('invoice DocNumber remains canonical and is validated without renumbering i
 
   expect(service).toContain("String((invoice as any).displayNumber || invoice.invoiceNumber || '').trim()");
   expect(service).toContain("DocNumber: invoiceDisplayNumber");
-  expect(service).toContain('assertQuickBooksDocumentNumber(\n    String((invoice as any).displayNumber || invoice.invoiceNumber || \'\').trim(),\n    \'QuickBooks invoice document number\'');
+  expect(service).toMatch(/assertQuickBooksDocumentNumber\(\r?\n\s+String\(\(invoice as any\)\.displayNumber \|\| invoice\.invoiceNumber \|\| ''\)\.trim\(\),\r?\n\s+'QuickBooks invoice document number',/);
   expect(service).toContain('resolveHistoricalQuickBooksInvoiceNumber');
 });

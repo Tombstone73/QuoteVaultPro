@@ -1,10 +1,19 @@
 export const QUICKBOOKS_DOCUMENT_NUMBER_MAX_LENGTH = 21;
 
-export type QuickBooksPaymentReferenceSource = "explicit" | "canonical";
+export type QuickBooksPaymentReferenceSource = "canonical";
 
 export type ResolvedQuickBooksPaymentReference = {
   value: string;
   source: QuickBooksPaymentReferenceSource;
+};
+
+export type QuickBooksPaymentPayload = {
+  CustomerRef: { value: string };
+  TotalAmt: number;
+  TxnDate: string;
+  PaymentRefNum: string;
+  PrivateNote: string;
+  Line: Array<{ Amount: number; LinkedTxn: Array<{ TxnId: string; TxnType: 'Invoice' }> }>;
 };
 
 function normalizeReference(value: unknown): string | null {
@@ -41,19 +50,14 @@ export function assertQuickBooksDocumentNumber(value: unknown, label: string): s
 }
 
 /**
- * Prefers the operator-entered payment/check reference when QBO can accept it.
- * If it is absent or too long, callers must reuse or allocate a persisted
- * PrintersHero reference instead; the original metadata is intentionally left intact.
+ * PaymentRefNum is the provider-searchable recovery key for a local Payment.
+ * It must therefore be the persisted, organization-unique reference rather
+ * than an operator-entered check/reference that can be reused by another
+ * payment. Operator-entered references remain local presentation metadata.
  */
 export function resolveQuickBooksPaymentReference(input: {
-  metadata: unknown;
   canonicalReference: unknown;
 }): ResolvedQuickBooksPaymentReference | null {
-  const explicitReference = getExplicitPaymentReference(input.metadata);
-  if (explicitReference && isQuickBooksDocumentNumberValid(explicitReference)) {
-    return { value: explicitReference, source: "explicit" };
-  }
-
   const canonicalReference = normalizeReference(input.canonicalReference);
   if (canonicalReference) {
     return {
@@ -70,4 +74,27 @@ export function formatQuickBooksPaymentReference(sequenceNumber: number): string
     throw new Error("QuickBooks payment reference sequence is invalid.");
   }
   return assertQuickBooksDocumentNumber(`PMT-${sequenceNumber}`, "Generated PrintersHero payment reference");
+}
+
+/** Build the exact QBO Payment shape without changing any local financial fact. */
+export function buildQuickBooksPaymentPayload(input: {
+  qbCustomerId: string;
+  amount: number;
+  txnDate: string;
+  paymentReference: string;
+  privateNote: string;
+  qbInvoiceId: string;
+}): QuickBooksPaymentPayload {
+  const paymentRefNum = assertQuickBooksDocumentNumber(input.paymentReference, 'QuickBooks payment reference');
+  return {
+    CustomerRef: { value: input.qbCustomerId },
+    TotalAmt: input.amount,
+    TxnDate: input.txnDate,
+    PaymentRefNum: paymentRefNum,
+    PrivateNote: input.privateNote,
+    Line: [{
+      Amount: input.amount,
+      LinkedTxn: [{ TxnId: input.qbInvoiceId, TxnType: 'Invoice' }],
+    }],
+  };
 }
