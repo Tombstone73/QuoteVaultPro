@@ -46,6 +46,8 @@ export type CustomerCommercialStore = Readonly<{
   setEntitlement(input: CustomerProductEntitlement, actor: CustomerCommercialActor): Promise<CustomerProductEntitlement>;
   replaceAgreement(input: ReplaceCustomerPricingAgreement, actor: CustomerCommercialActor): Promise<CustomerPricingAgreement>;
   listEntitlements(organizationId: OrganizationId, customerId: CustomerId): Promise<readonly CustomerProductEntitlement[]>;
+  /** Staff authoring needs a bounded, current view before replacing an agreement. */
+  listActivePricingAgreements(organizationId: OrganizationId, customerId: CustomerId): Promise<readonly CustomerPricingAgreement[]>;
 }>;
 
 export type CustomerCommercialActor = Readonly<{
@@ -96,6 +98,13 @@ export class CustomerCommercialApplicationService {
     if (!this.policy.decide(context.principal, { capability: "product.view", resource: { organizationId: context.organizationId, customerId } }).allowed)
       throw new V2ApplicationError("FORBIDDEN", "The principal cannot view this customer catalog.");
     return this.store.listEntitlements(context.organizationId as OrganizationId, customerId);
+  }
+
+  async activePricingAgreementsForCustomer(context: OperationContext, customerId: CustomerId): Promise<readonly CustomerPricingAgreement[]> {
+    requireOperationPrincipalScope(context);
+    if (!this.policy.decide(context.principal, { capability: "pricing.configure", resource: { organizationId: context.organizationId, customerId } }).allowed)
+      throw new V2ApplicationError("FORBIDDEN", "The principal cannot view this customer pricing policy.");
+    return this.store.listActivePricingAgreements(context.organizationId as OrganizationId, customerId);
   }
 }
 

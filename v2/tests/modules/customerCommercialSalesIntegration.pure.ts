@@ -21,6 +21,7 @@ const store: CustomerCommercialStore = {
   setEntitlement: async (value) => value,
   replaceAgreement: async (value) => ({ ...value, id: "unused", active: true, effectiveFrom: "2026-09-07T00:00:00.000Z", createdAt: "2026-09-07T00:00:00.000Z" }),
   listEntitlements: async () => [],
+  listActivePricingAgreements: async () => [],
 };
 const customerPricing = new CustomerCommercialPricingAdapter(new V2PricingParityAdapter(), store);
 let created: any;

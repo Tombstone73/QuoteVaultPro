@@ -20,6 +20,7 @@ const store = (enabled: boolean, agreement: unknown): CustomerCommercialStore =>
   setEntitlement: async (value) => value,
   replaceAgreement: async (value) => ({ ...value, id: "agreement", active: true, createdAt: "2026-09-07T00:00:00.000Z" }),
   listEntitlements: async () => [],
+  listActivePricingAgreements: async () => [],
 });
 
 const adjustment = { id: "agreement", organizationId: "org" as never, customerId: "customer" as never, productId: "product" as never, currency: USD, mode: "percent_adjustment" as const, value: -1000, active: true, effectiveFrom: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" };

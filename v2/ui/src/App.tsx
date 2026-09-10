@@ -465,6 +465,7 @@ export const App = ({
           customerId={customerId}
           canView={bootstrap.data?.capabilities.customerView === true}
           canCreate={bootstrap.data?.capabilities.customerEdit === true}
+          canManageCommercial={bootstrap.data?.capabilities.productEdit === true && bootstrap.data?.capabilities.pricingConfigure === true}
           openCustomer={(id) => {
             pushCustomerLocation(id);
             setCustomerId(id);
@@ -778,6 +779,7 @@ export const App = ({
             setInvoiceId("");
           }}
           canInvoiceView={bootstrap.data?.capabilities.invoiceView === true}
+          canInvoiceIssue={bootstrap.data?.capabilities.invoiceIssue === true}
           canInvoiceSend={bootstrap.data?.capabilities.invoiceSend === true}
           canPaymentView={bootstrap.data?.capabilities.paymentView === true}
           canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true}

@@ -15,6 +15,7 @@ const store:CustomerCommercialStore={
   setEntitlement:async(value)=>{records.push(value);return value;},
   replaceAgreement:async(value)=>({ ...value,id:"agreement-a",active:true,createdAt:"2026-09-07T00:00:00.000Z" }),
   listEntitlements:async()=>records,
+  listActivePricingAgreements:async()=>[],
 };
 const service=new CustomerCommercialApplicationService(store,new AuthorityPolicy());
 const staff:any={kind:"staff",organizationId:"org-a",userId:"staff-a",authority:{membershipId:"member-a",capabilities:["product.edit","product.view","pricing.configure"]}};
@@ -25,6 +26,7 @@ const staffApp=express().use(express.json()).use("/v2/organizations/:organizatio
 await request(staffApp).put("/v2/organizations/org-a/customer-commercial/customers/customer-a/products/product-a/entitlement").send({enabled:true}).expect(200);
 assert.equal(records[0]?.customerId,"customer-a");
 await request(staffApp).put("/v2/organizations/org-a/customer-commercial/customers/customer-a/products/product-a/pricing-agreement").send({mode:"fixed_unit",value:125,currency:"USD"}).expect(200);
+await request(staffApp).get("/v2/organizations/org-a/customer-commercial/customers/customer-a/pricing-agreements").expect(200,{ok:true,data:[]});
 const portal:any={kind:"portal",organizationId:"org-a",customerId:"customer-a",subjectId:"portal-a",capabilities:["product.view"]};
 const portalApp=express().use(express.json()).use("/v2/portal/catalog",createPortalCustomerCommercialRouter({service,store,pricing,products,portalPrincipal:{principal:async()=>portal}}));
 await request(portalApp).get("/v2/portal/catalog").expect(200,{ok:true,data:{items:[{productId:"product-a",displayName:"Allowed Product",requiresDimensions:false,currency:"USD"}]}});

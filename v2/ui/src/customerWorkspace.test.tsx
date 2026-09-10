@@ -49,10 +49,21 @@ const unlinkedPrimary = renderToStaticMarkup(<QueryClientProvider client={unlink
 assert.match(unlinkedPrimary, /<dt>Primary Contact<\/dt><dd>—<\/dd>/);
 assert.doesNotMatch(unlinkedPrimary, /<em>Primary<\/em>/);
 
+const commercialClient = new QueryClient();
+commercialClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-a"], detailClient.getQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-a"]));
+commercialClient.setQueryData(["v2", "scope-a", "org-a", "customers", "activity", "customer-a", ""], { items: [], totalMatching: 0 });
+commercialClient.setQueryData(["v2", "scope-a", "org-a", "customer-commercial", "customer-a", "entitlements"], [{ productId: "product-a", enabled: true, updatedAt: "2026-09-10T12:00:00.000Z" }]);
+commercialClient.setQueryData(["v2", "scope-a", "org-a", "customer-commercial", "customer-a", "agreements"], [{ id: "agreement-a", productId: "product-a", currency: "USD", mode: "fixed_unit", value: 125, active: true, effectiveFrom: "2026-09-10T12:00:00.000Z", createdAt: "2026-09-10T12:00:00.000Z" }]);
+commercialClient.setQueryData(["v2", "scope-a", "org-a", "customer-commercial", "products", ""], { items: [{ productId: "product-a", displayName: "Rigid Sign", lifecycle: "active", measurementMode: "quantity_only", pricingSummary: "Per piece", hasDraft: false }], page: 1, pageSize: 50, total: 1, hasMore: false });
+const commercial = renderToStaticMarkup(<QueryClientProvider client={commercialClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-a" canView canCreate canManageCommercial openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+for (const text of ["Portal catalog", "Portal enabled", "Save pricing agreement", "$1.25 per unit"]) assert.match(commercial, new RegExp(text.replace(/[$]/g, "\\$")));
+
 const workspaceSource = readFileSync(new URL("./CustomerWorkspace.tsx", import.meta.url), "utf8");
 assert.match(workspaceSource, /"catalog", search, cursor/, "Customer page/search cursors must have distinct React Query cache keys");
 assert.match(workspaceSource, /setSearch\(event\.target\.value\); setCursor\(""\); setCursorHistory\(\[\]\)/, "changing Customer search must reset paging");
 assert.match(workspaceSource, /"customers", "activity", customerId, cursor/, "Customer activity must be scoped and cursor-paged in its own cache key");
 assert.match(workspaceSource, /workspacePath\("proofing"\)/, "Proof activity must link through the canonical Proofing workspace.");
+assert.match(workspaceSource, /customerCommercialApi\.setEntitlement/, "catalog visibility must call the server-owned commercial policy");
+assert.match(workspaceSource, /customerCommercialApi\.setPricingAgreement/, "customer pricing must call the server-owned commercial policy");
 
 console.log("Customer workspace visual contract tests passed.");

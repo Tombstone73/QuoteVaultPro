@@ -104,6 +104,14 @@ export class PostgresCustomerCommercialStore implements CustomerCommercialStore 
     return result.rows.map(entitlement);
   }
 
+  async listActivePricingAgreements(organizationId: OrganizationId, customerId: CustomerId): Promise<readonly CustomerPricingAgreement[]> {
+    const result = await this.database.query<Row>(
+      "SELECT * FROM v2_customer_product_pricing_agreements WHERE organization_id=$1 AND customer_id=$2 AND active=true ORDER BY effective_from DESC,created_at DESC,id",
+      [organizationId, customerId],
+    );
+    return result.rows.map(agreement);
+  }
+
   private async event(client: Client, organizationId: OrganizationId, customerId: CustomerId, productId: ProductId, type: string, detail: Record<string, unknown>, actor: CustomerCommercialActor) {
     await client.query(
       `INSERT INTO v2_customer_product_commercial_events(id,organization_id,customer_id,product_id,event_type,event_detail,principal_kind,principal_subject,staff_actor_user_id,operation_id)

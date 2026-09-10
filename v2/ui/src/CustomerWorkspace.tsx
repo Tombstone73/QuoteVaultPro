@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { contactApi, customerApi, newBusinessRequestId, type CustomerActivityItem, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
+import { contactApi, customerApi, customerCommercialApi, newBusinessRequestId, productApi, type CustomerActivityItem, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
 import { invoicePath, orderPath, quotePath, workspacePath } from "./productRouting";
 
 const keys = {
@@ -31,12 +31,13 @@ const SummaryCard = ({ title, count, children }: Readonly<{ title: string; count
 
 const DetailMetric = ({ label, value }: Readonly<{ label: string; value: string }>) => <div className="v2-customer-metric"><small>{label}</small><strong>{value}</strong></div>;
 
-export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, canView, canCreate, openCustomer, openContact, backToCatalog }: Readonly<{
+export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, canView, canCreate, canManageCommercial = false, openCustomer, openContact, backToCatalog }: Readonly<{
   organizationId: string;
   sessionScope: string;
   customerId: string;
   canView: boolean;
   canCreate: boolean;
+  canManageCommercial?: boolean;
   openCustomer: (customerId: string) => void;
   openContact: (contactId: string) => void;
   backToCatalog: () => void;
@@ -62,7 +63,7 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
 
   if (!organizationId) return <section className="v2-customers"><div className="v2-proof-empty">Customers are unavailable.</div></section>;
   if (!canView) return <section className="v2-customers"><div className="v2-proof-empty">You do not have permission to view Customers.</div></section>;
-  if (customerId) return <CustomerDetail state={detail} organizationId={organizationId} sessionScope={sessionScope} canCreate={canCreate} openContact={openContact} backToCatalog={backToCatalog} />;
+  if (customerId) return <CustomerDetail state={detail} organizationId={organizationId} sessionScope={sessionScope} canCreate={canCreate} canManageCommercial={canManageCommercial} openContact={openContact} backToCatalog={backToCatalog} />;
 
   return <section className="v2-customers" aria-label="Customers">
     <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.totalMatching} customer accounts` : "Customer accounts"}</p></div>{canCreate && <button type="button" onClick={() => setCreating((value) => !value)}>{creating ? "Cancel" : "New Customer"}</button>}</header>
@@ -92,11 +93,12 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
   </section>;
 };
 
-const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, openContact, backToCatalog }: Readonly<{
+const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, canManageCommercial, openContact, backToCatalog }: Readonly<{
   state: ReturnType<typeof useQuery<CustomerWorkspaceRead>>;
   organizationId: string;
   sessionScope: string;
   canCreate: boolean;
+  canManageCommercial: boolean;
   openContact: (contactId: string) => void;
   backToCatalog: () => void;
 }>) => {
@@ -121,8 +123,51 @@ const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, openCo
       <SummaryCard title="Account Details"><CustomerEditForm organizationId={organizationId} sessionScope={sessionScope} customer={customer} canEdit={canCreate} /><dl className="v2-customer-detail-facts"><div><dt>Company</dt><dd>{identity.companyName ?? customer.displayName}</dd></div><div><dt>Primary Contact</dt><dd>{primaryName ?? unavailable}</dd></div><div><dt>Billing Address</dt><dd>{address(identity.billingAddress)}</dd></div><div><dt>Shipping Address</dt><dd>{address(identity.shippingAddress)}</dd></div></dl></SummaryCard>
       <SummaryCard title="Contacts" count={String(customer.contacts.length)}>{readiness.status === "needs_attention" && <p className="v2-customer-empty" role="status">Contact attention: {readiness.reasons.map((reason) => reason.replaceAll("_", " ")).join(", ")}.</p>}<ContactCreateForm organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} customerRevision={customer.revision} canCreate={canCreate} />{customer.contacts.length ? <ul className="v2-customer-contact-list">{customer.contacts.map((contact) => <li key={contact.contactId}><div><button type="button" onClick={() => openContact(contact.contactId)}>{contact.displayName}</button>{contact.primary && <em>Primary</em>}{contact.status === "archived" && <em>Inactive</em>}</div><small>{contact.email ?? unavailable}{contact.phone ? ` · ${contact.phone}` : ""}{contact.portalAccessStatus ? ` · Portal ${contact.portalAccessStatus}` : ""}</small>{canCreate && contact.status === "active" && !contact.primary && <PrimaryContactButton organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} customerRevision={customer.revision} contactId={contact.contactId} />}</li>)}</ul> : <p className="v2-customer-empty">No Contacts are linked to this Customer.</p>}</SummaryCard>
       <CustomerActivity organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} />
+      {canManageCommercial && <CustomerCommercialPanel organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} />}
     </div>
   </section>;
+};
+
+const centsFromCommercialInput = (value: string): number | null => {
+  const match = value.trim().match(/^(\d+)(?:\.(\d{1,2}))?$/);
+  if (!match) return null;
+  const cents = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return Number.isSafeInteger(cents) ? cents : null;
+};
+const basisPointsFromPercent = (value: string): number | null => {
+  const match = value.trim().match(/^(-?)(\d+)(?:\.(\d{1,2}))?$/);
+  if (!match) return null;
+  const points = Number(match[2]) * 100 + Number((match[3] ?? "").padEnd(2, "0"));
+  const signed = match[1] === "-" ? -points : points;
+  return Number.isSafeInteger(signed) && signed >= -10_000 ? signed : null;
+};
+
+/** Bounded staff authoring for the canonical commercial policy. It never
+ * calculates a price or updates a ProductVersion in the browser. */
+const CustomerCommercialPanel = ({ organizationId, sessionScope, customerId }: Readonly<{ organizationId: string; sessionScope: string; customerId: string }>) => {
+  const [productSearch, setProductSearch] = useState("");
+  const [entitlementProductId, setEntitlementProductId] = useState("");
+  const [pricingProductId, setPricingProductId] = useState("");
+  const [mode, setMode] = useState<"fixed_unit" | "percent_adjustment">("fixed_unit");
+  const [value, setValue] = useState("");
+  const queryClient = useQueryClient();
+  const entitlements = useQuery({ queryKey: ["v2", sessionScope, organizationId, "customer-commercial", customerId, "entitlements"], queryFn: () => customerCommercialApi.entitlements(organizationId, customerId) });
+  const agreements = useQuery({ queryKey: ["v2", sessionScope, organizationId, "customer-commercial", customerId, "agreements"], queryFn: () => customerCommercialApi.agreements(organizationId, customerId) });
+  const products = useQuery({ queryKey: ["v2", sessionScope, organizationId, "customer-commercial", "products", productSearch], queryFn: () => productApi.list(organizationId, productSearch, 1) });
+  const refresh = async () => queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "customer-commercial", customerId] });
+  const saveEntitlement = useMutation({ mutationFn: () => { if (!entitlementProductId) throw new Error("Select a Product before changing portal availability."); const current = entitlements.data?.find((item) => item.productId === entitlementProductId); return customerCommercialApi.setEntitlement(organizationId, customerId, entitlementProductId, !(current?.enabled ?? false)); }, onSuccess: refresh });
+  const saveAgreement = useMutation({ mutationFn: () => { if (!pricingProductId) throw new Error("Select a Product before saving customer pricing."); const normalized = mode === "fixed_unit" ? centsFromCommercialInput(value) : basisPointsFromPercent(value); if (normalized === null) throw new Error(mode === "fixed_unit" ? "Enter a non-negative unit price with at most two decimals." : "Enter a percentage adjustment no lower than -100.00%."); return customerCommercialApi.setPricingAgreement(organizationId, customerId, pricingProductId, { currency: "USD", mode, value: normalized }); }, onSuccess: async () => { setValue(""); await refresh(); } });
+  const label = (productId: string) => products.data?.items.find((item) => item.productId === productId)?.displayName ?? productId;
+  return <SummaryCard title="Portal catalog & pricing">
+    <p className="v2-customer-empty">Set customer-specific catalog visibility and commercial agreements. Product pricing is resolved and frozen only by the canonical Sales service.</p>
+    <label className="v2-customers-search">Find Product <input aria-label="Find Product for customer commercial policy" value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Product name…" /></label>
+    <div className="v2-customer-create"><label>Portal Product <select aria-label="Portal Product" value={entitlementProductId} onChange={(event) => setEntitlementProductId(event.target.value)}><option value="">Select Product…</option>{products.data?.items.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select></label><button type="button" disabled={!entitlementProductId || saveEntitlement.isPending} onClick={() => saveEntitlement.mutate()}>{entitlements.data?.find((item) => item.productId === entitlementProductId)?.enabled ? "Remove from Portal Catalog" : "Allow in Portal Catalog"}</button></div>
+    {entitlements.isError || saveEntitlement.isError ? <p role="alert">{mutationErrorMessage(saveEntitlement.error ?? entitlements.error, "Customer catalog policy could not be saved.")}</p> : null}
+    <ul className="v2-customer-contact-list" aria-label="Customer portal catalog">{entitlements.data?.length ? entitlements.data.map((item) => <li key={item.productId}><div><b>{label(item.productId)}</b><em>{item.enabled ? "Portal enabled" : "Portal disabled"}</em></div><small>Last changed {new Date(item.updatedAt).toLocaleString()}</small></li>) : <li>No explicit Product entitlements.</li>}</ul>
+    <form className="v2-customer-create" onSubmit={(event) => { event.preventDefault(); saveAgreement.mutate(); }}><label>Product <select aria-label="Customer pricing Product" value={pricingProductId} onChange={(event) => setPricingProductId(event.target.value)}><option value="">Select Product…</option>{products.data?.items.map((item) => <option key={item.productId} value={item.productId}>{item.displayName}</option>)}</select></label><label>Agreement <select aria-label="Customer pricing agreement type" value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}><option value="fixed_unit">Fixed unit price</option><option value="percent_adjustment">Percentage adjustment</option></select></label><label>{mode === "fixed_unit" ? "Unit price (USD)" : "Adjustment (%)"}<input aria-label={mode === "fixed_unit" ? "Unit price (USD)" : "Adjustment (%)"} inputMode="decimal" value={value} onChange={(event) => setValue(event.target.value)} placeholder={mode === "fixed_unit" ? "0.00" : "0.00"} /></label><button type="submit" disabled={!pricingProductId || !value.trim() || saveAgreement.isPending}>{saveAgreement.isPending ? "Saving…" : "Save pricing agreement"}</button></form>
+    {agreements.isError || saveAgreement.isError ? <p role="alert">{mutationErrorMessage(saveAgreement.error ?? agreements.error, "Customer pricing agreement could not be saved.")}</p> : null}
+    <ul className="v2-customer-contact-list" aria-label="Active customer pricing agreements">{agreements.data?.length ? agreements.data.map((agreement) => <li key={agreement.id}><div><b>{label(agreement.productId)}</b><em>{agreement.mode === "fixed_unit" ? `$${(agreement.value / 100).toFixed(2)} per unit` : `${(agreement.value / 100).toFixed(2)}% adjustment`}</em></div><small>Active from {new Date(agreement.effectiveFrom).toLocaleString()}{agreement.productVersionId ? " · Version-specific" : " · Product-wide"}</small></li>) : <li>No active customer pricing agreements.</li>}</ul>
+  </SummaryCard>;
 };
 
 /** A bounded context hub only: source domains retain all mutations and detail ownership. */

@@ -43,6 +43,10 @@ export const createCustomerCommercialRouter = (dependencies: CustomerCommercialH
     try { const { principal, organizationId } = await staff(request); const customerId = brandedId<"CustomerId">(request.params.customerId); return response.json({ ok: true, data: await dependencies.service.catalogForCustomer({ principal, organizationId, operationId: `customer-commercial:list:${customerId}` }, customerId) }); }
     catch (value) { return error(response, value, "Customer catalog is unavailable."); }
   });
+  router.get("/customers/:customerId/pricing-agreements", async (request, response) => {
+    try { const { principal, organizationId } = await staff(request); const customerId = brandedId<"CustomerId">(request.params.customerId); return response.json({ ok: true, data: await dependencies.service.activePricingAgreementsForCustomer({ principal, organizationId, operationId: `customer-commercial:pricing-list:${customerId}` }, customerId) }); }
+    catch (value) { return error(response, value, "Customer pricing policy is unavailable."); }
+  });
   router.put("/customers/:customerId/products/:productId/entitlement", async (request, response) => {
     try { const { principal, organizationId } = await staff(request); const enabled = body(request).enabled; if (typeof enabled !== "boolean") throw new V2ApplicationError("VALIDATION_ERROR", "An explicit entitlement enabled state is required."); const customerId = brandedId<"CustomerId">(request.params.customerId); const productId = brandedId<"ProductId">(request.params.productId); const value = await dependencies.service.setEntitlement({ principal, organizationId, operationId: `customer-commercial:entitlement:${customerId}:${productId}` }, { customerId, productId, enabled }); return response.json({ ok: true, data: value }); }
     catch (value) { return error(response, value, "Customer Product entitlement could not be saved."); }

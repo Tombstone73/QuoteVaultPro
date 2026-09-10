@@ -45,6 +45,7 @@ const read = (lifecycle: "draft" | "issued", balanceCents = 600, paidCents = 0):
 const renderInvoice = (
   lifecycle: "draft" | "issued",
   canInvoiceView = true,
+  canInvoiceIssue = true,
   balanceCents = 600,
   paidCents = 0,
 ) => {
@@ -72,6 +73,7 @@ const renderInvoice = (
         onSelectInvoice={() => {}}
         backToInvoices={() => {}}
         canInvoiceView={canInvoiceView}
+        canInvoiceIssue={canInvoiceIssue}
         canInvoiceSend
         canPaymentView
         canPaymentRecord
@@ -93,7 +95,7 @@ assert.match(draft, />Preview PDF</);
 assert.match(draft, /Order-backed/);
 assert.match(draft, />Take Payment</);
 assert.match(draft, />Pay by Card</);
-assert.doesNotMatch(draft, />Issue Invoice</);
+assert.match(draft, />Issue Invoice</);
 assert.match(draft, /Order ORD-1010/);
 assert.doesNotMatch(draft, /Order invoice-draft/);
 const issued = renderInvoice("issued");
@@ -102,14 +104,15 @@ assert.match(issued, /Issued Billing checkpoint; commercial content is immutable
 assert.match(issued, />Take Payment</);
 assert.doesNotMatch(issued, />Sync to QuickBooks</);
 assert.doesNotMatch(issued, />Issue Invoice</);
-const paid = renderInvoice("draft", true, 0, 600);
+const paid = renderInvoice("draft", true, true, 0, 600);
 assert.doesNotMatch(paid, />Take Payment</);
 assert.doesNotMatch(paid, />Pay by Card</);
-const creditDue = renderInvoice("draft", true, -50, 650);
+const creditDue = renderInvoice("draft", true, true, -50, 650);
 assert.match(creditDue, /Credit \/ refund due/);
 assert.doesNotMatch(creditDue, />Take Payment</);
 assert.doesNotMatch(creditDue, />Pay by Card</);
 assert.doesNotMatch(renderInvoice("draft", false), />Preview PDF</);
+assert.doesNotMatch(renderInvoice("draft", true, false), />Issue Invoice/);
 const noSelection = renderToStaticMarkup(
   <QueryClientProvider client={new QueryClient()}>
     <FinanceWorkspace
@@ -136,7 +139,7 @@ const apiSource = readFileSync("v2/ui/src/api.ts", "utf8");
 const appSource = readFileSync("v2/ui/src/App.tsx", "utf8");
 assert.doesNotMatch(workspaceSource, /QuickBooks sync/);
 assert.doesNotMatch(workspaceSource, /Retry Payment Sync/);
-assert.doesNotMatch(workspaceSource, /invoiceApi\.issue/);
+assert.match(workspaceSource, /invoiceApi\.issue/, "draft issuance must call the canonical billing command");
 assert.match(workspaceSource, /settlement\?\.balance\.cents \?\? 0\) > 0/);
 assert.match(apiSource, /settings\/accounting\/sync-selected/);
 assert.match(workspaceSource, /selectInvoice\(row\.invoiceId, row\.source\)/, "the Invoice grid opens with the canonical V2 Invoice ID");

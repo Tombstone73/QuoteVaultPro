@@ -2196,6 +2196,22 @@ export type CustomerActivityPage = Readonly<{
   totalMatching: number;
   nextCursor?: string;
 }>;
+export type CustomerProductEntitlement = Readonly<{
+  productId: string;
+  enabled: boolean;
+  updatedAt: string;
+}>;
+export type CustomerPricingAgreement = Readonly<{
+  id: string;
+  productId: string;
+  productVersionId?: string;
+  currency: string;
+  mode: "fixed_unit" | "percent_adjustment";
+  value: number;
+  active: boolean;
+  effectiveFrom: string;
+  createdAt: string;
+}>;
 export type ActionCenterItem = Readonly<{
   kind: "inbound" | "proofs" | "prepress" | "production" | "invoices";
   label: string;
@@ -2238,6 +2254,14 @@ export const customerApi = {
     ),
   update: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedRevision: string; companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerWorkspaceRead["editable"]["billingAddress"]; shippingAddress?: CustomerWorkspaceRead["editable"]["shippingAddress"] }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`, { method: "PATCH", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
   setPrimaryContact: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedCustomerRevision: string; contactId: string }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}/primary-contact`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
+};
+/** Staff-only customer commercial policy. The server remains the authority for
+ * entitlement, agreement replacement, pricing calculation, and audit facts. */
+export const customerCommercialApi = {
+  entitlements: (organizationId: string, customerId: string) => request<readonly CustomerProductEntitlement[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/customer-commercial/customers/${encodeURIComponent(customerId)}/products`),
+  agreements: (organizationId: string, customerId: string) => request<readonly CustomerPricingAgreement[]>(`/v2/organizations/${encodeURIComponent(organizationId)}/customer-commercial/customers/${encodeURIComponent(customerId)}/pricing-agreements`),
+  setEntitlement: (organizationId: string, customerId: string, productId: string, enabled: boolean) => request<CustomerProductEntitlement>(`/v2/organizations/${encodeURIComponent(organizationId)}/customer-commercial/customers/${encodeURIComponent(customerId)}/products/${encodeURIComponent(productId)}/entitlement`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify({ enabled }) }),
+  setPricingAgreement: (organizationId: string, customerId: string, productId: string, input: Readonly<{ productVersionId?: string; currency: string; mode: "fixed_unit" | "percent_adjustment"; value: number }>) => request<CustomerPricingAgreement>(`/v2/organizations/${encodeURIComponent(organizationId)}/customer-commercial/customers/${encodeURIComponent(customerId)}/products/${encodeURIComponent(productId)}/pricing-agreement`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
 };
 export type ContactCatalogItem = Readonly<{
   contactId: string;

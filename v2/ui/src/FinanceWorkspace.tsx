@@ -276,6 +276,7 @@ export const FinanceWorkspace = ({
   onSelectInvoice,
   backToInvoices,
   canInvoiceView,
+  canInvoiceIssue = false,
   canInvoiceSend,
   canPaymentView,
   canPaymentRecord,
@@ -291,6 +292,7 @@ export const FinanceWorkspace = ({
   onSelectInvoice: (invoiceId: string) => void;
   backToInvoices: () => void;
   canInvoiceView: boolean;
+  canInvoiceIssue?: boolean;
   canInvoiceSend: boolean;
   canPaymentView: boolean;
   canPaymentRecord: boolean;
@@ -405,6 +407,18 @@ export const FinanceWorkspace = ({
     onSuccess: async () => {
       setNotice("Payment recorded as an immutable financial fact.");
       closeDialog();
+      await refresh();
+    },
+    onError: (error) => setNotice(errorText(error)),
+  });
+  const issueInvoice = useMutation({
+    mutationFn: () => {
+      if (!detail.data || detail.data.invoice.source === "legacy" || detail.data.invoice.lifecycle !== "draft")
+        throw new Error("Only a current order-backed invoice can be issued.");
+      return invoiceApi.issue(organizationId, detail.data.invoice.invoiceId, newBusinessRequestId());
+    },
+    onSuccess: async () => {
+      setNotice("Invoice issued. Its commercial content is now immutable.");
       await refresh();
     },
     onError: (error) => setNotice(errorText(error)),
@@ -794,6 +808,11 @@ export const FinanceWorkspace = ({
                   }
                 >
                   Preview PDF
+                </button>
+              )}
+              {invoice.source !== "legacy" && invoice.lifecycle === "draft" && canInvoiceIssue && (
+                <button className="v2-invoice-issue" disabled={!csrfReady || issueInvoice.isPending} onClick={() => issueInvoice.mutate()}>
+                  {issueInvoice.isPending ? "Issuing…" : "Issue Invoice"}
                 </button>
               )}
               {paymentEligible && canPaymentRecord && (
