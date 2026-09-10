@@ -21,3 +21,12 @@ The owner/admin-only portal setup route preserves canonical invitation-token cre
 ## Cleanup
 
 The two DEV Railway AI flags remain enabled for the authorized QA matrix only. No provider credential was added or read. The seams are source-guarded and auditable; they do not change production behavior.
+
+## H1D lifecycle financial boundary
+
+The final lifecycle matrix used the canonical DEV-QA manual Payment and Refund
+application services only. It recorded one 100-cent manual Payment allocation
+and one one-cent manual Refund allocation for the dedicated QA Order. Neither
+operation initiated Stripe, Gmail, QuickBooks, carrier, or other provider
+work. The durable financial facts triggered the normal Order lifecycle
+reconciler and are retained as QA evidence.

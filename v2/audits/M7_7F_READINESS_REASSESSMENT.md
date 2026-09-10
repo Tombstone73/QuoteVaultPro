@@ -13,10 +13,24 @@
 
 ## Remaining application P0
 
-- Live QA Proof lifecycle: issue, revision, v2, approval, stale response.
-- Live QA Portal activation/login, customer scope, and portal read/write matrix.
-- Canonical inbound review, attachment handling, and Order conversion matrix.
-- Final cross-workflow QA lifecycle evidence.
+**None for V1 replacement.** The bounded DEV-QA matrices now include the
+canonical inbound conversion, Portal/customer scope and Artwork lineage,
+Proof evidence paths, and the final Production → Fulfillment → Invoice
+settlement → automatic close → Refund → automatic reopen lifecycle. The H1D
+matrix used an inbound-created physical Order and proved that the lifecycle is
+driven by immutable operational and financial facts rather than a manual
+completion/reopen control.
+
+This is an application-readiness conclusion only. It is not production GO.
+
+## Remaining application P1
+
+- Authenticated DEV UI/workspace coverage remains narrower than the exercised
+  server-authoritative workflows.
+- Live Gmail read/delivery and external provider behavior remain intentionally
+  outside the provider-free QA matrix.
+- Combined-shipment document scope and broader Product Builder coverage remain
+  launch follow-up work, not an application P0 revealed by H1D.
 
 ## Remaining external/control P0
 
@@ -26,4 +40,8 @@
 
 ## Exact next action
 
-Deploy the already-implemented proof/portal QA seams to DEV, then run only the remaining Proof, Portal, and Inbound conversion matrices within M7 QA. Do not begin M8 or make production changes.
+Stop application development for this QA closure. Resolve the existing
+external cutover-control P0 items—maintenance/alias control, restore point,
+write-free gate, reconciliation, manifest, endpoint fingerprint, and
+controlled worker startup—before any V1 replacement decision. Do not begin
+M8 or make production changes.

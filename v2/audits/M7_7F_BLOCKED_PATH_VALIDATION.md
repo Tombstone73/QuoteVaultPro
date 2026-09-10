@@ -33,6 +33,37 @@ One existing active QA Product (`89726ea4-61de-4612-bb2a-89d20c07263d`) was enab
 
 The ceiling behavior itself was live-proven through the same canonical service: an assigned capability temporarily removed from the ceiling did not become effective, and `fulfillment.view` temporarily placed only in the ceiling did not become effective. The exact approved Customer A ceiling was then restored. No staff/admin capability entered the Portal principal. All reset delivery was suppressed by the QA-only seam and no provider call was attempted.
 
-## Lifecycle
+## Lifecycle: PASS — automatic close and refund-driven reopen
 
-No broad already-proven production/fulfillment/finance paths were re-run. Consequently, the complete cross-workflow lifecycle is still pending final QA evidence.
+On the deployed DEV build `caf3e33`, the canonical inbound-created QA Order
+`ORD-1011` (`ab8de765-91d8-48cd-8c79-38dabf455a85`) completed the final
+cross-workflow lifecycle matrix. Its inbound conversion was not repeated.
+
+- The Order was initially `open`, had a $1.00 draft Invoice
+  (`350180ca-f7f6-47b1-9004-f85d89c76c84`), zero completed handoffs, and no
+  Production works. Proof was correctly not required by its frozen Product
+  facts.
+- Two existing synthetic QA production-art files were assigned as current
+  front/back evidence; no binary upload or provider call occurred. Canonical
+  Prepress completed both units and atomically handed them to the frozen
+  `roll` destination, creating exactly two Production works.
+- Before Production, the Order remained `open` with each work at `0/1` good
+  quantity. Canonical Roll attempts then recorded exactly `1/1` good quantity
+  and completed both works. Advancing the frozen Production route step left
+  the Order `open`, as its Fulfillment obligation was still unsatisfied.
+- A canonical pickup handoff allocated exactly one physical line quantity.
+  The frozen Fulfillment route step then completed. The Order remained `open`
+  while the Invoice balance was $1.00.
+- A QA-only canonical manual cash Payment allocated exactly 100 cents; it
+  made the Invoice balance zero and the lifecycle reconciler automatically
+  changed the Order to `completed`. No manual Order completion operation was
+  invoked.
+- A canonical one-cent manual Refund against that immutable Payment created
+  one immutable refund allocation, restored a positive Invoice balance, and
+  the lifecycle reconciler automatically reopened the Order to `open`.
+
+Post-reopen evidence: exactly two completed Production attempts, one immutable
+Fulfillment line, one Payment allocation, and one Refund allocation remain.
+Production and Fulfillment history were not reversed and no additional
+Production work was created. The remaining one-cent financial obligation is
+the sole reason this otherwise operationally complete Order is open.
