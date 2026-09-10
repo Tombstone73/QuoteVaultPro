@@ -184,12 +184,26 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
     sql`lower(${invoices.status}) not in ('void', 'canceled', 'cancelled')`,
     sql`${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}`,
   );
+  const paymentQueuePrerequisites = sql`
+    lower(${payments.status}) in ('succeeded', 'captured')
+    and coalesce(${invoices.qbInvoiceId}, '') <> ''
+    and ${invoices.accountingApprovedAt} is not null
+    and ${invoices.accountingApprovalRevokedAt} is null
+    and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}
+  `;
   const paymentUnsynced = and(
     isNull(payments.externalAccountingId),
-    inArray(payments.syncStatus, PAYMENT_UNSYNCED_STATUSES as any),
-    sql`lower(${payments.status}) in ('succeeded', 'captured')`,
+    or(
+      and(
+        inArray(payments.syncStatus, PAYMENT_UNSYNCED_STATUSES as any),
+        sql`lower(${payments.status}) in ('succeeded', 'captured')`,
+      ),
+      and(eq(payments.syncStatus, 'pending'), sql`not (${paymentQueuePrerequisites})`),
+    ),
   );
-  const paymentQueued = and(isNull(payments.externalAccountingId), eq(payments.syncStatus, 'pending'));
+  // Pending is only queued after the related invoice is a valid QuickBooks
+  // receivable. Before then it remains visible as blocked unsynced work.
+  const paymentQueued = and(isNull(payments.externalAccountingId), eq(payments.syncStatus, 'pending'), paymentQueuePrerequisites);
   const paymentFailed = and(isNull(payments.externalAccountingId), inArray(payments.syncStatus, PAYMENT_FAILED_STATUSES as any));
   const paymentSynced = or(isNotNull(payments.externalAccountingId), eq(payments.syncStatus, 'synced'));
 
@@ -211,8 +225,8 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
   const [paymentCounts] = await db
     .select({
       unsynced: sql<number>`coalesce(sum(case when ${paymentUnsynced} then 1 else 0 end), 0)::int`,
-      pending: sql<number>`coalesce(sum(case when ${paymentQueued} and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end), 0)::int`,
-      failed: sql<number>`coalesce(sum(case when ${paymentFailed} and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end), 0)::int`,
+      pending: sql<number>`coalesce(sum(case when ${paymentQueued} then 1 else 0 end), 0)::int`,
+      failed: sql<number>`coalesce(sum(case when ${paymentFailed} then 1 else 0 end), 0)::int`,
       synced: sql<number>`coalesce(sum(case when ${paymentSynced} then 1 else 0 end), 0)::int`,
       eligible: sql<number>`sum(case when ${payments.syncStatus} in ('pending','failed') and ${payments.accountingUpdatedAt} <= ${cutoff} and lower(${payments.status}) in ('succeeded','captured') and coalesce(${invoices.qbInvoiceId}, '') <> '' and ${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion} then 1 else 0 end)::int`,
     })
@@ -598,21 +612,25 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       select
         p.id::text as id,
         'payment'::text as resource_type,
-        ('Payment for ' || coalesce(i.display_number, i.invoice_number::text))::text as display_number,
+        ('Payment ' || coalesce(nullif(p.quickbooks_payment_reference, ''), left(p.id::text, 8)) || ' for ' || coalesce(i.display_number, i.invoice_number::text))::text as display_number,
         coalesce(c.company_name, '')::text as customer_name,
         coalesce(p.amount_cents, round(coalesce(p.amount, 0)::numeric * 100)::int)::int as amount_cents,
         p.status::text as status,
         p.sync_status::text as sync_status,
         case
           when p.external_accounting_id is not null or p.sync_status = 'synced' then 'synced'
-          when p.sync_status = 'pending' then 'queued'
+          when p.sync_status = 'pending'
+            and lower(p.status) in ('succeeded', 'captured')
+            and coalesce(i.qb_invoice_id, '') <> ''
+            and i.accounting_approved_at is not null and i.accounting_approval_revoked_at is null and i.accounting_approved_version = i.invoice_version
+            then 'queued'
           when p.sync_status in ('failed', 'error') then 'failed'
           else 'unsynced'
         end::text as queue_state,
         p.accounting_updated_at as accounting_updated_at,
         p.created_at as created_at,
         p.sync_error::text as last_error,
-        coalesce(p.provider_transaction_id, i.display_number, i.invoice_number::text, '')::text as reference,
+        coalesce(p.quickbooks_payment_reference, p.provider_transaction_id, i.display_number, i.invoice_number::text, '')::text as reference,
         (lower(p.status) in ('succeeded', 'captured')
           and p.external_accounting_id is null
           and p.sync_status <> 'synced'
@@ -642,11 +660,6 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       where p.organization_id = ${params.organizationId}
         and (i.import_source is null or i.import_source <> 'quickbooks')
         and i.is_historical = false
-        and (
-          p.external_accounting_id is not null
-          or p.sync_status = 'synced'
-          or (i.accounting_approved_at is not null and i.accounting_approval_revoked_at is null and i.accounting_approved_version = i.invoice_version)
-        )
         and (
           p.external_accounting_id is not null
           or p.sync_status in ('synced', 'pending', 'failed', 'error')

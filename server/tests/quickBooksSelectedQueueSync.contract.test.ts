@@ -128,7 +128,7 @@ test('the selected tab is the sole canonical state predicate and queue discovery
   expect(worker).toContain('const effectiveState = view;');
   expect(worker).toContain('queue_state = ${effectiveState}');
   expect(worker).toContain("when i.qb_sync_status = 'pending' then 'queued'");
-  expect(worker).toContain("when p.sync_status = 'pending' then 'queued'");
+  expect(worker).toContain("when p.sync_status = 'pending'");
   expect(routes).not.toContain("state: String(req.query.state || 'all')");
   expect(listFilters).not.toContain('state?: QuickBooksSyncQueueView');
   expect(listFunction).not.toContain('db.update(');
@@ -146,4 +146,26 @@ test('invoice export reads immutable override metadata and keeps its existing re
   expect(pricing).toContain('quickBooksUnitPriceForTotalOverride');
   expect(service).toContain('const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId)');
   expect(service).toContain("SELECT Id, DocNumber FROM Invoice WHERE DocNumber");
+});
+
+test('payment discovery remains tenant-scoped and shows invoice-blocked work as unsynced instead of hiding or queueing it', () => {
+  const worker = read('server/services/quickbooksSyncQueueWorker.ts');
+  const listFunction = worker
+    .slice(worker.indexOf('export async function listQuickBooksSyncQueueItemsForOrg'))
+    .split('\nconst QUICKBOOKS_SYNC_LEASE_MS')[0];
+  const paymentWhere = listFunction.slice(
+    listFunction.indexOf('where p.organization_id'),
+    listFunction.indexOf('    ), accounting_work'),
+  );
+
+  expect(worker).toContain('const paymentQueuePrerequisites = sql`');
+  expect(worker).toContain("and(eq(payments.syncStatus, 'pending'), sql`not (${paymentQueuePrerequisites})`)");
+  expect(worker).toContain("const paymentQueued = and(isNull(payments.externalAccountingId), eq(payments.syncStatus, 'pending'), paymentQueuePrerequisites)");
+  expect(listFunction).toContain("when p.sync_status = 'pending'");
+  expect(listFunction).toContain("and coalesce(i.qb_invoice_id, '') <> ''");
+  expect(listFunction).toContain("('Payment ' || coalesce(nullif(p.quickbooks_payment_reference, ''), left(p.id::text, 8))");
+  expect(listFunction).toContain('p.organization_id = ${params.organizationId}');
+  expect(paymentWhere).not.toContain('i.accounting_approved_at');
+  expect(listFunction).not.toContain('db.update(');
+  expect(listFunction).not.toContain('syncSingle');
 });

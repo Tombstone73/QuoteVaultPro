@@ -17,12 +17,18 @@ export function invoiceQueueState(value: unknown): QuickBooksSyncQueueState {
   return 'unsynced';
 }
 
-export function paymentQueueState(value: unknown, externalAccountingId: unknown): QuickBooksSyncQueueState {
+/**
+ * A payment cannot be queued until its parent invoice is an approved QuickBooks
+ * receivable. `invoiceReady` defaults to true for existing callers that have
+ * already established the parent prerequisite; callers evaluating a blocked
+ * payment can pass false.
+ */
+export function paymentQueueState(value: unknown, externalAccountingId: unknown, invoiceReady = true): QuickBooksSyncQueueState {
   if (String(externalAccountingId ?? '').trim()) return 'synced';
   const status = String(value ?? '').toLowerCase();
   if (PAYMENT_FAILED_STATUSES.includes(status as typeof PAYMENT_FAILED_STATUSES[number])) return 'failed';
   if (status === 'synced') return 'synced';
-  if (status === 'pending') return 'queued';
+  if (status === 'pending' && invoiceReady) return 'queued';
   return 'unsynced';
 }
 
