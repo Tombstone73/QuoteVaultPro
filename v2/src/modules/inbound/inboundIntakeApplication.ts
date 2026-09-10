@@ -167,7 +167,18 @@ export class InboundIntakeApplicationService {
       const customerContact = reserved.intake.matchedContactId
         ? { organizationId, customerId: reserved.intake.matchedCustomerId!, contactId: reserved.intake.matchedContactId }
         : { organizationId, customerId: reserved.intake.matchedCustomerId! };
-      const created = await this.orders.createOrder(context, {
+      // Conversion owns one stable Sales request identity per intake.  Sales
+      // intentionally rejects a command whose id differs from its operation
+      // context, so carry that same deterministic identity across this
+      // boundary rather than leaking the operator's transient HTTP request.
+      const conversionContext: OperationContext = {
+        ...context,
+        businessRequest: {
+          id: conversionRequestId,
+          payloadFingerprint: "inbound-conversion-fingerprint-is-derived-by-sales",
+        },
+      };
+      const created = await this.orders.createOrder(conversionContext, {
         businessRequestId: conversionRequestId,
         customerContact,
         ...(draft.purchaseOrderNumber ? { purchaseOrderNumber: draft.purchaseOrderNumber } : {}),
