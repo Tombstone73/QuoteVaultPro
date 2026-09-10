@@ -10,7 +10,7 @@ describe("Settings mobile scroll layout", () => {
   });
 
   test("does not make the full Settings navigation sticky on mobile", () => {
-    expect(source).toContain('className="h-fit p-3 lg:sticky lg:top-6"');
+    expect(source).toContain('cn("h-fit p-3 lg:sticky lg:top-6", collapsed && "lg:p-2")');
     expect(source).not.toContain('className="p-3 h-fit sticky top-6"');
   });
 

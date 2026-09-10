@@ -38,7 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertTriangle, ChevronDown, CircleHelp, Loader2, Printer, Ticket } from "lucide-react";
+import { AlertTriangle, ChevronDown, CircleHelp, Loader2, PanelLeftClose, PanelLeftOpen, Printer, Ticket } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   SETTINGS_NAV_ITEMS,
@@ -131,7 +131,18 @@ function Guard({ children }: { children: (activeOrgRole: string) => React.ReactN
   return <>{children(activeOrgRole)}</>;
 }
 
-function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
+export const SETTINGS_SIDEBAR_COLLAPSED_KEY = "printershero:v1:settings-sidebar-collapsed";
+
+function readSettingsSidebarCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(SETTINGS_SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function SettingsNav({ activeOrgRole, collapsed, onToggleCollapsed }: { activeOrgRole?: string; collapsed: boolean; onToggleCollapsed: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [query, setQuery] = React.useState("");
@@ -175,8 +186,24 @@ function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
   };
   
   return (
-    <TitanCard className="h-fit p-3 lg:sticky lg:top-6">
-      <div className="space-y-2">
+    <TitanCard
+      data-testid="settings-secondary-nav"
+      className={cn("h-fit p-3 lg:sticky lg:top-6", collapsed && "lg:p-2")}
+    >
+      <div className={cn("mb-2 flex justify-end", collapsed && "lg:mb-0")}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="hidden h-8 w-8 lg:inline-flex"
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "Expand settings navigation" : "Collapse settings navigation"}
+          title={collapsed ? "Expand settings navigation" : "Collapse settings navigation"}
+        >
+          {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+        </Button>
+      </div>
+      <div className={cn("space-y-2", collapsed && "lg:hidden")}>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-titan-text-muted" />
           <Input
@@ -260,6 +287,19 @@ function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
 
 export function SettingsLayout() {
   const location = useLocation();
+  const [settingsNavCollapsed, setSettingsNavCollapsed] = React.useState(readSettingsSidebarCollapsed);
+
+  const toggleSettingsNavCollapsed = () => {
+    setSettingsNavCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(SETTINGS_SIDEBAR_COLLAPSED_KEY, String(next));
+      } catch {
+        // This operator preference is optional and must not block Settings navigation.
+      }
+      return next;
+    });
+  };
 
   React.useEffect(() => {
     const anchor = decodeURIComponent(location.hash.slice(1));
@@ -285,12 +325,18 @@ export function SettingsLayout() {
             subtitle="Configure Printers Hero, your account, and integrations"
           />
 
-          <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6 mt-6">
+          <div
+            data-testid="settings-content-grid"
+            className={cn(
+              "grid grid-cols-1 gap-6 mt-6",
+              settingsNavCollapsed ? "lg:grid-cols-[52px_minmax(0,1fr)]" : "lg:grid-cols-[260px_minmax(0,1fr)]",
+            )}
+          >
             {/* Left: Settings Navigation */}
-            <SettingsNav activeOrgRole={activeOrgRole} />
+            <SettingsNav activeOrgRole={activeOrgRole} collapsed={settingsNavCollapsed} onToggleCollapsed={toggleSettingsNavCollapsed} />
 
             {/* Right: Settings Content */}
-            <div className="min-w-0">
+            <div data-testid="settings-content" className="min-w-0">
               <Outlet />
             </div>
           </div>

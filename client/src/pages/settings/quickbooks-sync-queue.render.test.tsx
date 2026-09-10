@@ -38,7 +38,7 @@ const fixture = [
   eligible: item.queueState !== 'synced',
   canTransmit: item.queueState === 'queued' || item.queueState === 'failed',
   canManualForce: item.queueState === 'queued' || item.queueState === 'failed',
-  ineligibleReason: null,
+  ineligibleReason: item.queueState === 'synced' ? 'Void, canceled, or synchronized records cannot sync.' : null,
   lastError: item.queueState === 'failed' ? 'Example failure' : null,
 }));
 
@@ -113,11 +113,19 @@ afterEach(() => {
   jest.clearAllMocks();
 });
 
-test('the rendered console keeps State = queued reachable through the Queued tab without a provider write', async () => {
+test('the rendered console uses the canonical State for eligibility labels without a provider write', async () => {
   expect(visibleRecords().join(' ')).toContain('queued');
   expect(visibleRecords().join(' ')).toContain('INV-101');
   expect(visibleRecords().join(' ')).toContain('Payment for INV-101');
   expect(container.textContent).toContain('Queued2');
+
+  const syncedRow = visibleRecords().find((row) => row.includes('INV-100')) || '';
+  expect(syncedRow).toContain('synced');
+  expect(syncedRow).toContain('Synced');
+  expect(syncedRow).not.toContain('Void, canceled, or synchronized records cannot sync.');
+  expect(visibleRecords().find((row) => row.includes('INV-102'))).toContain('Queueable');
+  expect(visibleRecords().find((row) => row.includes('INV-101'))).toContain('Auto syncable');
+  expect(visibleRecords().find((row) => row.includes('INV-103'))).toContain('Example failure');
 
   await chooseTab('Queued', 'INV-101');
   const queuedRows = visibleRecords().join(' ');
