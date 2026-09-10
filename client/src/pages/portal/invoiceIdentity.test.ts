@@ -6,7 +6,18 @@ import type { PortalInvoiceDto } from "@/hooks/usePortal";
 Object.assign(globalThis, { TextDecoder, TextEncoder });
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
-const { PortalInvoiceDesktopTable, PortalInvoiceMobileCard } = require("./invoices") as typeof import("./invoices");
+const {
+  DEFAULT_PORTAL_INVOICE_COLUMNS,
+  DEFAULT_PORTAL_INVOICE_SORT,
+  PortalInvoiceDesktopTable,
+  PortalInvoiceMobileCard,
+  clearPortalInvoiceSortPreference,
+  nextPortalInvoiceSort,
+  persistPortalInvoiceSortPreference,
+  portalInvoiceSortStorageKey,
+  readPortalInvoiceSortPreference,
+  sortPortalInvoices,
+} = require("./invoices") as typeof import("./invoices");
 
 const invoice = (overrides: Partial<PortalInvoiceDto> = {}): PortalInvoiceDto => ({
   id: "invoice-1",
@@ -50,8 +61,8 @@ describe("V1 Portal invoice list presentation", () => {
 
     expect([...document.querySelectorAll("thead th")].map((header) => header.textContent)).toEqual([
       "Invoice",
-      "Job / Order",
       "PO #",
+      "Job / Order",
       "Issued",
       "Due",
       "Amount Due",
@@ -65,8 +76,8 @@ describe("V1 Portal invoice list presentation", () => {
     expect(document.querySelector("table")?.className).toContain("min-w-[72rem]");
     expect([...document.querySelectorAll("col")].map((column) => column.className)).toEqual([
       "w-[10%]",
-      "w-[16%]",
       "w-[10%]",
+      "w-[16%]",
       "w-[10%]",
       "w-[10%]",
       "w-[11%]",
@@ -82,9 +93,9 @@ describe("V1 Portal invoice list presentation", () => {
     const cells = [...document.querySelectorAll("tbody td")];
     expect(cells).toHaveLength(9);
     expect(cells[0]?.textContent).toBe("INV-20155");
-    expect(cells[1]?.textContent).toContain("Titan Revolution Marketing Signs");
-    expect(cells[1]?.textContent).toContain("ORD-20047");
-    expect(cells[2]?.textContent).toBe("152235");
+    expect(cells[1]?.textContent).toBe("152235");
+    expect(cells[2]?.textContent).toContain("Titan Revolution Marketing Signs");
+    expect(cells[2]?.textContent).toContain("ORD-20047");
     expect(cells[3]?.textContent).toContain("Sep 7, 2026");
     expect(cells[4]?.textContent).toContain("Sep 22, 2026");
     expect(cells[5]?.textContent).toBe("$69.00");
@@ -136,5 +147,71 @@ describe("V1 Portal invoice list presentation", () => {
     expect(actionLinks.every((link) => link.className.includes("flex-1"))).toBe(true);
     expect(card?.querySelector(".break-words")).not.toBeNull();
     expect(card?.querySelector("table")).toBeNull();
+  });
+
+  test("makes all data headers except Actions keyboard-usable sort controls with direction state", () => {
+    render(React.createElement(PortalInvoiceDesktopTable, {
+      invoices: [invoice()],
+      preference: { key: "po", direction: "asc" },
+    }));
+
+    expect(document.querySelectorAll("thead button")).toHaveLength(8);
+    expect(document.querySelector('th[aria-sort="ascending"]')?.textContent).toContain("PO #");
+    expect(document.querySelector('th[aria-sort="ascending"] .lucide-arrow-up')).not.toBeNull();
+    expect([...document.querySelectorAll('th[aria-sort="none"]')]).toHaveLength(7);
+    expect([...document.querySelectorAll("thead th")].at(-1)?.textContent).toBe("Actions");
+    expect([...document.querySelectorAll("thead th")].at(-1)?.querySelector("button")).toBeNull();
+  });
+
+  test("reorders only informational columns while Invoice and Actions remain anchored", () => {
+    const reversed = [...DEFAULT_PORTAL_INVOICE_COLUMNS].reverse().map((column, order) => ({ ...column, order }));
+    render(React.createElement(PortalInvoiceDesktopTable, { invoices: [invoice()], columns: reversed }));
+    const labels = [...document.querySelectorAll("thead th")].map((header) => header.textContent);
+    expect(labels[0]).toBe("Invoice");
+    expect(labels.slice(1, -1)).toEqual(["Status", "Total", "Amount Due", "Due", "Issued", "Job / Order", "PO #"]);
+    expect(labels.at(-1)).toBe("Actions");
+  });
+});
+
+describe("V1 Portal invoice sorting and preferences", () => {
+  beforeEach(() => localStorage.clear());
+
+  test("defaults to Issued descending and toggles each header asc/desc", () => {
+    expect(DEFAULT_PORTAL_INVOICE_SORT).toEqual({ key: "issued", direction: "desc" });
+    expect(nextPortalInvoiceSort(DEFAULT_PORTAL_INVOICE_SORT, "issued")).toEqual({ key: "issued", direction: "asc" });
+    expect(nextPortalInvoiceSort({ key: "po", direction: "asc" }, "po")).toEqual({ key: "po", direction: "desc" });
+    expect(nextPortalInvoiceSort({ key: "po", direction: "desc" }, "total")).toEqual({ key: "total", direction: "asc" });
+  });
+
+  test("sorts every supported field with natural, numeric, timestamp, and canonical semantics", () => {
+    const rows = [
+      invoice({ id: "z", displayNumber: "INV-10", numberCore: 10, customerPoNumber: "PO 10", jobLabel: "Sign 10", issueDate: "2026-02-10T00:00:00Z", dueDate: "2026-03-10T00:00:00Z", amountDue: 10, total: 100, status: "sent", paymentStatusLabel: "Unpaid" }),
+      invoice({ id: "a", displayNumber: "INV-2", numberCore: 2, customerPoNumber: "po 2", jobLabel: "sign 2", issueDate: "2026-02-02T00:00:00Z", dueDate: "2026-03-02T00:00:00Z", amountDue: 2, total: 20, status: "paid", paymentStatusLabel: "Paid" }),
+      invoice({ id: "m", displayNumber: "A-3", numberCore: 3, customerPoNumber: " PO-3 ", jobLabel: "Banner 3", issueDate: "2026-02-03T00:00:00Z", dueDate: "2026-03-03T00:00:00Z", amountDue: 3, total: 30, status: "overdue", paymentStatusLabel: "Overdue" }),
+    ];
+    expect(sortPortalInvoices(rows, { key: "invoice", direction: "asc" }).map((row) => row.id)).toEqual(["a", "m", "z"]);
+    expect(sortPortalInvoices(rows, { key: "po", direction: "asc" }).map((row) => row.id)).toEqual(["a", "z", "m"]);
+    expect(sortPortalInvoices(rows, { key: "job", direction: "asc" }).map((row) => row.id)).toEqual(["m", "a", "z"]);
+    for (const key of ["issued", "due", "amountDue", "total"] as const) {
+      expect(sortPortalInvoices(rows, { key, direction: "asc" }).map((row) => row.id)).toEqual(["a", "m", "z"]);
+    }
+    expect(sortPortalInvoices(rows, { key: "status", direction: "asc" }).map((row) => row.id)).toEqual(["m", "a", "z"]);
+  });
+
+  test("keeps missing values last in both directions and preserves server order for ties", () => {
+    const rows = [invoice({ id: "first", customerPoNumber: "PO 2" }), invoice({ id: "missing", customerPoNumber: null }), invoice({ id: "tied", customerPoNumber: "po 2" })];
+    expect(sortPortalInvoices(rows, { key: "po", direction: "asc" }).map((row) => row.id)).toEqual(["first", "tied", "missing"]);
+    expect(sortPortalInvoices(rows, { key: "po", direction: "desc" }).map((row) => row.id)).toEqual(["first", "tied", "missing"]);
+  });
+
+  test("persists per portal user/customer, survives remount reads, and resets safely", () => {
+    persistPortalInvoiceSortPreference("user-1", "customer-1", { key: "total", direction: "asc" });
+    expect(readPortalInvoiceSortPreference("user-1", "customer-1")).toEqual({ key: "total", direction: "asc" });
+    expect(readPortalInvoiceSortPreference("user-1", "customer-2")).toEqual(DEFAULT_PORTAL_INVOICE_SORT);
+    expect(portalInvoiceSortStorageKey("user-1", "customer-1")).toContain("portalInvoiceSort:user_user-1:customer_customer-1");
+    clearPortalInvoiceSortPreference("user-1", "customer-1");
+    expect(readPortalInvoiceSortPreference("user-1", "customer-1")).toEqual(DEFAULT_PORTAL_INVOICE_SORT);
+    localStorage.setItem(portalInvoiceSortStorageKey("user-1", "customer-1"), "{malformed");
+    expect(readPortalInvoiceSortPreference("user-1", "customer-1")).toEqual(DEFAULT_PORTAL_INVOICE_SORT);
   });
 });
