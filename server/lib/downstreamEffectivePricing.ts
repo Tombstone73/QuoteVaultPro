@@ -31,6 +31,19 @@ function isTotalPriceOverride(lineItem: Record<string, any>): boolean {
   return candidates.some((candidate) => TOTAL_OVERRIDE_MODES.has(String(candidate?.mode ?? candidate?.priceOverrideMode ?? '').trim().toLowerCase()));
 }
 
+function getPriceOverrideMode(lineItem: Record<string, any>): string | null {
+  const candidates = [
+    lineItem?.specsJson?.priceOverride,
+    lineItem?.priceOverride,
+    { mode: lineItem?.priceOverrideMode },
+  ];
+  for (const candidate of candidates) {
+    const mode = String(candidate?.mode ?? candidate?.priceOverrideMode ?? '').trim().toLowerCase();
+    if (mode) return mode;
+  }
+  return null;
+}
+
 /**
  * QuickBooks keeps sales-line rates separately from customer-facing currency
  * formatting. For a total override, calculate a provider-only rate from the
@@ -44,6 +57,75 @@ function quickBooksUnitPriceForTotalOverride(totalCents: number, quantity: numbe
   const numerator = safeTotalCents * QUICKBOOKS_PROVIDER_CENTS_SCALE;
   const roundedProviderUnits = (numerator + (safeQuantity / 2n)) / safeQuantity;
   return Number(roundedProviderUnits) / (10 ** QUICKBOOKS_PROVIDER_UNIT_PRICE_DECIMALS);
+}
+
+export type QuickBooksInvoiceLinePayloadDiagnostic = {
+  lineNum: number;
+  quantity: number;
+  unitPrice: number;
+  amount: number;
+  overrideType: string | null;
+  precisionReason: 'display_rate' | 'total_override' | 'authoritative_total_mismatch';
+};
+
+/**
+ * Produces the provider representation and a deliberately non-sensitive
+ * diagnostic summary from the same calculation.  The diagnostic is useful for
+ * proving a queued retry is rebuilding from current invoice snapshots rather
+ * than replaying a stale payload.
+ */
+export function buildQuickBooksInvoiceLinePayloadsWithDiagnostics(lineItems: any[]): {
+  payloads: any[];
+  diagnostics: QuickBooksInvoiceLinePayloadDiagnostic[];
+} {
+  const results = (lineItems || []).map((lineItem: any, index: number) => {
+    const pricing = resolveOrderLineItemInvoicePricing(lineItem);
+    const providerQuantity = pricing.commercialQuantity ?? pricing.quantity;
+    const totalOverride = isTotalPriceOverride(lineItem);
+    // Invoice snapshots intentionally retain a customer-facing, two-decimal
+    // unit price.  Formula-priced and historic lines can therefore have a
+    // correct authoritative total that is not representable by that display
+    // rate (for example 214 × $0.54 !== $116.16).  In that case Amount is the
+    // commercial authority, so derive a provider-only rate from exact cents.
+    const authoritativeTotalMismatch =
+      pricing.commercialQuantity === null &&
+      pricing.effectiveUnitPriceCents * pricing.quantity !== pricing.effectiveTotalCents;
+    const usePreciseTotalRate = pricing.commercialQuantity === null && (totalOverride || authoritativeTotalMismatch);
+    const unitPrice = usePreciseTotalRate
+      ? quickBooksUnitPriceForTotalOverride(pricing.effectiveTotalCents, providerQuantity)
+      : Number(((pricing.commercialRateCents ?? pricing.effectiveUnitPriceCents) / 100).toFixed(2));
+    const amount = Number((pricing.effectiveTotalCents / 100).toFixed(2));
+
+    return {
+      payload: {
+        LineNum: index + 1,
+        Amount: amount,
+        DetailType: "SalesItemLineDetail",
+        SalesItemLineDetail: {
+          Qty: providerQuantity,
+          UnitPrice: unitPrice,
+        },
+        Description: String(lineItem.description || ""),
+      },
+      diagnostic: {
+        lineNum: index + 1,
+        quantity: providerQuantity,
+        unitPrice,
+        amount,
+        overrideType: getPriceOverrideMode(lineItem),
+        precisionReason: totalOverride
+          ? 'total_override'
+          : authoritativeTotalMismatch
+            ? 'authoritative_total_mismatch'
+            : 'display_rate',
+      } satisfies QuickBooksInvoiceLinePayloadDiagnostic,
+    };
+  });
+
+  return {
+    payloads: results.map((result) => result.payload),
+    diagnostics: results.map((result) => result.diagnostic),
+  };
 }
 
 export function resolveOrderLineItemInvoicePricing(lineItem: Record<string, any>): {
@@ -78,26 +160,6 @@ export function resolveOrderLineItemInvoicePricing(lineItem: Record<string, any>
 }
 
 export function buildQuickBooksInvoiceLinePayloads(lineItems: any[]): any[] {
-  return (lineItems || []).map((lineItem: any, index: number) => {
-    const pricing = resolveOrderLineItemInvoicePricing(lineItem);
-    const providerQuantity = pricing.commercialQuantity ?? pricing.quantity;
-    // Hourly snapshots already have a frozen commercial rate and can use
-    // fractional hours. Preserve that existing representation unchanged.
-    const usePreciseTotalOverrideRate = pricing.commercialQuantity === null && isTotalPriceOverride(lineItem);
-    const unitPrice = usePreciseTotalOverrideRate
-      ? quickBooksUnitPriceForTotalOverride(pricing.effectiveTotalCents, providerQuantity)
-      : Number(((pricing.commercialRateCents ?? pricing.effectiveUnitPriceCents) / 100).toFixed(2));
-
-    return {
-      LineNum: index + 1,
-      Amount: Number((pricing.effectiveTotalCents / 100).toFixed(2)),
-      DetailType: "SalesItemLineDetail",
-      SalesItemLineDetail: {
-        Qty: providerQuantity,
-        UnitPrice: unitPrice,
-      },
-      Description: String(lineItem.description || ""),
-    };
-  });
+  return buildQuickBooksInvoiceLinePayloadsWithDiagnostics(lineItems).payloads;
 }
 import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';

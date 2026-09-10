@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   buildQuickBooksInvoiceLinePayloads,
+  buildQuickBooksInvoiceLinePayloadsWithDiagnostics,
   resolveOrderLineItemInvoicePricing,
 } from "../lib/downstreamEffectivePricing";
 
@@ -100,6 +101,33 @@ describe("downstream effective line item pricing consumers", () => {
     expect(line.SalesItemLineDetail.UnitPrice).toBe(79.1923077);
     expect(Math.round(line.SalesItemLineDetail.Qty * line.SalesItemLineDetail.UnitPrice * 100)).toBe(205900);
     expect(line.Amount).not.toBe(2058.94);
+  });
+
+  test("Force Sync's invoice builder preserves an authoritative historic formula total when its display rate is rounded", () => {
+    // Production invoice 20298 shape: this line is not marked as an override,
+    // but its immutable $116.16 total cannot be represented by 214 × $0.54.
+    const built = buildQuickBooksInvoiceLinePayloadsWithDiagnostics([{
+      description: "Historic formula-priced line",
+      quantity: 214,
+      unitPriceCents: 54,
+      lineTotalCents: 11616,
+      specsJson: null,
+    }]);
+
+    expect(built.payloads).toHaveLength(1);
+    expect(built.payloads[0]).toMatchObject({
+      Amount: 116.16,
+      SalesItemLineDetail: { Qty: 214, UnitPrice: 0.5428037 },
+    });
+    expect(Math.round(built.payloads[0].SalesItemLineDetail.Qty * built.payloads[0].SalesItemLineDetail.UnitPrice * 100)).toBe(11616);
+    expect(built.diagnostics).toEqual([{
+      lineNum: 1,
+      quantity: 214,
+      unitPrice: 0.5428037,
+      amount: 116.16,
+      overrideType: null,
+      precisionReason: "authoritative_total_mismatch",
+    }]);
   });
 
   test("total overrides use provider precision for clean, half-cent, and repeating rates while preserving each authoritative cent total", () => {

@@ -136,16 +136,26 @@ test('the selected tab is the sole canonical state predicate and queue discovery
   expect(listFunction).not.toContain('syncSingle');
 });
 
-test('invoice export reads immutable override metadata and keeps its existing retry idempotency path', () => {
+test('Force Sync invoice export rebuilds current snapshot lines with provider precision and keeps retry idempotency', () => {
   const service = read('server/quickbooksService.ts');
   const pricing = read('server/lib/downstreamEffectivePricing.ts');
 
   expect(service).toContain('specsJson: invoiceLineItems.specsJson');
-  expect(service).toContain('buildQuickBooksInvoiceLinePayloads(getBillableBundleRoots(lineItems as any[]))');
+  expect(service).toContain('buildQuickBooksInvoiceLinePayloadsWithDiagnostics(getBillableBundleRoots(lineItems as any[]))');
+  expect(service).toContain("console.info('[QuickBooks] Invoice pre-send payload'");
   expect(pricing).toContain("'override_total_after_margin'");
   expect(pricing).toContain('quickBooksUnitPriceForTotalOverride');
+  expect(pricing).toContain('authoritativeTotalMismatch');
   expect(service).toContain('const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId)');
   expect(service).toContain("SELECT Id, DocNumber FROM Invoice WHERE DocNumber");
+});
+
+test('Force Sync payment export records only a safe reference diagnostic and retains its existing duplicate recovery path', () => {
+  const service = read('server/quickbooksService.ts');
+
+  expect(service).toContain("console.info('[QuickBooks] Payment pre-send payload'");
+  expect(service).toContain("paymentReferenceShape: paymentRefNum.startsWith('PMT-') ? 'PMT-*' : 'other'");
+  expect(service).toContain("SELECT Id FROM Payment WHERE PaymentRefNum");
 });
 
 test('payment discovery remains tenant-scoped and shows invoice-blocked work as unsynced instead of hiding or queueing it', () => {

@@ -20,7 +20,7 @@ import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHi
 import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quickBooksHistoricalInvoiceNumbering.service';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
-import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePricing';
+import { buildQuickBooksInvoiceLinePayloadsWithDiagnostics } from './lib/downstreamEffectivePricing';
 import { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
 import {
   resolveBillingCustomerForOrder,
@@ -1373,13 +1373,20 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     'QuickBooks invoice document number',
   );
 
+  const invoiceLines = buildQuickBooksInvoiceLinePayloadsWithDiagnostics(getBillableBundleRoots(lineItems as any[]));
   const qbInvoiceData: any = {
     CustomerRef: { value: qbCustomerId },
     DocNumber: invoiceDisplayNumber,
     TxnDate: new Date(txnDate).toISOString().split('T')[0],
     DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
-    Line: buildQuickBooksInvoiceLinePayloads(getBillableBundleRoots(lineItems as any[])),
+    Line: invoiceLines.payloads,
   };
+
+  console.info('[QuickBooks] Invoice pre-send payload', {
+    organizationId,
+    invoiceId,
+    lines: invoiceLines.diagnostics,
+  });
 
   // Remove undefined properties for QB API
   if (!qbInvoiceData.DueDate) delete qbInvoiceData.DueDate;
@@ -1526,6 +1533,14 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     paymentReference: paymentRefNum,
     privateNote,
     qbInvoiceId,
+  });
+
+  console.info('[QuickBooks] Payment pre-send payload', {
+    organizationId,
+    paymentId,
+    paymentReferenceLength: paymentRefNum.length,
+    paymentReferenceShape: paymentRefNum.startsWith('PMT-') ? 'PMT-*' : 'other',
+    linkedInvoiceReference: String((invoice as any).displayNumber || invoice.invoiceNumber || '').trim() || null,
   });
 
   const existingQbPaymentId = String((payment as any).externalAccountingId || '').trim();
