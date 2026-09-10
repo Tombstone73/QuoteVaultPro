@@ -31,14 +31,15 @@ export const createPortalArtworkRouter = (dependencies: PortalArtworkHttpDepende
         throw new V2ApplicationError("VALIDATION_ERROR", "Portal uploads are customer-supplied source Artwork only.");
       if (input.side !== undefined && input.side !== "front" && input.side !== "back")
         throw new V2ApplicationError("VALIDATION_ERROR", "Artwork side is invalid.");
-      if (input.supersedesArtworkAssignmentId || input.layerKey !== undefined || input.layerOrder !== undefined)
-        throw new V2ApplicationError("VALIDATION_ERROR", "Portal Artwork replacement and layered Artwork are unavailable.");
+      if (input.layerKey !== undefined || input.layerOrder !== undefined)
+        throw new V2ApplicationError("VALIDATION_ERROR", "Portal layered Artwork is unavailable.");
       if ((input.orderId && input.orderId !== request.params.orderId) || (input.orderLineId && input.orderLineId !== request.params.orderLineId))
         throw new V2ApplicationError("VALIDATION_ERROR", "Artwork Order scope must match the request path.");
       const result = await dependencies.service.upload(await principal(dependencies, request), {
         businessRequestId: input.businessRequestId,
         orderId: request.params.orderId,
         orderLineId: request.params.orderLineId,
+        ...(input.supersedesArtworkAssignmentId ? { supersedesArtworkAssignmentId: input.supersedesArtworkAssignmentId } : {}),
         ...(input.side ? { side: input.side } : {}),
         ...(input.sourcePageIndex !== undefined ? { sourcePageIndex: input.sourcePageIndex } : {}),
         filename: input.filename,

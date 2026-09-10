@@ -48,4 +48,53 @@ export class PostgresPortalArtworkOwnershipRead implements PortalArtworkOwnershi
     if (!found.rows[0]?.allowed)
       throw new V2ApplicationError("FORBIDDEN", "Artwork upload is unavailable for this Order line.");
   }
+
+  async assertCurrentOwnedCustomerSuppliedArtwork(principal: PortalPrincipal, orderId: string, orderLineId: string, artworkAssignmentId: string): Promise<void> {
+    const found = await this.pool.query<{ allowed: boolean }>(
+      `SELECT EXISTS(
+        SELECT 1
+        FROM customer_portal_access access
+        JOIN customer_contacts contact
+          ON contact.organization_id=access.organization_id
+         AND contact.id=access.contact_id
+         AND contact.status='active'
+        JOIN customer_contact_links link
+          ON link.organization_id=access.organization_id
+         AND link.customer_id=access.customer_id
+         AND link.contact_id=access.contact_id
+         AND link.status='active'
+        JOIN v2_sales_documents document
+          ON document.organization_id=access.organization_id
+         AND document.customer_id=access.customer_id
+         AND document.id=$4
+         AND document.document_kind='order'
+        JOIN v2_sales_order_details order_detail
+          ON order_detail.organization_id=document.organization_id
+         AND order_detail.document_id=document.id
+         AND order_detail.commercial_state='open'
+        JOIN v2_sales_document_lines line
+          ON line.organization_id=document.organization_id
+         AND line.document_id=document.id
+         AND line.id=$5
+        JOIN v2_artwork_assignments artwork
+          ON artwork.organization_id=document.organization_id
+         AND artwork.order_document_id=document.id
+         AND artwork.order_line_id=line.id
+         AND artwork.id=$6
+         AND artwork.purpose='customer_supplied'
+        WHERE access.organization_id=$1
+          AND access.customer_id=$2
+          AND access.user_id=$3
+          AND access.status='ACTIVE'
+          AND NOT EXISTS (
+            SELECT 1 FROM v2_artwork_assignments successor
+            WHERE successor.organization_id=artwork.organization_id
+              AND successor.supersedes_artwork_assignment_id=artwork.id
+          )
+      ) AS allowed`,
+      [principal.organizationId, principal.customerId, principal.subjectId, orderId, orderLineId, artworkAssignmentId],
+    );
+    if (!found.rows[0]?.allowed)
+      throw new V2ApplicationError("FORBIDDEN", "Artwork replacement is unavailable for this Order line.");
+  }
 }
