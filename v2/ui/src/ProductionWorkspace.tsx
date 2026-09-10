@@ -464,6 +464,7 @@ export const ProductionWorkspace = ({
   const [view, setView] = useState<ProductionView>("overview");
   const [selectedWorkId, setSelectedWorkId] = useState("");
   const [goodQuantity, setGoodQuantity] = useState("1");
+  const [wasteQuantity, setWasteQuantity] = useState("0");
   const [queueState, setQueueState] = useState<Record<Station, { page: number; pageSize: 25 | 50 | 100; search: string }>>({ flatbed: { page: 1, pageSize: 25, search: "" }, roll: { page: 1, pageSize: 25, search: "" } });
   const queryClient = useQueryClient();
   const canRead = Boolean(organizationId && sessionScope && canView);
@@ -516,9 +517,26 @@ export const ProductionWorkspace = ({
   const remainingGoodQuantity = work?.remainingGoodQuantity ?? 0;
 
   useEffect(() => {
-    if (activeAttempt)
+    if (activeAttempt) {
       setGoodQuantity(String(Math.max(1, remainingGoodQuantity)));
+      setWasteQuantity("0");
+    }
   }, [activeAttempt?.productionAttemptId, remainingGoodQuantity]);
+
+  const outputDeltas = () => {
+    const parsedGood = Number.parseInt(goodQuantity, 10);
+    const parsedWaste = Number.parseInt(wasteQuantity, 10);
+    return {
+      goodQuantityDelta: Number.isSafeInteger(parsedGood) && parsedGood > 0 && remainingGoodQuantity > 0
+        ? Math.min(remainingGoodQuantity, parsedGood)
+        : 0,
+      wasteQuantityDelta: Number.isSafeInteger(parsedWaste) && parsedWaste > 0 ? parsedWaste : 0,
+    };
+  };
+  const hasOutput = (() => {
+    const input = outputDeltas();
+    return input.goodQuantityDelta > 0 || input.wasteQuantityDelta > 0;
+  })();
 
   const refresh = () =>
     Promise.all([
@@ -549,13 +567,7 @@ export const ProductionWorkspace = ({
         organizationId,
         attemptId,
         newBusinessRequestId(),
-        Math.max(
-          1,
-          Math.min(
-            remainingGoodQuantity || 1,
-            Number.parseInt(goodQuantity, 10) || 1,
-          ),
-        ),
+        outputDeltas(),
       ),
     onSuccess: refresh,
   });
@@ -864,9 +876,11 @@ export const ProductionWorkspace = ({
               canWork={canWork}
               canComplete={canComplete}
               goodQuantity={goodQuantity}
+              wasteQuantity={wasteQuantity}
               busy={start.isPending || output.isPending || complete.isPending}
               onSelect={setSelectedWorkId}
               onGoodQuantityChange={setGoodQuantity}
+              onWasteQuantityChange={setWasteQuantity}
               onStart={(kind) => start.mutate(kind)}
               onRecordOutput={(attemptId) => output.mutate(attemptId)}
               onCompleteAttempt={(attemptId) => complete.mutate(attemptId)}
@@ -943,7 +957,7 @@ export const ProductionWorkspace = ({
                           <input
                             aria-label="Good output"
                             type="number"
-                            min="1"
+                            min="0"
                             max={Math.max(1, remainingGoodQuantity)}
                             step="1"
                             value={goodQuantity}
@@ -952,18 +966,29 @@ export const ProductionWorkspace = ({
                             }
                           />
                         </label>
+                        <label>
+                          Waste output
+                          <input
+                            aria-label="Waste output"
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={wasteQuantity}
+                            onChange={(event) => setWasteQuantity(event.target.value)}
+                          />
+                        </label>
                         <button
                           className="v2-production-rail-button go"
                           disabled={
                             !canWork ||
                             output.isPending ||
-                            remainingGoodQuantity === 0
+                            !hasOutput
                           }
                           onClick={() =>
                             output.mutate(activeAttempt.productionAttemptId)
                           }
                         >
-                          Record good output
+                          Record output
                         </button>
                         <button
                           className="v2-production-rail-button neutral"

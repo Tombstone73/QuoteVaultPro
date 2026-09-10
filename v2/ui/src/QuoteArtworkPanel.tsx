@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import React, { useEffect, useState } from "react";
-import { newBusinessRequestId, quoteApi, type QuoteArtworkProjection, type QuoteRead } from "./api";
+import { artworkApi, newBusinessRequestId, quoteApi, type QuoteArtworkProjection, type QuoteRead } from "./api";
 import { ArtworkAutoUploadDropzone } from "./ArtworkAutoUploadDropzone";
 
 const metadata = (item: QuoteArtworkProjection): string => {
@@ -96,8 +96,9 @@ export const QuoteArtworkPanel = ({
     {artwork.isSuccess && !artwork.data.length && <p className="muted">No artwork is attached to this Quote.</p>}
     {artwork.data?.length ? <ol className="v2-sales-quote-artwork-list">{artwork.data.map((item) => {
       const line = quote.quote.lines.find((candidate) => candidate.lineId === item.association.quoteLineId);
+      const contentUrl = artworkApi.contentUrl(organizationId, item.file.id);
       return <li key={item.association.id}>
-        <div><b>{item.file.displayFilename}</b><small>{line?.description || "Quote line"} · {metadata(item)} · No preview available</small></div>
+        <div><b>{item.file.displayFilename}</b><small>{line?.description || "Quote line"} · {metadata(item)} · Private view/download</small><span className="v2-sales-quote-artwork-actions"><a href={contentUrl} target="_blank" rel="noreferrer">Open file</a><a href={contentUrl} download={item.file.displayFilename}>Download</a></span></div>
         {mutable && <button type="button" disabled={remove.isPending} onClick={() => remove.mutate(item.association.id)}>{remove.isPending ? "Removing…" : "Remove"}</button>}
       </li>;
     })}</ol> : null}

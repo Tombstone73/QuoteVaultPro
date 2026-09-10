@@ -25,11 +25,15 @@ const quote = (deliveryState: "not_sent" | "sent" = "not_sent"): QuoteRead => ({
   totals: { currency: "USD", calculatedLineAmount: { cents: 100, currency: "USD" }, sellingLineAmount: { cents: 100, currency: "USD" } },
 });
 
-const render = (deliveryState: "not_sent" | "sent") => renderToStaticMarkup(
-  <QueryClientProvider client={new QueryClient()}>
+const render = (deliveryState: "not_sent" | "sent", artwork: readonly unknown[] = []) => {
+  const client = new QueryClient();
+  client.setQueryData(["v2", "scope-a", "org-a", "quote-artwork", "quote-a", "3"], artwork);
+  return renderToStaticMarkup(
+  <QueryClientProvider client={client}>
     <QuoteArtworkPanel organizationId="org-a" sessionScope="scope-a" quote={quote(deliveryState)} canEdit csrfReady onQuoteRefresh={() => undefined} onError={() => undefined} />
   </QueryClientProvider>,
-);
+  );
+};
 
 assert.match(render("not_sent"), /Canonical files are associated with this Quote line/);
 assert.match(render("not_sent"), /aria-label="Quote artwork line"/);
@@ -38,6 +42,11 @@ assert.match(render("not_sent"), /aria-label="Quote artwork side"/);
 assert.doesNotMatch(render("not_sent"), />Upload Artwork<\/button>/);
 assert.match(render("sent"), /Quote artwork is read only/);
 assert.doesNotMatch(render("sent"), /Drag a PDF here or click to select/);
+const artworkMarkup = render("not_sent", [{ association: { id: "association-a", quoteId: "quote-a", quoteLineId: "line-a", artworkFileId: "file-a", purpose: "customer_supplied", createdAt: "2026-09-01T00:00:00.000Z" }, file: { id: "file-a", displayFilename: "customer-art.pdf", originalFilename: "customer-art.pdf", contentType: "application/pdf", byteSize: 42, source: "customer", createdAt: "2026-09-01T00:00:00.000Z" } }]);
+assert.match(artworkMarkup, /Open file/);
+assert.match(artworkMarkup, /Download/);
+assert.match(artworkMarkup, /artwork\/files\/file-a\/content/);
+assert.doesNotMatch(artworkMarkup, /object_key|storageProvider/);
 
 const originalFetch = globalThis.fetch;
 const seen: { url?: string; init?: RequestInit } = {};

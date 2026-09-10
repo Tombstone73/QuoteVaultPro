@@ -71,9 +71,11 @@ export const FlatbedStationPanel = ({
   canWork,
   canComplete,
   goodQuantity,
+  wasteQuantity,
   busy,
   onSelect,
   onGoodQuantityChange,
+  onWasteQuantityChange,
   onStart,
   onRecordOutput,
   onCompleteAttempt,
@@ -88,9 +90,11 @@ export const FlatbedStationPanel = ({
   canWork: boolean;
   canComplete: boolean;
   goodQuantity: string;
+  wasteQuantity: string;
   busy?: boolean;
   onSelect: (workId: string) => void;
   onGoodQuantityChange: (value: string) => void;
+  onWasteQuantityChange: (value: string) => void;
   onStart: (kind: "initial" | "reprint") => void;
   onRecordOutput: (attemptId: string) => void;
   onCompleteAttempt: (attemptId: string) => void;
@@ -111,6 +115,8 @@ export const FlatbedStationPanel = ({
     [queue, materialFilter],
   );
   const selectedRemaining = selected ? remaining(selected) : 0;
+  const validGoodOutput = Number.isSafeInteger(Number(goodQuantity)) && Number(goodQuantity) > 0;
+  const validWasteOutput = Number.isSafeInteger(Number(wasteQuantity)) && Number(wasteQuantity) > 0;
   const materialContext = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "production", "flatbed", selected?.work.productionWorkId, "materials"],
     queryFn: () => productionApi.materials(organizationId, selected!.work.productionWorkId),
@@ -178,8 +184,9 @@ export const FlatbedStationPanel = ({
         <section className="v2-flatbed-action-list">
           <button type="button" disabled={!onOpenTraveler} onClick={() => onOpenTraveler?.(selected)}>Open Traveler</button>
           {!activeAttempt ? <button className="go" type="button" disabled={!canWork || busy || selected.unitQuantitySatisfied} onClick={() => onStart(selected.attempts.length ? "reprint" : "initial")}>{selected.attempts.length ? "Start reprint" : "Start production"}</button> : <>
-            <label>Good output<input aria-label="Flatbed good output" type="number" min="1" max={Math.max(1, selectedRemaining)} step="1" value={goodQuantity} onChange={(event) => onGoodQuantityChange(event.target.value)} /></label>
-            <button className="go" type="button" disabled={!canWork || busy || selectedRemaining === 0} onClick={() => onRecordOutput(activeAttempt.productionAttemptId)}>Record good output</button>
+            <label>Good output<input aria-label="Flatbed good output" type="number" min="0" max={Math.max(1, selectedRemaining)} step="1" value={goodQuantity} onChange={(event) => onGoodQuantityChange(event.target.value)} /></label>
+            <label>Waste output<input aria-label="Flatbed waste output" type="number" min="0" step="1" value={wasteQuantity} onChange={(event) => onWasteQuantityChange(event.target.value)} /></label>
+            <button className="go" type="button" disabled={!canWork || busy || (!validGoodOutput && !validWasteOutput)} onClick={() => onRecordOutput(activeAttempt.productionAttemptId)}>Record output</button>
             <button type="button" disabled={!canComplete || busy} onClick={() => onCompleteAttempt(activeAttempt.productionAttemptId)}>Complete attempt</button>
           </>}
           {selected.unitQuantitySatisfied && <p className="v2-flatbed-complete">Production quantity is satisfied. Fulfillment remains a separate authority.</p>}

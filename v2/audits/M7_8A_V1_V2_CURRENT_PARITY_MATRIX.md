@@ -20,12 +20,12 @@ P1 decision before cutover; they are not represented as completed capability.
 | Customers and contacts | customer/account list, detail, contact maintenance | tenant-scoped cursor-paged Customer/Contact workspaces, primary-contact authority, activity hub | SUPERSEDES | P1: credit/terms/internal account fields are not yet V2 commercial authority |
 | Customer commercial policy | staff account/product conventions | capability-gated Customer portal-entitlement and active pricing-agreement authoring, server-enforced Sales pricing | PARITY | P0 closed in M7.8A; policy is audited and ProductVersions remain immutable |
 | Products | create, edit, publish catalog offerings | New Product Draft → typed Builder → immutable publish flow, material/routing/pricing controls | SUPERSEDES | New Product was already present at baseline; stale test/audit assertion corrected |
-| Quotes | create, configure, price, send, accept, convert | canonical sales quote authority, current pricing, conversion and documents | PARITY | P1: clone/revise/void and quote-attachment ergonomics need a business decision |
+| Quotes | create, configure, price, send, accept, convert | canonical sales quote authority, duplicate/edit/void controls, protected Artwork, and documents | PARITY | remaining list-preference/export ergonomics are P1 |
 | Orders | create/edit, workflow/routing, traveler | canonical Order projection, frozen route evidence, direct/no-production policy, Traveler | SUPERSEDES | P1: duplicate/reorder/line-note/header fulfillment ergonomics |
-| Artwork | source attachments and operator preview/download | canonical Artwork assignment, immutable source/derived lineage and proof/prepress ownership | SUPERSEDES | P1: generic private-file preview/download remains incomplete outside owned workflows |
+| Artwork | source attachments and operator preview/download | canonical Artwork assignment, immutable source/derived lineage, protected generic open/download, and proof/prepress ownership | SUPERSEDES | P1: batching/nesting and additional revision ergonomics |
 | Proofing | issue/review/revision | immutable versions, exact artifact viewer, scoped staff/portal response | SUPERSEDES | P1: bulk operational output/delivery live validation |
 | Prepress | work queue and handoff | readiness blockers, production-art revision, atomic frozen-destination handoff | SUPERSEDES | P1: batching/nesting/exception-run ergonomics |
-| Flatbed and Roll | station-specific workboards | common canonical attempts/quantity authority with station presentation, artwork, material and Traveler context | SUPERSEDES | P1: machine/printer/waste/pause/reopen operational controls |
+| Flatbed and Roll | station-specific workboards | common canonical attempts/quantity authority with station presentation, artwork, material, Traveler, good and waste output context | SUPERSEDES | P1: machine/printer/pause/reopen operational controls |
 | Fulfillment | shipment/pickup records | immutable quantity handoffs, partial/multiple events, manual shipment metadata and combined compatible shipments | SUPERSEDES | P1: prepared-shipment recovery/detail and combined-container document scope |
 | Invoices, payments and refunds | billing records and payment operations | order-backed Invoice, immutable Payment/Refund allocation facts, Stripe/QuickBooks boundaries | SUPERSEDES | Invoice issuance was P0-unreachable and is closed in M7.8A; provider/live validation remains P1 |
 | Customer portal | account/order/quote/invoice/proof access | authenticated customer-scoped reads, entitled catalog, canonical Orders, proof/fulfillment reads and allocation-aware payments | SUPERSEDES | P1: remaining document/profile/configuration live validation |
@@ -86,8 +86,8 @@ operator; every listed V2 command also has a scoped server contract.
 | Quotes | list, create, customer/contact, PO/due/notes, line configuration | Quotes workspace / Sales entry / quote application services | PARITY | — |
 | Quotes | authorized price override | V1 override UI | capability-gated `quote.overridePrice`, canonical pricing evidence | PARITY | — |
 | Quotes | send, accept, convert | V2 mounted controls with quote send/convert authority | SUPERSEDES | immutable conversion evidence retained |
-| Quotes | duplicate; staff revise/void semantics | V1 quote editor controls | no matching V2 control found | PARTIAL | P1 duplicate; owner decision for exact revise/void semantics |
-| Quotes | attachments/artwork and Quote PDF/print | V1 Quote attachment/PDF panels | no Quote-scoped V2 artwork/PDF path substantiated | MISSING | P1; promote if source art/PDF is required before quote acceptance |
+| Quotes | duplicate; staff revise/void semantics | V1 quote editor controls | mounted canonical Duplicate Quote, open-quote edit/revision, terminal void/decline with reason | PARITY | — |
+| Quotes | attachments/artwork and Quote PDF/print | V1 Quote attachment/PDF panels | mounted canonical Quote Artwork upload/remove plus protected view/open/download and Quote PDF preview | PARITY | — |
 | Quotes | configurable saved list columns/sort/filter/export/gallery | V1 `internal-quotes.tsx` preferences/export | V2 keyword/lifecycle/cursor list only | PARTIAL | P1 operator efficiency; owner decides required columns/export |
 | Orders | list/search/status/pagination | Sales → Orders server-backed workboard | PARITY | — |
 | Orders | create/edit header, customer/contact, PO/due/terms | Sales entry and Order application | PARITY | — |
@@ -111,7 +111,7 @@ operator; every listed V2 command also has a scoped server contract.
 | Production | Flatbed/Roll navigation, queues, start/output/complete | V2 shell stations, attempts, quantity commands | SUPERSEDES | — |
 | Production | front/back/double-sided, material grouping, frozen art | Roll/Flatbed panels and work projections | SUPERSEDES | — |
 | Production | partial good quantity/no overproduction/history | V2 attempt and output evidence | SUPERSEDES | — |
-| Production | pause/hold/reopen/return-to-prepress, notes and waste | V1 production recovery/note controls | no V2 immutable exception workflow found | PARTIAL | P1 routine exception handling |
+| Production | pause/hold/reopen/return-to-prepress, notes and waste | V1 production recovery/note controls | V2 now records good and waste deltas through the existing immutable attempt authority; no V2 hold/rework/note event model exists | PARTIAL | P1 routine exception handling |
 | Production | machine/printer assignment, bulk reassign, capacity calendar | V1 boards/actions | V2 intentionally has no scheduling domain | DEFERRED WITH DECISION | implement only a canonical scheduling authority if required |
 | Fulfillment | partial/multiple pickup with history | V2 immutable handoffs, pickup controls | SUPERSEDES | — |
 | Fulfillment | shipment quantities, carrier/service/tracking/notes/package count | Shipment Builder and container endpoints | PARITY | — |

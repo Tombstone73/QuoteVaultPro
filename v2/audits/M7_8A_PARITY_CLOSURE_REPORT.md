@@ -24,6 +24,14 @@ runtime, and owner-decision items remain open.
   the opaque Artwork file identifier; the existing server route rechecks the
   tenant principal and `artwork.view` capability before resolving file bytes.
   No storage key, public URL, or new Artwork authority was added.
+- Corrected stale Quote findings: the current V2 surface already mounted
+  duplicate, open-quote edit/revision, terminal void/decline, line reorder,
+  and PDF preview. This continuation adds the missing protected Quote Artwork
+  open/download affordance on the same canonical Artwork delivery route.
+- Exposed the existing immutable Production `wasteQuantityDelta` authority in
+  both the shared station rail and Flatbed controls. Waste-only output is now
+  possible; it never satisfies good quantity, advances Fulfillment, or creates
+  material-consumption records.
 
 ## Audit outcome
 
@@ -37,9 +45,10 @@ This is deliberately not a component-count: one group can contain multiple V1
 controls where they produce the same business result. At the current source
 state, 33 groups are parity/superseded, 17 are partial, 10 are missing or
 unreachable, and 6 require an explicit business decision before being treated
-as launch scope. The three P0 reachability findings are closed. A fourth
-routine P1—generic private Artwork access—has also been closed using the
-existing protected content transport. These counts
+as launch scope. The three P0 reachability findings are closed. Three additional
+routine UI findings—generic private Artwork access, Quote Artwork access, and
+Production waste capture—have also been closed using existing protected or
+canonical authority. These counts
 are source/contract evidence; deployed-role and provider behavior remains a
 separate DEV validation requirement.
 

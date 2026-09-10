@@ -17,9 +17,9 @@ listed operational consequence.
 | ID | Area | Missing or partial routine capability | Consequence if waived | Recommended owner decision |
 | --- | --- | --- | --- | --- |
 | P1-01 | CRM commercial account | terms, credit limit/balance, tax/billing recipient and internal account-note authority | staff must keep commercial-account facts outside V2 | decide whether V2 is commercial-account authority at launch |
-| P1-02 | Quotes/Orders | duplicate/revise/void, line duplication/reorder, line notes and richer fulfillment header entry | slower manual recreation; no data integrity workaround is authorized | define minimum sales-desk ergonomics for launch |
+| P1-02 | Orders | line notes and richer fulfillment header entry | slower manual recreation; no data integrity workaround is authorized | define minimum sales-desk ergonomics for launch |
 | P1-03 | Artwork/Prepress | batch/nesting/exception-run controls and any further revision ergonomics | private generic view/open/download is now available through existing scoped Artwork delivery; bulk throughput tools remain absent | identify launch-volume requirements and exact owner workflow |
-| P1-04 | Production | pause/reopen, machine/printer selection, waste/exception and calendar controls | shop-floor exception work is manual/outside V2 | determine which controls are mandatory versus later operations tooling |
+| P1-04 | Production | pause/reopen, machine/printer selection, issue notes and calendar controls | good and waste output now use canonical immutable attempt deltas; broader exception work remains manual/outside V2 | determine which controls are mandatory versus later operations tooling |
 | P1-05 | Fulfillment | prepared-shipment recovery/detail and canonical combined-shipment document | shipment recovery/document scope can be ambiguous | approve a single combined-slip scope and required recovery flow |
 | P1-06 | Portal | final document/profile/configuration and authenticated live-flow validation | customer launch scope may be incomplete despite source contracts | nominate portal launch acceptance cases and authorize DEV validation |
 | P1-07 | Inbound/provider | Gmail read scope, attachment binary adoption and provider validation | intake remains deterministic/manual rather than live-provider sourced | authorize a bounded Gmail-read milestone |
@@ -27,9 +27,9 @@ listed operational consequence.
 | P1-09 | Inventory/procurement | purchasing and complete inventory operator workflows | material operations remain limited to current reservation/consumption foundation | decide whether procurement is launch scope |
 | P1-10 | Runtime/providers | production OAuth, webhook and worker-topology validation | no safe production release claim | retain as mandatory M7 cutover-control evidence |
 | P1-11 | Fulfillment safety | reopen prepared shipment; immutable correction/reversal workflow | operators cannot safely recover an interrupted or incorrect shipment container in V2 | implement a canonical correction/recovery model before busy dispatch launch |
-| P1-12 | Production exceptions | pause/hold/reopen/return-to-prepress, production notes and waste | operators may need off-system exception handling | implement immutable exception facts and owner-return flow; do not mutate attempts |
+| P1-12 | Production exceptions | pause/hold/reopen/return-to-prepress and production notes | waste output is now recorded through canonical immutable attempt facts; operators may still need off-system exception handling | implement immutable exception facts and owner-return flow; do not mutate attempts |
 | P1-13 | Artwork access | **CLOSED:** generic Artwork view/open/download | Artwork detail now uses the existing server-authorized private-content transport; assignment/revision ownership remains unchanged | no additional action for basic private access |
-| P1-14 | Sales documents | Quote artwork/PDF/print evidence and exact V2 quote document route validation | quote desk may lack customer-facing output/artwork context | validate mounted document path; add only a canonical Quote-scoped document/artwork projection if absent |
+| P1-14 | Sales documents | **CLOSED:** Quote duplicate/void/reorder, Quote Artwork, and Quote PDF access | mounted canonical Quote controls now expose protected Artwork open/download and PDF preview; Quote lifecycle remains server-owned | no additional action for the audited Quote/document capabilities |
 
 ## Classification rules
 

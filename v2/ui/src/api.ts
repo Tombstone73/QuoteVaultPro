@@ -3075,13 +3075,13 @@ export const productionApi = {
     org: string,
     attemptId: string,
     businessRequestId: string,
-    goodQuantityDelta: number,
+    input: Readonly<{ goodQuantityDelta: number; wasteQuantityDelta?: number }>,
   ) =>
     productionMutation<unknown>(
       org,
       `/attempts/${encodeURIComponent(attemptId)}/output`,
       businessRequestId,
-      { goodQuantityDelta },
+      input,
     ),
   complete: (org: string, attemptId: string, businessRequestId: string) =>
     productionMutation<unknown>(
