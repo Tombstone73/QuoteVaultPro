@@ -1891,6 +1891,13 @@
       "when": 1788048000121,
       "tag": "0274_v2_suppressed_delivery_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 276,
+      "version": "7",
+      "when": 1788048000122,
+      "tag": "0275_v2_fulfillment_shipment_recovery",
+      "breakpoints": true
     }
   ]
 }

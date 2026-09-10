@@ -9,6 +9,17 @@ runtime, and owner-decision items remain open.
 
 ## Changes
 
+- M7.8B closes the pre-shipment Fulfillment recovery safety gap. A prepared
+  shipment now has immutable revision/allocation evidence, can be corrected or
+  voided with an attributed reason, and reserves but never fulfills quantity.
+  One server transaction revalidates the active revision and physical
+  availability, materializes canonical per-Order handoffs, allocation lines,
+  snapshots, and container attachments, then transitions the container to
+  `SHIPPED`. A failed finalization rolls back all of those database facts.
+  Browser code no longer creates handoffs or attaches them after shipping.
+  Post-shipped quantity correction remains deliberately fail-closed pending a
+  separately approved physical return/re-delivery/reversal authority.
+
 - Added active customer pricing-agreement readback to the canonical commercial
   store/service and staff HTTP surface.
 - Added bounded Customer-detail authoring for portal Product entitlement and
@@ -73,12 +84,13 @@ separate DEV validation requirement.
 
 ## Required next decisions
 
-The follow-on P1 feasibility review also found that shipment recovery/correction
-and Production hold/rework are not safe UI-only patches. Shipment recovery needs
-an atomic container/finalization and immutable correction model; Production
-exceptions need a canonical interruption/rework ledger that preserves frozen
-Artwork, attempt, Prepress, and routing evidence. They remain decision-ready
-bounded domain milestones, not hidden controls.
+The M7.8B follow-on has now implemented the atomic container/finalization and
+immutable prepared-correction model. The remaining Fulfillment decision is
+strictly post-shipped: approve a separate physical return/re-delivery/reversal
+authority if the business needs to alter shipped quantities. Production
+exceptions still need a canonical interruption/rework ledger that preserves
+frozen Artwork, attempt, Prepress, and routing evidence. They remain
+decision-ready bounded domain milestones, not hidden controls.
 
 No additional broad parity implementation should start automatically. The next
 bounded action is an owner decision on the remaining P1 queue, especially

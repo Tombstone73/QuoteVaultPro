@@ -12,11 +12,16 @@ const groups = groupShipmentAllocations([
   { orderId: "order-a", orderLineId: "line-b", quantity: "5" },
   { orderId: "order-b", orderLineId: "line-c", quantity: "7" },
 ]);
-assert.deepEqual(groups.get("order-a"), [{ orderLineId: "line-a", quantity: 20 }, { orderLineId: "line-b", quantity: 5 }]);
-assert.deepEqual(groups.get("order-b"), [{ orderLineId: "line-c", quantity: 7 }]);
+assert.deepEqual(groups, [
+  { orderId: "order-a", orderLineId: "line-a", quantity: 20 },
+  { orderId: "order-a", orderLineId: "line-b", quantity: 5 },
+  { orderId: "order-b", orderLineId: "line-c", quantity: 7 },
+]);
 
 const markup = renderToStaticMarkup(<ShipmentBuilder organizationId="org-a" csrfReady canShip refresh={async () => {}} orders={[{ orderId: "order-a", number: "ORD-100", commercialState: "open", customerName: "Titan", customerId: "customer-a", requestedFulfillment: { method: "shipping", destination: { addressLine1: "1 Print Way", city: "Tampa" } }, lines: [{ orderId: "order-a", orderLineId: "line-a", description: "Banner", orderedQuantity: 60, completedPickupQuantity: 0, completedShipmentQuantity: 0, completedFulfillmentQuantity: 0, completedProductionQuantity: 60, availableFulfillmentQuantity: 60, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 60 }], handoffs: [] }]} />);
 assert.match(markup, /Create shipment/);
-assert.match(markup, /Final compatibility and availability are checked by the server/);
+assert.match(markup, /server owns allocations, compatibility, and quantity validation/i);
+assert.doesNotMatch(markup, /Record selected allocations/);
+assert.doesNotMatch(markup, /Mark shipped/);
 assert.doesNotMatch(markup, /carrier API/i);
-console.log("Shipment builder quantity and bounded-selection tests passed.");
+console.log("Shipment builder server-owned allocation and bounded-selection tests passed.");

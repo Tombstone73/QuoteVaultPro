@@ -46,6 +46,8 @@ export type FulfillmentAvailability = Readonly<{
   remainingProductionQuantity: number;
   /** Commercial quantity not yet handed off. This can exceed the currently available physical quantity. */
   remainingFulfillmentQuantity: number;
+  /** Active prepared-container reservations reduce available physical output but are not fulfillment history. */
+  reservedShipmentQuantity?: number;
   /** Present only for historical facts that cannot be reconciled with recorded Production output. */
   physicalIntegrityAnomaly?: FulfillmentPhysicalIntegrityAnomaly;
 }>;

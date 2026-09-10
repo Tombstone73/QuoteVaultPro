@@ -4,7 +4,8 @@
  * provider reference and label document without becoming the source of truth
  * for the customer handoff allocation.
  */
-export type CarrierShipmentStatus = "prepared" | "shipped";
+/** A voided container is historical recovery evidence, never a carrier event. */
+export type CarrierShipmentStatus = "prepared" | "shipped" | "voided";
 
 export type ManualCarrierShipment = Readonly<{
   status: CarrierShipmentStatus;

@@ -807,16 +807,43 @@ export type FulfillmentShipmentCarrierInput = Readonly<{
   notes?: string;
   packageCount?: number;
 }>;
-export type FulfillmentShipmentContainer = Readonly<{
+  export type FulfillmentShipmentContainer = Readonly<{
   shipmentId: string;
-  status: "prepared" | "shipped";
+  status: "prepared" | "shipped" | "voided";
   customerId?: string;
   destination?: unknown;
-  carrier: Readonly<{ status: "prepared" | "shipped" } & FulfillmentShipmentCarrierInput>;
+  carrier: Readonly<{ status: "prepared" | "shipped" | "voided" } & FulfillmentShipmentCarrierInput>;
   createdAt: string;
   createdPrincipalSubject: string;
   shippedAt?: string;
-  shippedPrincipalSubject?: string;
+    shippedPrincipalSubject?: string;
+    preparedRevisionId?: string;
+    voidedAt?: string;
+    voidedPrincipalSubject?: string;
+    voidReason?: string;
+  }>;
+/**
+ * Operator intent for a prepared physical shipment. The server owns every
+ * compatibility decision and later immutable handoff; this is
+ * never a client-side fulfillment completion command.
+ */
+export type FulfillmentShipmentDraftAllocationInput = Readonly<{
+  orderId: string;
+  orderLineId: string;
+  quantity: number;
+}>;
+export type FulfillmentShipmentDraftAllocation = FulfillmentShipmentDraftAllocationInput;
+  export type FulfillmentShipmentPreparedRevision = Readonly<{
+    revisionId: string;
+    revisionNumber: number;
+    kind: "initial" | "correction";
+    allocations: readonly FulfillmentShipmentDraftAllocation[];
+    carrier: FulfillmentShipmentContainer["carrier"];
+  }>;
+  /** Persisted shipment detail, including its server-owned prepared revision. */
+  export type FulfillmentShipmentDetail = FulfillmentShipmentContainer & Readonly<{
+    currentPreparedRevision?: FulfillmentShipmentPreparedRevision;
+    events: readonly Readonly<{ type: "prepared" | "corrected" | "voided" | "shipped"; sequenceNumber: number }> [];
 }>;
 export type FulfillmentPhysicalIntegrityAnomaly = Readonly<{
   code: "FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION";
@@ -3233,32 +3260,46 @@ export const fulfillmentApi = {
   createShipment: (
     org: string,
     businessRequestId: string,
-    input: Readonly<{ customerId?: string; destination?: unknown; carrier?: FulfillmentShipmentCarrierInput }>,
-  ) => request<FulfillmentShipmentContainer>(fulfillmentEndpoint(org, "/shipments"), {
+    input: Readonly<{ customerId?: string; destination?: unknown; carrier?: FulfillmentShipmentCarrierInput; allocations: readonly FulfillmentShipmentDraftAllocationInput[] }>,
+  ) => request<FulfillmentShipmentDetail>(fulfillmentEndpoint(org, "/shipments/prepared"), {
     method: "POST",
     headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
     body: JSON.stringify({ businessRequestId, ...input }),
   }),
-  markShipmentShipped: (
+    listShipments: (org: string) =>
+      request<readonly FulfillmentShipmentContainer[]>(fulfillmentEndpoint(org, "/shipments")),
+  getShipment: (org: string, shipmentId: string) =>
+    request<FulfillmentShipmentDetail>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}`)),
+  correctShipment: (
     org: string,
     shipmentId: string,
     businessRequestId: string,
-    carrier?: FulfillmentShipmentCarrierInput,
-  ) => request<FulfillmentShipmentContainer>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/ship`), {
+    input: Readonly<{ allocations: readonly FulfillmentShipmentDraftAllocationInput[]; reason: string; carrier?: FulfillmentShipmentCarrierInput }>,
+  ) => request<FulfillmentShipmentDetail>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/correct`), {
     method: "POST",
     headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
-    body: JSON.stringify({ businessRequestId, ...(carrier ? { carrier } : {}) }),
+    body: JSON.stringify({ businessRequestId, ...input }),
   }),
-  attachShipmentHandoffs: (
+    cancelShipment: (
     org: string,
     shipmentId: string,
     businessRequestId: string,
-    handoffIds: readonly string[],
-  ) => request<void>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/handoffs`), {
+    reason: string,
+  ) => request<FulfillmentShipmentDetail>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/cancel`), {
     method: "POST",
     headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
-    body: JSON.stringify({ businessRequestId, handoffIds }),
-  }),
+      body: JSON.stringify({ businessRequestId, reason }),
+    }),
+    finalizeShipment: (
+      org: string,
+      shipmentId: string,
+      businessRequestId: string,
+      expectedPreparedRevisionId: string,
+    ) => request<FulfillmentShipmentDetail>(fulfillmentEndpoint(org, `/shipments/${encodeURIComponent(shipmentId)}/finalize`), {
+      method: "POST",
+      headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
+      body: JSON.stringify({ businessRequestId, expectedPreparedRevisionId }),
+    }),
 };
 const inboundOrdersEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/inbound-orders${suffix}`;
