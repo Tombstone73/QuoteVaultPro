@@ -26,6 +26,15 @@ closure queue and waiver decisions are in `M7_8A_OPERATOR_PARITY_GAPS.md`.
 The actual V1 audit reference was local `main` at `29b99eb`; its divergence from
 `origin/main` was recorded as provenance, not reconciled or modified.
 
+The continuation audit normalized **66 current operator capability groups**.
+This is deliberately not a component-count: one group can contain multiple V1
+controls where they produce the same business result. At the current source
+state, 33 groups are parity/superseded, 17 are partial, 10 are missing or
+unreachable, and 6 require an explicit business decision before being treated
+as launch scope. The three P0 reachability findings are closed. These counts
+are source/contract evidence; deployed-role and provider behavior remains a
+separate DEV validation requirement.
+
 ## Validation
 
 - Direct TypeScript checks for `v2/tsconfig.json` and `v2/ui/tsconfig.json`

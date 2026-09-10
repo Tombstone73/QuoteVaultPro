@@ -26,6 +26,10 @@ listed operational consequence.
 | P1-08 | Shell | permission-scoped global search and notification authority | users navigate through module worklists rather than global command search | waive or define a scoped search contract |
 | P1-09 | Inventory/procurement | purchasing and complete inventory operator workflows | material operations remain limited to current reservation/consumption foundation | decide whether procurement is launch scope |
 | P1-10 | Runtime/providers | production OAuth, webhook and worker-topology validation | no safe production release claim | retain as mandatory M7 cutover-control evidence |
+| P1-11 | Fulfillment safety | reopen prepared shipment; immutable correction/reversal workflow | operators cannot safely recover an interrupted or incorrect shipment container in V2 | implement a canonical correction/recovery model before busy dispatch launch |
+| P1-12 | Production exceptions | pause/hold/reopen/return-to-prepress, production notes and waste | operators may need off-system exception handling | implement immutable exception facts and owner-return flow; do not mutate attempts |
+| P1-13 | Artwork access | private generic artwork preview/download/revision affordance | staff cannot inspect/download customer/source artwork from the Artwork workspace | add scoped content view/download using existing private content authority |
+| P1-14 | Sales documents | Quote artwork/PDF/print evidence and exact V2 quote document route validation | quote desk may lack customer-facing output/artwork context | validate mounted document path; add only a canonical Quote-scoped document/artwork projection if absent |
 
 ## Classification rules
 
