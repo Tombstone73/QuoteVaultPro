@@ -32,9 +32,11 @@ import {
   quickBooksCredentialLockKey,
   resolveQuickBooksTokenExpiryMetadata,
   selectAuthoritativeQuickBooksConnection,
+  isRecoverableQuickBooksSdkRefreshValidationLatch,
   type QuickBooksConnectionState,
   type QuickBooksCredentialErrorCategory,
 } from './services/quickbooksCredentialManager';
+import { refreshQuickBooksOAuthGrant } from './services/quickbooksOAuthProvider';
 
 export { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
 
@@ -62,6 +64,25 @@ const getOAuthClient = (): any => {
     redirectUri,
   });
 };
+
+function getQuickBooksOAuthRuntimeDiagnostic(): Record<string, string | null> {
+  const clientId = String(process.env.QUICKBOOKS_CLIENT_ID || process.env.QB_CLIENT_ID || '').trim();
+  const environment = String(process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox').trim().toLowerCase();
+  const redirectUri = String(process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI || '').trim();
+  let redirectHost: string | null = null;
+  let redirectPath: string | null = null;
+  try {
+    const parsed = new URL(redirectUri);
+    redirectHost = parsed.host;
+    redirectPath = parsed.pathname;
+  } catch {}
+  return {
+    oauthEnvironment: environment || null,
+    oauthClientFingerprint: clientId ? crypto.createHash('sha256').update(clientId).digest('hex').slice(0, 12) : null,
+    redirectHost,
+    redirectPath,
+  };
+}
 
 function qbLogsEnabled(): boolean {
   return String(process.env.QB_DEBUG_LOGS || '').trim() === '1';
@@ -142,14 +163,12 @@ function requireQuickBooksOrganizationId(organizationId: string | undefined | nu
 
 async function refreshQuickBooksTokenWithDiagnostics(oauthClient: any, refreshToken: string, organizationId: string, stage: string) {
   try {
-    oauthClient.setToken({
-      refresh_token: refreshToken,
-    } as any);
-    const authResponse = await oauthClient.refresh();
+    const authResponse = await refreshQuickBooksOAuthGrant(oauthClient, refreshToken);
     const diagnostic = extractQuickBooksOAuthDiagnostic(authResponse);
     console.log('[QuickBooks] OAuth refresh succeeded', {
       organizationId,
       stage,
+      ...getQuickBooksOAuthRuntimeDiagnostic(),
       refreshHttpStatus: diagnostic.httpStatus,
       oauthError: diagnostic.oauthError,
       oauthErrorDescription: diagnostic.oauthErrorDescription,
@@ -165,6 +184,7 @@ async function refreshQuickBooksTokenWithDiagnostics(oauthClient: any, refreshTo
     console.error('[QuickBooks] OAuth refresh failed', {
       organizationId,
       stage,
+      ...getQuickBooksOAuthRuntimeDiagnostic(),
       refreshHttpStatus: diagnostic.httpStatus,
       oauthError: diagnostic.oauthError,
       oauthErrorDescription: diagnostic.oauthErrorDescription,
@@ -259,7 +279,7 @@ export async function getQuickBooksAuthStateForOrganization(organizationId: stri
   if (!connection) return { authState: 'not_connected', message: 'QuickBooks not connected', connection: null };
 
   const qbAuth = getQuickBooksAuthMetadata(connection);
-  if (qbAuth?.state === 'needs_reauth') {
+  if (qbAuth?.state === 'needs_reauth' && !isRecoverableQuickBooksSdkRefreshValidationLatch(connection)) {
     return {
       authState: 'needs_reauth',
       message: qbAuth.message || 'QuickBooks connection needs reauthorization',
@@ -273,7 +293,9 @@ export async function getQuickBooksAuthStateForOrganization(organizationId: stri
 export async function isQuickBooksReauthRequiredForOrganization(organizationId: string): Promise<{ needsReauth: boolean; message?: string }> {
   const connection = await getActiveConnection(organizationId);
   const qbAuth = getQuickBooksAuthMetadata(connection);
-  if (qbAuth?.state === 'needs_reauth') return { needsReauth: true, message: qbAuth.message };
+  if (qbAuth?.state === 'needs_reauth' && !isRecoverableQuickBooksSdkRefreshValidationLatch(connection)) {
+    return { needsReauth: true, message: qbAuth.message };
+  }
   return { needsReauth: false };
 }
 

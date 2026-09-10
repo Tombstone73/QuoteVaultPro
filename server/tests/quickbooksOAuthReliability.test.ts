@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "@jest/globals";
+import { describe, expect, jest, test, beforeEach, afterEach } from "@jest/globals";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -8,12 +8,14 @@ import {
   encryptQuickBooksTokenIfConfigured,
   extractQuickBooksOAuthDiagnostic,
   getQuickBooksCredentialCauseText,
+  isRecoverableQuickBooksSdkRefreshValidationLatch,
   isEncryptedQuickBooksToken,
   mergeQuickBooksRefreshToken,
   redactQuickBooksOAuthDiagnostic,
   resolveQuickBooksTokenExpiryMetadata,
   selectAuthoritativeQuickBooksConnection,
 } from "../services/quickbooksCredentialManager";
+import { refreshQuickBooksOAuthGrant } from "../services/quickbooksOAuthProvider";
 
 const root = process.cwd();
 
@@ -143,7 +145,7 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(makeRequestBody).toContain("recordTransientFailure(orgId, 'transient_api_failure', err)");
     expect(makeRequestBody).not.toContain("markNeedsReauth(orgId, latest, err)");
     expect(refreshBody).toContain("if (category === \"invalid_grant\")");
-    expect(refreshBody).toContain("await this.markNeedsReauth(orgId, latest, error)");
+    expect(refreshBody).toContain("await this.markNeedsReauth(orgId, refreshing, error)");
   });
 
   test("failed access token errors preserve credential manager cause and OAuth fields", () => {
@@ -268,7 +270,7 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(persistBody).toContain("stale qbAuth metadata remains");
     expect(persistBody).toContain("credentialGeneration");
     expect(refreshBody).toContain("category: \"persistence_failure\"");
-    expect(refreshBody).toContain("markNeedsReauth(orgId, latest, error, \"persistence_failure\")");
+    expect(refreshBody).toContain("markNeedsReauth(orgId, current, error, \"persistence_failure\")");
     expect(refreshBody).not.toContain("markNeedsReauth(orgId, latest, error); } catch");
   });
 
@@ -320,5 +322,142 @@ describe("QuickBooks OAuth credential reliability", () => {
     expect(credentialSource).toContain("decryptQuickBooksToken(persisted.refreshToken)");
     expect(routeSource).not.toContain("logout");
     expect(routeSource).toContain("tenantContext");
+  });
+
+  test("fresh access token remains on the cached-token path", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain("if (!options.forceRefresh && !accessTokenExpired)");
+    expect(source).toContain("return connection.accessToken");
+  });
+
+  test("expired access token reaches Intuit with the persisted refresh grant", async () => {
+    const refreshUsingToken = jest.fn().mockResolvedValue({ token: { access_token: "new-access" } });
+    await expect(refreshQuickBooksOAuthGrant({ refreshUsingToken }, " stored-refresh ")).resolves.toEqual({
+      token: { access_token: "new-access" },
+    });
+    expect(refreshUsingToken).toHaveBeenCalledWith("stored-refresh");
+  });
+
+  test("rotated refresh token is selected for persistence", () => {
+    expect(mergeQuickBooksRefreshToken("old-refresh", { access_token: "new-access", refresh_token: "new-refresh" })).toBe("new-refresh");
+  });
+
+  test("refresh response without a new refresh token preserves the stored grant", () => {
+    expect(mergeQuickBooksRefreshToken("stored-refresh", { access_token: "new-access" })).toBe("stored-refresh");
+  });
+
+  test("concurrent refresh path reloads peer credentials under the organization lock", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain("pg_try_advisory_xact_lock");
+    expect(source).toContain("peerAlreadyRefreshed");
+    expect(source).toContain("return latest as T");
+  });
+
+  test("invalid_grant remains the only OAuth response that requires reauthorization", () => {
+    expect(classifyQuickBooksCredentialError({ response: { status: 400, data: { error: "invalid_grant" } } })).toBe("invalid_grant");
+  });
+
+  test("invalid_client remains a configuration failure and not a revoked grant", () => {
+    expect(classifyQuickBooksCredentialError({ response: { status: 401, data: { error: "invalid_client" } } })).toBe("invalid_client");
+  });
+
+  test("transient OAuth failure remains retryable without reconnect", () => {
+    expect(classifyQuickBooksCredentialError({ response: { status: 503 }, message: "Service unavailable" })).toBe("transient_api_failure");
+  });
+
+  test("post-refresh persistence failure is surfaced and latched safely", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain('category: "persistence_failure"');
+    expect(source).toContain('await this.markNeedsReauth(orgId, current, error, "persistence_failure")');
+  });
+
+  test("missing refresh token is rejected before provider execution", async () => {
+    const refreshUsingToken = jest.fn();
+    await expect(refreshQuickBooksOAuthGrant({ refreshUsingToken }, " ")).rejects.toThrow("refresh token is missing");
+    expect(refreshUsingToken).not.toHaveBeenCalled();
+  });
+
+  test("missing access token in a refresh response is rejected", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain("QuickBooks refresh response did not include an access token");
+  });
+
+  test("tenant isolation scopes credential load and persistence by organization", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain('eq(oauthConnections.organizationId, orgId)');
+    expect(source).toContain('eq(oauthConnections.organizationId, args.organizationId)');
+  });
+
+  test("duplicate connection rows resolve to one authoritative active row", () => {
+    const rows = [
+      { id: "stale", updatedAt: new Date("2026-09-10T12:00:00Z"), createdAt: new Date(), metadata: { qbConnection: { authoritative: false, state: "superseded" } } },
+      { id: "active", updatedAt: new Date("2026-09-09T12:00:00Z"), createdAt: new Date(), metadata: { qbConnection: { authoritative: true, state: "connected" } } },
+    ] as any;
+    expect(selectAuthoritativeQuickBooksConnection(rows)?.id).toBe("active");
+  });
+
+  test("legacy plaintext credential loading remains supported", () => {
+    expect(decryptQuickBooksToken("legacy-refresh")).toEqual({ value: "legacy-refresh", wasEncrypted: false });
+  });
+
+  test("encrypted credential loading remains supported", () => {
+    const encrypted = encryptQuickBooksToken("encrypted-refresh");
+    expect(decryptQuickBooksToken(encrypted)).toEqual({ value: "encrypted-refresh", wasEncrypted: true });
+  });
+
+  test("backend restart recovery uses only persisted organization credentials", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain("async loadCredentials(organizationId");
+    expect(source).not.toContain("express-session");
+  });
+
+  test("browser logout does not clear the provider credential row", () => {
+    const routes = readRepoFile("server/routes/quickbooks.routes.ts");
+    expect(routes).not.toContain("logout");
+    expect(routes).toContain("disconnectConnectionForOrganization");
+  });
+
+  test("queued approved force sync acquires credentials before provider execution", () => {
+    const worker = readRepoFile("server/services/quickbooksSyncQueueWorker.ts");
+    const selected = worker.slice(worker.indexOf("export async function runSelectedQuickBooksSyncForOrg"), worker.indexOf("export async function enqueueSelectedQuickBooksSyncForOrg"));
+    expect(selected.indexOf("getValidAccessTokenForOrganization")).toBeLessThan(selected.indexOf("syncSingleInvoiceToQuickBooksForOrganization"));
+    expect(selected).toContain("getInvoiceQuickBooksApprovalEligibility");
+    expect(selected).toContain("claimQuickBooksSyncLease");
+  });
+
+  test("provider execution receives the newly refreshed access token", async () => {
+    const providerCall = jest.fn();
+    const refreshUsingToken = jest.fn().mockResolvedValue({ token: { access_token: "new-access", refresh_token: "new-refresh" } });
+    const response = await refreshQuickBooksOAuthGrant({ refreshUsingToken }, "old-refresh");
+    await providerCall(response.token.access_token);
+    expect(providerCall).toHaveBeenCalledWith("new-access");
+  });
+
+  test("diagnostic logging contains no raw credential fields", () => {
+    const provider = readRepoFile("server/services/quickbooksOAuthProvider.ts");
+    const service = readRepoFile("server/quickbooksService.ts");
+    const refreshLog = service.slice(service.indexOf("async function refreshQuickBooksTokenWithDiagnostics"), service.indexOf("async function setQuickBooksTransientHealthError"));
+    expect(provider).not.toContain("console.");
+    expect(refreshLog).not.toContain("oauthClient.setToken");
+    expect(refreshLog).not.toContain("oauthClient.refresh()");
+    expect(refreshLog).toContain("hasAccessToken:");
+    expect(refreshLog).toContain("refreshTokenRotated:");
+    expect(refreshLog).toContain("getQuickBooksOAuthRuntimeDiagnostic");
+    expect(refreshLog).not.toContain("Authorization:");
+  });
+
+  test("legacy SDK-local invalid latch is retried but an Intuit HTTP invalid_grant remains latched", () => {
+    const base = { metadata: { qbAuth: { state: "needs_reauth", message: "The Refresh token is invalid, please Authorize again." }, qbCredential: { lastErrorHttpStatus: null } } } as any;
+    expect(isRecoverableQuickBooksSdkRefreshValidationLatch(base)).toBe(true);
+    expect(isRecoverableQuickBooksSdkRefreshValidationLatch({ ...base, metadata: { ...base.metadata, qbCredential: { lastErrorHttpStatus: 400 } } })).toBe(false);
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain("delete (refreshingMetadata as any).qbAuth");
+  });
+
+  test("refresh failure state writes use the post-refreshing row version", () => {
+    const source = readRepoFile("server/services/quickbooksCredentialManager.ts");
+    expect(source).toContain("const refreshing = await this.loadCredentials(orgId)");
+    expect(source).toContain("this.markDegraded(orgId, refreshing");
+    expect(source).toContain("this.markNeedsReauth(orgId, refreshing");
   });
 });

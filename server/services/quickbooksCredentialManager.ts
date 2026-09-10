@@ -387,6 +387,26 @@ function qbAuthMetadata(connection: OAuthConnection | null): Record<string, any>
   return meta.qbAuth && typeof meta.qbAuth === "object" ? { ...meta.qbAuth } : {};
 }
 
+const INTUIT_SDK_LOCAL_REFRESH_VALIDATION_MESSAGE = "the refresh token is invalid, please authorize again";
+
+/**
+ * Older code rebuilt the SDK token with no refresh-expiry metadata and called
+ * `refresh()`. intuit-oauth then produced this exact local validation error
+ * without an HTTP response. Such a latch does not prove that Intuit revoked the
+ * grant, so one explicit refreshUsingToken attempt is safe and recoverable.
+ */
+export function isRecoverableQuickBooksSdkRefreshValidationLatch(connection: OAuthConnection | null): boolean {
+  const auth = qbAuthMetadata(connection);
+  if (auth.state !== "needs_reauth") return false;
+  const credential = qbCredentialMetadata(connection);
+  if (credential.lastErrorHttpStatus != null) return false;
+  const text = [auth.message, credential.lastErrorMessage, credential.lastOAuthErrorDescription]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return text.includes(INTUIT_SDK_LOCAL_REFRESH_VALIDATION_MESSAGE);
+}
+
 function qbConnectionMetadata(connection: OAuthConnection | null): Record<string, any> {
   const meta = metadataOf(connection);
   return meta.qbConnection && typeof meta.qbConnection === "object" ? { ...meta.qbConnection } : {};
@@ -455,8 +475,11 @@ function statusFromConnection(connection: OAuthConnection | null, decrypted: Qui
 
   const credential = qbCredentialMetadata(connection);
   const auth = qbAuthMetadata(connection);
-  const state = auth.state === "needs_reauth"
+  const recoverableSdkLatch = isRecoverableQuickBooksSdkRefreshValidationLatch(connection);
+  const state = auth.state === "needs_reauth" && !recoverableSdkLatch
     ? "needs_reauth"
+    : recoverableSdkLatch
+      ? "degraded"
     : credential.state === "refreshing"
       ? "refreshing"
       : credential.state === "degraded"
@@ -627,7 +650,7 @@ export class QuickBooksCredentialManager {
       accessTokenExpired,
       refreshAttempted: false,
     });
-    if (qbAuthMetadata(connection).state === "needs_reauth") {
+    if (qbAuthMetadata(connection).state === "needs_reauth" && !isRecoverableQuickBooksSdkRefreshValidationLatch(connection)) {
       credentialLog("warn", "getValidAccessToken.needs_reauth_latched", {
         organizationId: orgId,
         connectionId: connection.id,
@@ -709,7 +732,7 @@ export class QuickBooksCredentialManager {
         });
         return latest;
       }
-      if (qbAuthMetadata(latest).state === "needs_reauth") {
+      if (qbAuthMetadata(latest).state === "needs_reauth" && !isRecoverableQuickBooksSdkRefreshValidationLatch(latest)) {
         credentialLog("warn", "refreshCredentials.needs_reauth_latched", {
           organizationId: orgId,
           connectionId: latest.id,
@@ -729,6 +752,17 @@ export class QuickBooksCredentialManager {
       }
 
       await this.markRefreshing(orgId, latest);
+      // markRefreshing advances updatedAt. Reload that exact state so all
+      // subsequent success/failure writes use the current credential snapshot.
+      const refreshing = await this.loadCredentials(orgId);
+      if (!refreshing || refreshing.id !== latest.id) {
+        throw new QuickBooksCredentialManagerError("QuickBooks credentials changed while refresh was starting.", {
+          category: "credential_manager_failure",
+          stage: "mark_refreshing",
+          organizationId: orgId,
+          connectionId: latest.id,
+        });
+      }
 
       let token: QuickBooksTokenRefreshResponse;
       try {
@@ -740,7 +774,7 @@ export class QuickBooksCredentialManager {
           accessTokenExpired,
           refreshAttempted: true,
         });
-        token = await input.refreshWithIntuit(latest.refreshToken);
+        token = await input.refreshWithIntuit(refreshing.refreshToken);
       } catch (error) {
         const category = classifyQuickBooksCredentialError(error);
         const diagnostic = extractQuickBooksOAuthDiagnostic(error);
@@ -758,9 +792,9 @@ export class QuickBooksCredentialManager {
           finalCredentialState: category === "invalid_grant" ? "needs_reauth" : "degraded",
         });
         if (category === "invalid_grant") {
-          await this.markNeedsReauth(orgId, latest, error);
+          await this.markNeedsReauth(orgId, refreshing, error);
         } else {
-          await this.markDegraded(orgId, latest, category, error, "intuit_refresh");
+          await this.markDegraded(orgId, refreshing, category, error, "intuit_refresh");
         }
         throw new QuickBooksCredentialManagerError("OAuth refresh failed.", {
           category,
@@ -794,20 +828,20 @@ export class QuickBooksCredentialManager {
           connectionId: latest.id,
           diagnostic,
         });
-        await this.markDegraded(orgId, latest, "refresh_response_error", error, "intuit_refresh_response");
+        await this.markDegraded(orgId, refreshing, "refresh_response_error", error, "intuit_refresh_response");
         throw error;
       }
 
-      const refreshToken = mergeQuickBooksRefreshToken(latest.refreshToken, token);
-      const refreshTokenRotated = String(token.refresh_token ?? "").trim().length > 0 && refreshToken !== latest.refreshToken;
+      const refreshToken = mergeQuickBooksRefreshToken(refreshing.refreshToken, token);
+      const refreshTokenRotated = String(token.refresh_token ?? "").trim().length > 0 && refreshToken !== refreshing.refreshToken;
       const refreshTokenPreserved = String(token.refresh_token ?? "").trim().length === 0;
       const expiry = resolveQuickBooksTokenExpiryMetadata(token);
-      const existingCredential = qbCredentialMetadata(latest);
+      const existingCredential = qbCredentialMetadata(refreshing);
 
       try {
         await this.persistCredentials({
           organizationId: orgId,
-          connection: latest,
+          connection: refreshing,
           accessToken,
           refreshToken,
           expiresAt: expiry.accessExpiresAt,
@@ -847,7 +881,10 @@ export class QuickBooksCredentialManager {
         // Intuit may already have invalidated the previous refresh token. Do
         // not advertise automatic recovery when its replacement could not be
         // durably stored; a reconnect is the only safe recovery path.
-        await this.markNeedsReauth(orgId, latest, error, "persistence_failure");
+        const current = await this.loadCredentials(orgId);
+        if (current && current.id === refreshing.id) {
+          await this.markNeedsReauth(orgId, current, error, "persistence_failure");
+        }
         throw new QuickBooksCredentialManagerError("QuickBooks refreshed credentials could not be persisted.", {
           category: "persistence_failure",
           stage: "persist_refreshed_credentials",
@@ -951,9 +988,16 @@ export class QuickBooksCredentialManager {
   }
 
   private async markRefreshing(organizationId: string, connection: OAuthConnection): Promise<void> {
+    const refreshingMetadata = buildMetadata(connection, { state: "refreshing", refreshingAt: new Date().toISOString() });
+    if (isRecoverableQuickBooksSdkRefreshValidationLatch(connection)) {
+      // Remove only the known SDK-local false latch before the real provider
+      // attempt. A transient Intuit failure must remain degraded/retryable,
+      // while a real invalid_grant below will write a new needs_reauth latch.
+      delete (refreshingMetadata as any).qbAuth;
+    }
     await db.update(oauthConnections)
       .set({
-        metadata: buildMetadata(connection, { state: "refreshing", refreshingAt: new Date().toISOString() }) as any,
+        metadata: refreshingMetadata as any,
         updatedAt: new Date(),
       })
       .where(and(
