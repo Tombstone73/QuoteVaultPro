@@ -6,6 +6,12 @@ import ProductImportExport from "./ProductImportExport";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const toast = jest.fn();
+const validImportDocument = {
+  schemaVersion: "products-export/v2",
+  exportedAt: "2026-09-11T00:00:00.000Z",
+  orgId: "source-org",
+  products: [{ name: "Styrene", description: "Rigid styrene signs" }],
+};
 const fetchMock = jest.fn(async (url: string) => ({
   ok: true,
   json: async () => String(url).includes("dryRun=1")
@@ -20,7 +26,9 @@ jest.mock("@tanstack/react-query", () => ({
   useMutation: (config: any) => ({
     isPending: false,
     mutate: () => {
-      void config.mutationFn().then((result: unknown) => config.onSuccess?.(result));
+      void config.mutationFn()
+        .then((result: unknown) => config.onSuccess?.(result))
+        .catch((error: unknown) => config.onError?.(error));
     },
   }),
 }));
@@ -68,7 +76,7 @@ describe("ProductImportExport file picker", () => {
 
     const selectedFile = {
       name: "styrene-product.json",
-      text: async () => JSON.stringify({ schemaVersion: "products-export/v2", products: [{ name: "Styrene" }] }),
+      text: async () => JSON.stringify(validImportDocument),
     } as File;
     Object.defineProperty(input, "files", { configurable: true, value: [selectedFile] });
     await act(async () => {
@@ -99,6 +107,30 @@ describe("ProductImportExport file picker", () => {
       "/api/admin/products/import?dryRun=0",
       expect.objectContaining({ method: "POST" }),
     );
+
+    act(() => root.unmount());
+  });
+
+  test("rejects a malformed export envelope before Preview and reports the missing fields", async () => {
+    const { container, root } = renderPage();
+    const input = container.querySelector('[data-testid="product-import-file-input"]') as HTMLInputElement;
+    const malformedFile = {
+      name: "incomplete-styrene.json",
+      text: async () => JSON.stringify({ schemaVersion: "products-export/v2", products: [{ name: "Styrene" }] }),
+    } as File;
+    Object.defineProperty(input, "files", { configurable: true, value: [malformedFile] });
+
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("No file chosen");
+    expect(container.textContent).not.toContain("Preview Selected");
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Invalid file",
+      description: expect.stringContaining("exportedAt"),
+    }));
 
     act(() => root.unmount());
   });

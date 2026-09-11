@@ -3,6 +3,7 @@ import {
   productsExportV2Schema, 
   productExportV2ItemSchema,
   productImportV2RequestSchema,
+  productImportV2ApiRequestSchema,
   importPlanSchema,
   importResultSchema,
   summarizeProductExportItem,
@@ -150,6 +151,33 @@ describe('Product Import/Export Schemas (v2)', () => {
       
       const result = productImportV2RequestSchema.safeParse(invalidRequest);
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('productImportV2ApiRequestSchema', () => {
+    test('accepts the exporter document plus a typed upsert mode', () => {
+      const result = productImportV2ApiRequestSchema.safeParse({
+        schemaVersion: 'products-export/v2',
+        exportedAt: '2024-01-01T00:00:00.000Z',
+        orgId: 'org_test',
+        products: [],
+        mode: 'upsertBySlug',
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    test('rejects unsupported import modes without changing the document contract', () => {
+      const result = productImportV2ApiRequestSchema.safeParse({
+        schemaVersion: 'products-export/v2',
+        exportedAt: '2024-01-01T00:00:00.000Z',
+        orgId: 'org_test',
+        products: [],
+        mode: 'updateEverything',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues[0]?.path).toEqual(['mode']);
     });
   });
   

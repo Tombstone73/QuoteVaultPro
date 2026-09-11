@@ -674,21 +674,24 @@ export function registerProductRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
-      const mode = (req.body.mode || "upsertBySlug") as any;
+      const defaultMode = "upsertBySlug" as const;
 
-      const { productImportV2RequestSchema } = await import("@shared/importExportSchemas");
+      const { productImportV2ApiRequestSchema } = await import("@shared/importExportSchemas");
       const { buildImportPlan, applyImport } = await import("../services/pbv2ImportMapper");
 
       // Validate request body
-      const validation = productImportV2RequestSchema.safeParse(req.body);
+      const validation = productImportV2ApiRequestSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({
           error: "Invalid import request",
-          details: validation.error.errors,
+          details: validation.error.issues.map((issue) => ({
+            field: issue.path.join(".") || "request",
+            message: issue.message,
+          })),
         });
       }
 
-      const importRequest = validation.data;
+      const { mode: validatedMode, ...importRequest } = validation.data;
 
       if (!userId) {
         return res.status(403).json({ error: "User ID required" });
@@ -698,7 +701,7 @@ export function registerProductRoutes(
         db,
         organizationId,
         userId,
-        mode,
+        mode: validatedMode ?? defaultMode,
       };
 
       if (dryRun) {

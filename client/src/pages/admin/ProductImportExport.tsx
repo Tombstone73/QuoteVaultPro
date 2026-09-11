@@ -10,7 +10,14 @@ import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { summarizeProductExportItem, type ProductExportV2Item } from "@shared/importExportSchemas";
+import {
+  importModeSchema,
+  productImportV2RequestSchema,
+  summarizeProductExportItem,
+  type ImportMode,
+  type ProductExportV2Item,
+  type ProductImportV2Request,
+} from "@shared/importExportSchemas";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -118,31 +125,37 @@ async function exportProducts(productIds: string[]) {
   return await res.json();
 }
 
-async function runDryRun(payload: any, mode: string) {
+type ImportValidationDetail = { field?: string; message?: string };
+
+async function importError(res: Response, fallback: string): Promise<Error> {
+  const body: { error?: string; details?: ImportValidationDetail[] } | null = await res.json().catch(() => null);
+  const details = Array.isArray(body?.details)
+    ? body.details
+      .map((detail) => `${detail.field || "request"}: ${detail.message || "Invalid value"}`)
+      .join("; ")
+    : "";
+  return new Error([body?.error || fallback, details].filter(Boolean).join(" — "));
+}
+
+async function runDryRun(payload: ProductImportV2Request, mode: ImportMode) {
   const res = await fetch(`/api/admin/products/import?dryRun=1`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, mode }),
     credentials: "include",
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || "Dry run failed");
-  }
+  if (!res.ok) throw await importError(res, "Dry run failed");
   return (await res.json()) as ImportPlan;
 }
 
-async function applyImport(payload: any, mode: string) {
+async function applyImport(payload: ProductImportV2Request, mode: ImportMode) {
   const res = await fetch(`/api/admin/products/import?dryRun=0`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, mode }),
     credentials: "include",
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || "Import failed");
-  }
+  if (!res.ok) throw await importError(res, "Import failed");
   return (await res.json()) as ImportResult;
 }
 
@@ -152,10 +165,10 @@ export default function ProductImportExport() {
   const { toast } = useToast();
   const importFileInputRef = useRef<HTMLInputElement>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
-  const [importPayload, setImportPayload] = useState<any | null>(null);
+  const [importPayload, setImportPayload] = useState<ProductImportV2Request | null>(null);
   const [dryRunResult, setDryRunResult] = useState<ImportPlan | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [importMode, setImportMode] = useState<"upsertBySlug" | "requireExplicitConflictResolution">("upsertBySlug");
+  const [importMode, setImportMode] = useState<ImportMode>("upsertBySlug");
   const [selectedExportProductIds, setSelectedExportProductIds] = useState<Set<string>>(new Set());
   const [selectedImportProductIndexes, setSelectedImportProductIndexes] = useState<Set<number>>(new Set());
 
@@ -174,7 +187,7 @@ export default function ProductImportExport() {
 
   const selectedImportCount = selectedImportProductIndexes.size;
 
-  const getSelectedImportPayload = () => {
+  const getSelectedImportPayload = (): ProductImportV2Request | null => {
     if (!importPayload) return null;
     return {
       ...importPayload,
@@ -201,10 +214,10 @@ export default function ProductImportExport() {
         description: `Exported ${data.products.length} products`,
       });
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       toast({
         title: "Export failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : "Export failed",
         variant: "destructive",
       });
     },
@@ -228,10 +241,10 @@ export default function ProductImportExport() {
         });
       }
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       toast({
         title: "Dry run failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : "Dry run failed",
         variant: "destructive",
       });
     },
@@ -260,10 +273,10 @@ export default function ProductImportExport() {
         });
       }
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       toast({
         title: "Import failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : "Import failed",
         variant: "destructive",
       });
     },
@@ -275,17 +288,24 @@ export default function ProductImportExport() {
 
     try {
       const text = await file.text();
-      const json = JSON.parse(text);
-      const productCount = Array.isArray(json?.products) ? json.products.length : 0;
+      const json: unknown = JSON.parse(text);
+      const parsed = productImportV2RequestSchema.safeParse(json);
+      if (!parsed.success) {
+        const issues = parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`)
+          .join("; ");
+        throw new Error(issues || "File does not match the products-export/v2 import format");
+      }
+      const productCount = parsed.data.products.length;
       setImportFile(file);
-      setImportPayload(json);
+      setImportPayload(parsed.data);
       setSelectedImportProductIndexes(new Set(Array.from({ length: productCount }, (_, index) => index)));
       setDryRunResult(null);
       setImportResult(null);
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast({
         title: "Invalid file",
-        description: "File must be valid JSON",
+        description: error instanceof Error ? error.message : "File must be valid JSON",
         variant: "destructive",
       });
     }
@@ -469,9 +489,12 @@ export default function ProductImportExport() {
               <label className="text-sm font-medium">Import Mode</label>
               <Select
                 value={importMode}
-                onValueChange={(v) => {
-                  setImportMode(v as any);
-                  setDryRunResult(null);
+                onValueChange={(value) => {
+                  const parsed = importModeSchema.safeParse(value);
+                  if (parsed.success) {
+                    setImportMode(parsed.data);
+                    setDryRunResult(null);
+                  }
                 }}
               >
                 <SelectTrigger className="w-full">

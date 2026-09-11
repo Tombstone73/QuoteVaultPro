@@ -258,6 +258,14 @@ export const importModeSchema = z.enum([
 
 export type ImportMode = z.infer<typeof importModeSchema>;
 
+/** HTTP-only envelope. The persisted import document remains byte-for-byte
+ * compatible with the exporter; mode controls how the destination applies it. */
+export const productImportV2ApiRequestSchema = productImportV2RequestSchema.extend({
+  mode: importModeSchema.optional(),
+});
+
+export type ProductImportV2ApiRequest = z.infer<typeof productImportV2ApiRequestSchema>;
+
 export interface ProductImportExportSummary {
   hasPbv2: boolean;
   hasActiveTree: boolean;
