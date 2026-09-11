@@ -29,6 +29,7 @@ export type SalesLine = Readonly<{
   position: number;
   productId: string;
   description: string;
+  operationalNote?: string;
   quantity: number;
   resolvedConfiguration: Readonly<Record<string, unknown>>;
   calculatedUnitAmount: { cents: number; currency: string };

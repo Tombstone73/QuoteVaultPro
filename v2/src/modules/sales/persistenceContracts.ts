@@ -70,6 +70,7 @@ export type SalesLinePersistenceEnvelope = Readonly<{
   productId: string;
   productTypeId?: string;
   description: string;
+  operationalNote?: string;
   quantity: number;
   currency: CurrencyCode;
   calculatedUnitAmount: Money;
@@ -94,6 +95,7 @@ export const toSalesLinePersistenceEnvelope = (line: SalesLineSnapshot): SalesLi
     productId: line.productId,
     productTypeId: line.productTypeId,
     description: line.description,
+    operationalNote: line.operationalNote,
     quantity: line.quantity,
     currency: line.pricingResult.currency,
     calculatedUnitAmount: line.pricingResult.calculatedUnitAmount,

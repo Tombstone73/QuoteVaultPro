@@ -774,6 +774,7 @@ export const OrderWorkspace = (
                 },
               ])
             }
+            onSaveNote={(note) => change([{ kind: "update_note", lineId: selectedLine.lineId, ...(note.trim() ? { note } : {}) }])}
             onDuplicate={() =>
               change([{ kind: "duplicate", sourceLineId: selectedLine.lineId }])
             }
@@ -1285,6 +1286,13 @@ export const OrderLineDescriptionEditor = ({
   </label>;
 };
 
+/** Staff-only production/sales context: never included in price or tax inputs. */
+export const OrderLineOperationalNoteEditor = ({ note: persistedNote, editable, busy, csrfReady, onSave }: Readonly<{ note: string; editable: boolean; busy: boolean; csrfReady: boolean; onSave: (note: string) => void }>) => {
+  const [note, setNote] = useState(persistedNote);
+  useEffect(() => setNote(persistedNote), [persistedNote]);
+  return <label className="field"><span>Operational line note</span><textarea aria-label="Operational line note" value={note} maxLength={4000} disabled={!editable || busy} onChange={(event) => setNote(event.target.value)} />{editable && <button className="button secondary" type="button" disabled={busy || !csrfReady || note.trim() === persistedNote} onClick={() => onSave(note)}>Save line note</button>}<small>Staff-only context; this does not change pricing, tax, or customer documents.</small></label>;
+};
+
 const OrderLineEditor = ({
   line,
   route,
@@ -1301,6 +1309,7 @@ const OrderLineEditor = ({
   busy,
   onSave,
   onSaveDescription,
+  onSaveNote,
   onDuplicate,
   onMoveUp,
   onMoveDown,
@@ -1324,6 +1333,7 @@ const OrderLineEditor = ({
   busy: boolean;
   onSave: (line: QuoteLineMutationInput) => void;
   onSaveDescription: (description: string) => void;
+  onSaveNote: (note: string) => void;
   onDuplicate: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -1390,6 +1400,7 @@ const OrderLineEditor = ({
           </div>
         </dl>
         <OrderLineDescriptionEditor description={line.description} editable={editable} busy={busy} csrfReady={csrfReady} onSave={onSaveDescription} />
+        <OrderLineOperationalNoteEditor note={line.operationalNote ?? ""} editable={editable} busy={busy} csrfReady={csrfReady} onSave={onSaveNote} />
         {editable && (
           <>
             {!canOverridePrice && (

@@ -112,6 +112,7 @@ export type UpdateOrderInput = Readonly<{
     | Readonly<{ kind: "update"; lineId: SalesLineId; line: OrderLineInput }>
     /** A Sales-owned presentation edit. It must not re-resolve or reprice a frozen line. */
     | Readonly<{ kind: "update_description"; lineId: SalesLineId; description: string }>
+    | Readonly<{ kind: "update_note"; lineId: SalesLineId; note?: string }>
     | Readonly<{ kind: "remove"; lineId: SalesLineId }>
     | Readonly<{ kind: "duplicate"; sourceLineId: SalesLineId }>
     | Readonly<{ kind: "reorder"; lineIds: readonly SalesLineId[] }>
@@ -264,6 +265,7 @@ export interface OrderTransaction {
   }>): Promise<boolean>;
   removeLinesNotIn(organizationId: OrganizationId, orderId: OrderId, retainedLineIds: readonly SalesLineId[]): Promise<void>;
   hasRoute(organizationId: OrganizationId, orderId: OrderId, lineId: SalesLineId): Promise<boolean>;
+  hasFulfillmentHandoff(organizationId: OrganizationId, orderId: OrderId): Promise<boolean>;
   /** Downstream owners remain independent. Sales consumes only these facts to
    * decide whether cancellation would create an impossible state. */
   cancellationBlockers(organizationId: OrganizationId, orderId: OrderId): Promise<readonly string[]>;
@@ -646,6 +648,8 @@ export class OrderApplicationService {
       const requestedDueDate = patch.requestedDueDate === null ? undefined : (patch.requestedDueDate ?? current.order.requestedDueDate);
       const terms = patch.terms ?? current.order.terms;
       const requestedFulfillment = patch.requestedFulfillment === null ? undefined : validateFulfillment(patch.requestedFulfillment ?? current.order.requestedFulfillment);
+      if (canonicalJson(requestedFulfillment ?? {}) !== canonicalJson(current.order.requestedFulfillment ?? {}) && await tx.hasFulfillmentHandoff(brandedId<"OrganizationId">(context.organizationId), input.orderId))
+        throw new V2ApplicationError("CONFLICT", "Requested fulfillment is frozen after a handoff. Use the Fulfillment recovery workflow.");
       const sellingAdjustment = patch.sellingAdjustment === null ? undefined : validateAdjustment(patch.sellingAdjustment ?? current.order.sellingAdjustment);
       const commercialCharge = patch.commercialCharge === null ? undefined : validateCommercialCharge(patch.commercialCharge ?? current.order.commercialCharge);
       const lines = await this.applyLineChanges(tx, context, current, input.lineChanges ?? []);
@@ -936,8 +940,8 @@ export class OrderApplicationService {
         const index = lines.findIndex((line) => line.lineId === change.sourceLineId);
         if (index < 0) throw new V2ApplicationError("NOT_FOUND", "Order line was not found in this Order.");
         const source = lines[index]!;
-        if (source.sellingPriceDecision.kind !== "calculated") requireAllowed(this.authority, context, "order.overridePrice");
-        lines.splice(index + 1, 0, Object.freeze({ ...source, lineId: brandedId<"SalesLineId">(randomUUID()) }));
+        const duplicate = (await this.buildLines(tx, context, current.order.customerContact, [{ productId: source.productId, description: source.description, quantity: source.quantity, selections: source.resolvedConfiguration.selections, ...(source.resolvedConfiguration.dimensions ? { dimensions: source.resolvedConfiguration.dimensions } : {}) }]))[0]!;
+        lines.splice(index + 1, 0, Object.freeze({ ...duplicate, ...(source.operationalNote ? { operationalNote: source.operationalNote } : {}) }));
         continue;
       }
       if (change.kind === "add") {
@@ -962,6 +966,13 @@ export class OrderApplicationService {
         // the Product identity, configuration, quantities, and all pricing
         // evidence. Billing synchronization below remains the financial lock.
         lines[index] = { ...prior, description };
+        continue;
+      }
+      if (change.kind === "update_note") {
+        const note = change.note?.trim();
+        if (note && note.length > 4000) throw new V2ApplicationError("VALIDATION_ERROR", "Order line note is too long.");
+        lines[index] = { ...prior, ...(note ? { operationalNote: note } : {}) };
+        if (!note) delete (lines[index] as { operationalNote?: string }).operationalNote;
         continue;
       }
       const intended: OrderLineInput = {
@@ -1007,12 +1018,15 @@ export class OrderApplicationService {
       else {
         if (prior.quantity !== line.quantity) changes.push({ group: "line", kind: "quantity_changed", resourceId: line.lineId, summary: "Order line quantity changed." });
         if (prior.description !== line.description) changes.push({ group: "line", kind: "description_changed", resourceId: line.lineId, summary: "Order line description updated." });
+        if (prior.operationalNote !== line.operationalNote) changes.push({ group: "notes", kind: "line_note_changed", resourceId: line.lineId, summary: "Order line operational note updated." });
         if (canonicalJson(prior.resolvedConfiguration) !== canonicalJson(line.resolvedConfiguration)) changes.push({ group: "line", kind: "configuration_changed", resourceId: line.lineId, summary: "Order line configuration changed." });
         if (canonicalJson(prior.sellingPriceDecision) !== canonicalJson(line.sellingPriceDecision)) changes.push({ group: "price", kind: "selling_price_changed", resourceId: line.lineId, summary: "Order line selling price changed." });
       }
     }
     for (const line of before) if (!after.some((candidate) => candidate.lineId === line.lineId))
       changes.push({ group: "line", kind: "line_removed", resourceId: line.lineId, summary: "Order line removed." });
+    if (before.length === after.length && before.map((line) => line.lineId).join(",") !== after.map((line) => line.lineId).join(","))
+      changes.push({ group: "line", kind: "line_reordered", summary: "Order line presentation sequence updated." });
     return changes;
   }
 

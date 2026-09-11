@@ -36,7 +36,7 @@ type HeaderRow = Readonly<{
   commercial_charge: unknown; tax_composition: unknown;
 }>;
 type LineRow = Readonly<{
-  id: string; product_id: string; product_type_id: string | null; description: string; quantity: number;
+  id: string; product_id: string; product_type_id: string | null; description: string; operational_note: string | null; quantity: number;
   calculated_line_cents: string; selling_line_cents: string; resolved_configuration: unknown;
   pricing_result: unknown; selling_price_decision: unknown; taxability_snapshot: unknown;
 }>;
@@ -152,12 +152,12 @@ export class PostgresOrderTransaction implements OrderTransaction {
       [organizationId, orderId],
     );
     const row = header.rows[0]; if (!row) return null;
-    const lineRows = await this.client.query<LineRow>("SELECT id,product_id,product_type_id,description,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId,orderId]);
+    const lineRows = await this.client.query<LineRow>("SELECT id,product_id,product_type_id,description,operational_note,quantity,calculated_line_cents,selling_line_cents,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position", [organizationId,orderId]);
     const terms = asObject<{termsCode?: string}>(row.terms_json);
     const lines: SalesLineSnapshot[] = lineRows.rows.map((line) => ({
       lineId: brandedId<"SalesLineId">(line.id), productId: brandedId<"ProductId">(line.product_id),
       ...(line.product_type_id ? { productTypeId: brandedId<"ProductTypeId">(line.product_type_id) } : {}),
-      description: line.description, quantity: line.quantity,
+      description: line.description, ...(line.operational_note ? { operationalNote: line.operational_note } : {}), quantity: line.quantity,
       resolvedConfiguration: asObject<SalesLineSnapshot["resolvedConfiguration"]>(line.resolved_configuration),
       pricingResult: asObject<SalesLineSnapshot["pricingResult"]>(line.pricing_result),
       sellingPriceDecision: asObject<SalesLineSnapshot["sellingPriceDecision"]>(line.selling_price_decision),
@@ -230,6 +230,10 @@ export class PostgresOrderTransaction implements OrderTransaction {
   async hasRoute(organizationId: OrganizationId, orderId: OrderId, lineId: SalesLineId): Promise<boolean> {
     const route = await this.routing.readRouteForWork(organizationId, brandedId<"OrderLineId">(lineId));
     return route?.work.orderId === orderId;
+  }
+  async hasFulfillmentHandoff(organizationId: OrganizationId, orderId: OrderId): Promise<boolean> {
+    const result = await this.client.query<{ exists: boolean }>("SELECT EXISTS(SELECT 1 FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2) AS exists", [organizationId, orderId]);
+    return result.rows[0]?.exists === true;
   }
   async cancellationBlockers(organizationId: OrganizationId, orderId: OrderId): Promise<readonly string[]> {
     const checks: readonly [string, string][] = [
@@ -319,8 +323,8 @@ export class PostgresOrderTransaction implements OrderTransaction {
     for (const [position,line] of lines.entries()) {
       const e = toSalesLinePersistenceEnvelope(line);
       await this.client.query(
-        "INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,taxability_snapshot=EXCLUDED.taxability_snapshot,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id",
-        [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision,JSON.stringify(e.taxability)],
+        "INSERT INTO v2_sales_document_lines(id,organization_id,document_id,position,product_id,product_type_id,description,operational_note,quantity,currency,calculated_unit_cents,calculated_line_cents,selling_unit_cents,selling_line_cents,pricing_result_id,pricing_evidence_fingerprint,resolved_configuration,pricing_result,selling_price_decision,taxability_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb) ON CONFLICT(id) DO UPDATE SET position=EXCLUDED.position,product_id=EXCLUDED.product_id,product_type_id=EXCLUDED.product_type_id,description=EXCLUDED.description,operational_note=EXCLUDED.operational_note,quantity=EXCLUDED.quantity,currency=EXCLUDED.currency,calculated_unit_cents=EXCLUDED.calculated_unit_cents,calculated_line_cents=EXCLUDED.calculated_line_cents,selling_unit_cents=EXCLUDED.selling_unit_cents,selling_line_cents=EXCLUDED.selling_line_cents,pricing_result_id=EXCLUDED.pricing_result_id,pricing_evidence_fingerprint=EXCLUDED.pricing_evidence_fingerprint,resolved_configuration=EXCLUDED.resolved_configuration,pricing_result=EXCLUDED.pricing_result,selling_price_decision=EXCLUDED.selling_price_decision,taxability_snapshot=EXCLUDED.taxability_snapshot,updated_at=now() WHERE v2_sales_document_lines.organization_id=EXCLUDED.organization_id AND v2_sales_document_lines.document_id=EXCLUDED.document_id",
+        [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.operationalNote ?? null,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision,JSON.stringify(e.taxability)],
       );
       await synchronizeProductionRequirements(this.client, organizationId, orderId, line);
       // A ProductionWork is durable attempt history, but its target remains a

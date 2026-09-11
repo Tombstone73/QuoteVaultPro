@@ -21,6 +21,19 @@ are deliberately not exposed. Internal account context uses a staff-only,
 append-only `customer_notes` entry path; notes are not returned by Portal,
 documents, or delivery DTOs.
 
+## M7.8E Orders sales-desk closure
+
+V2 Orders now carry a tenant-scoped, staff-only operational note per line. The
+note is distinct from description, pricing, tax, and customer documents. A
+duplicate line creates a new identity and re-resolves the current Product
+configuration and canonical price; it does not clone price evidence or artwork.
+Exact-set line reordering persists only presentation/document sequence and is
+audited without changing line identity, configuration, pricing, Production, or
+Fulfillment allocations. The existing Pickup/Shipping/Local delivery request,
+destination snapshot, and instructions remain Sales-owned and project to
+Fulfillment. Once an immutable handoff exists, request changes fail closed and
+must use the Fulfillment recovery path.
+
 ## Result
 
 **PASS WITH FINDINGS — source/contract parity closure.** The confirmed P0

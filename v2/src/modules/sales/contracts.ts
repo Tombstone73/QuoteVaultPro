@@ -48,6 +48,8 @@ export type SalesLineInput = Readonly<{
 
 export type SalesLineSnapshot = Readonly<SalesLineInput & {
   lineId: SalesLineId;
+  /** Staff-only operational context. It never participates in pricing or tax. */
+  operationalNote?: string;
   calculatedLineAmount: Money;
   sellingLineAmount: Money;
   /** Frozen at commercial-line creation from the current Product. */
@@ -164,7 +166,7 @@ export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{
   group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment" | "lifecycle";
-  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_auto_reopened" | "order_archived" | "order_unarchived";
+  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "line_note_changed" | "line_reordered" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_auto_reopened" | "order_archived" | "order_unarchived";
   resourceId?: SalesLineId | CustomerId | ContactId;
   summary: string;
 }>;
