@@ -34,9 +34,17 @@ destination snapshot, and instructions remain Sales-owned and project to
 Fulfillment. Once an immutable handoff exists, request changes fail closed and
 must use the Fulfillment recovery path.
 
+Dedicated DEV QA validation now proves that boundary end-to-end: a new
+fulfillment-only QA Order accepted a pre-handoff Pickup-to-Shipping update,
+recorded one canonical provider-free shipment handoff for its one available
+unit, then rejected a Local Delivery/destination/instruction replacement with
+the server's `409 CONFLICT` response. The handoff count remained one and the
+Shipping request snapshot remained unchanged after the rejected command.
+
 ## Result
 
-**PASS WITH FINDINGS — source/contract parity closure.** The confirmed P0
+**PASS WITH FINDINGS — source/contract parity closure; M7.8E is IMPLEMENTED +
+DEV VALIDATED.** The confirmed P0
 operator reachability blockers are closed through canonical V2 authority. This
 does **not** change the overall production cutover disposition: the P1 provider,
 runtime, and owner-decision items remain open.
