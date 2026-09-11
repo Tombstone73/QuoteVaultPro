@@ -12,7 +12,7 @@ export type SetPrimaryContactInput = Readonly<{ businessRequestId: string; expec
 export type SetBillingContactInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; contactId: string; billing: boolean }>;
 export type AddCustomerInternalNoteInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; note: string }>;
 
-type CustomerRow = Readonly<{ id: string; crm_revision: string }>;
+type CustomerRow = Readonly<{ id: string; crm_revision: string; payment_terms: string; credit_limit: string | null; credit_limit_configured_at: Date | null; is_tax_exempt: boolean; tax_exempt_reason: string | null; tax_exempt_certificate_ref: string | null }>;
 type ContactRow = Readonly<{ id: string; status: "active" | "archived"; crm_revision: string }>;
 const revision = (row: Readonly<{ crm_revision: string }>) => row.crm_revision;
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -50,7 +50,7 @@ export class PostgresCustomerContactAdministration {
           shipping.street1 ?? null, shipping.street2 ?? null, shipping.city ?? null, shipping.state ?? null, shipping.postalCode ?? null, shipping.country ?? null,
           input.paymentTerms ?? null, input.creditLimitCents !== undefined, input.creditLimitCents ?? null, input.taxExempt ?? null, input.taxExemptReason ?? null, input.taxExemptCertificateRef ?? null],
       );
-      return { eventType: "customer_master_updated", changes: { before: { revision: input.expectedRevision }, after: { companyName: input.companyName } } };
+      return { eventType: "customer_master_updated", changes: { before: { revision: input.expectedRevision, paymentTerms: customer.payment_terms, creditLimit: customer.credit_limit_configured_at ? customer.credit_limit : null, taxExempt: customer.is_tax_exempt, taxExemptReason: customer.tax_exempt_reason, taxExemptCertificateRef: customer.tax_exempt_certificate_ref }, after: { companyName: input.companyName, paymentTerms: input.paymentTerms ?? customer.payment_terms, creditLimitCents: input.creditLimitCents === undefined ? undefined : input.creditLimitCents, taxExempt: input.taxExempt ?? customer.is_tax_exempt, taxExemptReason: input.taxExempt === undefined ? customer.tax_exempt_reason : input.taxExemptReason, taxExemptCertificateRef: input.taxExempt === undefined ? customer.tax_exempt_certificate_ref : input.taxExemptCertificateRef } } };
     });
   }
 
@@ -182,7 +182,7 @@ export class PostgresCustomerContactAdministration {
   }
 
   private async customer(client: PoolClient, organizationId: string, customerId: string): Promise<CustomerRow> {
-    const result = await client.query<CustomerRow>("SELECT id,crm_revision::text FROM customers WHERE organization_id=$1 AND id=$2 AND is_active IS NOT FALSE AND COALESCE(status,'active') NOT IN ('archived','superseded','deleted') AND merged_into_customer_id IS NULL FOR UPDATE", [organizationId, customerId]);
+    const result = await client.query<CustomerRow>("SELECT id,crm_revision::text,payment_terms,credit_limit::text,credit_limit_configured_at,is_tax_exempt,tax_exempt_reason,tax_exempt_certificate_ref FROM customers WHERE organization_id=$1 AND id=$2 AND is_active IS NOT FALSE AND COALESCE(status,'active') NOT IN ('archived','superseded','deleted') AND merged_into_customer_id IS NULL FOR UPDATE", [organizationId, customerId]);
     if (!result.rows[0]) throw new V2ApplicationError("NOT_FOUND", "Customer is unavailable in this organization.");
     return result.rows[0];
   }
