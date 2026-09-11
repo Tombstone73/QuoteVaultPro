@@ -5,10 +5,12 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 
 export type CustomerAddressInput = Readonly<{ street1?: string; street2?: string; city?: string; state?: string; postalCode?: string; country?: string }>;
-export type UpdateCustomerInput = Readonly<{ businessRequestId: string; expectedRevision: string; companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerAddressInput; shippingAddress?: CustomerAddressInput }>;
+export type UpdateCustomerInput = Readonly<{ businessRequestId: string; expectedRevision: string; companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerAddressInput; shippingAddress?: CustomerAddressInput; paymentTerms?: "due_on_receipt" | "net_15" | "net_30" | "net_45" | "custom"; creditLimitCents?: number | null; taxExempt?: boolean; taxExemptReason?: string; taxExemptCertificateRef?: string }>;
 export type CreateContactInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; firstName: string; lastName: string; email?: string; phone?: string; title?: string }>;
 export type UpdateContactInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; expectedContactRevision: string; customerId: string; firstName: string; lastName: string; email?: string; phone?: string; title?: string; active: boolean }>;
 export type SetPrimaryContactInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; contactId: string }>;
+export type SetBillingContactInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; contactId: string; billing: boolean }>;
+export type AddCustomerInternalNoteInput = Readonly<{ businessRequestId: string; expectedCustomerRevision: string; customerId: string; note: string }>;
 
 type CustomerRow = Readonly<{ id: string; crm_revision: string }>;
 type ContactRow = Readonly<{ id: string; status: "active" | "archived"; crm_revision: string }>;
@@ -19,6 +21,8 @@ const operationNames = {
   createContact: "customers.contact.create.v1",
   updateContact: "customers.contact.update.v1",
   setPrimary: "customers.contact.primary.set.v1",
+  setBilling: "customers.contact.billing.set.v1",
+  addNote: "customers.account_note.add.v1",
 } as const;
 
 /** The V2 command boundary for CRM master facts.  Sales reads these identities
@@ -37,10 +41,14 @@ export class PostgresCustomerContactAdministration {
         `UPDATE customers SET company_name=$3, display_name=$4, email=$5, phone=$6,
           billing_street1=$7,billing_street2=$8,billing_city=$9,billing_state=$10,billing_postal_code=$11,billing_country=$12,
           shipping_street1=$13,shipping_street2=$14,shipping_city=$15,shipping_state=$16,shipping_postal_code=$17,shipping_country=$18,
+          payment_terms=COALESCE($19,payment_terms),credit_limit=CASE WHEN $20::boolean THEN CASE WHEN $21::bigint IS NULL THEN 0 ELSE $21::numeric/100 END ELSE credit_limit END,
+          credit_limit_configured_at=CASE WHEN $20::boolean THEN CASE WHEN $21::bigint IS NULL THEN NULL ELSE now() END ELSE credit_limit_configured_at END,
+          is_tax_exempt=COALESCE($22,is_tax_exempt),tax_exempt_reason=CASE WHEN $22::boolean IS NULL THEN tax_exempt_reason WHEN $22 THEN $23 ELSE NULL END,tax_exempt_certificate_ref=CASE WHEN $22::boolean IS NULL THEN tax_exempt_certificate_ref WHEN $22 THEN $24 ELSE NULL END,
           crm_revision=crm_revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2`,
         [organizationId, customerId, input.companyName, input.displayName ?? null, input.email ?? null, input.phone ?? null,
           billing.street1 ?? null, billing.street2 ?? null, billing.city ?? null, billing.state ?? null, billing.postalCode ?? null, billing.country ?? null,
-          shipping.street1 ?? null, shipping.street2 ?? null, shipping.city ?? null, shipping.state ?? null, shipping.postalCode ?? null, shipping.country ?? null],
+          shipping.street1 ?? null, shipping.street2 ?? null, shipping.city ?? null, shipping.state ?? null, shipping.postalCode ?? null, shipping.country ?? null,
+          input.paymentTerms ?? null, input.creditLimitCents !== undefined, input.creditLimitCents ?? null, input.taxExempt ?? null, input.taxExemptReason ?? null, input.taxExemptCertificateRef ?? null],
       );
       return { eventType: "customer_master_updated", changes: { before: { revision: input.expectedRevision }, after: { companyName: input.companyName } } };
     });
@@ -121,6 +129,35 @@ export class PostgresCustomerContactAdministration {
       await client.query("UPDATE customer_contact_links SET is_primary=true,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, target.rows[0].id]);
       await client.query("UPDATE customers SET crm_revision=crm_revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, input.customerId]);
       return { eventType: "customer_primary_contact_set", changes: { customerId: input.customerId, contactId: input.contactId } };
+    });
+  }
+
+  async setBillingContact(organizationId: string, principal: Principal, input: SetBillingContactInput): Promise<void> {
+    await this.command(organizationId, principal, operationNames.setBilling, input.businessRequestId, input, input.customerId, "customer", async (client) => {
+      const customer = await this.customer(client, organizationId, input.customerId);
+      this.assertRevision(customer, input.expectedCustomerRevision, "Customer");
+      const target = await client.query<{ id: string }>(
+        `SELECT l.id FROM customer_contact_links l JOIN customer_contacts ct ON ct.organization_id=l.organization_id AND ct.id=l.contact_id
+         WHERE l.organization_id=$1 AND l.customer_id=$2 AND l.contact_id=$3 AND l.status='active' AND ct.status='active' FOR UPDATE`,
+        [organizationId, input.customerId, input.contactId],
+      );
+      if (!target.rows[0]) throw new V2ApplicationError("NOT_FOUND", "An active Contact for this Customer is required.");
+      await client.query("UPDATE customer_contact_links SET is_billing=$3,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, target.rows[0].id, input.billing]);
+      await client.query("UPDATE customers SET crm_revision=crm_revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, input.customerId]);
+      return { eventType: input.billing ? "customer_billing_contact_enabled" : "customer_billing_contact_disabled", changes: { customerId: input.customerId, contactId: input.contactId, billing: input.billing } };
+    });
+  }
+
+  async addInternalNote(organizationId: string, principal: Principal, input: AddCustomerInternalNoteInput): Promise<string> {
+    return this.command(organizationId, principal, operationNames.addNote, input.businessRequestId, input, input.customerId, "customer", async (client) => {
+      const customer = await this.customer(client, organizationId, input.customerId);
+      this.assertRevision(customer, input.expectedCustomerRevision, "Customer");
+      const authorId = staffActorId(principal);
+      if (!authorId) throw new V2ApplicationError("FORBIDDEN", "Only a staff actor may add an internal Customer note.");
+      const noteId = randomUUID();
+      await client.query("INSERT INTO customer_notes(id,customer_id,user_id,note,is_internal,created_at,updated_at) SELECT $1,$2,$3,$4,true,now(),now() WHERE EXISTS (SELECT 1 FROM customers WHERE organization_id=$5 AND id=$2)", [noteId, input.customerId, authorId, input.note, organizationId]);
+      await client.query("UPDATE customers SET crm_revision=crm_revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, input.customerId]);
+      return { resourceId: noteId, resourceType: "customer_account_note", eventType: "customer_account_note_added", changes: { customerId: input.customerId, noteId, characterCount: input.note.length } };
     });
   }
 

@@ -8,8 +8,10 @@ export type CustomerWorkspaceRead = Readonly<{
   displayName: string;
   revision: string;
   editable: Readonly<{ companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerAddress; shippingAddress?: CustomerAddress }>;
+  commercial: Readonly<{ paymentTerms: "due_on_receipt" | "net_15" | "net_30" | "net_45" | "custom"; creditLimitCents?: number; taxExempt: boolean; taxExemptReason?: string; taxExemptCertificateRef?: string; openReceivableCents: number; availableCreditCents?: number }>;
   presentation: CustomerPresentationIdentity;
   contacts: readonly CustomerWorkspaceContact[];
+  internalNotes: readonly Readonly<{ noteId: string; note: string; createdAt: string }> [];
   contactReadiness: Readonly<{ status: "ready" | "needs_attention"; reasons: readonly ("no_contacts" | "no_active_contacts" | "no_primary_contact")[] }>;
 }>;
 export type CustomerAddress = Readonly<{ street1?: string; street2?: string; city?: string; state?: string; postalCode?: string; country?: string }>;
@@ -19,6 +21,7 @@ export type CustomerWorkspaceContact = Readonly<{
   email?: string;
   phone?: string;
   primary: boolean;
+  billing: boolean;
   title?: string;
   status: "active" | "archived";
   revision: string;
@@ -81,12 +84,13 @@ type CustomerContactRow = Readonly<{
   email: string | null;
   phone: string | null;
   is_primary: boolean | null;
+  is_billing: boolean | null;
   title: string | null;
   status: "active" | "archived";
   crm_revision: string;
   portal_access_status: string | null;
 }>;
-type CustomerDetailRow = Readonly<{ id: string; company_name: string; display_name: string | null; email: string | null; phone: string | null; crm_revision: string; billing_street1: string | null; billing_street2: string | null; billing_city: string | null; billing_state: string | null; billing_postal_code: string | null; billing_country: string | null; shipping_street1: string | null; shipping_street2: string | null; shipping_city: string | null; shipping_state: string | null; shipping_postal_code: string | null; shipping_country: string | null }>;
+type CustomerDetailRow = Readonly<{ id: string; company_name: string; display_name: string | null; email: string | null; phone: string | null; crm_revision: string; billing_street1: string | null; billing_street2: string | null; billing_city: string | null; billing_state: string | null; billing_postal_code: string | null; billing_country: string | null; shipping_street1: string | null; shipping_street2: string | null; shipping_city: string | null; shipping_state: string | null; shipping_postal_code: string | null; shipping_country: string | null; payment_terms: "due_on_receipt" | "net_15" | "net_30" | "net_45" | "custom"; credit_limit_cents: string | null; tax_exempt: boolean; tax_exempt_reason: string | null; tax_exempt_certificate_ref: string | null }>;
 type CustomerActivityRow = Readonly<{ kind: CustomerActivityKind; entity_id: string; occurred_at: Date; title: string; detail: string }>;
 type CustomerActivityCursor = Readonly<{ occurredAt: string; kind: CustomerActivityKind; entityId: string }>;
 
@@ -96,6 +100,7 @@ const contact = (row: CustomerContactRow): CustomerWorkspaceContact => ({
   ...(row.email ? { email: row.email } : {}),
   ...(row.phone ? { phone: row.phone } : {}),
   primary: row.is_primary === true,
+  billing: row.is_billing === true,
   ...(row.title ? { title: row.title } : {}),
   status: row.status,
   revision: row.crm_revision,
@@ -267,12 +272,12 @@ export class PostgresCustomerWorkspaceReader {
     const customer = await reader.getCustomer(organizationId, customerId);
     if (!customer) return null;
     const raw = await this.pool.query<CustomerDetailRow>(
-      `SELECT id,company_name,display_name,email,phone,crm_revision::text,billing_street1,billing_street2,billing_city,billing_state,billing_postal_code,billing_country,shipping_street1,shipping_street2,shipping_city,shipping_state,shipping_postal_code,shipping_country
+      `SELECT id,company_name,display_name,email,phone,crm_revision::text,billing_street1,billing_street2,billing_city,billing_state,billing_postal_code,billing_country,shipping_street1,shipping_street2,shipping_city,shipping_state,shipping_postal_code,shipping_country,payment_terms,CASE WHEN credit_limit_configured_at IS NULL THEN NULL ELSE round(credit_limit*100)::bigint::text END AS credit_limit_cents,is_tax_exempt AS tax_exempt,tax_exempt_reason,tax_exempt_certificate_ref
        FROM customers WHERE organization_id=$1 AND id=$2`, [organizationId, customerId],
     );
     const row = raw.rows[0];
     if (!row) return null;
-    const contacts = await this.contacts(organizationId, customerId);
+    const [contacts, receivable, internalNotes] = await Promise.all([this.contacts(organizationId, customerId), this.openReceivable(organizationId, customerId), this.internalNotes(organizationId, customerId)]);
     const reasons: ("no_contacts" | "no_active_contacts" | "no_primary_contact")[] = [];
     if (!contacts.length) reasons.push("no_contacts", "no_active_contacts");
     else if (!contacts.some((entry) => entry.status === "active")) reasons.push("no_active_contacts");
@@ -286,8 +291,10 @@ export class PostgresCustomerWorkspaceReader {
       displayName: customer.displayName,
       revision: row.crm_revision,
       editable: { companyName: row.company_name, ...(row.display_name ? { displayName: row.display_name } : {}), ...(row.email ? { email: row.email } : {}), ...(row.phone ? { phone: row.phone } : {}), ...(toAddress("billing") ? { billingAddress: toAddress("billing") } : {}), ...(toAddress("shipping") ? { shippingAddress: toAddress("shipping") } : {}) },
+      commercial: { paymentTerms: row.payment_terms, ...(row.credit_limit_cents !== null ? { creditLimitCents: Number(row.credit_limit_cents), availableCreditCents: Math.max(0, Number(row.credit_limit_cents) - receivable) } : {}), taxExempt: row.tax_exempt, ...(row.tax_exempt_reason ? { taxExemptReason: row.tax_exempt_reason } : {}), ...(row.tax_exempt_certificate_ref ? { taxExemptCertificateRef: row.tax_exempt_certificate_ref } : {}), openReceivableCents: receivable },
       presentation: await reader.getPresentationIdentity({ organizationId, customerId }),
       contacts,
+      internalNotes,
       contactReadiness: { status: reasons.length ? "needs_attention" : "ready", reasons },
     };
   }
@@ -327,7 +334,7 @@ export class PostgresCustomerWorkspaceReader {
 
   private async contacts(organizationId: OrganizationId, customerId: CustomerId): Promise<readonly CustomerWorkspaceContact[]> {
     const result = await this.pool.query<CustomerContactRow>(
-      `SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone, ct.title, ct.status, ct.crm_revision::text, l.is_primary,
+      `SELECT ct.id, ct.first_name, ct.last_name, ct.email, ct.phone, ct.title, ct.status, ct.crm_revision::text, l.is_primary,l.is_billing,
         portal.status AS portal_access_status
       FROM customer_contact_links l
       JOIN customer_contacts ct ON ct.organization_id = l.organization_id AND ct.id = l.contact_id
@@ -340,5 +347,23 @@ export class PostgresCustomerWorkspaceReader {
       [organizationId, customerId],
     );
     return result.rows.map(contact);
+  }
+
+  private async openReceivable(organizationId: OrganizationId, customerId: CustomerId): Promise<number> {
+    const result = await this.pool.query<{ cents: string }>(
+      `WITH paid AS (SELECT organization_id,invoice_id,sum(amount_cents)::bigint cents FROM v2_billing_payment_allocations WHERE organization_id=$1 GROUP BY organization_id,invoice_id),
+       refunded AS (SELECT e.organization_id,e.invoice_id,sum(a.amount_cents)::bigint cents FROM v2_billing_refund_allocations a JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id WHERE a.organization_id=$1 GROUP BY e.organization_id,e.invoice_id)
+       SELECT COALESCE(sum(i.total_cents-COALESCE(paid.cents,0)+COALESCE(refunded.cents,0)),0)::bigint::text cents FROM v2_billing_invoices i LEFT JOIN paid ON paid.organization_id=i.organization_id AND paid.invoice_id=i.id LEFT JOIN refunded ON refunded.organization_id=i.organization_id AND refunded.invoice_id=i.id WHERE i.organization_id=$1 AND i.customer_id=$2 AND i.invoice_state='issued'`,
+      [organizationId, customerId],
+    );
+    return Number(result.rows[0]?.cents ?? 0);
+  }
+  private async internalNotes(organizationId: OrganizationId, customerId: CustomerId): Promise<readonly Readonly<{ noteId: string; note: string; createdAt: string }>[]> {
+    const result = await this.pool.query<{ id: string; note: string; created_at: Date }>(
+      `SELECT n.id,n.note,n.created_at FROM customer_notes n JOIN customers c ON c.id=n.customer_id
+       WHERE c.organization_id=$1 AND n.customer_id=$2 AND n.is_internal=true ORDER BY n.created_at DESC,n.id DESC LIMIT 50`,
+      [organizationId, customerId],
+    );
+    return result.rows.map((row) => ({ noteId: row.id, note: row.note, createdAt: row.created_at.toISOString() }));
   }
 }

@@ -29,6 +29,7 @@ type CustomerRow = {
   shipping_state: string | null;
   shipping_postal_code: string | null;
   shipping_country: string | null;
+  payment_terms?: string | null;
 };
 type ContactRow = {
   id: string;
@@ -172,6 +173,16 @@ export class PostgresCustomersCompatibilityReader implements CustomersReadPort {
       ...(billingAddress ? { billingAddress } : {}),
       ...(shippingAddress ? { shippingAddress } : {}),
     };
+  }
+
+  async getCommercialPolicy(organizationId: OrganizationId, customerId: CustomerId): Promise<Readonly<{ paymentTerms?: string }> | null> {
+    const result = await this.client.query<{ payment_terms: string | null }>(
+      `SELECT payment_terms FROM customers WHERE organization_id=$1 AND id=$2 AND is_active IS NOT FALSE
+       AND COALESCE(status,'active') NOT IN ('archived','superseded','deleted') AND merged_into_customer_id IS NULL`,
+      [organizationId, customerId],
+    );
+    const row = result.rows[0];
+    return row ? (row.payment_terms ? { paymentTerms: row.payment_terms } : {}) : null;
   }
 
   private async customerRow(

@@ -20,4 +20,7 @@ export interface CustomersReadPort {
   getContact(organizationId: OrganizationId, contactId: ContactId): Promise<Readonly<{ id: ContactId; customerId?: CustomerId; displayName: string }> | null>;
   validateContactReference(reference: CustomerContactReference): Promise<boolean>;
   getPresentationIdentity(reference: CustomerContactReference): Promise<CustomerPresentationIdentity>;
+  /** Mutable CRM policy, resolved only when creating a new commercial document.
+   * Sales persists the resolved terms in its own immutable snapshot. */
+  getCommercialPolicy?(organizationId: OrganizationId, customerId: CustomerId): Promise<Readonly<{ paymentTerms?: string }> | null>;
 }

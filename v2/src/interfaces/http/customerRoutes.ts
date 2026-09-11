@@ -5,7 +5,7 @@ import { brandedId } from "../../modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { OperationContext } from "../../application/operation.js";
 import type { CustomerActivityPage, CustomerActivityPageRequest, CustomerCatalogPage, CustomerCatalogPageRequest, CustomerWorkspaceRead } from "../../../infrastructure/compatibility/postgresCustomerWorkspaceRead.js";
-import type { UpdateCustomerInput, SetPrimaryContactInput } from "../../../infrastructure/customers/postgresCustomerContactAdministration.js";
+import type { AddCustomerInternalNoteInput, UpdateCustomerInput, SetBillingContactInput, SetPrimaryContactInput } from "../../../infrastructure/customers/postgresCustomerContactAdministration.js";
 
 export type CustomerHttpDependencies = Readonly<{
   customers: Readonly<{
@@ -19,6 +19,8 @@ export type CustomerHttpDependencies = Readonly<{
   administration?: Readonly<{
     updateCustomer(organizationId: string, principal: Principal, customerId: string, input: UpdateCustomerInput): Promise<void>;
     setPrimaryContact(organizationId: string, principal: Principal, input: SetPrimaryContactInput): Promise<void>;
+    setBillingContact(organizationId: string, principal: Principal, input: SetBillingContactInput): Promise<void>;
+    addInternalNote(organizationId: string, principal: Principal, input: AddCustomerInternalNoteInput): Promise<string>;
   }>;
   principals: Readonly<{ principal(request: Request, organizationId: string): Promise<Principal> }>;
 }>;
@@ -77,12 +79,28 @@ const address = (value: unknown, label: string) => {
 const updateInput = (value: unknown): UpdateCustomerInput => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "A Customer correction object is required.");
   const body = value as Record<string, unknown>;
-  return { businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedRevision: requiredText(body, "expectedRevision", "Customer revision", 200), companyName: requiredText(body, "companyName", "Company name", 255), ...(optionalText(body.displayName, "Display name", 255) ? { displayName: optionalText(body.displayName, "Display name", 255) } : {}), ...(optionalText(body.email, "Email", 255) ? { email: optionalText(body.email, "Email", 255) } : {}), ...(optionalText(body.phone, "Phone", 50) ? { phone: optionalText(body.phone, "Phone", 50) } : {}), ...(body.billingAddress !== undefined ? { billingAddress: address(body.billingAddress, "Billing address") } : {}), ...(body.shippingAddress !== undefined ? { shippingAddress: address(body.shippingAddress, "Shipping address") } : {}) };
+  const terms = body.paymentTerms;
+  if (terms !== undefined && terms !== "due_on_receipt" && terms !== "net_15" && terms !== "net_30" && terms !== "net_45" && terms !== "custom") throw new V2ApplicationError("VALIDATION_ERROR", "Payment terms are invalid.");
+  if (body.creditLimitCents !== undefined && body.creditLimitCents !== null && (!Number.isSafeInteger(body.creditLimitCents) || (body.creditLimitCents as number) < 0)) throw new V2ApplicationError("VALIDATION_ERROR", "Credit limit must be a non-negative whole-cent amount.");
+  if (body.taxExempt !== undefined && typeof body.taxExempt !== "boolean") throw new V2ApplicationError("VALIDATION_ERROR", "Tax exemption must be true or false.");
+  if (body.taxExempt === true && !optionalText(body.taxExemptReason, "Tax exemption reason", 500)) throw new V2ApplicationError("VALIDATION_ERROR", "A tax exemption reason is required.");
+  return { businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedRevision: requiredText(body, "expectedRevision", "Customer revision", 200), companyName: requiredText(body, "companyName", "Company name", 255), ...(optionalText(body.displayName, "Display name", 255) ? { displayName: optionalText(body.displayName, "Display name", 255) } : {}), ...(optionalText(body.email, "Email", 255) ? { email: optionalText(body.email, "Email", 255) } : {}), ...(optionalText(body.phone, "Phone", 50) ? { phone: optionalText(body.phone, "Phone", 50) } : {}), ...(body.billingAddress !== undefined ? { billingAddress: address(body.billingAddress, "Billing address") } : {}), ...(body.shippingAddress !== undefined ? { shippingAddress: address(body.shippingAddress, "Shipping address") } : {}), ...(terms !== undefined ? { paymentTerms: terms as UpdateCustomerInput["paymentTerms"] } : {}), ...(body.creditLimitCents !== undefined ? { creditLimitCents: body.creditLimitCents as number | null } : {}), ...(body.taxExempt !== undefined ? { taxExempt: body.taxExempt as boolean, ...(optionalText(body.taxExemptReason, "Tax exemption reason", 500) ? { taxExemptReason: optionalText(body.taxExemptReason, "Tax exemption reason", 500) } : {}), ...(optionalText(body.taxExemptCertificateRef, "Tax exemption certificate", 255) ? { taxExemptCertificateRef: optionalText(body.taxExemptCertificateRef, "Tax exemption certificate", 255) } : {}) } : {}) };
 };
 const primaryInput = (customerId: string, value: unknown): SetPrimaryContactInput => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "A Primary Contact selection is required.");
   const body = value as Record<string, unknown>;
   return { customerId, contactId: requiredText(body, "contactId", "Contact", 200), businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedCustomerRevision: requiredText(body, "expectedCustomerRevision", "Customer revision", 200) };
+};
+const billingInput = (customerId: string, value: unknown): SetBillingContactInput => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "A billing Contact selection is required.");
+  const body = value as Record<string, unknown>;
+  if (typeof body.billing !== "boolean") throw new V2ApplicationError("VALIDATION_ERROR", "Billing must be true or false.");
+  return { customerId, contactId: requiredText(body, "contactId", "Contact", 200), businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedCustomerRevision: requiredText(body, "expectedCustomerRevision", "Customer revision", 200), billing: body.billing };
+};
+const noteInput = (customerId: string, value: unknown): AddCustomerInternalNoteInput => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new V2ApplicationError("VALIDATION_ERROR", "An internal Customer note is required.");
+  const body = value as Record<string, unknown>;
+  return { customerId, businessRequestId: requiredText(body, "businessRequestId", "Business request ID", 200), expectedCustomerRevision: requiredText(body, "expectedCustomerRevision", "Customer revision", 200), note: requiredText(body, "note", "Internal note", 4000) };
 };
 
 export const createCustomerRouter = (dependencies: CustomerHttpDependencies) => {
@@ -183,6 +201,26 @@ export const createCustomerRouter = (dependencies: CustomerHttpDependencies) => 
       const customer = await dependencies.customers.read(brandedId<"OrganizationId">(organizationId), brandedId<"CustomerId">(request.params.customerId));
       if (!customer) throw new V2ApplicationError("NOT_FOUND", "Customer is unavailable in this organization.");
       return response.status(200).json({ ok: true, data: customer });
+    } catch (error) { return fail(response, error); }
+  });
+  router.put("/:customerId/billing-contact", async (request, response) => {
+    try {
+      const { organizationId, principal } = await principalFor(request);
+      if (!new AuthorityPolicy().decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed) return deny(response, 403, "FORBIDDEN", "Billing Contact administration is unavailable.");
+      if (!dependencies.administration) throw new V2ApplicationError("INTERNAL_ERROR", "Customer administration runtime is unavailable.");
+      await dependencies.administration.setBillingContact(organizationId, principal, billingInput(request.params.customerId, request.body));
+      const customer = await dependencies.customers.read(brandedId<"OrganizationId">(organizationId), brandedId<"CustomerId">(request.params.customerId));
+      if (!customer) throw new V2ApplicationError("NOT_FOUND", "Customer is unavailable in this organization.");
+      return response.status(200).json({ ok: true, data: customer });
+    } catch (error) { return fail(response, error); }
+  });
+  router.post("/:customerId/internal-notes", async (request, response) => {
+    try {
+      const { organizationId, principal } = await principalFor(request);
+      if (!new AuthorityPolicy().decide(principal, { capability: "customer.edit", resource: { organizationId } }).allowed) return deny(response, 403, "FORBIDDEN", "Internal Customer notes are unavailable.");
+      if (!dependencies.administration) throw new V2ApplicationError("INTERNAL_ERROR", "Customer administration runtime is unavailable.");
+      const noteId = await dependencies.administration.addInternalNote(organizationId, principal, noteInput(request.params.customerId, request.body));
+      return response.status(201).json({ ok: true, data: { noteId } });
     } catch (error) { return fail(response, error); }
   });
   return router;

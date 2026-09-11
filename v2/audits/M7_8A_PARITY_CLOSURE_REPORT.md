@@ -1,5 +1,26 @@
 # M7.8A parity closure report
 
+## M7.8D CRM commercial account and billing recipient closure
+
+M7.8D makes the existing Customer policy facts operational in V2 without
+creating a parallel pricing or finance authority. Staff with `customer.edit`
+can maintain payment terms, an explicitly configured (including $0) credit
+limit, and tax-exemption evidence. Credit exposure is a read-only aggregate
+from V2 invoices, payment allocations, and refund allocations; it is warning
+context, not a new fulfillment or sales blocker. New Quotes and Orders resolve
+the Customer's default terms only when the caller did not select terms, then
+store the resolved value in the existing immutable sales snapshot. Existing
+documents never reprice or change terms because a Customer policy changes.
+
+Billing recipient selection is relationship-owned: active, scoped Contacts can
+be marked as billing recipients. The existing invoice delivery resolver already
+uses all active billing recipients before primary/customer-email fallback and
+audits each actual send. Pricing agreements remain the only customer-specific
+commercial price authority; legacy pricing tiers and mutable customer balances
+are deliberately not exposed. Internal account context uses a staff-only,
+append-only `customer_notes` entry path; notes are not returned by Portal,
+documents, or delivery DTOs.
+
 ## Result
 
 **PASS WITH FINDINGS — source/contract parity closure.** The confirmed P0

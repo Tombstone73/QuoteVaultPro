@@ -2172,6 +2172,7 @@ export type CustomerWorkspaceRead = Readonly<{
   displayName: string;
   revision: string;
   editable: Readonly<{ companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: Readonly<{ street1?: string; street2?: string; city?: string; state?: string; postalCode?: string; country?: string }>; shippingAddress?: Readonly<{ street1?: string; street2?: string; city?: string; state?: string; postalCode?: string; country?: string }> }>;
+  commercial: Readonly<{ paymentTerms: "due_on_receipt" | "net_15" | "net_30" | "net_45" | "custom"; creditLimitCents?: number; taxExempt: boolean; taxExemptReason?: string; taxExemptCertificateRef?: string; openReceivableCents: number; availableCreditCents?: number }>;
   presentation: Readonly<{
     customerDisplayName?: string;
     contactDisplayName?: string;
@@ -2199,11 +2200,13 @@ export type CustomerWorkspaceRead = Readonly<{
     email?: string;
     phone?: string;
     primary: boolean;
+    billing: boolean;
     title?: string;
     status: "active" | "archived";
     revision: string;
     portalAccessStatus?: string;
   }>[];
+  internalNotes: readonly Readonly<{ noteId: string; note: string; createdAt: string }>[];
   contactReadiness: Readonly<{ status: "ready" | "needs_attention"; reasons: readonly string[] }>;
 }>;
 export type CustomerCatalogItem = Readonly<{
@@ -2293,8 +2296,10 @@ export const customerApi = {
         body: JSON.stringify(input),
       },
     ),
-  update: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedRevision: string; companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerWorkspaceRead["editable"]["billingAddress"]; shippingAddress?: CustomerWorkspaceRead["editable"]["shippingAddress"] }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`, { method: "PATCH", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
+  update: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedRevision: string; companyName: string; displayName?: string; email?: string; phone?: string; billingAddress?: CustomerWorkspaceRead["editable"]["billingAddress"]; shippingAddress?: CustomerWorkspaceRead["editable"]["shippingAddress"]; paymentTerms?: CustomerWorkspaceRead["commercial"]["paymentTerms"]; creditLimitCents?: number | null; taxExempt?: boolean; taxExemptReason?: string; taxExemptCertificateRef?: string }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}`, { method: "PATCH", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
   setPrimaryContact: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedCustomerRevision: string; contactId: string }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}/primary-contact`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
+  setBillingContact: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedCustomerRevision: string; contactId: string; billing: boolean }>) => request<CustomerWorkspaceRead>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}/billing-contact`, { method: "PUT", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
+  addInternalNote: (organizationId: string, customerId: string, input: Readonly<{ businessRequestId: string; expectedCustomerRevision: string; note: string }>) => request<Readonly<{ noteId: string }>>(`/v2/organizations/${encodeURIComponent(organizationId)}/customers/${encodeURIComponent(customerId)}/internal-notes`, { method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" }, body: JSON.stringify(input) }),
 };
 /** Staff-only customer commercial policy. The server remains the authority for
  * entitlement, agreement replacement, pricing calculation, and audit facts. */

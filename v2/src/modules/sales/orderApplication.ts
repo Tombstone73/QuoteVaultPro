@@ -346,6 +346,11 @@ const validateReference = async (
   if (reference.organizationId !== organizationId || !(await customers.validateContactReference(reference)))
     throw new V2ApplicationError("NOT_FOUND", "Customer or contact is unavailable in this organization.");
 };
+const resolvedTerms = async (customers: CustomersReadPort, organizationId: string, reference: CustomerContactReference, requested: CommercialTerms): Promise<CommercialTerms> => {
+  if (requested.termsCode || !reference.customerId || !customers.getCommercialPolicy) return requested;
+  const policy = await customers.getCommercialPolicy(organizationId as OrganizationId, reference.customerId);
+  return policy?.paymentTerms ? { ...requested, termsCode: policy.paymentTerms } : requested;
+};
 
 const validateFulfillment = (value: RequestedFulfillment | undefined): RequestedFulfillment | undefined => {
   if (!value) return undefined;
@@ -460,7 +465,7 @@ export class OrderApplicationService {
         customerContact: input.customerContact,
         purchaseOrderNumber: input.purchaseOrderNumber,
         requestedDueDate: input.requestedDueDate,
-        terms: input.terms ?? {},
+        terms: await resolvedTerms(tx.customers, context.organizationId, input.customerContact, input.terms ?? {}),
         requestedFulfillment: validateFulfillment(input.requestedFulfillment),
         sellingAdjustment: validateAdjustment(input.sellingAdjustment),
         commercialCharge: validateCommercialCharge(input.commercialCharge),

@@ -16,7 +16,7 @@ listed operational consequence.
 
 | ID | Area | Missing or partial routine capability | Consequence if waived | Recommended owner decision |
 | --- | --- | --- | --- | --- |
-| P1-01 | CRM commercial account | terms, credit limit/balance, tax/billing recipient and internal account-note authority | staff must keep commercial-account facts outside V2 | decide whether V2 is commercial-account authority at launch |
+| P1-01 | CRM commercial account | **CLOSED:** terms, typed/unset credit policy, tax policy, active billing-recipient authority and append-only internal notes | M7.8D derives A/R from V2 Finance, freezes terms/tax in new commercial records, and never restores mutable legacy balance/tier pricing | no additional action for the audited commercial-account capability |
 | P1-02 | Orders | line notes and richer fulfillment header entry | slower manual recreation; no data integrity workaround is authorized | define minimum sales-desk ergonomics for launch |
 | P1-03 | Artwork/Prepress | batch/nesting/exception-run controls and any further revision ergonomics | private generic view/open/download is now available through existing scoped Artwork delivery; bulk throughput tools remain absent | identify launch-volume requirements and exact owner workflow |
 | P1-04 | Production | actual return-to-Prepress successor routing, machine/printer selection and calendar controls | hold/resume, issue notes, and a blocking Prepress-rework request are canonical append-only evidence; machine/scheduling remain intentionally absent | approve a per-work rework-cycle/route authority; separately decide whether scheduling is required |

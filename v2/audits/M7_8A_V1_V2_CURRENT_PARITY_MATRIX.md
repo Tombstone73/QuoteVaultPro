@@ -17,7 +17,7 @@ P1 decision before cutover; they are not represented as completed capability.
 
 | Operational surface | V1 reference behavior | V2 current behavior | Status | Priority / evidence |
 | --- | --- | --- | --- | --- |
-| Customers and contacts | customer/account list, detail, contact maintenance | tenant-scoped cursor-paged Customer/Contact workspaces, primary-contact authority, activity hub | SUPERSEDES | P1: credit/terms/internal account fields are not yet V2 commercial authority |
+| Customers and contacts | customer/account list, detail, contact maintenance | tenant-scoped cursor-paged Customer/Contact workspaces, primary/billing-recipient authority, commercial policy and derived A/R hub | SUPERSEDES | M7.8D: terms, credit, tax and delivery preferences are V2-owned; broader contact/lead ergonomics remain P1 |
 | Customer commercial policy | staff account/product conventions | capability-gated Customer portal-entitlement and active pricing-agreement authoring, server-enforced Sales pricing | PARITY | P0 closed in M7.8A; policy is audited and ProductVersions remain immutable |
 | Products | create, edit, publish catalog offerings | New Product Draft → typed Builder → immutable publish flow, material/routing/pricing controls | SUPERSEDES | New Product was already present at baseline; stale test/audit assertion corrected |
 | Quotes | create, configure, price, send, accept, convert | canonical sales quote authority, duplicate/edit/void controls, protected Artwork, and documents | PARITY | remaining list-preference/export ergonomics are P1 |
@@ -71,8 +71,8 @@ operator; every listed V2 command also has a scoped server contract.
 | CRM | Create/edit Customer plus billing/shipping address | Customer workspace POST/PATCH under `customer.edit` | PARITY | — |
 | CRM | Add contact and choose primary contact | Customer detail controls; contact/customer command routes | PARITY | — |
 | CRM | Contact list/edit/activate-deactivate | Sales → Contacts, `ContactsWorkspace.tsx` and scoped contacts routes | PARTIAL | P1 list filtering/sorting/page and standalone creation decision |
-| CRM | Standalone lead/contact, contact address/mobile/flags/billing recipient | V1 `pages/contacts.tsx`, contact form/detail | MISSING | P1; becomes P0 only if billing/invoice delivery currently depends on it |
-| CRM | Customer notes, credit limit/balance, terms, tax/type/pricing tier | V1 customer detail, credit and relations routes | MISSING | P1 commercial-account decision; do not recreate mutable tier pricing blindly |
+| CRM | Standalone lead/contact, contact address/mobile/flags | V1 `pages/contacts.tsx`, contact form/detail | MISSING | P1; commercial billing recipient is now a V2 Customer-contact relationship |
+| CRM | Customer credit limit/balance, terms, tax and billing recipient | V1 customer detail, credit and relations routes | SUPERSEDES | M7.8D exposes policy and derived V2 A/R; legacy mutable balance/tier pricing are intentionally not restored |
 | CRM | Customer activity and related records | bounded tenant-scoped V2 Activity hub links to owning contexts | SUPERSEDES | historical compatibility/read policy still needs cutover evidence |
 | CRM | Merge/export/import | V1 merge/export has backend evidence but no current operator UI proof | NOT REQUIRED / UNPROVEN | validate real usage before making it a gap |
 | CRM | Destructive customer/contact delete | V1 destructive control | V2 archival/audit preservation | SUPERSEDES | do not restore except for a legal-erasure requirement |
