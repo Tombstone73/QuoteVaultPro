@@ -1,0 +1,773 @@
+{
+  "schemaVersion": "products-export/v2",
+  "exportedAt": "2026-09-11T00:00:00.000Z",
+  "orgId": "56e0f644-bb25-43ef-8ee1-473831115849",
+  "orgName": "Titan Graphics",
+  "products": [
+    {
+      "name": "Styrene",
+      "slug": "styrene",
+      "description": "Custom printed rigid styrene signs with selectable thickness, sides, contour cutting, and grommets.",
+      "category": "Rigid",
+      "productTypeName": "Sheet",
+      "pricingMode": "area",
+      "pricingFormula": "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      "pricingEngine": "formulaLibrary",
+      "pricingFormulaRef": {
+        "code": "4X8_WITH_WASTE_CALCULATION",
+        "name": "4x8 Sheets with rounding"
+      },
+      "pricingProfileKey": "default",
+      "pricingProfileConfig": {
+        "allowRotation": true,
+        "formulaVariables": {
+          "sheet_width": 48,
+          "sheet_length": 96,
+          "usable_drop_min": 24,
+          "minimum_billable_sqft": 3,
+          "billable_length_increment": 12
+        }
+      },
+      "useNestingCalculator": false,
+      "materialType": "sheet",
+      "nestingVolumePricing": {
+        "tiers": [],
+        "enabled": false
+      },
+      "isService": false,
+      "requiresProductionJob": true,
+      "isTaxable": true,
+      "isActive": false,
+      "artworkPolicy": "not_required",
+      "variantLabel": "Variant",
+      "showStoreLink": true,
+      "thumbnailUrls": [],
+      "optionTreeJson": {
+        "sku": "STYRENE-DRAFT",
+        "schemaVersion": 2,
+        "status": "DRAFT",
+        "category": "Rigid",
+        "productName": "Styrene",
+        "basePrice": 0,
+        "fulfillment": "pickup-only",
+        "meta": {
+          "pricingProfileKey": "default",
+          "pricingFormula": "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+          "formulaVariables": {
+            "sheet_width": 48,
+            "sheet_length": 96,
+            "usable_drop_min": 24,
+            "minimum_billable_sqft": 3,
+            "billable_length_increment": 12
+          },
+          "pricingFormulaVariables": {
+            "sheet_width": 48,
+            "sheet_length": 96,
+            "usable_drop_min": 24,
+            "minimum_billable_sqft": 3,
+            "billable_length_increment": 12
+          },
+          "pricingV2": {
+            "unitSystem": "imperial",
+            "tierBasis": "line_item_quantity",
+            "optionMatrixPricingUnit": "per_square_foot",
+            "base": {
+              "perSqftCents": null,
+              "perPieceCents": null,
+              "minimumChargeCents": null
+            }
+          }
+        },
+        "rootNodeIds": [
+          "node_styrene_base_entry",
+          "opt_styrene_thickness",
+          "opt_styrene_sides",
+          "opt_styrene_contour_cutting",
+          "opt_styrene_grommets",
+          "opt_styrene_grommet_quantity"
+        ],
+        "edges": [
+          {
+            "id": "edge_styrene_thickness",
+            "status": "DISABLED",
+            "priority": 0,
+            "fromNodeId": "group_styrene_thickness",
+            "toNodeId": "opt_styrene_thickness",
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          },
+          {
+            "id": "edge_styrene_sides",
+            "status": "DISABLED",
+            "priority": 0,
+            "fromNodeId": "group_styrene_sides",
+            "toNodeId": "opt_styrene_sides",
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          },
+          {
+            "id": "edge_styrene_contour_cutting",
+            "status": "DISABLED",
+            "priority": 0,
+            "fromNodeId": "group_styrene_finishing",
+            "toNodeId": "opt_styrene_contour_cutting",
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          },
+          {
+            "id": "edge_styrene_grommets",
+            "status": "DISABLED",
+            "priority": 1,
+            "fromNodeId": "group_styrene_finishing",
+            "toNodeId": "opt_styrene_grommets",
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          }
+        ],
+        "nodes": {
+          "node_styrene_base_entry": {
+            "id": "node_styrene_base_entry",
+            "key": "base",
+            "kind": "computed",
+            "type": "COMPUTE",
+            "label": "Base Entry",
+            "status": "ENABLED",
+            "description": "Base entry node",
+            "compute": {
+              "outputs": {
+                "value": {
+                  "type": "number"
+                }
+              },
+              "expression": {
+                "op": "literal",
+                "value": 0
+              }
+            }
+          },
+          "opt_styrene_thickness": {
+            "id": "opt_styrene_thickness",
+            "key": "styrene.thickness",
+            "kind": "question",
+            "type": "INPUT",
+            "label": "Thickness",
+            "status": "ENABLED",
+            "description": "Assign each thickness to its material after import.",
+            "input": {
+              "type": "select",
+              "required": true,
+              "valueType": "TEXT",
+              "defaultValue": "styrene_020",
+              "selectionKey": "styrene_thickness"
+            },
+            "choices": [
+              {
+                "label": ".020",
+                "value": "styrene_020",
+                "sortOrder": 0,
+                "materialOverride": {
+                  "materialId": "b26703d3-8d8f-49ea-b1e1-b6e3ae00c793"
+                },
+                "inventoryConsumption": [
+                  {
+                    "materialId": "b26703d3-8d8f-49ea-b1e1-b6e3ae00c793",
+                    "multiplier": 1,
+                    "quantityBasis": "area_sqft"
+                  }
+                ]
+              },
+              {
+                "label": ".030",
+                "value": "styrene_030",
+                "sortOrder": 1,
+                "materialOverride": {
+                  "materialId": "537c7b30-8caf-4d1b-9a0b-6591773640da"
+                },
+                "inventoryConsumption": [
+                  {
+                    "materialId": "537c7b30-8caf-4d1b-9a0b-6591773640da",
+                    "multiplier": 1,
+                    "quantityBasis": "area_sqft"
+                  }
+                ]
+              },
+              {
+                "label": ".040",
+                "value": "styrene_040",
+                "sortOrder": 2,
+                "materialOverride": {
+                  "materialId": "789819c3-d60e-44c7-a6ce-48fd15aee982"
+                },
+                "inventoryConsumption": [
+                  {
+                    "materialId": "789819c3-d60e-44c7-a6ce-48fd15aee982",
+                    "multiplier": 1,
+                    "quantityBasis": "area_sqft"
+                  }
+                ]
+              },
+              {
+                "label": ".060",
+                "value": "styrene_060",
+                "sortOrder": 3,
+                "materialOverride": {
+                  "materialId": "3d99fcda-d817-4614-a1a3-31578acfef8a"
+                },
+                "inventoryConsumption": [
+                  {
+                    "materialId": "3d99fcda-d817-4614-a1a3-31578acfef8a",
+                    "multiplier": 1,
+                    "quantityBasis": "area_sqft"
+                  }
+                ]
+              },
+              {
+                "label": ".080",
+                "value": "styrene_080",
+                "sortOrder": 4,
+                "materialOverride": {
+                  "materialId": "1a9a503a-eecf-47f7-9842-5272b888f3a5"
+                },
+                "inventoryConsumption": [
+                  {
+                    "materialId": "1a9a503a-eecf-47f7-9842-5272b888f3a5",
+                    "multiplier": 1,
+                    "quantityBasis": "area_sqft"
+                  }
+                ]
+              }
+            ],
+            "weightImpact": [],
+            "pricingImpact": []
+          },
+          "opt_styrene_sides": {
+            "id": "opt_styrene_sides",
+            "key": "styrene.sides",
+            "kind": "question",
+            "type": "INPUT",
+            "label": "Sides",
+            "status": "ENABLED",
+            "description": "",
+            "input": {
+              "type": "select",
+              "required": true,
+              "valueType": "TEXT",
+              "defaultValue": "single_sided",
+              "selectionKey": "styrene_sides"
+            },
+            "choices": [
+              {
+                "label": "Single Sided 4/0",
+                "value": "single_sided",
+                "sortOrder": 0
+              },
+              {
+                "label": "Double Sided 4/4",
+                "value": "double_sided",
+                "sortOrder": 1
+              }
+            ],
+            "weightImpact": [],
+            "pricingImpact": []
+          },
+          "opt_styrene_contour_cutting": {
+            "id": "opt_styrene_contour_cutting",
+            "key": "styrene.contour_cutting",
+            "kind": "question",
+            "type": "INPUT",
+            "label": "Contour Cutting",
+            "status": "ENABLED",
+            "description": "",
+            "input": {
+              "type": "select",
+              "required": true,
+              "valueType": "TEXT",
+              "defaultValue": "no",
+              "selectionKey": "styrene_contour_cutting"
+            },
+            "choices": [
+              {
+                "label": "No",
+                "value": "no",
+                "sortOrder": 0
+              },
+              {
+                "label": "Yes",
+                "value": "yes",
+                "sortOrder": 1,
+                "pricingImpact": [
+                  {
+                    "mode": "addPercent",
+                    "basis": "lineSubtotal",
+                    "percent": 10
+                  }
+                ]
+              }
+            ],
+            "weightImpact": [],
+            "pricingImpact": []
+          },
+          "opt_styrene_grommets": {
+            "id": "opt_styrene_grommets",
+            "key": "styrene.grommets",
+            "kind": "question",
+            "type": "INPUT",
+            "label": "Grommets",
+            "status": "ENABLED",
+            "description": "",
+            "input": {
+              "type": "select",
+              "required": true,
+              "valueType": "TEXT",
+              "defaultValue": "no",
+              "selectionKey": "styrene_grommets"
+            },
+            "choices": [
+              {
+                "label": "No",
+                "value": "no",
+                "sortOrder": 0
+              },
+              {
+                "label": "Custom Quantity",
+                "value": "custom_quantity",
+                "sortOrder": 1
+              }
+            ],
+            "weightImpact": [],
+            "pricingImpact": []
+          },
+          "opt_styrene_grommet_quantity": {
+            "id": "opt_styrene_grommet_quantity",
+            "key": "styrene.grommets.quantity",
+            "kind": "question",
+            "type": "INPUT",
+            "label": "Grommet Quantity per Sign",
+            "status": "ENABLED",
+            "description": "",
+            "visibility": {
+              "rules": [
+                {
+                  "type": "equals",
+                  "selectionKey": "styrene_grommets",
+                  "value": "custom_quantity"
+                }
+              ]
+            },
+            "input": {
+              "type": "number",
+              "required": true,
+              "valueType": "NUMBER",
+              "defaultValue": 0,
+              "selectionKey": "styrene_grommet_quantity",
+              "constraints": {
+                "number": {
+                  "min": 0,
+                  "step": 1,
+                  "integerOnly": true
+                }
+              }
+            },
+            "weightImpact": [],
+            "pricingImpact": [
+              {
+                "mode": "addFormula",
+                "formula": "styrene_grommet_quantity * 0.25 * q"
+              }
+            ]
+          },
+          "group_styrene_thickness": {
+            "id": "group_styrene_thickness",
+            "key": "group_styrene_thickness",
+            "kind": "group",
+            "type": "GROUP",
+            "label": "Thickness",
+            "status": "ENABLED",
+            "description": "",
+            "displayOrder": 0,
+            "ui": {
+              "sortOrder": 0
+            }
+          },
+          "group_styrene_sides": {
+            "id": "group_styrene_sides",
+            "key": "group_styrene_sides",
+            "kind": "group",
+            "type": "GROUP",
+            "label": "Sides",
+            "status": "ENABLED",
+            "description": "",
+            "displayOrder": 1,
+            "ui": {
+              "sortOrder": 1
+            }
+          },
+          "group_styrene_finishing": {
+            "id": "group_styrene_finishing",
+            "key": "group_styrene_finishing",
+            "kind": "group",
+            "type": "GROUP",
+            "label": "Finishing",
+            "status": "ENABLED",
+            "description": "",
+            "displayOrder": 2,
+            "ui": {
+              "sortOrder": 2
+            }
+          }
+        },
+        "rules": [],
+        "pricingMatrix": {
+          "id": "matrix_styrene_thickness_sides",
+          "dimensions": [
+            "styrene_thickness",
+            "styrene_sides"
+          ],
+          "rows": [
+            {
+              "id": "styrene_020_single",
+              "when": {
+                "styrene_thickness": "styrene_020",
+                "styrene_sides": "single_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_020_single_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_020_single_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_020_single_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_020_double",
+              "when": {
+                "styrene_thickness": "styrene_020",
+                "styrene_sides": "double_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_020_double_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_020_double_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_020_double_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_030_single",
+              "when": {
+                "styrene_thickness": "styrene_030",
+                "styrene_sides": "single_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_030_single_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_030_single_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_030_single_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_030_double",
+              "when": {
+                "styrene_thickness": "styrene_030",
+                "styrene_sides": "double_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_030_double_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_030_double_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_030_double_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_040_single",
+              "when": {
+                "styrene_thickness": "styrene_040",
+                "styrene_sides": "single_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_040_single_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_040_single_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_040_single_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_040_double",
+              "when": {
+                "styrene_thickness": "styrene_040",
+                "styrene_sides": "double_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_040_double_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_040_double_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_040_double_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_060_single",
+              "when": {
+                "styrene_thickness": "styrene_060",
+                "styrene_sides": "single_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_060_single_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_060_single_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_060_single_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_060_double",
+              "when": {
+                "styrene_thickness": "styrene_060",
+                "styrene_sides": "double_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_060_double_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_060_double_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_060_double_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            },
+            {
+              "id": "styrene_080_single",
+              "when": {
+                "styrene_thickness": "styrene_080",
+                "styrene_sides": "single_sided"
+              },
+              "variables": {
+                "base_price": 325
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_080_single_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": 325
+                },
+                {
+                  "id": "styrene_080_single_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": 293
+                },
+                {
+                  "id": "styrene_080_single_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": 260
+                }
+              ]
+            },
+            {
+              "id": "styrene_080_double",
+              "when": {
+                "styrene_thickness": "styrene_080",
+                "styrene_sides": "double_sided"
+              },
+              "variables": {
+                "base_price": null
+              },
+              "tierBasis": "line_item_quantity",
+              "qtyTiers": [
+                {
+                  "id": "styrene_080_double_qty_1",
+                  "minQty": 1,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_080_double_qty_10",
+                  "minQty": 10,
+                  "perSqftCents": null
+                },
+                {
+                  "id": "styrene_080_double_qty_51",
+                  "minQty": 51,
+                  "perSqftCents": null
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "mappings": {
+    "productTypes": [
+      {
+        "name": "Sheet",
+        "id": "7f03c85a-c1e2-4549-a918-0393615d75b4"
+      }
+    ],
+    "materials": [
+      {
+        "sku": "Styrene_020",
+        "name": "Styrene - .020",
+        "id": "b26703d3-8d8f-49ea-b1e1-b6e3ae00c793"
+      },
+      {
+        "sku": "Styrene_030",
+        "name": "Styrene - .030",
+        "id": "537c7b30-8caf-4d1b-9a0b-6591773640da"
+      },
+      {
+        "sku": "Styrene_040",
+        "name": "Styrene - .040",
+        "id": "789819c3-d60e-44c7-a6ce-48fd15aee982"
+      },
+      {
+        "sku": "Styrene_060",
+        "name": "Styrene - .060",
+        "id": "3d99fcda-d817-4614-a1a3-31578acfef8a"
+      },
+      {
+        "sku": "Styrene_080",
+        "name": "Styrene - .080",
+        "id": "1a9a503a-eecf-47f7-9842-5272b888f3a5"
+      }
+    ],
+    "pricingFormulas": [
+      {
+        "code": "4X8_WITH_WASTE_CALCULATION",
+        "name": "4x8 Sheets with rounding"
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Download, Upload, FileJson, AlertCircle, CheckCircle2, XCircle, Info } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -150,6 +150,7 @@ async function applyImport(payload: any, mode: string) {
 
 export default function ProductImportExport() {
   const { toast } = useToast();
+  const importFileInputRef = useRef<HTMLInputElement>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importPayload, setImportPayload] = useState<any | null>(null);
   const [dryRunResult, setDryRunResult] = useState<ImportPlan | null>(null);
@@ -440,18 +441,26 @@ export default function ProductImportExport() {
         </CardHeader>
         <CardContent className="space-y-4">
           {/* File upload */}
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <input
+              ref={importFileInputRef}
+              data-testid="product-import-file-input"
               type="file"
               accept=".json"
               onChange={handleFileSelect}
-              className="block w-full text-sm text-muted-foreground
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-md file:border-0
-                file:text-sm file:font-semibold
-                file:bg-primary file:text-primary-foreground
-                hover:file:bg-primary/90"
+              className="sr-only"
+              aria-label="Choose product import JSON file"
             />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => importFileInputRef.current?.click()}
+            >
+              Choose File
+            </Button>
+            <span className="text-sm text-muted-foreground" aria-live="polite">
+              {importFile ? importFile.name : "No file chosen"}
+            </span>
           </div>
 
           {/* Import mode selector */}
