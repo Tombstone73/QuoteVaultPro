@@ -88,7 +88,11 @@ The M7.8B follow-on has now implemented the atomic container/finalization and
 immutable prepared-correction model. The remaining Fulfillment decision is
 strictly post-shipped: approve a separate physical return/re-delivery/reversal
 authority if the business needs to alter shipped quantities. Production
-exceptions still need a canonical interruption/rework ledger that preserves
+exceptions now have a canonical append-only interruption ledger for holds,
+resumes, notes, and a blocking Prepress-rework request. The request snapshots
+the current output but does not mutate an attempt, route, Prepress handoff,
+Artwork lineage, Fulfillment authority, or sibling work. A return-to-Prepress
+rework bridge still needs to preserve
 frozen Artwork, attempt, Prepress, and routing evidence. They remain
 decision-ready bounded domain milestones, not hidden controls.
 

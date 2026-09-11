@@ -35,7 +35,11 @@ const requirementLabel = (item: ProductionWorkProjection) => {
 };
 
 export const flatbedState = (item: ProductionWorkProjection) =>
-  item.unitQuantitySatisfied
+  item.state === "held"
+    ? "On hold"
+    : item.state === "rework_requested"
+      ? "Prepress rework requested"
+    : item.unitQuantitySatisfied
     ? "Complete"
     : item.attempts.some((attempt) => !attempt.completedAt)
       ? "In progress"
@@ -183,11 +187,11 @@ export const FlatbedStationPanel = ({
         <section><small>Selected job</small><h2>{requirementLabel(selected)}</h2><dl><div><dt>Status</dt><dd>{flatbedState(selected)}</dd></div><div><dt>Remaining</dt><dd>{selectedRemaining}</dd></div><div><dt>Destination</dt><dd>Flatbed</dd></div></dl></section>
         <section className="v2-flatbed-action-list">
           <button type="button" disabled={!onOpenTraveler} onClick={() => onOpenTraveler?.(selected)}>Open Traveler</button>
-          {!activeAttempt ? <button className="go" type="button" disabled={!canWork || busy || selected.unitQuantitySatisfied} onClick={() => onStart(selected.attempts.length ? "reprint" : "initial")}>{selected.attempts.length ? "Start reprint" : "Start production"}</button> : <>
+          {!activeAttempt ? <button className="go" type="button" disabled={!canWork || busy || selected.unitQuantitySatisfied || selected.state === "held" || selected.state === "rework_requested"} onClick={() => onStart(selected.attempts.length ? "reprint" : "initial")}>{selected.attempts.length ? "Start reprint" : "Start production"}</button> : <>
             <label>Good output<input aria-label="Flatbed good output" type="number" min="0" max={Math.max(1, selectedRemaining)} step="1" value={goodQuantity} onChange={(event) => onGoodQuantityChange(event.target.value)} /></label>
             <label>Waste output<input aria-label="Flatbed waste output" type="number" min="0" step="1" value={wasteQuantity} onChange={(event) => onWasteQuantityChange(event.target.value)} /></label>
-            <button className="go" type="button" disabled={!canWork || busy || (!validGoodOutput && !validWasteOutput)} onClick={() => onRecordOutput(activeAttempt.productionAttemptId)}>Record output</button>
-            <button type="button" disabled={!canComplete || busy} onClick={() => onCompleteAttempt(activeAttempt.productionAttemptId)}>Complete attempt</button>
+            <button className="go" type="button" disabled={!canWork || busy || selected.state === "held" || selected.state === "rework_requested" || (!validGoodOutput && !validWasteOutput)} onClick={() => onRecordOutput(activeAttempt.productionAttemptId)}>Record output</button>
+            <button type="button" disabled={!canComplete || busy || selected.state === "held" || selected.state === "rework_requested"} onClick={() => onCompleteAttempt(activeAttempt.productionAttemptId)}>Complete attempt</button>
           </>}
           {selected.unitQuantitySatisfied && <p className="v2-flatbed-complete">Production quantity is satisfied. Fulfillment remains a separate authority.</p>}
         </section>

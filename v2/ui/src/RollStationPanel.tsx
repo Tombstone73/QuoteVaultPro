@@ -40,6 +40,8 @@ const requirementLabel = (work: ProductionWorkProjection) => {
 };
 
 const workState = (work: ProductionWorkProjection) => {
+  if (work.state === "held") return "On hold";
+  if (work.state === "rework_requested") return "Prepress rework requested";
   if (work.unitQuantitySatisfied) return "Complete";
   if (work.attempts.some((attempt) => !attempt.completedAt)) return "In progress";
   return "Ready";

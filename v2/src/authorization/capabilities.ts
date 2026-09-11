@@ -15,7 +15,7 @@ export const capabilityIds = [
   "artwork.view", "artwork.adopt", "artwork.assign",
   "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship",
   "prepress.view", "prepress.work", "prepress.complete",
-  "production.view", "production.work", "production.complete",
+  "production.view", "production.work", "production.complete", "production.hold", "production.rework", "production.note",
   "inventory.view", "inventory.receive",
   "inbound.view", "inbound.review",
   "assistant.use",

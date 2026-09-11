@@ -30,6 +30,8 @@ const unit = (
   recordedGoodQuantity: options.completedGoodQuantity ?? 0,
   remainingGoodQuantity: 40 - (options.completedGoodQuantity ?? 0),
   unitQuantitySatisfied: options.unitQuantitySatisfied ?? false,
+  state: "ready",
+  exceptionEvents: [],
 });
 
 const render = (queue: readonly ProductionWorkProjection[]) =>

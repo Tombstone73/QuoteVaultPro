@@ -111,7 +111,9 @@ operator; every listed V2 command also has a scoped server contract.
 | Production | Flatbed/Roll navigation, queues, start/output/complete | V2 shell stations, attempts, quantity commands | SUPERSEDES | — |
 | Production | front/back/double-sided, material grouping, frozen art | Roll/Flatbed panels and work projections | SUPERSEDES | — |
 | Production | partial good quantity/no overproduction/history | V2 attempt and output evidence | SUPERSEDES | — |
-| Production | pause/hold/reopen/return-to-prepress, notes and waste | V1 production recovery/note controls | V2 now records good and waste deltas through the existing immutable attempt authority; no V2 hold/rework/note event model exists | PARTIAL | P1 routine exception handling |
+| Production | pause/hold, issue notes and waste | V1 production recovery/note controls | append-only hold/resume/note events, immutable attempt/output history, server-derived held state, and station controls | SUPERSEDES | hold never rewrites attempts, output, Artwork, Routing, or Fulfillment |
+| Production | request Prepress rework | V1 mutable production-return service | immutable `rework_requested` evidence blocks further Production and snapshots current output without route/attempt/artwork/Fulfillment mutation | PARTIAL | request is not a backward route transition or a successor handoff |
+| Production | return-to-Prepress / production-art successor | V1 mutable production-return service | deliberately absent: the current frozen route is shared by the line and a return may require active-attempt termination | GAP | P1; needs approved per-work successor routing and output-disposition authority |
 | Production | machine/printer assignment, bulk reassign, capacity calendar | V1 boards/actions | V2 intentionally has no scheduling domain | DEFERRED WITH DECISION | implement only a canonical scheduling authority if required |
 | Fulfillment | partial/multiple pickup with history | V2 immutable handoffs, pickup controls | SUPERSEDES | — |
 | Fulfillment | shipment quantities, carrier/service/tracking/notes/package count | Shipment Builder and container endpoints | PARITY | — |

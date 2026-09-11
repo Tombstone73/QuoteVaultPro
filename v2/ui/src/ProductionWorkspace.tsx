@@ -36,6 +36,8 @@ const requirementLabel = (work: ProductionWorkProjection) => {
 };
 
 const workState = (work: ProductionWorkProjection) => {
+  if (work.state === "held") return "On hold";
+  if (work.state === "rework_requested") return "Prepress rework requested";
   if (work.unitQuantitySatisfied) return "Unit satisfied";
   if (work.attempts.some((attempt) => !attempt.completedAt))
     return "Attempt active";
@@ -428,6 +430,43 @@ const attemptLabel = (attempt: ProductionAttempt) =>
     attempt.wasteQuantity ? ` · ${attempt.wasteQuantity} waste` : ""
   }`;
 
+const ProductionExceptionControls = ({
+  work,
+  canWork,
+  busy,
+  onHold,
+  onResume,
+  onNote,
+  onRequestRework,
+}: Readonly<{
+  work: ProductionWorkProjection;
+  canWork: boolean;
+  busy: boolean;
+  onHold: (category: string, note?: string) => void;
+  onResume: (note?: string) => void;
+  onNote: (note: string) => void;
+  onRequestRework: (reason: string, category?: string, note?: string) => void;
+}>) => {
+  const [category, setCategory] = useState("operator_issue");
+  const [note, setNote] = useState("");
+  const [reworkReason, setReworkReason] = useState("");
+  const held = work.state === "held";
+  const reworkRequested = work.state === "rework_requested";
+  return <section className="v2-production-exceptions" aria-label="Production exceptions">
+    <header><h3>Operational exception</h3><small>Holds and notes are immutable evidence; they do not alter output, artwork, or routing.</small></header>
+    <p><b>{held ? "On hold" : reworkRequested ? "Prepress rework requested — Production is blocked" : "No active hold"}</b></p>
+    <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)} disabled={busy || held || reworkRequested}><option value="operator_issue">Operator issue</option><option value="equipment">Equipment</option><option value="material">Material</option><option value="quality">Quality</option></select></label>
+    <label>Note<textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={1000} placeholder="Reason, condition, or next action" /></label>
+    <label>Prepress rework reason<textarea value={reworkReason} onChange={(event) => setReworkReason(event.target.value)} maxLength={500} placeholder="Why Production cannot continue as-is" disabled={reworkRequested} /></label>
+    <div>
+      {held ? <button type="button" disabled={!canWork || busy} onClick={() => onResume(note || undefined)}>Resume work</button> : <button type="button" disabled={!canWork || busy || work.unitQuantitySatisfied || reworkRequested} onClick={() => onHold(category, note || undefined)}>Place on hold</button>}
+      <button type="button" disabled={!canWork || busy || !note.trim()} onClick={() => onNote(note)}>Add note</button>
+      <button type="button" disabled={!canWork || busy || work.unitQuantitySatisfied || reworkRequested || !reworkReason.trim()} onClick={() => onRequestRework(reworkReason, category, note || undefined)}>Request Prepress Rework</button>
+    </div>
+    {work.exceptionEvents.length ? <ol>{work.exceptionEvents.slice().reverse().slice(0, 4).map((entry) => <li key={entry.productionWorkEventId}><b>{entry.kind.replaceAll("_", " ")}</b>{entry.category ? ` · ${entry.category}` : ""}{entry.note ? ` · ${entry.note}` : ""}</li>)}</ol> : <p>No exception evidence is recorded.</p>}
+  </section>;
+};
+
 /**
  * The approved Production station presentation backed entirely by real M2.3
  * ProductionWork/ProductionAttempt projections. Board and Calendar deliberately
@@ -576,6 +615,10 @@ export const ProductionWorkspace = ({
       productionApi.complete(organizationId, attemptId, newBusinessRequestId()),
     onSuccess: refresh,
   });
+  const hold = useMutation({mutationFn: (input: { category: string; note?: string }) => productionApi.hold(organizationId, work!.work.productionWorkId, newBusinessRequestId(), input), onSuccess: refresh});
+  const resume = useMutation({mutationFn: (note?: string) => productionApi.resume(organizationId, work!.work.productionWorkId, newBusinessRequestId(), note ? { note } : {}), onSuccess: refresh});
+  const note = useMutation({mutationFn: (value: string) => productionApi.note(organizationId, work!.work.productionWorkId, newBusinessRequestId(), value), onSuccess: refresh});
+  const requestRework = useMutation({mutationFn: (input: { reason: string; category?: string; note?: string }) => productionApi.requestRework(organizationId, work!.work.productionWorkId, newBusinessRequestId(), input), onSuccess: refresh});
   const open = useMutation({mutationFn:(artworkAssignmentId:string)=>productionApi.open(organizationId,newBusinessRequestId(),artworkAssignmentId),onSuccess:refresh});
 
   const selectStation = (nextStation: Station) => {
@@ -867,6 +910,7 @@ export const ProductionWorkspace = ({
             <small>{activeAttempt ? "In Progress" : "Next up"}</small>
           </div>
           {station === "flatbed" && !routedProductionWorkId ? (
+            <>
             <FlatbedStationPanel
               organizationId={organizationId}
               sessionScope={sessionScope}
@@ -887,6 +931,8 @@ export const ProductionWorkspace = ({
               onOpenArtwork={(item) => openArtwork(item.work.artworkFileId)}
               onOpenTraveler={(item) => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/production/works/${encodeURIComponent(item.work.productionWorkId)}/traveler.pdf`, "_blank", "noopener,noreferrer")}
             />
+            {work && <ProductionExceptionControls work={work} canWork={canWork} busy={hold.isPending || resume.isPending || note.isPending || requestRework.isPending} onHold={(category, value) => hold.mutate({category, ...(value ? {note:value} : {})})} onResume={(value) => resume.mutate(value)} onNote={(value) => note.mutate(value)} onRequestRework={(reason, category, value) => requestRework.mutate({reason, ...(category ? {category} : {}), ...(value ? {note:value} : {})})} />}
+            </>
           ) : (
           <section className="v2-production-station">
             <aside className="v2-production-rail">
@@ -931,7 +977,9 @@ export const ProductionWorkspace = ({
                           disabled={
                             !canWork ||
                             start.isPending ||
-                            work.unitQuantitySatisfied
+                            work.unitQuantitySatisfied ||
+                            work.state === "held" ||
+                            work.state === "rework_requested"
                           }
                           onClick={() =>
                             start.mutate(
@@ -982,6 +1030,8 @@ export const ProductionWorkspace = ({
                           disabled={
                             !canWork ||
                             output.isPending ||
+                            work.state === "held" ||
+                            work.state === "rework_requested" ||
                             !hasOutput
                           }
                           onClick={() =>
@@ -992,7 +1042,7 @@ export const ProductionWorkspace = ({
                         </button>
                         <button
                           className="v2-production-rail-button neutral"
-                          disabled={!canComplete || complete.isPending}
+                          disabled={!canComplete || complete.isPending || work.state === "held" || work.state === "rework_requested"}
                           onClick={() =>
                             complete.mutate(activeAttempt.productionAttemptId)
                           }
@@ -1095,8 +1145,9 @@ export const ProductionWorkspace = ({
                     sessionScope={sessionScope}
                     workId={work.work.productionWorkId}
                     activeAttempt={activeAttempt}
-                    canWork={canWork}
+                    canWork={canWork && work.state !== "held" && work.state !== "rework_requested"}
                   />
+                  <ProductionExceptionControls work={work} canWork={canWork} busy={hold.isPending || resume.isPending || note.isPending || requestRework.isPending} onHold={(category, value) => hold.mutate({category, ...(value ? {note:value} : {})})} onResume={(value) => resume.mutate(value)} onNote={(value) => note.mutate(value)} onRequestRework={(reason, category, value) => requestRework.mutate({reason, ...(category ? {category} : {}), ...(value ? {note:value} : {})})} />
                   <section className="v2-production-detail-lower">
                     <article>
                       <h3>Attempt history</h3>

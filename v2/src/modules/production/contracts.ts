@@ -6,6 +6,16 @@ import type { ProductionUnitRequirement } from "../shared/productionRequirements
 /** Stable execution destinations. Equipment identity is deliberately deferred. */
 export type ProductionStationKey = "flatbed" | "roll";
 export type ProductionAttemptKind = "initial" | "reprint" | "correction";
+/** Append-only operator evidence.  Control state is derived from this stream. */
+export type ProductionWorkEventKind = "hold" | "resume" | "note" | "rework_requested";
+export type ProductionWorkState = "ready" | "active" | "held" | "rework_requested" | "complete";
+export type ProductionWorkEvent = Readonly<{
+  productionWorkEventId: string; organizationId: OrganizationId; productionWorkId: ProductionWorkId;
+  sequence: number; kind: ProductionWorkEventKind; category?: string; note?: string;
+  reason?: string; productionAttemptId?: ProductionAttemptId;
+  recordedGoodQuantity?: number; recordedWasteQuantity?: number; createdAt: string;
+  createdPrincipalKind: PrincipalKind; createdPrincipalSubject: string; createdStaffActorUserId?: string;
+}>;
 
 /** One durable work identity for one frozen requirement and exact production-Art evidence. */
 export type ProductionWork = Readonly<{
@@ -38,7 +48,7 @@ export type ProductionOperatorContext = Readonly<{
 export type ProductionWorkProjection = Readonly<{
   work: ProductionWork; attempts: readonly ProductionAttempt[]; completedGoodQuantity: number;
   recordedGoodQuantity: number; remainingGoodQuantity: number; activeAttempt?: ProductionAttempt;
-  unitQuantitySatisfied: boolean;
+  unitQuantitySatisfied: boolean; state: ProductionWorkState; exceptionEvents: readonly ProductionWorkEvent[];
   operatorContext?: ProductionOperatorContext;
 }>;
 /**
@@ -52,3 +62,8 @@ export type OpenProductionWorkInput = Readonly<{ businessRequestId: string; artw
 export type StartProductionAttemptInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; stationKey: ProductionStationKey; kind: ProductionAttemptKind }>;
 export type RecordProductionOutputInput = Readonly<{ businessRequestId: string; productionAttemptId: ProductionAttemptId; goodQuantityDelta: number; wasteQuantityDelta?: number }>;
 export type CompleteProductionAttemptInput = Readonly<{ businessRequestId: string; productionAttemptId: ProductionAttemptId }>;
+export type HoldProductionWorkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; category: string; note?: string }>;
+export type ResumeProductionWorkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; note?: string }>;
+export type NoteProductionWorkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; note: string }>;
+/** This is deliberately a blocked request, not a route transition or a new handoff. */
+export type RequestProductionReworkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; reason: string; category?: string; note?: string }>;

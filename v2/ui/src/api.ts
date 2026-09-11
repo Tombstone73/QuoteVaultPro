@@ -1404,6 +1404,20 @@ export type ProductionWorkProjection = Readonly<{
   remainingGoodQuantity: number;
   activeAttempt?: ProductionAttempt;
   unitQuantitySatisfied: boolean;
+  state: "ready" | "active" | "held" | "rework_requested" | "complete";
+  exceptionEvents: readonly Readonly<{
+    productionWorkEventId: string;
+    sequence: number;
+    kind: "hold" | "resume" | "note" | "rework_requested";
+    category?: string;
+    reason?: string;
+    note?: string;
+    productionAttemptId?: string;
+    recordedGoodQuantity?: number;
+    recordedWasteQuantity?: number;
+    createdAt: string;
+    createdPrincipalSubject: string;
+  }>[];
   operatorContext?: Readonly<{
     orderNumber?: string;
     product?: Readonly<{ productId: string; displayName: string }>;
@@ -3117,6 +3131,14 @@ export const productionApi = {
       businessRequestId,
       {},
     ),
+  hold: (org: string, workId: string, businessRequestId: string, input: Readonly<{ category: string; note?: string }>) =>
+    productionMutation<unknown>(org, `/works/${encodeURIComponent(workId)}/hold`, businessRequestId, input),
+  resume: (org: string, workId: string, businessRequestId: string, input: Readonly<{ note?: string }> = {}) =>
+    productionMutation<unknown>(org, `/works/${encodeURIComponent(workId)}/resume`, businessRequestId, input),
+  note: (org: string, workId: string, businessRequestId: string, note: string) =>
+    productionMutation<unknown>(org, `/works/${encodeURIComponent(workId)}/notes`, businessRequestId, { note }),
+  requestRework: (org: string, workId: string, businessRequestId: string, input: Readonly<{ reason: string; category?: string; note?: string }>) =>
+    productionMutation<unknown>(org, `/works/${encodeURIComponent(workId)}/rework-requests`, businessRequestId, input),
   materials: (org: string, workId: string) =>
     request<ProductionMaterialProjection>(
       productionEndpoint(org, `/works/${encodeURIComponent(workId)}/materials`),
