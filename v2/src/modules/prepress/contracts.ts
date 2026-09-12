@@ -6,8 +6,14 @@ import type { ProductionUnitRequirement } from "../shared/productionRequirements
 
 /** Read-only queue grouping; absent/all preserves every supported routed line. */
 export type PrepressQueueRequirementState = "configured" | "unconfigured" | "all";
+/** Filters are intentionally projections of facts already owned by Routing,
+ * Artwork, Proofing and Prepress. They never create a second queue state. */
+export type PrepressQueueDestination = "flatbed" | "roll" | "all";
+export type PrepressQueueReadiness = "ready" | "blocked" | "all";
 export type PrepressQueuePageRequest = OperationalQueuePageRequest & Readonly<{
   requirementState?: PrepressQueueRequirementState;
+  destination?: PrepressQueueDestination;
+  readiness?: PrepressQueueReadiness;
 }>;
 
 /** One independently prepared, explicitly selected production-Artwork usage. */
@@ -50,6 +56,17 @@ export type PrepressProductionHandoff = Readonly<{
   unit: PrepressUnit;
   destination: "flatbed" | "roll";
   productionWorkIds: readonly ProductionWorkId[];
+}>;
+
+/** A deliberately page-bounded throughput command. It is not a persistent
+ * batch/run entity: each result remains the normal per-unit canonical handoff. */
+export const PREPRESS_BULK_HANDOFF_MAX = 50;
+export type SendPrepressToProductionBulkInput = Readonly<{
+  businessRequestId: string;
+  prepressUnitIds: readonly PrepressUnitId[];
+}>;
+export type PrepressBulkProductionHandoff = Readonly<{
+  handoffs: readonly PrepressProductionHandoff[];
 }>;
 
 /** Derived cross-owner read: no missing/aggregate state is persisted in Prepress. */

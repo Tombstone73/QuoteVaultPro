@@ -16,6 +16,7 @@ export interface PrepressHttpService {
   start(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
   complete(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
   sendToProduction(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
+  sendManyToProduction(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
 }
 export interface VerifiedV2PrepressPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
 export type PrepressHttpDependencies = Readonly<{ service: PrepressHttpService; principals: VerifiedV2PrepressPrincipalProvider }>;
@@ -28,7 +29,11 @@ const positive=(value:unknown,fallback:number)=>typeof value==="string"&&/^\d+$/
 const pageRequest=(request:Request):PrepressQueuePageRequest=>{
   const requirementState=request.query.requirementState;
   if(requirementState!==undefined&&requirementState!=="all"&&requirementState!=="configured"&&requirementState!=="unconfigured")throw new V2ApplicationError("VALIDATION_ERROR","requirementState must be configured, unconfigured, or all.");
-  return {page:positive(request.query.page,1),pageSize:Math.min(100,positive(request.query.pageSize,25)),...(typeof request.query.q==="string"?{search:request.query.q}:{}),...(requirementState===undefined?{}:{requirementState})};
+  const destination=request.query.destination;
+  if(destination!==undefined&&destination!=="all"&&destination!=="flatbed"&&destination!=="roll")throw new V2ApplicationError("VALIDATION_ERROR","destination must be flatbed, roll, or all.");
+  const readiness=request.query.readiness;
+  if(readiness!==undefined&&readiness!=="all"&&readiness!=="ready"&&readiness!=="blocked")throw new V2ApplicationError("VALIDATION_ERROR","readiness must be ready, blocked, or all.");
+  return {page:positive(request.query.page,1),pageSize:Math.min(100,positive(request.query.pageSize,25)),...(typeof request.query.q==="string"?{search:request.query.q}:{}),...(requirementState===undefined?{}:{requirementState}),...(destination===undefined?{}:{destination}),...(readiness===undefined?{}:{readiness})};
 };
 
 /** Authenticated transport for bounded queue reads and unit-scoped Prepress work. */
@@ -41,5 +46,6 @@ export const createPrepressRouter=(deps:PrepressHttpDependencies):Router=>{const
   router.post("/units/:prepressUnitId/start",(request,response)=>void run(response,async()=>deps.service.start(await context(request,deps,true),{...body(request.body),prepressUnitId:request.params.prepressUnitId as PrepressUnitId})));
   router.post("/units/:prepressUnitId/complete",(request,response)=>void run(response,async()=>deps.service.complete(await context(request,deps,true),{...body(request.body),prepressUnitId:request.params.prepressUnitId as PrepressUnitId})));
   router.post("/units/:prepressUnitId/send-to-production",(request,response)=>void run(response,async()=>deps.service.sendToProduction(await context(request,deps,true),{...body(request.body),prepressUnitId:request.params.prepressUnitId as PrepressUnitId})));
+  router.post("/units/send-to-production",(request,response)=>void run(response,async()=>deps.service.sendManyToProduction(await context(request,deps,true),body(request.body))));
   return router;
 };

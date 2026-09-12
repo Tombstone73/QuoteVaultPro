@@ -3032,12 +3032,16 @@ const prepressMutation = <T>(
     body: JSON.stringify({ ...input, businessRequestId }),
   });
 export type PrepressQueueRequirementState = "configured" | "unconfigured" | "all";
-export type PrepressQueuePageRequest = OperationalQueuePageRequest & Readonly<{ requirementState?: PrepressQueueRequirementState }>;
+export type PrepressQueueDestination = "flatbed" | "roll" | "all";
+export type PrepressQueueReadiness = "ready" | "blocked" | "all";
+export type PrepressQueuePageRequest = OperationalQueuePageRequest & Readonly<{ requirementState?: PrepressQueueRequirementState; destination?: PrepressQueueDestination; readiness?: PrepressQueueReadiness }>;
 export const prepressApi = {
   list: (org: string, query: PrepressQueuePageRequest = {}) => {
     const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 25) });
     if (query.search?.trim()) params.set("q", query.search.trim());
     if (query.requirementState) params.set("requirementState", query.requirementState);
+    if (query.destination) params.set("destination", query.destination);
+    if (query.readiness) params.set("readiness", query.readiness);
     return request<OperationalQueuePage<PrepressQueueItem>>(prepressEndpoint(org, `/queue?${params}`));
   },
   get: (org: string, prepressUnitId: string) =>
@@ -3072,6 +3076,13 @@ export const prepressApi = {
       `/units/${encodeURIComponent(prepressUnitId)}/send-to-production`,
       businessRequestId,
       {},
+    ),
+  sendManyToProduction: (org: string, prepressUnitIds: readonly string[], businessRequestId: string) =>
+    prepressMutation<Readonly<{ handoffs: readonly Readonly<{ unit: PrepressUnit; destination: "flatbed" | "roll"; productionWorkIds: readonly string[] }>[]}>>(
+      org,
+      "/units/send-to-production",
+      businessRequestId,
+      { prepressUnitIds: [...prepressUnitIds] },
     ),
 };
 const productionEndpoint = (org: string, suffix = "") =>

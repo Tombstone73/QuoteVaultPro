@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PrepressWorkspace } from "./PrepressWorkspace";
 
 const client = new QueryClient();
-client.setQueryData(["v2", "scope-a", "org-a", "prepress", "queue", 1, 25, "", "configured"], {
+client.setQueryData(["v2", "scope-a", "org-a", "prepress", "queue", 1, 25, "", "configured", "all", "all"], {
   items: [{ orderId: "order-a", orderNumber: "ORD-100", customerDisplayName: "Shop customer", orderLineId: "line-a", lineDescription: "Window graphics", quantity: 2, routingStepKind: "prepress", coverage: { state: "configured", productionArtworkComplete: true, allRequiredPrepressUnitsComplete: true, requirements: [{ requirement: { key: "front", side: "front" }, artworkAssignmentIds: ["assignment-a"], productionArtworkCovered: true, prepressComplete: true, prepressUnits: [{ prepressUnitId: "unit-a", organizationId: "org-a", orderId: "order-a", orderLineId: "line-a", artworkAssignmentId: "assignment-a", artworkFileId: "file-a", createdAt: "2026-09-06", startedAt: "2026-09-06", completedAt: "2026-09-06" }] }] }, operational: { materials: ["vinyl"], sourceArtwork: [], productionArtwork: [{ artworkAssignmentId: "assignment-a", artworkFileId: "file-a", filename: "ready.pdf", contentType: "application/pdf", purpose: "production", side: "front" }], proof: { required: true, state: "approved" }, productionDestination: "flatbed", readiness: { ready: true, blockers: [] } } }],
   pagination: { page: 1, pageSize: 25, totalCount: 1, totalPages: 1 },
 });
@@ -20,5 +20,9 @@ assert.match(markup, /Destination.*flatbed/s);
 assert.match(markup, /Proof.*approved/s);
 assert.match(markup, /Readiness: Ready to send/);
 assert.match(markup, /Send to flatbed/);
+assert.match(markup, /Filter Prepress station/);
+assert.match(markup, /Filter Prepress readiness/);
+assert.match(markup, /Select visible ready Prepress work/);
+assert.match(markup, /limit 50/);
 
 console.log("Prepress operational viewer, production-art revision, blocker, and handoff UI contracts passed.");

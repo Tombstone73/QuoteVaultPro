@@ -41,6 +41,42 @@ unit, then rejected a Local Delivery/destination/instruction replacement with
 the server's `409 CONFLICT` response. The handoff count remained one and the
 Shipping request snapshot remained unchanged after the rejected command.
 
+## M7.8F Artwork / Prepress throughput closure
+
+The active V1 Prepress surface is `/production/prepress`, not the older
+unlinked manual queue or standalone `/prepress` diagnostic tool. Its source
+proves station/status/rush/search/sort controls, unbounded selection, a
+client-side sequential bulk loop, per-line original-file ZIP, controlled
+material overrides, and durable Combined Runs. Combined Runs are not a visual
+convenience: V1 persists run/member/allocation state and downstream Production
+uses it. M7.8F therefore does not reproduce that mutable entity under another
+name.
+
+V2 now closes the safe workboard throughput subset using existing canonical
+owners: server-paged search now includes frozen station and readiness filters;
+the workspace provides page-scoped individual/select-visible selection capped
+at 50; and one authenticated bulk command locks and re-reads every selected
+Prepress unit before invoking the existing single handoff authority. The
+command is all-or-nothing, has one idempotent request record, uses stable lock
+ordering for overlapping selections, and retains an attribution/audit event
+for every real unit handoff. It does not create a batch, alter Artwork lineage,
+or infer a destination. Stale/unready/foreign units fail the whole operation
+without a browser-side partial loop.
+
+V2 already supersedes V1's routine source/current Production Artwork context:
+the workboard shows canonical source and current Production Art, revision
+upload supersedes the current Production-Art assignment, and private
+open/download rechecks `artwork.view`. V1's original-file ZIP is a narrow
+per-line stream (it excludes bridged attachments and can skip unavailable
+storage), so no broad multi-file bundle is claimed here. V1 material override
+is a real inventory/commercial mutation and standalone preflight is an
+unlinked TTL diagnostic utility; both remain owner decisions rather than new
+Prepress-side free-form state.
+
+The remaining M7.8F gap is explicit: persistent run/nesting and exception-run
+recovery require an approved V2 Production-run and successor-cycle domain.
+The existing `rework_requested` evidence is not misrepresented as that cycle.
+
 ## Result
 
 **PASS WITH FINDINGS — source/contract parity closure; M7.8E is IMPLEMENTED +

@@ -51,7 +51,10 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
   private readonly requests=new PostgresOperationRequestRepository();
   constructor(private readonly client:PoolClient,private readonly hooks?:PrepressPersistenceTestHooks) {}
   async reserve(input:Parameters<PrepressTransaction["reserve"]>[0]){const r=await this.requests.reserve(this.client,input);return {kind:r.kind,request:{id:r.request.id,resultJson:r.request.resultJson}};}
-  async succeed(org:string,id:string,result:Parameters<PrepressTransaction["succeed"]>[2]){await this.requests.succeed(this.client,org,id,{resourceType:"prepress_unit",resourceId:result.unit.prepressUnitId,resultJson:result});}
+  async succeed(org:string,id:string,result:Parameters<PrepressTransaction["succeed"]>[2]){
+    const unit="unit" in result?result.unit:undefined;
+    await this.requests.succeed(this.client,org,id,{resourceType:unit?"prepress_unit":"prepress_bulk_handoff",resourceId:unit?unit.prepressUnitId:`bulk:${id}`,resultJson:result});
+  }
   async attribute(input:Parameters<PrepressTransaction["attribute"]>[0]){await this.requests.recordAttribution(this.client,{organizationId:input.organizationId,operationRequestId:input.requestId,operation:input.operation,resourceType:"prepress_unit",resourceId:input.resourceId,principalKind:input.principalKind,principalSubject:input.principalSubject,staffActorUserId:input.staffActorUserId});}
   async audit(input:Parameters<PrepressTransaction["audit"]>[0]){await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,'prepress_unit',$5,$6,$7,$8,$9::jsonb)",[input.organizationId,input.requestId,input.operation,input.eventType,input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId??null,JSON.stringify([{kind:input.eventType,summary:input.summary}])]);await this.hooks?.afterAudit?.();}
   async findUnit(org:OrganizationId,id:PrepressUnitId){const r=await this.client.query<UnitRow>("SELECT * FROM v2_prepress_units WHERE organization_id=$1 AND id=$2",[org,id]);return r.rows[0]?unit(r.rows[0]):null;}
@@ -61,15 +64,31 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
   async listQueue(org:OrganizationId,request:PrepressQueuePageRequest):Promise<OperationalQueuePage<PrepressQueueItem>>{
     /* The queue is deliberately bounded. Coverage is loaded by the same
        transaction/repository, so no UI component infers requirements from art. */
-    const page=request.page??1,pageSize=request.pageSize??25,search=request.search??"",requirementState=request.requirementState??"all",offset=(page-1)*pageSize;
+    const page=request.page??1,pageSize=request.pageSize??25,search=request.search??"",requirementState=request.requirementState??"all",destination=request.destination??"all",readiness=request.readiness??"all",offset=(page-1)*pageSize;
+    /* Mirrors the projection's ready result using only canonical frozen facts.
+       Keeping this in SQL is important: filtering after pagination would make
+       an operator's page incomplete and would permit client-side inference. */
+    const ready=`l.production_requirement_state='configured'
+        AND EXISTS(SELECT 1 FROM v2_sales_line_production_requirements requirement WHERE requirement.organization_id=l.organization_id AND requirement.order_line_id=l.id)
+        AND NOT EXISTS(SELECT 1 FROM v2_sales_line_production_requirements requirement WHERE requirement.organization_id=l.organization_id AND requirement.order_line_id=l.id AND NOT EXISTS(
+          SELECT 1 FROM v2_artwork_assignments assignment JOIN v2_prepress_units completed ON completed.organization_id=assignment.organization_id AND completed.artwork_assignment_id=assignment.id AND completed.completed_at IS NOT NULL
+          WHERE assignment.organization_id=requirement.organization_id AND assignment.order_line_id=requirement.order_line_id AND assignment.purpose='production' AND assignment.side IS NOT DISTINCT FROM requirement.side AND assignment.source_page_index IS NOT DISTINCT FROM requirement.source_page_index AND assignment.layer_key IS NOT DISTINCT FROM requirement.layer_key AND assignment.layer_order IS NOT DISTINCT FROM requirement.layer_order AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=assignment.organization_id AND successor.supersedes_artwork_assignment_id=assignment.id)
+        ))
+        AND (NOT COALESCE((l.resolved_configuration#>>'{productFacts,requiresProofApproval}')::boolean,(v.tree_json#>>'{meta,general,requiresProofApproval}')::boolean,false) OR EXISTS(
+          SELECT 1 FROM v2_proof_works work JOIN v2_proof_versions version ON version.organization_id=work.organization_id AND version.proof_work_id=work.id JOIN v2_proof_responses response ON response.organization_id=version.organization_id AND response.proof_version_id=version.id
+          WHERE work.organization_id=l.organization_id AND work.order_line_id=l.id AND response.outcome='approved' AND version.id=(SELECT latest.id FROM v2_proof_versions latest WHERE latest.organization_id=work.organization_id AND latest.proof_work_id=work.id ORDER BY latest.sequence DESC LIMIT 1)
+        ))
+        AND EXISTS(SELECT 1 FROM v2_route_instance_steps production_step WHERE production_step.organization_id=ri.organization_id AND production_step.route_instance_id=ri.id AND production_step.step_kind='production' AND production_step.production_destination_station_key IS NOT NULL)`;
     const where=`d.organization_id=$1 AND d.document_kind='order' AND ri.route_state IN ('pending','active')
         AND step.step_kind IN ('proofing','prepress')
         AND EXISTS(SELECT 1 FROM v2_route_instance_steps ps WHERE ps.organization_id=ri.organization_id AND ps.route_instance_id=ri.id AND ps.step_kind='prepress')
         AND NOT EXISTS(SELECT 1 FROM v2_sales_line_workflow_exceptions bypass WHERE bypass.organization_id=l.organization_id AND bypass.order_line_id=l.id AND bypass.prepress_requirement='not_required')
         AND ($3::text='all' OR l.production_requirement_state=$3::text)
-        AND ($2='' OR d.display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%' OR l.description ILIKE '%'||$2||'%')`;
+        AND ($4::text='all' OR EXISTS(SELECT 1 FROM v2_route_instance_steps production_step WHERE production_step.organization_id=ri.organization_id AND production_step.route_instance_id=ri.id AND production_step.step_kind='production' AND production_step.production_destination_station_key=$4::text))
+        AND ($5::text='all' OR ($5::text='ready' AND (${ready})) OR ($5::text='blocked' AND NOT (${ready})))
+        AND ($2='' OR d.display_number ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%' OR l.description ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM v2_order_line_material_requirements material WHERE material.organization_id=l.organization_id AND material.order_line_id=l.id AND (material.material_name_snapshot ILIKE '%'||$2||'%' OR COALESCE(material.material_sku_snapshot,'') ILIKE '%'||$2||'%')))`;
     const [count,rows]=await Promise.all([
-      this.client.query<{count:string}>(`SELECT count(*) count FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id AND o.commercial_state='open' AND o.archived_at IS NULL JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id JOIN v2_route_instances ri ON ri.organization_id=l.organization_id AND ri.order_document_id=d.id AND ri.order_line_id=l.id LEFT JOIN v2_route_instance_steps step ON step.organization_id=ri.organization_id AND step.route_instance_id=ri.id AND step.id=ri.current_step_id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id WHERE ${where}`,[org,search,requirementState]),
+      this.client.query<{count:string}>(`SELECT count(*) count FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id AND o.commercial_state='open' AND o.archived_at IS NULL JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id JOIN v2_route_instances ri ON ri.organization_id=l.organization_id AND ri.order_document_id=d.id AND ri.order_line_id=l.id LEFT JOIN v2_route_instance_steps step ON step.organization_id=ri.organization_id AND step.route_instance_id=ri.id AND step.id=ri.current_step_id LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId' WHERE ${where}`,[org,search,requirementState,destination,readiness]),
     this.client.query<OperationalLineRow>(`SELECT d.id order_id,d.display_number order_number,d.customer_id customer_id,COALESCE(c.display_name,c.company_name,'Customer') customer_display_name,l.id line_id,l.description line_description,l.quantity,d.requested_due_date::text,step.step_kind,l.production_requirement_state,l.resolved_configuration,
         COALESCE((l.resolved_configuration#>>'{productFacts,requiresProofApproval}')::boolean,(v.tree_json#>>'{meta,general,requiresProofApproval}')::boolean,false) requires_proof,
         COALESCE(e.production_destination,next_production.production_destination_station_key) production_destination
@@ -82,7 +101,7 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
       LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId'
       LEFT JOIN v2_sales_line_workflow_exceptions e ON e.organization_id=l.organization_id AND e.order_line_id=l.id
       WHERE ${where}
-      ORDER BY d.requested_due_date NULLS LAST,d.updated_at DESC,l.position,l.id LIMIT $4 OFFSET $5`,[org,search,requirementState,pageSize,offset]),
+      ORDER BY d.requested_due_date NULLS LAST,d.updated_at DESC,l.position,l.id LIMIT $6 OFFSET $7`,[org,search,requirementState,destination,readiness,pageSize,offset]),
     ]);
     const totalCount=Number(count.rows[0]?.count??0),lineIds=rows.rows.map((row)=>row.line_id);if(!lineIds.length)return {items:[],pagination:{page,pageSize:pageSize as 25|50|100,totalCount,totalPages:Math.ceil(totalCount/pageSize)}};
     const [requirements,evidence,artwork,proofs,materials]=await Promise.all([

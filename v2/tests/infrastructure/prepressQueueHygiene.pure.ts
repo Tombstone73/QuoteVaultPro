@@ -40,10 +40,12 @@ for (const requirementState of [undefined, "all", "configured", "unconfigured"] 
     assert.match(query.sql, /ri.route_state IN \('pending','active'\)/);
     assert.match(query.sql, /ps.step_kind='prepress'/);
     assert.match(query.sql, /\(\$3::text='all' OR l.production_requirement_state=\$3::text\)/);
-    assert.deepEqual(query.values.slice(0, 3), ["org-a", "QA", requirementState ?? "all"]);
+    assert.match(query.sql, /production_destination_station_key=\$4::text/);
+    assert.match(query.sql, /\$5::text='ready'/);
+    assert.deepEqual(query.values.slice(0, 5), ["org-a", "QA", requirementState ?? "all", "all", "all"]);
   }
-  assert.match(rows.sql, /LIMIT \$4 OFFSET \$5$/);
-  assert.deepEqual(rows.values.slice(3), [25, 25]);
+  assert.match(rows.sql, /LIMIT \$6 OFFSET \$7$/);
+  assert.deepEqual(rows.values.slice(5), [25, 25]);
   for (const query of queries.slice(2)) assert.deepEqual(query.values, ["org-a", pageRows.map(row => row.line_id)]);
   assert.ok(queries.every(query => query.sql.startsWith("SELECT")), "recovery is read-only");
   if (state === "unconfigured") for (const item of result.items) assert.deepEqual(item.coverage, { state: "unconfigured", requirements: [], productionArtworkComplete: false, allRequiredPrepressUnitsComplete: false });
@@ -62,10 +64,12 @@ const server = express().use("/v2/organizations/:organizationId/prepress", creat
 }));
 for (const state of ["configured", "unconfigured", "all"]) {
   await request(server).get(`/v2/organizations/org-a/prepress/queue?requirementState=${state}&page=2&pageSize=50&q=%20QA%20`).expect(200);
-  assert.deepEqual(calls.at(-1), { organizationId: "org-a", query: { page: 2, pageSize: 50, search: "QA", requirementState: state } });
+  assert.deepEqual(calls.at(-1), { organizationId: "org-a", query: { page: 2, pageSize: 50, search: "QA", requirementState: state, destination: "all", readiness: "all" } });
 }
 await request(server).get("/v2/organizations/org-a/prepress/queue").expect(200);
 assert.equal(calls.at(-1)?.query.requirementState, "all", "existing API consumers retain all routed work");
+await request(server).get("/v2/organizations/org-a/prepress/queue?destination=roll&readiness=ready").expect(200);
+assert.deepEqual(calls.at(-1), { organizationId: "org-a", query: { page: 1, pageSize: 25, search: "", destination: "roll", readiness: "ready", requirementState: "all" } });
 const authorizedCalls = calls.length;
 for (const invalid of ["unknown", "", "configured&requirementState=unconfigured", "configured%27%20OR%201=1--"]) {
   const response = await request(server).get(`/v2/organizations/org-a/prepress/queue?requirementState=${invalid}`).expect(400);

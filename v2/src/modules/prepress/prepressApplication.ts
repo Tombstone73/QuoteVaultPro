@@ -5,15 +5,16 @@ import { principalSubject, staffActorId } from "../../authorization/principals.j
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type ArtworkAssignmentId, type OrganizationId, type OrderLineId, type PrepressUnitId } from "../shared/commercialValues.js";
 import { normalizeOperationalQueuePage, type OperationalQueuePage } from "../shared/operationalQueue.js";
-import type { CompletePrepressUnitInput, OpenPrepressUnitInput, OrderLinePrepressCoverage, PrepressProductionHandoff, PrepressQueueItem, PrepressQueuePageRequest, PrepressUnit, SendPrepressToProductionInput, StartPrepressUnitInput } from "./contracts.js";
+import { PREPRESS_BULK_HANDOFF_MAX, type CompletePrepressUnitInput, type OpenPrepressUnitInput, type OrderLinePrepressCoverage, type PrepressBulkProductionHandoff, type PrepressProductionHandoff, type PrepressQueueItem, type PrepressQueuePageRequest, type PrepressUnit, type SendPrepressToProductionBulkInput, type SendPrepressToProductionInput, type StartPrepressUnitInput } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
 export type PrepressMutationResult = Readonly<{ unit: PrepressUnit }>;
+type PrepressOperationResult = PrepressMutationResult | PrepressBulkProductionHandoff;
 
 export interface PrepressTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string } & Actor>): Promise<Reservation>;
-  succeed(organizationId: string, requestId: string, result: PrepressMutationResult): Promise<void>;
+  succeed(organizationId: string, requestId: string, result: PrepressOperationResult): Promise<void>;
   attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceId: string } & Actor>): Promise<void>;
   audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "prepress_unit_opened" | "prepress_unit_started" | "prepress_unit_completed" | "prepress_unit_handed_to_production"; resourceId: string; summary: string } & Actor>): Promise<void>;
   findUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
@@ -50,7 +51,11 @@ export class PrepressApplicationService {
       requireOperationPrincipalScope(context); this.require(context, "prepress.view");
       const requirementState = request.requirementState ?? "all";
       if (!["all", "configured", "unconfigured"].includes(requirementState)) throw new V2ApplicationError("VALIDATION_ERROR", "requirementState must be configured, unconfigured, or all.");
-      const page = { ...normalizeOperationalQueuePage(request), requirementState };
+      const destination = request.destination ?? "all";
+      if (!["all", "flatbed", "roll"].includes(destination)) throw new V2ApplicationError("VALIDATION_ERROR", "destination must be flatbed, roll, or all.");
+      const readiness = request.readiness ?? "all";
+      if (!["all", "ready", "blocked"].includes(readiness)) throw new V2ApplicationError("VALIDATION_ERROR", "readiness must be ready, blocked, or all.");
+      const page = { ...normalizeOperationalQueuePage(request), requirementState, destination, readiness };
       return success(await this.runner.transaction((tx) => tx.listQueue(brandedId<"OrganizationId">(context.organizationId), page)));
     } catch (error) { return failure(this.error(error)); }
   }
@@ -90,6 +95,46 @@ export class PrepressApplicationService {
       const handoff = await tx.handoffToProduction({ organizationId: brandedId<"OrganizationId">(context.organizationId), prepressUnitId: input.prepressUnitId, ...actor(context) });
       return handoff;
     }) as Promise<ApplicationResult<PrepressProductionHandoff>>;
+  }
+  /**
+   * Page-bounded, all-or-nothing throughput command. The unit handoff is still
+   * the single canonical authority; this only composes several handoffs inside
+   * one transaction so the browser can never create an ambiguous partial run.
+   */
+  async sendManyToProduction(context: OperationContext, input: SendPrepressToProductionBulkInput): Promise<ApplicationResult<PrepressBulkProductionHandoff>> {
+    try {
+      requireOperationPrincipalScope(context);
+      for (const capability of ["prepress.complete", "route.advance", "production.work"] as const)
+        if (!this.authority.decide(context.principal, { capability, resource: { organizationId: context.organizationId } }).allowed)
+          throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority to hand Prepress work to Production.");
+      if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      // Stable lock order prevents two overlapping operator selections from
+      // taking the same unit locks in opposite order. Order is not business
+      // meaning, so it is also normalized for idempotency.
+      const submitted:unknown= input.prepressUnitIds;
+      if(!Array.isArray(submitted)||submitted.some((id)=>typeof id!=="string")) throw new V2ApplicationError("VALIDATION_ERROR", "prepressUnitIds must be an array of unit IDs.");
+      const ids = [...new Set(submitted.map((id)=>brandedId<"PrepressUnitId">(id.trim())))].sort((left,right)=>left.localeCompare(right));
+      if (!ids.length || ids.length > PREPRESS_BULK_HANDOFF_MAX || ids.some((id) => !String(id).trim()))
+        throw new V2ApplicationError("VALIDATION_ERROR", `Select between 1 and ${PREPRESS_BULK_HANDOFF_MAX} distinct Prepress units.`);
+      return success(await this.runner.transaction(async (tx) => {
+        const reserved = await tx.reserve({ organizationId: context.organizationId, operation: "prepress.units.handoff-to-production.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint({ prepressUnitIds: ids }), ...actor(context) });
+        if (reserved.kind === "replay") return reserved.request.resultJson as PrepressBulkProductionHandoff;
+        // Lock/re-read every unit before any route can advance. The database
+        // transaction rolls all prior handoffs back if a later item is stale.
+        const locked=[] as PrepressUnit[];
+        for (const id of ids) { const unit=await tx.lockUnit(brandedId<"OrganizationId">(context.organizationId), id); if(!unit)throw new V2ApplicationError("NOT_FOUND", "A selected Prepress unit is unavailable."); locked.push(unit); }
+        if(new Set(locked.map((unit)=>unit.orderLineId)).size!==locked.length)throw new V2ApplicationError("VALIDATION_ERROR", "Select at most one completed Prepress unit per Order line.");
+        const handoffs: PrepressProductionHandoff[] = [];
+        for (const unit of locked.sort((left,right)=>`${left.orderId}:${left.orderLineId}:${left.prepressUnitId}`.localeCompare(`${right.orderId}:${right.orderLineId}:${right.prepressUnitId}`))) handoffs.push(await tx.handoffToProduction({ organizationId: brandedId<"OrganizationId">(context.organizationId), prepressUnitId: unit.prepressUnitId, ...actor(context) }));
+        const result: PrepressBulkProductionHandoff = { handoffs };
+        for (const handoff of handoffs) {
+          await tx.attribute({ organizationId: context.organizationId, requestId: reserved.request.id, operation: "prepress.units.handoff-to-production.v1", resourceId: handoff.unit.prepressUnitId, ...actor(context) });
+          await tx.audit({ organizationId: context.organizationId, requestId: reserved.request.id, operation: "prepress.units.handoff-to-production.v1", eventType: "prepress_unit_handed_to_production", resourceId: handoff.unit.prepressUnitId, summary: `Prepress evidence handed to the frozen Production destination. Destination: ${handoff.destination}.`, ...actor(context) });
+        }
+        await tx.succeed(context.organizationId, reserved.request.id, result);
+        return result;
+      }));
+    } catch (error) { return failure(this.error(error)); }
   }
   private async mutate(context: OperationContext, operation: string, input: { businessRequestId: string }, capability: "prepress.work" | "prepress.complete", eventType: Parameters<PrepressTransaction["audit"]>[0]["eventType"], summary: string, work: (tx: PrepressTransaction) => Promise<PrepressMutationResult>): Promise<ApplicationResult<PrepressMutationResult>> {
     try { requireOperationPrincipalScope(context); this.require(context, capability); if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required."); return success(await this.runner.transaction(async (tx) => { const reserved = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) }); if (reserved.kind === "replay") return reserved.request.resultJson as PrepressMutationResult; const result = await work(tx); const destination="destination" in result&&typeof result.destination==="string"?` Destination: ${result.destination}.`:""; await tx.attribute({ organizationId: context.organizationId, requestId: reserved.request.id, operation, resourceId: result.unit.prepressUnitId, ...actor(context) }); await tx.audit({ organizationId: context.organizationId, requestId: reserved.request.id, operation, eventType, resourceId: result.unit.prepressUnitId, summary:`${summary}${destination}`, ...actor(context) }); await tx.succeed(context.organizationId, reserved.request.id, result); return result; })); } catch (error) { return failure(this.error(error)); }
