@@ -8711,9 +8711,10 @@ export const directPrintJobs = pgTable("direct_print_jobs", {
   trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
   status: varchar("status", { length: 20 }).notNull().$type<typeof directPrintJobStatusValues[number]>().default("queued"),
   attempts: integer("attempts").notNull().default(0), claimedAt: timestamp("claimed_at", { withTimezone: true }), submittedAt: timestamp("submitted_at", { withTimezone: true }), failedAt: timestamp("failed_at", { withTimezone: true }), lastError: text("last_error"),
+  requestKey: varchar("request_key", { length: 160 }).notNull(),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => [index("direct_print_jobs_agent_queue_idx").on(table.agentId, table.status, table.createdAt), index("direct_print_jobs_org_idx").on(table.organizationId, table.createdAt)]);
+}, (table) => [index("direct_print_jobs_agent_queue_idx").on(table.agentId, table.status, table.createdAt), index("direct_print_jobs_org_idx").on(table.organizationId, table.createdAt), uniqueIndex("direct_print_jobs_org_request_key_uidx").on(table.organizationId, table.requestKey)]);
 
 // Stage 19G: authoritative batch/child state is separate from generic plans.
 // A plan describes one confirmed action; these records retain row payloads,

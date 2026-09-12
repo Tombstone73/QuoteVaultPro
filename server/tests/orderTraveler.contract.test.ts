@@ -13,12 +13,17 @@ describe("order traveler identification projection", () => {
     const travelerRouteStart = source.indexOf('app.get("/api/orders/:orderId/traveler"');
     const travelerRouteEnd = source.indexOf('app.post("/api/orders/:orderId/traveler-print"');
     const travelerRoute = source.slice(travelerRouteStart, travelerRouteEnd);
+    const travelerSource = readFileSync(
+      path.join(process.cwd(), "server/services/orderTravelerSourceService.ts"),
+      "utf8",
+    );
 
     expect(travelerRouteStart).toBeGreaterThan(-1);
     expect(travelerRouteEnd).toBeGreaterThan(travelerRouteStart);
-    expect(travelerRoute).toContain("poNumber: orders.poNumber");
-    expect(travelerRoute).toContain("jobLabel: orders.label");
-    expect(travelerRoute).toContain("poNumber: order.poNumber ?? null");
-    expect(travelerRoute).toContain("jobLabel: order.jobLabel ?? null");
+    expect(travelerRoute).toContain("getOrderTravelerSource(organizationId, orderId)");
+    expect(travelerSource).toContain("poNumber: orders.poNumber");
+    expect(travelerSource).toContain("jobLabel: orders.label");
+    expect(travelerSource).toContain("poNumber: order.poNumber ?? null");
+    expect(travelerSource).toContain("jobLabel: order.jobLabel ?? null");
   });
 });

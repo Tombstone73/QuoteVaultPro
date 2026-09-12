@@ -29,16 +29,19 @@ import {
 } from "@/components/production/ticketPrintPrimitives";
 import { Printer, ArrowLeft } from "lucide-react";
 
-function useOrderTraveler(orderId: string | undefined) {
+function useOrderTraveler(orderId: string | undefined, directPrintJobId: string | null) {
   return useQuery<OrderTravelerSource>({
-    queryKey: ["/api/orders", orderId, "traveler"],
+    queryKey: ["/api/orders", orderId, "traveler", directPrintJobId],
     queryFn: async () => {
-      const res = await fetch(`/api/orders/${orderId}/traveler`, { credentials: "include" });
+      const url = directPrintJobId
+        ? `/api/local-bridge/direct-print/jobs/${encodeURIComponent(directPrintJobId)}/traveler`
+        : `/api/orders/${orderId}/traveler`;
+      const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load order traveler");
       const json = await res.json();
       return json.data as OrderTravelerSource;
     },
-    enabled: !!orderId,
+    enabled: !!orderId && (!directPrintJobId || directPrintJobId.length > 0),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -47,7 +50,8 @@ function useOrderTraveler(orderId: string | undefined) {
 export default function OrderTravelerPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const [searchParams] = useSearchParams();
-  const { data, isLoading, error } = useOrderTraveler(orderId);
+  const directPrintJobId = searchParams.get("directPrintJobId");
+  const { data, isLoading, error } = useOrderTraveler(orderId, directPrintJobId);
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const printer = useStationPrinter();
@@ -116,7 +120,7 @@ export default function OrderTravelerPage() {
       </div>
 
       <div className="mx-auto max-w-md px-4 py-6">
-        <ThermalPrintPage feedSpacer={Number.isFinite(feedMm) && feedMm > 0 ? `${feedMm}mm` : undefined}>
+        <ThermalPrintPage ready feedSpacer={Number.isFinite(feedMm) && feedMm > 0 ? `${feedMm}mm` : undefined}>
           <ThermalValue align="center" size="normal" style={{ textTransform: "uppercase" }}>
             Order Traveler
           </ThermalValue>

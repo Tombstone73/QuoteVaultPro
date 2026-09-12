@@ -64,14 +64,17 @@ export function registerPrinterProfileRoutes(
       const organizationId = getRequestOrganizationId(req); const orderId = String(req.params.orderId || "");
       const destinationId = String(req.body?.destinationId || ""); const copies = Number(req.body?.copies);
       const printNote = typeof req.body?.printNote === "string" ? req.body.printNote.trim() : "";
-      if (!organizationId || !orderId || !destinationId || !Number.isInteger(copies) || copies < 1 || copies > 99 || printNote.length > 1000) return res.status(400).json({ success: false, code: "DIRECT_PRINT_VALIDATION", error: "Select a destination and enter 1–99 copies." });
+      const requestKey = String(req.header("Idempotency-Key") || req.body?.requestKey || "").trim();
+      if (!organizationId || !orderId || !destinationId || !Number.isInteger(copies) || copies < 1 || copies > 99 || printNote.length > 1000 || !requestKey || requestKey.length > 160) return res.status(400).json({ success: false, code: "DIRECT_PRINT_VALIDATION", error: "Select a destination, enter 1–99 copies, and provide a valid print request key." });
       const [order] = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId))).limit(1);
       const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`)).limit(1);
       if (!order || !destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Traveler destination is not available for direct printing." });
       const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
       if (!agent?.lastSeenAt || Date.now() - new Date(agent.lastSeenAt).getTime() > 120000) return res.status(409).json({ success: false, code: "PRINT_AGENT_OFFLINE", error: "The mapped Print Agent is offline." });
-      const [job] = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId, agentId: agent.id, copies, printNote: printNote || null, trailingFeedMm: destination.trailingFeedMm, createdByUserId: getUserId(req.user) ?? null }).returning();
-      res.status(202).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName } });
+      const created = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId, agentId: agent.id, copies, printNote: printNote || null, trailingFeedMm: destination.trailingFeedMm, requestKey, createdByUserId: getUserId(req.user) ?? null }).onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
+      const job = created[0] ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.requestKey, requestKey))).limit(1))[0];
+      if (!job) return res.status(500).json({ success: false, code: "DIRECT_PRINT_CREATE_FAILED", error: "Could not create the Traveler print job." });
+      res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName, duplicate: !created[0] } });
     } catch (error) { sendError(res, error, "Failed to queue Traveler print"); }
   });
 

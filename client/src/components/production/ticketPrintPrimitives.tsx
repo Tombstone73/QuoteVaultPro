@@ -18,15 +18,19 @@ export function ThermalPrintPage({
   children,
   feedSpacer = THERMAL_FEED_SPACER_DEFAULT,
   style,
+  ready = false,
 }: {
   children: ReactNode;
   feedSpacer?: string;
   style?: CSSProperties;
+  /** Allows the local print agent to wait for canonical React rendering. */
+  ready?: boolean;
 }) {
   const feedSpacerStyle = { "--thermal-feed-spacer": feedSpacer } as CSSProperties;
   return (
     <div
       id={THERMAL_PRINT_AREA_ID}
+      data-traveler-ready={ready ? "true" : undefined}
       className="mx-auto bg-white text-black"
       style={{
         ...feedSpacerStyle,

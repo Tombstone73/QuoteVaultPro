@@ -122,6 +122,7 @@ import {
     orderCreationIdempotencyStore,
 } from "./helpers/orderCreationIdempotency.helpers";
 import { getClientBooleanOverride } from "../lib/clientBooleanOverride";
+import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import {
     mergePricingIntoSpecsJson,
     resolvePersistedLineItemPricing,
@@ -2188,108 +2189,9 @@ export async function registerOrderRoutes(
             const orderId = String(req.params.orderId || "");
             if (!orderId.trim()) return res.status(400).json({ message: "orderId required" });
 
-            const orderRows = await db
-                .select({
-                    id: orders.id,
-                    orderNumber: orders.orderNumber,
-                    poNumber: orders.poNumber,
-                    jobLabel: orders.label,
-                    dueDate: orders.dueDate,
-                    priority: orders.priority,
-                    notesInternal: orders.notesInternal,
-                    contactId: orders.contactId,
-                    customerName: customers.companyName,
-                })
-                .from(orders)
-                .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, organizationId)))
-                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
-                .limit(1);
-
-            const order = orderRows[0];
-            if (!order) return res.status(404).json({ message: "Order not found" });
-
-            let contactName: string | null = null;
-            if (order.contactId) {
-                const contactRows = await db
-                    .select({ firstName: customerContacts.firstName, lastName: customerContacts.lastName })
-                    .from(customerContacts)
-                    .where(eq(customerContacts.id, order.contactId))
-                    .limit(1);
-                const c = contactRows[0];
-                if (c) contactName = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim() || null;
-            }
-
-            const lineItemRows = await db
-                .select({
-                    id: orderLineItems.id,
-                    description: orderLineItems.description,
-                    quantity: orderLineItems.quantity,
-                    width: orderLineItems.width,
-                    height: orderLineItems.height,
-                    materialId: orderLineItems.materialId,
-                    productPrimaryMaterialId: products.primaryMaterialId,
-                    pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
-                    materialUsageJson: orderLineItems.materialUsageJson,
-                    materialUsages: orderLineItems.materialUsages,
-                    specsJson: orderLineItems.specsJson,
-                    optionSelectionsJson: orderLineItems.optionSelectionsJson,
-                    selectedOptions: orderLineItems.selectedOptions,
-                    productionNotes: orderLineItems.productionNotes,
-                    sortOrder: orderLineItems.sortOrder,
-                    createdAt: orderLineItems.createdAt,
-                })
-                .from(orderLineItems)
-                .leftJoin(products, and(eq(orderLineItems.productId, products.id), eq(products.organizationId, organizationId)))
-                .where(eq(orderLineItems.orderId, orderId))
-                .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt);
-
-            const materialIds = Array.from(
-                new Set(lineItemRows.flatMap((li) => collectLineItemProductionMaterialIds({
-                    lineItem: li,
-                    productPrimaryMaterialId: li.productPrimaryMaterialId ?? null,
-                }))),
-            );
-            const materialNameById = new Map<string, string>();
-            if (materialIds.length > 0) {
-                const materialRows = await db
-                    .select({ id: materials.id, name: materials.name })
-                    .from(materials)
-                    .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)));
-                for (const m of materialRows) materialNameById.set(m.id, m.name);
-            }
-
-            const travelerLineItems = lineItemRows.map((li) => {
-                const size = li.width && li.height ? `${li.width} × ${li.height}` : null;
-                return {
-                    description: li.description ?? "",
-                    quantity: Number(li.quantity) || 0,
-                    size,
-                    material: resolveLineItemMaterialDisplayLabel({
-                        lineItem: li,
-                        materialName: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
-                        materialById: materialNameById,
-                        productPrimaryMaterialId: li.productPrimaryMaterialId ?? null,
-                        primaryMaterialName: li.productPrimaryMaterialId ? materialNameById.get(li.productPrimaryMaterialId) ?? null : null,
-                    }),
-                    productionNotes: li.productionNotes ?? null,
-                };
-            });
-
-            return res.json({
-                success: true,
-                data: {
-                    orderId: order.id,
-                    orderNumber: order.orderNumber,
-                    poNumber: order.poNumber ?? null,
-                    jobLabel: order.jobLabel ?? null,
-                    customerName: String(order.customerName || "—"),
-                    contactName,
-                    dueDate: order.dueDate ?? null,
-                    priority: order.priority ?? null,
-                    internalNotes: order.notesInternal ?? null,
-                    lineItems: travelerLineItems,
-                },
-            });
+            const traveler = await getOrderTravelerSource(organizationId, orderId);
+            if (!traveler) return res.status(404).json({ message: "Order not found" });
+            return res.json({ success: true, data: traveler });
         } catch (error) {
             console.error("Error building order traveler:", error);
             return res.status(500).json({ message: "Failed to build order traveler" });
