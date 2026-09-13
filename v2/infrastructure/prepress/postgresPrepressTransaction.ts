@@ -193,8 +193,9 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
       FROM v2_sales_document_lines l LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId' WHERE l.organization_id=$1 AND l.id=$2 FOR SHARE OF l`,[input.organizationId,prepared.orderLineId]);
     if(!proof.rows[0])throw new Error("Order line was not found.");if(proof.rows[0].required&&!proof.rows[0].approved)throw new Error("The current Proof Version must be approved before sending this work to Production.");
     if(prepared.reworkCycleId){
-      const cycle=await this.client.query<{id:string;predecessor_production_work_id:string;remaining_required_quantity:number;state:"prepress_pending"|"production_created"}>("SELECT id,predecessor_production_work_id,remaining_required_quantity,state FROM v2_production_rework_cycles WHERE organization_id=$1 AND id=$2 FOR UPDATE",[input.organizationId,prepared.reworkCycleId]);
+      const cycle=await this.client.query<{id:string;predecessor_production_work_id:string;remaining_required_quantity:number;destination_station_key:"flatbed"|"roll"|null;state:"prepress_pending"|"production_created"}>("SELECT id,predecessor_production_work_id,remaining_required_quantity,destination_station_key,state FROM v2_production_rework_cycles WHERE organization_id=$1 AND id=$2 FOR UPDATE",[input.organizationId,prepared.reworkCycleId]);
       const current=cycle.rows[0];if(!current||current.state!=="prepress_pending")throw new Error("The rework successor cycle is no longer available for Production handoff.");
+      if(!current.destination_station_key)throw new Error("The rework successor cycle has no frozen Production destination.");
       const artwork=await this.client.query<{current:boolean}>("SELECT NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) current FROM v2_artwork_assignments a WHERE a.organization_id=$1 AND a.id=$2",[input.organizationId,prepared.artworkAssignmentId]);
       if(!artwork.rows[0]?.current)throw new Error("Rework Production Artwork changed; open the current Artwork as the successor Prepress unit before handoff.");
       const inserted=await this.client.query<{id:string}>(`INSERT INTO v2_production_works(id,organization_id,order_document_id,order_line_id,requirement_key,artwork_assignment_id,artwork_file_id,prepress_unit_id,side,source_page_index,layer_key,layer_order,ordered_quantity,rework_cycle_id,predecessor_production_work_id,created_principal_kind,created_principal_subject,created_staff_actor_user_id)
@@ -203,7 +204,7 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
         WHERE predecessor.organization_id=$1 AND predecessor.id=$9 RETURNING id`,[input.organizationId,prepared.artworkAssignmentId,prepared.prepressUnitId,current.remaining_required_quantity,prepared.reworkCycleId,input.principalKind,input.principalSubject,input.staffActorUserId??null,current.predecessor_production_work_id]);
       if(!inserted.rows[0])throw new Error("Successor Production work could not be created.");
       await this.client.query("UPDATE v2_production_rework_cycles SET successor_production_work_id=$3,state='production_created' WHERE organization_id=$1 AND id=$2",[input.organizationId,prepared.reworkCycleId,inserted.rows[0].id]);
-      return {unit:prepared,destination,productionWorkIds:[brandedId<"ProductionWorkId">(inserted.rows[0].id)]};
+      return {unit:prepared,destination:current.destination_station_key,productionWorkIds:[brandedId<"ProductionWorkId">(inserted.rows[0].id)]};
     }
     const assignments=await this.client.query<{assignment_id:string|null}>(`SELECT current_assignment.id assignment_id
       FROM v2_sales_line_production_requirements requirement
