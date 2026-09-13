@@ -11,45 +11,67 @@ rendering, and asks Windows to spool it to the mapped queue. `submitted` means
 Windows accepted the spool request; it cannot guarantee paper physically left
 the Epson.
 
-## Workstation setup
+## Shop workstation setup
 
-1. Install the Epson TM-L90 Windows driver and confirm a browser Traveler
-   already prints correctly to it. List the actual queues with
-   `PrintersHero.PrintAgent.exe --list-printers` (or Windows `Get-Printer`),
-   then note the exact queue name.
-2. In PrintersHero Settings, create a Local Bridge agent and copy its one-time
-   token. Create a Traveler printer profile mapped to that agent and exact
-   Windows queue name. The browser never receives that queue name.
-3. Install the Microsoft Edge WebView2 Evergreen Runtime and .NET 8 Desktop
-   Runtime on the workstation.
-4. Publish this project, copy its publish folder to a stable local path, and
-   set these **user** environment variables:
+No Visual Studio, .NET runtime installation, source editing, or manual task
+creation is required.
 
-   ```powershell
-   dotnet publish -c Release -r win-x64 --self-contained false
-   [Environment]::SetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'https://www.printershero.com', 'User')
-   [Environment]::SetEnvironmentVariable('PRINTERSHERO_AGENT_TOKEN', 'paste-the-one-time-token-here', 'User')
-   ```
+1. Download and extract the `PrintersHero-Traveler-Print-Agent-win-x64.zip`
+   release package to a stable local folder.
+2. In PrintersHero Settings, create a Local Bridge / Print Agent pairing token.
+   Copy it; it is shown only once.
+3. Double-click `setup-agent.cmd` (or right-click `setup-agent.ps1` and choose
+   **Run with PowerShell**).
+4. If needed, accept the prompt to open the official Microsoft WebView2
+   Runtime installer page. Install it, then run setup again.
+5. Paste the pairing token when prompted and choose the installed Epson TM-L90
+   Windows queue from the numbered list. USB and IP-installed queues work the
+   same way.
+6. Setup registers that queue only for the paired agent, installs and starts
+   the per-user logon task, and shows an `[OK]` checklist. The token is never
+   shown again or written to agent logs.
+7. In PrintersHero, use **Print Traveler** for one test ticket. **Open Browser
+   Print** remains available as a fallback.
 
-5. Start a new Windows sign-in session, then install the logon task:
+The release is a **self-contained win-x64** build. It includes the required
+.NET runtime files; WebView2 remains the only workstation prerequisite.
 
-   ```powershell
-   .\scripts\manage-agent-task.ps1 -Action install -AgentPath 'C:\PrintersHero\PrintAgent\PrintersHero.PrintAgent.exe'
-   .\scripts\manage-agent-task.ps1 -Action start
-   ```
+### Diagnostics and removal
 
-6. Confirm Settings shows the agent online, then use **Print Traveler** once.
-   The **Open Browser Print** action remains available if the agent is offline.
+```powershell
+.\setup-agent.ps1 -Check
+.\setup-agent.ps1 -Uninstall
+.\setup-agent.ps1 -Uninstall -RemoveConfiguration
+```
 
-The task script provides `install`, `start`, `stop`, `restart`, `status`, and
-`uninstall`. It uses a per-user logon task instead of a Windows Session 0
-service: Session 0 cannot reliably access the user-installed Epson driver or
-WebView2 printer integration.
+`-Check` verifies WebView2, the selected local queue, agent executable,
+configuration presence, startup task, process, and a safe PrintersHero
+heartbeat. It never prints the pairing token. Uninstall does not revoke the
+server-side pairing credential.
+
+The logon task is intentional instead of a Windows Session 0 service: the
+Epson driver and WebView2 print integration must run in the logged-in user's
+session. The underlying task script still supports `install`, `start`, `stop`,
+`restart`, `status`, and `uninstall` for diagnostics.
+
+## Development and release build
+
+For development, normal `dotnet build` remains available. To create the shop
+package on a build machine with the .NET 8 SDK:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+This runs the `Shop-win-x64` publish profile with `SelfContained=true`, writes
+the distributable folder to `release\PrintersHero-Traveler-Print-Agent\`, and
+creates `release\PrintersHero-Traveler-Print-Agent-win-x64.zip`. The package
+contains no tokens or machine-specific printer names.
 
 ## Troubleshooting
 
 - `Mapped Windows printer is unavailable`: the local Epson queue does not
-  exist or its name differs from the Settings printer profile.
+  exist or its name differs from the queue selected during setup.
 - A claimed job that is not acknowledged remains claimed rather than being
   retried automatically. This intentionally avoids a duplicate physical
   Traveler after a crash; make a new explicit Print Traveler request if needed.

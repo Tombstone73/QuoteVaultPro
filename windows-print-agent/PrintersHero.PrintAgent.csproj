@@ -1,4 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><AssemblyName>PrintersHero.PrintAgent</AssemblyName></PropertyGroup>
   <ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3065.39" /></ItemGroup>
+  <ItemGroup>
+    <None Update="setup-agent.ps1" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="setup-agent.cmd" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="README.md" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="README.txt" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="scripts\manage-agent-task.ps1" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

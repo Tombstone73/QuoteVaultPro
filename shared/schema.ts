@@ -8696,7 +8696,7 @@ export const localFileCopyJobStatusEnum = pgEnum("local_file_copy_job_status", [
 export const localBridgeAgents = pgTable("local_bridge_agents", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 255 }).notNull(), status: localBridgeAgentStatusEnum("status").notNull().default("pending"), tokenHash: varchar("token_hash", { length: 128 }).notNull(),
-  machineLabel: varchar("machine_label", { length: 255 }), agentVersion: varchar("agent_version", { length: 64 }), lastSeenAt: timestamp("last_seen_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(), revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  machineLabel: varchar("machine_label", { length: 255 }), agentVersion: varchar("agent_version", { length: 64 }), configuredTravelerPrinterName: varchar("configured_traveler_printer_name", { length: 255 }), lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(), revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
 export const directPrintJobStatusValues = ["queued", "claimed", "rendering", "submitted", "failed"] as const;
