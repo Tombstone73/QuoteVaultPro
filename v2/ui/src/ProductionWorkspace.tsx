@@ -455,6 +455,7 @@ const ProductionExceptionControls = ({
   const reworkRequested = work.state === "rework_requested";
   return <section className="v2-production-exceptions" aria-label="Production exceptions">
     <header><h3>Operational exception</h3><small>Holds and notes are immutable evidence; they do not alter output, artwork, or routing.</small></header>
+    {work.work.reworkCycleId && <p><b>Rework cycle</b> · successor Production work preserves this cycle's own Artwork and attempt history{work.work.predecessorProductionWorkId ? ` · predecessor ${work.work.predecessorProductionWorkId.slice(0, 8)}` : ""}</p>}
     <p><b>{held ? "On hold" : reworkRequested ? "Prepress rework requested — Production is blocked" : "No active hold"}</b></p>
     <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)} disabled={busy || held || reworkRequested}><option value="operator_issue">Operator issue</option><option value="equipment">Equipment</option><option value="material">Material</option><option value="quality">Quality</option></select></label>
     <label>Note<textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={1000} placeholder="Reason, condition, or next action" /></label>

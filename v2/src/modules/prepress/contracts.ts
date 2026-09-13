@@ -1,5 +1,5 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
-import type { ArtworkAssignmentId, ArtworkFileId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductionWorkId } from "../shared/commercialValues.js";
+import type { ArtworkAssignmentId, ArtworkFileId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductionReworkCycleId, ProductionWorkId } from "../shared/commercialValues.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
 import type { OperationalQueuePageRequest } from "../shared/operationalQueue.js";
 import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
@@ -40,6 +40,10 @@ export type PrepressUnit = Readonly<{
   completedPrincipalKind?: PrincipalKind;
   completedPrincipalSubject?: string;
   completedStaffActorUserId?: string;
+  reworkCycleId?: ProductionReworkCycleId;
+  predecessorProductionWorkId?: ProductionWorkId;
+  reworkReason?: string;
+  reworkRemainingRequiredQuantity?: number;
 }>;
 
 /** Deliberately derived: Prepress does not persist a second Routing/workflow status. */

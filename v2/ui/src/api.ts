@@ -1332,6 +1332,10 @@ export type PrepressUnit = Readonly<{
   layerKey?: string;
   layerOrder?: number;
   createdAt: string;
+  reworkCycleId?: string;
+  predecessorProductionWorkId?: string;
+  reworkReason?: string;
+  reworkRemainingRequiredQuantity?: number;
   startedAt?: string;
   completedAt?: string;
 }>;
@@ -1395,6 +1399,8 @@ export type ProductionWorkProjection = Readonly<{
     artworkAssignmentId: string;
     artworkFileId: string;
     prepressUnitId?: string;
+    reworkCycleId?: string;
+    predecessorProductionWorkId?: string;
     orderedQuantity: number;
   }>;
   attempts: readonly ProductionAttempt[];

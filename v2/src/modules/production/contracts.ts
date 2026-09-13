@@ -1,6 +1,6 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
-import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionWorkId } from "../shared/commercialValues.js";
+import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionReworkCycleId, ProductionWorkId } from "../shared/commercialValues.js";
 import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
 
 /** Stable execution destinations. Equipment identity is deliberately deferred. */
@@ -22,6 +22,7 @@ export type ProductionWork = Readonly<{
   productionWorkId: ProductionWorkId; organizationId: OrganizationId; orderId: OrderId; orderLineId: OrderLineId;
   requirement: ProductionUnitRequirement; artworkAssignmentId: ArtworkAssignmentId; artworkFileId: ArtworkFileId;
   prepressUnitId?: PrepressUnitId; orderedQuantity: number;
+  reworkCycleId?: ProductionReworkCycleId; predecessorProductionWorkId?: ProductionWorkId;
   createdAt: string; createdPrincipalKind: PrincipalKind; createdPrincipalSubject: string; createdStaffActorUserId?: string;
 }>;
 
@@ -68,3 +69,7 @@ export type ResumeProductionWorkInput = Readonly<{ businessRequestId: string; pr
 export type NoteProductionWorkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; note: string }>;
 /** This is deliberately a blocked request, not a route transition or a new handoff. */
 export type RequestProductionReworkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; reason: string; category?: string; note?: string }>;
+export type ProductionReworkSuccessor = Readonly<{
+  productionReworkCycleId: ProductionReworkCycleId; predecessorProductionWorkId: ProductionWorkId;
+  successorPrepressUnitId: PrepressUnitId; remainingRequiredQuantity: number;
+}>;

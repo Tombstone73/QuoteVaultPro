@@ -7,7 +7,7 @@ import { ArtworkAutoUploadDropzone } from "./ArtworkAutoUploadDropzone";
 const PREPRESS_BULK_HANDOFF_MAX=50;
 const keys = { queue: (scope:string, org:string, page:number, pageSize:number, search:string, requirementState:PrepressQueueRequirementState,destination:PrepressQueueDestination,readiness:PrepressQueueReadiness) => ["v2", scope, org, "prepress", "queue", page, pageSize, search, requirementState,destination,readiness] as const, unit: (scope:string, org:string, unit:string) => ["v2", scope, org, "prepress", "unit", unit] as const };
 const label = (r:ProductionRequirementCoverage["requirement"]) => r.side ? `${r.side[0]!.toUpperCase()}${r.side.slice(1)}${r.sourcePageIndex===undefined?"":` · Page ${r.sourcePageIndex+1}`}${r.layerKey?` · ${r.layerKey} ${r.layerOrder!+1}`:""}` : r.key;
-const state = (coverage:ProductionRequirementCoverage,item:PrepressQueueItem) => !coverage.productionArtworkCovered ? "Needs Production Art" : coverage.prepressComplete ? "Prepress Complete" : coverage.prepressUnits.some((unit)=>unit.startedAt) ? "In Prepress" : item.routingStepKind!=="prepress" ? `Waiting on ${item.routingStepKind??"Routing"}` : "Ready for Prepress";
+const state = (coverage:ProductionRequirementCoverage,item:PrepressQueueItem) => coverage.prepressUnits.some((unit)=>unit.reworkCycleId&&!unit.completedAt) ? "Rework in Prepress" : !coverage.productionArtworkCovered ? "Needs Production Art" : coverage.prepressComplete ? "Prepress Complete" : coverage.prepressUnits.some((unit)=>unit.startedAt) ? "In Prepress" : item.routingStepKind!=="prepress" ? `Waiting on ${item.routingStepKind??"Routing"}` : "Ready for Prepress";
 const statusClass = (value:string) => value==="Prepress Complete" ? "ok" : value==="In Prepress" ? "active" : value==="Ready for Prepress" ? "ready" : value.startsWith("Needs") ? "warn" : "neutral";
 const prerequisite = (item:PrepressQueueItem) => item.routingStepKind==="proofing" ? "Routing is still at Proofing; Prepress cannot start." : item.routingStepKind==="prepress" ? "Routing has made Prepress current. Proofing remains owned by Proofing." : `Routing is currently at ${item.routingStepKind??"an unavailable step"}.`;
 
@@ -42,7 +42,7 @@ export const PrepressWorkspace=({organizationId,sessionScope,canView,canArtworkA
   if(!canView)return <section className="v2-prepress"><div className="v2-proof-empty">You do not have permission to view Prepress.</div></section>;
   const groups=new Map<string,PrepressQueueItem[]>();for(const entry of filtered)groups.set(entry.orderId,[...(groups.get(entry.orderId)??[]),entry]);
   const productionArtwork=item?.operational?.productionArtwork??[]; const suppliedArtwork=item?.operational?.sourceArtwork??[];
-  const selectedUnit=requirement?.prepressUnits[0]; const candidates=requirement?.artworkAssignmentIds??[];
+  const selectedUnit=requirement?.prepressUnits.find((unit)=>unit.reworkCycleId)||requirement?.prepressUnits[0]; const candidates=requirement?.artworkAssignmentIds??[];
   const currentProductionArtwork=productionArtwork.find((entry)=>entry.side===requirement?.requirement.side&&entry.sourcePageIndex===requirement?.requirement.sourcePageIndex);
   const uploadProduction=useMutation({mutationFn:(file:File)=>{
     if(!item||!requirement)throw new Error("Select a production requirement before uploading Artwork.");

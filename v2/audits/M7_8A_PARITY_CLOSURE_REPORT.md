@@ -108,6 +108,24 @@ is also **OWNER DECISION REQUIRED** because it changes inventory/commercial
 authority. Return-to-Prepress/revised-Artwork successor routing remains a
 separate P1 domain decision; ordinary release/recovery does not claim it.
 
+## M7.8H Return-to-Prepress successor-cycle closure
+
+M7.8H replaces the former evidence-only rework request with one immutable,
+tenant-scoped successor cycle. The predecessor Production work, frozen route,
+attempts, output and Artwork lineage remain unchanged. The command snapshots
+reason and output, terminalizes an active attempt as non-successful, blocks
+future predecessor execution, creates one linked Prepress unit, and is
+idempotent. The successor is completed and handed off using the canonical
+Prepress path; its Production work carries only the predecessor's remaining
+required quantity and its own identity/linkage.
+
+An active or prepared Run reservation fails closed until the member is released.
+Accepted good output remains valid Fulfillment evidence; the successor request
+adds none. Cases A/B (zero or partial accepted good output) are covered. Case C
+(accepted output later judged unusable) remains an explicit owner decision: no
+silent subtraction or scrap disposition was introduced. Material override and
+original-file ZIP remain their existing owner decisions.
+
 ## Result
 
 **PASS WITH FINDINGS — source/contract parity closure; M7.8E is IMPLEMENTED +

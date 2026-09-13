@@ -44,6 +44,11 @@ const tx = {
     attempt = { ...attempt, goodQuantity: attempt.goodQuantity + input.goodQuantityDelta, wasteQuantity: attempt.wasteQuantity + input.wasteQuantityDelta }; return attempt;
   },
   completeAttempt: async () => attempt,
+  createReworkSuccessor: async (input: { productionWorkId: string; recordedGoodQuantity: number }) => {
+    assert.equal(input.productionWorkId, work.productionWorkId);
+    attempt = { ...attempt, completedAt: "2026-09-10T00:01:00.000Z", completedPrincipalKind: "staff", completedPrincipalSubject: "operator-a", terminalDisposition: "released" };
+    return { productionReworkCycleId: brandedId<"ProductionReworkCycleId">("cycle-a"), predecessorProductionWorkId: work.productionWorkId, successorPrepressUnitId: brandedId<"PrepressUnitId">("rework-unit-a"), remainingRequiredQuantity: work.orderedQuantity - input.recordedGoodQuantity };
+  },
   appendWorkEvent: async (input: Omit<ProductionWorkEvent, "productionWorkEventId" | "sequence" | "createdAt"> & { id: string }) => {
     const created: ProductionWorkEvent = { productionWorkEventId: input.id, organizationId: input.organizationId, productionWorkId: input.productionWorkId,
       sequence: events.length + 1, kind: input.kind, ...(input.category ? { category: input.category } : {}), ...(input.reason ? { reason: input.reason } : {}), ...(input.note ? { note: input.note } : {}), ...(input.productionAttemptId ? { productionAttemptId: input.productionAttemptId } : {}), ...(input.recordedGoodQuantity === undefined ? {} : { recordedGoodQuantity: input.recordedGoodQuantity }), ...(input.recordedWasteQuantity === undefined ? {} : { recordedWasteQuantity: input.recordedWasteQuantity }), createdAt: "2026-09-10T00:00:00.000Z", createdPrincipalKind: input.createdPrincipalKind, createdPrincipalSubject: input.createdPrincipalSubject, ...(input.createdStaffActorUserId ? { createdStaffActorUserId: input.createdStaffActorUserId } : {}) };
@@ -67,7 +72,9 @@ const before = { good: attempt.goodQuantity, waste: attempt.wasteQuantity, event
 const requested = await service.requestRework(context("rework-a"), { businessRequestId: "rework-a", productionWorkId: work.productionWorkId, reason: "Customer artwork needs a revised bleed", category: "artwork", note: "Await Prepress review" });
 assert.equal(requested.ok, true); assert.equal(projection().state, "rework_requested");
 assert.deepEqual({ good: attempt.goodQuantity, waste: attempt.wasteQuantity }, { good: before.good, waste: before.waste }, "rework request preserves all output");
-assert.equal(attempt.completedAt, undefined, "rework request does not terminalize the active attempt");
+assert.equal(attempt.terminalDisposition, "released", "rework terminalizes an active attempt without crediting its unused reservation");
+assert.equal(requested.value.successor?.remainingRequiredQuantity, 80, "successor owns only the remaining required quantity");
+assert.equal(requested.value.successor?.successorPrepressUnitId, "rework-unit-a", "successor Prepress work has its own identity");
 assert.equal(events.at(-1)?.recordedGoodQuantity, 20, "request snapshots immutable output totals");
 assert.equal(frozenRouteRevision, before.routeRevision, "rework request leaves the frozen route untouched");
 assert.equal(siblingRecordedGoodQuantity, before.siblingGood, "rework request leaves sibling Production work untouched");
