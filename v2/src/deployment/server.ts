@@ -110,7 +110,7 @@ export const createV2DeploymentApp = (
   const proofingRuntime = composeAuthenticatedProofingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
   const proofing = { ...proofingRuntime, dependencies: { ...proofingRuntime.dependencies, artifacts: new PostgresProofArtifactRead(pool, { file: async (organizationId, artworkFileId) => artwork.dependencies.delivery?.file(organizationId, artworkFileId) ?? null }) } };
   const prepress = composeAuthenticatedPrepressRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
-  const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new ProductionApplicationService(new PostgresProductionTransactionRunner(pool), undefined, orderLifecycle) });
+  const production = composeAuthenticatedProductionRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new ProductionApplicationService(new PostgresProductionTransactionRunner(pool), undefined, orderLifecycle), orderLifecycle });
   const fulfillment = composeAuthenticatedFulfillmentRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new FulfillmentApplicationService(new PostgresFulfillmentTransactionRunner(pool), undefined, orderLifecycle), orderLifecycle });
   const routing = composeAuthenticatedRoutingRuntime({ pool, trustedHostIdentity, trustedHostMiddleware, service: new RoutingLifecycleApplicationService(new PostgresRoutingLifecycleTransactionRunner(pool), undefined, orderLifecycle) });
   const inventory = composeAuthenticatedInventoryRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });

@@ -1919,6 +1919,13 @@
       "when": 1788048000125,
       "tag": "0278_v2_order_line_operational_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1788048000126,
+      "tag": "0279_v2_canonical_production_runs",
+      "breakpoints": true
     }
   ]
 }

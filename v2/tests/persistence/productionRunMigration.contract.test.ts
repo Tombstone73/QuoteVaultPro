@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const source=readFileSync(new URL("../../../server/db/migrations_v2/0279_v2_canonical_production_runs.sql",import.meta.url),"utf8");
+for(const table of ["v2_production_runs","v2_production_run_allocations","v2_production_run_events"])assert.match(source,new RegExp(`CREATE TABLE ${table}`));
+for(const invariant of ["allocated_quantity>0","good_quantity<=allocated_quantity","terminal_resolution","v2_production_run_allocations_work_idx","artwork_identity_fingerprint","artwork_object_version","artwork_refreshed","allocation_reserved","attempt_linked","good_output","waste_output","member_released","reservation_released","production_run_allocation_id","production_attempt_id","production.run.create","production.run.execute"])assert.match(source,new RegExp(invariant.replaceAll(".","\\.")));
+assert.doesNotMatch(source,/fulfillment/i,"run migration cannot establish fulfillment authority");
+assert.match(source,/ADD COLUMN terminal_disposition/);
+assert.match(source,/successful','released','cancelled/);
+assert.match(source,/production_attempt_id varchar/);
+assert.doesNotMatch(source,/UPDATE v2_production_attempts/i,"Run migration must not fabricate historic evidence");
+console.log("Production Run migration contract passed.");

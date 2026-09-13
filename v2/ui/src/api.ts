@@ -1425,6 +1425,15 @@ export type ProductionWorkProjection = Readonly<{
     customer?: Readonly<{ customerId: string; displayName: string }>;
   }>;
 }>;
+export type ProductionRun = Readonly<{
+  productionRunId: string;
+  stationKey: "flatbed" | "roll";
+  state: "draft" | "ready" | "active" | "held" | "completed" | "cancelled";
+  revision: number;
+  materialFingerprint: string | null;
+  allocations: readonly Readonly<{ productionRunAllocationId: string; productionWorkId: string; allocatedQuantity: number; goodQuantity: number; wasteQuantity: number; artworkAssignmentId: string; artworkFileId: string; artworkIdentityFingerprint: string; artworkObjectVersion: string; position: number; releasedAt?: string; terminalResolution?: "successful" | "released" | "cancelled"; }>[];
+  events: readonly Readonly<{ productionRunEventId: string; sequence: number; kind: "created" | "allocation_reserved" | "ready" | "artwork_refreshed" | "started" | "attempt_linked" | "good_output" | "waste_output" | "held" | "resumed" | "member_released" | "reservation_released" | "cancelled" | "completed"; productionRunAllocationId?: string; productionAttemptId?: string; reason?: string; note?: string; createdAt: string; createdPrincipalSubject: string; }>[];
+}>;
 export type ProductionMaterialProjection = Readonly<{
   usage: Readonly<{
     productionWorkId: string;
@@ -3109,6 +3118,10 @@ export const productionApi = {
     request<ProductionWorkProjection>(
       productionEndpoint(org, `/works/${encodeURIComponent(id)}`),
     ),
+  runs: (org:string,station:"flatbed"|"roll") => request<readonly ProductionRun[]>(productionEndpoint(org,`/runs?station=${station}`)),
+  createRun: (org:string,businessRequestId:string,input:Readonly<{stationKey:"flatbed"|"roll";members:readonly Readonly<{productionWorkId:string;quantity:number}>[];layoutMetadata?:Record<string,unknown>}>) => productionMutation<ProductionRun>(org,"/runs",businessRequestId,input as Record<string,unknown>),
+  transitionRun: (org:string,runId:string,businessRequestId:string,transition:"ready"|"start"|"hold"|"resume"|"complete"|"cancel",reason?:string) => productionMutation<ProductionRun>(org,`/runs/${encodeURIComponent(runId)}/transitions`,businessRequestId,{transition,...(reason?{reason}:{})}),
+  runOutput: (org:string,runId:string,allocationId:string,businessRequestId:string,input:Readonly<{goodQuantityDelta:number;wasteQuantityDelta?:number}>) => productionMutation<ProductionRun>(org,`/runs/${encodeURIComponent(runId)}/allocations/${encodeURIComponent(allocationId)}/output`,businessRequestId,input),
   open: (org: string, businessRequestId: string, artworkAssignmentId: string) =>
     productionMutation<{ work: ProductionWorkProjection["work"] }>(
       org,

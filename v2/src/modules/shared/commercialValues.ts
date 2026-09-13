@@ -38,6 +38,9 @@ export type PrepressUnitId = Brand<string, "PrepressUnitId">;
 /** Production work is anchored to a frozen required production unit, not an Order status. */
 export type ProductionWorkId = Brand<string, "ProductionWorkId">;
 export type ProductionAttemptId = Brand<string, "ProductionAttemptId">;
+/** A physical execution grouping; it never replaces its member Production work. */
+export type ProductionRunId = Brand<string, "ProductionRunId">;
+export type ProductionRunAllocationId = Brand<string, "ProductionRunAllocationId">;
 /** Physical material usage is immutable Production history, not inventory movement. */
 export type ProductionMaterialConsumptionId = Brand<string, "ProductionMaterialConsumptionId">;
 export type OrderLineMaterialRequirementId = Brand<string, "OrderLineMaterialRequirementId">;

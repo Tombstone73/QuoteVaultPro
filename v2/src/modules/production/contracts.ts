@@ -31,6 +31,7 @@ export type ProductionAttempt = Readonly<{
   kind: ProductionAttemptKind; stationKey: ProductionStationKey; goodQuantity: number; wasteQuantity: number;
   startedAt: string; startedPrincipalKind: PrincipalKind; startedPrincipalSubject: string; startedStaffActorUserId?: string;
   completedAt?: string; completedPrincipalKind?: PrincipalKind; completedPrincipalSubject?: string; completedStaffActorUserId?: string;
+  terminalDisposition?: "successful" | "released" | "cancelled";
 }>;
 
 /**

@@ -77,6 +77,37 @@ The remaining M7.8F gap is explicit: persistent run/nesting and exception-run
 recovery require an approved V2 Production-run and successor-cycle domain.
 The existing `rework_requested` evidence is not misrepresented as that cycle.
 
+## M7.8G canonical Production Run closure
+
+M7.8G implements the source-proven V1 Combined Run outcome as a new canonical
+V2 domain, rather than restoring V1's mutable queue controls. A Run holds
+tenant-scoped, station/material-compatible ordered allocations, their frozen
+Production-Art identity/version and a durable ordered event ledger. It creates
+and terminalizes canonical attempts, records only good/waste output, and uses
+the ordinary Production reconciliation path after every output, release,
+cancellation and completion operation. A Run transition therefore cannot grant
+Production, Fulfillment, or Order lifecycle credit itself.
+
+Preparation is fail-closed: Start compares every frozen artwork reference to
+current canonical Production Artwork and returns a deterministic stale conflict
+when it differs. Draft/Ready Runs may refresh preparation explicitly; started
+Runs retain the execution Artwork as historical truth. Partial or zero-output
+members can be terminally released/cancelled without losing output or crediting
+the unused reservation. Normal subsequent Run creation can reserve the
+remaining work, so recovery is not a special successor bypass. Flatbed and Roll
+share this state machine and now display the authoritative event history.
+
+The remaining decisions are narrow and explicit. V1 evidence proves durable
+membership/order but not persistent placement geometry, so nesting/layout is
+**SUPERSEDED** by persistent Runs and no optimizer/geometry was added. A Run
+Sheet is **NOT REQUIRED / UNPROVEN**: no V1 document/PDF workflow or necessary
+operator outcome was found. Original-file ZIP is an **OWNER DECISION REQUIRED**
+because V1's narrow per-line stream is not evidence that a bundle is routine
+launch scope beyond V2's private individual Artwork access. Material override
+is also **OWNER DECISION REQUIRED** because it changes inventory/commercial
+authority. Return-to-Prepress/revised-Artwork successor routing remains a
+separate P1 domain decision; ordinary release/recovery does not claim it.
+
 ## Result
 
 **PASS WITH FINDINGS — source/contract parity closure; M7.8E is IMPLEMENTED +

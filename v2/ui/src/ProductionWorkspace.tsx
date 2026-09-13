@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { RollStationPanel } from "./RollStationPanel";
 import { FlatbedStationPanel } from "./FlatbedStationPanel";
+import { ProductionRunWorkspace } from "./ProductionRunWorkspace";
 
 type Station = "flatbed" | "roll";
 type ProductionView = "overview" | "board" | "calendar" | "stations";
@@ -500,6 +501,7 @@ export const ProductionWorkspace = ({
   openArtwork: (artworkFileId: string) => void;
 }) => {
   const [station, setStation] = useState<Station>("flatbed");
+  const [stationSurface, setStationSurface] = useState<"queue"|"runs">("queue");
   const [view, setView] = useState<ProductionView>("overview");
   const [selectedWorkId, setSelectedWorkId] = useState("");
   const [goodQuantity, setGoodQuantity] = useState("1");
@@ -754,6 +756,7 @@ export const ProductionWorkspace = ({
                 )}
               </article>
             ))}
+            <button type="button" className={stationSurface === "runs" ? "active" : ""} onClick={() => setStationSurface(stationSurface === "runs" ? "queue" : "runs")}>Runs</button>
           </div>
         </section>
       ) : view === "calendar" ? (
@@ -909,7 +912,7 @@ export const ProductionWorkspace = ({
             ))}
             <small>{activeAttempt ? "In Progress" : "Next up"}</small>
           </div>
-          {station === "flatbed" && !routedProductionWorkId ? (
+          {stationSurface === "runs" ? <ProductionRunWorkspace organizationId={organizationId} sessionScope={sessionScope} station={station} queue={queue.data?.items ?? []} canWork={canWork} onOpenArtwork={openArtwork} /> : station === "flatbed" && !routedProductionWorkId ? (
             <>
             <FlatbedStationPanel
               organizationId={organizationId}
