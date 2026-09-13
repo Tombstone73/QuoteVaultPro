@@ -38,6 +38,8 @@ export type PrepressUnitId = Brand<string, "PrepressUnitId">;
 /** Production work is anchored to a frozen required production unit, not an Order status. */
 export type ProductionWorkId = Brand<string, "ProductionWorkId">;
 export type ProductionAttemptId = Brand<string, "ProductionAttemptId">;
+/** Append-only evidence that accepted Production output later became unusable. */
+export type ProductionOutputDispositionId = Brand<string, "ProductionOutputDispositionId">;
 /** One immutable rework bridge from a blocked Production work to its successor cycle. */
 export type ProductionReworkCycleId = Brand<string, "ProductionReworkCycleId">;
 /** A physical execution grouping; it never replaces its member Production work. */

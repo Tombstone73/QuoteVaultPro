@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const migration=readFileSync(new URL("../../../server/db/migrations_v2/0282_v2_production_output_rejections.sql",import.meta.url),"utf8");
+const production=readFileSync(new URL("../../infrastructure/production/postgresProductionTransaction.ts",import.meta.url),"utf8");
+const fulfillment=readFileSync(new URL("../../infrastructure/fulfillment/postgresFulfillmentTransaction.ts",import.meta.url),"utf8");
+for(const token of ["CREATE TABLE v2_production_output_dispositions","production_attempt_id","rejected_quantity","v2_usable_production_good_quantity","append-only","production.output.reject","output_rejected"])assert.match(migration,new RegExp(token.replaceAll(".","\\.")));
+assert.match(production,/Correct or void the prepared shipment reservation/);
+assert.match(production,/Rejected quantity exceeds unfulfilled usable Production output/);
+assert.match(fulfillment,/v2_usable_production_good_quantity/);
+assert.doesNotMatch(migration,/UPDATE v2_production_attempts SET good_quantity/i,"immutable good output is never rewritten");
+console.log("Production output disposition migration contract passed.");

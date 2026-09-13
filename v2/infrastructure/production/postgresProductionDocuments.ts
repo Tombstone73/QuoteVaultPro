@@ -15,7 +15,7 @@ export class PostgresProductionDocumentService {
   constructor(private readonly pool: Pool) {}
   async traveler(organizationId: OrganizationId, productionWorkId: ProductionWorkId): Promise<OwnerPdfDocument> {
     const [branding, result] = await Promise.all([readTenantBranding(this.pool, organizationId), this.pool.query<Row>(`SELECT d.display_number number,COALESCE(NULLIF(btrim(c.display_name),''),NULLIF(btrim(c.company_name),'')) customer,d.purchase_order_number po,d.requested_due_date::text due,l.description,l.resolved_configuration configuration,w.ordered_quantity,
-      COALESCE((SELECT sum(a.good_quantity) FROM v2_production_attempts a WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id AND a.completed_at IS NOT NULL),0)::text completed_quantity,
+      v2_usable_production_good_quantity(w.organization_id,w.id)::text completed_quantity,
       w.requirement_key,w.side,w.source_page_index,w.layer_key,w.layer_order,
       (SELECT a.station_key FROM v2_production_attempts a WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id ORDER BY a.sequence DESC LIMIT 1) station,
       (SELECT string_agg(DISTINCT concat_ws(' ',r.material_name_snapshot,r.material_sku_snapshot),', ' ORDER BY concat_ws(' ',r.material_name_snapshot,r.material_sku_snapshot)) FROM v2_order_line_material_requirements r WHERE r.organization_id=w.organization_id AND r.order_line_id=w.order_line_id) materials

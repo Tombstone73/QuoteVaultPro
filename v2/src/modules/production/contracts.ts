@@ -1,13 +1,13 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
-import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionReworkCycleId, ProductionWorkId } from "../shared/commercialValues.js";
+import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionOutputDispositionId, ProductionReworkCycleId, ProductionWorkId } from "../shared/commercialValues.js";
 import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
 
 /** Stable execution destinations. Equipment identity is deliberately deferred. */
 export type ProductionStationKey = "flatbed" | "roll";
 export type ProductionAttemptKind = "initial" | "reprint" | "correction";
 /** Append-only operator evidence.  Control state is derived from this stream. */
-export type ProductionWorkEventKind = "hold" | "resume" | "note" | "rework_requested";
+export type ProductionWorkEventKind = "hold" | "resume" | "note" | "rework_requested" | "output_rejected";
 export type ProductionWorkState = "ready" | "active" | "held" | "rework_requested" | "complete";
 export type ProductionWorkEvent = Readonly<{
   productionWorkEventId: string; organizationId: OrganizationId; productionWorkId: ProductionWorkId;
@@ -15,6 +15,13 @@ export type ProductionWorkEvent = Readonly<{
   reason?: string; productionAttemptId?: ProductionAttemptId;
   recordedGoodQuantity?: number; recordedWasteQuantity?: number; createdAt: string;
   createdPrincipalKind: PrincipalKind; createdPrincipalSubject: string; createdStaffActorUserId?: string;
+}>;
+/** Immutable correction evidence; it never edits the original output fact. */
+export type ProductionOutputDisposition = Readonly<{
+  productionOutputDispositionId: ProductionOutputDispositionId; organizationId: OrganizationId;
+  productionWorkId: ProductionWorkId; productionAttemptId: ProductionAttemptId; rejectedQuantity: number;
+  category?: string; reason: string; createdAt: string; createdPrincipalKind: PrincipalKind;
+  createdPrincipalSubject: string; createdStaffActorUserId?: string;
 }>;
 
 /** One durable work identity for one frozen requirement and exact production-Art evidence. */
@@ -49,8 +56,10 @@ export type ProductionOperatorContext = Readonly<{
 
 export type ProductionWorkProjection = Readonly<{
   work: ProductionWork; attempts: readonly ProductionAttempt[]; completedGoodQuantity: number;
-  recordedGoodQuantity: number; remainingGoodQuantity: number; activeAttempt?: ProductionAttempt;
+  recordedGoodQuantity: number; rejectedGoodQuantity: number; usableGoodQuantity: number;
+  remainingGoodQuantity: number; activeAttempt?: ProductionAttempt;
   unitQuantitySatisfied: boolean; state: ProductionWorkState; exceptionEvents: readonly ProductionWorkEvent[];
+  outputDispositions: readonly ProductionOutputDisposition[];
   operatorContext?: ProductionOperatorContext;
 }>;
 /**
@@ -63,6 +72,7 @@ export type ProductionStationQueueItem = ProductionWorkProjection;
 export type OpenProductionWorkInput = Readonly<{ businessRequestId: string; artworkAssignmentId: ArtworkAssignmentId }>;
 export type StartProductionAttemptInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; stationKey: ProductionStationKey; kind: ProductionAttemptKind }>;
 export type RecordProductionOutputInput = Readonly<{ businessRequestId: string; productionAttemptId: ProductionAttemptId; goodQuantityDelta: number; wasteQuantityDelta?: number }>;
+export type RejectProductionOutputInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; productionAttemptId: ProductionAttemptId; rejectedQuantity: number; reason: string; category?: string }>;
 export type CompleteProductionAttemptInput = Readonly<{ businessRequestId: string; productionAttemptId: ProductionAttemptId }>;
 export type HoldProductionWorkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; category: string; note?: string }>;
 export type ResumeProductionWorkInput = Readonly<{ businessRequestId: string; productionWorkId: ProductionWorkId; note?: string }>;

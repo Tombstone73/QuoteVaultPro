@@ -439,6 +439,7 @@ const ProductionExceptionControls = ({
   onResume,
   onNote,
   onRequestRework,
+  onRejectOutput,
 }: Readonly<{
   work: ProductionWorkProjection;
   canWork: boolean;
@@ -447,12 +448,18 @@ const ProductionExceptionControls = ({
   onResume: (note?: string) => void;
   onNote: (note: string) => void;
   onRequestRework: (reason: string, category?: string, note?: string) => void;
+  onRejectOutput: (input: { attemptId: string; rejectedQuantity: number; reason: string; category?: string }) => void;
 }>) => {
   const [category, setCategory] = useState("operator_issue");
   const [note, setNote] = useState("");
   const [reworkReason, setReworkReason] = useState("");
+  const [rejectedAttemptId, setRejectedAttemptId] = useState("");
+  const [rejectedQuantity, setRejectedQuantity] = useState("1");
+  const [rejectionReason, setRejectionReason] = useState("");
+  const [rejectionConfirmed, setRejectionConfirmed] = useState(false);
   const held = work.state === "held";
   const reworkRequested = work.state === "rework_requested";
+  const rejectableAttempts = work.attempts.filter((attempt) => Boolean(attempt.completedAt) && attempt.goodQuantity > 0);
   return <section className="v2-production-exceptions" aria-label="Production exceptions">
     <header><h3>Operational exception</h3><small>Holds and notes are immutable evidence; they do not alter output, artwork, or routing.</small></header>
     {work.work.reworkCycleId && <p><b>Rework cycle</b> · successor Production work preserves this cycle's own Artwork and attempt history{work.work.predecessorProductionWorkId ? ` · predecessor ${work.work.predecessorProductionWorkId.slice(0, 8)}` : ""}</p>}
@@ -465,6 +472,8 @@ const ProductionExceptionControls = ({
       <button type="button" disabled={!canWork || busy || !note.trim()} onClick={() => onNote(note)}>Add note</button>
       <button type="button" disabled={!canWork || busy || work.unitQuantitySatisfied || reworkRequested || !reworkReason.trim()} onClick={() => onRequestRework(reworkReason, category, note || undefined)}>Request Prepress Rework</button>
     </div>
+    {rejectableAttempts.length > 0 && <fieldset className="v2-production-output-rejection"><legend>Reject accepted output</legend><small>This creates immutable scrap evidence. It never edits historical output and is blocked while a prepared shipment reserves this line.</small><label>Completed attempt<select value={rejectedAttemptId} onChange={(event) => setRejectedAttemptId(event.target.value)}><option value="">Select accepted output</option>{rejectableAttempts.map((attempt) => <option key={attempt.productionAttemptId} value={attempt.productionAttemptId}>{attemptLabel(attempt)}</option>)}</select></label><label>Rejected / scrap quantity<input type="number" min="1" step="1" value={rejectedQuantity} onChange={(event) => setRejectedQuantity(event.target.value)} /></label><label>Reason<textarea value={rejectionReason} maxLength={1000} onChange={(event) => setRejectionReason(event.target.value)} placeholder="Why this accepted output is unusable" /></label><label><input type="checkbox" checked={rejectionConfirmed} onChange={(event) => setRejectionConfirmed(event.target.checked)} /> I confirm this output is unusable and may reopen Production.</label><button type="button" disabled={!canWork || busy || !rejectionConfirmed || !rejectedAttemptId || !rejectionReason.trim() || !Number.isSafeInteger(Number(rejectedQuantity)) || Number(rejectedQuantity) < 1} onClick={() => onRejectOutput({attemptId:rejectedAttemptId,rejectedQuantity:Number(rejectedQuantity),reason:rejectionReason,category})}>Record rejection / scrap</button></fieldset>}
+    {work.outputDispositions.length > 0 && <ol>{work.outputDispositions.slice().reverse().map((item) => <li key={item.productionOutputDispositionId}><b>{item.rejectedQuantity} rejected</b>{item.category ? ` · ${item.category}` : ""}{` · ${item.reason}`}</li>)}</ol>}
     {work.exceptionEvents.length ? <ol>{work.exceptionEvents.slice().reverse().slice(0, 4).map((entry) => <li key={entry.productionWorkEventId}><b>{entry.kind.replaceAll("_", " ")}</b>{entry.category ? ` · ${entry.category}` : ""}{entry.note ? ` · ${entry.note}` : ""}</li>)}</ol> : <p>No exception evidence is recorded.</p>}
   </section>;
 };
@@ -616,6 +625,11 @@ export const ProductionWorkspace = ({
   const complete = useMutation({
     mutationFn: (attemptId: string) =>
       productionApi.complete(organizationId, attemptId, newBusinessRequestId()),
+    onSuccess: refresh,
+  });
+  const rejectOutput = useMutation({
+    mutationFn: (input: { attemptId: string; rejectedQuantity: number; reason: string; category?: string }) =>
+      productionApi.rejectOutput(organizationId, work!.work.productionWorkId, input.attemptId, newBusinessRequestId(), input),
     onSuccess: refresh,
   });
   const hold = useMutation({mutationFn: (input: { category: string; note?: string }) => productionApi.hold(organizationId, work!.work.productionWorkId, newBusinessRequestId(), input), onSuccess: refresh});
@@ -935,7 +949,7 @@ export const ProductionWorkspace = ({
               onOpenArtwork={(item) => openArtwork(item.work.artworkFileId)}
               onOpenTraveler={(item) => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/production/works/${encodeURIComponent(item.work.productionWorkId)}/traveler.pdf`, "_blank", "noopener,noreferrer")}
             />
-            {work && <ProductionExceptionControls work={work} canWork={canWork} busy={hold.isPending || resume.isPending || note.isPending || requestRework.isPending} onHold={(category, value) => hold.mutate({category, ...(value ? {note:value} : {})})} onResume={(value) => resume.mutate(value)} onNote={(value) => note.mutate(value)} onRequestRework={(reason, category, value) => requestRework.mutate({reason, ...(category ? {category} : {}), ...(value ? {note:value} : {})})} />}
+            {work && <ProductionExceptionControls work={work} canWork={canWork} busy={hold.isPending || resume.isPending || note.isPending || requestRework.isPending || rejectOutput.isPending} onHold={(category, value) => hold.mutate({category, ...(value ? {note:value} : {})})} onResume={(value) => resume.mutate(value)} onNote={(value) => note.mutate(value)} onRequestRework={(reason, category, value) => requestRework.mutate({reason, ...(category ? {category} : {}), ...(value ? {note:value} : {})})} onRejectOutput={(input) => rejectOutput.mutate(input)} />}
             </>
           ) : (
           <section className="v2-production-station">
@@ -1151,7 +1165,7 @@ export const ProductionWorkspace = ({
                     activeAttempt={activeAttempt}
                     canWork={canWork && work.state !== "held" && work.state !== "rework_requested"}
                   />
-                  <ProductionExceptionControls work={work} canWork={canWork} busy={hold.isPending || resume.isPending || note.isPending || requestRework.isPending} onHold={(category, value) => hold.mutate({category, ...(value ? {note:value} : {})})} onResume={(value) => resume.mutate(value)} onNote={(value) => note.mutate(value)} onRequestRework={(reason, category, value) => requestRework.mutate({reason, ...(category ? {category} : {}), ...(value ? {note:value} : {})})} />
+                  <ProductionExceptionControls work={work} canWork={canWork} busy={hold.isPending || resume.isPending || note.isPending || requestRework.isPending || rejectOutput.isPending} onHold={(category, value) => hold.mutate({category, ...(value ? {note:value} : {})})} onResume={(value) => resume.mutate(value)} onNote={(value) => note.mutate(value)} onRequestRework={(reason, category, value) => requestRework.mutate({reason, ...(category ? {category} : {}), ...(value ? {note:value} : {})})} onRejectOutput={(input) => rejectOutput.mutate(input)} />
                   <section className="v2-production-detail-lower">
                     <article>
                       <h3>Attempt history</h3>

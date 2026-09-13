@@ -121,10 +121,12 @@ required quantity and its own identity/linkage.
 
 An active or prepared Run reservation fails closed until the member is released.
 Accepted good output remains valid Fulfillment evidence; the successor request
-adds none. Cases A/B (zero or partial accepted good output) are covered. Case C
-(accepted output later judged unusable) remains an explicit owner decision: no
-silent subtraction or scrap disposition was introduced. Material override and
-original-file ZIP remain their existing owner decisions.
+adds none. Cases A/B (zero or partial accepted good output) are covered. The
+M7.8H follow-up closes Case C through an attributed, append-only rejection/scrap
+disposition. It refuses quantities already fulfilled or reserved by a prepared
+shipment, changes usable-good only through the new disposition, and invokes the ordinary
+Production and Order lifecycle reconciler. Material override and original-file
+ZIP remain their existing owner decisions.
 
 ## Result
 

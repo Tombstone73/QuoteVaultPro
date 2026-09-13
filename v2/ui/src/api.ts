@@ -1407,6 +1407,8 @@ export type ProductionWorkProjection = Readonly<{
   completedGoodQuantity: number;
   /** All recorded output, including an active attempt. */
   recordedGoodQuantity: number;
+  rejectedGoodQuantity: number;
+  usableGoodQuantity: number;
   /** Server-authoritative output still required for this Production unit. */
   remainingGoodQuantity: number;
   activeAttempt?: ProductionAttempt;
@@ -1415,7 +1417,7 @@ export type ProductionWorkProjection = Readonly<{
   exceptionEvents: readonly Readonly<{
     productionWorkEventId: string;
     sequence: number;
-    kind: "hold" | "resume" | "note" | "rework_requested";
+    kind: "hold" | "resume" | "note" | "rework_requested" | "output_rejected";
     category?: string;
     reason?: string;
     note?: string;
@@ -1425,6 +1427,7 @@ export type ProductionWorkProjection = Readonly<{
     createdAt: string;
     createdPrincipalSubject: string;
   }>[];
+  outputDispositions: readonly Readonly<{ productionOutputDispositionId: string; productionAttemptId: string; rejectedQuantity: number; category?: string; reason: string; createdAt: string; createdPrincipalSubject: string; }>[];
   operatorContext?: Readonly<{
     orderNumber?: string;
     product?: Readonly<{ productId: string; displayName: string }>;
@@ -3167,6 +3170,8 @@ export const productionApi = {
       businessRequestId,
       {},
     ),
+  rejectOutput: (org: string, workId: string, attemptId: string, businessRequestId: string, input: Readonly<{ rejectedQuantity: number; reason: string; category?: string }>) =>
+    productionMutation<unknown>(org, `/works/${encodeURIComponent(workId)}/attempts/${encodeURIComponent(attemptId)}/output-rejections`, businessRequestId, input),
   hold: (org: string, workId: string, businessRequestId: string, input: Readonly<{ category: string; note?: string }>) =>
     productionMutation<unknown>(org, `/works/${encodeURIComponent(workId)}/hold`, businessRequestId, input),
   resume: (org: string, workId: string, businessRequestId: string, input: Readonly<{ note?: string }> = {}) =>

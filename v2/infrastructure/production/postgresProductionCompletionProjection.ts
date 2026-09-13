@@ -12,9 +12,8 @@ export class PostgresProductionCompletionProjection implements ProductionComplet
         WHERE organization_id=$1 AND order_line_id=$2
       ), works AS (
         SELECT w.requirement_key,
-          COALESCE(SUM(a.good_quantity) FILTER (WHERE a.completed_at IS NOT NULL),0) >= MAX(w.ordered_quantity) satisfied
+          COALESCE(SUM(v2_usable_production_good_quantity(w.organization_id,w.id)),0) >= MAX(w.ordered_quantity) satisfied
         FROM v2_production_works w
-        LEFT JOIN v2_production_attempts a ON a.organization_id=w.organization_id AND a.production_work_id=w.id
         WHERE w.organization_id=$1 AND w.order_line_id=$2
         GROUP BY w.requirement_key
       )

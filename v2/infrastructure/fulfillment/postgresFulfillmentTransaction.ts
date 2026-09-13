@@ -30,9 +30,8 @@ const availabilitySql=`WITH production_output AS (
   FROM v2_sales_document_lines l
   LEFT JOIN v2_sales_line_production_requirements r ON r.organization_id=l.organization_id AND r.order_line_id=l.id
   LEFT JOIN LATERAL (
-    SELECT COALESCE(SUM(a.good_quantity) FILTER (WHERE a.completed_at IS NOT NULL),0) completed_good_quantity
+    SELECT COALESCE(SUM(v2_usable_production_good_quantity(w.organization_id,w.id)),0) completed_good_quantity
     FROM v2_production_works w
-    LEFT JOIN v2_production_attempts a ON a.organization_id=w.organization_id AND a.production_work_id=w.id
     WHERE w.organization_id=l.organization_id AND w.order_line_id=l.id AND w.requirement_key=r.requirement_key
   ) unit_output ON r.requirement_key IS NOT NULL
   WHERE l.organization_id=$1 AND l.document_id=$2

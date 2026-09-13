@@ -24,8 +24,8 @@ let siblingRecordedGoodQuantity = 11;
 const projection = (): ProductionWorkProjection => {
   const latest = [...events].reverse().find((item) => item.kind !== "note");
   const state = latest?.kind === "rework_requested" ? "rework_requested" : latest?.kind === "hold" ? "held" : "active";
-  return { work, attempts: [attempt], completedGoodQuantity: 0, recordedGoodQuantity: attempt.goodQuantity,
-    remainingGoodQuantity: 100 - attempt.goodQuantity, activeAttempt: attempt, unitQuantitySatisfied: false, state, exceptionEvents: [...events] };
+  return { work, attempts: [attempt], completedGoodQuantity: 0, recordedGoodQuantity: attempt.goodQuantity, rejectedGoodQuantity: 0, usableGoodQuantity: 0,
+    remainingGoodQuantity: 100 - attempt.goodQuantity, activeAttempt: attempt, unitQuantitySatisfied: false, state, exceptionEvents: [...events], outputDispositions: [] };
 };
 const tx = {
   reserve: async (input: { businessRequestId: string }) => results.has(input.businessRequestId)

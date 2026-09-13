@@ -46,9 +46,7 @@ const definitions: Readonly<Record<ActionCenterKind, Readonly<{ label: string; h
     href: "/production",
     sql: `SELECT count(*)::text AS count FROM v2_production_works w
           WHERE w.organization_id=$1
-            AND COALESCE((SELECT sum(a.good_quantity) FROM v2_production_attempts a
-              WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id
-                AND a.completed_at IS NOT NULL),0) < w.ordered_quantity`,
+            AND v2_usable_production_good_quantity(w.organization_id,w.id) < w.ordered_quantity`,
   },
   invoices: {
     label: "Open invoice balances",
