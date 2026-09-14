@@ -3,8 +3,9 @@ PrintersHero Traveler Print Agent
 1. Extract this complete folder to a stable local location.
 2. Create a Local Bridge / Print Agent pairing token in PrintersHero Settings.
 3. Double-click setup-agent.cmd.
-4. Approve the one-time Windows administrator prompt so setup can create the
-   startup task for this Windows user.
+4. Keep setup open through the final checklist. It creates the startup task
+   for the signed-in Windows user. If task creation is blocked, the same
+   window shows the error and stays open.
 5. If prompted, install Microsoft Edge WebView2 Runtime from the official
    Microsoft page, then run setup again.
 6. Choose the Traveler printer from the list, then paste the pairing token.

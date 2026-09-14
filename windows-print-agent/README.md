@@ -22,8 +22,10 @@ creation is required.
    Copy it; it is shown only once.
 3. Double-click `setup-agent.cmd` (or right-click `setup-agent.ps1` and choose
    **Run with PowerShell**).
-4. Approve the one-time Windows administrator prompt. It creates the startup
-   task for the current Windows user; no manual Task Scheduler work is needed.
+4. Keep the setup window open through the final checklist. It creates the
+   startup task for the signed-in Windows user; no manual Task Scheduler work
+   is needed. If Windows blocks task creation, the same window shows the exact
+   error and stays open.
 5. If needed, accept the prompt to open the official Microsoft WebView2
    Runtime installer page. Install it, then run setup again.
 6. Choose the installed Epson TM-L90 Windows queue from the numbered list,

@@ -57,29 +57,6 @@ function Write-Check([string]$Label, [bool]$Ok, [string]$Detail = '') {
   return $Ok
 }
 
-function Test-IsAdministrator {
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-function Restart-ElevatedSetup {
-  if (Test-IsAdministrator) { return }
-  if ($NonInteractive) { throw 'Setup requires administrator approval to install the Windows startup task. Run the command from an elevated PowerShell session.' }
-
-  $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath), '-ApiBaseUrl', ('"{0}"' -f $ApiBaseUrl))
-  if ($Uninstall) { $arguments += '-Uninstall' }
-  if ($RemoveConfiguration) { $arguments += '-RemoveConfiguration' }
-  if ($TravelerPrinter) { $arguments += @('-TravelerPrinter', ('"{0}"' -f $TravelerPrinter)) }
-
-  try {
-    $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
-  } catch {
-    throw 'Administrator approval is required to install or remove the Windows startup task.'
-  }
-  exit $process.ExitCode
-}
-
 function Test-TaskInstalled {
   $null = & schtasks.exe /Query /TN 'PrintersHero Traveler Print Agent' /FO LIST 2>&1
   return $LASTEXITCODE -eq 0
@@ -142,8 +119,6 @@ function Remove-AgentConfiguration {
 }
 
 if ($DefinitionOnly) { return }
-
-if (-not $Check) { Restart-ElevatedSetup }
 
 if ($Uninstall) {
   & $script:TaskScript -Action stop
