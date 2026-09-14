@@ -13,7 +13,8 @@ PrintersHero Traveler Print Agent
 7. When every setup check shows [OK], print one test Traveler in PrintersHero.
 
 The installed task loads the current saved pairing configuration at every
-startup, so a successful setup uses the selected token immediately.
+startup, so a successful setup uses the selected token immediately. Keep the
+extracted package folder in its chosen location after setup.
 
 For diagnostics run: setup-agent.ps1 -Check
 For removal run:     setup-agent.ps1 -Uninstall

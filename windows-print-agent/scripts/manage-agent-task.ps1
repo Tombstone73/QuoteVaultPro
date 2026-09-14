@@ -7,6 +7,8 @@ param(
 
 $taskName = 'PrintersHero Traveler Print Agent'
 $processName = 'PrintersHero.PrintAgent'
+$taskLauncherDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'PrintersHero\PrintAgent'
+$taskLauncherPath = Join-Path $taskLauncherDirectory 'start-agent.ps1'
 
 function Invoke-TaskScheduler([string[]]$Arguments) {
   $output = & schtasks.exe @Arguments 2>&1
@@ -25,19 +27,19 @@ function Require-AgentPath {
 
 function Get-AgentTaskCommand {
   Require-AgentPath
-  $launcherPath = Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $AgentPath)) 'scripts\start-agent.ps1'
-  if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
+  $launcherSourcePath = Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $AgentPath)) 'scripts\start-agent.ps1'
+  if (-not (Test-Path -LiteralPath $launcherSourcePath -PathType Leaf)) {
     throw 'Install requires scripts\start-agent.ps1 from the complete PrintersHero package.'
   }
 
   # Task Scheduler does not refresh a signed-in user's environment after setup
   # changes it. The launcher reads the saved user configuration each time so a
   # new pairing token is used immediately, without embedding it in the task.
-  # Encoding only the launcher path avoids schtasks.exe splitting paths such as
-  # "Downloads\Agent (4)" at spaces or parentheses. No secret is encoded.
-  $launcherCommand = "& '$((Resolve-Path -LiteralPath $launcherPath).Path.Replace("'", "''"))'"
-  $encodedLauncherCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcherCommand))
-  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encodedLauncherCommand"
+  # schtasks.exe also limits /TR to 261 characters. Install the non-secret
+  # launcher at a stable short path so package paths with spaces remain safe.
+  New-Item -ItemType Directory -Path $taskLauncherDirectory -Force | Out-Null
+  Copy-Item -LiteralPath $launcherSourcePath -Destination $taskLauncherPath -Force
+  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $taskLauncherPath"
 }
 
 switch ($Action) {
@@ -62,5 +64,6 @@ switch ($Action) {
     if ($LASTEXITCODE -ne 0 -and ($output | Out-String) -notmatch 'cannot find|does not exist') {
       throw "Windows Task Scheduler command failed: $(($output | Out-String).Trim())"
     }
+    Remove-Item -LiteralPath $taskLauncherPath -Force -ErrorAction SilentlyContinue
   }
 }

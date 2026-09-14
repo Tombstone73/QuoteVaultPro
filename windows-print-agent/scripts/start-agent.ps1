@@ -2,8 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$packageRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$agentPath = Join-Path $packageRoot 'PrintersHero.PrintAgent.exe'
+$agentPath = [Environment]::GetEnvironmentVariable('PRINTERSHERO_AGENT_PATH', 'User')
 $logPath = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'PrintersHero\print-agent-launcher.log'
 
 function Write-LauncherLog([string]$Message) {
@@ -13,8 +12,8 @@ function Write-LauncherLog([string]$Message) {
 }
 
 try {
-  if (-not (Test-Path -LiteralPath $agentPath -PathType Leaf)) {
-    throw 'PrintersHero.PrintAgent.exe is missing from the package.'
+  if ([string]::IsNullOrWhiteSpace($agentPath) -or -not (Test-Path -LiteralPath $agentPath -PathType Leaf)) {
+    throw 'Saved PrintersHero agent path is missing or unavailable. Run setup-agent.cmd again from the extracted package.'
   }
 
   foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER')) {

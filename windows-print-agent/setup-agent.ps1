@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.11'
+$script:SetupVersion = '1.0.12'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
@@ -177,7 +177,7 @@ function Select-TravelerPrinter([string]$RequestedPrinter) {
 }
 
 function Remove-AgentConfiguration {
-  foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER')) {
+  foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER', 'PRINTERSHERO_AGENT_PATH')) {
     [Environment]::SetEnvironmentVariable($name, $null, 'User')
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
   }
@@ -241,7 +241,7 @@ if ($AgentToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'The pairing token form
 if (-not ([Uri]$ApiBaseUrl).IsAbsoluteUri -or ([Uri]$ApiBaseUrl).Scheme -ne 'https') { throw 'PrintersHero API URL must be an HTTPS absolute URL.' }
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 
-foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter }.GetEnumerator()) {
+foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter; PRINTERSHERO_AGENT_PATH = $script:AgentPath }.GetEnumerator()) {
   [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
   Set-Item "Env:$($pair.Key)" $pair.Value
 }
