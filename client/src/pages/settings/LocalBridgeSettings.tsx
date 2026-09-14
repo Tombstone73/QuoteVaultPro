@@ -14,6 +14,7 @@ export default function LocalBridgeSettings() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("Shop Local Bridge");
   const [token, setToken] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const agents = useQuery({ queryKey: ["/api/local-bridge/admin/agents"], queryFn: () => readJson<any>("/api/local-bridge/admin/agents") });
   const jobs = useQuery({ queryKey: ["/api/local-bridge/admin/jobs"], queryFn: () => readJson<any>("/api/local-bridge/admin/jobs") });
   const create = useMutation({
@@ -32,6 +33,15 @@ export default function LocalBridgeSettings() {
   const status = !activeAgents.length
     ? "No active agents"
     : `${onlineAgentCount} of ${activeAgents.length} active agent${activeAgents.length === 1 ? "" : "s"} online`;
+  const copyToken = async () => {
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      setCopyFeedback("Copied to clipboard.");
+    } catch {
+      setCopyFeedback("Could not copy automatically. Select and copy the token manually.");
+    }
+  };
   return (
     <div className="space-y-6">
       <div>
@@ -56,7 +66,12 @@ export default function LocalBridgeSettings() {
         <Button onClick={() => create.mutate()} disabled={create.isPending}>Create bridge token</Button>
         {token ? (
           <div className="break-all rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100" role="status" aria-live="polite">
-            Copy this token now; it will not be shown again: <code className="font-mono font-medium">{token}</code>
+            <div className="flex flex-wrap items-center gap-2">
+              <span>Copy this token now; it will not be shown again:</span>
+              <code className="font-mono font-medium">{token}</code>
+              <Button type="button" size="sm" variant="outline" onClick={copyToken}>Copy token</Button>
+            </div>
+            {copyFeedback ? <p className="mt-2 font-medium">{copyFeedback}</p> : null}
           </div>
         ) : null}
         {activeAgents.map((agent: any) => {

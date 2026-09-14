@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.4'
+$script:SetupVersion = '1.0.5'
 
 trap {
   if ($ElevatedChild) {
@@ -221,7 +221,9 @@ if (-not $AgentToken) {
   if ($NonInteractive) { throw 'AgentToken is required for unattended setup.' }
   $AgentToken = Get-PlainSecureString (Read-Host 'Paste the PrintersHero pairing token' -AsSecureString)
 }
+$AgentToken = $AgentToken.Trim()
 if ([string]::IsNullOrWhiteSpace($AgentToken)) { throw 'A PrintersHero pairing token is required.' }
+if ($AgentToken -match '[\p{Cc}]') { throw 'The pairing token contains invalid control characters. Copy the token again from PrintersHero, then rerun setup.' }
 if (-not ([Uri]$ApiBaseUrl).IsAbsoluteUri -or ([Uri]$ApiBaseUrl).Scheme -ne 'https') { throw 'PrintersHero API URL must be an HTTPS absolute URL.' }
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 

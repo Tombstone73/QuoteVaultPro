@@ -39,8 +39,10 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.4'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.5'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
+    expect(setup).toContain('$AgentToken = $AgentToken.Trim()');
+    expect(setup).toContain('The pairing token contains invalid control characters');
     expect(agent).toContain("PRINTERSHERO_TRAVELER_PRINTER");
     expect(agent).toContain("configured Traveler printer unavailable or mismatched");
   });
@@ -74,6 +76,8 @@ describe("Traveler print agent installer contract", () => {
     expect(routes).toContain('PrintersHero-Traveler-Print-Agent-win-x64.zip');
     expect(localBridgeSettings).toContain('Download Traveler Print Agent');
     expect(localBridgeSettings).toContain('Download Legacy Local Bridge Agent');
+    expect(localBridgeSettings).toContain('navigator.clipboard.writeText(token)');
+    expect(localBridgeSettings).toContain('Copy token');
     expect(localBridgeSettings).toContain('dark:bg-amber-950/40');
     expect(localBridgeSettings).toContain('dark:text-amber-100');
     expect(localBridgeSettings).toContain('Traveler printer:');
