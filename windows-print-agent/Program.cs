@@ -10,7 +10,7 @@ namespace PrintersHero.PrintAgent;
 record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 static class Program {
-  const string AgentVersion = "1.0.13";
+  const string AgentVersion = "1.0.15";
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
   static readonly string Token = Environment.GetEnvironmentVariable("PRINTERSHERO_AGENT_TOKEN") ?? "";
   static readonly string TravelerPrinter = (Environment.GetEnvironmentVariable("PRINTERSHERO_TRAVELER_PRINTER") ?? "").Trim();
@@ -40,8 +40,66 @@ static class Program {
   // The Windows spooler is queried locally; the server never accepts a queue
   // supplied by an operator. Status failures still fail closed at PrintAsync.
   static bool QueueExists(string queue) => PrinterSettings.InstalledPrinters.Cast<string>().Any(name => string.Equals(name, queue, StringComparison.OrdinalIgnoreCase));
-  static async Task PrintTraveler(Claim job) { using var form = new Form { Width = 1, Height = 1, ShowInTaskbar = false, Opacity = 0 }; using var web = new WebView2 { Dock = DockStyle.Fill }; form.Controls.Add(web); form.Show(); await web.EnsureCoreWebView2Async(); web.CoreWebView2.AddWebResourceRequestedFilter($"{BaseUrl}/*", CoreWebView2WebResourceContext.All); web.CoreWebView2.WebResourceRequested += (_, e) => { e.Request.Headers.SetHeader("Authorization", $"Bearer {Token}"); }; var ready = new TaskCompletionSource(); web.CoreWebView2.NavigationCompleted += (_, e) => { if (e.IsSuccess) ready.TrySetResult(); else ready.TrySetException(new InvalidOperationException("Traveler render navigation failed.")); }; var separator = job.travelerUrl?.Contains('?') == true ? "&" : "?"; var route = $"{BaseUrl}{job.travelerUrl}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={job.trailingFeedMm}"; web.CoreWebView2.Navigate(route); await ready.Task.WaitAsync(TimeSpan.FromSeconds(30)); await WaitForTravelerRender(web); await web.ExecuteScriptAsync("document.fonts ? document.fonts.ready : Promise.resolve()"); var settings = web.CoreWebView2.Environment.CreatePrintSettings(); settings.PrinterName = job.queueName; settings.Copies = job.copies; settings.ShouldPrintBackgrounds = true; settings.ShouldPrintHeaderAndFooter = false; var status = await web.CoreWebView2.PrintAsync(settings); if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}"); }
-  static async Task WaitForTravelerRender(WebView2 web) { var deadline = DateTime.UtcNow.AddSeconds(30); while (DateTime.UtcNow < deadline) { var rendered = await web.ExecuteScriptAsync("Boolean(document.querySelector('[data-traveler-ready=\\\"true\\\"]'))"); if (rendered.Contains("true", StringComparison.OrdinalIgnoreCase)) return; await Task.Delay(100); } throw new InvalidOperationException("Traveler content did not finish rendering."); }
+  static async Task PrintTraveler(Claim job) {
+    using var form = new Form { Width = 1, Height = 1, ShowInTaskbar = false, Opacity = 0 };
+    using var web = new WebView2 { Dock = DockStyle.Fill };
+    form.Controls.Add(web);
+    form.Show();
+    await web.EnsureCoreWebView2Async();
+
+    web.CoreWebView2.AddWebResourceRequestedFilter($"{BaseUrl}/*", CoreWebView2WebResourceContext.All);
+    web.CoreWebView2.WebResourceRequested += (_, e) => e.Request.Headers.SetHeader("Authorization", $"Bearer {Token}");
+    // The existing request interceptor covers page resources. Also patch fetch
+    // before React starts so the claimed-job request always carries the bridge
+    // credential when the Traveler app loads off-screen.
+    var tokenJson = JsonSerializer.Serialize(Token);
+    await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync($@"
+      (() => {{
+        const token = {tokenJson};
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {{}}) => {{
+          const requestUrl = typeof input === 'string' ? new URL(input, window.location.href) : new URL(input.url);
+          if (requestUrl.pathname.startsWith('/api/local-bridge/direct-print/jobs/')) {{
+            const headers = new Headers(init.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
+            headers.set('Authorization', 'Bearer ' + token);
+            return originalFetch(input, {{ ...init, headers }});
+          }}
+          return originalFetch(input, init);
+        }};
+      }})();");
+
+    int? sourceStatus = null;
+    web.CoreWebView2.WebResourceResponseReceived += (_, e) => {
+      if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var requestUri) && requestUri.AbsolutePath.StartsWith("/api/local-bridge/direct-print/jobs/", StringComparison.OrdinalIgnoreCase)) sourceStatus = e.Response.StatusCode;
+    };
+    var ready = new TaskCompletionSource();
+    web.CoreWebView2.NavigationCompleted += (_, e) => { if (e.IsSuccess) ready.TrySetResult(); else ready.TrySetException(new InvalidOperationException("Traveler render navigation failed.")); };
+    var separator = job.travelerUrl?.Contains('?') == true ? "&" : "?";
+    var route = $"{BaseUrl}{job.travelerUrl}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={job.trailingFeedMm}";
+    web.CoreWebView2.Navigate(route);
+    await ready.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    await WaitForTravelerRender(web, () => sourceStatus);
+    await web.ExecuteScriptAsync("document.fonts ? document.fonts.ready : Promise.resolve()");
+    var settings = web.CoreWebView2.Environment.CreatePrintSettings();
+    settings.PrinterName = job.queueName;
+    settings.Copies = job.copies;
+    settings.ShouldPrintBackgrounds = true;
+    settings.ShouldPrintHeaderAndFooter = false;
+    var status = await web.CoreWebView2.PrintAsync(settings);
+    if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}");
+  }
+  static async Task WaitForTravelerRender(WebView2 web, Func<int?> sourceStatus) {
+    var deadline = DateTime.UtcNow.AddSeconds(30);
+    while (DateTime.UtcNow < deadline) {
+      var rendered = await web.ExecuteScriptAsync("Boolean(document.querySelector('[data-traveler-ready=\\\"true\\\"]'))");
+      if (rendered.Contains("true", StringComparison.OrdinalIgnoreCase)) return;
+      await Task.Delay(100);
+    }
+    var pageStateJson = await web.ExecuteScriptAsync("JSON.stringify({ failedLoad: Boolean(document.body && document.body.innerText.includes('Failed to load order traveler.')) })");
+    using var pageState = JsonDocument.Parse(pageStateJson);
+    var failedLoad = pageState.RootElement.TryGetProperty("failedLoad", out var failedLoadValue) && failedLoadValue.GetBoolean();
+    throw new InvalidOperationException($"Traveler content did not finish rendering (source request status: {sourceStatus()?.ToString() ?? "not observed"}; page data load failed: {failedLoad}).");
+  }
   static async Task<T?> Get<T>(string path) { var r = await Http.GetAsync(BaseUrl + path); r.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await r.Content.ReadAsStringAsync()); return d.RootElement.GetProperty("data").Deserialize<T>(JsonOptions); }
   static async Task Post(string path, object body) => await Post<object>(path, body);
   static async Task<T?> Post<T>(string path, object body) { var r = await Http.PostAsJsonAsync(BaseUrl + path, body); r.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await r.Content.ReadAsStringAsync()); return d.RootElement.TryGetProperty("data", out var value) ? value.Deserialize<T>(JsonOptions) : default; }
