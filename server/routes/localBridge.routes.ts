@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 import archiver from "archiver";
 import type { Express } from "express";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
 import { ObjectStorageService } from "../objectStorage";
 import { auditLogs, customers, directPrintJobs, localBridgeAgents, localFileCopyJobs, localFileDestinations, lineItemFiles, orders, printerProfiles, productionRuns } from "@shared/schema";
@@ -54,7 +54,62 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/local-bridge/heartbeat", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name), agentVersion: req.body?.agentVersion || null, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id)); res.json({ success: true, data: { status: "active" } }); });
   // The installer may configure only its own paired agent. It never sends the
   // printer inventory to the server; only the explicit selection is persisted.
-  app.post("/api/local-bridge/direct-print/configuration", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; const queueName = String(req.body?.travelerPrinterName || "").trim(); if (!queueName || queueName.length > 255) return res.status(400).json({ error: "A valid Traveler printer name is required." }); await db.update(localBridgeAgents).set({ configuredTravelerPrinterName: queueName, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id)); const [existing] = await db.select({ id: printerProfiles.id }).from(printerProfiles).where(and(eq(printerProfiles.organizationId, agent.organizationId), eq(printerProfiles.printAgentId, agent.id), sql`${printerProfiles.supportedDocuments} ? 'traveler'`)).limit(1); const [destination] = existing ? await db.update(printerProfiles).set({ windowsQueueName: queueName, isActive: true, updatedAt: new Date() }).where(eq(printerProfiles.id, existing.id)).returning() : await db.insert(printerProfiles).values({ organizationId: agent.organizationId, displayName: "Traveler", printerType: "production_ticket", intendedUse: "production_ticket", windowsQueueName: queueName, printAgentId: agent.id, supportedDocuments: ["traveler"], defaultCopies: 1, trailingFeedMm: "0", scope: "organization", isActive: true, isDefault: false }).returning(); res.json({ success: true, data: { travelerPrinterName: queueName, destinationId: destination.id } }); });
+  app.post("/api/local-bridge/direct-print/configuration", bridgeAuth, async (req: any, res) => {
+    const agent = req.bridgeAgent;
+    const queueName = String(req.body?.travelerPrinterName || "").trim();
+    if (!queueName || queueName.length > 255) return res.status(400).json({ error: "A valid Traveler printer name is required." });
+
+    await db.update(localBridgeAgents)
+      .set({ configuredTravelerPrinterName: queueName, updatedAt: new Date() })
+      .where(eq(localBridgeAgents.id, agent.id));
+
+    // Prefer an existing unpaired profile using this exact Windows queue. This
+    // preserves the operator's destination label/location while connecting it
+    // to the agent that selected the queue. Profiles paired to another agent
+    // are never changed by this endpoint.
+    let existing = (await db.select({ id: printerProfiles.id })
+      .from(printerProfiles)
+      .where(and(
+        eq(printerProfiles.organizationId, agent.organizationId),
+        isNull(printerProfiles.printAgentId),
+        eq(printerProfiles.windowsQueueName, queueName),
+        sql`${printerProfiles.supportedDocuments} ? 'traveler'`,
+      ))
+      .limit(1))[0];
+
+    if (!existing) {
+      existing = (await db.select({ id: printerProfiles.id })
+        .from(printerProfiles)
+        .where(and(
+          eq(printerProfiles.organizationId, agent.organizationId),
+          eq(printerProfiles.printAgentId, agent.id),
+          sql`${printerProfiles.supportedDocuments} ? 'traveler'`,
+        ))
+        .limit(1))[0];
+    }
+
+    const [destination] = existing
+      ? await db.update(printerProfiles)
+        .set({ windowsQueueName: queueName, printAgentId: agent.id, isActive: true, updatedAt: new Date() })
+        .where(eq(printerProfiles.id, existing.id))
+        .returning()
+      : await db.insert(printerProfiles).values({
+        organizationId: agent.organizationId,
+        displayName: "Traveler",
+        printerType: "production_ticket",
+        intendedUse: "production_ticket",
+        windowsQueueName: queueName,
+        printAgentId: agent.id,
+        supportedDocuments: ["traveler"],
+        defaultCopies: 1,
+        trailingFeedMm: "0",
+        scope: "organization",
+        isActive: true,
+        isDefault: false,
+      }).returning();
+
+    res.json({ success: true, data: { travelerPrinterName: queueName, destinationId: destination.id } });
+  });
   // A print host only sees jobs assigned to its paired identity. Claiming is a
   // single conditional update so two agents cannot submit the same Traveler.
   app.get("/api/local-bridge/direct-print/jobs", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; const rows = await db.select({ id: directPrintJobs.id, orderId: directPrintJobs.orderId, copies: directPrintJobs.copies, printNote: directPrintJobs.printNote, trailingFeedMm: directPrintJobs.trailingFeedMm, queueName: printerProfiles.windowsQueueName, destinationName: printerProfiles.displayName, location: printerProfiles.location }).from(directPrintJobs).innerJoin(printerProfiles, eq(directPrintJobs.destinationId, printerProfiles.id)).where(and(eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"))).limit(10); res.json({ success: true, data: rows }); });

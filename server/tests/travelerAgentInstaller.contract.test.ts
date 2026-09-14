@@ -88,4 +88,11 @@ describe("Traveler print agent installer contract", () => {
     expect(localBridgeSettings).toContain('Awaiting setup');
     expect(routes).toContain('eq(localBridgeAgents.status, "active")');
   });
+
+  test("pairs an unpaired Traveler profile with the exact selected Windows queue", () => {
+    expect(routes).toContain("isNull(printerProfiles.printAgentId)");
+    expect(routes).toContain("eq(printerProfiles.windowsQueueName, queueName)");
+    expect(routes).toContain("printAgentId: agent.id");
+    expect(routes).toContain("Profiles paired to another agent");
+  });
 });
