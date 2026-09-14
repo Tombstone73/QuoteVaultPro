@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.9'
+$script:SetupVersion = '1.0.10'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')

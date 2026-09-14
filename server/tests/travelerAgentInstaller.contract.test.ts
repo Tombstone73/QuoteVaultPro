@@ -40,7 +40,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.9'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.10'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -67,6 +67,8 @@ describe("Traveler print agent installer contract", () => {
     expect(taskScript).toContain("Windows Task Scheduler command failed");
     expect(taskScript).toContain("Get-AgentTaskCommand");
     expect(taskScript).toContain("scripts\\start-agent.ps1");
+    expect(taskScript).toContain("-EncodedCommand $encodedLauncherCommand");
+    expect(taskScript).toContain("No secret is encoded");
     expect(launcherScript).toContain("GetEnvironmentVariable($name, 'User')");
     expect(launcherScript).toContain("SetEnvironmentVariable($name, $value, 'Process')");
     expect(launcherScript).not.toContain("PRINTERSHERO_AGENT_TOKEN=");

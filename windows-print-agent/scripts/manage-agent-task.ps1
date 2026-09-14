@@ -33,7 +33,11 @@ function Get-AgentTaskCommand {
   # Task Scheduler does not refresh a signed-in user's environment after setup
   # changes it. The launcher reads the saved user configuration each time so a
   # new pairing token is used immediately, without embedding it in the task.
-  return ('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f (Resolve-Path -LiteralPath $launcherPath))
+  # Encoding only the launcher path avoids schtasks.exe splitting paths such as
+  # "Downloads\Agent (4)" at spaces or parentheses. No secret is encoded.
+  $launcherCommand = "& '$((Resolve-Path -LiteralPath $launcherPath).Path.Replace("'", "''"))'"
+  $encodedLauncherCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcherCommand))
+  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encodedLauncherCommand"
 }
 
 switch ($Action) {
