@@ -1989,6 +1989,13 @@
       "when": 1788048000135,
       "tag": "0288_v2_shipment_shipping_allocation_event_kinds",
       "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1788048000136,
+      "tag": "0289_v2_billing_invoice_revision_history_immutability",
+      "breakpoints": true
     }
   ]
 }
