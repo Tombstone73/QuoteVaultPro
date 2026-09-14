@@ -8,6 +8,8 @@ describe("Traveler print agent installer contract", () => {
   const project = read("windows-print-agent/PrintersHero.PrintAgent.csproj");
   const publishProfile = read("windows-print-agent/Properties/PublishProfiles/Shop-win-x64.pubxml");
   const agent = read("windows-print-agent/Program.cs");
+  const routes = read("server/routes/localBridge.routes.ts");
+  const localBridgeSettings = read("client/src/pages/settings/LocalBridgeSettings.tsx");
 
   test("uses Microsoft's documented WebView2 runtime registration, not a browser executable", () => {
     expect(setup).toContain("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
@@ -52,5 +54,14 @@ describe("Traveler print agent installer contract", () => {
     expect(project).toContain('None Update="setup-agent.ps1" CopyToPublishDirectory="PreserveNewest"');
     expect(project).toContain('None Update="scripts\\manage-agent-task.ps1" CopyToPublishDirectory="PreserveNewest"');
     expect(project).toContain('None Update="README.txt" CopyToPublishDirectory="PreserveNewest"');
+  });
+
+  test("serves the Traveler package separately from the legacy file-copy agent", () => {
+    expect(routes).toContain('/api/local-bridge/admin/traveler-print-agent-package');
+    expect(routes).toContain('PrintersHero-Traveler-Print-Agent-win-x64.zip');
+    expect(localBridgeSettings).toContain('Download Traveler Print Agent');
+    expect(localBridgeSettings).toContain('Download Legacy Local Bridge Agent');
+    expect(localBridgeSettings).toContain('dark:bg-amber-950/40');
+    expect(localBridgeSettings).toContain('dark:text-amber-100');
   });
 });

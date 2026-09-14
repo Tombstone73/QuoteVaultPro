@@ -11,6 +11,7 @@ import { getRequestOrganizationId } from "../tenantContext";
 import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 
 const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
+const travelerPrintAgentPackageName = "PrintersHero-Traveler-Print-Agent-win-x64.zip";
 const bridgeAuth = async (req: any, res: any, next: any) => { const raw = String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""); if (!raw) return res.status(401).json({ error: "Bridge token required" }); const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.tokenHash, tokenHash(raw)), eq(localBridgeAgents.status, "active"))).limit(1); if (!agent) return res.status(401).json({ error: "Invalid or revoked bridge token" }); req.bridgeAgent = agent; next(); };
 export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated: any; tenantContext: any; requireOrgOwnerAdmin: any }) {
   const admin = [deps.isAuthenticated, deps.tenantContext, deps.requireOrgOwnerAdmin];
@@ -39,6 +40,14 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   app.get("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const customerId = String(req.query.customerId || ""); if (!customerId) return res.status(400).json({ error: "customerId is required" }); const [destination] = await db.select().from(localFileDestinations).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, customerId), eq(localFileDestinations.destinationType, "customer_art_folder"))).orderBy(desc(localFileDestinations.updatedAt)).limit(1); res.json({ success: true, data: destination ?? null }); });
   app.get("/api/local-bridge/admin/jobs", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); res.json({ success: true, data: await db.select().from(localFileCopyJobs).where(eq(localFileCopyJobs.organizationId, organizationId)).limit(50) }); });
   app.get("/api/local-bridge/admin/agent-package", ...admin, async (_req: any, res) => { const dir = [path.resolve(process.cwd(), "dist/local-bridge-agent"), path.resolve(process.cwd(), "local-bridge-agent")].find(fs.existsSync); if (!dir) return res.status(404).json({ error: "Agent package unavailable" }); res.attachment("printershero-local-bridge-agent-v1.zip"); const zip = archiver("zip"); zip.pipe(res); zip.directory(dir, "printershero-local-bridge-agent"); await zip.finalize(); });
+  app.get("/api/local-bridge/admin/traveler-print-agent-package", ...admin, async (_req: any, res) => {
+    const packagePath = [
+      path.resolve(process.cwd(), "dist", "print-agent", travelerPrintAgentPackageName),
+      path.resolve(process.cwd(), "server", "assets", "print-agent", travelerPrintAgentPackageName),
+    ].find(fs.existsSync);
+    if (!packagePath) return res.status(404).json({ error: "Traveler Print Agent package unavailable" });
+    return res.download(packagePath, travelerPrintAgentPackageName);
+  });
   app.post("/api/local-bridge/heartbeat", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name), agentVersion: req.body?.agentVersion || null, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id)); res.json({ success: true, data: { status: "active" } }); });
   // The installer may configure only its own paired agent. It never sends the
   // printer inventory to the server; only the explicit selection is persisted.

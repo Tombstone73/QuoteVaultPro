@@ -34,9 +34,15 @@ export default function LocalBridgeSettings() {
         <p className="text-sm text-muted-foreground">Optional outbound bridge for customer art-folder copies. The cloud backend never writes directly to your network.</p>
       </div>
       <div className="space-y-2 rounded border p-4">
-        <h3 className="font-medium">Download Local Bridge Agent</h3>
-        <p className="text-sm text-muted-foreground">Download the current bridge package. It runs on a shop PC or server inside your network.</p>
-        <Button asChild><a href="/api/local-bridge/admin/agent-package">Download Local Bridge Agent</a></Button>
+        <h3 className="font-medium">Traveler Print Agent</h3>
+        <p className="text-sm text-muted-foreground">Download the self-contained Windows agent used to print Travelers to a configured local printer. It includes the .NET runtime; WebView2 and the printer driver remain workstation requirements.</p>
+        <Button asChild><a href="/api/local-bridge/admin/traveler-print-agent-package">Download Traveler Print Agent</a></Button>
+        <ol className="list-decimal pl-5 text-sm"><li>Extract the ZIP to a stable local folder on the print workstation.</li><li>Run setup-agent.cmd.</li><li>Select the Traveler printer and paste a newly created pairing token.</li><li>Confirm this page shows Online.</li></ol>
+      </div>
+      <div className="space-y-2 rounded border p-4">
+        <h3 className="font-medium">Legacy Local Bridge Agent</h3>
+        <p className="text-sm text-muted-foreground">This small Node.js agent copies customer artwork to local folders. It does not print Travelers.</p>
+        <Button variant="outline" asChild><a href="/api/local-bridge/admin/agent-package">Download Legacy Local Bridge Agent</a></Button>
         <ol className="list-decimal pl-5 text-sm"><li>Download and extract the bridge package.</li><li>Run it on a shop PC or server.</li><li>Enter the API base URL and bridge token.</li><li>Confirm this page shows Online.</li></ol>
       </div>
       <div className="space-y-3 rounded border p-4">
