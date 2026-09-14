@@ -40,7 +40,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.16'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.17'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -55,7 +55,8 @@ describe("Traveler print agent installer contract", () => {
     expect(agent).toContain("[STAThread] static void Main");
     expect(agent).toContain("Start only after the WinForms message loop establishes its STA sync");
     expect(agent).toContain("AddScriptToExecuteOnDocumentCreatedAsync");
-    expect(agent).toContain("source request status");
+    expect(agent).toContain("__printersHeroTravelerSource");
+    expect(agent).toContain("source request:");
     expect(agent).toContain("JsonSerializer.Deserialize<string>(pageStateJson)");
   });
 

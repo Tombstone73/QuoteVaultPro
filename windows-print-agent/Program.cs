@@ -10,7 +10,7 @@ namespace PrintersHero.PrintAgent;
 record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 static class Program {
-  const string AgentVersion = "1.0.16";
+  const string AgentVersion = "1.0.17";
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
   static readonly string Token = Environment.GetEnvironmentVariable("PRINTERSHERO_AGENT_TOKEN") ?? "";
   static readonly string TravelerPrinter = (Environment.GetEnvironmentVariable("PRINTERSHERO_TRAVELER_PRINTER") ?? "").Trim();
@@ -56,13 +56,21 @@ static class Program {
     await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync($@"
       (() => {{
         const token = {tokenJson};
+        window.__printersHeroTravelerSource = {{ requested: false, status: null, error: null }};
         const originalFetch = window.fetch.bind(window);
         window.fetch = (input, init = {{}}) => {{
           const requestUrl = typeof input === 'string' ? new URL(input, window.location.href) : new URL(input.url);
           if (requestUrl.pathname.startsWith('/api/local-bridge/direct-print/jobs/')) {{
+            window.__printersHeroTravelerSource.requested = true;
             const headers = new Headers(init.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
             headers.set('Authorization', 'Bearer ' + token);
-            return originalFetch(input, {{ ...init, headers }});
+            return originalFetch(input, {{ ...init, headers }}).then((response) => {{
+              window.__printersHeroTravelerSource.status = response.status;
+              return response;
+            }}).catch((error) => {{
+              window.__printersHeroTravelerSource.error = String(error).slice(0, 200);
+              throw error;
+            }});
           }}
           return originalFetch(input, init);
         }};
@@ -95,11 +103,22 @@ static class Program {
       if (rendered.Contains("true", StringComparison.OrdinalIgnoreCase)) return;
       await Task.Delay(100);
     }
-    var pageStateJson = await web.ExecuteScriptAsync("JSON.stringify({ failedLoad: Boolean(document.body && document.body.innerText.includes('Failed to load order traveler.')) })");
+    var pageStateJson = await web.ExecuteScriptAsync("JSON.stringify({ failedLoad: Boolean(document.body && document.body.innerText.includes('Failed to load order traveler.')), loading: Boolean(document.body && document.body.innerText.includes('Loading order traveler...')), documentReadyState: document.readyState, rootChildren: document.getElementById('root')?.childElementCount ?? 0, source: window.__printersHeroTravelerSource ?? null })");
     var pageStateText = JsonSerializer.Deserialize<string>(pageStateJson) ?? "{}";
     using var pageState = JsonDocument.Parse(pageStateText);
     var failedLoad = pageState.RootElement.TryGetProperty("failedLoad", out var failedLoadValue) && failedLoadValue.GetBoolean();
-    throw new InvalidOperationException($"Traveler content did not finish rendering (source request status: {sourceStatus()?.ToString() ?? "not observed"}; page data load failed: {failedLoad}).");
+    var loading = pageState.RootElement.TryGetProperty("loading", out var loadingValue) && loadingValue.GetBoolean();
+    var documentReadyState = pageState.RootElement.TryGetProperty("documentReadyState", out var documentReadyStateValue) ? documentReadyStateValue.GetString() : "unknown";
+    var rootChildren = pageState.RootElement.TryGetProperty("rootChildren", out var rootChildrenValue) && rootChildrenValue.TryGetInt32(out var rootChildCount) ? rootChildCount : -1;
+    var sourceDetail = sourceStatus()?.ToString() ?? "not observed";
+    if (pageState.RootElement.TryGetProperty("source", out var sourceValue) && sourceValue.ValueKind == JsonValueKind.Object) {
+      var requested = sourceValue.TryGetProperty("requested", out var requestedValue) && requestedValue.GetBoolean();
+      if (sourceValue.TryGetProperty("status", out var sourceStatusValue) && sourceStatusValue.ValueKind == JsonValueKind.Number) sourceDetail = sourceStatusValue.GetInt32().ToString();
+      else if (sourceValue.TryGetProperty("error", out var sourceErrorValue) && sourceErrorValue.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(sourceErrorValue.GetString())) sourceDetail = $"browser error: {sourceErrorValue.GetString()}";
+      else if (requested) sourceDetail = "requested without response";
+      else sourceDetail = "not requested by page";
+    }
+    throw new InvalidOperationException($"Traveler content did not finish rendering (source request: {sourceDetail}; page state: {(failedLoad ? "failed" : loading ? "loading" : "not rendered")}; document: {documentReadyState}; root children: {rootChildren}).");
   }
   static async Task<T?> Get<T>(string path) { var r = await Http.GetAsync(BaseUrl + path); r.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await r.Content.ReadAsStringAsync()); return d.RootElement.GetProperty("data").Deserialize<T>(JsonOptions); }
   static async Task Post(string path, object body) => await Post<object>(path, body);

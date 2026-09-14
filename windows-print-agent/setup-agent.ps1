@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.16'
+$script:SetupVersion = '1.0.17'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
@@ -255,7 +255,7 @@ try {
 }
 
 try {
-  $heartbeat = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-1.0.16' }
+  $heartbeat = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-1.0.17' }
   if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful heartbeat status.' }
 } catch {
   throw 'The printer was configured, but PrintersHero could not receive the agent heartbeat. Check the production API connection and run setup again.'
