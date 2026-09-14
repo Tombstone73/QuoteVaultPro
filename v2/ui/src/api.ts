@@ -928,6 +928,7 @@ export type ReplacementObligationProjection = Readonly<{
   remainingProductionQuantity: number;
   remainingFulfillmentQuantity: number;
   billingPending: boolean;
+  billingInvoice?: Readonly<{ invoiceId: string; invoiceNumber: string; lifecycle: "draft" | "issued" | "void"; currency: string; totalCents: number }>;
 }>;
 export type QuoteListItem = Readonly<{
   source: "v2" | "legacy";

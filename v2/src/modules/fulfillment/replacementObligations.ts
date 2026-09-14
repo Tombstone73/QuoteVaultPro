@@ -7,7 +7,7 @@ import type { ReplacementBillingTreatment, ShippingResponsibility } from "./repl
 export const replacementReasons = ["production_delay","print_defect","finishing_defect","wrong_material","transit_damage","lost_in_transit","customer_rejection","customer_change","internal_shipping_error","carrier_issue","other"] as const;
 export type ReplacementReason = (typeof replacementReasons)[number];
 export type ReplacementObligationStatus = "open" | "production_complete" | "fulfilled" | "cancelled";
-export type ReplacementObligationEventKind = "created" | "production_authority_created" | "production_satisfied" | "fulfillment_satisfied" | "completed" | "cancelled" | "corrected";
+export type ReplacementObligationEventKind = "created" | "production_authority_created" | "production_satisfied" | "fulfillment_satisfied" | "completed" | "cancelled" | "corrected" | "billable_invoice_created";
 
 /** A post-fulfillment replacement. The source handoff stays immutable forever. */
 export type ReplacementObligation = Readonly<{
@@ -46,7 +46,7 @@ export type CreateReplacementObligationInput = Readonly<{
 
 /** This is intentionally distinct from a refund, shipment correction, or rejected output. */
 export type ReplacementObligationEvent = Readonly<{ sequence:number; kind:ReplacementObligationEventKind; detail:Readonly<Record<string, unknown>>; createdAt:string; createdPrincipalKind:PrincipalKind; createdPrincipalSubject:string }>;
-export type ReplacementObligationProjection = Readonly<{ obligation:ReplacementObligation; remainingProductionQuantity:number; remainingFulfillmentQuantity:number; billingPending:boolean; events:readonly ReplacementObligationEvent[] }>;
+export type ReplacementObligationProjection = Readonly<{ obligation:ReplacementObligation; remainingProductionQuantity:number; remainingFulfillmentQuantity:number; billingPending:boolean; billingInvoice?:Readonly<{invoiceId:string;invoiceNumber:string;lifecycle:"draft"|"issued"|"void";currency:string;totalCents:number}>; events:readonly ReplacementObligationEvent[] }>;
 export interface ReplacementObligationApplicationPort {
   create(context:OperationContext,input:CreateReplacementObligationInput):Promise<ApplicationResult<ReplacementObligationProjection>>;
   list(context:OperationContext,orderId:OrderId):Promise<ApplicationResult<readonly ReplacementObligationProjection[]>>;

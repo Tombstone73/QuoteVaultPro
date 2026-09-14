@@ -722,6 +722,7 @@ export const App = ({
            canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true}
            canShip={bootstrap.data?.capabilities.fulfillmentShip === true}
            canReplace={bootstrap.data?.capabilities.fulfillmentReplace === true}
+           canInvoiceView={bootstrap.data?.capabilities.invoiceView === true}
           csrfReady={Boolean(bootstrap)}
           orderId={fulfillmentOrderId}
           openOrder={(id) => {
@@ -733,6 +734,11 @@ export const App = ({
             pushCustomerLocation(id);
             setCustomerId(id);
             setPage("customers");
+          }}
+          openInvoice={(id) => {
+            pushInvoiceLocation(id);
+            setInvoiceId(id);
+            setPage("invoices");
           }}
           onSelectOrder={(id) => {
             pushFulfillmentLocation(id);

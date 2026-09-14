@@ -166,10 +166,10 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
   }
 
   async readDraftForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null> {
-    return this.readModel("i.sales_order_document_id=$2 AND i.invoice_state='draft'", organizationId, orderId);
+    return this.readModel("i.sales_order_document_id=$2 AND i.invoice_state='draft' AND i.replacement_obligation_id IS NULL", organizationId, orderId);
   }
   async readInvoiceForOrder(organizationId: OrganizationId, orderId: OrderId): Promise<DraftInvoiceReadModel | null> {
-    return this.readModel("i.sales_order_document_id=$2 ORDER BY CASE i.invoice_state WHEN 'draft' THEN 0 WHEN 'issued' THEN 1 ELSE 2 END,i.updated_at DESC LIMIT 1", organizationId, orderId);
+    return this.readModel("i.sales_order_document_id=$2 AND i.replacement_obligation_id IS NULL ORDER BY CASE i.invoice_state WHEN 'draft' THEN 0 WHEN 'issued' THEN 1 ELSE 2 END,i.updated_at DESC LIMIT 1", organizationId, orderId);
   }
 
   async listInvoices(organizationId: OrganizationId, request: InvoiceListRequest): Promise<readonly InvoiceListItem[]> {
@@ -324,7 +324,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     const result = await this.client.query<InvoiceRow>(
       `SELECT id,invoice_state,source_sales_state_token,synchronization_version
        FROM v2_billing_invoices
-       WHERE organization_id=$1 AND sales_order_document_id=$2
+       WHERE organization_id=$1 AND sales_order_document_id=$2 AND replacement_obligation_id IS NULL
        ORDER BY created_at
        ${forUpdate ? "FOR UPDATE" : ""}`,
       [input.organizationId, input.orderId],
