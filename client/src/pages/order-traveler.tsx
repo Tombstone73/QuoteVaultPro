@@ -125,7 +125,6 @@ export default function OrderTravelerPage() {
             Order Traveler
           </ThermalValue>
           <ThermalDivider heavy />
-          {printNote ? <><ThermalLabel>Print Note</ThermalLabel><ThermalValue size="normal" style={{ margin: "1.5mm 0" }}>{printNote}</ThermalValue><ThermalDivider /></> : null}
 
           {traveler.headerRows.map((row) => (
             <div key={row.key}>
@@ -185,6 +184,7 @@ export default function OrderTravelerPage() {
             ))
           )}
 
+          {printNote ? <><ThermalDivider heavy /><ThermalSection compact><div data-testid="traveler-print-note"><ThermalLabel>Print Note</ThermalLabel><ThermalValue size="normal" style={{ margin: "1.5mm 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" }}>{printNote}</ThermalValue></div></ThermalSection></> : null}
           <ThermalDivider heavy />
           <ThermalQrBlock
             qrDataUrl={qrDataUrl}

@@ -33,7 +33,20 @@ describe("direct Traveler printing safety contract", () => {
     expect(traveler).toContain("directPrintJobId");
     expect(traveler).toContain("/api/local-bridge/direct-print/jobs/");
     expect(agent).toContain("job.travelerUrl");
+    expect(agent).toContain('Uri.EscapeDataString(job.printNote ?? "")');
     expect(agent).toContain("WebView2PrintStatus.Succeeded");
+  });
+
+  test("the print-only note stays on the durable print job and reaches both Traveler paths", () => {
+    const schema = read("shared/schema.ts");
+    const routes = read("server/routes/printerProfiles.routes.ts");
+    const dialog = read("client/src/components/production/TravelerPrintDialog.tsx");
+
+    expect(schema).toContain('printNote: varchar("print_note", { length: 1000 })');
+    expect(routes).toContain("printNote: printNote || null");
+    expect(routes).not.toContain("internalNotes:");
+    expect(dialog).toContain("travelerBrowserPrintUrl(orderId, note)");
+    expect(dialog).toContain("new URLSearchParams({ printNote: note })");
   });
 
   test("browser print remains an explicit fallback", () => {
