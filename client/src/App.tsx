@@ -103,7 +103,6 @@ import FulfillmentWorkspacePage from "@/pages/fulfillment-workspace";
 import FulfillmentShipmentManifestPage from "@/pages/fulfillment-shipment-manifest";
 import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
-import DailyProductionListPage from "@/pages/daily-production-list";
 import ReportStudioRoute from "@/pages/report-studio";
 import SharedReportPage from "@/pages/shared-report";
 import FinancePage from "@/pages/finance";
@@ -336,7 +335,6 @@ function Router() {
         <Route path="/fulfillment/shipments/:shipmentId" element={<FulfillmentShipmentDetailPage />} />
         <Route path={ROUTES.labels} element={<LabelsPage />} />
         <Route path={ROUTES.reports} element={<ReportsPage />} />
-        <Route path={ROUTES.dailyProductionReport} element={<DailyProductionListPage />} />
         <Route path="/reports/:reportId" element={<ReportStudioRoute />} />
         <Route path={ROUTES.finance} element={<FinancePage />} />
 

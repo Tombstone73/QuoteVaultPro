@@ -253,7 +253,6 @@ export const ROUTES = {
   },
   labels: "/shipping",
   reports: "/reports",
-  dailyProductionReport: "/reports/daily-production",
   finance: "/payments",
 
   // Misc
