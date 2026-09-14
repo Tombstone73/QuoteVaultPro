@@ -19,7 +19,7 @@ CREATE TABLE v2_production_runs (
   CONSTRAINT v2_production_runs_state_chk CHECK(state IN ('draft','ready','active','held','completed','cancelled')),
   CONSTRAINT v2_production_runs_revision_chk CHECK(revision>0),
   CONSTRAINT v2_production_runs_actor_chk CHECK(created_principal_kind IN ('staff','delegated_ai','service') AND length(btrim(created_principal_subject))>0),
-  CONSTRAINT v2_production_runs_terminal_timestamp_chk CHECK((state<>'completed' OR completed_at IS NOT NULL) AND (state<>'cancelled' OR cancelled_at IS NOT NULL)
+  CONSTRAINT v2_production_runs_terminal_timestamp_chk CHECK((state<>'completed' OR completed_at IS NOT NULL) AND (state<>'cancelled' OR cancelled_at IS NOT NULL))
 );
 
 CREATE TABLE v2_production_run_allocations (
