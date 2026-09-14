@@ -93,6 +93,8 @@ export type DraftInvoiceReadModel = Readonly<{
   currency: CurrencyCode;
   synchronizationVersion: string;
   lines: readonly DraftInvoiceReadLine[];
+  /** Live non-product charges. Issued checkpoint lines remain immutable evidence. */
+  additionalCharges?: readonly Readonly<{ kind: "shipping"; amount: Money; tax: Money; note?: string }> [];
   subtotal: Money;
   salesAdjustment?: Readonly<{ amount: Money; reason: string }>;
   taxTotal: Money;

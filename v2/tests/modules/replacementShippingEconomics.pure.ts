@@ -10,6 +10,7 @@ assert.equal(shippingCustomerPrice({ estimatedCarrierCostCents: 1_500, policy: {
 
 const split = equalShippingAllocation(10_000, ["6789", "1235", "12902"]);
 assert.deepEqual([...split], [["1235", 3334], ["12902", 3333], ["6789", 3333]]);
+assert.deepEqual([...equalShippingAllocation(2, ["200", "100", "300"])], [["100", 1], ["200", 1], ["300", 0]], "penny remainder is deterministic and zero-share Orders remain represented");
 assertShippingAllocations(10_000, [...split].map(([orderId, customerShippingPriceCents]) => ({ orderId, customerShippingPriceCents })));
 assert.throws(() => assertShippingAllocations(10_000, [{ orderId: "1235", customerShippingPriceCents: 9_999 }]));
 assert.equal(absorbedFreightCents(8_000, 2_000), 6_000);

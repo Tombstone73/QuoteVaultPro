@@ -285,7 +285,13 @@ export class V2QuickBooksBillingWorker {
         "SELECT id,display_name,company_name,email,phone,customer_type FROM customers WHERE organization_id=$1 AND id=$2", [job.organizationId, row.customer_id]);
       const customerRow = customer.rows[0];
       if (!customerRow) throw new Error("V2 Invoice customer is unavailable for QuickBooks sync.");
-      const lineRows = await client.query<{ description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string }>("SELECT description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 ORDER BY position", [job.organizationId, job.subjectId]);
+      // Shipping is a canonical Invoice additional charge, not a manufactured
+      // Product line.  It still travels in the current approved QB projection.
+      const lineRows = await client.query<{ description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string }>(`SELECT description,quantity,selling_unit_cents,selling_line_cents FROM (
+        SELECT position AS ordering,description,quantity,selling_unit_cents::text,selling_line_cents::text FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2
+        UNION ALL
+        SELECT 1000000 + row_number() OVER (ORDER BY created_at,id),COALESCE(customer_note,'Shipping'),1,customer_charge_cents::text,customer_charge_cents::text FROM v2_billing_invoice_additional_charges WHERE organization_id=$1 AND invoice_id=$2
+      ) current_projection ORDER BY ordering`, [job.organizationId, job.subjectId]);
       const lines = projectionLines(lineRows.rows);
       if (!lines.length) throw new Error("V2 Order-backed Invoice has no billable lines for QuickBooks sync.");
       const customerProjection: V2QuickBooksCustomer = { id: customerRow.id, displayName: customerRow.display_name || customerRow.company_name || "", companyName: customerRow.company_name || undefined, email: customerRow.email || undefined, phone: customerRow.phone || undefined, kind: customerRow.customer_type === "individual" ? "individual" : "business" };
@@ -385,7 +391,11 @@ export class V2QuickBooksBillingWorker {
       // an immutable historical issued invoice. Its persisted V2 lines are a
       // safe compatibility fallback; new live postings always use the export
       // snapshot above.
-      const fallbackLines = snapshotLines.length ? [] : projectionLines((await client.query<{ description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string }>("SELECT description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 ORDER BY position", [job.organizationId, row.invoice_id])).rows);
+      const fallbackLines = snapshotLines.length ? [] : projectionLines((await client.query<{ description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string }>(`SELECT description,quantity,selling_unit_cents,selling_line_cents FROM (
+        SELECT position AS ordering,description,quantity,selling_unit_cents::text,selling_line_cents::text FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2
+        UNION ALL
+        SELECT 1000000 + row_number() OVER (ORDER BY created_at,id),COALESCE(customer_note,'Shipping'),1,customer_charge_cents::text,customer_charge_cents::text FROM v2_billing_invoice_additional_charges WHERE organization_id=$1 AND invoice_id=$2
+      ) current_projection ORDER BY ordering`, [job.organizationId, row.invoice_id])).rows);
       const lines = snapshotLines.length ? snapshotLines : fallbackLines;
       if (!lines.length) throw new Error("V2 Refund cannot project an Invoice without its exported accounting lines.");
       await this.startRefundWorkflow(job.organizationId, job.subjectId);

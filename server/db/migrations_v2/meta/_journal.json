@@ -1975,6 +1975,13 @@
       "when": 1788048000133,
       "tag": "0286_v2_shipping_pricing_policy_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 288,
+      "version": "7",
+      "when": 1788048000134,
+      "tag": "0287_v2_shipment_shipping_invoice_projection",
+      "breakpoints": true
     }
   ]
 }

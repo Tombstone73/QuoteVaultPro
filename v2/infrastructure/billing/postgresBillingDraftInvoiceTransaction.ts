@@ -210,6 +210,10 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       "SELECT source_sales_line_id,product_id,description,quantity,selling_unit_cents,selling_line_cents FROM v2_billing_invoice_lines WHERE organization_id=$1 AND invoice_id=$2 AND sales_order_document_id=$3 ORDER BY position",
       [organizationId, invoice.id, invoice.sales_order_document_id],
     );
+    const additionalCharges = await this.client.query<{charge_kind:"shipping";customer_charge_cents:string;tax_cents:string;customer_note:string|null}>(
+      "SELECT charge_kind,customer_charge_cents::text,tax_cents::text,customer_note FROM v2_billing_invoice_additional_charges WHERE organization_id=$1 AND invoice_id=$2 ORDER BY created_at,id",
+      [organizationId, invoice.id],
+    );
     const checkpoint = invoice.invoice_state === "issued" ? await this.client.query<{ checkpoint_json: IssuedInvoiceCheckpoint }>("SELECT checkpoint_json FROM v2_billing_invoice_checkpoints WHERE organization_id=$1 AND invoice_id=$2", [organizationId, invoice.id]) : undefined;
     const currentPresentation = invoice.customer_display_name ? { customerDisplayName: invoice.customer_display_name } : undefined;
     const issuedCheckpoint = checkpoint?.rows[0]?.checkpoint_json;
@@ -220,6 +224,7 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       ...(issuedCheckpoint ? { customerPresentation: issuedCheckpoint.customerPresentation, issuedCheckpoint } : currentPresentation ? { customerPresentation: currentPresentation } : {}),
       currency, synchronizationVersion: invoice.synchronization_version,
       lines: lines.rows.map((line) => ({ sourceOrderLineId: brandedId<"OrderLineId">(line.source_sales_line_id), productId: brandedId<"ProductId">(line.product_id), description: line.description, quantity: line.quantity, sellingUnitAmount: money(currency, Number(line.selling_unit_cents)), lineAmount: money(currency, Number(line.selling_line_cents)) })),
+      ...(additionalCharges.rows.length ? { additionalCharges: additionalCharges.rows.map(charge => ({kind:charge.charge_kind,amount:money(currency,Number(charge.customer_charge_cents)),tax:money(currency,Number(charge.tax_cents)),...(charge.customer_note?{note:charge.customer_note}:{})})) } : {}),
       subtotal: money(currency, Number(invoice.subtotal_cents)), ...(Number(invoice.sales_adjustment_cents) !== 0 && invoice.sales_adjustment_reason ? { salesAdjustment: { amount: money(currency, Number(invoice.sales_adjustment_cents)), reason: invoice.sales_adjustment_reason } } : {}), taxTotal: money(currency, Number(invoice.tax_total_cents)), total: money(currency, Number(invoice.total_cents)),
       ...(invoice.purchase_order_number ? { purchaseOrderNumber: invoice.purchase_order_number } : {}), ...(invoice.terms_code ? { termsCode: invoice.terms_code } : {}), ...(invoice.issued_at ? { issuedAt: invoice.issued_at.toISOString() } : {}),
       createdAt: invoice.created_at.toISOString(), updatedAt: invoice.updated_at.toISOString(),
