@@ -7,7 +7,8 @@ param(
   [string]$ApiBaseUrl = 'https://api.printershero.com',
   [string]$AgentToken,
   [string]$TravelerPrinter,
-  [switch]$NonInteractive
+  [switch]$NonInteractive,
+  [switch]$ElevatedChild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,15 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
+
+trap {
+  if ($ElevatedChild) {
+    Write-Host ''
+    Write-Host 'Setup did not complete. Review the error above before closing this Administrator setup window.' -ForegroundColor Red
+    [void](Read-Host 'Press Enter to close')
+  }
+  exit 1
+}
 
 function Get-WebView2RuntimeVersion {
   $keys = @(
@@ -55,6 +65,29 @@ function Write-Check([string]$Label, [bool]$Ok, [string]$Detail = '') {
   $suffix = if ($Detail) { ": $Detail" } else { '' }
   Write-Host "$marker $Label$suffix"
   return $Ok
+}
+
+function Test-IsAdministrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Restart-ElevatedSetup {
+  if (Test-IsAdministrator) { return }
+  if ($NonInteractive) { throw 'Setup requires administrator approval to install or remove the Windows startup task.' }
+
+  $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath), '-ApiBaseUrl', ('"{0}"' -f $ApiBaseUrl), '-ElevatedChild')
+  if ($Uninstall) { $arguments += '-Uninstall' }
+  if ($RemoveConfiguration) { $arguments += '-RemoveConfiguration' }
+  if ($TravelerPrinter) { $arguments += @('-TravelerPrinter', ('"{0}"' -f $TravelerPrinter)) }
+
+  try {
+    $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+  } catch {
+    throw 'Administrator approval is required to install or remove the Windows startup task.'
+  }
+  exit $process.ExitCode
 }
 
 function Test-TaskInstalled {
@@ -119,6 +152,8 @@ function Remove-AgentConfiguration {
 }
 
 if ($DefinitionOnly) { return }
+
+if (-not $Check) { Restart-ElevatedSetup }
 
 if ($Uninstall) {
   & $script:TaskScript -Action stop

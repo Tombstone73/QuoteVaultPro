@@ -46,8 +46,9 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain("if ($Check)");
     expect(setup).toContain("if ($Uninstall)");
     expect(setup).toContain("Remove-AgentConfiguration");
-    expect(setup).not.toContain("Start-Process -FilePath 'powershell.exe' -Verb RunAs");
-    expect(setup).not.toContain('Restart-ElevatedSetup');
+    expect(setup).toContain("Start-Process -FilePath 'powershell.exe' -Verb RunAs");
+    expect(setup).toContain('Restart-ElevatedSetup');
+    expect(setup).toContain('Administrator setup window');
     expect(taskScript).toContain("Invoke-TaskScheduler");
     expect(taskScript).toContain("Windows Task Scheduler command failed");
   });
