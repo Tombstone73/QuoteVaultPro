@@ -1982,6 +1982,13 @@
       "when": 1788048000134,
       "tag": "0287_v2_shipment_shipping_invoice_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 289,
+      "version": "7",
+      "when": 1788048000135,
+      "tag": "0288_v2_shipment_shipping_allocation_event_kinds",
+      "breakpoints": true
     }
   ]
 }
