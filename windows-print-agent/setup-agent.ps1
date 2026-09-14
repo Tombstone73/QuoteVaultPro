@@ -17,6 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
+$script:SetupVersion = '1.0.4'
 
 trap {
   if ($ElevatedChild) {
@@ -71,7 +72,7 @@ function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hasht
     $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
     $content = [System.Net.Http.StringContent]::new(($Body | ConvertTo-Json -Compress), [System.Text.Encoding]::UTF8, 'application/json')
     $response = $client.PostAsync(("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path), $content).GetAwaiter().GetResult()
-    [pscustomobject]@{ StatusCode = [int]$response.StatusCode }
+    [pscustomobject]@{ StatusCode = [int]$response.StatusCode; ReasonPhrase = [string]$response.ReasonPhrase }
   } finally {
     if ($response) { $response.Dispose() }
     if ($content) { $content.Dispose() }
@@ -195,6 +196,7 @@ if (-not (Test-Path -LiteralPath $script:AgentPath -PathType Leaf)) { throw "Age
 if (-not (Test-Path -LiteralPath $script:TaskScript -PathType Leaf)) { throw 'The task-management script is missing from this package.' }
 
 $webViewVersion = Get-WebView2RuntimeVersion
+Write-Host "PrintersHero Traveler Print Agent Setup $script:SetupVersion"
 if ($webViewVersion) {
   Write-Host "Microsoft WebView2 Runtime: Installed ($webViewVersion)"
 } else {
@@ -218,7 +220,7 @@ $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 try {
   $configuration = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter }
   if ($configuration.StatusCode -eq 401) { throw 'The pairing token is invalid or revoked. Create a new Local Bridge token in PrintersHero, copy it, then run setup again.' }
-  if (-not (Test-SuccessStatus $configuration)) { throw 'PrintersHero could not configure the selected printer. Check the production API connection and try a newly created token.' }
+  if (-not (Test-SuccessStatus $configuration)) { throw ("PrintersHero returned HTTP {0} ({1}) while configuring the selected printer through {2}." -f $configuration.StatusCode, $configuration.ReasonPhrase, $ApiBaseUrl) }
 } catch {
   throw $_
 }
