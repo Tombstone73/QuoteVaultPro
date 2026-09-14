@@ -57,26 +57,34 @@ function Get-PlainSecureString([Security.SecureString]$Value) {
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
 
-function Initialize-HttpClientSupport {
-  if ($null -eq ('System.Net.Http.HttpClient' -as [type])) {
-    Add-Type -AssemblyName System.Net.Http
-  }
-}
-
 function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hashtable]$Body = @{}) {
-  Initialize-HttpClientSupport
-  $client = [System.Net.Http.HttpClient]::new()
-  $content = $null
+  $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create(("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path))
+  $request.Method = 'POST'
+  $request.ContentType = 'application/json; charset=utf-8'
+  $request.Accept = 'application/json'
+  $request.Headers['Authorization'] = "Bearer $Token"
+  $payload = $Body | ConvertTo-Json -Compress
+  $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+  $request.ContentLength = $payloadBytes.Length
+  $requestStream = $null
   $response = $null
   try {
-    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
-    $content = [System.Net.Http.StringContent]::new(($Body | ConvertTo-Json -Compress), [System.Text.Encoding]::UTF8, 'application/json')
-    $response = $client.PostAsync(("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path), $content).GetAwaiter().GetResult()
+    $requestStream = $request.GetRequestStream()
+    $requestStream.Write($payloadBytes, 0, $payloadBytes.Length)
+    $requestStream.Flush()
+    try {
+      $response = [System.Net.HttpWebResponse]$request.GetResponse()
+    } catch [System.Net.WebException] {
+      if ($_.Exception.Response) {
+        $response = [System.Net.HttpWebResponse]$_.Exception.Response
+      } else {
+        throw
+      }
+    }
     [pscustomobject]@{ StatusCode = [int]$response.StatusCode; ReasonPhrase = [string]$response.ReasonPhrase }
   } finally {
     if ($response) { $response.Dispose() }
-    if ($content) { $content.Dispose() }
-    $client.Dispose()
+    if ($requestStream) { $requestStream.Dispose() }
   }
 }
 

@@ -37,8 +37,8 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain("/api/local-bridge/direct-print/configuration");
     expect(setup).toContain('The pairing token is invalid or revoked');
     expect(setup).toContain('Test-SuccessStatus');
-    expect(setup).toContain('System.Net.Http.HttpClient');
-    expect(setup).toContain('Add-Type -AssemblyName System.Net.Http');
+    expect(setup).toContain('System.Net.HttpWebRequest');
+    expect(setup).toContain('$request.GetRequestStream()');
     expect(setup).toContain("$script:SetupVersion = '1.0.4'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(agent).toContain("PRINTERSHERO_TRAVELER_PRINTER");
