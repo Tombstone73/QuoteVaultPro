@@ -17,7 +17,12 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.6'
+$script:SetupVersion = '1.0.7'
+
+if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
+  $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
+  if (-not [string]::IsNullOrWhiteSpace($savedApiBaseUrl)) { $ApiBaseUrl = $savedApiBaseUrl }
+}
 
 trap {
   if ($ElevatedChild) {
@@ -218,6 +223,15 @@ if ($webViewVersion) {
 
 $selectedPrinter = Select-TravelerPrinter $TravelerPrinter
 if (-not $AgentToken) {
+  $savedAgentToken = [Environment]::GetEnvironmentVariable('PRINTERSHERO_AGENT_TOKEN', 'User')
+  if (-not [string]::IsNullOrWhiteSpace($savedAgentToken) -and -not $NonInteractive) {
+    $useSavedToken = Read-Host 'Use the saved PrintersHero pairing token for this retry? [Y/n]'
+    if ([string]::IsNullOrWhiteSpace($useSavedToken) -or $useSavedToken -match '^[Yy]') { $AgentToken = $savedAgentToken }
+  } elseif (-not [string]::IsNullOrWhiteSpace($savedAgentToken) -and $NonInteractive) {
+    $AgentToken = $savedAgentToken
+  }
+}
+if (-not $AgentToken) {
   if ($NonInteractive) { throw 'AgentToken is required for unattended setup.' }
   $AgentToken = Get-PlainSecureString (Read-Host 'Paste the PrintersHero pairing token' -AsSecureString)
 }
@@ -226,6 +240,11 @@ if ([string]::IsNullOrWhiteSpace($AgentToken)) { throw 'A PrintersHero pairing t
 if ($AgentToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'The pairing token format is invalid. Create a new token in PrintersHero, use Copy token, then rerun setup.' }
 if (-not ([Uri]$ApiBaseUrl).IsAbsoluteUri -or ([Uri]$ApiBaseUrl).Scheme -ne 'https') { throw 'PrintersHero API URL must be an HTTPS absolute URL.' }
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
+
+foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter }.GetEnumerator()) {
+  [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
+  Set-Item "Env:$($pair.Key)" $pair.Value
+}
 
 try {
   $configuration = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter }
@@ -242,10 +261,6 @@ try {
   throw 'The printer was configured, but PrintersHero could not receive the agent heartbeat. Check the production API connection and run setup again.'
 }
 
-foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter }.GetEnumerator()) {
-  [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
-  Set-Item "Env:$($pair.Key)" $pair.Value
-}
 $AgentToken = $null
 
 & $script:TaskScript -Action install -AgentPath $script:AgentPath
