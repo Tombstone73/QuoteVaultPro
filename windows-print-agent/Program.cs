@@ -10,7 +10,7 @@ namespace PrintersHero.PrintAgent;
 record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 static class Program {
-  const string AgentVersion = "1.0.15";
+  const string AgentVersion = "1.0.16";
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
   static readonly string Token = Environment.GetEnvironmentVariable("PRINTERSHERO_AGENT_TOKEN") ?? "";
   static readonly string TravelerPrinter = (Environment.GetEnvironmentVariable("PRINTERSHERO_TRAVELER_PRINTER") ?? "").Trim();
@@ -96,7 +96,8 @@ static class Program {
       await Task.Delay(100);
     }
     var pageStateJson = await web.ExecuteScriptAsync("JSON.stringify({ failedLoad: Boolean(document.body && document.body.innerText.includes('Failed to load order traveler.')) })");
-    using var pageState = JsonDocument.Parse(pageStateJson);
+    var pageStateText = JsonSerializer.Deserialize<string>(pageStateJson) ?? "{}";
+    using var pageState = JsonDocument.Parse(pageStateText);
     var failedLoad = pageState.RootElement.TryGetProperty("failedLoad", out var failedLoadValue) && failedLoadValue.GetBoolean();
     throw new InvalidOperationException($"Traveler content did not finish rendering (source request status: {sourceStatus()?.ToString() ?? "not observed"}; page data load failed: {failedLoad}).");
   }
