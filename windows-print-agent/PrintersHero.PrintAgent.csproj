@@ -7,5 +7,6 @@
     <None Update="README.md" CopyToPublishDirectory="PreserveNewest" />
     <None Update="README.txt" CopyToPublishDirectory="PreserveNewest" />
     <None Update="scripts\manage-agent-task.ps1" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="scripts\start-agent.ps1" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -9,6 +9,7 @@ describe("Traveler print agent installer contract", () => {
   const publishProfile = read("windows-print-agent/Properties/PublishProfiles/Shop-win-x64.pubxml");
   const agent = read("windows-print-agent/Program.cs");
   const taskScript = read("windows-print-agent/scripts/manage-agent-task.ps1");
+  const launcherScript = read("windows-print-agent/scripts/start-agent.ps1");
   const routes = read("server/routes/localBridge.routes.ts");
   const localBridgeSettings = read("client/src/pages/settings/LocalBridgeSettings.tsx");
 
@@ -39,7 +40,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.8'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.9'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -64,6 +65,11 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Error: {0}');
     expect(taskScript).toContain("Invoke-TaskScheduler");
     expect(taskScript).toContain("Windows Task Scheduler command failed");
+    expect(taskScript).toContain("Get-AgentTaskCommand");
+    expect(taskScript).toContain("scripts\\start-agent.ps1");
+    expect(launcherScript).toContain("GetEnvironmentVariable($name, 'User')");
+    expect(launcherScript).toContain("SetEnvironmentVariable($name, $value, 'Process')");
+    expect(launcherScript).not.toContain("PRINTERSHERO_AGENT_TOKEN=");
   });
 
   test("publishes a self-contained win-x64 package with installer assets", () => {
@@ -72,6 +78,7 @@ describe("Traveler print agent installer contract", () => {
     expect(publishProfile).toContain("<PublishTrimmed>false</PublishTrimmed>");
     expect(project).toContain('None Update="setup-agent.ps1" CopyToPublishDirectory="PreserveNewest"');
     expect(project).toContain('None Update="scripts\\manage-agent-task.ps1" CopyToPublishDirectory="PreserveNewest"');
+    expect(project).toContain('None Update="scripts\\start-agent.ps1" CopyToPublishDirectory="PreserveNewest"');
     expect(project).toContain('None Update="README.txt" CopyToPublishDirectory="PreserveNewest"');
   });
 

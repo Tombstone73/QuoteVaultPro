@@ -23,10 +23,22 @@ function Require-AgentPath {
   }
 }
 
+function Get-AgentTaskCommand {
+  Require-AgentPath
+  $launcherPath = Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $AgentPath)) 'scripts\start-agent.ps1'
+  if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
+    throw 'Install requires scripts\start-agent.ps1 from the complete PrintersHero package.'
+  }
+
+  # Task Scheduler does not refresh a signed-in user's environment after setup
+  # changes it. The launcher reads the saved user configuration each time so a
+  # new pairing token is used immediately, without embedding it in the task.
+  return ('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f (Resolve-Path -LiteralPath $launcherPath))
+}
+
 switch ($Action) {
   'install' {
-    Require-AgentPath
-    Invoke-TaskScheduler @('/Create', '/TN', $taskName, '/TR', ('"{0}"' -f (Resolve-Path -LiteralPath $AgentPath)), '/SC', 'ONLOGON', '/RL', 'LIMITED', '/F') | Out-Null
+    Invoke-TaskScheduler @('/Create', '/TN', $taskName, '/TR', (Get-AgentTaskCommand), '/SC', 'ONLOGON', '/RL', 'LIMITED', '/F') | Out-Null
   }
   'start' { Invoke-TaskScheduler @('/Run', '/TN', $taskName) | Out-Null }
   'stop' { Get-Process -Name $processName -ErrorAction SilentlyContinue | Stop-Process }

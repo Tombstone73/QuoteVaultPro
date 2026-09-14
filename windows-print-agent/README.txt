@@ -12,6 +12,9 @@ PrintersHero Traveler Print Agent
    Production setup uses https://api.printershero.com (not the web-app URL).
 7. When every setup check shows [OK], print one test Traveler in PrintersHero.
 
+The installed task loads the current saved pairing configuration at every
+startup, so a successful setup uses the selected token immediately.
+
 For diagnostics run: setup-agent.ps1 -Check
 For removal run:     setup-agent.ps1 -Uninstall
 
