@@ -15,6 +15,14 @@ export type MigrationLockConfig = {
   retryIntervalMs: number;
 };
 
+export type PackagedMigrationLedgerProgress = {
+  isPooledConnection: boolean;
+  appliedCount: number;
+  appliedLatestWhen: number;
+  packagedCount: number;
+  packagedLatestWhen: number;
+};
+
 function normalize(value: string | undefined | null): string {
   return (value ?? "").trim();
 }
@@ -103,4 +111,17 @@ export function getMigrationLockConfig(
     timeoutMs: parsePositiveInteger(env.MIGRATION_LOCK_TIMEOUT_MS, defaultTimeoutMs),
     retryIntervalMs: parsePositiveInteger(env.MIGRATION_LOCK_RETRY_MS, 1_000),
   };
+}
+
+/**
+ * A pooled PostgreSQL session can retain a session-level advisory lock after a
+ * previous deploy ends. If the packaged migration ledger is already complete,
+ * there is no DDL to serialize, so startup may safely run read-only release
+ * checks without waiting behind that stale lock.
+ */
+export function canBypassPooledMigrationLock(progress: PackagedMigrationLedgerProgress): boolean {
+  return progress.isPooledConnection
+    && progress.packagedCount > 0
+    && progress.appliedCount >= progress.packagedCount
+    && progress.appliedLatestWhen >= progress.packagedLatestWhen;
 }

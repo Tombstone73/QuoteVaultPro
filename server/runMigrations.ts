@@ -10,6 +10,7 @@ import {
   getMigrationLockConfig,
   getSafeDatabaseLabel,
   isPooledNeonDatabaseUrl,
+  canBypassPooledMigrationLock,
   parseAutoMigrateConfig,
   selectMigrationDatabaseUrl,
 } from "./lib/migrationRuntimeConfig";
@@ -25,7 +26,13 @@ const MIGRATIONS_SCHEMA = "public";
 type MigrationRuntime = {
   pool: Pool;
   db: any;
+  connectionString: string;
   close: () => Promise<void>;
+};
+
+type MigrationJournalSummary = {
+  entryCount: number;
+  latestWhen: number;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -56,6 +63,7 @@ async function createMigrationRuntime(): Promise<MigrationRuntime> {
     return {
       pool: pool as unknown as Pool,
       db,
+      connectionString: selection.connectionString,
       close: async () => {},
     };
   }
@@ -65,6 +73,7 @@ async function createMigrationRuntime(): Promise<MigrationRuntime> {
   return {
     pool: migrationPool,
     db: migrationDb,
+    connectionString: selection.connectionString,
     close: async () => {
       await migrationPool.end();
     },
@@ -151,6 +160,32 @@ async function acquireMigrationAdvisoryLock(client: any): Promise<boolean> {
   );
   await logAdvisoryLockDiagnostics(client);
   return false;
+}
+
+async function canUseCompletedPooledMigrationLedger(
+  client: any,
+  summary: MigrationJournalSummary | null,
+  connectionString: string,
+): Promise<boolean> {
+  if (!summary || !isPooledNeonDatabaseUrl(connectionString)) return false;
+
+  try {
+    const result = await client.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(MAX(created_at), -1)::bigint AS latest_when FROM public.${MIGRATIONS_TABLE}`,
+    );
+    const appliedCount = Number(result.rows[0]?.count ?? 0);
+    const appliedLatestWhen = Number(result.rows[0]?.latest_when ?? -1);
+    return canBypassPooledMigrationLock({
+      isPooledConnection: true,
+      appliedCount,
+      appliedLatestWhen,
+      packagedCount: summary.entryCount,
+      packagedLatestWhen: summary.latestWhen,
+    });
+  } catch (error: any) {
+    console.warn("[Migrations] Could not verify the pooled migration ledger before lock acquisition:", error?.message || error);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +511,7 @@ export async function runMigrations(): Promise<void> {
   //   → the build artifact is stale — re-run npm run build (Railway: clear cache and redeploy).
   // If maxWhen in the journal < MAX(created_at) in the ledger:
   //   → the next migration's 'when' is too low and it will be silently skipped.
+  let packagedMigrationSummary: MigrationJournalSummary | null = null;
   try {
     const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
@@ -484,6 +520,7 @@ export async function runMigrations(): Promise<void> {
     const maxWhen = entries.length > 0 ? Math.max(...entries.map((e) => e.when)) : -1;
     const lastEntry = entries.find((e) => e.idx === maxIdx);
     const maxWhenEntry = entries.find((e) => e.when === maxWhen);
+    packagedMigrationSummary = { entryCount: entries.length, latestWhen: maxWhen };
     console.log(
       `[Migrations] Packaged journal: ${entries.length} entries, highest idx = ${maxIdx} (${lastEntry?.tag ?? "unknown"}), highest when = ${maxWhen} (${maxWhenEntry?.tag ?? "unknown"} — ${new Date(maxWhen).toISOString()})`,
     );
@@ -529,6 +566,14 @@ export async function runMigrations(): Promise<void> {
   let client: any | null = null;
   try {
     client = await (migrationRuntime.pool as any).connect();
+    if (await canUseCompletedPooledMigrationLedger(client, packagedMigrationSummary, migrationRuntime.connectionString)) {
+      console.warn(
+        "[Migrations] Pooled migration advisory lock bypassed: the packaged ledger is already complete. " +
+        "Running read-only release verification so a stale pooled session cannot block API availability.",
+      );
+      await runReleaseChecks(client);
+      return;
+    }
     lockAcquired = await acquireMigrationAdvisoryLock(client);
     if (!lockAcquired) {
       throw new Error(`Could not acquire migration advisory lock ${ADVISORY_LOCK_KEY}`);

@@ -263,6 +263,7 @@ import { registerPortalRoutes } from './routes/portal.routes';
 import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
 import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.routes';
 import { registerPrinterProfileRoutes } from './routes/printerProfiles.routes';
+import { registerDailyProductionReportRoutes } from './routes/dailyProductionReport.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -450,6 +451,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)
   registerProductionConfigRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
+  registerDailyProductionReportRoutes(app, { isAuthenticated, tenantContext });
   // Production jobs routes extracted to ./routes/productionJobs.routes.ts (do NOT re-add here)
   registerProductionJobsRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   registerProductionRunRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });

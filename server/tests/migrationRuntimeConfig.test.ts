@@ -1,4 +1,5 @@
 import {
+  canBypassPooledMigrationLock,
   getMigrationLockConfig,
   getSafeDatabaseLabel,
   isPooledNeonDatabaseUrl,
@@ -85,5 +86,29 @@ describe("migration runtime config", () => {
     expect(label).toContain("example.com/app");
     expect(label).not.toContain("super-secret");
     expect(label).not.toContain("user:");
+  });
+
+  test("only bypasses a pooled advisory lock when every packaged migration is already applied", () => {
+    expect(canBypassPooledMigrationLock({
+      isPooledConnection: true,
+      appliedCount: 197,
+      appliedLatestWhen: 1_788_048_000_048,
+      packagedCount: 197,
+      packagedLatestWhen: 1_788_048_000_048,
+    })).toBe(true);
+    expect(canBypassPooledMigrationLock({
+      isPooledConnection: true,
+      appliedCount: 196,
+      appliedLatestWhen: 1_788_048_000_048,
+      packagedCount: 197,
+      packagedLatestWhen: 1_788_048_000_048,
+    })).toBe(false);
+    expect(canBypassPooledMigrationLock({
+      isPooledConnection: false,
+      appliedCount: 197,
+      appliedLatestWhen: 1_788_048_000_048,
+      packagedCount: 197,
+      packagedLatestWhen: 1_788_048_000_048,
+    })).toBe(false);
   });
 });
