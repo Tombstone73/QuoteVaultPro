@@ -719,8 +719,9 @@ export const App = ({
           organizationId={organizationId}
           sessionScope={sessionScope}
           canView={bootstrap.data?.capabilities.fulfillmentView === true}
-          canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true}
-          canShip={bootstrap.data?.capabilities.fulfillmentShip === true}
+           canPickup={bootstrap.data?.capabilities.fulfillmentPickup === true}
+           canShip={bootstrap.data?.capabilities.fulfillmentShip === true}
+           canReplace={bootstrap.data?.capabilities.fulfillmentReplace === true}
           csrfReady={Boolean(bootstrap)}
           orderId={fulfillmentOrderId}
           openOrder={(id) => {

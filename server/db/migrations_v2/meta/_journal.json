@@ -1947,6 +1947,20 @@
       "when": 1788048000129,
       "tag": "0282_v2_production_output_rejections",
       "breakpoints": true
+    },
+    {
+      "idx": 284,
+      "version": "7",
+      "when": 1788048000130,
+      "tag": "0283_v2_replacement_obligations_shipping_economics",
+      "breakpoints": true
+    },
+    {
+      "idx": 285,
+      "version": "7",
+      "when": 1788048000131,
+      "tag": "0284_v2_replacement_obligation_execution",
+      "breakpoints": true
     }
   ]
 }

@@ -142,6 +142,7 @@ export type UiBootstrap = Readonly<{
     fulfillmentView?: boolean;
     fulfillmentPickup?: boolean;
     fulfillmentShip?: boolean;
+    fulfillmentReplace?: boolean;
     inboundView?: boolean;
     inboundReview?: boolean;
     assistantUse?: boolean;
@@ -832,6 +833,7 @@ export type FulfillmentShipmentDraftAllocationInput = Readonly<{
   orderId: string;
   orderLineId: string;
   quantity: number;
+  replacementObligationId?: string;
 }>;
 export type FulfillmentShipmentDraftAllocation = FulfillmentShipmentDraftAllocationInput;
   export type FulfillmentShipmentPreparedRevision = Readonly<{
@@ -910,6 +912,22 @@ export type FulfillmentTerminalResult = Readonly<{
   }>;
   allocations: readonly Readonly<{ orderLineId: string; quantity: number }>[];
   availability: readonly FulfillmentAvailability[];
+}>;
+export type ReplacementObligationProjection = Readonly<{
+  obligation: Readonly<{
+    replacementObligationId: string;
+    orderId: string;
+    orderLineId: string;
+    replacementQuantity: number;
+    reason: string;
+    responsibility: "titan" | "customer" | "carrier" | "pending";
+    billingTreatment: "no_charge" | "billable" | "pending";
+    note?: string;
+    status: "open" | "production_complete" | "fulfilled" | "cancelled";
+  }>;
+  remainingProductionQuantity: number;
+  remainingFulfillmentQuantity: number;
+  billingPending: boolean;
 }>;
 export type QuoteListItem = Readonly<{
   source: "v2" | "legacy";
@@ -3320,6 +3338,9 @@ export const fulfillmentApi = {
     allocations: readonly { orderLineId: string; quantity: number }[],
   ) =>
     fulfillmentMutation(org, orderId, method, businessRequestId, allocations),
+  replacements: (org: string, orderId: string) => request<readonly ReplacementObligationProjection[]>(fulfillmentEndpoint(org, `/orders/${encodeURIComponent(orderId)}/replacements`)),
+  createReplacement: (org: string, orderId: string, businessRequestId: string, input: Readonly<{ orderLineId: string; replacementQuantity: number; reason: string; responsibility: "titan" | "customer" | "carrier" | "pending"; billingTreatment: "no_charge" | "billable"; note?: string }>) => request<ReplacementObligationProjection>(fulfillmentEndpoint(org, `/orders/${encodeURIComponent(orderId)}/replacements`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org)) ?? ""}, body:JSON.stringify({businessRequestId,...input}) }),
+  cancelReplacement: (org: string, replacementObligationId: string, businessRequestId: string) => request<ReplacementObligationProjection>(fulfillmentEndpoint(org, `/replacements/${encodeURIComponent(replacementObligationId)}/cancel`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org)) ?? ""}, body:JSON.stringify({businessRequestId}) }),
   createShipment: (
     org: string,
     businessRequestId: string,

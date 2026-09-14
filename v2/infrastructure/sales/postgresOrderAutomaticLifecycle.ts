@@ -30,19 +30,31 @@ export class PostgresOrderAutomaticLifecycle implements OrderAutomaticLifecycle 
         CASE WHEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') IN ('standard_production','fulfillment_only','service_fee') THEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') ELSE NULL END workflow_intent,
         CASE WHEN e.production_requirement='not_required' THEN false ELSE COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) END requires_production,
         CASE WHEN e.production_requirement='not_required' THEN true WHEN COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false)=false THEN true ELSE COALESCE((SELECT count(*)>0 AND bool_and(COALESCE((SELECT sum(v2_usable_production_good_quantity(w.organization_id,w.id)) FROM v2_production_works w WHERE w.organization_id=req.organization_id AND w.order_line_id=req.order_line_id AND w.requirement_key=req.requirement_key),0)>=l.quantity) FROM v2_sales_line_production_requirements req WHERE req.organization_id=l.organization_id AND req.order_line_id=l.id),false) END production_complete,
-        COALESCE((SELECT sum(hl.quantity) FROM v2_fulfillment_handoff_lines hl WHERE hl.organization_id=l.organization_id AND hl.order_document_id=l.document_id AND hl.order_line_id=l.id),0)::text fulfilled_quantity,
+        COALESCE((SELECT sum(hl.quantity) FROM v2_fulfillment_handoff_lines hl JOIN v2_fulfillment_handoffs handoff ON handoff.organization_id=hl.organization_id AND handoff.id=hl.handoff_id WHERE hl.organization_id=l.organization_id AND hl.order_document_id=l.document_id AND hl.order_line_id=l.id AND handoff.replacement_obligation_id IS NULL),0)::text fulfilled_quantity,
         CASE WHEN EXISTS(SELECT 1 FROM v2_route_instances ri WHERE ri.organization_id=l.organization_id AND ri.order_line_id=l.id) THEN NOT EXISTS(SELECT 1 FROM v2_route_instances ri WHERE ri.organization_id=l.organization_id AND ri.order_line_id=l.id AND ri.route_state<>'completed') ELSE NOT COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) END route_complete,
         e.production_requirement
         FROM v2_sales_document_lines l LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId'
         LEFT JOIN v2_sales_line_workflow_exceptions e ON e.organization_id=l.organization_id AND e.order_line_id=l.id
         WHERE l.organization_id=$1 AND l.document_id=$2 ORDER BY l.position,l.id`, [organizationId, orderId]);
       const operational = orderCompletionEligibility(lines.rows.map((line) => ({ orderLineId: line.id, description: line.description, workflowIntent: line.workflow_intent === "standard_production" || line.workflow_intent === "fulfillment_only" || line.workflow_intent === "service_fee" ? line.workflow_intent : null, requiresProduction: line.requires_production, orderedQuantity: line.quantity, productionComplete: line.production_complete, fulfilledQuantity: Number(line.fulfilled_quantity), routeComplete: line.route_complete, ...(line.production_requirement ? { productionRequirement: line.production_requirement } : {}) })));
+      // A fulfilled original line remains historical truth.  A post-fulfillment
+      // replacement is an independent operational obligation on the same Order
+      // and must keep it open until its own Production/Fulfillment cycle closes.
+      const replacements = await client.query<{ open_count: string }>(`SELECT count(*)::text open_count
+        FROM v2_order_replacement_obligations r
+        WHERE r.organization_id=$1 AND r.order_document_id=$2 AND r.status NOT IN ('fulfilled','cancelled')`, [organizationId, orderId]);
+      const activeReplacementCount = Number(replacements.rows[0]?.open_count ?? 0);
+      const replacementOperational = activeReplacementCount === 0 ? operational : {
+        ...operational,
+        eligible: false,
+        blockers: [...operational.blockers, { orderLineId: "replacement", kind: "production_incomplete" as const, reason: `${activeReplacementCount} replacement obligation(s) remain unresolved.` }],
+      };
       // An Order with several active Invoices is financially settled only when
       // every active Invoice is settled.  This deliberately retains the prior
       // no-Invoice behaviour (not yet settlement-complete) while avoiding an
       // aggregate Payment closing an Order after only one Invoice is paid.
       const financial = await client.query<{ settled: boolean }>(`SELECT EXISTS(SELECT 1 FROM v2_billing_invoices i WHERE i.organization_id=$1 AND i.sales_order_document_id=$2 AND i.invoice_state<>'void') AND NOT EXISTS(SELECT 1 FROM v2_billing_invoices i WHERE i.organization_id=$1 AND i.sales_order_document_id=$2 AND i.invoice_state<>'void' AND i.total_cents-COALESCE((SELECT sum(a.amount_cents) FROM v2_billing_payment_allocations a WHERE a.organization_id=i.organization_id AND a.invoice_id=i.id),0)+COALESCE((SELECT sum(e.amount_cents) FROM v2_billing_refund_allocation_evidence e WHERE e.organization_id=i.organization_id AND e.invoice_id=i.id),0)>0) settled`, [organizationId, orderId]);
-      const desired = reconciledOrderState(current.state, operational, financial.rows[0]?.settled === true);
+      const desired = reconciledOrderState(current.state, replacementOperational, financial.rows[0]?.settled === true);
       if (desired === "completed" && current.state === "open") {
         await client.query("UPDATE v2_sales_order_details SET commercial_state='completed',completed_at=now(),completed_principal_kind='service',completed_principal_subject='order-lifecycle-reconciler',completed_staff_actor_user_id=NULL,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state='open'", [organizationId, orderId]);
         await client.query("INSERT INTO v2_audit_events(organization_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,changes) VALUES($1,'sales.order.lifecycle.reconcile.v1','order_auto_closed','sales_order',$2,'service','order-lifecycle-reconciler',$3::jsonb)", [organizationId, orderId, JSON.stringify([{ kind: "order_auto_closed", summary: "All operational obligations and the canonical Invoice settlement are complete." }])]);

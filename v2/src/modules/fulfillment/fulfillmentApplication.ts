@@ -5,7 +5,7 @@ import { principalSubject, staffActorId } from "../../authorization/principals.j
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, type FulfillmentHandoffId, type FulfillmentHandoffLineId, type OrderId, type OrganizationId } from "../shared/commercialValues.js";
 import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
-import type { CompleteFulfillmentInput, FulfillmentAvailability, FulfillmentHandoff, FulfillmentHandoffLine, FulfillmentMethod, FulfillmentTerminalResult } from "./contracts.js";
+import type { CompleteFulfillmentInput, FulfillmentAvailability, FulfillmentHandoff, FulfillmentHandoffLine, FulfillmentMethod, FulfillmentTerminalResult, ReplacementFulfillmentAvailability } from "./contracts.js";
 
 type Actor=Readonly<{principalKind:OperationContext["principal"]["kind"];principalSubject:string;staffActorUserId?:string}>;
 type Reservation=Readonly<{kind:"new"|"resumed"|"replay";request:Readonly<{id:string;resultJson:unknown|null}>}>;
@@ -16,7 +16,8 @@ export interface FulfillmentTransaction {
  attribute(input:Readonly<{organizationId:string;requestId:string;operation:string;resourceId:string}&Actor>):Promise<void>;
  audit(input:Readonly<{organizationId:string;requestId:string;operation:string;method:FulfillmentMethod;resourceId:string;allocations:readonly FulfillmentHandoffLine[]}&Actor>):Promise<void>;
  lockAvailability(organizationId:OrganizationId,orderId:OrderId,lineIds:readonly string[]):Promise<ScopedAvailability|null>;
- createHandoff(input:Readonly<{id:FulfillmentHandoffId;organizationId:OrganizationId;orderId:OrderId;method:FulfillmentMethod;customerId?:string;contactId?:string}&Actor>):Promise<FulfillmentHandoff>;
+ lockReplacementAvailability(organizationId:OrganizationId,orderId:OrderId,replacementObligationId:string):Promise<ReplacementFulfillmentAvailability|null>;
+ createHandoff(input:Readonly<{id:FulfillmentHandoffId;organizationId:OrganizationId;orderId:OrderId;method:FulfillmentMethod;customerId?:string;contactId?:string;replacementObligationId?:string}&Actor>):Promise<FulfillmentHandoff>;
  createAllocations(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId;orderId:OrderId;allocations:readonly Readonly<{id:FulfillmentHandoffLineId;orderLineId:string;quantity:number}>[]}>):Promise<readonly FulfillmentHandoffLine[]>;
  writeDocumentSnapshot(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId}>):Promise<void>;
  readAvailability(organizationId:OrganizationId,orderId:OrderId):Promise<ScopedAvailability|null>;
@@ -49,12 +50,13 @@ export class FulfillmentApplicationService {
     this.require(c,cap,locked.customerId);
     if((input.customerId&&input.customerId!==locked.customerId)||(input.contactId&&input.contactId!==locked.contactId))throw new V2ApplicationError("VALIDATION_ERROR","Fulfillment customer/contact context must match the canonical Sales Order context.");
     const byLine=new Map(locked.availability.map(x=>[x.orderLineId,x]));
-    for(const allocation of input.allocations){
+    if(input.replacementObligationId){this.require(c,"fulfillment.replace",locked.customerId);const replacement=await tx.lockReplacementAvailability(org,input.orderId,input.replacementObligationId);if(!replacement||input.allocations.length!==1||input.allocations[0]?.orderLineId!==replacement.orderLineId||input.allocations[0].quantity>replacement.availableFulfillmentQuantity)throw new V2ApplicationError("CONFLICT","Replacement fulfillment exceeds the accepted-good authority or is not available.");}
+    else for(const allocation of input.allocations){
      const available=byLine.get(allocation.orderLineId);
      if(available?.physicalIntegrityAnomaly)throw new V2ApplicationError("CONFLICT","Fulfillment history exceeds recorded Production output for this OrderLine. Additional handoffs are blocked until the integrity anomaly is resolved.");
      if(!available||allocation.quantity>available.availableFulfillmentQuantity)throw new V2ApplicationError("CONFLICT","Fulfillment quantity exceeds the canonically produced quantity available for handoff.");
     }
-    const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...actor(c)});
+    const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...(input.replacementObligationId?{replacementObligationId:input.replacementObligationId}:{}),...actor(c)});
     const allocations=await tx.createAllocations({organizationId:org,handoffId:handoff.handoffId,orderId:input.orderId,allocations:input.allocations.map(x=>({id:brandedId<"FulfillmentHandoffLineId">(randomUUID()),...x}))});
     await tx.writeDocumentSnapshot({organizationId:org,handoffId:handoff.handoffId});
     const after=await tx.readAvailability(org,input.orderId); if(!after)throw new V2ApplicationError("NOT_FOUND","Order was not found.");
@@ -68,6 +70,6 @@ export class FulfillmentApplicationService {
   } catch(e) { return failure(this.error(e)); }
  }
  private validate(c:OperationContext,input:CompleteFulfillmentInput){if(!c.businessRequest||c.businessRequest.id!==input.businessRequestId)throw new V2ApplicationError("VALIDATION_ERROR","A matching business request identity is required.");if(!input.allocations.length)throw new V2ApplicationError("VALIDATION_ERROR","At least one OrderLine allocation is required.");const ids=new Set<string>();for(const a of input.allocations){if(!a.orderLineId||!Number.isSafeInteger(a.quantity)||a.quantity<=0)throw new V2ApplicationError("VALIDATION_ERROR","Fulfillment quantities must be positive safe integers.");if(ids.has(a.orderLineId))throw new V2ApplicationError("VALIDATION_ERROR","An OrderLine may appear only once in a handoff.");ids.add(a.orderLineId);}}
- private require(c:OperationContext,cap:"fulfillment.view"|"fulfillment.pickup"|"fulfillment.ship",customerId?:string){if(!this.authority.decide(c.principal,{capability:cap,resource:{organizationId:c.organizationId,customerId}}).allowed)throw new V2ApplicationError("FORBIDDEN","The principal does not have authority for this Fulfillment operation.");}
+ private require(c:OperationContext,cap:"fulfillment.view"|"fulfillment.pickup"|"fulfillment.ship"|"fulfillment.replace",customerId?:string){if(!this.authority.decide(c.principal,{capability:cap,resource:{organizationId:c.organizationId,customerId}}).allowed)throw new V2ApplicationError("FORBIDDEN","The principal does not have authority for this Fulfillment operation.");}
  private error(e:unknown){return e instanceof V2ApplicationError?e:new V2ApplicationError("VALIDATION_ERROR",e instanceof Error?e.message:"Fulfillment operation could not be completed.");}
 }

@@ -1,5 +1,5 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
-import type { ContactId, CustomerId, FulfillmentHandoffId, FulfillmentHandoffLineId, OrderId, OrderLineId, OrganizationId } from "../shared/commercialValues.js";
+import type { ContactId, CustomerId, FulfillmentHandoffId, FulfillmentHandoffLineId, OrderId, OrderLineId, OrganizationId, ReplacementObligationId } from "../shared/commercialValues.js";
 
 export type FulfillmentMethod = "pickup" | "shipment";
 
@@ -26,6 +26,7 @@ export const fulfillmentSupplyQuantity = (input: Readonly<{
 export type FulfillmentHandoff = Readonly<{
   handoffId: FulfillmentHandoffId; organizationId: OrganizationId; orderId: OrderId; method: FulfillmentMethod;
   completedAt: string; customerId?: CustomerId; contactId?: ContactId;
+  replacementObligationId?: ReplacementObligationId;
   completedPrincipalKind: PrincipalKind; completedPrincipalSubject: string; completedStaffActorUserId?: string;
 }>;
 
@@ -55,7 +56,11 @@ export type FulfillmentAvailability = Readonly<{
 export type CompleteFulfillmentInput = Readonly<{
   businessRequestId: string; orderId: OrderId; allocations: readonly Readonly<{ orderLineId: OrderLineId; quantity: number }> [];
   customerId?: CustomerId; contactId?: ContactId;
+  replacementObligationId?: ReplacementObligationId;
 }>;
+
+/** Replacement supply is separate from the original line's historical handoffs. */
+export type ReplacementFulfillmentAvailability = Readonly<{ replacementObligationId:ReplacementObligationId; orderLineId:OrderLineId; customerId?:CustomerId; contactId?:ContactId; availableFulfillmentQuantity:number }>;
 
 export type FulfillmentTerminalResult = Readonly<{
   handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; availability: readonly FulfillmentAvailability[];

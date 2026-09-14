@@ -9,7 +9,7 @@ export const teamCapabilityGroups: readonly TeamCapabilityGroup[] = [
   { key: "customers", label: "Customers", capabilities: ["customer.view", "customer.edit"] },
   { key: "products_pricing", label: "Products & Pricing", capabilities: ["product.view", "product.edit", "pricing.preview", "pricing.configure", "pricing.publish"] },
   { key: "routing_production", label: "Routing & Production", capabilities: ["route.view", "route.advance", "route.reroute", "route.skipStep", "route.manageTemplates", "artwork.view", "artwork.adopt", "artwork.assign", "proof.view", "proof.prepare", "proof.issue", "proof.respond", "prepress.view", "prepress.work", "prepress.complete", "production.view", "production.work", "production.complete", "production.hold", "production.rework", "production.note", "production.output.reject", "inventory.view", "inventory.receive"] },
-  { key: "fulfillment", label: "Fulfillment", capabilities: ["fulfillment.view", "fulfillment.pickup", "fulfillment.ship"] },
+  { key: "fulfillment", label: "Fulfillment", capabilities: ["fulfillment.view", "fulfillment.pickup", "fulfillment.ship", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price"] },
   { key: "billing", label: "Billing", capabilities: ["invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue", "payment.view", "payment.record", "refund.issue"] },
   { key: "settings", label: "Settings & Access", capabilities: ["organization.configure", "communications.configure", "permissions.view", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal"] },
 ];

@@ -1,6 +1,7 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { CustomerId, FulfillmentHandoffId, OrganizationId } from "../shared/commercialValues.js";
 import { manualCarrierShipment, type ManualCarrierShipment } from "./carrierShipment.js";
+import type { ShippingPricingPolicy, ShippingResponsibility } from "./replacementShippingEconomics.js";
 
 export type ShipmentContainerStatus = "prepared" | "shipped" | "voided";
 
@@ -9,6 +10,8 @@ export type ShipmentPreparedAllocation = Readonly<{
   orderId: string;
   orderLineId: string;
   quantity: number;
+  /** Replacement inventory is authority-distinct from original Order output. */
+  replacementObligationId?: string;
 }>;
 
 /** One immutable operator snapshot of an editable prepared container. */
@@ -63,6 +66,17 @@ export type FulfillmentShipmentContainer = Readonly<{
   voidedPrincipalKind?: PrincipalKind;
   voidedPrincipalSubject?: string;
   voidReason?: string;
+  /** Internal only: carrier cost is never a portal/document field. */
+  shippingEconomics?: Readonly<{
+    estimatedCarrierCostCents?: number;
+    customerShippingPriceCents?: number;
+    pricingPolicySnapshot?: ShippingPricingPolicy;
+    responsibility?: ShippingResponsibility;
+    reason?: string;
+    note?: string;
+    actualCarrierCostCents?: number;
+    absorbedFreightCents?: number;
+  }>;
 }>;
 
 /** Tenant-scoped recovery read.  The latest immutable prepared revision is projected without replacing history. */

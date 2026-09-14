@@ -1,6 +1,6 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ArtworkSide } from "../artwork/contracts.js";
-import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionOutputDispositionId, ProductionReworkCycleId, ProductionWorkId } from "../shared/commercialValues.js";
+import type { ArtworkAssignmentId, ArtworkFileId, CustomerId, OrderId, OrderLineId, OrganizationId, PrepressUnitId, ProductId, ProductionAttemptId, ProductionOutputDispositionId, ProductionReworkCycleId, ProductionWorkId, ReplacementObligationId } from "../shared/commercialValues.js";
 import type { ProductionUnitRequirement } from "../shared/productionRequirements.js";
 
 /** Stable execution destinations. Equipment identity is deliberately deferred. */
@@ -30,6 +30,7 @@ export type ProductionWork = Readonly<{
   requirement: ProductionUnitRequirement; artworkAssignmentId: ArtworkAssignmentId; artworkFileId: ArtworkFileId;
   prepressUnitId?: PrepressUnitId; orderedQuantity: number;
   reworkCycleId?: ProductionReworkCycleId; predecessorProductionWorkId?: ProductionWorkId;
+  replacementObligationId?: ReplacementObligationId; replacementOriginProductionWorkId?: ProductionWorkId;
   createdAt: string; createdPrincipalKind: PrincipalKind; createdPrincipalSubject: string; createdStaffActorUserId?: string;
 }>;
 

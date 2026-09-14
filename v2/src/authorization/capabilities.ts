@@ -13,7 +13,7 @@ export const capabilityIds = [
   "route.view", "route.advance", "route.reroute", "route.skipStep", "route.manageTemplates",
   "workflow.override",
   "artwork.view", "artwork.adopt", "artwork.assign",
-  "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship",
+  "proof.view", "proof.prepare", "proof.issue", "proof.respond", "fulfillment.view", "fulfillment.pickup", "fulfillment.ship", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price",
   "prepress.view", "prepress.work", "prepress.complete",
   "production.view", "production.work", "production.complete", "production.hold", "production.rework", "production.note", "production.output.reject", "production.run.create", "production.run.execute",
   "inventory.view", "inventory.receive",
