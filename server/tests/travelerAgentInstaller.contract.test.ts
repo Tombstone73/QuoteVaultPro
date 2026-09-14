@@ -38,6 +38,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('The pairing token is invalid or revoked');
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.Http.HttpClient');
+    expect(setup).toContain('Add-Type -AssemblyName System.Net.Http');
     expect(agent).toContain("PRINTERSHERO_TRAVELER_PRINTER");
     expect(agent).toContain("configured Traveler printer unavailable or mismatched");
   });

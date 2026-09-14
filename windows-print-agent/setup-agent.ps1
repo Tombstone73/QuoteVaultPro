@@ -56,7 +56,14 @@ function Get-PlainSecureString([Security.SecureString]$Value) {
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
 
+function Initialize-HttpClientSupport {
+  if ($null -eq ('System.Net.Http.HttpClient' -as [type])) {
+    Add-Type -AssemblyName System.Net.Http
+  }
+}
+
 function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hashtable]$Body = @{}) {
+  Initialize-HttpClientSupport
   $client = [System.Net.Http.HttpClient]::new()
   $content = $null
   $response = $null
