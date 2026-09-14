@@ -10,13 +10,14 @@ namespace PrintersHero.PrintAgent;
 record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 static class Program {
-  const string AgentVersion = "1.0.17";
+  const string AgentVersion = "1.0.18";
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
   static readonly string Token = Environment.GetEnvironmentVariable("PRINTERSHERO_AGENT_TOKEN") ?? "";
   static readonly string TravelerPrinter = (Environment.GetEnvironmentVariable("PRINTERSHERO_TRAVELER_PRINTER") ?? "").Trim();
   static readonly string LogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PrintersHero", "print-agent.log");
   static readonly HttpClient Http = new();
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
+  static readonly HashSet<string> CanonicalTravelerWebHosts = new(StringComparer.OrdinalIgnoreCase) { "www.printershero.com", "dev.printershero.com" };
   [STAThread] static void Main(string[] args) {
     if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; }
     if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, and PRINTERSHERO_TRAVELER_PRINTER are required.");
@@ -40,6 +41,26 @@ static class Program {
   // The Windows spooler is queried locally; the server never accepts a queue
   // supplied by an operator. Status failures still fail closed at PrintAsync.
   static bool QueueExists(string queue) => PrinterSettings.InstalledPrinters.Cast<string>().Any(name => string.Equals(name, queue, StringComparison.OrdinalIgnoreCase));
+  static Uri GetApiOrigin() {
+    if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var apiOrigin) || apiOrigin.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(apiOrigin.Query) || !string.IsNullOrEmpty(apiOrigin.Fragment)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL must be an HTTPS API origin.");
+    return apiOrigin;
+  }
+  static string? GetQueryParameter(Uri uri, string key) {
+    foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)) {
+      var separator = pair.IndexOf('=');
+      var name = Uri.UnescapeDataString(separator >= 0 ? pair[..separator] : pair);
+      if (!string.Equals(name, key, StringComparison.Ordinal)) continue;
+      return Uri.UnescapeDataString(separator >= 0 ? pair[(separator + 1)..] : "");
+    }
+    return null;
+  }
+  static Uri GetTravelerNavigationUri(Claim job) {
+    if (string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var travelerUri)) throw new InvalidOperationException("PrintersHero did not return an absolute Traveler web URL.");
+    if (travelerUri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(travelerUri.Host)) throw new InvalidOperationException("PrintersHero returned a noncanonical Traveler web URL.");
+    var expectedPath = $"/orders/{Uri.EscapeDataString(job.orderId)}/traveler";
+    if (!string.Equals(travelerUri.AbsolutePath, expectedPath, StringComparison.Ordinal) || !string.Equals(GetQueryParameter(travelerUri, "directPrintJobId"), job.id, StringComparison.Ordinal)) throw new InvalidOperationException("PrintersHero returned an invalid Traveler print route.");
+    return travelerUri;
+  }
   static async Task PrintTraveler(Claim job) {
     using var form = new Form { Width = 1, Height = 1, ShowInTaskbar = false, Opacity = 0 };
     using var web = new WebView2 { Dock = DockStyle.Fill };
@@ -47,20 +68,30 @@ static class Program {
     form.Show();
     await web.EnsureCoreWebView2Async();
 
-    web.CoreWebView2.AddWebResourceRequestedFilter($"{BaseUrl}/*", CoreWebView2WebResourceContext.All);
-    web.CoreWebView2.WebResourceRequested += (_, e) => e.Request.Headers.SetHeader("Authorization", $"Bearer {Token}");
+    var apiOrigin = GetApiOrigin().GetLeftPart(UriPartial.Authority);
+    var travelerUri = GetTravelerNavigationUri(job);
+    web.CoreWebView2.AddWebResourceRequestedFilter($"{apiOrigin}/*", CoreWebView2WebResourceContext.All);
+    web.CoreWebView2.WebResourceRequested += (_, e) => {
+      if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var requestUri)
+        && string.Equals(requestUri.GetLeftPart(UriPartial.Authority), apiOrigin, StringComparison.OrdinalIgnoreCase)
+        && requestUri.AbsolutePath.StartsWith("/api/local-bridge/direct-print/jobs/", StringComparison.OrdinalIgnoreCase)) {
+        e.Request.Headers.SetHeader("Authorization", $"Bearer {Token}");
+      }
+    };
     // The existing request interceptor covers page resources. Also patch fetch
     // before React starts so the claimed-job request always carries the bridge
     // credential when the Traveler app loads off-screen.
     var tokenJson = JsonSerializer.Serialize(Token);
+    var apiOriginJson = JsonSerializer.Serialize(apiOrigin);
     await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync($@"
       (() => {{
         const token = {tokenJson};
+        const apiOrigin = {apiOriginJson};
         window.__printersHeroTravelerSource = {{ requested: false, status: null, error: null }};
         const originalFetch = window.fetch.bind(window);
         window.fetch = (input, init = {{}}) => {{
           const requestUrl = typeof input === 'string' ? new URL(input, window.location.href) : new URL(input.url);
-          if (requestUrl.pathname.startsWith('/api/local-bridge/direct-print/jobs/')) {{
+          if (requestUrl.origin === apiOrigin && requestUrl.pathname.startsWith('/api/local-bridge/direct-print/jobs/')) {{
             window.__printersHeroTravelerSource.requested = true;
             const headers = new Headers(init.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
             headers.set('Authorization', 'Bearer ' + token);
@@ -78,12 +109,13 @@ static class Program {
 
     int? sourceStatus = null;
     web.CoreWebView2.WebResourceResponseReceived += (_, e) => {
-      if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var requestUri) && requestUri.AbsolutePath.StartsWith("/api/local-bridge/direct-print/jobs/", StringComparison.OrdinalIgnoreCase)) sourceStatus = e.Response.StatusCode;
+      if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var requestUri) && string.Equals(requestUri.GetLeftPart(UriPartial.Authority), apiOrigin, StringComparison.OrdinalIgnoreCase) && requestUri.AbsolutePath.StartsWith("/api/local-bridge/direct-print/jobs/", StringComparison.OrdinalIgnoreCase)) { sourceStatus = e.Response.StatusCode; Log($"Direct-print source response: {sourceStatus}."); }
     };
     var ready = new TaskCompletionSource();
-    web.CoreWebView2.NavigationCompleted += (_, e) => { if (e.IsSuccess) ready.TrySetResult(); else ready.TrySetException(new InvalidOperationException("Traveler render navigation failed.")); };
-    var separator = job.travelerUrl?.Contains('?') == true ? "&" : "?";
-    var route = $"{BaseUrl}{job.travelerUrl}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={job.trailingFeedMm}";
+    web.CoreWebView2.NavigationCompleted += (_, e) => { if (e.IsSuccess) { Log($"Traveler navigation succeeded: {travelerUri.Host}."); ready.TrySetResult(); } else { Log($"Traveler navigation failed: {travelerUri.Host} ({e.WebErrorStatus})."); ready.TrySetException(new InvalidOperationException("Traveler render navigation failed.")); } };
+    var separator = travelerUri.Query.Length > 0 ? "&" : "?";
+    var route = $"{travelerUri}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={job.trailingFeedMm}";
+    Log($"Traveler navigation host: {travelerUri.Host}.");
     web.CoreWebView2.Navigate(route);
     await ready.Task.WaitAsync(TimeSpan.FromSeconds(30));
     await WaitForTravelerRender(web, () => sourceStatus);
@@ -94,13 +126,14 @@ static class Program {
     settings.ShouldPrintBackgrounds = true;
     settings.ShouldPrintHeaderAndFooter = false;
     var status = await web.CoreWebView2.PrintAsync(settings);
+    Log($"WebView2 print status: {status}.");
     if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}");
   }
   static async Task WaitForTravelerRender(WebView2 web, Func<int?> sourceStatus) {
     var deadline = DateTime.UtcNow.AddSeconds(30);
     while (DateTime.UtcNow < deadline) {
       var rendered = await web.ExecuteScriptAsync("Boolean(document.querySelector('[data-traveler-ready=\\\"true\\\"]'))");
-      if (rendered.Contains("true", StringComparison.OrdinalIgnoreCase)) return;
+      if (rendered.Contains("true", StringComparison.OrdinalIgnoreCase)) { Log("Traveler ready marker reached."); return; }
       await Task.Delay(100);
     }
     var pageStateJson = await web.ExecuteScriptAsync("JSON.stringify({ failedLoad: Boolean(document.body && document.body.innerText.includes('Failed to load order traveler.')), loading: Boolean(document.body && document.body.innerText.includes('Loading order traveler...')), documentReadyState: document.readyState, rootChildren: document.getElementById('root')?.childElementCount ?? 0, source: window.__printersHeroTravelerSource ?? null })");

@@ -28,6 +28,7 @@ import {
   ThermalValue,
 } from "@/components/production/ticketPrintPrimitives";
 import { Printer, ArrowLeft } from "lucide-react";
+import { apiFetch } from "@/lib/queryClient";
 
 function useOrderTraveler(orderId: string | undefined, directPrintJobId: string | null) {
   return useQuery<OrderTravelerSource>({
@@ -36,7 +37,10 @@ function useOrderTraveler(orderId: string | undefined, directPrintJobId: string 
       const url = directPrintJobId
         ? `/api/local-bridge/direct-print/jobs/${encodeURIComponent(directPrintJobId)}/traveler`
         : `/api/orders/${orderId}/traveler`;
-      const res = await fetch(url, { credentials: "include" });
+      // apiFetch resolves `/api/*` through the deployment's canonical API
+      // origin. This matters for off-screen direct printing because the
+      // Traveler document is deliberately hosted on the web-app origin.
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error("Failed to load order traveler");
       const json = await res.json();
       return json.data as OrderTravelerSource;

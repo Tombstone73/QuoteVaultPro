@@ -23,6 +23,7 @@ describe("direct Traveler printing safety contract", () => {
     expect(bridge).toContain('app.get("/api/local-bridge/direct-print/jobs/:id/traveler"');
     expect(bridge).toContain('eq(directPrintJobs.status, "claimed")');
     expect(bridge).toContain("getOrderTravelerSource(agent.organizationId, job.orderId)");
+    expect(bridge).toContain("bridgeAuth");
     expect(source).toContain("The single server-side projection");
   });
 
@@ -33,8 +34,33 @@ describe("direct Traveler printing safety contract", () => {
     expect(traveler).toContain("directPrintJobId");
     expect(traveler).toContain("/api/local-bridge/direct-print/jobs/");
     expect(agent).toContain("job.travelerUrl");
+    expect(agent).toContain("GetTravelerNavigationUri");
+    expect(agent).toContain("PrintersHero did not return an absolute Traveler web URL");
+    expect(agent).toContain("CanonicalTravelerWebHosts");
+    expect(agent).not.toContain('var route = $"{BaseUrl}{job.travelerUrl}');
+    expect(traveler).toContain("apiFetch(url)");
     expect(agent).toContain('Uri.EscapeDataString(job.printNote ?? "")');
     expect(agent).toContain("WebView2PrintStatus.Succeeded");
+  });
+
+  test("the server claims jobs with the canonical configured web origin, not its API host", () => {
+    const bridge = read("server/routes/localBridge.routes.ts");
+    const urlBuilder = read("server/lib/directTravelerPrintUrl.ts");
+
+    expect(bridge).toContain("getPublicWebOrigin()");
+    expect(bridge).toContain("buildClaimedTravelerWebUrl");
+    expect(urlBuilder).toContain('"www.printershero.com"');
+    expect(urlBuilder).toContain('"dev.printershero.com"');
+    expect(urlBuilder).toContain("directPrintJobId");
+  });
+
+  test("the ready marker remains attached only to the rendered Traveler print page", () => {
+    const traveler = read("client/src/pages/order-traveler.tsx");
+    const primitives = read("client/src/components/production/ticketPrintPrimitives.tsx");
+
+    expect(traveler).toContain("if (error || !data || !traveler)");
+    expect(traveler).toContain("<ThermalPrintPage ready");
+    expect(primitives).toContain('data-traveler-ready={ready ? "true" : undefined}');
   });
 
   test("the print-only note stays on the durable print job and reaches both Traveler paths", () => {

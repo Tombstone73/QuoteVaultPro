@@ -40,7 +40,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.17'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.18'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -58,6 +58,9 @@ describe("Traveler print agent installer contract", () => {
     expect(agent).toContain("__printersHeroTravelerSource");
     expect(agent).toContain("source request:");
     expect(agent).toContain("JsonSerializer.Deserialize<string>(pageStateJson)");
+    expect(agent).toContain('const string AgentVersion = "1.0.18"');
+    expect(agent).toContain("Traveler navigation host:");
+    expect(agent).toContain("Direct-print source response:");
   });
 
   test("uses the existing task manager for install, diagnostics, and uninstall", () => {

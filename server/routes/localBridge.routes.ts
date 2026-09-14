@@ -9,6 +9,8 @@ import { ObjectStorageService } from "../objectStorage";
 import { auditLogs, customers, directPrintJobs, localBridgeAgents, localFileCopyJobs, localFileDestinations, lineItemFiles, orders, printerProfiles, productionRuns } from "@shared/schema";
 import { getRequestOrganizationId } from "../tenantContext";
 import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
+import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../lib/directTravelerPrintUrl";
+import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 
 const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
 const travelerPrintAgentPackageName = "PrintersHero-Traveler-Print-Agent-win-x64.zip";
@@ -113,7 +115,28 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   // A print host only sees jobs assigned to its paired identity. Claiming is a
   // single conditional update so two agents cannot submit the same Traveler.
   app.get("/api/local-bridge/direct-print/jobs", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; const rows = await db.select({ id: directPrintJobs.id, orderId: directPrintJobs.orderId, copies: directPrintJobs.copies, printNote: directPrintJobs.printNote, trailingFeedMm: directPrintJobs.trailingFeedMm, queueName: printerProfiles.windowsQueueName, destinationName: printerProfiles.displayName, location: printerProfiles.location }).from(directPrintJobs).innerJoin(printerProfiles, eq(directPrintJobs.destinationId, printerProfiles.id)).where(and(eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"))).limit(10); res.json({ success: true, data: rows }); });
-  app.post("/api/local-bridge/direct-print/jobs/:id/claim", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; const [job] = await db.update(directPrintJobs).set({ status: "claimed", claimedAt: new Date(), attempts: sql`${directPrintJobs.attempts} + 1`, updatedAt: new Date() }).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"))).returning(); if (!job) return res.status(409).json({ error: "Print job is no longer available" }); const [destination] = await db.select({ windowsQueueName: printerProfiles.windowsQueueName }).from(printerProfiles).where(and(eq(printerProfiles.id, job.destinationId), eq(printerProfiles.organizationId, agent.organizationId))).limit(1); res.json({ success: true, data: { ...job, queueName: destination?.windowsQueueName ?? null, travelerUrl: `/orders/${job.orderId}/traveler?directPrintJobId=${encodeURIComponent(job.id)}` } }); });
+  app.post("/api/local-bridge/direct-print/jobs/:id/claim", bridgeAuth, async (req: any, res) => {
+    let canonicalWebOrigin: string;
+    try {
+      canonicalWebOrigin = getCanonicalTravelerWebOrigin(getPublicWebOrigin());
+    } catch (error: any) {
+      return res.status(503).json({ error: error?.message || "Traveler web application origin is unavailable." });
+    }
+
+    const agent = req.bridgeAgent;
+    const [job] = await db.update(directPrintJobs).set({ status: "claimed", claimedAt: new Date(), attempts: sql`${directPrintJobs.attempts} + 1`, updatedAt: new Date() }).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"))).returning();
+    if (!job) return res.status(409).json({ error: "Print job is no longer available" });
+
+    const [destination] = await db.select({ windowsQueueName: printerProfiles.windowsQueueName }).from(printerProfiles).where(and(eq(printerProfiles.id, job.destinationId), eq(printerProfiles.organizationId, agent.organizationId))).limit(1);
+    return res.json({
+      success: true,
+      data: {
+        ...job,
+        queueName: destination?.windowsQueueName ?? null,
+        travelerUrl: buildClaimedTravelerWebUrl(canonicalWebOrigin, job.orderId, job.id),
+      },
+    });
+  });
   // This endpoint is deliberately job-scoped: it returns the exact source
   // consumed by the existing React Traveler page, never an arbitrary URL or
   // file. A claimed job is the only way an agent credential can read it.
