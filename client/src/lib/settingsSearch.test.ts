@@ -14,6 +14,10 @@ describe("settings search registry", () => {
     expect(searchSettings("Storage", "admin")[0]).toMatchObject({ id: "storage", kind: "page" });
   });
 
+  test("finds the Local Bridge page by its Traveler Print Agent purpose", () => {
+    expect(searchSettings("traveler print", "admin")[0]).toMatchObject({ id: "local-bridge", route: "/settings/local-bridge" });
+  });
+
   test("finds individual settings and explicit aliases", () => {
     expect(searchSettings("Company Info & Branding", "admin")[0]).toMatchObject({ id: "company-info-branding" });
     expect(searchSettings("logo", "admin")[0]).toMatchObject({ id: "company-info-branding" });
