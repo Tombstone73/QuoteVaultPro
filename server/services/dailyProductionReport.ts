@@ -1,10 +1,11 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { getOrganizationTimezone } from "./orderDueDateService";
 import {
   customers,
   orderLineItems,
   orders,
+  orderStatusPills,
   organizations,
   products,
   productTypes,
@@ -12,6 +13,7 @@ import {
 } from "@shared/schema";
 import type { DailyProductionReport } from "@shared/dailyProductionReport";
 import { buildDailyProductionReport } from "@shared/dailyProductionReportProjection";
+import { DAILY_PRODUCTION_STATUS_KEYS } from "./dailyProductionReportStatus";
 
 export { buildDailyProductionReport, getDailyProductionDueState, sortDailyProductionRows } from "@shared/dailyProductionReportProjection";
 
@@ -28,7 +30,27 @@ function calendarDateInTimezone(now: Date, timezone: string): string {
 
 /** Reads report data only after the authenticated endpoint is requested. */
 export async function getDailyProductionReport(organizationId: string): Promise<DailyProductionReport> {
-  const [organization, timezone, rows, activeOrderStatuses] = await Promise.all([
+  const normalizedPillValue = sql<string>`lower(regexp_replace(regexp_replace(trim(coalesce(${orders.statusPillValue}, '')), '[_-]+', ' ', 'g'), '\\s+', ' ', 'g'))`;
+  const hasNoPillValue = sql<boolean>`${normalizedPillValue} = ''`;
+  const reportStatusKeys = [...DAILY_PRODUCTION_STATUS_KEYS];
+  const reportStatusValues = ["new", "in production"];
+  const isQualifiedCurrentStatus = or(
+    and(
+      isNotNull(orders.statusPillId),
+      inArray(orderStatusPills.key, reportStatusKeys),
+    ),
+    and(
+      isNull(orders.statusPillId),
+      inArray(normalizedPillValue, reportStatusValues),
+    ),
+    and(
+      isNull(orders.statusPillId),
+      hasNoPillValue,
+      inArray(orders.status, reportStatusKeys),
+    ),
+  );
+
+  const [organization, timezone, rows] = await Promise.all([
     db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, organizationId)).limit(1),
     getOrganizationTimezone(organizationId),
     db
@@ -51,6 +73,10 @@ export async function getDailyProductionReport(organizationId: string): Promise<
         jobStationKey: productionJobs.stationKey,
       })
       .from(orders)
+      .leftJoin(orderStatusPills, and(
+        eq(orderStatusPills.id, orders.statusPillId),
+        eq(orderStatusPills.organizationId, orders.organizationId),
+      ))
       .leftJoin(customers, eq(customers.id, orders.customerId))
       .leftJoin(orderLineItems, eq(orderLineItems.orderId, orders.id))
       .leftJoin(products, eq(products.id, orderLineItems.productId))
@@ -61,15 +87,9 @@ export async function getDailyProductionReport(organizationId: string): Promise<
       ))
       .where(and(
         eq(orders.organizationId, organizationId),
-        eq(orders.state, "open"),
-        inArray(orders.status, ["new", "in_production"]),
+        isQualifiedCurrentStatus,
         isNull(orders.canceledAt),
       )),
-    db.select({ status: orders.status }).from(orders).where(and(
-      eq(orders.organizationId, organizationId),
-      eq(orders.state, "open"),
-      isNull(orders.canceledAt),
-    )),
   ]);
 
   const report = buildDailyProductionReport({
@@ -83,9 +103,7 @@ export async function getDailyProductionReport(organizationId: string): Promise<
     ...report,
     diagnostics: {
       ...report.diagnostics,
-      activeOrdersOutsideReportStatus: activeOrderStatuses.filter(
-        (row) => !["new", "in_production"].includes(String(row.status || "").toLowerCase()),
-      ).length,
+      activeOrdersOutsideReportStatus: 0,
     },
   };
 }

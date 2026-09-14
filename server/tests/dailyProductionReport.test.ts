@@ -3,6 +3,8 @@ import {
   getDailyProductionDueState,
   sortDailyProductionRows,
 } from "@shared/dailyProductionReportProjection";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 const base = {
   orderId: "order-1", orderNumber: "1001", displayNumber: null, jobNumber: null, label: null, poNumber: null,
@@ -35,4 +37,11 @@ describe("Daily Production List projection", () => {
   test("handles unknown legacy fulfillment safely", () => expect(report([{ ...base, shippingMethod: "courier_pigeon" }]).overview[0].fulfillment).toBe("Unknown"));
   test("excludes service and production-bypassed lines", () => expect(report([{ ...base, isService: true, quantity: 99 }, { ...base, lineItemId: "bypassed", productionBypassed: true, quantity: 99 }]).overview[0].quantity).toBe(0));
   test("surfaces unclassified routing instead of guessing", () => { const result = report([{ ...base, defaultStationKey: "large_sign_printer" }]); expect(result.overview[0].destination).toBe("unclassified"); expect(result.diagnostics.unclassifiedProductionLines).toBe(1); });
+  test("queries the organization-scoped current status pill instead of legacy status as the primary authority", () => {
+    const source = readFileSync(path.join(process.cwd(), "server/services/dailyProductionReport.ts"), "utf8");
+    expect(source).toContain("eq(orderStatusPills.id, orders.statusPillId)");
+    expect(source).toContain("eq(orderStatusPills.organizationId, orders.organizationId)");
+    expect(source).toContain("inArray(orderStatusPills.key, reportStatusKeys)");
+    expect(source).not.toContain('eq(orders.state, "open")');
+  });
 });
