@@ -10,7 +10,8 @@ type OrderRow = Readonly<{ id:string; display_number:string }>;
 type SourceRow = Readonly<{
   id:string; customer_id:string|null; contact_id:string|null; purchase_order_number:string|null; currency:string; terms_code:string|null;
   tax_context_reference:string|null; tax_calculator_version:string; tax_evidence:unknown;
-  source_sales_line_id:string; product_id:string; description:string; quantity:number; selling_unit_cents:string; selling_line_cents:string; sales_pricing_evidence_fingerprint:string;
+  source_sales_line_id:string; product_id:string; description:string;
+  source_quantity:number; source_selling_unit_cents:string; source_selling_line_cents:string; source_pricing_evidence_fingerprint:string;
   taxability_snapshot:unknown;
 }>;
 
@@ -61,7 +62,8 @@ export const createOrReadReplacementInvoice=async(client:PoolClient,input:Readon
   if(!base?.display_number) throw new V2ApplicationError("CONFLICT","The Order / Job base number is unavailable for this replacement Invoice.");
 
   const source=await client.query<SourceRow>(`SELECT i.id,i.customer_id,i.contact_id,i.purchase_order_number,i.currency,i.terms_code,i.tax_context_reference,i.tax_calculator_version,i.tax_evidence,
-      line.source_sales_line_id,line.product_id,line.description,line.quantity,line.selling_unit_cents,line.selling_line_cents,line.sales_pricing_evidence_fingerprint,
+      line.source_sales_line_id,line.product_id,line.description,
+      sales_line.quantity AS source_quantity,sales_line.selling_unit_cents AS source_selling_unit_cents,sales_line.selling_line_cents AS source_selling_line_cents,sales_line.pricing_evidence_fingerprint AS source_pricing_evidence_fingerprint,
       sales_line.taxability_snapshot
     FROM v2_billing_invoices i
     JOIN v2_billing_invoice_lines line ON line.organization_id=i.organization_id AND line.invoice_id=i.id AND line.sales_order_document_id=i.sales_order_document_id
@@ -72,9 +74,9 @@ export const createOrReadReplacementInvoice=async(client:PoolClient,input:Readon
   const original=source.rows[0];
   if(!original) throw new V2ApplicationError("CONFLICT","A billable replacement requires the canonical issued base Invoice and its original Order-line pricing evidence.");
   if(original.currency!==currencyCode(original.currency)) throw new V2ApplicationError("CONFLICT","The original Invoice currency is invalid.");
-  const originalLineCents=Number(original.selling_line_cents);
-  if(!Number.isSafeInteger(originalLineCents)||!Number.isSafeInteger(original.quantity)||original.quantity<=0) throw new V2ApplicationError("CONFLICT","The original Invoice line cannot safely price this replacement.");
-  const lineCents=proportionalReplacementLineCents(originalLineCents,original.quantity,input.replacementQuantity);
+  const originalLineCents=Number(original.source_selling_line_cents), originalUnitCents=Number(original.source_selling_unit_cents);
+  if(!Number.isSafeInteger(originalLineCents)||!Number.isSafeInteger(originalUnitCents)||!Number.isSafeInteger(original.source_quantity)||original.source_quantity<=0||!original.source_pricing_evidence_fingerprint.trim()) throw new V2ApplicationError("CONFLICT","The original Order line cannot safely price this replacement.");
+  const lineCents=proportionalReplacementLineCents(originalLineCents,original.source_quantity,input.replacementQuantity);
   const tax=replacementTax(original.tax_evidence,original.taxability_snapshot,original.source_sales_line_id,lineCents);
 
   const allocated=await client.query<{invoice_sequence:number}>("SELECT invoice_sequence FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2 AND invoice_sequence IS NOT NULL FOR UPDATE",[input.organizationId,input.orderId]);
@@ -104,7 +106,7 @@ export const createOrReadReplacementInvoice=async(client:PoolClient,input:Readon
   await client.query(`INSERT INTO v2_billing_invoice_lines(
       id,organization_id,invoice_id,sales_order_document_id,source_sales_line_id,position,product_id,description,quantity,currency,selling_unit_cents,selling_line_cents,sales_pricing_evidence_fingerprint
     ) VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,$9,$10,$11,$12)`,[
-    randomUUID(),input.organizationId,invoiceId,input.orderId,original.source_sales_line_id,original.product_id,original.description,input.replacementQuantity,original.currency,original.selling_unit_cents,lineCents,original.sales_pricing_evidence_fingerprint,
+    randomUUID(),input.organizationId,invoiceId,input.orderId,original.source_sales_line_id,original.product_id,original.description,input.replacementQuantity,original.currency,originalUnitCents,lineCents,original.source_pricing_evidence_fingerprint,
   ]);
   return projection(invoice);
 };

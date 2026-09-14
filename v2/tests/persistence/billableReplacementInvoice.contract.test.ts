@@ -12,7 +12,13 @@ assert.match(writer,/FOR UPDATE OF d,o/,"suffix allocation locks the canonical O
 assert.match(writer,/ON CONFLICT DO NOTHING/,"duplicate obligation Invoice creation is conflict safe");
 assert.match(writer,/replacement_obligation_id/,"Invoice is structurally linked to its obligation");
 assert.match(writer,/proportionalReplacementLineCents/,"partial amounts retain original effective selling basis");
+assert.match(writer,/sales_line\.quantity AS source_quantity/,"replacement quantity is sourced from the Order line");
+assert.match(writer,/sales_line\.selling_unit_cents AS source_selling_unit_cents/,"replacement unit price is sourced from the Order line");
+assert.match(writer,/sales_line\.selling_line_cents AS source_selling_line_cents/,"replacement line price is sourced from the Order line");
+assert.match(writer,/sales_line\.pricing_evidence_fingerprint AS source_pricing_evidence_fingerprint/,"replacement pricing evidence is sourced from the Order line");
+assert.doesNotMatch(writer,/line\.selling_unit_cents,line\.selling_line_cents,line\.sales_pricing_evidence_fingerprint/,"live Invoice-line selling evidence is not the replacement pricing source");
 assert.match(writer,/tax_evidence/,"frozen tax evidence is reused rather than current pricing");
+assert.match(writer,/0,NULL,NULL,NULL/,"document-level Order adjustments are not allocated into the replacement Invoice");
 assert.doesNotMatch(writer,/enqueueV2QuickBooksAutoSync|customerPricing|resolveActivePricingInput/,"creation does not queue accounting or invoke current pricing");
 assert.match(replacements,/PostgresOperationRequestRepository/,"replacement retry uses canonical business-request idempotency");
 assert.match(replacements,/createOrReadReplacementInvoice/,"billable creation atomically creates the canonical Invoice");
