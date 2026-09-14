@@ -4,7 +4,7 @@ param(
   [switch]$Uninstall,
   [switch]$RemoveConfiguration,
   [switch]$DefinitionOnly,
-  [string]$ApiBaseUrl = 'https://www.printershero.com',
+  [string]$ApiBaseUrl = 'https://api.printershero.com',
   [string]$AgentToken,
   [string]$TravelerPrinter,
   [switch]$NonInteractive

@@ -26,6 +26,8 @@ describe("Traveler print agent installer contract", () => {
   });
 
   test("stores credentials without logging them and configures only the paired agent", () => {
+    expect(setup).toContain("[string]$ApiBaseUrl = 'https://api.printershero.com'");
+    expect(setup).not.toContain("[string]$ApiBaseUrl = 'https://www.printershero.com'");
     expect(setup).toContain("PRINTERSHERO_AGENT_TOKEN");
     expect(setup).toContain("Get-PlainSecureString");
     expect(setup).toContain("$AgentToken = $null");

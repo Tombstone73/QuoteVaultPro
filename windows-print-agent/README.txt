@@ -5,7 +5,8 @@ PrintersHero Traveler Print Agent
 3. Double-click setup-agent.cmd.
 4. If prompted, install Microsoft Edge WebView2 Runtime from the official
    Microsoft page, then run setup again.
-5. Paste the pairing token and choose the Traveler printer from the list.
+5. Choose the Traveler printer from the list, then paste the pairing token.
+   Production setup uses https://api.printershero.com (not the web-app URL).
 6. When every setup check shows [OK], print one test Traveler in PrintersHero.
 
 For diagnostics run: setup-agent.ps1 -Check
