@@ -57,13 +57,23 @@ function Get-PlainSecureString([Security.SecureString]$Value) {
 }
 
 function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hashtable]$Body = @{}) {
-  $headers = @{ Authorization = "Bearer $Token" }
-  Invoke-RestMethod -Method Post -Uri ("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path) -Headers $headers -ContentType 'application/json' -Body ($Body | ConvertTo-Json -Compress)
+  $client = [System.Net.Http.HttpClient]::new()
+  $content = $null
+  $response = $null
+  try {
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
+    $content = [System.Net.Http.StringContent]::new(($Body | ConvertTo-Json -Compress), [System.Text.Encoding]::UTF8, 'application/json')
+    $response = $client.PostAsync(("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path), $content).GetAwaiter().GetResult()
+    [pscustomobject]@{ StatusCode = [int]$response.StatusCode }
+  } finally {
+    if ($response) { $response.Dispose() }
+    if ($content) { $content.Dispose() }
+    $client.Dispose()
+  }
 }
 
-function Get-HttpStatusCode([System.Exception]$Exception) {
-  if ($null -eq $Exception.Response) { return $null }
-  try { return [int]$Exception.Response.StatusCode } catch { return $null }
+function Test-SuccessStatus([object]$Response) {
+  return $null -ne $Response -and $Response.StatusCode -ge 200 -and $Response.StatusCode -lt 300
 }
 
 function Write-Check([string]$Label, [bool]$Ok, [string]$Detail = '') {
@@ -124,7 +134,8 @@ function Invoke-AgentCheck {
   $ok = (Write-Check 'Agent running' $running) -and $ok
   if ($configurationPresent) {
     try {
-      Invoke-AgentApi $baseUrl $token '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-check' } | Out-Null
+      $heartbeat = Invoke-AgentApi $baseUrl $token '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-check' }
+      if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful heartbeat status.' }
       $ok = (Write-Check 'PrintersHero heartbeat successful' $true) -and $ok
     } catch {
       $ok = (Write-Check 'PrintersHero heartbeat successful' $false 'Could not authenticate or reach PrintersHero') -and $ok
@@ -198,14 +209,16 @@ if (-not ([Uri]$ApiBaseUrl).IsAbsoluteUri -or ([Uri]$ApiBaseUrl).Scheme -ne 'htt
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 
 try {
-  Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter } | Out-Null
+  $configuration = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter }
+  if ($configuration.StatusCode -eq 401) { throw 'The pairing token is invalid or revoked. Create a new Local Bridge token in PrintersHero, copy it, then run setup again.' }
+  if (-not (Test-SuccessStatus $configuration)) { throw 'PrintersHero could not configure the selected printer. Check the production API connection and try a newly created token.' }
 } catch {
-  if ((Get-HttpStatusCode $_.Exception) -eq 401) { throw 'The pairing token is invalid or revoked. Create a new Local Bridge token in PrintersHero, copy it, then run setup again.' }
-  throw 'PrintersHero could not configure the selected printer. Check the production API connection and try a newly created token.'
+  throw $_
 }
 
 try {
-  Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-1.0.0' } | Out-Null
+  $heartbeat = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-1.0.0' }
+  if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful heartbeat status.' }
 } catch {
   throw 'The printer was configured, but PrintersHero could not receive the agent heartbeat. Check the production API connection and run setup again.'
 }
