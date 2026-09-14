@@ -234,6 +234,8 @@ export const createV2HttpApp = (
                 fulfillmentPickup: policy.decide(principal, { capability: "fulfillment.pickup", resource: { organizationId } }).allowed,
                 fulfillmentShip: policy.decide(principal, { capability: "fulfillment.ship", resource: { organizationId } }).allowed,
                 fulfillmentReplace: policy.decide(principal, { capability: "fulfillment.replace", resource: { organizationId } }).allowed,
+                fulfillmentShippingCost: policy.decide(principal, { capability: "fulfillment.shipping.cost", resource: { organizationId } }).allowed,
+                fulfillmentShippingPrice: policy.decide(principal, { capability: "fulfillment.shipping.price", resource: { organizationId } }).allowed,
                 routeView: policy.decide(principal, { capability: "route.view", resource: { organizationId } }).allowed,
                 routeAdvance: policy.decide(principal, { capability: "route.advance", resource: { organizationId } }).allowed,
                 routeManageTemplates: policy.decide(principal, { capability: "route.manageTemplates", resource: { organizationId } }).allowed,

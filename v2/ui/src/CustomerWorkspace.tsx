@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { contactApi, customerApi, customerCommercialApi, newBusinessRequestId, productApi, type CustomerActivityItem, type CustomerCatalogItem, type CustomerWorkspaceRead } from "./api";
+import { contactApi, customerApi, customerCommercialApi, newBusinessRequestId, productApi, shippingPricingApi, type CustomerActivityItem, type CustomerCatalogItem, type CustomerWorkspaceRead, type ShippingPricingMode } from "./api";
 import { invoicePath, orderPath, quotePath, workspacePath } from "./productRouting";
 
 const keys = {
@@ -32,13 +32,14 @@ const SummaryCard = ({ title, count, children }: Readonly<{ title: string; count
 const DetailMetric = ({ label, value }: Readonly<{ label: string; value: string }>) => <div className="v2-customer-metric"><small>{label}</small><strong>{value}</strong></div>;
 const money = (cents: number | undefined) => cents === undefined ? "Not configured" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 
-export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, canView, canCreate, canManageCommercial = false, openCustomer, openContact, backToCatalog }: Readonly<{
+export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, canView, canCreate, canManageCommercial = false, canManageShipping = false, openCustomer, openContact, backToCatalog }: Readonly<{
   organizationId: string;
   sessionScope: string;
   customerId: string;
   canView: boolean;
   canCreate: boolean;
   canManageCommercial?: boolean;
+  canManageShipping?: boolean;
   openCustomer: (customerId: string) => void;
   openContact: (contactId: string) => void;
   backToCatalog: () => void;
@@ -64,7 +65,7 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
 
   if (!organizationId) return <section className="v2-customers"><div className="v2-proof-empty">Customers are unavailable.</div></section>;
   if (!canView) return <section className="v2-customers"><div className="v2-proof-empty">You do not have permission to view Customers.</div></section>;
-  if (customerId) return <CustomerDetail state={detail} organizationId={organizationId} sessionScope={sessionScope} canCreate={canCreate} canManageCommercial={canManageCommercial} openContact={openContact} backToCatalog={backToCatalog} />;
+  if (customerId) return <CustomerDetail state={detail} organizationId={organizationId} sessionScope={sessionScope} canCreate={canCreate} canManageCommercial={canManageCommercial} canManageShipping={canManageShipping} openContact={openContact} backToCatalog={backToCatalog} />;
 
   return <section className="v2-customers" aria-label="Customers">
     <header className="v2-customer-page-header"><div><h1>Customers</h1><p>{list.data ? `${list.data.totalMatching} customer accounts` : "Customer accounts"}</p></div>{canCreate && <button type="button" onClick={() => setCreating((value) => !value)}>{creating ? "Cancel" : "New Customer"}</button>}</header>
@@ -94,12 +95,13 @@ export const CustomerWorkspace = ({ organizationId, sessionScope, customerId, ca
   </section>;
 };
 
-const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, canManageCommercial, openContact, backToCatalog }: Readonly<{
+const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, canManageCommercial, canManageShipping, openContact, backToCatalog }: Readonly<{
   state: ReturnType<typeof useQuery<CustomerWorkspaceRead>>;
   organizationId: string;
   sessionScope: string;
   canCreate: boolean;
   canManageCommercial: boolean;
+  canManageShipping: boolean;
   openContact: (contactId: string) => void;
   backToCatalog: () => void;
 }>) => {
@@ -127,8 +129,19 @@ const CustomerDetail = ({ state, organizationId, sessionScope, canCreate, canMan
       <CustomerActivity organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} />
       <CustomerInternalNotes organizationId={organizationId} sessionScope={sessionScope} customer={customer} canEdit={canCreate} />
       {canManageCommercial && <CustomerCommercialPanel organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} />}
+      {canManageShipping && <CustomerShippingPolicyPanel organizationId={organizationId} sessionScope={sessionScope} customerId={customer.customerId} />}
     </div>
   </section>;
+};
+
+const CustomerShippingPolicyPanel=({organizationId,sessionScope,customerId}:{organizationId:string;sessionScope:string;customerId:string})=>{
+  const key=["v2",sessionScope,organizationId,"customer-shipping-policy",customerId] as const,client=useQueryClient();
+  const query=useQuery({queryKey:key,queryFn:()=>shippingPricingApi.getCustomerPolicy(organizationId,customerId)});
+  const [mode,setMode]=useState<ShippingPricingMode>("pass_through"),[flat,setFlat]=useState(""),[percent,setPercent]=useState("");
+  const save=useMutation({mutationFn:()=>shippingPricingApi.saveCustomerPolicy(organizationId,customerId,newBusinessRequestId(),{mode,currency:"USD",...(mode==="flat"?{flatAmountCents:Number(flat)}:{}),...(mode==="percent"?{percentageBasisPoints:Number(percent)}:{})}),onSuccess:value=>client.setQueryData(key,value)});
+  const inherit=useMutation({mutationFn:()=>shippingPricingApi.inheritCustomerPolicy(organizationId,customerId,newBusinessRequestId()),onSuccess:value=>client.setQueryData(key,value)});
+  const override=query.data?.customerOverride;
+  return <SummaryCard title="Shipping pricing"><p className="v2-customer-empty">{override?`Explicit customer override: ${override.mode.replaceAll("_"," ")}.`:`Inheriting the organization default: ${query.data?.organizationDefault?.mode.replaceAll("_"," ")??"not configured"}.`}</p><div className="v2-customer-create"><label>Override policy <select value={mode} onChange={event=>setMode(event.target.value as ShippingPricingMode)}><option value="pass_through">Pass through</option><option value="flat">Cost + flat</option><option value="percent">Cost + percentage</option><option value="no_charge">No charge</option><option value="manual">Manual price</option></select></label>{mode==="flat"&&<label>Markup cents <input value={flat} onChange={event=>setFlat(event.target.value)} /></label>}{mode==="percent"&&<label>Basis points <input value={percent} onChange={event=>setPercent(event.target.value)} /></label>}<button type="button" disabled={save.isPending} onClick={()=>save.mutate()}>Save override</button><button type="button" disabled={!override||inherit.isPending} onClick={()=>inherit.mutate()}>Inherit organization default</button></div>{(query.isError||save.isError||inherit.isError)&&<p role="alert">Shipping policy could not be saved.</p>}</SummaryCard>;
 };
 
 const centsFromCommercialInput = (value: string): number | null => {

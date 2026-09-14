@@ -7,8 +7,9 @@ export type StaffShipmentEconomics = Readonly<{
   estimatedCarrierCostCents?: number;
   actualCarrierCostCents?: number;
   customerShippingPriceCents?: number;
+  customerPriceFrozen: boolean;
   absorbedFreightCents?: number;
-  pricingPolicySnapshot?: ShippingPricingPolicy;
+  pricingPolicySnapshot?: ShippingPricingPolicy | Readonly<{ policy: ShippingPricingPolicy; source: "organization_default" | "customer_override"; establishedAt: string }>;
   responsibility?: ShippingResponsibility;
   reason?: string;
   note?: string;

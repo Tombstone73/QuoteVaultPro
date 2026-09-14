@@ -143,6 +143,8 @@ export type UiBootstrap = Readonly<{
     fulfillmentPickup?: boolean;
     fulfillmentShip?: boolean;
     fulfillmentReplace?: boolean;
+    fulfillmentShippingCost?: boolean;
+    fulfillmentShippingPrice?: boolean;
     inboundView?: boolean;
     inboundReview?: boolean;
     assistantUse?: boolean;
@@ -801,6 +803,11 @@ export type CreatedProductWithInitialDraft = Readonly<{
   draftUpdatedAt: string;
 }>;
 export type FulfillmentMethod = "pickup" | "shipment";
+export type ShippingPricingMode = "pass_through" | "flat" | "percent" | "no_charge" | "manual";
+export type ShippingPricingPolicy = Readonly<{ mode: ShippingPricingMode; flatAmountCents?: number; percentageBasisPoints?: number; currency: string; version: number }>;
+export type ShippingPricingPolicyRead = Readonly<{ organizationDefault?: ShippingPricingPolicy; customerOverride?: ShippingPricingPolicy }>;
+/** Never used by customer, portal, packing-slip, or shipment-detail DTOs. */
+export type StaffShipmentEconomics = Readonly<{ shipmentId:string; customerId?:string; estimatedCarrierCostCents?:number; actualCarrierCostCents?:number; customerShippingPriceCents?:number; customerPriceFrozen:boolean; pricingPolicySnapshot?:Readonly<{policy:ShippingPricingPolicy;source:"organization_default"|"customer_override";establishedAt:string}> }>;
 /** Provider-free shipment-container facts. Carrier integrations remain optional. */
 export type FulfillmentShipmentCarrierInput = Readonly<{
   carrierName?: string;
@@ -3385,6 +3392,21 @@ export const fulfillmentApi = {
       headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
       body: JSON.stringify({ businessRequestId, expectedPreparedRevisionId }),
     }),
+};
+/** Staff-only shipping economics endpoints. Customer and portal DTOs never use these shapes. */
+export const shippingPricingApi = {
+  getOrganizationPolicy: (org:string) => request<ShippingPricingPolicyRead>(fulfillmentEndpoint(org,"/shipping-pricing-policy")),
+  saveOrganizationPolicy: (org:string,businessRequestId:string,policy:Omit<ShippingPricingPolicy,"version">) => request<ShippingPricingPolicyRead>(fulfillmentEndpoint(org,"/shipping-pricing-policy"),{method:"PUT",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...policy})}),
+  getCustomerPolicy: (org:string,customerId:string) => request<ShippingPricingPolicyRead>(fulfillmentEndpoint(org,`/customers/${encodeURIComponent(customerId)}/shipping-pricing-policy`)),
+  saveCustomerPolicy: (org:string,customerId:string,businessRequestId:string,policy:Omit<ShippingPricingPolicy,"version">) => request<ShippingPricingPolicyRead>(fulfillmentEndpoint(org,`/customers/${encodeURIComponent(customerId)}/shipping-pricing-policy`),{method:"PUT",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...policy})}),
+  inheritCustomerPolicy: (org:string,customerId:string,businessRequestId:string) => request<ShippingPricingPolicyRead>(fulfillmentEndpoint(org,`/customers/${encodeURIComponent(customerId)}/shipping-pricing-policy`),{method:"DELETE",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId})}),
+};
+/** Staff-only economics authority; intentionally separate from shipment and portal APIs. */
+export const shipmentEconomicsApi = {
+  read: (org:string,shipmentId:string) => request<StaffShipmentEconomics>(fulfillmentEndpoint(org,`/shipments/${encodeURIComponent(shipmentId)}/internal-economics`)),
+  setEstimated: (org:string,shipmentId:string,businessRequestId:string,estimatedCarrierCostCents:number) => request<StaffShipmentEconomics>(fulfillmentEndpoint(org,`/shipments/${encodeURIComponent(shipmentId)}/economics/estimated-cost`),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,estimatedCarrierCostCents})}),
+  setActual: (org:string,shipmentId:string,businessRequestId:string,input:Readonly<{actualCarrierCostCents:number;responsibility:"titan"|"customer"|"carrier"|"pending";reason:string;note?:string}>) => request<StaffShipmentEconomics>(fulfillmentEndpoint(org,`/shipments/${encodeURIComponent(shipmentId)}/economics/actual-cost`),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...input})}),
+  establishPrice: (org:string,shipmentId:string,businessRequestId:string,manualCustomerPriceCents?:number) => request<StaffShipmentEconomics>(fulfillmentEndpoint(org,`/shipments/${encodeURIComponent(shipmentId)}/economics/customer-price`),{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org))??""},body:JSON.stringify({businessRequestId,...(manualCustomerPriceCents===undefined?{}:{manualCustomerPriceCents})})}),
 };
 const inboundOrdersEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/inbound-orders${suffix}`;

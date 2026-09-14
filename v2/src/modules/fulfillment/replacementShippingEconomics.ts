@@ -3,6 +3,7 @@ export type ShippingPricingMode = "pass_through" | "flat" | "percent" | "no_char
 export type ShippingResponsibility = "titan" | "customer" | "carrier" | "pending";
 export type ReplacementBillingTreatment = "no_charge" | "billable" | "pending";
 export type ShippingPricingPolicy = Readonly<{ mode: ShippingPricingMode; flatAmountCents?: number; percentageBasisPoints?: number; currency: string; version: number }>;
+export type ResolvedShippingPricingPolicy = Readonly<{ policy: ShippingPricingPolicy; source: "organization_default" | "customer_override" }>;
 
 const cents = (value: number, label: string) => {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative whole-cent amount.`);
@@ -17,11 +18,29 @@ export const shippingCustomerPrice = (input: Readonly<{ estimatedCarrierCostCent
     case "percent": {
       const rate = input.policy.percentageBasisPoints ?? -1;
       if (!Number.isSafeInteger(rate) || rate < 0) throw new Error("Shipping percentage must be non-negative basis points.");
-      return estimated + Math.round(estimated * rate / 10_000);
+      const markup = (BigInt(estimated) * BigInt(rate) + 5_000n) / 10_000n;
+      const total = BigInt(estimated) + markup;
+      if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Shipping price is outside the safe whole-cent range.");
+      return Number(total);
     }
     case "no_charge": return 0;
     case "manual": return cents(input.manualCustomerPriceCents ?? -1, "Manual customer shipping price");
   }
+};
+
+/** Customer policy is an explicit override; absence is inheritance, never a copied default. */
+export const resolveShippingPricingPolicy = (organizationDefault: ShippingPricingPolicy | undefined, customerOverride?: ShippingPricingPolicy): ResolvedShippingPricingPolicy => {
+  if (customerOverride) return { policy: customerOverride, source: "customer_override" };
+  if (!organizationDefault) throw new Error("No organization shipping pricing policy is configured.");
+  return { policy: organizationDefault, source: "organization_default" };
+};
+
+export const shippingPriceFromResolvedPolicy = (input: Readonly<{ estimatedCarrierCostCents?: number; resolved: ResolvedShippingPricingPolicy; manualCustomerPriceCents?: number }>): number => {
+  const { policy } = input.resolved;
+  if (policy.mode === "manual") return shippingCustomerPrice({ estimatedCarrierCostCents: 0, policy, manualCustomerPriceCents: input.manualCustomerPriceCents });
+  if (policy.mode === "no_charge") return 0;
+  if (input.estimatedCarrierCostCents === undefined) throw new Error("A valid estimated carrier cost is required before customer shipping price can be established.");
+  return shippingCustomerPrice({ estimatedCarrierCostCents: input.estimatedCarrierCostCents, policy });
 };
 
 /** Stable lexical Order-number ordering receives any unavoidable penny remainder. */

@@ -1968,6 +1968,13 @@
       "when": 1788048000132,
       "tag": "0285_v2_billable_replacement_invoices",
       "breakpoints": true
+    },
+    {
+      "idx": 287,
+      "version": "7",
+      "when": 1788048000133,
+      "tag": "0286_v2_shipping_pricing_policy_authority",
+      "breakpoints": true
     }
   ]
 }
