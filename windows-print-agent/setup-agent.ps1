@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.7'
+$script:SetupVersion = '1.0.8'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
@@ -54,12 +54,6 @@ function Get-InstalledTravelerPrinters {
     ForEach-Object { [string]$_.Name } |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Sort-Object -Unique)
-}
-
-function Get-PlainSecureString([Security.SecureString]$Value) {
-  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
-  try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
 
 function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hashtable]$Body = @{}) {
@@ -233,7 +227,13 @@ if (-not $AgentToken) {
 }
 if (-not $AgentToken) {
   if ($NonInteractive) { throw 'AgentToken is required for unattended setup.' }
-  $AgentToken = Get-PlainSecureString (Read-Host 'Paste the PrintersHero pairing token' -AsSecureString)
+  Write-Host 'Copy the PrintersHero pairing token, then return to this setup window.'
+  [void](Read-Host 'Press Enter to read the pairing token from the clipboard')
+  try {
+    $AgentToken = Get-Clipboard -Raw -ErrorAction Stop
+  } catch {
+    throw 'The Windows clipboard could not be read. Use Copy token in PrintersHero, then run setup again.'
+  }
 }
 $AgentToken = [regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')
 if ([string]::IsNullOrWhiteSpace($AgentToken)) { throw 'A PrintersHero pairing token is required.' }
