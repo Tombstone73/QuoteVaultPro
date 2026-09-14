@@ -17,7 +17,23 @@ static class Program {
   static readonly string LogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PrintersHero", "print-agent.log");
   static readonly HttpClient Http = new();
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
-  [STAThread] static async Task Main(string[] args) { if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; } if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, and PRINTERSHERO_TRAVELER_PRINTER are required."); Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token); Log("Agent started."); ApplicationConfiguration.Initialize(); using var timer = new System.Windows.Forms.Timer { Interval = 15000 }; timer.Tick += async (_,_) => await Tick(); timer.Start(); await Tick(); Application.Run(new ApplicationContext()); }
+  [STAThread] static void Main(string[] args) {
+    if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; }
+    if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, and PRINTERSHERO_TRAVELER_PRINTER are required.");
+    Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+    Log("Agent started.");
+    ApplicationConfiguration.Initialize();
+    using var timer = new System.Windows.Forms.Timer { Interval = 1 };
+    timer.Tick += async (_, _) => {
+      // Start only after the WinForms message loop establishes its STA sync
+      // context. Stopping the timer avoids overlapping WebView2 print jobs.
+      timer.Stop();
+      try { await Tick(); }
+      finally { timer.Interval = 15000; timer.Start(); }
+    };
+    timer.Start();
+    Application.Run(new ApplicationContext());
+  }
   static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
   static async Task Tick() { try { await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion }); foreach (var job in await Get<List<Job>>("/api/local-bridge/direct-print/jobs") ?? []) await Print(job); } catch (Exception ex) { Log($"Poll failure: {ex.Message}"); } }
   static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch { return; } if (claim is null || string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); await PrintTraveler(claim); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
