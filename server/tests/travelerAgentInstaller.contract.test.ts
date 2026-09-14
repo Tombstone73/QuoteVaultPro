@@ -39,10 +39,10 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.5'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.6'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
-    expect(setup).toContain('$AgentToken = $AgentToken.Trim()');
-    expect(setup).toContain('The pairing token contains invalid control characters');
+    expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
+    expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
     expect(agent).toContain("PRINTERSHERO_TRAVELER_PRINTER");
     expect(agent).toContain("configured Traveler printer unavailable or mismatched");
   });
