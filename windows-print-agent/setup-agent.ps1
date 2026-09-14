@@ -61,6 +61,11 @@ function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hasht
   Invoke-RestMethod -Method Post -Uri ("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path) -Headers $headers -ContentType 'application/json' -Body ($Body | ConvertTo-Json -Compress)
 }
 
+function Get-HttpStatusCode([System.Exception]$Exception) {
+  if ($null -eq $Exception.Response) { return $null }
+  try { return [int]$Exception.Response.StatusCode } catch { return $null }
+}
+
 function Write-Check([string]$Label, [bool]$Ok, [string]$Detail = '') {
   $marker = if ($Ok) { '[OK]' } else { '[FAIL]' }
   $suffix = if ($Detail) { ": $Detail" } else { '' }
@@ -194,9 +199,15 @@ $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 
 try {
   Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter } | Out-Null
+} catch {
+  if ((Get-HttpStatusCode $_.Exception) -eq 401) { throw 'The pairing token is invalid or revoked. Create a new Local Bridge token in PrintersHero, copy it, then run setup again.' }
+  throw 'PrintersHero could not configure the selected printer. Check the production API connection and try a newly created token.'
+}
+
+try {
   Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-1.0.0' } | Out-Null
 } catch {
-  throw 'PrintersHero pairing could not be confirmed. Check the URL and pairing token, then run setup again.'
+  throw 'The printer was configured, but PrintersHero could not receive the agent heartbeat. Check the production API connection and run setup again.'
 }
 
 foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter }.GetEnumerator()) {
