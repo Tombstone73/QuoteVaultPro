@@ -21,6 +21,7 @@ $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps
 trap {
   if ($ElevatedChild) {
     Write-Host ''
+    Write-Host ("Error: {0}" -f $_.Exception.Message) -ForegroundColor Red
     Write-Host 'Setup did not complete. Review the error above before closing this Administrator setup window.' -ForegroundColor Red
     [void](Read-Host 'Press Enter to close')
   }

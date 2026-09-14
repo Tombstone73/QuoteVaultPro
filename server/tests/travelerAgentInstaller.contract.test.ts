@@ -49,6 +49,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain("Start-Process -FilePath 'powershell.exe' -Verb RunAs");
     expect(setup).toContain('Restart-ElevatedSetup');
     expect(setup).toContain('Administrator setup window');
+    expect(setup).toContain('Error: {0}');
     expect(taskScript).toContain("Invoke-TaskScheduler");
     expect(taskScript).toContain("Windows Task Scheduler command failed");
   });
