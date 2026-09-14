@@ -22,16 +22,18 @@ creation is required.
    Copy it; it is shown only once.
 3. Double-click `setup-agent.cmd` (or right-click `setup-agent.ps1` and choose
    **Run with PowerShell**).
-4. If needed, accept the prompt to open the official Microsoft WebView2
+4. Approve the one-time Windows administrator prompt. It creates the startup
+   task for the current Windows user; no manual Task Scheduler work is needed.
+5. If needed, accept the prompt to open the official Microsoft WebView2
    Runtime installer page. Install it, then run setup again.
-5. Choose the installed Epson TM-L90 Windows queue from the numbered list,
+6. Choose the installed Epson TM-L90 Windows queue from the numbered list,
    then paste the pairing token when prompted. USB and IP-installed queues
    work the same way. The production API defaults to
    `https://api.printershero.com`; do not substitute the web-app URL.
-6. Setup registers that queue only for the paired agent, installs and starts
+7. Setup registers that queue only for the paired agent, installs and starts
    the per-user logon task, and shows an `[OK]` checklist. The token is never
    shown again or written to agent logs.
-7. In PrintersHero, use **Print Traveler** for one test ticket. **Open Browser
+8. In PrintersHero, use **Print Traveler** for one test ticket. **Open Browser
    Print** remains available as a fallback.
 
 The release is a **self-contained win-x64** build. It includes the required

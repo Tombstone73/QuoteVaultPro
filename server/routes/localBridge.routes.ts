@@ -16,7 +16,10 @@ const bridgeAuth = async (req: any, res: any, next: any) => { const raw = String
 export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated: any; tenantContext: any; requireOrgOwnerAdmin: any }) {
   const admin = [deps.isAuthenticated, deps.tenantContext, deps.requireOrgOwnerAdmin];
   app.post("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const rawToken = crypto.randomBytes(32).toString("base64url"); const [agent] = await db.insert(localBridgeAgents).values({ organizationId, name: String(req.body?.name || "Local Bridge"), tokenHash: tokenHash(rawToken), status: "active" }).returning(); res.json({ success: true, data: { agent, token: rawToken } }); });
-  app.get("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); res.json({ success: true, data: await db.select().from(localBridgeAgents).where(eq(localBridgeAgents.organizationId, organizationId)) }); });
+  // Revoked credentials remain in the database for audit purposes, but are
+  // intentionally not returned to the operator UI because they cannot pair
+  // or receive work again.
+  app.get("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); res.json({ success: true, data: await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).orderBy(desc(localBridgeAgents.updatedAt)) }); });
   app.post("/api/local-bridge/admin/agents/:id/revoke", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); await db.update(localBridgeAgents).set({ status: "revoked", revokedAt: new Date(), updatedAt: new Date() }).where(and(eq(localBridgeAgents.id, req.params.id), eq(localBridgeAgents.organizationId, organizationId))); res.json({ success: true, data: {} }); });
   app.post("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => {
     const organizationId = getRequestOrganizationId(req); const customerId = String(req.body?.customerId || ""); const localPath = String(req.body?.localPath || "").trim();

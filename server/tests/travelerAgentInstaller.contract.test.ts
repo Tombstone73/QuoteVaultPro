@@ -8,6 +8,7 @@ describe("Traveler print agent installer contract", () => {
   const project = read("windows-print-agent/PrintersHero.PrintAgent.csproj");
   const publishProfile = read("windows-print-agent/Properties/PublishProfiles/Shop-win-x64.pubxml");
   const agent = read("windows-print-agent/Program.cs");
+  const taskScript = read("windows-print-agent/scripts/manage-agent-task.ps1");
   const routes = read("server/routes/localBridge.routes.ts");
   const localBridgeSettings = read("client/src/pages/settings/LocalBridgeSettings.tsx");
 
@@ -45,6 +46,10 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain("if ($Check)");
     expect(setup).toContain("if ($Uninstall)");
     expect(setup).toContain("Remove-AgentConfiguration");
+    expect(setup).toContain("Start-Process -FilePath 'powershell.exe' -Verb RunAs");
+    expect(setup).toContain("Administrator approval is required");
+    expect(taskScript).toContain("Invoke-TaskScheduler");
+    expect(taskScript).toContain("Windows Task Scheduler command failed");
   });
 
   test("publishes a self-contained win-x64 package with installer assets", () => {
@@ -63,5 +68,8 @@ describe("Traveler print agent installer contract", () => {
     expect(localBridgeSettings).toContain('Download Legacy Local Bridge Agent');
     expect(localBridgeSettings).toContain('dark:bg-amber-950/40');
     expect(localBridgeSettings).toContain('dark:text-amber-100');
+    expect(localBridgeSettings).toContain('Traveler printer:');
+    expect(localBridgeSettings).toContain('Awaiting setup');
+    expect(routes).toContain('eq(localBridgeAgents.status, "active")');
   });
 });
