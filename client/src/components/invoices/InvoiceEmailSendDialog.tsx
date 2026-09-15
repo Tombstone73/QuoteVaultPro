@@ -98,12 +98,22 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
           <p>This invoice is not approved for accounting.</p>
           <p>Send Anyway will email the invoice but will not approve it for accounting. The invoice will remain Not Approved.</p>
         </div> : <div className="space-y-4">
-          <div className="rounded-md border bg-muted/30 px-3 py-2.5">
+          <div className="rounded-md border bg-muted/30 px-3 py-2.5" data-testid="invoice-send-targets">
             <div className="text-xs font-medium text-muted-foreground">Sending to</div>
             {invoiceEmailRecipients.isLoading ? (
               <div className="mt-1 text-sm text-muted-foreground">Resolving recipient…</div>
-            ) : usingConfiguredRecipients && recipientOptions.length > 1 ? (
-              <div className="mt-1 text-sm font-medium">{recipientOptions.length} configured invoice recipients</div>
+            ) : usingConfiguredRecipients ? (
+              <div className="mt-1 min-w-0 space-y-2">
+                <div className="text-sm font-medium">{recipientOptions.length} configured invoice recipient{recipientOptions.length === 1 ? "" : "s"}</div>
+                <div className="space-y-1.5">
+                  {recipientOptions.map((recipient) => (
+                    <div key={recipient.email.toLowerCase()} className="min-w-0">
+                      <div className="truncate text-sm font-medium">{recipient.name || recipient.email}</div>
+                      <a className="block break-all text-xs text-primary underline-offset-2 hover:underline" href={`mailto:${recipient.email}`}>{recipient.email}</a>
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : resolvedRecipientEmail ? (
               <div className="mt-1 min-w-0">
                 <div className="truncate text-sm font-medium">{resolvedRecipientName || resolvedRecipientEmail}</div>
