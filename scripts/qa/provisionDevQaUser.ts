@@ -1,7 +1,7 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { devQaFullAccessProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
+import { devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../../server/lib/devQaProvisioningGuard";
 import { auditLogs, authIdentities, organizations, userOrganizations, users } from "../../shared/schema";
 
@@ -9,15 +9,22 @@ let databaseModule: typeof import("../../server/db") | undefined;
 
 async function provision() {
   const config = getDevQaProvisioningConfig();
-  const plan = devQaFullAccessProvisioningPlan(config);
+  const permissionProfile = (process.env.PRINTERSHERO_DEV_QA_PERMISSION_PROFILE ?? "full").trim().toLowerCase();
+  if (permissionProfile !== "full" && permissionProfile !== "m78i") {
+    throw new Error("PRINTERSHERO_DEV_QA_PERMISSION_PROFILE must be either 'full' or 'm78i'.");
+  }
+  const plan = permissionProfile === "m78i" ? devQaM78iOperationalProvisioningPlan(config) : devQaFullAccessProvisioningPlan(config);
   const passwordHash = await bcrypt.hash(config.password, 12);
   databaseModule = await import("../../server/db");
   const { db } = databaseModule;
 
   return db.transaction(async (tx) => {
-    const [organization] = await tx.select({ id: organizations.id, slug: organizations.slug, isArchived: organizations.isArchived, deleteState: organizations.deleteState }).from(organizations).where(eq(organizations.id, config.organizationId)).limit(1);
+    const [organization] = await tx.select({ id: organizations.id, name: organizations.name, slug: organizations.slug, isArchived: organizations.isArchived, deleteState: organizations.deleteState }).from(organizations).where(eq(organizations.id, config.organizationId)).limit(1);
     if (!organization || organization.slug.toLowerCase() !== config.organizationSlug || organization.isArchived || organization.deleteState !== "active") {
       throw new Error("Configured DEV QA organization is missing, inactive, or does not match the expected slug.");
+    }
+    if (permissionProfile === "m78i" && organization.name !== "PrintersHero M7 QA") {
+      throw new Error("The m78i permission profile is restricted to the verified PrintersHero M7 QA organization.");
     }
 
     const [existingUser] = await tx.select().from(users).where(eq(users.email, plan.account.email)).limit(1);
@@ -62,15 +69,15 @@ async function provision() {
     // The custom QA set is the one effective V2 set for this sandbox actor; legacy bootstrap/template assignments remain preserved but inactive.
     await tx.execute(sql`UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=${config.organizationId} AND user_id=${user.id} AND permission_set_id<>${permissionSetId} AND active=true`);
     await tx.execute(sql`UPDATE v2_permission_organization_state SET authority_revision=authority_revision+1,updated_at=now() WHERE organization_id=${config.organizationId}`);
-    await tx.insert(auditLogs).values({ organizationId: config.organizationId, userId: user.id, userName: "DEV QA provisioner", actionType: "DEV_QA_FULL_ACCESS_ENSURED", entityType: "user", entityId: user.id, entityName: "DEV QA Browser", description: "DEV QA Browser converged to its dedicated DEV-only full operational permission set.", newValues: { permissionSet: plan.permissionSet.name, capabilities: plan.permissionSet.capabilities, source: "qa:provision-dev-user" }, ipAddress: "cli", userAgent: "qa-provision-dev-user" });
-    await tx.execute(sql`INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,permission_set_id,target_user_id,detail) VALUES(${config.organizationId},'dev_qa_full_access_provisioned','service','dev-qa-provisioner',${permissionSetId},${user.id},${JSON.stringify({ capabilities: plan.permissionSet.capabilities, source: "qa:provision-dev-user" })}::jsonb)`);
-    return { created: !existingUser, permissionSetCreated: !existingSet.rows[0], organizationId: config.organizationId, capabilities: plan.permissionSet.capabilities };
+    await tx.insert(auditLogs).values({ organizationId: config.organizationId, userId: user.id, userName: "DEV QA provisioner", actionType: "DEV_QA_FULL_ACCESS_ENSURED", entityType: "user", entityId: user.id, entityName: "DEV QA Browser", description: "DEV QA Browser converged to its dedicated DEV-only permission set.", newValues: { permissionProfile, permissionSet: plan.permissionSet.name, capabilities: plan.permissionSet.capabilities, source: "qa:provision-dev-user" }, ipAddress: "cli", userAgent: "qa-provision-dev-user" });
+    await tx.execute(sql`INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,permission_set_id,target_user_id,detail) VALUES(${config.organizationId},'dev_qa_full_access_provisioned','service','dev-qa-provisioner',${permissionSetId},${user.id},${JSON.stringify({ permissionProfile, capabilities: plan.permissionSet.capabilities, source: "qa:provision-dev-user" })}::jsonb)`);
+    return { created: !existingUser, permissionSetCreated: !existingSet.rows[0], organizationId: config.organizationId, permissionProfile, capabilities: plan.permissionSet.capabilities };
   });
 }
 
 provision().then((result) => {
   // Deliberately no email, password, hash, connection string, token, user ID, or set ID output.
-  console.log(JSON.stringify({ success: true, created: result.created, permissionSetCreated: result.permissionSetCreated, organizationId: result.organizationId, capabilities: result.capabilities }));
+  console.log(JSON.stringify({ success: true, created: result.created, permissionSetCreated: result.permissionSetCreated, organizationId: result.organizationId, permissionProfile: result.permissionProfile, capabilities: result.capabilities }));
 }).catch((error: unknown) => {
   console.error(JSON.stringify({ success: false, message: error instanceof Error ? error.message : "DEV QA provisioning failed." }));
   process.exitCode = 1;

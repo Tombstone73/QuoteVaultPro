@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { capabilityIds } from "../../v2/src/authorization/capabilities";
-import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
+import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
 
 const devEnv = {
@@ -45,6 +45,14 @@ describe("DEV QA full-access provisioning", () => {
     expect(DEV_QA_FULL_ACCESS_CAPABILITIES).toEqual(capabilityIds);
     expect(DEV_QA_FULL_ACCESS_CAPABILITIES).toEqual(expect.arrayContaining(["product.view", "product.edit", "pricing.configure"]));
     expect(DEV_QA_FULL_ACCESS_CAPABILITIES).toEqual(expect.arrayContaining(["quote.create", "order.create", "payment.record", "refund.issue", "route.manageTemplates", "proof.issue", "prepress.complete", "production.complete", "fulfillment.ship", "inventory.receive"]));
+  });
+
+  test("requires an explicit least-privilege M7.8I operational plan", () => {
+    const plan = devQaM78iOperationalProvisioningPlan(getDevQaProvisioningConfig(devEnv));
+    expect(plan.permissionSet).toMatchObject({ name: DEV_QA_M78I_PERMISSION_SET_NAME, principalKind: "staff" });
+    expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
+    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price", "production.output.reject", "production.run.create", "production.run.execute"]));
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "communications.configure"]));
   });
 
   test("keeps platform and structural ownership outside the V2 QA permission set", () => {
