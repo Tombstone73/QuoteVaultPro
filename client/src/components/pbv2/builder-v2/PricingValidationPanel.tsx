@@ -35,6 +35,15 @@ export type PricingPreviewState = {
   unit: "in";
 };
 
+export type RollPricingPreview = {
+  piecesAcross: number;
+  rowsRequired: number;
+  consumedLinearFeet: number;
+  billedLinearFeet: number;
+  billingLengthIncrementIn: number | null;
+  formulaResult: number;
+};
+
 type PricingPreviewResponse = {
   unitPrice: number;
   totalPrice: number;
@@ -147,6 +156,12 @@ type PricingPreviewResponse = {
     quantityBasisUsed?: string;
     selectedRate?: number | null;
     finalFormulaTotal?: number | null;
+    rollLayout?: {
+      piecesAcross: number;
+      rowsRequired: number;
+      actualConsumedLinearFeet: number;
+      billingLengthIn: number;
+    } | null;
     sheetYield?: {
       finishedSqft: number;
       totalFinishedSqft: number;
@@ -321,6 +336,7 @@ interface PricingValidationPanelProps {
   allowZeroPrice?: boolean;
   productPrimaryMaterialId?: string | null;
   materialNamesById?: Record<string, string>;
+  onRollPricingPreviewChange?: (preview: RollPricingPreview | null) => void;
   findings: Finding[];
 }
 
@@ -570,7 +586,7 @@ function PreviewErrorBanner({
   );
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode, allowZeroPrice = false, productPrimaryMaterialId, materialNamesById, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode, allowZeroPrice = false, productPrimaryMaterialId, materialNamesById, onRollPricingPreviewChange, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -899,6 +915,25 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
       ? formulaPricingDebug.finalTotal
       : result.breakdown.basePrice)
     : 0;
+  const activeRollLayout = formulaDebug?.rollLayout ?? result?.debug?.rollLayout ?? null;
+  const billingLengthIncrement = Number(formulaDebug?.variables?.billing_length_increment);
+  const displayFormulaResult = formulaAuthoritativeTotal
+    ?? (typeof formulaDebug?.formulaEvaluatedTotal === "number" ? formulaDebug.formulaEvaluatedTotal : displayTotalPrice);
+  useEffect(() => {
+    if (!onRollPricingPreviewChange) return;
+    if (!activeRollLayout) {
+      onRollPricingPreviewChange(null);
+      return;
+    }
+    onRollPricingPreviewChange({
+      piecesAcross: activeRollLayout.piecesAcross,
+      rowsRequired: activeRollLayout.rowsRequired,
+      consumedLinearFeet: activeRollLayout.actualConsumedLinearFeet,
+      billedLinearFeet: activeRollLayout.billingLengthIn / 12,
+      billingLengthIncrementIn: Number.isFinite(billingLengthIncrement) ? billingLengthIncrement : null,
+      formulaResult: displayFormulaResult,
+    });
+  }, [activeRollLayout, billingLengthIncrement, displayFormulaResult, onRollPricingPreviewChange]);
   const finalTotalDisplayMismatch = Boolean(
     result &&
     formulaAuthoritativeTotal != null &&
@@ -1307,6 +1342,17 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                           Check formula output
                         </Badge>
                       ) : null}
+                    </div>
+                  ) : null}
+                  {activeRollLayout ? (
+                    <div className="pt-2 mt-2 border-t border-slate-700 text-xs text-slate-400 space-y-1" data-testid="roll-layout-preview">
+                      <div className="uppercase tracking-wide">Roll layout (calculated)</div>
+                      <div className="flex items-center justify-between"><span>Pieces across</span><span className="font-mono">{activeRollLayout.piecesAcross}</span></div>
+                      <div className="flex items-center justify-between"><span>Rows required</span><span className="font-mono">{activeRollLayout.rowsRequired}</span></div>
+                      <div className="flex items-center justify-between"><span>Consumed linear feet</span><span className="font-mono">{activeRollLayout.actualConsumedLinearFeet.toFixed(3)}</span></div>
+                      <div className="flex items-center justify-between"><span>Billed linear feet</span><span className="font-mono">{(activeRollLayout.billingLengthIn / 12).toFixed(3)}</span></div>
+                      <div className="flex items-center justify-between"><span>Billing length increment</span><span className="font-mono">{Number.isFinite(billingLengthIncrement) ? `${billingLengthIncrement} in` : "—"}</span></div>
+                      <div className="flex items-center justify-between"><span>Formula result</span><span className="font-mono">{currencyFormatter.format(displayFormulaResult)}</span></div>
                     </div>
                   ) : null}
                   {typeof result.derived?.sqft === "number" || typeof result.derived?.linearFeet === "number" ? (

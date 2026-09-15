@@ -29,6 +29,14 @@ import {
   pricingConfigHasRotationState,
   shouldShowPricingEngineRotationControl,
 } from "@/lib/productPricingRotation";
+import {
+  formulaReferencesLinearFootRate,
+  applyRollPricingFormulaVariable,
+  mergeRollPricingFormulaVariables,
+  shouldShowRollPricingConfiguration,
+  type RollPricingValidationError,
+  validateRollPricingConfiguration,
+} from "@/lib/rollPricingConfiguration";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -89,6 +97,7 @@ export const ProductForm = ({
   onPbv2PricingModeChange,
   onGenerateAiParsingDescription,
   isGeneratingAiParsingDescription = false,
+  rollPricingPreview,
 }: {
   form: any;
   materials: any;
@@ -123,6 +132,14 @@ export const ProductForm = ({
   onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
   onGenerateAiParsingDescription?: () => void;
   isGeneratingAiParsingDescription?: boolean;
+  rollPricingPreview?: {
+    piecesAcross: number;
+    rowsRequired: number;
+    consumedLinearFeet: number;
+    billedLinearFeet: number;
+    billingLengthIncrementIn: number | null;
+    formulaResult: number;
+  } | null;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -202,8 +219,45 @@ export const ProductForm = ({
   // Options are now managed by PBV2ProductBuilderSectionV2, not ProductForm
 
   const handleSave = React.useCallback((data: any) => {
-    return onSave(data);
-  }, [onSave]);
+    const selectedFormula = data.pricingFormulaId
+      ? getPricingFormulaSelectionValues(pricingFormulas, data.pricingFormulaId).pricingFormula
+      : null;
+    const pricingFormula = String(data.pricingFormula || selectedFormula || getDefaultFormula(data.pricingProfileKey || "default") || "");
+    const pricingConfig = data.pricingProfileConfig && typeof data.pricingProfileConfig === "object" && !Array.isArray(data.pricingProfileConfig)
+      ? data.pricingProfileConfig as Record<string, unknown>
+      : {};
+    const formulaVariables = mergeRollPricingFormulaVariables({
+      treeFormulaVariables: treeMeta?.formulaVariables,
+      treePricingFormulaVariables: treeMeta?.pricingFormulaVariables,
+      pricingProfileConfig: pricingConfig,
+    });
+
+    if (shouldShowRollPricingConfiguration({ formula: pricingFormula, formulaVariables })) {
+      const rollErrors = validateRollPricingConfiguration({ formula: pricingFormula, formulaVariables });
+      const entries = Object.entries(rollErrors);
+      if (entries.length > 0) {
+        entries.forEach(([key, message]) => {
+          form.setError(`pricingProfileConfig.formulaVariables.${key}` as any, { type: "validate", message });
+        });
+        toast({
+          title: "Complete roll pricing configuration",
+          description: "Correct the highlighted roll configuration values before saving.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+    const dataWithMergedRollVariables = shouldShowRollPricingConfiguration({ formula: pricingFormula, formulaVariables })
+      ? {
+        ...data,
+        pricingProfileConfig: {
+          ...pricingConfig,
+          formulaVariables,
+        },
+      }
+      : data;
+    return onSave(dataWithMergedRollVariables);
+  }, [form, onSave, pricingFormulas, toast, treeMeta?.formulaVariables, treeMeta?.pricingFormulaVariables]);
 
   return (
     <form
@@ -481,6 +535,7 @@ export const ProductForm = ({
           trimAllowanceX={safeTrimAllowanceX}
           trimAllowanceY={safeTrimAllowanceY}
           onUpdateAllowRotation={updateProductAllowRotation}
+          rollPricingPreview={rollPricingPreview}
         />
 
         {/* RIGHT: Material & Weight Configuration */}
@@ -815,6 +870,7 @@ function PricingEngineRadioSection({
   trimAllowanceX,
   trimAllowanceY,
   onUpdateAllowRotation,
+  rollPricingPreview,
 }: {
   form: any;
   pricingFormulas: any;
@@ -833,6 +889,14 @@ function PricingEngineRadioSection({
   trimAllowanceX?: number;
   trimAllowanceY?: number;
   onUpdateAllowRotation?: (allowRotation: boolean) => void;
+  rollPricingPreview?: {
+    piecesAcross: number;
+    rowsRequired: number;
+    consumedLinearFeet: number;
+    billedLinearFeet: number;
+    billingLengthIncrementIn: number | null;
+    formulaResult: number;
+  } | null;
 }) {
   type PricingEngineMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
   const LEGACY_SQFT_BASIC_FORMULA = "ceil(total_sqft) * base_price";
@@ -878,6 +942,19 @@ function PricingEngineRadioSection({
   const hourlyRateValueRaw = currentFormulaVariables.hourly_rate ?? treeMeta?.formulaVariables?.hourly_rate ?? treeMeta?.pricingFormulaVariables?.hourly_rate;
   const hourlyRateInputValue = hourlyRateValueRaw === undefined || hourlyRateValueRaw === null ? "" : String(hourlyRateValueRaw);
   const hasHourlyRateValue = hourlyRateInputValue !== "" && Number.isFinite(Number(hourlyRateInputValue));
+  const activeRollFormulaVariables = mergeRollPricingFormulaVariables({
+    treeFormulaVariables: treeMeta?.formulaVariables,
+    treePricingFormulaVariables: treeMeta?.pricingFormulaVariables,
+    pricingProfileConfig: currentProfileConfig,
+  });
+  const shouldShowRollPricing = isAdvancedMode && shouldShowRollPricingConfiguration({
+    formula: formulaForValidation,
+    formulaVariables: activeRollFormulaVariables,
+  });
+  const rollPricingErrors = validateRollPricingConfiguration({
+    formula: formulaForValidation,
+    formulaVariables: activeRollFormulaVariables,
+  });
   const isLegacyFeeSqftFormula = currentProfile === "fee" && String(currentFormula || "").trim() === LEGACY_SQFT_BASIC_FORMULA;
   const [referenceOpen, setReferenceOpen] = useState(false);
   const [referenceInsertEnabled, setReferenceInsertEnabled] = useState(false);
@@ -931,24 +1008,23 @@ function PricingEngineRadioSection({
     );
   }, [form, getSafeFlatGoodsConfig]);
 
-  const updatePricingFormulaVariable = useCallback((key: string, value: number | null, shouldDirty = true) => {
+  const updatePricingFormulaVariable = useCallback((key: string, value: number | boolean | null, shouldDirty = true) => {
     const current = form.getValues("pricingProfileConfig");
     const currentRecord = current && typeof current === "object" && !Array.isArray(current)
       ? { ...(current as Record<string, any>) }
       : {};
-    const variables = currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
-      ? { ...(currentRecord.formulaVariables as Record<string, number>) }
-      : {};
-
-    if (value === null) {
-      delete variables[key];
-    } else {
-      variables[key] = value;
-    }
+    const mergedVariables = {
+      ...activeRollFormulaVariables,
+      ...(currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
+        ? currentRecord.formulaVariables as Record<string, number | boolean>
+        : {}),
+    } as Record<string, unknown>;
+    const variables = applyRollPricingFormulaVariable(mergedVariables, key, value);
 
     const nextConfig = {
       ...currentRecord,
       formulaVariables: variables,
+      ...(key === "allow_rotation" && value !== null ? { allowRotation: Boolean(value) } : {}),
     };
     form.setValue("pricingProfileConfig", nextConfig, { shouldDirty });
     onUpdateTreeMeta?.({
@@ -960,7 +1036,7 @@ function PricingEngineRadioSection({
         billingUnit: { kind: "hour", selectionKey: "hours", step: 0.25 },
       } : {}),
     });
-  }, [currentProfile, form, onUpdateTreeMeta, pricingProfileKey]);
+  }, [activeRollFormulaVariables, currentProfile, form, onUpdateTreeMeta, pricingProfileKey]);
 
   const isAutoManagedFormula = useCallback((formula: string, profileKey: string | null | undefined) => {
     const trimmed = String(formula || "").trim();
@@ -1539,11 +1615,166 @@ function PricingEngineRadioSection({
         ) : null}
       </RadioGroup>
 
+      {shouldShowRollPricing ? (
+        <RollPricingConfigurationPanel
+          formula={formulaForValidation}
+          formulaVariables={activeRollFormulaVariables}
+          errors={rollPricingErrors}
+          onUpdateVariable={updatePricingFormulaVariable}
+          preview={rollPricingPreview}
+        />
+      ) : null}
+
       <FormulaReferenceModal
         open={referenceOpen}
         onOpenChange={setReferenceOpen}
         onInsertText={referenceInsertEnabled ? insertFormulaTextAtCursor : undefined}
       />
+    </div>
+  );
+}
+
+function RollPricingConfigurationPanel({
+  formula,
+  formulaVariables,
+  errors,
+  onUpdateVariable,
+  preview,
+}: {
+  formula: string;
+  formulaVariables: Record<string, unknown>;
+  errors: RollPricingValidationError;
+  onUpdateVariable: (key: string, value: number | boolean | null, shouldDirty?: boolean) => void;
+  preview?: {
+    piecesAcross: number;
+    rowsRequired: number;
+    consumedLinearFeet: number;
+    billedLinearFeet: number;
+    billingLengthIncrementIn: number | null;
+    formulaResult: number;
+  } | null;
+}) {
+  const requiresLinearFootRate = formulaReferencesLinearFootRate(formula);
+  const inputValue = (key: string) => {
+    const value = formulaVariables[key];
+    return value === undefined || value === null ? "" : String(value);
+  };
+  const updateNumber = (key: string, rawValue: string) => {
+    if (rawValue === "") {
+      onUpdateVariable(key, null);
+      return;
+    }
+    const parsed = Number(rawValue);
+    onUpdateVariable(key, Number.isFinite(parsed) ? parsed : null);
+  };
+  const isRotationAllowed = formulaVariables.allow_rotation === true
+    || formulaVariables.allow_rotation === 1
+    || String(formulaVariables.allow_rotation ?? "").trim().toLowerCase() === "true";
+
+  const fields: Array<{
+    key: "linear_foot_rate" | "printable_width" | "piece_allowance_x" | "piece_allowance_y" | "billing_width_increment" | "billing_length_increment" | "registration_waste";
+    label: string;
+    placeholder: string;
+    helper?: string;
+    currency?: boolean;
+    required?: boolean;
+  }> = [
+    {
+      key: "linear_foot_rate",
+      label: "Sell price per billed linear foot",
+      placeholder: "0.00",
+      currency: true,
+      required: requiresLinearFootRate,
+    },
+    { key: "printable_width", label: "Printable width", placeholder: "54", required: true },
+    { key: "piece_allowance_x", label: "Width production allowance", placeholder: "0" },
+    { key: "piece_allowance_y", label: "Length production allowance", placeholder: "0" },
+    { key: "billing_width_increment", label: "Billing width increment", placeholder: "12", required: true },
+    {
+      key: "billing_length_increment",
+      label: "Billing length increment",
+      placeholder: "12",
+      helper: "Use 12 in to bill roll length in whole linear-foot increments.",
+      required: true,
+    },
+    { key: "registration_waste", label: "Registration waste", placeholder: "0" },
+  ];
+
+  return (
+    <section className="rounded-md border border-slate-700 bg-slate-900/30 p-3 space-y-3" aria-labelledby="roll-pricing-configuration-heading">
+      <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+        <h4 id="roll-pricing-configuration-heading" className="text-xs font-medium text-slate-200">Roll Pricing Configuration</h4>
+        <p className="text-[11px] text-slate-500">Canonical roll inputs only; layout values remain calculated.</p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+        {fields.map((field) => {
+          const error = errors[field.key];
+          return (
+            <div key={field.key} className="space-y-1">
+              <Label htmlFor={`roll-pricing-${field.key}`} className="text-xs text-slate-400">
+                {field.label}{field.required ? <RequiredIndicator /> : null} {!field.currency ? <span className="text-slate-500">(in)</span> : null}
+              </Label>
+              <div className="relative">
+                {field.currency ? <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-xs text-slate-500">$</span> : null}
+                <Input
+                  id={`roll-pricing-${field.key}`}
+                  type="number"
+                  min={field.key === "linear_foot_rate" || field.key === "piece_allowance_x" || field.key === "piece_allowance_y" || field.key === "registration_waste" ? 0 : 0.01}
+                  step="0.01"
+                  inputMode="decimal"
+                  value={inputValue(field.key)}
+                  placeholder={field.placeholder}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={field.helper || error ? `roll-pricing-${field.key}-description` : undefined}
+                  onChange={(event) => updateNumber(field.key, event.target.value)}
+                  className={`h-8 bg-slate-950/60 border-slate-700/50 text-sm ${field.currency ? "pl-5" : ""}`}
+                />
+              </div>
+              {error ? <p id={`roll-pricing-${field.key}-description`} className="text-[11px] text-destructive">{error}</p> : null}
+              {!error && field.helper ? <p id={`roll-pricing-${field.key}-description`} className="text-[11px] leading-snug text-slate-500">{field.helper}</p> : null}
+            </div>
+          );
+        })}
+
+        <div className="flex items-center justify-between gap-3 rounded border border-slate-700/70 bg-slate-950/30 px-2.5 py-2 sm:col-span-2 xl:col-span-1">
+          <div className="min-w-0">
+            <Label htmlFor="roll-pricing-allow-rotation" className="text-xs text-slate-300">Allow rotation</Label>
+            <p className="mt-0.5 text-[11px] leading-snug text-slate-500">Use the orientation with the lower canonical roll consumption.</p>
+          </div>
+          <Switch
+            id="roll-pricing-allow-rotation"
+            checked={isRotationAllowed}
+            onCheckedChange={(checked) => onUpdateVariable("allow_rotation", Boolean(checked))}
+            aria-label="Allow rotation for roll layout"
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-slate-700/70 pt-2" data-testid="roll-pricing-preview">
+        <div className="mb-1.5 text-xs font-medium text-slate-300">Roll Pricing Preview</div>
+        {preview ? (
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400 sm:grid-cols-3">
+            <PreviewValue label="Pieces across" value={String(preview.piecesAcross)} />
+            <PreviewValue label="Rows required" value={String(preview.rowsRequired)} />
+            <PreviewValue label="Consumed linear feet" value={preview.consumedLinearFeet.toFixed(3)} />
+            <PreviewValue label="Billed linear feet" value={preview.billedLinearFeet.toFixed(3)} />
+            <PreviewValue label="Billing length increment" value={preview.billingLengthIncrementIn === null ? "—" : `${preview.billingLengthIncrementIn} in`} />
+            <PreviewValue label="Formula result" value={new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(preview.formulaResult)} />
+          </div>
+        ) : (
+          <p className="text-[11px] leading-snug text-slate-500">Calculated roll layout will appear after the canonical pricing preview has valid dimensions and configuration.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PreviewValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2">
+      <span className="truncate">{label}</span>
+      <span className="shrink-0 font-mono text-slate-200">{value}</span>
     </div>
   );
 }

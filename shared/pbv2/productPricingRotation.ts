@@ -38,6 +38,19 @@ export function productPricingConfigHasRotation(config: unknown): boolean {
   return getProductAllowRotation(config) !== null;
 }
 
+const ROLL_LAYOUT_FORMULA_VARIABLE_KEYS = [
+  "printable_width",
+  "billing_width_increment",
+  "billing_length_increment",
+  "piece_allowance_x",
+  "piece_allowance_y",
+  "registration_waste",
+] as const;
+
+function isRollLayoutFormulaVariableSet(variables: Record<string, any>): boolean {
+  return ROLL_LAYOUT_FORMULA_VARIABLE_KEYS.some((key) => Object.prototype.hasOwnProperty.call(variables, key));
+}
+
 /** Moves any recognized rotation value to the canonical product field without dropping other config. */
 export function normalizeProductPricingRotationConfig(
   config: unknown,
@@ -48,7 +61,14 @@ export function normalizeProductPricingRotationConfig(
   const legacyVariables = isRecord(current.variables) ? { ...current.variables } : null;
   const resolved = getProductAllowRotation(current) ?? fallbackAllowRotation;
 
-  delete formulaVariables.allow_rotation;
+  // Sheet/legacy product writes retain the historical top-level-only rotation
+  // behavior. A real roll layout also requires the canonical formula variable
+  // because PBV2 formula metadata is its persistence and preview contract.
+  if (isRollLayoutFormulaVariableSet(formulaVariables)) {
+    formulaVariables.allow_rotation = resolved;
+  } else {
+    delete formulaVariables.allow_rotation;
+  }
   if (legacyVariables) {
     delete legacyVariables.allow_rotation;
   }

@@ -34,6 +34,34 @@ describe("Product Catalog allowRotation writes", () => {
     });
   });
 
+  test("preserves canonical roll allow_rotation with roll layout formula variables", () => {
+    const normalized = normalizeProductRotationForWrite({
+      pricingProfileKey: "default",
+      pricingFormula: "billed_linear_feet * linear_foot_rate",
+      pricingProfileConfig: {
+        allowRotation: true,
+        formulaVariables: {
+          printable_width: 54,
+          billing_width_increment: 12,
+          billing_length_increment: 12,
+          linear_foot_rate: 9.5,
+          allow_rotation: false,
+        },
+      },
+    });
+
+    expect(normalized.pricingProfileConfig).toEqual({
+      allowRotation: true,
+      formulaVariables: {
+        printable_width: 54,
+        billing_width_increment: 12,
+        billing_length_increment: 12,
+        linear_foot_rate: 9.5,
+        allow_rotation: true,
+      },
+    });
+  });
+
   test("does not add rotation to unrelated fee pricing config", () => {
     const input = {
       pricingProfileKey: "fee",

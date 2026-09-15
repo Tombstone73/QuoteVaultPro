@@ -35,7 +35,7 @@ import {
 import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
-import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
+import { PricingValidationPanel, type RollPricingPreview } from "@/components/pbv2/builder-v2/PricingValidationPanel";
 import { ProductIntakeDraftBanner } from "@/components/ProductIntakeDraftBanner";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import { resolveRequestedDraftEditorContext } from "@/lib/pbv2/requestedDraftEditorHydration";
@@ -192,6 +192,10 @@ const ProductEditorPage = () => {
   const [engineDirty, setEngineDirty] = useState(false);
   const [pricingEngine, setPricingEngine] = useState<"formulaLibrary" | "pricingProfile" | "pricingFormula">("pricingProfile");
   const [pbv2PricingMode, setPbv2PricingMode] = useState<"basic" | "advanced">("basic");
+  const [rollPricingPreview, setRollPricingPreview] = useState<RollPricingPreview | null>(null);
+  const handleRollPricingPreviewChange = React.useCallback((next: RollPricingPreview | null) => {
+    setRollPricingPreview((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+  }, []);
 
   // Track PBV2 tree meta (shippingConfig, productImages, pricingV2) for ProductForm
   const [treeMeta, setTreeMeta] = useState<{
@@ -1164,6 +1168,7 @@ const ProductEditorPage = () => {
               onPbv2PricingModeChange={setPbv2PricingMode}
               onGenerateAiParsingDescription={requestAiParsingDescription}
               isGeneratingAiParsingDescription={aiParsingDescriptionMutation.isPending}
+              rollPricingPreview={rollPricingPreview}
               onAddPricingV2Tier={(kind) => {
                 const current = treeMeta.pricingV2 || {};
                 const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
@@ -1261,6 +1266,7 @@ const ProductEditorPage = () => {
             allowZeroPrice={form.watch("allowZeroPrice") === true}
             productPrimaryMaterialId={form.watch("primaryMaterialId") || null}
             materialNamesById={materialNamesById}
+            onRollPricingPreviewChange={handleRollPricingPreviewChange}
             findings={pbv2PricingData.findings}
           />
         }
