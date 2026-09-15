@@ -7,7 +7,7 @@
     "when": 1788048000136,
     "tag": "0289_v2_billing_invoice_revision_history_immutability"
   },
-  "canonicalSha256": "b1c2a257e917c962a3e7b65a5f0c540dfbafb15bc3c347f7e53379b3bb0b305f",
+  "canonicalSha256": "8f5d2ca5c8150e5d103cb3fcfcb37287112ce45230d7b8746e505a64210c3bfc",
   "unappliedRepairs": [
     {
       "priorCanonicalSha256": "af7525e574de33570676458314ce398b900443dc2c9cd3727058fbdea43c92e3",
@@ -23,6 +23,13 @@
         "0257_v2_finance_paged_ledger_read_model"
       ],
       "reason": "DEV rejected the unreleased 0257 legacy-payment expression index before either Finance migration committed; created_at is timestamp without time zone and its implicit cast to timestamptz is session-time-zone dependent."
+    },
+    {
+      "priorCanonicalSha256": "b1c2a257e917c962a3e7b65a5f0c540dfbafb15bc3c347f7e53379b3bb0b305f",
+      "tags": [
+        "0287_v2_shipment_shipping_invoice_projection"
+      ],
+      "reason": "DEV rejected the unreleased 0287 tenant-scoped allocation foreign key because its parent lacked a unique (id, organization_id) key; the pending migration now establishes that key before creating the child foreign key."
     }
   ]
 }

@@ -34,6 +34,9 @@ const permittedUnappliedRepairs = new Map([
   ["07aaf39aa4b5c3a12afc863574e981199a942e855e46a48c985b1d06bfd7970b", [
     "0257_v2_finance_paged_ledger_read_model",
   ]],
+  ["b1c2a257e917c962a3e7b65a5f0c540dfbafb15bc3c347f7e53379b3bb0b305f", [
+    "0287_v2_shipment_shipping_invoice_projection",
+  ]],
 ]);
 
 function sha256(value) {

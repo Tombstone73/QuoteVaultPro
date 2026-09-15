@@ -1,6 +1,13 @@
 -- M7.8I: a shipment's frozen customer freight may be allocated by Order and
 -- projected exactly once to the canonical Invoice for that work.  Freight is
 -- deliberately an Invoice additional charge, never a fake Product/Order line.
+-- The additional-charge lineage is tenant-scoped.  PostgreSQL requires this
+-- exact referenced column pair to be unique before it can support the
+-- composite foreign key below.
+ALTER TABLE v2_fulfillment_shipment_shipping_allocations
+  ADD CONSTRAINT v2_fulfillment_shipment_shipping_allocations_id_org_uidx
+  UNIQUE(id,organization_id);
+
 ALTER TABLE v2_fulfillment_shipment_shipping_allocations
   ADD COLUMN membership_fingerprint varchar(128),
   ADD COLUMN projected_at timestamptz;
