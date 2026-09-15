@@ -2,7 +2,7 @@
  * Order Traveler - thermal whole-order summary for Epson TM-L90 style printing.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import QRCode from "qrcode";
@@ -30,6 +30,10 @@ import {
 import { Printer, ArrowLeft } from "lucide-react";
 import { apiFetch } from "@/lib/queryClient";
 
+export function hasValidDirectPrintJobId(value: string | null): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
+}
+
 function useOrderTraveler(orderId: string | undefined, directPrintJobId: string | null) {
   return useQuery<OrderTravelerSource>({
     queryKey: ["/api/orders", orderId, "traveler", directPrintJobId],
@@ -45,7 +49,7 @@ function useOrderTraveler(orderId: string | undefined, directPrintJobId: string 
       const json = await res.json();
       return json.data as OrderTravelerSource;
     },
-    enabled: !!orderId && (!directPrintJobId || directPrintJobId.length > 0),
+    enabled: !!orderId,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -55,10 +59,81 @@ export default function OrderTravelerPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const [searchParams] = useSearchParams();
   const directPrintJobId = searchParams.get("directPrintJobId");
-  const { data, isLoading, error } = useOrderTraveler(orderId, directPrintJobId);
+  const printNote = searchParams.get("printNote")?.trim() || null;
+  const feedMm = Number(searchParams.get("feedMm"));
+
+  // The direct shell is intentionally separate from the staff experience so
+  // WebView2 does not start authenticated printer-profile queries or render
+  // browser-print controls. The claimed-job source remains bearer-protected.
+  if (hasValidDirectPrintJobId(directPrintJobId)) {
+    return <DirectPrintTravelerRenderer orderId={orderId} directPrintJobId={directPrintJobId} printNote={printNote} feedMm={feedMm} />;
+  }
+
+  return <InteractiveTravelerRenderer orderId={orderId} printNote={printNote} feedMm={feedMm} />;
+}
+
+type TravelerRendererProps = {
+  orderId: string | undefined;
+  printNote: string | null;
+  feedMm: number;
+};
+
+function DirectPrintTravelerRenderer({ orderId, directPrintJobId, printNote, feedMm }: TravelerRendererProps & { directPrintJobId: string }) {
+  const source = useOrderTraveler(orderId, directPrintJobId);
+  return <TravelerDocument {...source} orderId={orderId} printNote={printNote} feedMm={feedMm} />;
+}
+
+function InteractiveTravelerRenderer({ orderId, printNote, feedMm }: TravelerRendererProps) {
+  const source = useOrderTraveler(orderId, null);
+  const printer = useStationPrinter();
+
+  function handlePrint() {
+    if (printer.profiles.length > 0 && !printer.selectedProfile) {
+      window.alert("Select a printer profile before printing.");
+      return;
+    }
+    if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
+    window.print();
+    if (orderId) void logTravelerPrint(orderId);
+  }
+
+  const controls = (
+    <div className="ticket-no-print sticky top-0 z-10 border-b bg-background">
+      <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 py-3">
+        <Button variant="ghost" size="sm" onClick={() => window.history.back()} className="gap-1.5">
+          <ArrowLeft className="h-4 w-4" /> Back
+        </Button>
+        <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+          Order Traveler
+        </span>
+        <div className="ml-auto">
+          <Button onClick={handlePrint} size="sm" className="gap-1.5" disabled={printer.profiles.length > 0 && !printer.selectedProfile}>
+            <Printer className="h-4 w-4" /> Print Traveler
+          </Button>
+        </div>
+      </div>
+      <div className="mx-auto max-w-3xl px-4 pb-3">
+        <PrinterPicker printer={printer} />
+      </div>
+    </div>
+  );
+
+  return <TravelerDocument {...source} orderId={orderId} printNote={printNote} feedMm={feedMm} controls={controls} />;
+}
+
+type TravelerDocumentProps = {
+  orderId: string | undefined;
+  data: OrderTravelerSource | undefined;
+  isLoading: boolean;
+  error: unknown;
+  printNote: string | null;
+  feedMm: number;
+  controls?: ReactNode;
+};
+
+function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, controls }: TravelerDocumentProps) {
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const printer = useStationPrinter();
   const template = useMemo(() => loadTicketTemplate(), []);
 
   const orderUrl = useMemo(() => {
@@ -82,19 +157,6 @@ export default function OrderTravelerPage() {
     if (!data) return null;
     return buildOrderTravelerData(data, template);
   }, [data, template]);
-  const printNote = searchParams.get("printNote")?.trim() || null;
-  const feedMm = Number(searchParams.get("feedMm"));
-
-  function handlePrint() {
-    if (printer.profiles.length > 0 && !printer.selectedProfile) {
-      window.alert("Select a printer profile before printing.");
-      return;
-    }
-    if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
-    window.print();
-    if (orderId) void logTravelerPrint(orderId);
-  }
-
   if (isLoading) return <CenteredMessage>Loading order traveler...</CenteredMessage>;
   if (error || !data || !traveler) {
     return <CenteredMessage>Failed to load order traveler.</CenteredMessage>;
@@ -104,24 +166,7 @@ export default function OrderTravelerPage() {
     <div className="min-h-screen bg-muted/40 print:bg-white">
       <style dangerouslySetInnerHTML={{ __html: THERMAL_PRINT_STYLES }} />
 
-      <div className="ticket-no-print sticky top-0 z-10 border-b bg-background">
-        <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 py-3">
-          <Button variant="ghost" size="sm" onClick={() => window.history.back()} className="gap-1.5">
-            <ArrowLeft className="h-4 w-4" /> Back
-          </Button>
-          <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
-            Order Traveler
-          </span>
-          <div className="ml-auto">
-            <Button onClick={handlePrint} size="sm" className="gap-1.5" disabled={printer.profiles.length > 0 && !printer.selectedProfile}>
-              <Printer className="h-4 w-4" /> Print Traveler
-            </Button>
-          </div>
-        </div>
-        <div className="mx-auto max-w-3xl px-4 pb-3">
-          <PrinterPicker printer={printer} />
-        </div>
-      </div>
+      {controls}
 
       <div className="mx-auto max-w-md px-4 py-6">
         <ThermalPrintPage ready feedSpacer={Number.isFinite(feedMm) && feedMm > 0 ? `${feedMm}mm` : undefined}>

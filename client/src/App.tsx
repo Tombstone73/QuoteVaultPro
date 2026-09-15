@@ -55,6 +55,7 @@ import ProductionBoard from "@/pages/production";
 import ProductionJobDetailPage from "@/pages/production-job-detail";
 import ProductionTicketPage from "@/pages/production-ticket";
 import OrderTravelerPage from "@/pages/order-traveler";
+import DirectPrintTravelerRoute from "@/pages/direct-print-traveler-route";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
@@ -158,6 +159,9 @@ function Router() {
         {/* Token-based proof review — no account required; the token IS the auth */}
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
         <Route path="/shared/reports/:token" element={<SharedReportPage />} />
+        {/* The shell is public only for a claimed direct-print job. Its source
+            endpoint remains protected by the Local Bridge bearer token. */}
+        <Route path="/orders/:orderId/traveler" element={<DirectPrintTravelerRoute />} />
         {/* Public legal/support pages */}
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />

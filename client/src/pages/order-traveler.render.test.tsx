@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globa
 import { useQuery } from "@tanstack/react-query";
 
 let mockSearchParams = new URLSearchParams();
+const mockUseStationPrinter = jest.fn();
+const mockApiFetch = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   useParams: () => ({ orderId: "order-xyz" }),
@@ -12,10 +14,11 @@ jest.mock("react-router-dom", () => ({
 
 jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn() }));
 jest.mock("qrcode", () => ({ __esModule: true, default: { toDataURL: jest.fn(async () => "data:image/png;base64,qr") } }));
-jest.mock("@/hooks/useStationPrinter", () => ({ useStationPrinter: () => ({ profiles: [], selectedProfile: null }) }));
+jest.mock("@/hooks/useStationPrinter", () => ({ useStationPrinter: mockUseStationPrinter }));
 jest.mock("@/hooks/usePrinterProfiles", () => ({ markPrinterProfileUsed: jest.fn() }));
 jest.mock("@/hooks/useProduction", () => ({ logTravelerPrint: jest.fn() }));
 jest.mock("@/components/production/PrinterPicker", () => ({ PrinterPicker: () => null }));
+jest.mock("@/lib/queryClient", () => ({ apiFetch: mockApiFetch }));
 
 import OrderTravelerPage from "./order-traveler";
 import { travelerBrowserPrintUrl } from "@/components/production/TravelerPrintDialog";
@@ -52,6 +55,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   useQueryMock.mockReset();
+  mockUseStationPrinter.mockReturnValue({ profiles: [], selectedProfile: null });
 });
 
 afterEach(() => {
@@ -91,5 +95,23 @@ describe("OrderTravelerPage print-only notes", () => {
     expect(Array.from(noteElement?.querySelectorAll("div") ?? []).some((element) => (element as HTMLElement).style.whiteSpace === "pre-wrap")).toBe(true);
     expect(container.querySelector('[data-traveler-ready="true"]')).toBeTruthy();
     expect(container.textContent).toContain("Scan to open order in Printers Hero");
+    expect(container.textContent).not.toContain("Print Traveler");
+    expect(mockUseStationPrinter).not.toHaveBeenCalled();
+  });
+
+  test("uses only the claimed-job source for direct print and does not mark ready before data renders", async () => {
+    const params = new URLSearchParams({ directPrintJobId: "job-1" });
+    await renderTraveler(params);
+
+    const queryOptions = useQueryMock.mock.calls[0][0] as any;
+    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({ data: travelerSource }) });
+    await expect(queryOptions.queryFn()).resolves.toEqual(travelerSource);
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/local-bridge/direct-print/jobs/job-1/traveler");
+    expect(queryOptions.queryKey).toEqual(["/api/orders", "order-xyz", "traveler", "job-1"]);
+    expect(mockUseStationPrinter).not.toHaveBeenCalled();
+
+    useQueryMock.mockReturnValue({ data: undefined, isLoading: true, error: null } as any);
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.querySelector('[data-traveler-ready="true"]')).toBeNull();
   });
 });

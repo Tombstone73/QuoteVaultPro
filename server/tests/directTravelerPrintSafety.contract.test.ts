@@ -20,11 +20,31 @@ describe("direct Traveler printing safety contract", () => {
     const bridge = read("server/routes/localBridge.routes.ts");
     const source = read("server/services/orderTravelerSourceService.ts");
 
-    expect(bridge).toContain('app.get("/api/local-bridge/direct-print/jobs/:id/traveler"');
+    expect(bridge).toContain('app.get("/api/local-bridge/direct-print/jobs/:id/traveler", bridgeAuth');
     expect(bridge).toContain('eq(directPrintJobs.status, "claimed")');
     expect(bridge).toContain("getOrderTravelerSource(agent.organizationId, job.orderId)");
     expect(bridge).toContain("bridgeAuth");
     expect(source).toContain("The single server-side projection");
+  });
+
+  test("missing or invalid bridge credentials cannot read the direct Traveler source", () => {
+    const bridge = read("server/routes/localBridge.routes.ts");
+
+    expect(bridge).toContain("const raw = String(req.headers.authorization || \"\").replace(/^Bearer\\s+/i, \"\")");
+    expect(bridge).toContain('if (!raw) return res.status(401).json({ error: "Bridge token required" })');
+    expect(bridge).toContain('eq(localBridgeAgents.status, "active")');
+    expect(bridge).toContain('return res.status(401).json({ error: "Invalid or revoked bridge token" })');
+  });
+
+  test("only a structural direct-print shell bypasses staff routing; it embeds no Traveler data", () => {
+    const app = read("client/src/App.tsx");
+    const gate = read("client/src/pages/direct-print-traveler-route.tsx");
+
+    expect(app).toContain('<Route path="/orders/:orderId/traveler" element={<DirectPrintTravelerRoute />} />');
+    expect(gate).toContain("hasValidDirectPrintJobId");
+    expect(gate).toContain('<Navigate to="/login" replace />');
+    expect(gate).not.toContain("api/local-bridge/direct-print/jobs/");
+    expect(gate).not.toContain("Authorization");
   });
 
   test("the agent opens the existing Traveler page and the page uses the claimed-job source", () => {
@@ -61,6 +81,17 @@ describe("direct Traveler printing safety contract", () => {
     expect(traveler).toContain("if (error || !data || !traveler)");
     expect(traveler).toContain("<ThermalPrintPage ready");
     expect(primitives).toContain('data-traveler-ready={ready ? "true" : undefined}');
+  });
+
+  test("direct mode does not initialize staff printer controls", () => {
+    const traveler = read("client/src/pages/order-traveler.tsx");
+    const directStart = traveler.indexOf("function DirectPrintTravelerRenderer");
+    const interactiveStart = traveler.indexOf("function InteractiveTravelerRenderer");
+    const directRenderer = traveler.slice(directStart, interactiveStart);
+
+    expect(directRenderer).not.toContain("useStationPrinter");
+    expect(directRenderer).not.toContain("PrinterPicker");
+    expect(directRenderer).not.toContain("window.print");
   });
 
   test("the print-only note stays on the durable print job and reaches both Traveler paths", () => {
