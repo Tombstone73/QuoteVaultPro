@@ -29,6 +29,7 @@ import {
 } from "@/components/production/ticketPrintPrimitives";
 import { Printer, ArrowLeft } from "lucide-react";
 import { apiFetch } from "@/lib/queryClient";
+import { travelerFeedSpacerMm } from "@/lib/travelerTrailingFeed";
 
 export function hasValidDirectPrintJobId(value: string | null): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
@@ -169,7 +170,7 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
       {controls}
 
       <div className="mx-auto max-w-md px-4 py-6">
-        <ThermalPrintPage ready feedSpacer={Number.isFinite(feedMm) && feedMm > 0 ? `${feedMm}mm` : undefined}>
+        <ThermalPrintPage ready feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)}>
           <ThermalValue align="center" size="normal" style={{ textTransform: "uppercase" }}>
             Order Traveler
           </ThermalValue>

@@ -1,71 +1,99 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Web.WebView2.Core;
 using System.Drawing.Printing;
+using Supabase.Realtime;
+using Supabase.Realtime.Broadcast;
+using Supabase.Realtime.Models;
 
 namespace PrintersHero.PrintAgent;
 record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
+sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.19";
-  // Fast enough to make new Travelers feel immediate without busy polling.
-  const int QueuePollIntervalMs = 1500;
-  // Presence monitoring is intentionally independent of the work queue.
-  const int HeartbeatIntervalMs = 60000;
+  const string AgentVersion = "1.0.20";
+  const decimal BaseTravelerTrailingFeedMm = 38.1m;
+  const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
   static readonly string Token = Environment.GetEnvironmentVariable("PRINTERSHERO_AGENT_TOKEN") ?? "";
   static readonly string TravelerPrinter = (Environment.GetEnvironmentVariable("PRINTERSHERO_TRAVELER_PRINTER") ?? "").Trim();
+  static readonly string SupabaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_SUPABASE_URL") ?? "").TrimEnd('/');
+  static readonly string SupabasePublishableKey = Environment.GetEnvironmentVariable("PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY") ?? "";
   static readonly string LogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PrintersHero", "print-agent.log");
   static readonly HttpClient Http = new();
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
   static readonly HashSet<string> CanonicalTravelerWebHosts = new(StringComparer.OrdinalIgnoreCase) { "www.printershero.com", "dev.printershero.com" };
-  static DateTimeOffset nextHeartbeatAt = DateTimeOffset.MinValue;
+  static readonly SemaphoreSlim QueueDrainGate = new(1, 1);
+  static int QueueDrainRequested;
+  static int RealtimeOpenCount;
+  static Client? RealtimeClient;
   [STAThread] static void Main(string[] args) {
     if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; }
-    if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, and PRINTERSHERO_TRAVELER_PRINTER are required.");
+    if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter) || string.IsNullOrWhiteSpace(SupabaseUrl) || string.IsNullOrWhiteSpace(SupabasePublishableKey)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, PRINTERSHERO_TRAVELER_PRINTER, PRINTERSHERO_SUPABASE_URL, and PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY are required.");
     Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
     Log("Agent started.");
     ApplicationConfiguration.Initialize();
     using var timer = new System.Windows.Forms.Timer { Interval = 1 };
     timer.Tick += async (_, _) => {
-      // Start only after the WinForms message loop establishes its STA sync
-      // context. Stopping the timer avoids overlapping WebView2 print jobs.
+      // This is one startup dispatch after WinForms establishes its STA
+      // context. It never schedules an API poll or Railway heartbeat.
       timer.Stop();
-      try { await Tick(); }
-      finally { timer.Interval = QueuePollIntervalMs; timer.Start(); }
+      try { await StartRealtimeWakeSubscriber(); }
+      catch (Exception ex) { Log($"Realtime wake subscriber failed to start: {ex.Message}"); }
     };
     timer.Start();
     Application.Run(new ApplicationContext());
   }
   static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
-  static async Task Tick() {
-    TryHeartbeatIfDue();
-    await PollDirectPrintQueue();
+  static string GetWakeTopic() {
+    var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Token))).ToLowerInvariant();
+    return $"printershero:traveler-wake:{tokenHash}";
   }
-  static void TryHeartbeatIfDue() {
-    var now = DateTimeOffset.UtcNow;
-    if (now < nextHeartbeatAt) return;
-    nextHeartbeatAt = now.AddMilliseconds(HeartbeatIntervalMs);
-    _ = SendHeartbeatAsync();
+  static string GetRealtimeEndpoint() {
+    if (!Uri.TryCreate(SupabaseUrl, UriKind.Absolute, out var origin) || origin.Scheme != Uri.UriSchemeHttps) throw new InvalidOperationException("PRINTERSHERO_SUPABASE_URL must be an HTTPS origin.");
+    var builder = new UriBuilder(origin) { Scheme = Uri.UriSchemeWss, Path = "/realtime/v1/websocket", Query = $"apikey={Uri.EscapeDataString(SupabasePublishableKey)}" };
+    return builder.Uri.ToString();
   }
-  static async Task SendHeartbeatAsync() {
+  static async Task StartRealtimeWakeSubscriber() {
+    var options = new ClientOptions();
+    RealtimeClient = new Client(GetRealtimeEndpoint(), options);
+    RealtimeClient.AddStateChangedHandler((client, state) => {
+      if (state != Supabase.Realtime.Constants.SocketState.Open) return;
+      var connection = Interlocked.Increment(ref RealtimeOpenCount);
+      if (connection > 1) _ = RequestQueueDrain("realtime reconnect catch-up");
+    });
+    var channel = RealtimeClient.Channel(GetWakeTopic());
+    var broadcast = channel.Register<QueueChangedBroadcast>(broadcastSelf: false, broadcastAck: false);
+    broadcast.AddBroadcastEventHandler((sender, response) => {
+      if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) _ = RequestQueueDrain("realtime queue_changed wake");
+    });
+    await RealtimeClient.ConnectAsync();
+    await channel.Subscribe();
+    Log("Supabase Realtime wake subscription established.");
+    await RequestQueueDrain("realtime startup catch-up");
+  }
+  static async Task RequestQueueDrain(string reason) {
+    Interlocked.Exchange(ref QueueDrainRequested, 1);
+    if (!await QueueDrainGate.WaitAsync(0)) return;
     try {
-      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion });
-      Log("Heartbeat successful.");
-    } catch (Exception ex) {
-      // A heartbeat outage must not block or disable subsequent queue checks.
-      Log($"Heartbeat failure: {ex.Message}");
-    }
+      do {
+        Interlocked.Exchange(ref QueueDrainRequested, 0);
+        await DrainDirectPrintQueue(reason);
+      } while (Interlocked.Exchange(ref QueueDrainRequested, 0) == 1);
+    } finally { QueueDrainGate.Release(); }
   }
-  static async Task PollDirectPrintQueue() {
+  static async Task DrainDirectPrintQueue(string reason) {
     List<Job>? jobs;
     try {
       jobs = await Get<List<Job>>("/api/local-bridge/direct-print/jobs");
     } catch (Exception ex) {
-      Log($"Queue poll failure: {ex.Message}");
+      Log($"Queue drain failed ({reason}): {ex.Message}");
       return;
     }
     foreach (var job in jobs ?? []) {
@@ -149,14 +177,21 @@ static class Program {
     };
     var ready = new TaskCompletionSource();
     web.CoreWebView2.NavigationCompleted += (_, e) => { if (e.IsSuccess) { Log($"Traveler navigation succeeded: {travelerUri.Host}."); ready.TrySetResult(); } else { Log($"Traveler navigation failed: {travelerUri.Host} ({e.WebErrorStatus})."); ready.TrySetException(new InvalidOperationException("Traveler render navigation failed.")); } };
+    var additionalFeedMm = NormalizeAdditionalTrailingFeedMm(job.trailingFeedMm);
+    var effectiveFeedMm = BaseTravelerTrailingFeedMm + additionalFeedMm;
     var separator = travelerUri.Query.Length > 0 ? "&" : "?";
-    var route = $"{travelerUri}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={job.trailingFeedMm}";
+    var route = $"{travelerUri}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={additionalFeedMm.ToString("0.##", CultureInfo.InvariantCulture)}";
     Log($"Traveler navigation host: {travelerUri.Host}.");
     Log($"Traveler navigation started: {travelerUri.Host}.");
     web.CoreWebView2.Navigate(route);
     await ready.Task.WaitAsync(TimeSpan.FromSeconds(30));
     await WaitForTravelerRender(web, () => sourceStatus);
     await web.ExecuteScriptAsync("document.fonts ? document.fonts.ready : Promise.resolve()");
+    var renderedHeightJson = await web.ExecuteScriptAsync("(() => Math.ceil(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)))()");
+    var renderedHeight = JsonSerializer.Deserialize<double>(renderedHeightJson);
+    Log($"Additional trailing feed: {additionalFeedMm.ToString("0.##", CultureInfo.InvariantCulture)} mm.");
+    Log($"Effective trailing feed: {effectiveFeedMm.ToString("0.##", CultureInfo.InvariantCulture)} mm.");
+    Log($"Rendered ticket height: {renderedHeight.ToString("0.##", CultureInfo.InvariantCulture)} px.");
     var settings = web.CoreWebView2.Environment.CreatePrintSettings();
     settings.PrinterName = job.queueName;
     settings.Copies = job.copies;
@@ -167,6 +202,7 @@ static class Program {
     Log($"WebView2 print status: {status}.");
     if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}");
   }
+  static decimal NormalizeAdditionalTrailingFeedMm(decimal value) => Math.Clamp(value, 0m, MaxAdditionalTrailingFeedMm);
   static async Task WaitForTravelerRender(WebView2 web, Func<int?> sourceStatus) {
     var deadline = DateTime.UtcNow.AddSeconds(30);
     while (DateTime.UtcNow < deadline) {

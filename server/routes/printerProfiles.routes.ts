@@ -6,6 +6,7 @@ import { getRequestOrganizationId } from "../tenantContext";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { directPrintJobs, localBridgeAgents, orders, printerProfiles } from "@shared/schema";
+import { publishPrintAgentWake } from "../services/printAgentWake";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -55,8 +56,10 @@ export function registerPrinterProfileRoutes(
     const organizationId = getRequestOrganizationId(req);
     if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
     const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, trailingFeedMm: printerProfiles.trailingFeedMm, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId, agentName: localBridgeAgents.name, lastSeenAt: localBridgeAgents.lastSeenAt, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`));
-    const now = Date.now();
-    res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName && item.lastSeenAt && now - new Date(item.lastSeenAt).getTime() < 120000) })) });
+    // Realtime wake keeps a durable queue viable while a workstation is
+    // temporarily disconnected. `lastSeenAt` is therefore informational,
+    // never a gate that makes an otherwise mapped destination unqueueable.
+    res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName) })) });
   });
 
   app.post("/api/orders/:orderId/direct-print/traveler", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -71,11 +74,11 @@ export function registerPrinterProfileRoutes(
       if (!order || !destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Traveler destination is not available for direct printing." });
       const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
       if (!agent?.configuredTravelerPrinterName || agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ success: false, code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The Print Agent's selected Traveler printer does not match this destination." });
-      if (!agent?.lastSeenAt || Date.now() - new Date(agent.lastSeenAt).getTime() > 120000) return res.status(409).json({ success: false, code: "PRINT_AGENT_OFFLINE", error: "The mapped Print Agent is offline." });
       const created = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId, agentId: agent.id, copies, printNote: printNote || null, trailingFeedMm: destination.trailingFeedMm, requestKey, createdByUserId: getUserId(req.user) ?? null }).onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
       const job = created[0] ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.requestKey, requestKey))).limit(1))[0];
       if (!job) return res.status(500).json({ success: false, code: "DIRECT_PRINT_CREATE_FAILED", error: "Could not create the Traveler print job." });
-      res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName, duplicate: !created[0] } });
+      const wake = await publishPrintAgentWake(agent.tokenHash);
+      res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
     } catch (error) { sendError(res, error, "Failed to queue Traveler print"); }
   });
 

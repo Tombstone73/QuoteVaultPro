@@ -114,4 +114,14 @@ describe("OrderTravelerPage print-only notes", () => {
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelector('[data-traveler-ready="true"]')).toBeNull();
   });
+
+  test("adds the job snapshot feed to the standard spacer only for direct printing", async () => {
+    await renderTraveler(new URLSearchParams({ directPrintJobId: "job-feed", feedMm: "12.7" }));
+    const directArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
+    expect(directArea.style.getPropertyValue("--thermal-feed-spacer")).toBe("50.8mm");
+
+    await renderTraveler();
+    const browserArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
+    expect(browserArea.style.getPropertyValue("--thermal-feed-spacer")).toBe("1.5in");
+  });
 });

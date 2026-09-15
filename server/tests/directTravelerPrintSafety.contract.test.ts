@@ -111,4 +111,34 @@ describe("direct Traveler printing safety contract", () => {
     expect(dialog).toContain("Open Browser Print");
     expect(dialog).toContain("Idempotency-Key");
   });
+
+  test("snapshots additional feed and renders it after the standard thermal tear-off space", () => {
+    const schema = read("shared/schema.ts");
+    const routes = read("server/routes/printerProfiles.routes.ts");
+    const traveler = read("client/src/pages/order-traveler.tsx");
+    const agent = read("windows-print-agent/Program.cs");
+    const profileForm = read("client/src/components/production/PrinterProfileForm.tsx");
+
+    expect(schema).toContain('trailingFeedMm: numeric("trailing_feed_mm"');
+    expect(schema).toContain("z.coerce.number().min(0).max(100)");
+    expect(routes).toContain("trailingFeedMm: destination.trailingFeedMm");
+    expect(traveler).toContain("travelerFeedSpacerMm(feedMm)");
+    expect(profileForm).toContain("Additional trailing feed (mm)");
+    expect(profileForm).toContain("Added after the standard 38.1 mm / 1.5 in tear-off space.");
+    expect(agent).toContain("CultureInfo.InvariantCulture");
+    expect(agent).toContain("Effective trailing feed:");
+  });
+
+  test("queues durable work independently of freshness and then sends a data-free wake", () => {
+    const routes = read("server/routes/printerProfiles.routes.ts");
+    const wake = read("server/services/printAgentWake.ts");
+
+    expect(routes).toContain("publishPrintAgentWake(agent.tokenHash)");
+    expect(routes).not.toContain('code: "PRINT_AGENT_OFFLINE"');
+    expect(routes).not.toContain("now - new Date(item.lastSeenAt).getTime() < 120000");
+    expect(wake).toContain('JSON.stringify({ type: PRINT_AGENT_WAKE_EVENT })');
+    expect(wake).toContain("maxAttempts = 2");
+    expect(wake).not.toContain("orderId");
+    expect(wake).not.toContain("queueName");
+  });
 });

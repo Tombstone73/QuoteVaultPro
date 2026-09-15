@@ -12,8 +12,8 @@ async function readJson<T>(url: string): Promise<T> { const response = await api
 const travelerAgentDownloadUrl = apiUrl("/api/local-bridge/admin/traveler-print-agent-package");
 const legacyBridgeAgentDownloadUrl = apiUrl("/api/local-bridge/admin/agent-package");
 
-function isAgentOnline(agent: any) {
-  return Boolean(agent.machineLabel && agent.configuredTravelerPrinterName && agent.lastSeenAt && Date.now() - new Date(agent.lastSeenAt).getTime() < 5 * 60_000);
+function isAgentConfigured(agent: any) {
+  return Boolean(agent.machineLabel && agent.configuredTravelerPrinterName);
 }
 
 export default function LocalBridgeSettings() {
@@ -35,10 +35,10 @@ export default function LocalBridgeSettings() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/local-bridge/admin/agents"] }),
   });
   const activeAgents = (agents.data?.data ?? []).filter((agent: any) => agent.status === "active");
-  const onlineAgentCount = activeAgents.filter(isAgentOnline).length;
+  const configuredAgentCount = activeAgents.filter(isAgentConfigured).length;
   const status = !activeAgents.length
     ? "No active agents"
-    : `${onlineAgentCount} of ${activeAgents.length} active agent${activeAgents.length === 1 ? "" : "s"} online`;
+    : `${configuredAgentCount} of ${activeAgents.length} active agent${activeAgents.length === 1 ? "" : "s"} configured`;
   const copyToken = async () => {
     if (!token) return;
     try {
@@ -58,7 +58,7 @@ export default function LocalBridgeSettings() {
         <h3 className="font-medium">Traveler Print Agent</h3>
         <p className="text-sm text-muted-foreground">Download the self-contained Windows agent used to print Travelers to a configured local printer. It includes the .NET runtime; WebView2 and the printer driver remain workstation requirements.</p>
         <Button asChild><a href={travelerAgentDownloadUrl}>Download Traveler Print Agent</a></Button>
-        <ol className="list-decimal pl-5 text-sm"><li>Extract the ZIP to a stable local folder on the print workstation.</li><li>Run setup-agent.cmd.</li><li>Select the Traveler printer and paste a newly created pairing token.</li><li>Confirm this page shows Online.</li></ol>
+        <ol className="list-decimal pl-5 text-sm"><li>Extract the ZIP to a stable local folder on the print workstation.</li><li>Run setup-agent.cmd.</li><li>Select the Traveler printer and paste a newly created pairing token.</li><li>Confirm this page shows the configured workstation and Traveler printer.</li></ol>
       </div>
       <div className="space-y-2 rounded border p-4">
         <h3 className="font-medium">Legacy Local Bridge Agent</h3>
@@ -81,14 +81,15 @@ export default function LocalBridgeSettings() {
           </div>
         ) : null}
         {activeAgents.map((agent: any) => {
-          const paired = Boolean(agent.machineLabel && agent.configuredTravelerPrinterName);
-          const connection = !paired ? "Awaiting setup" : isAgentOnline(agent) ? "Online" : "Offline";
+          const paired = isAgentConfigured(agent);
+          const connection = !paired ? "Awaiting setup" : "Configured (event-driven)";
           return (
           <div key={agent.id} className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
             <div className="min-w-0 space-y-1">
               <p className="font-medium">{agent.name}</p>
               <p className="text-sm text-muted-foreground">Traveler printer: <span className="font-medium text-foreground">{agent.configuredTravelerPrinterName || "Not configured"}</span></p>
-              <p className="text-sm text-muted-foreground">Workstation: {agent.machineLabel || "Not paired yet"} · <span className={connection === "Online" ? "font-medium text-emerald-700 dark:text-emerald-300" : "font-medium text-amber-700 dark:text-amber-300"}>{connection}</span></p>
+              <p className="text-sm text-muted-foreground">Workstation: {agent.machineLabel || "Not paired yet"} · <span className={paired ? "font-medium text-emerald-700 dark:text-emerald-300" : "font-medium text-amber-700 dark:text-amber-300"}>{connection}</span></p>
+              {agent.lastSeenAt ? <p className="text-xs text-muted-foreground">Last activity: {new Date(agent.lastSeenAt).toLocaleString()}</p> : null}
             </div>
             <Button variant="destructive" size="sm" onClick={() => revoke.mutate(agent.id)}>Revoke</Button>
           </div>

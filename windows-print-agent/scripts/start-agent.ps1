@@ -16,7 +16,7 @@ try {
     throw 'Saved PrintersHero agent path is missing or unavailable. Run setup-agent.cmd again from the extracted package.'
   }
 
-  foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER')) {
+  foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER', 'PRINTERSHERO_SUPABASE_URL', 'PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY')) {
     $value = [Environment]::GetEnvironmentVariable($name, 'User')
     if ([string]::IsNullOrWhiteSpace($value)) {
       throw "Saved $name configuration is missing. Run setup-agent.cmd again."

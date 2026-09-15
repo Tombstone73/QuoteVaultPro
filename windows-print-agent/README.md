@@ -11,11 +11,13 @@ rendering, and asks Windows to spool it to the mapped queue. `submitted` means
 Windows accepted the spool request; it cannot guarantee paper physically left
 the Epson.
 
-The agent checks the Traveler queue every 1.5 seconds and sends its presence
-heartbeat every 60 seconds. This keeps normal print discovery responsive while
-remaining serial: it never overlaps Traveler rendering or submits duplicate
-jobs. Larger future deployments may use long polling or server push instead of
-frequent polling.
+The agent keeps a direct, outbound Supabase Realtime subscription using its
+paired capability topic. When PrintersHero durably queues a Traveler, it sends
+a data-free `queue_changed` wake signal. The agent then checks its authenticated
+queue once, claims, renders, and prints serially. It makes no recurring HTTP
+queue poll or heartbeat request to PrintersHero while idle. A reconnect performs
+one catch-up queue check, so the durable PostgreSQL queue remains authoritative
+if a wake is missed.
 
 ## Shop workstation setup
 
@@ -38,9 +40,11 @@ creation is required.
    then paste the pairing token when prompted. USB and IP-installed queues
    work the same way. The production API defaults to
    `https://api.printershero.com`; do not substitute the web-app URL.
-7. Setup registers that queue only for the paired agent, installs and starts
-   the per-user logon task, and shows an `[OK]` checklist. The token is never
-   shown again or written to agent logs.
+7. Setup registers that queue only for the paired agent, securely receives the
+   Supabase project URL and non-secret publishable subscription key, installs
+   and starts the per-user logon task, and shows an `[OK]` checklist. It never
+   receives a Supabase service-role key. The pairing token is never shown again
+   or written to agent logs.
 8. In PrintersHero, use **Print Traveler** for one test ticket. **Open Browser
    Print** remains available as a fallback.
 
@@ -56,8 +60,8 @@ The release is a **self-contained win-x64** build. It includes the required
 ```
 
 `-Check` verifies WebView2, the selected local queue, agent executable,
-configuration presence, startup task, process, and a safe PrintersHero
-heartbeat. It never prints the pairing token. Uninstall does not revoke the
+configuration presence, startup task, process, and an explicit authenticated
+PrintersHero diagnostic. It never prints the pairing token. Uninstall does not revoke the
 server-side pairing credential.
 
 The logon task is intentional instead of a Windows Session 0 service: the
@@ -89,5 +93,8 @@ contains no tokens or machine-specific printer names.
 - Ensure the API URL has no path suffix and uses HTTPS in production.
 - Local agent logs are at `%LOCALAPPDATA%\PrintersHero\print-agent.log`; they
   contain job ids and printer names, never the bridge credential or document.
+- `trailingFeedMm` is additional space after the standard 38.1 mm / 1.5 in
+  tear-off spacer. The log reports both the additional and effective feed
+  immediately before Windows receives the print request.
 - Do not copy the bridge token into tickets, logs, or source control. Revoke
   and recreate the agent in Settings if it is exposed.

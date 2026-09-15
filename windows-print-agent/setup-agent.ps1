@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.19'
+$script:SetupVersion = '1.0.20'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
@@ -80,7 +80,9 @@ function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hasht
         throw
       }
     }
-    [pscustomobject]@{ StatusCode = [int]$response.StatusCode; ReasonPhrase = [string]$response.ReasonPhrase }
+    $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+    try { $responseBody = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    [pscustomobject]@{ StatusCode = [int]$response.StatusCode; ReasonPhrase = [string]$response.ReasonPhrase; Body = $responseBody }
   } finally {
     if ($response) { $response.Dispose() }
     if ($requestStream) { $requestStream.Dispose() }
@@ -141,8 +143,10 @@ function Invoke-AgentCheck {
   $ok = (Write-Check 'Traveler printer' $printerFound $(if ($configuredPrinter) { $configuredPrinter } else { 'not configured' })) -and $ok
   $baseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
   $token = [Environment]::GetEnvironmentVariable('PRINTERSHERO_AGENT_TOKEN', 'User')
-  $configurationPresent = -not [string]::IsNullOrWhiteSpace($baseUrl) -and -not [string]::IsNullOrWhiteSpace($token)
-  $ok = (Write-Check 'PrintersHero configuration' $configurationPresent $(if ($baseUrl) { $baseUrl } else { 'not configured' })) -and $ok
+  $supabaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_SUPABASE_URL', 'User')
+  $supabaseKey = [Environment]::GetEnvironmentVariable('PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY', 'User')
+  $configurationPresent = -not [string]::IsNullOrWhiteSpace($baseUrl) -and -not [string]::IsNullOrWhiteSpace($token) -and -not [string]::IsNullOrWhiteSpace($supabaseUrl) -and -not [string]::IsNullOrWhiteSpace($supabaseKey)
+  $ok = (Write-Check 'PrintersHero realtime configuration' $configurationPresent $(if ($supabaseUrl) { $supabaseUrl } else { 'not configured' })) -and $ok
   $taskInstalled = Test-TaskInstalled
   $ok = (Write-Check 'Startup task installed' $taskInstalled) -and $ok
   $running = Test-AgentRunning
@@ -150,13 +154,13 @@ function Invoke-AgentCheck {
   if ($configurationPresent) {
     try {
       $heartbeat = Invoke-AgentApi $baseUrl $token '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-check' }
-      if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful heartbeat status.' }
-      $ok = (Write-Check 'PrintersHero heartbeat successful' $true) -and $ok
+      if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful diagnostic status.' }
+      $ok = (Write-Check 'PrintersHero authenticated diagnostic successful' $true) -and $ok
     } catch {
-      $ok = (Write-Check 'PrintersHero heartbeat successful' $false 'Could not authenticate or reach PrintersHero') -and $ok
+      $ok = (Write-Check 'PrintersHero authenticated diagnostic successful' $false 'Could not authenticate or reach PrintersHero') -and $ok
     }
   } else {
-    $ok = (Write-Check 'PrintersHero heartbeat successful' $false 'configuration missing') -and $ok
+    $ok = (Write-Check 'PrintersHero authenticated diagnostic successful' $false 'configuration missing') -and $ok
   }
   return $ok
 }
@@ -177,7 +181,7 @@ function Select-TravelerPrinter([string]$RequestedPrinter) {
 }
 
 function Remove-AgentConfiguration {
-  foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER', 'PRINTERSHERO_AGENT_PATH')) {
+  foreach ($name in @('PRINTERSHERO_API_BASE_URL', 'PRINTERSHERO_AGENT_TOKEN', 'PRINTERSHERO_TRAVELER_PRINTER', 'PRINTERSHERO_SUPABASE_URL', 'PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY', 'PRINTERSHERO_AGENT_PATH')) {
     [Environment]::SetEnvironmentVariable($name, $null, 'User')
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
   }
@@ -241,24 +245,21 @@ if ($AgentToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'The pairing token form
 if (-not ([Uri]$ApiBaseUrl).IsAbsoluteUri -or ([Uri]$ApiBaseUrl).Scheme -ne 'https') { throw 'PrintersHero API URL must be an HTTPS absolute URL.' }
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 
-foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter; PRINTERSHERO_AGENT_PATH = $script:AgentPath }.GetEnumerator()) {
-  [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
-  Set-Item "Env:$($pair.Key)" $pair.Value
-}
-
 try {
   $configuration = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter }
   if ($configuration.StatusCode -eq 401) { throw 'The pairing token is invalid or revoked. Create a new Local Bridge token in PrintersHero, copy it, then run setup again.' }
   if (-not (Test-SuccessStatus $configuration)) { throw ("PrintersHero returned HTTP {0} ({1}) while configuring the selected printer through {2}." -f $configuration.StatusCode, $configuration.ReasonPhrase, $ApiBaseUrl) }
+  $configurationData = ($configuration.Body | ConvertFrom-Json -ErrorAction Stop).data
+  $supabaseUrl = [string]$configurationData.realtime.url
+  $supabasePublishableKey = [string]$configurationData.realtime.publishableKey
+  if ([string]::IsNullOrWhiteSpace($supabaseUrl) -or [string]::IsNullOrWhiteSpace($supabasePublishableKey)) { throw 'PrintersHero did not return the required non-secret realtime configuration.' }
 } catch {
   throw $_
 }
 
-try {
-  $heartbeat = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-1.0.19' }
-  if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful heartbeat status.' }
-} catch {
-  throw 'The printer was configured, but PrintersHero could not receive the agent heartbeat. Check the production API connection and run setup again.'
+foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter; PRINTERSHERO_SUPABASE_URL = $supabaseUrl; PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY = $supabasePublishableKey; PRINTERSHERO_AGENT_PATH = $script:AgentPath }.GetEnumerator()) {
+  [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
+  Set-Item "Env:$($pair.Key)" $pair.Value
 }
 
 $AgentToken = $null
