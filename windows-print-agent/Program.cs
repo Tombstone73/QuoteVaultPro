@@ -17,7 +17,7 @@ record Job(string id, string orderId, int copies, string? printNote, decimal tra
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.23";
+  const string AgentVersion = "1.0.24";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -30,39 +30,41 @@ static class Program {
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
   static readonly HashSet<string> CanonicalTravelerWebHosts = new(StringComparer.OrdinalIgnoreCase) { "www.printershero.com", "dev.printershero.com" };
   static readonly StaQueueDrainScheduler QueueDrainScheduler = new(DispatchQueueDrainToSta, DrainDirectPrintQueue, Log);
-  static Control? StaDispatcher;
+  static TravelerStaDispatcherForm? StaDispatcher;
   static int StaDispatcherThreadId;
   static int AgentShuttingDown;
+  static int RealtimeStartupStarted;
+  static int RealtimeSubscriptionActive;
   static int RealtimeOpenCount;
   static int RealtimeInitialSubscriptionComplete;
   static int RealtimeReconnectCatchupPending;
   static Client? RealtimeClient;
+  static RealtimeChannel? RealtimeChannel;
+  static Action? ClearRealtimeHandlers;
   [STAThread] static void Main(string[] args) {
     if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; }
     if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter) || string.IsNullOrWhiteSpace(SupabaseUrl) || string.IsNullOrWhiteSpace(SupabasePublishableKey)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, PRINTERSHERO_TRAVELER_PRINTER, PRINTERSHERO_SUPABASE_URL, and PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY are required.");
     Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
     Log("Agent started.");
     ApplicationConfiguration.Initialize();
-    using var staDispatcher = new Control { Visible = false };
-    staDispatcher.CreateControl();
-    StaDispatcher = staDispatcher;
-    StaDispatcherThreadId = Environment.CurrentManagedThreadId;
-    Application.ApplicationExit += (_, _) => {
+    using var staDispatcher = new TravelerStaDispatcherForm();
+    staDispatcher.Shown += (_, _) => {
+      if (Interlocked.Exchange(ref RealtimeStartupStarted, 1) == 1) return;
+      StaDispatcher = staDispatcher;
+      StaDispatcherThreadId = Environment.CurrentManagedThreadId;
+      if (!staDispatcher.IsHandleCreated || staDispatcher.IsDisposed || Thread.CurrentThread.GetApartmentState() != ApartmentState.STA) {
+        throw new InvalidOperationException("Traveler STA dispatcher did not become ready.");
+      }
+      Log($"Traveler STA dispatcher ready on thread {StaDispatcherThreadId}.");
+      _ = ObserveRealtimeStartup();
+    };
+    staDispatcher.FormClosed += (_, _) => {
       Interlocked.Exchange(ref AgentShuttingDown, 1);
       QueueDrainScheduler.Shutdown();
+      CleanupRealtimeAttempt(RealtimeClient, RealtimeChannel, ClearRealtimeHandlers);
       StaDispatcher = null;
     };
-    Log("Traveler STA dispatcher initialized.");
-    using var timer = new System.Windows.Forms.Timer { Interval = 1 };
-    timer.Tick += async (_, _) => {
-      // This is one startup dispatch after WinForms establishes its STA
-      // context. It never schedules an API poll or Railway heartbeat.
-      timer.Stop();
-      try { await StartRealtimeWakeSubscriber(); }
-      catch (Exception ex) { Log($"Realtime wake subscriber failed to start: {ex.Message}"); }
-    };
-    timer.Start();
-    Application.Run(new ApplicationContext());
+    Application.Run(staDispatcher);
   }
   static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
   static bool IsTravelerStaThread() => Environment.CurrentManagedThreadId == StaDispatcherThreadId && Thread.CurrentThread.GetApartmentState() == ApartmentState.STA;
@@ -107,9 +109,16 @@ static class Program {
     return $"printershero:traveler-wake:{tokenHash}";
   }
   static string GetRealtimeBaseEndpoint() => RealtimeConnectionConfiguration.GetRealtimeBaseEndpoint(SupabaseUrl);
+  static async Task ObserveRealtimeStartup() {
+    try { await StartRealtimeWakeSubscriber(); }
+    catch (Exception ex) { Log($"Realtime wake subscriber stopped: {ex.Message}"); }
+  }
   static async Task StartRealtimeWakeSubscriber() {
     var retryDelaySeconds = 3;
     while (true) {
+      Client? candidateClient = null;
+      RealtimeChannel? candidateChannel = null;
+      Action? clearCandidateHandlers = null;
       try {
         Interlocked.Exchange(ref RealtimeOpenCount, 0);
         Interlocked.Exchange(ref RealtimeInitialSubscriptionComplete, 0);
@@ -117,8 +126,8 @@ static class Program {
         var realtimeBaseEndpoint = GetRealtimeBaseEndpoint();
         Log($"Supabase Realtime endpoint host: {new Uri(realtimeBaseEndpoint).Host}.");
         Log("Supabase publishable key configured: yes.");
-        RealtimeClient = new Client(realtimeBaseEndpoint, RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey));
-        RealtimeClient.AddStateChangedHandler((_, state) => {
+        candidateClient = new Client(realtimeBaseEndpoint, RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey));
+        candidateClient.AddStateChangedHandler((_, state) => {
           switch (state) {
             case Supabase.Realtime.Constants.SocketState.Open:
               var connection = Interlocked.Increment(ref RealtimeOpenCount);
@@ -138,37 +147,60 @@ static class Program {
         });
 
         Log("Supabase Realtime connecting.");
-        await RealtimeClient.ConnectAsync();
-        if (RealtimeClient.Socket is null || !RealtimeClient.Socket.IsConnected) throw new InvalidOperationException("Supabase Realtime did not reach an open socket state.");
+        await candidateClient.ConnectAsync();
+        if (candidateClient.Socket is null || !candidateClient.Socket.IsConnected) throw new InvalidOperationException("Supabase Realtime did not reach an open socket state.");
 
         // Supabase.Realtime 7.4.0 requires ConnectAsync to create the socket
         // before Channel/Register/Subscribe. The channel itself automatically
         // rejoins after a later socket reconnect once it has joined successfully.
-        var channel = RealtimeClient.Channel(GetWakeTopic());
-        channel.AddStateChangedHandler((channelSender, state) => {
+        candidateChannel = candidateClient.Channel(GetWakeTopic());
+        candidateChannel.AddStateChangedHandler((channelSender, state) => {
           if (state != Supabase.Realtime.Constants.ChannelState.Joined || Volatile.Read(ref RealtimeInitialSubscriptionComplete) != 1) return;
           if (Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0) == 1) _ = CompleteReconnectCatchup();
         });
-        var broadcast = channel.Register<QueueChangedBroadcast>(broadcastSelf: false, broadcastAck: false);
+        var broadcast = candidateChannel.Register<QueueChangedBroadcast>(broadcastSelf: false, broadcastAck: false);
         broadcast.AddBroadcastEventHandler((broadcastSender, response) => {
           if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) {
             Log("Realtime queue_changed wake received.");
             _ = ObserveQueueDrainSignal("realtime queue_changed wake");
           }
         });
-        await channel.Subscribe();
+        clearCandidateHandlers = () => {
+          broadcast.ClearBroadcastEventHandlers();
+          candidateChannel.ClearStateChangedHandlers();
+          candidateClient.ClearStateChangedHandlers();
+        };
+        await candidateChannel.Subscribe();
+        if (Interlocked.Exchange(ref RealtimeSubscriptionActive, 1) == 1) throw new InvalidOperationException("A PrintersHero Realtime subscription is already active.");
+        RealtimeClient = candidateClient;
+        RealtimeChannel = candidateChannel;
+        ClearRealtimeHandlers = clearCandidateHandlers;
         Volatile.Write(ref RealtimeInitialSubscriptionComplete, 1);
         Log("Supabase Realtime wake subscription established.");
-        await ScheduleQueueDrainOnSta("realtime startup catch-up");
-        Log("Startup queue catch-up completed.");
-        return;
+        break;
       } catch (Exception ex) {
-        RealtimeClient = null;
+        CleanupRealtimeAttempt(candidateClient, candidateChannel, clearCandidateHandlers);
         Log($"Supabase Realtime startup failed; retrying locally in {retryDelaySeconds} seconds: {ex.Message}");
         await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds));
         retryDelaySeconds = Math.Min(retryDelaySeconds * 2, 30);
       }
     }
+    try {
+      await ScheduleQueueDrainOnSta("realtime startup catch-up");
+      Log("Startup queue catch-up completed.");
+    } catch (Exception ex) {
+      Log($"Startup queue catch-up failed: {ex.Message}");
+    }
+  }
+  static void CleanupRealtimeAttempt(Client? client, RealtimeChannel? channel, Action? clearHandlers) {
+    try { clearHandlers?.Invoke(); } catch (Exception ex) { Log($"Realtime handler cleanup warning: {ex.Message}"); }
+    try { channel?.Unsubscribe(); } catch (Exception ex) { Log($"Realtime channel cleanup warning: {ex.Message}"); }
+    try { if (client is not null && channel is not null) client.Remove(channel); } catch (Exception ex) { Log($"Realtime channel removal warning: {ex.Message}"); }
+    try { client?.Disconnect(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "PrintersHero Realtime attempt cleanup"); } catch (Exception ex) { Log($"Realtime socket cleanup warning: {ex.Message}"); }
+    if (ReferenceEquals(RealtimeClient, client)) RealtimeClient = null;
+    if (ReferenceEquals(RealtimeChannel, channel)) RealtimeChannel = null;
+    if (ReferenceEquals(ClearRealtimeHandlers, clearHandlers)) ClearRealtimeHandlers = null;
+    Interlocked.Exchange(ref RealtimeSubscriptionActive, 0);
   }
   static async Task CompleteReconnectCatchup() {
     try {

@@ -37,6 +37,50 @@ finally
 
 Console.WriteLine("Supabase Realtime 7.4.0 endpoint/options contract passed.");
 
+var dispatcherReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var dispatcherWorkCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var dispatcherThreadId = 0;
+var dispatcherThread = new Thread(() =>
+{
+  using var form = new TravelerStaDispatcherForm();
+  form.Shown += (_, _) =>
+  {
+    try
+    {
+      dispatcherThreadId = Environment.CurrentManagedThreadId;
+      Require(form.IsHandleCreated, "The dispatcher Form must have a Win32 handle when startup begins.");
+      Require(!form.IsDisposed, "The dispatcher Form must remain alive while the message pump runs.");
+      Require(Thread.CurrentThread.GetApartmentState() == ApartmentState.STA, "The dispatcher Form must run on an STA thread.");
+      dispatcherReady.TrySetResult();
+      form.BeginInvoke(new Action(() =>
+      {
+        try
+        {
+          Require(Environment.CurrentManagedThreadId == dispatcherThreadId, "BeginInvoke must return work to the dispatcher thread.");
+          Require(Thread.CurrentThread.GetApartmentState() == ApartmentState.STA, "Dispatched Traveler work must remain STA.");
+          dispatcherWorkCompleted.TrySetResult();
+        }
+        catch (Exception ex) { dispatcherWorkCompleted.TrySetException(ex); }
+        finally { form.Close(); }
+      }));
+    }
+    catch (Exception ex)
+    {
+      dispatcherReady.TrySetException(ex);
+      dispatcherWorkCompleted.TrySetException(ex);
+      form.Close();
+    }
+  };
+  Application.Run(form);
+});
+dispatcherThread.SetApartmentState(ApartmentState.STA);
+dispatcherThread.Start();
+await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(10));
+await dispatcherWorkCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+Require(dispatcherThread.Join(TimeSpan.FromSeconds(10)), "The dispatcher thread must stop after its Form closes.");
+
+Console.WriteLine("Traveler STA Form handle/message-pump contract passed.");
+
 var postedStaWork = new Queue<Func<Task>>();
 var firstDrainStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 var releaseFirstDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
