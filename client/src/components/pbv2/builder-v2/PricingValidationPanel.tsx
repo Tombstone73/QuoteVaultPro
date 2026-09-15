@@ -1314,7 +1314,9 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div className="uppercase tracking-wide">Derived</div>
                       <div className="flex items-center justify-between"><span>sqft</span><span className="font-mono">{typeof result.derived?.sqft === "number" ? result.derived.sqft.toFixed(2) : "—"}</span></div>
                       <div className="flex items-center justify-between"><span>total_sqft</span><span className="font-mono">{typeof result.derived?.totalSqft === "number" ? result.derived.totalSqft.toFixed(2) : "—"}</span></div>
-                      <div className="flex items-center justify-between"><span>linear_feet</span><span className="font-mono">{typeof result.derived?.linearFeet === "number" ? result.derived.linearFeet.toFixed(2) : "—"}</span></div>
+                      <div className="flex items-center justify-between"><span>linear_feet (legacy)</span><span className="font-mono">{typeof result.derived?.linearFeet === "number" ? result.derived.linearFeet.toFixed(2) : "—"}</span></div>
+                      <div className="flex items-center justify-between"><span>consumed_linear_feet</span><span className="font-mono">{typeof result.derived?.consumedLinearFeet === "number" ? result.derived.consumedLinearFeet.toFixed(3) : "—"}</span></div>
+                      <div className="flex items-center justify-between"><span>billed_linear_feet</span><span className="font-mono">{typeof result.derived?.billedLinearFeet === "number" ? result.derived.billedLinearFeet.toFixed(3) : "—"}</span></div>
                     </div>
                   ) : null}
                   {result.breakdown ? (

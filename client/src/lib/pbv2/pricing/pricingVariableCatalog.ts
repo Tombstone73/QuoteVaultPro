@@ -53,9 +53,23 @@ export const PRICING_VARIABLE_CATALOG: PricingVariableCatalogEntry[] = [
   },
   {
     key: "linear_feet",
-    label: "Linear Feet",
-    description: "Computed linear footage from width and quantity.",
+    label: "Linear Feet (Legacy)",
+    description: "Legacy ordered-width ÷ 12 linear footage; not roll consumption or billed roll length.",
     example: 2,
+    category: "Derived",
+  },
+  {
+    key: "consumed_linear_feet",
+    label: "Consumed Linear Feet",
+    description: "Actual roll length consumed by canonical roll layout, including allowances and registration waste.",
+    example: 3.875,
+    category: "Derived",
+  },
+  {
+    key: "billed_linear_feet",
+    label: "Billed Linear Feet",
+    description: "Customer-billable roll length after canonical billing-length increment rounding.",
+    example: 4,
     category: "Derived",
   },
   {

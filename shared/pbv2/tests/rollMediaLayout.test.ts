@@ -90,6 +90,28 @@ describe("roll media nesting layout", () => {
     expect(layout.billingPanelWidthIn).toBe(billingPanelWidthIn);
   });
 
+  test.each([
+    { quantity: 1, piecesAcross: 5, rowsRequired: 1, billingLengthIn: 12, actualConsumedLengthIn: 10 },
+    { quantity: 5, piecesAcross: 5, rowsRequired: 1, billingLengthIn: 12, actualConsumedLengthIn: 10 },
+    { quantity: 6, piecesAcross: 5, rowsRequired: 2, billingLengthIn: 24, actualConsumedLengthIn: 20 },
+  ])("uses canonical 54-inch roll rows and 12-inch billing increments for quantity $quantity", ({ quantity, piecesAcross, rowsRequired, billingLengthIn, actualConsumedLengthIn }) => {
+    const layout = calculateRollMediaLayout({
+      physicalRollWidthIn: 54,
+      printableWidthIn: 54,
+      finishedWidthIn: 10,
+      finishedHeightIn: 10,
+      quantity,
+      billingWidthIncrementIn: 12,
+      billingLengthIncrementIn: 12,
+    });
+
+    expect(layout.piecesAcross).toBe(piecesAcross);
+    expect(layout.rowsRequired).toBe(rowsRequired);
+    expect(layout.billingLengthIn).toBe(billingLengthIn);
+    expect(layout.actualConsumedLengthIn).toBe(actualConsumedLengthIn);
+    expect(layout.actualConsumedLinearFeet).toBeCloseTo(actualConsumedLengthIn / 12, 6);
+  });
+
   test("fails closed when the production width exceeds printable roll width", () => {
     expect(() => calculateRollMediaLayout({
       ...baseRoll,

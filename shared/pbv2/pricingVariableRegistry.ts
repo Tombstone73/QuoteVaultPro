@@ -30,7 +30,9 @@ export type CanonicalPricingVariableKey =
   | "total_sheet_count"
   | "allow_rotation"
   | "q"
-  | "linear_feet";
+  | "linear_feet"
+  | "consumed_linear_feet"
+  | "billed_linear_feet";
 
 export interface PricingVariableDefinition {
   key: string;
@@ -276,9 +278,25 @@ export const PBV2_PRICING_VARIABLES: PricingVariableDefinition[] = [
   },
   {
     key: "linear_feet",
-    label: "Linear Feet",
-    description: "Linear feet derived from width in inches.",
+    label: "Linear Feet (Legacy)",
+    description: "Legacy dimensional linear footage derived from ordered width ÷ 12. This is not roll consumption or billed roll length.",
     example: 2,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "consumed_linear_feet",
+    label: "Consumed Linear Feet",
+    description: "Actual roll length consumed by the canonical roll layout, including production allowances and registration waste. Use for material consumption, not customer billing.",
+    example: 3.875,
+    category: "Derived",
+    aliases: [],
+  },
+  {
+    key: "billed_linear_feet",
+    label: "Billed Linear Feet",
+    description: "Customer-billable roll length from the canonical roll layout after billing-length increment rounding. Use with a configured linear-foot sell rate.",
+    example: 4,
     category: "Derived",
     aliases: [],
   },

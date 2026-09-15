@@ -271,6 +271,8 @@ export type PricingPreviewEvaluationResult = {
     sqft?: number;
     totalSqft?: number;
     linearFeet?: number;
+    consumedLinearFeet?: number;
+    billedLinearFeet?: number;
     orderedWidth?: number;
     orderedHeight?: number;
     trimAllowanceX?: number;
@@ -317,6 +319,8 @@ export type PricingPreviewEvaluationResult = {
       sqft: number;
       totalSqft: number;
       linearFeet: number;
+      consumedLinearFeet?: number;
+      billedLinearFeet?: number;
       ordered_width?: number;
       ordered_height?: number;
       trim_allowance_x?: number;
@@ -1288,6 +1292,12 @@ export function evaluatePricingPreviewFromTree(input: {
   const sqft = baseDetails.sqftPerItem;
   const totalSqft = baseDetails.totalSqft;
   const linearFeet = baseDetails.linearFeet;
+  const previewRollLayout = buildRollLayoutFromFormulaScope({
+    formulaScope: formulaDebug.variables,
+    orderedWidthIn: baseDetails.orderedWidthIn,
+    orderedHeightIn: baseDetails.orderedHeightIn,
+    quantity,
+  });
   const pricingDebug = {
     basePrice: basePriceCents / 100,
     optionsPrice: optionsCents / 100,
@@ -1354,6 +1364,8 @@ export function evaluatePricingPreviewFromTree(input: {
       sqft: Number.isFinite(sqft) ? sqft : undefined,
       totalSqft: Number.isFinite(totalSqft) ? totalSqft : undefined,
       linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
+      consumedLinearFeet: previewRollLayout?.actualConsumedLinearFeet,
+      billedLinearFeet: previewRollLayout ? previewRollLayout.billingLengthIn / 12 : undefined,
       orderedWidth: Number.isFinite(baseDetails.orderedWidthIn) ? baseDetails.orderedWidthIn : undefined,
       orderedHeight: Number.isFinite(baseDetails.orderedHeightIn) ? baseDetails.orderedHeightIn : undefined,
       trimAllowanceX: Number.isFinite(baseDetails.trimAllowanceX) ? baseDetails.trimAllowanceX : undefined,
@@ -1387,12 +1399,7 @@ export function evaluatePricingPreviewFromTree(input: {
       selectedRate: formulaDebug.selectedRate,
       finalFormulaTotal: formulaDebug.finalFormulaTotal,
       sheetYield: formulaDebug.sheetYield,
-      rollLayout: buildRollLayoutFromFormulaScope({
-        formulaScope: formulaDebug.variables,
-        orderedWidthIn: baseDetails.orderedWidthIn,
-        orderedHeightIn: baseDetails.orderedHeightIn,
-        quantity,
-      }),
+      rollLayout: previewRollLayout,
       formulaEvaluatedTotal: pricingDebug.formulaEvaluatedTotal,
       rawBasePrice: pricingDebug.rawBasePrice,
       evaluatedFormulaTotalRaw: pricingDebug.evaluatedFormulaTotalRaw,
@@ -1423,6 +1430,8 @@ export function evaluatePricingPreviewFromTree(input: {
         sqft,
         totalSqft,
         linearFeet,
+        consumedLinearFeet: previewRollLayout?.actualConsumedLinearFeet,
+        billedLinearFeet: previewRollLayout ? previewRollLayout.billingLengthIn / 12 : undefined,
         ordered_width: baseDetails.orderedWidthIn,
         ordered_height: baseDetails.orderedHeightIn,
         trim_allowance_x: baseDetails.trimAllowanceX,
@@ -4691,6 +4700,36 @@ function evaluatePreviewFormulaToCents(input: {
   likelyMisconfiguredFormula: boolean;
   warnings: Array<{ code: string; message: string; detail?: any }>;
 } {
+  const baseScope = buildFormulaScope({
+    ...input,
+    computedSheets: input.sheetYieldMetrics?.computedSheets,
+    billedSheets: input.sheetYieldMetrics?.billedSheets,
+    sheetCount: input.sheetYieldMetrics?.sheetCount,
+    sheetSqft: input.sheetYieldMetrics?.sheetSqft,
+    billedSheetSqft: input.sheetYieldMetrics?.billedSheetSqft,
+    piecesPerSheet: input.sheetYieldMetrics?.piecesPerSheet,
+    fullSheets: input.sheetYieldMetrics?.fullSheets,
+    partialSheetPieceCount: input.sheetYieldMetrics?.partialSheetPieceCount,
+    partialSheetFinishedSqft: input.sheetYieldMetrics?.partialSheetFinishedSqft,
+    partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
+    totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
+    allowRotation: input.sheetYieldMetrics?.allowRotation,
+  });
+  // Formula variables provide roll configuration, but never the resulting
+  // consumption values. Resolve configuration first, then inject the single
+  // canonical layout result into the protected runtime scope.
+  const rollConfigurationScope = buildFormulaEvaluationScope({
+    scope: baseScope,
+    formulaVariables: input.formulaVariables,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+    unitPriceOverride: input.unitPriceOverride,
+  });
+  const rollLayout = buildRollLayoutFromFormulaScope({
+    formulaScope: rollConfigurationScope,
+    orderedWidthIn: input.orderedWidthIn,
+    orderedHeightIn: input.orderedHeightIn,
+    quantity: input.quantity,
+  });
   const scope = buildFormulaScope({
     ...input,
     computedSheets: input.sheetYieldMetrics?.computedSheets,
@@ -4705,6 +4744,7 @@ function evaluatePreviewFormulaToCents(input: {
     partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
     totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
     allowRotation: input.sheetYieldMetrics?.allowRotation,
+    rollLayout,
   });
   const formulaScope = buildFormulaEvaluationScope({
     scope,
@@ -4799,6 +4839,39 @@ function evaluatePreviewFormulaToCents(input: {
       { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
       { label: 'drop_usable', value: input.sheetYieldMetrics.dropUsable == null ? "unavailable" : String(input.sheetYieldMetrics.dropUsable) },
     );
+  }
+  if (rollLayout) {
+    steps.push(
+      { label: 'consumed_linear_feet', value: rollLayout.actualConsumedLinearFeet },
+      { label: 'billed_linear_feet', value: rollLayout.billingLengthIn / 12 },
+    );
+  }
+
+  const requiredRollVariable = findRollConsumptionVariableReference(input.formula);
+  if (requiredRollVariable && !rollLayout) {
+    const message = `Pricing formula references ${requiredRollVariable}, but canonical roll layout is unavailable. Configure a positive printable roll width plus billing_width_increment and billing_length_increment; no dimensional fallback is used.`;
+    const formulaError = new Error(`Formula error: ${message}`) as PricingPreviewFormulaError;
+    formulaError.code = 'PBV2_FORMULA_ERROR';
+    formulaError.details = [{
+      code: 'PBV2_ROLL_LAYOUT_REQUIRED',
+      message,
+      path: 'pricingFormula',
+      missingSymbol: requiredRollVariable,
+    }];
+    formulaError.debug = {
+      pricingSystem: 'pbv2',
+      formulaRaw: input.formula,
+      formulaResolved: resolveFormulaAliases(input.formula),
+      variables: formulaScope,
+      variableSources,
+      appliedAs: inferFormulaApplication(input.formula),
+      steps,
+      errors: [{ code: 'PBV2_ROLL_LAYOUT_REQUIRED', message, detail: { missingSymbol: requiredRollVariable } }],
+      lastCeilInput: null,
+      lastCeilResult: null,
+      baseRateUsed: resolvedBaseRate,
+    };
+    throw formulaError;
   }
 
   // Pre-validate: reject JavaScript-style Math.xxx function calls before they hit mathjs
@@ -4947,6 +5020,47 @@ function buildBaseFormulaDebugContext(input: {
   pricingMatrixVariables?: Record<string, number>;
   unitPriceOverride?: number;
 }): NonNullable<PricingPreviewEvaluationResult['debug']> {
+  const baseScope = buildFormulaScope({
+    formula: input.formulaRaw,
+    orderedWidthIn: input.orderedWidthIn,
+    orderedHeightIn: input.orderedHeightIn,
+    trimAllowanceX: input.trimAllowanceX,
+    trimAllowanceY: input.trimAllowanceY,
+    finishedWidthIn: input.finishedWidthIn,
+    finishedHeightIn: input.finishedHeightIn,
+    quantity: input.quantity,
+    baseRatePerSqft: input.baseRatePerSqft,
+    originalBaseRate: input.originalBaseRate,
+    tierBaseRate: input.tierBaseRate,
+    effectiveBaseRate: input.effectiveBaseRate,
+    sqftPerItem: input.sqftPerItem,
+    totalSqft: input.totalSqft,
+    linearFeet: input.linearFeet,
+    computedSheets: input.sheetYieldMetrics?.computedSheets,
+    billedSheets: input.sheetYieldMetrics?.billedSheets,
+    sheetCount: input.sheetYieldMetrics?.sheetCount,
+    sheetSqft: input.sheetYieldMetrics?.sheetSqft,
+    billedSheetSqft: input.sheetYieldMetrics?.billedSheetSqft,
+    piecesPerSheet: input.sheetYieldMetrics?.piecesPerSheet,
+    fullSheets: input.sheetYieldMetrics?.fullSheets,
+    partialSheetPieceCount: input.sheetYieldMetrics?.partialSheetPieceCount,
+    partialSheetFinishedSqft: input.sheetYieldMetrics?.partialSheetFinishedSqft,
+    partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
+    totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
+    allowRotation: input.sheetYieldMetrics?.allowRotation,
+  });
+  const rollConfigurationScope = buildFormulaEvaluationScope({
+    scope: baseScope,
+    formulaVariables: input.formulaVariables,
+    pricingMatrixVariables: input.pricingMatrixVariables,
+    unitPriceOverride: input.unitPriceOverride,
+  });
+  const rollLayout = buildRollLayoutFromFormulaScope({
+    formulaScope: rollConfigurationScope,
+    orderedWidthIn: input.orderedWidthIn,
+    orderedHeightIn: input.orderedHeightIn,
+    quantity: input.quantity,
+  });
   const scope = buildFormulaScope({
     formula: input.formulaRaw,
     orderedWidthIn: input.orderedWidthIn,
@@ -4975,6 +5089,7 @@ function buildBaseFormulaDebugContext(input: {
     partialSheetBillableSqft: input.sheetYieldMetrics?.partialSheetBillableSqft,
     totalSheetCount: input.sheetYieldMetrics?.totalSheetCount,
     allowRotation: input.sheetYieldMetrics?.allowRotation,
+    rollLayout,
   });
   const variables = buildFormulaEvaluationScope({
     scope,
@@ -5227,6 +5342,8 @@ function buildPricingPreviewWeightDebug(input: {
 
 function inferFormulaQuantityBasis(formula: string): string {
   const normalized = String(formula || "").toLowerCase();
+  if (/\bbilled_linear_feet\b/.test(normalized)) return "billed_linear_feet";
+  if (/\bconsumed_linear_feet\b/.test(normalized)) return "consumed_linear_feet";
   if (/\bcomputed_sheets\b/.test(normalized)) return "computed_sheets";
   if (/\btotal_sheet_count\b/.test(normalized)) return "total_sheet_count";
   if (/\bsheet_count\b/.test(normalized)) return "sheet_count";
@@ -5241,6 +5358,12 @@ function inferFormulaQuantityBasis(formula: string): string {
   if (/\broll_nesting_billable_sqft\s*\(/.test(normalized)) return "roll_nesting_billable_sqft";
   if (/\bsheet_consumption_sqft\s*\(/.test(normalized)) return "sheet_consumption_sqft";
   return "unknown";
+}
+
+function findRollConsumptionVariableReference(formula: string): "consumed_linear_feet" | "billed_linear_feet" | null {
+  if (/\bbilled_linear_feet\b/i.test(formula)) return "billed_linear_feet";
+  if (/\bconsumed_linear_feet\b/i.test(formula)) return "consumed_linear_feet";
+  return null;
 }
 
 function formulaReferencesPricingRate(formula: string): boolean {
@@ -5298,7 +5421,7 @@ function buildPbv2PricingFormulaError(input: {
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
   const normalized = String(formula || '').toLowerCase();
   if (!normalized.trim()) return 'unknown';
-  if (/\b(quantity|q|hours|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized) || /\broll_nesting_billable_sqft\s*\(/.test(normalized)) {
+  if (/\b(quantity|q|hours|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft|consumed_linear_feet|billed_linear_feet)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized) || /\broll_nesting_billable_sqft\s*\(/.test(normalized)) {
     return 'totalPrice';
   }
   return 'unitPrice';

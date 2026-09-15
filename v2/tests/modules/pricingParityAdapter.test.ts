@@ -88,6 +88,39 @@ describe("M1.2 Pricing parity adapter", () => {
     expect(result.nestingEstimate?.facts.actualConsumedLinearFeet).toBe(3.875);
   });
 
+  test("roll-consumption formula uses canonical shared layout values and does not bill legacy linear feet", async () => {
+    const result = await adapter.calculate(requestFor({ id: "roll-linear-feet", quantity: 6, width: "10", height: "10", rules: {
+      base: { perSquareFootCents: decimalText("100") },
+      formula: {
+        id: "roll-linear-feet",
+        source: "embedded",
+        version: "v1",
+        contentHash: "sha256:roll-linear-feet",
+        expression: "billed_linear_feet * linear_foot_rate",
+        variables: {
+          printable_width: 54,
+          billing_width_increment: 12,
+          billing_length_increment: 12,
+          linear_foot_rate: 10,
+          billed_linear_feet: 999,
+        },
+      },
+    } }));
+
+    expect(result.calculatedLineAmount.cents).toBe(2000);
+    expect(result.formula?.variables.linear_feet).toBeCloseTo(10 / 12, 8);
+    expect(result.formula?.variables.consumed_linear_feet).toBeCloseTo(20 / 12, 6);
+    expect(result.formula?.variables.billed_linear_feet).toBe(2);
+    expect(result.formula?.variables.linear_foot_rate).toBe(10);
+  });
+
+  test("roll-consumption formula fails closed without canonical layout evidence or configuration", async () => {
+    await expect(adapter.calculate(requestFor({ id: "roll-linear-feet-missing-layout", quantity: 1, width: "10", height: "10", rules: {
+      base: { perSquareFootCents: decimalText("100") },
+      formula: { id: "roll-linear-feet", source: "embedded", version: "v1", contentHash: "sha256:roll-linear-feet", expression: "billed_linear_feet * linear_foot_rate", variables: { linear_foot_rate: 10 } },
+    } }))).rejects.toThrow(/canonical roll layout/i);
+  });
+
   test("Coroplast rotation changes supplied sheet evidence and therefore price", async () => {
     const withoutRotation = estimatePricingSheetUsage({ pieceWidthIn: 24, pieceHeightIn: 36, quantity: 5, sheetWidthIn: 48, sheetLengthIn: 96, usableDropMinimumIn: 0, billableLengthIncrementIn: 1, minimumBillableSqft: 32, allowRotation: false });
     const withRotation = estimatePricingSheetUsage({ pieceWidthIn: 24, pieceHeightIn: 36, quantity: 5, sheetWidthIn: 48, sheetLengthIn: 96, usableDropMinimumIn: 0, billableLengthIncrementIn: 1, minimumBillableSqft: 32, allowRotation: true });

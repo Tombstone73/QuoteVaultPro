@@ -211,8 +211,10 @@ export function calculateRollMediaLayout(input: RollMediaLayoutInput): RollMedia
     rotated = null;
   }
 
-  if (!normal && rotated) return rotated;
-  if (!normal && !rotated) throw normalError;
+  if (!normal) {
+    if (rotated) return rotated;
+    throw normalError;
+  }
   if (!rotated) return normal;
   if (rotated.actualConsumedLengthIn < normal.actualConsumedLengthIn) return rotated;
   if (rotated.actualConsumedLengthIn > normal.actualConsumedLengthIn) return normal;

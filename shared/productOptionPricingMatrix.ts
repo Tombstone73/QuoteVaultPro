@@ -54,6 +54,8 @@ export const PBV2_PRICING_MATRIX_PROTECTED_VARIABLES = new Set([
   "sqft",
   "total_sqft",
   "linear_feet",
+  "consumed_linear_feet",
+  "billed_linear_feet",
   "finished_width",
   "fw",
   "finished_height",

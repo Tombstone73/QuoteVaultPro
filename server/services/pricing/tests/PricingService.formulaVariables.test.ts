@@ -96,6 +96,28 @@ describe("formula-scoped variables", () => {
     expect(result.unitPrice).toBeCloseTo(11, 2);
   });
 
+  test("roll pricing bills canonical billed length while exposing distinct consumed length", () => {
+    const result = runFormula(
+      "billed_linear_feet * linear_foot_rate",
+      10,
+      10,
+      6,
+      {
+        printable_width: 54,
+        billing_width_increment: 12,
+        billing_length_increment: 12,
+        linear_foot_rate: 10,
+      },
+    );
+
+    expect(result.totalPrice).toBeCloseTo(20, 8);
+    expect(result.derived?.linearFeet).toBeCloseTo(10 / 12, 8);
+    expect(result.derived?.consumedLinearFeet).toBeCloseTo(20 / 12, 6);
+    expect(result.derived?.billedLinearFeet).toBe(2);
+    expect(result.debug?.variables.billed_linear_feet).toBe(2);
+    expect(result.debug?.variables.consumed_linear_feet).toBeCloseTo(20 / 12, 6);
+  });
+
   // ── missing variable produces a clear error ────────────────────────────────
 
   test("referencing an undefined variable throws PBV2_FORMULA_ERROR", () => {
@@ -113,6 +135,23 @@ describe("formula-scoped variables", () => {
     );
     expect(err).not.toBeNull();
     expect(err.code).toBe("PBV2_FORMULA_ERROR");
+  });
+
+  test("roll-consumption formula fails clearly when canonical layout configuration is missing", () => {
+    const err = runFormulaExpectError(
+      "billed_linear_feet * linear_foot_rate",
+      10,
+      10,
+      1,
+      { linear_foot_rate: 10 },
+    );
+
+    expect(err.code).toBe("PBV2_FORMULA_ERROR");
+    expect(err.details[0]).toEqual(expect.objectContaining({
+      code: "PBV2_ROLL_LAYOUT_REQUIRED",
+      missingSymbol: "billed_linear_feet",
+    }));
+    expect(err.details[0].message).toContain("no dimensional fallback");
   });
 
   // ── existing formulas without variables still work ─────────────────────────
@@ -146,5 +185,23 @@ describe("formula-scoped variables", () => {
     // built-in base_price=1 (perSqftCents=100); variable base_price=999
     const result = runFormula("base_price * 1", 24, 36, 1, { base_price: 999 });
     expect(result.unitPrice).toBeCloseTo(1, 2);
+  });
+
+  test("formula variables cannot shadow canonical roll-consumption values", () => {
+    const result = runFormula(
+      "billed_linear_feet",
+      10,
+      10,
+      1,
+      {
+        printable_width: 54,
+        billing_width_increment: 12,
+        billing_length_increment: 12,
+        billed_linear_feet: 999,
+      },
+    );
+
+    expect(result.unitPrice).toBe(1);
+    expect(result.debug?.variables.billed_linear_feet).toBe(1);
   });
 });

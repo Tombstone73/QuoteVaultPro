@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { calculateRollMediaLayout, type RollMediaLayoutResult } from "../../../../shared/pbv2/rollMediaLayout.js";
 import { brandedId, canonicalJson, decimalText, money, type JsonValue } from "../shared/commercialValues.js";
 import {
   assertPricingCalculationRequest,
@@ -67,6 +68,41 @@ const evaluateResolvedFormula = (expression: string, variables: Record<string, n
 
 const numericFormulaVariables = (values: Readonly<Record<string, unknown>>): Record<string, number> =>
   Object.fromEntries(Object.entries(values).filter(([, value]) => typeof value === "number" && Number.isFinite(value)) as [string, number][]);
+const finiteVariable = (variables: Readonly<Record<string, number>>, keys: readonly string[]): number | undefined => {
+  for (const key of keys) {
+    const value = variables[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+};
+const canonicalRollLayout = (input: Readonly<{ variables: Readonly<Record<string, number>>; widthIn: number; heightIn: number; quantity: number }>): RollMediaLayoutResult | undefined => {
+  const printableWidthIn = finiteVariable(input.variables, ["printable_width", "printableWidth"]);
+  const billingWidthIncrementIn = finiteVariable(input.variables, ["billing_width_increment", "billingWidthIncrement"]);
+  const billingLengthIncrementIn = finiteVariable(input.variables, ["billing_length_increment", "billingLengthIncrement"]);
+  if (printableWidthIn == null || billingWidthIncrementIn == null || billingLengthIncrementIn == null) return undefined;
+  try {
+    return calculateRollMediaLayout({
+      finishedWidthIn: input.widthIn,
+      finishedHeightIn: input.heightIn,
+      quantity: input.quantity,
+      physicalRollWidthIn: finiteVariable(input.variables, ["physical_roll_width", "roll_width", "rollWidth"]),
+      printableWidthIn,
+      edgeWasteInPerSide: finiteVariable(input.variables, ["edge_waste_per_side", "edgeWasteInPerSide"]),
+      productionAllowanceXIn: finiteVariable(input.variables, ["piece_allowance_x", "production_allowance_x", "productionAllowanceX"]) ?? 0,
+      productionAllowanceYIn: finiteVariable(input.variables, ["piece_allowance_y", "production_allowance_y", "productionAllowanceY"]) ?? 0,
+      registrationWasteIn: finiteVariable(input.variables, ["registration_waste", "registrationWasteIn"]) ?? 0,
+      billingWidthIncrementIn,
+      billingLengthIncrementIn,
+      allowRotation: input.variables.allow_rotation,
+    });
+  } catch {
+    return undefined;
+  }
+};
+const rollConsumptionReference = (expression: string): "consumed_linear_feet" | "billed_linear_feet" | undefined =>
+  /\bbilled_linear_feet\b/iu.test(expression) ? "billed_linear_feet"
+    : /\bconsumed_linear_feet\b/iu.test(expression) ? "consumed_linear_feet"
+      : undefined;
 /**
  * V1 pricing works in decimal inches. Quantizing conversion at twelve decimal
  * places prevents binary mm/25.4 noise from changing an exact tier boundary,
@@ -120,11 +156,31 @@ export class V2PricingParityAdapter implements PricingPort {
     const unitPriceDollars = perPieceCents / 100;
     const nestingFacts = request.nestingEstimate?.facts ?? {};
     const billedSqft = typeof nestingFacts.billedSheetSqft === "number" ? nestingFacts.billedSheetSqft : typeof nestingFacts.billableSqft === "number" ? nestingFacts.billableSqft : 0;
-    const formulaVariables = {
-      ...numericFormulaVariables(rules.formula?.variables ?? {}),
+    const configuredFormulaVariables = numericFormulaVariables(rules.formula?.variables ?? {});
+    const layoutFromEvidence = request.nestingEstimate?.facts;
+    const evidenceConsumedLinearFeet = typeof layoutFromEvidence?.actualConsumedLinearFeet === "number"
+      ? layoutFromEvidence.actualConsumedLinearFeet
+      : typeof layoutFromEvidence?.actualConsumedLengthIn === "number"
+        ? layoutFromEvidence.actualConsumedLengthIn / 12
+        : undefined;
+    const evidenceBilledLinearFeet = typeof layoutFromEvidence?.billedLinearFeet === "number"
+      ? layoutFromEvidence.billedLinearFeet
+      : typeof layoutFromEvidence?.billingLengthIn === "number"
+        ? layoutFromEvidence.billingLengthIn / 12
+        : undefined;
+    const calculatedRollLayout = evidenceConsumedLinearFeet == null || evidenceBilledLinearFeet == null
+      ? canonicalRollLayout({ variables: configuredFormulaVariables, widthIn: width, heightIn: height, quantity: configuration.quantity })
+      : undefined;
+    const consumedLinearFeet = evidenceConsumedLinearFeet ?? calculatedRollLayout?.actualConsumedLinearFeet;
+    const billedLinearFeet = evidenceBilledLinearFeet ?? (calculatedRollLayout ? calculatedRollLayout.billingLengthIn / 12 : undefined);
+    const formulaVariables: Record<string, number> = {
+      ...configuredFormulaVariables,
       q: configuration.quantity,
       w: width,
       h: height,
+      // Kept for V1 compatibility only. It remains width ÷ 12 and is not a
+      // substitute for canonical roll consumption or billable roll length.
+      linear_feet: width / 12,
       sqft: quantityOnly ? 0 : width * height / 144,
       total_sqft: totalSqft,
       computed_sheets: computedSheets ?? 0,
@@ -134,6 +190,12 @@ export class V2PricingParityAdapter implements PricingPort {
       sheet_price: unitPriceDollars,
       unitPrice: unitPriceDollars,
     };
+    if (consumedLinearFeet != null) formulaVariables.consumed_linear_feet = consumedLinearFeet;
+    if (billedLinearFeet != null) formulaVariables.billed_linear_feet = billedLinearFeet;
+    const requiredRollVariable = rules.formula ? rollConsumptionReference(rules.formula.expression) : undefined;
+    if (requiredRollVariable && formulaVariables[requiredRollVariable] == null) {
+      throw new Error(`Pricing formula requires ${requiredRollVariable}, but canonical roll layout evidence/configuration is unavailable. Configure printable width and billing increments; no dimensional fallback is used.`);
+    }
 
     if (quantityOnly && rules.formula) warnings.push({ code: "QUANTITY_ONLY_FORMULA_IGNORED", message: "Quantity-only pricing used its resolved per-piece rate and ignored a stale area/formula path." });
     const rawBaseCents = rules.formula && !quantityOnly

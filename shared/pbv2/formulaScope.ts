@@ -2,6 +2,7 @@
  * Pure formula scope utilities for PBV2 pricing preview evaluation.
  * No DB or network dependencies — safe to import in unit tests.
  */
+import type { RollMediaLayoutResult } from "./rollMediaLayout";
 
 /**
  * Variables that user-configured formulaVariables cannot override.
@@ -45,6 +46,8 @@ export const FORMULA_VARIABLE_PROTECTED_KEYS = new Set([
   "total_sheet_count",
   "allow_rotation",
   "linear_feet",
+  "consumed_linear_feet",
+  "billed_linear_feet",
   "finished_width",
   "fw",
   "finished_height",
@@ -89,6 +92,8 @@ export const MATRIX_VARIABLE_PROTECTED_KEYS = new Set([
   "total_sheet_count",
   "allow_rotation",
   "linear_feet",
+  "consumed_linear_feet",
+  "billed_linear_feet",
   "finished_width",
   "fw",
   "finished_height",
@@ -129,6 +134,11 @@ export function buildFormulaScope(input: {
   partialSheetBillableSqft?: number | null;
   totalSheetCount?: number | null;
   allowRotation?: boolean | null;
+  /**
+   * Canonical roll-media layout. When unavailable, roll-consumption pricing
+   * variables are intentionally omitted rather than guessed from geometry.
+   */
+  rollLayout?: RollMediaLayoutResult | null;
 }): Record<string, number | string | boolean | null> {
   const scope: Record<string, number | string | boolean | null> = {
     width: input.orderedWidthIn,
@@ -163,6 +173,11 @@ export function buildFormulaScope(input: {
     allow_rotation: input.allowRotation ?? false,
     linear_feet: input.linearFeet,
   };
+
+  if (input.rollLayout) {
+    scope.consumed_linear_feet = input.rollLayout.actualConsumedLinearFeet;
+    scope.billed_linear_feet = input.rollLayout.billingLengthIn / 12;
+  }
 
   const sheetYieldEntries: Array<[string, number | null | undefined]> = [
     ["computed_sheets", input.computedSheets],
