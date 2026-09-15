@@ -1,5 +1,7 @@
 # PrintersHero Windows Traveler Print Agent
 
+Version 1.0.21
+
 This is the shop-side, outbound-only agent for **Traveler** tickets. It runs
 in the logged-in Windows session because Edge WebView2 and Windows printer
 drivers must use that session. It never listens on the LAN and the cloud never
@@ -16,8 +18,10 @@ paired capability topic. When PrintersHero durably queues a Traveler, it sends
 a data-free `queue_changed` wake signal. The agent then checks its authenticated
 queue once, claims, renders, and prints serially. It makes no recurring HTTP
 queue poll or heartbeat request to PrintersHero while idle. A reconnect performs
-one catch-up queue check, so the durable PostgreSQL queue remains authoritative
-if a wake is missed.
+one catch-up queue check only after Supabase Realtime automatically rejoins the
+wake channel, so the durable PostgreSQL queue remains authoritative if a wake is
+missed. If the initial Realtime connection is unavailable, the agent retries it
+locally with capped backoff and does not call PrintersHero until subscribed.
 
 ## Shop workstation setup
 

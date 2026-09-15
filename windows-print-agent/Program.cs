@@ -17,7 +17,7 @@ record Job(string id, string orderId, int copies, string? printNote, decimal tra
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.20";
+  const string AgentVersion = "1.0.21";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -32,6 +32,8 @@ static class Program {
   static readonly SemaphoreSlim QueueDrainGate = new(1, 1);
   static int QueueDrainRequested;
   static int RealtimeOpenCount;
+  static int RealtimeInitialSubscriptionComplete;
+  static int RealtimeReconnectCatchupPending;
   static Client? RealtimeClient;
   [STAThread] static void Main(string[] args) {
     if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; }
@@ -61,22 +63,71 @@ static class Program {
     return builder.Uri.ToString();
   }
   static async Task StartRealtimeWakeSubscriber() {
-    var options = new ClientOptions();
-    RealtimeClient = new Client(GetRealtimeEndpoint(), options);
-    RealtimeClient.AddStateChangedHandler((client, state) => {
-      if (state != Supabase.Realtime.Constants.SocketState.Open) return;
-      var connection = Interlocked.Increment(ref RealtimeOpenCount);
-      if (connection > 1) _ = RequestQueueDrain("realtime reconnect catch-up");
-    });
-    var channel = RealtimeClient.Channel(GetWakeTopic());
-    var broadcast = channel.Register<QueueChangedBroadcast>(broadcastSelf: false, broadcastAck: false);
-    broadcast.AddBroadcastEventHandler((sender, response) => {
-      if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) _ = RequestQueueDrain("realtime queue_changed wake");
-    });
-    await RealtimeClient.ConnectAsync();
-    await channel.Subscribe();
-    Log("Supabase Realtime wake subscription established.");
-    await RequestQueueDrain("realtime startup catch-up");
+    var retryDelaySeconds = 3;
+    while (true) {
+      try {
+        Interlocked.Exchange(ref RealtimeOpenCount, 0);
+        Interlocked.Exchange(ref RealtimeInitialSubscriptionComplete, 0);
+        Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0);
+        RealtimeClient = new Client(GetRealtimeEndpoint(), new ClientOptions());
+        RealtimeClient.AddStateChangedHandler((_, state) => {
+          switch (state) {
+            case Supabase.Realtime.Constants.SocketState.Open:
+              var connection = Interlocked.Increment(ref RealtimeOpenCount);
+              Log("Supabase Realtime connected.");
+              if (connection > 1 && Volatile.Read(ref RealtimeInitialSubscriptionComplete) == 1) {
+                Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 1);
+              }
+              break;
+            case Supabase.Realtime.Constants.SocketState.Reconnect:
+              Log("Supabase Realtime reconnecting.");
+              break;
+            case Supabase.Realtime.Constants.SocketState.Close:
+            case Supabase.Realtime.Constants.SocketState.Error:
+              Log("Supabase Realtime disconnected.");
+              break;
+          }
+        });
+
+        Log("Supabase Realtime connecting.");
+        await RealtimeClient.ConnectAsync();
+        if (RealtimeClient.Socket is null || !RealtimeClient.Socket.IsConnected) throw new InvalidOperationException("Supabase Realtime did not reach an open socket state.");
+
+        // Supabase.Realtime 7.4.0 requires ConnectAsync to create the socket
+        // before Channel/Register/Subscribe. The channel itself automatically
+        // rejoins after a later socket reconnect once it has joined successfully.
+        var channel = RealtimeClient.Channel(GetWakeTopic());
+        channel.AddStateChangedHandler((channelSender, state) => {
+          if (state != Supabase.Realtime.Constants.ChannelState.Joined || Volatile.Read(ref RealtimeInitialSubscriptionComplete) != 1) return;
+          if (Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0) == 1) _ = CompleteReconnectCatchup();
+        });
+        var broadcast = channel.Register<QueueChangedBroadcast>(broadcastSelf: false, broadcastAck: false);
+        broadcast.AddBroadcastEventHandler((broadcastSender, response) => {
+          if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) {
+            Log("Realtime queue_changed wake received.");
+            _ = RequestQueueDrain("realtime queue_changed wake");
+          }
+        });
+        await channel.Subscribe();
+        Volatile.Write(ref RealtimeInitialSubscriptionComplete, 1);
+        Log("Supabase Realtime wake subscription established.");
+        await RequestQueueDrain("realtime startup catch-up");
+        Log("Queue catch-up completed.");
+        return;
+      } catch (Exception ex) {
+        RealtimeClient = null;
+        Log($"Supabase Realtime startup failed; retrying locally in {retryDelaySeconds} seconds: {ex.Message}");
+        await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds));
+        retryDelaySeconds = Math.Min(retryDelaySeconds * 2, 30);
+      }
+    }
+  }
+  static async Task CompleteReconnectCatchup() {
+    try {
+      Log("Supabase Realtime wake subscription restored.");
+      await RequestQueueDrain("realtime reconnect catch-up");
+      Log("Reconnect queue catch-up completed.");
+    } catch (Exception ex) { Log($"Reconnect queue catch-up failed: {ex.Message}"); }
   }
   static async Task RequestQueueDrain(string reason) {
     Interlocked.Exchange(ref QueueDrainRequested, 1);

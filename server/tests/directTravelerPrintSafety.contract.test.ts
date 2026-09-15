@@ -127,6 +127,17 @@ describe("direct Traveler printing safety contract", () => {
     expect(profileForm).toContain("Added after the standard 38.1 mm / 1.5 in tear-off space.");
     expect(agent).toContain("CultureInfo.InvariantCulture");
     expect(agent).toContain("Effective trailing feed:");
+    expect(agent).toContain("const decimal BaseTravelerTrailingFeedMm = 38.1m");
+    expect(agent).toContain("BaseTravelerTrailingFeedMm + additionalFeedMm");
+  });
+
+  test("keeps the standard tear-off space plus only the configured additional feed", () => {
+    const effectiveFeed = (additional: number) => 38.1 + Math.min(Math.max(additional, 0), 100);
+
+    expect(effectiveFeed(0)).toBeCloseTo(38.1, 6);
+    expect(effectiveFeed(12.7)).toBeCloseTo(50.8, 6);
+    expect(effectiveFeed(25)).toBeCloseTo(63.1, 6);
+    expect(effectiveFeed(100)).toBeCloseTo(138.1, 6);
   });
 
   test("queues durable work independently of freshness and then sends a data-free wake", () => {

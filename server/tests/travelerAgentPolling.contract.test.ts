@@ -9,7 +9,7 @@ describe("Traveler print agent event-driven wake contract", () => {
 
   test("uses Supabase Realtime directly and never schedules a recurring Railway poll or heartbeat", () => {
     expect(project).toContain('PackageReference Include="Supabase.Realtime"');
-    expect(agent).toContain("new Client(GetRealtimeEndpoint(), options)");
+    expect(agent).toContain("new Client(GetRealtimeEndpoint(), new ClientOptions())");
     expect(agent).toContain("/realtime/v1/websocket");
     expect(agent).not.toContain("QueuePollIntervalMs");
     expect(agent).not.toContain("HeartbeatIntervalMs");
@@ -33,6 +33,28 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).toContain("await QueueDrainGate.WaitAsync(0)");
     expect(agent).toContain("foreach (var job in jobs ?? [])");
     expect(agent).toContain("await Print(job);");
+  });
+
+  test("connects the 7.4.0 socket before creating the wake channel and retries initial Realtime failures locally", () => {
+    const connect = agent.indexOf("await RealtimeClient.ConnectAsync()");
+    const channel = agent.indexOf("RealtimeClient.Channel(GetWakeTopic())");
+
+    expect(connect).toBeGreaterThan(-1);
+    expect(channel).toBeGreaterThan(connect);
+    expect(agent).toContain("RealtimeClient.Socket is null || !RealtimeClient.Socket.IsConnected");
+    expect(agent).toContain("Supabase Realtime startup failed; retrying locally");
+    expect(agent).toContain("await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds))");
+    expect(agent).toContain("Math.Min(retryDelaySeconds * 2, 30)");
+  });
+
+  test("waits for the automatically rejoined channel before one reconnect catch-up and never duplicates initial open", () => {
+    expect(agent).toContain("channel.AddStateChangedHandler");
+    expect(agent).toContain("ChannelState.Joined");
+    expect(agent).toContain("RealtimeInitialSubscriptionComplete");
+    expect(agent).toContain("RealtimeReconnectCatchupPending");
+    expect(agent).toContain("connection > 1 && Volatile.Read(ref RealtimeInitialSubscriptionComplete) == 1");
+    expect(agent).toContain("Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0) == 1");
+    expect(agent).toContain("Supabase Realtime wake subscription restored.");
   });
 
   test("keeps safe non-sensitive pipeline diagnostics", () => {

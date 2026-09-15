@@ -41,7 +41,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.20'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.21'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -59,7 +59,7 @@ describe("Traveler print agent installer contract", () => {
     expect(agent).toContain("__printersHeroTravelerSource");
     expect(agent).toContain("source request:");
     expect(agent).toContain("JsonSerializer.Deserialize<string>(pageStateJson)");
-    expect(agent).toContain('const string AgentVersion = "1.0.20"');
+    expect(agent).toContain('const string AgentVersion = "1.0.21"');
     expect(setup).toContain("PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY");
     expect(setup).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
     expect(agent).toContain("Traveler navigation host:");
@@ -99,6 +99,7 @@ describe("Traveler print agent installer contract", () => {
     expect(project).toContain('None Update="scripts\\manage-agent-task.ps1" CopyToPublishDirectory="PreserveNewest"');
     expect(project).toContain('None Update="scripts\\start-agent.ps1" CopyToPublishDirectory="PreserveNewest"');
     expect(project).toContain('None Update="README.txt" CopyToPublishDirectory="PreserveNewest"');
+    expect(read("windows-print-agent/scripts/build-release.ps1")).toContain("PrintersHero-Traveler-Print-Agent-win-x64.zip");
   });
 
   test("serves the Traveler package separately from the legacy file-copy agent", () => {

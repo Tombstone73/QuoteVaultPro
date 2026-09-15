@@ -1,4 +1,4 @@
-PrintersHero Traveler Print Agent
+PrintersHero Traveler Print Agent 1.0.21
 
 1. Extract this complete folder to a stable local location.
 2. Create a Local Bridge / Print Agent pairing token in PrintersHero Settings.
