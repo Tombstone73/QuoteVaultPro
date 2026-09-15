@@ -268,6 +268,7 @@ describe("fulfillment operational workflow helpers", () => {
       pickupRepo: {} as any,
       dbInstance: fakeDb as any,
       billingAutomationService: billingAutomationService as any,
+      autoCloseReconciler: jest.fn(async () => null),
     });
 
     await expect((service as any).ensureTerminalBilling({
@@ -324,6 +325,7 @@ describe("fulfillment operational workflow helpers", () => {
       pickupRepo: {} as any,
       dbInstance: { select } as any,
       billingAutomationService: { ensureOrderBackedInvoiceForOrderTrigger: jest.fn(async () => ({ status: "skipped" })) } as any,
+      autoCloseReconciler: jest.fn(async () => null),
     });
     await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).resolves.toMatchObject({ id: "shipment-1" });
     expect(fakeShipmentRepo.markShipped).toHaveBeenCalled();

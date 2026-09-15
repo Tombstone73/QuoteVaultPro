@@ -60,7 +60,7 @@ export function getOrderJobStatus(input: {
 }) {
   if (!input.orderId) return "No linked Order";
   if (String(input.orderState || "").toLowerCase() === "canceled") return "Cancelled";
-  if (String(input.orderState || "").toLowerCase() === "closed") return "Operationally Complete";
+  if (String(input.orderState || "").toLowerCase() === "closed") return "Closed";
   if (terminalFulfillmentStates.has(String(input.orderFulfillmentStatus || "").toLowerCase())) return "Fulfillment Complete";
   if (String(input.orderState || "").toLowerCase() === "production_complete") return "Production Complete";
   const value = input.orderStatusPillValue || input.orderStatus || input.orderState || "Open";

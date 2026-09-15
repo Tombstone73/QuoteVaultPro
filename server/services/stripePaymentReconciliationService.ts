@@ -213,7 +213,7 @@ export async function captureAndApply(input: StripePaymentObservationInput): Pro
 export async function retryByEvent(eventId: string): Promise<StripePaymentReconciliationResult> {
   const normalizedEventId = required(textOrNull(eventId), "STRIPE_EVENT_ID_REQUIRED", "Stripe event id is required.");
   try {
-    return await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       await lock(tx, `stripe-webhook:${normalizedEventId}`);
       const [event] = await tx.select().from(paymentWebhookEvents).where(and(
         eq(paymentWebhookEvents.provider, "stripe"),
@@ -433,6 +433,24 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
         invoiceId: reconciled?.updated?.id ? String(reconciled.updated.id) : invoiceId,
       };
     });
+    // This is the shared durable Stripe-payment boundary. Skip duplicate
+    // webhook deliveries so a later staff reopen is never immediately undone.
+    if (!result.alreadyProcessed && result.effect === "succeeded" && result.invoiceId) {
+      const [invoice] = await db.select({ organizationId: invoices.organizationId, orderId: invoices.orderId })
+        .from(invoices)
+        .where(eq(invoices.id, result.invoiceId))
+        .limit(1);
+      if (invoice?.orderId) {
+        const { reconcileOrderAutoCloseFailSoft } = await import("./orderAutoCloseService");
+        await reconcileOrderAutoCloseFailSoft({
+          organizationId: String(invoice.organizationId),
+          orderId: String(invoice.orderId),
+          source: "stripe_payment",
+          metadata: { eventId: normalizedEventId, invoiceId: result.invoiceId, paymentId: result.paymentId },
+        });
+      }
+    }
+    return result;
   } catch (error: any) {
     // Keep the captured observation retryable. The error update is intentionally
     // outside the failed transaction, while the financial effect itself never is.

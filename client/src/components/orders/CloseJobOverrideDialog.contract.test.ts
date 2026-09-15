@@ -15,3 +15,8 @@ test('Close Job Override turns structured backend failures into an operator-safe
   expect(source).toContain('one or more physical line items still need production completion');
   expect(source).toContain('description: overrideErrorDescription(error)');
 });
+
+test('closed Orders display Closed ahead of their terminal fulfillment history', () => {
+  expect(source).toContain('orderState || "").toLowerCase() === "closed") return "Closed"');
+  expect(source.indexOf('return "Closed"')).toBeLessThan(source.indexOf('return "Fulfillment Complete"'));
+});

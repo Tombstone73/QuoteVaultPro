@@ -829,7 +829,12 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
   const updatedPayment = resultRecord.payment;
   // This repeat is now only the existing post-commit workflow-pillar hook; the
   // payment record and persisted invoice rollup were committed together above.
-  const updatedInvoice = await refreshInvoiceStatus(String((updatedPayment as any).invoiceId));
+  const updatedInvoice = await refreshInvoiceStatus(String((updatedPayment as any).invoiceId), {
+    reconcileOrderAutoClose: result === "approved",
+    actorUserId: input.actor?.userId ?? null,
+    actorUserName: input.actor?.userName ?? null,
+    source: "eps_hosted_payment",
+  });
   const invoiceName = String((updatedInvoice as any)?.invoiceNumber || (updatedPayment as any).invoiceId || "");
   const amountOverride = result === "approved" && approvedAmountCents !== resultRecord.pendingAmountCents;
   const auditValues = {
@@ -938,7 +943,7 @@ export async function createTokenSale(input: {
     idempotencyKey,
     actor: input.actor,
   });
-  if (response.approved) await refreshInvoiceStatus(input.invoiceId);
+  if (response.approved) await refreshInvoiceStatus(input.invoiceId, { reconcileOrderAutoClose: true, actorUserId: input.actor?.userId ?? null, actorUserName: input.actor?.userName ?? null, source: "eps_token_payment" });
   await audit({
     organizationId: input.organizationId,
     actor: input.actor,
@@ -985,7 +990,7 @@ export async function createCardPresentSale(input: {
     idempotencyKey,
     actor: input.actor,
   });
-  if (response.approved) await refreshInvoiceStatus(input.invoiceId);
+  if (response.approved) await refreshInvoiceStatus(input.invoiceId, { reconcileOrderAutoClose: true, actorUserId: input.actor?.userId ?? null, actorUserName: input.actor?.userName ?? null, source: "eps_card_present_payment" });
   await audit({
     organizationId: input.organizationId,
     actor: input.actor,
@@ -1112,7 +1117,7 @@ export async function createGiftCardSale(input: {
     idempotencyKey,
     actor: input.actor,
   });
-  if (response.approved) await refreshInvoiceStatus(input.invoiceId);
+  if (response.approved) await refreshInvoiceStatus(input.invoiceId, { reconcileOrderAutoClose: true, actorUserId: input.actor?.userId ?? null, actorUserName: input.actor?.userName ?? null, source: "eps_gift_card_payment" });
   await audit({
     organizationId: input.organizationId,
     actor: input.actor,
@@ -1192,7 +1197,7 @@ export async function runEpsFollowOn(input: {
     notes: `EPS ${input.action} for transaction ${transactionId}`,
   });
 
-  if (response.approved) await refreshInvoiceStatus(input.invoiceId);
+  if (response.approved) await refreshInvoiceStatus(input.invoiceId, { reconcileOrderAutoClose: input.action === "capture", actorUserId: input.actor?.userId ?? null, actorUserName: input.actor?.userName ?? null, source: "eps_payment_capture" });
   await audit({
     organizationId: input.organizationId,
     actor: input.actor,

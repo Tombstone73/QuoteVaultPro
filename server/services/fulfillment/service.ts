@@ -7,6 +7,7 @@ import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
+import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
@@ -24,6 +25,7 @@ export class FulfillmentService {
   private readonly dashboardRepo: FulfillmentDashboardRepo;
   private readonly dbInstance: typeof db;
   private readonly billingAutomationService: typeof billingInvoiceAutomationService;
+  private readonly autoCloseReconciler: typeof reconcileOrderAutoCloseFailSoft;
 
   constructor(deps?: {
     shipmentRepo?: ShipmentRepo;
@@ -31,12 +33,14 @@ export class FulfillmentService {
     dashboardRepo?: FulfillmentDashboardRepo;
     dbInstance?: typeof db;
     billingAutomationService?: typeof billingInvoiceAutomationService;
+    autoCloseReconciler?: typeof reconcileOrderAutoCloseFailSoft;
   }) {
     this.dbInstance = deps?.dbInstance ?? db;
     this.shipmentRepo = deps?.shipmentRepo ?? new ShipmentRepo(this.dbInstance);
     this.pickupRepo = deps?.pickupRepo ?? new PickupRepo(this.dbInstance);
     this.dashboardRepo = deps?.dashboardRepo ?? new FulfillmentDashboardRepo(this.dbInstance);
     this.billingAutomationService = deps?.billingAutomationService ?? billingInvoiceAutomationService;
+    this.autoCloseReconciler = deps?.autoCloseReconciler ?? reconcileOrderAutoCloseFailSoft;
   }
 
   private canOverridePickupReady(actorRole?: string | null): boolean {
@@ -64,6 +68,17 @@ export class FulfillmentService {
     return result;
   }
 
+  private async reconcileOrderAutoCloseAfterFulfillment(orgId: string, orderId: string, actorUserId: string | null | undefined, source: string, metadata?: Record<string, unknown>) {
+    return this.autoCloseReconciler({
+      organizationId: orgId,
+      orderId,
+      actorUserId: actorUserId ?? null,
+      actorUserName: 'System',
+      source,
+      metadata,
+    });
+  }
+
   async reconcileTerminalBilling(orgId: string, orderId: string, actorUserId?: string | null) {
     const [order] = await this.dbInstance.select({ id: orders.id, fulfillmentStatus: orders.fulfillmentStatus })
       .from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
@@ -71,7 +86,9 @@ export class FulfillmentService {
     if (!['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
       throw new FulfillmentHttpError(409, 'Billing reconciliation is available after terminal fulfillment only.', 'FULFILLMENT_NOT_TERMINAL');
     }
-    return this.ensureTerminalBilling({ organizationId: orgId, orderId, trigger: 'picked_up_or_shipped', sourceEvent: 'FULFILLMENT_BILLING_RECONCILILED', actorUserId });
+    const billing = await this.ensureTerminalBilling({ organizationId: orgId, orderId, trigger: 'picked_up_or_shipped', sourceEvent: 'FULFILLMENT_BILLING_RECONCILILED', actorUserId });
+    await this.reconcileOrderAutoCloseAfterFulfillment(orgId, orderId, actorUserId, 'terminal_fulfillment_billing_reconciliation');
+    return billing;
   }
 
   /** Read-only preview used by the Close Job Override confirmation. */
@@ -249,6 +266,9 @@ export class FulfillmentService {
       } as any);
     });
 
+    await this.reconcileOrderAutoCloseAfterFulfillment(orgId, input.orderId, input.actorUserId, 'historical_fulfillment_reconciliation', {
+      sourceInvoiceId: input.sourceInvoiceId ?? null,
+    });
     return { alreadyCompleted: false, remainingFulfillmentQuantity, reconciliationNote };
   }
 
@@ -735,6 +755,7 @@ export class FulfillmentService {
           actorUserId,
         }));
       }
+      await this.reconcileOrderAutoCloseAfterFulfillment(orgId, orderId, actorUserId, 'shipment_shipped', { shipmentId });
     }
     return { ...(result.shipment as any), billingAutomation: billingAutomationResults };
   }
@@ -975,6 +996,7 @@ export class FulfillmentService {
     if (!result.ok) throw new FulfillmentHttpError(result.code === 'NOT_FOUND' ? 404 : 409, result.message, result.code);
     const billingAutomation = await this.ensureTerminalBilling({ organizationId: orgId, orderId: ticketWithOrder.orderId,
       trigger: 'picked_up_or_shipped', sourceEvent: 'PICKUP_HANDOFF_RECORDED', actorUserId });
+    await this.reconcileOrderAutoCloseAfterFulfillment(orgId, ticketWithOrder.orderId, actorUserId, 'pickup_handoff_recorded', { ticketId });
     return { ...result, billingAutomation };
   }
 }

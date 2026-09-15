@@ -13,6 +13,7 @@ test('Customer Detail invoice sort fields remain explicitly allowlisted and serv
   expect(invoiceService).toContain("case 'balance':");
   expect(invoiceService).toContain("when ${invoices.accountingApprovedAt} is not null");
   expect(invoiceService).toContain("when ${invoices.orderId} is null then 'no linked order'");
+  expect(invoiceService).toContain("when lower(coalesce(${orders.state}, '')) = 'closed' then 'closed'");
   expect(invoiceService).toContain("return 'issueDate';");
 });
 

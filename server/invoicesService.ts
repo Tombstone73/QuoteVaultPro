@@ -376,7 +376,7 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
       return sql`case
         when ${invoices.orderId} is null then 'no linked order'
         when lower(coalesce(${orders.state}, '')) = 'canceled' then 'cancelled'
-        when lower(coalesce(${orders.state}, '')) = 'closed' then 'operationally complete'
+        when lower(coalesce(${orders.state}, '')) = 'closed' then 'closed'
         when lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered') then 'fulfillment complete'
         when lower(coalesce(${orders.state}, '')) = 'production_complete' then 'production complete'
         else lower(coalesce(${orders.statusPillValue}, ${orders.status}, ${orders.state}, 'open'))
@@ -1554,11 +1554,22 @@ export async function recordManualPaymentCanonical(input: {
     return { payment, becamePaid: String(nextState.status).toLowerCase() === "paid", orderId: invoice.orderId ? String(invoice.orderId) : null, reused: false };
   });
 
-  if (result.becamePaid && result.orderId) {
+  // An idempotency replay must not immediately undo a deliberate staff reopen.
+  // Only the newly committed manual payment is a reconciliation trigger.
+  if (result.becamePaid && result.orderId && !result.reused) {
     const { applyWorkflowStatusPillFailSoft } = await import('./services/workflowStatusPillService');
     await applyWorkflowStatusPillFailSoft({
       organizationId: input.organizationId, orderId: result.orderId, triggerKey: 'payment_received', actorUserId: input.userId,
       actorUserName: 'System', source: 'system', reason: 'Invoice paid', metadata: { invoiceId: input.invoiceId, paymentId: result.payment.id },
+    });
+    const { reconcileOrderAutoCloseFailSoft } = await import('./services/orderAutoCloseService');
+    await reconcileOrderAutoCloseFailSoft({
+      organizationId: input.organizationId,
+      orderId: result.orderId,
+      actorUserId: input.userId,
+      actorUserName: 'System',
+      source: 'manual_payment',
+      metadata: { invoiceId: input.invoiceId, paymentId: result.payment.id },
     });
   }
   return result.payment;
@@ -1662,7 +1673,12 @@ export async function voidManualPaymentCanonical(input: {
   });
 }
 
-export async function refreshInvoiceStatus(id: string) {
+export async function refreshInvoiceStatus(id: string, options?: {
+  reconcileOrderAutoClose?: boolean;
+  actorUserId?: string | null;
+  actorUserName?: string | null;
+  source?: string;
+}) {
   const result = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-rollup:${id}`}))`);
     const [invoice] = await tx.select({ organizationId: invoices.organizationId }).from(invoices).where(eq(invoices.id, id)).limit(1);
@@ -1678,6 +1694,17 @@ export async function refreshInvoiceStatus(id: string) {
       triggerKey: 'payment_received', actorUserId: String((invoice as any).createdByUserId), actorUserName: 'System',
       source: 'system', reason: 'Invoice paid', metadata: { invoiceId: id },
     });
+    if (options?.reconcileOrderAutoClose) {
+      const { reconcileOrderAutoCloseFailSoft } = await import('./services/orderAutoCloseService');
+      await reconcileOrderAutoCloseFailSoft({
+        organizationId: String((invoice as any).organizationId),
+        orderId: String((invoice as any).orderId),
+        actorUserId: options.actorUserId ?? null,
+        actorUserName: options.actorUserName ?? 'System',
+        source: options.source ?? 'invoice_payment_reconciliation',
+        metadata: { invoiceId: id },
+      });
+    }
   }
   return updated;
 }

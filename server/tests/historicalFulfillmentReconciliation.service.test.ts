@@ -96,6 +96,7 @@ test("historical reconciliation completes fulfilled-only backlog without billing
     shipmentRepo: {} as any,
     pickupRepo: {} as any,
     billingAutomationService: billingAutomationService as any,
+    autoCloseReconciler: jest.fn(async () => null),
   });
 
   await expect(service.reconcileHistoricalFulfillment("org-1", {
