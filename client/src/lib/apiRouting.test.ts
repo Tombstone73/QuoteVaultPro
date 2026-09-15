@@ -27,6 +27,17 @@ describe("deployment-bound API routing", () => {
     expect(resolveApiOriginForWebHost("localhost", "")).toBe("");
   });
 
+  it("builds Local Bridge agent downloads against the canonical API origin in both deployments", () => {
+    const travelerPackage = "/api/local-bridge/admin/traveler-print-agent-package";
+    const legacyPackage = "/api/local-bridge/admin/agent-package";
+    expect(`${expectedApiOriginForWebHost("www.printershero.com")}${travelerPackage}`)
+      .toBe("https://api.printershero.com/api/local-bridge/admin/traveler-print-agent-package");
+    expect(`${expectedApiOriginForWebHost("dev.printershero.com")}${travelerPackage}`)
+      .toBe("https://api-dev.printershero.com/api/local-bridge/admin/traveler-print-agent-package");
+    expect(`${expectedApiOriginForWebHost("www.printershero.com")}${legacyPackage}`)
+      .toBe("https://api.printershero.com/api/local-bridge/admin/agent-package");
+  });
+
   it("does not retain a Vercel rewrite capable of sending application traffic to DEV", () => {
     const vercelConfig = readFileSync("vercel.json", "utf8");
     expect(vercelConfig).not.toContain("api-dev.printershero.com");

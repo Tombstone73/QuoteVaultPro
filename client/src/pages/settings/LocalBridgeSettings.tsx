@@ -2,9 +2,15 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { apiUrl } from "@/lib/apiConfig";
 import { apiFetch, apiRequest } from "@/lib/queryClient";
 
 async function readJson<T>(url: string): Promise<T> { const response = await apiFetch(url); if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<T>; }
+
+// These must target the deployment's API origin, not the Vercel web host.
+// The endpoints retain their existing authenticated Local Bridge admin middleware.
+const travelerAgentDownloadUrl = apiUrl("/api/local-bridge/admin/traveler-print-agent-package");
+const legacyBridgeAgentDownloadUrl = apiUrl("/api/local-bridge/admin/agent-package");
 
 function isAgentOnline(agent: any) {
   return Boolean(agent.machineLabel && agent.configuredTravelerPrinterName && agent.lastSeenAt && Date.now() - new Date(agent.lastSeenAt).getTime() < 5 * 60_000);
@@ -51,13 +57,13 @@ export default function LocalBridgeSettings() {
       <div className="space-y-2 rounded border p-4">
         <h3 className="font-medium">Traveler Print Agent</h3>
         <p className="text-sm text-muted-foreground">Download the self-contained Windows agent used to print Travelers to a configured local printer. It includes the .NET runtime; WebView2 and the printer driver remain workstation requirements.</p>
-        <Button asChild><a href="/api/local-bridge/admin/traveler-print-agent-package">Download Traveler Print Agent</a></Button>
+        <Button asChild><a href={travelerAgentDownloadUrl}>Download Traveler Print Agent</a></Button>
         <ol className="list-decimal pl-5 text-sm"><li>Extract the ZIP to a stable local folder on the print workstation.</li><li>Run setup-agent.cmd.</li><li>Select the Traveler printer and paste a newly created pairing token.</li><li>Confirm this page shows Online.</li></ol>
       </div>
       <div className="space-y-2 rounded border p-4">
         <h3 className="font-medium">Legacy Local Bridge Agent</h3>
         <p className="text-sm text-muted-foreground">This small Node.js agent copies customer artwork to local folders. It does not print Travelers.</p>
-        <Button variant="outline" asChild><a href="/api/local-bridge/admin/agent-package">Download Legacy Local Bridge Agent</a></Button>
+        <Button variant="outline" asChild><a href={legacyBridgeAgentDownloadUrl}>Download Legacy Local Bridge Agent</a></Button>
         <ol className="list-decimal pl-5 text-sm"><li>Download and extract the bridge package.</li><li>Run it on a shop PC or server.</li><li>Enter the API base URL and bridge token.</li><li>Confirm this page shows Online.</li></ol>
       </div>
       <div className="space-y-3 rounded border p-4">

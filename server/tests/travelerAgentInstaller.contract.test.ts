@@ -12,6 +12,7 @@ describe("Traveler print agent installer contract", () => {
   const launcherScript = read("windows-print-agent/scripts/start-agent.ps1");
   const routes = read("server/routes/localBridge.routes.ts");
   const localBridgeSettings = read("client/src/pages/settings/LocalBridgeSettings.tsx");
+  const packageCopy = read("scripts/copy-print-agent-package.mjs");
 
   test("uses Microsoft's documented WebView2 runtime registration, not a browser executable", () => {
     expect(setup).toContain("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
@@ -110,6 +111,25 @@ describe("Traveler print agent installer contract", () => {
     expect(localBridgeSettings).toContain('Traveler printer:');
     expect(localBridgeSettings).toContain('Awaiting setup');
     expect(routes).toContain('eq(localBridgeAgents.status, "active")');
+  });
+
+  test("routes both authenticated agent downloads to the deployment's canonical API origin", () => {
+    expect(localBridgeSettings).toContain('import { apiUrl } from "@/lib/apiConfig"');
+    expect(localBridgeSettings).toContain('const travelerAgentDownloadUrl = apiUrl("/api/local-bridge/admin/traveler-print-agent-package")');
+    expect(localBridgeSettings).toContain('const legacyBridgeAgentDownloadUrl = apiUrl("/api/local-bridge/admin/agent-package")');
+    expect(localBridgeSettings).toContain('href={travelerAgentDownloadUrl}');
+    expect(localBridgeSettings).toContain('href={legacyBridgeAgentDownloadUrl}');
+    expect(localBridgeSettings).not.toContain('href="/api/local-bridge/admin/traveler-print-agent-package"');
+    expect(localBridgeSettings).not.toContain('href="/api/local-bridge/admin/agent-package"');
+    expect(localBridgeSettings).not.toContain('react-router-dom');
+    expect(routes).toContain('app.get("/api/local-bridge/admin/traveler-print-agent-package", ...admin');
+    expect(routes).toContain('app.get("/api/local-bridge/admin/agent-package", ...admin');
+  });
+
+  test("copies the self-contained Traveler package into the build output served by the route", () => {
+    expect(packageCopy).toContain('server", "assets", "print-agent", filename');
+    expect(packageCopy).toContain('"dist", "print-agent"');
+    expect(packageCopy).toContain('Required Traveler Print Agent package is missing');
   });
 
   test("pairs an unpaired Traveler profile with the exact selected Windows queue", () => {
