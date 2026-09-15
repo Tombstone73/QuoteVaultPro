@@ -71,7 +71,10 @@ try {
   const report = await request("/api/reports/daily-production", { headers: { Origin: frontendOrigin } });
   if (report.statusCode !== 401) throw new Error(`/api/reports/daily-production expected protected 401, got ${report.statusCode}`);
 
-  console.log("Compiled server smoke passed: health, auth config, production-origin preflight, and protected report route are reachable.");
+  const reportPdf = await request("/api/reports/daily-production/pdf", { headers: { Origin: frontendOrigin } });
+  if (reportPdf.statusCode !== 401) throw new Error(`/api/reports/daily-production/pdf expected protected 401, got ${reportPdf.statusCode}`);
+
+  console.log("Compiled server smoke passed: health, auth config, production-origin preflight, and protected report/PDF routes are reachable.");
 } catch (error) {
   console.error(output);
   throw error;

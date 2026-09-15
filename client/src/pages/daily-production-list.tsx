@@ -1,9 +1,9 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Printer } from "lucide-react";
+import { AlertCircle, ArrowLeft, Loader2, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ROUTES } from "@/config/routes";
-import { apiRequest } from "@/lib/queryClient";
+import { apiFetchBlob, apiRequest } from "@/lib/queryClient";
 import type { DailyProductionReport, DailyProductionReportRow } from "@shared/dailyProductionReport";
 
 type View = "overview" | "breakdown";
@@ -62,6 +62,8 @@ export default function DailyProductionListPage() {
   const [view, setView] = React.useState<View>("overview");
   const [report, setReport] = React.useState<DailyProductionReport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [pdfError, setPdfError] = React.useState<string | null>(null);
+  const [isGeneratingPdf, setIsGeneratingPdf] = React.useState(false);
 
   React.useEffect(() => { void (async () => {
     try {
@@ -73,31 +75,39 @@ export default function DailyProductionListPage() {
     }
   })(); }, []);
 
-  const printStyles = <style>{`@media print {
-    @page { size: letter portrait; margin: .42in; }
-    body { background: white !important; color: #111827 !important; }
-    .daily-production-no-print, nav, aside, header[role="banner"] { display: none !important; }
-    .daily-production-report { max-width: none !important; padding: 0 !important; color: #111827 !important; }
-    .daily-production-report .border { border-color: #cbd5e1 !important; }
-    .daily-production-report .bg-card, .daily-production-report .bg-muted\\/60 { background: white !important; }
-    .daily-production-report .text-muted-foreground { color: #475569 !important; }
-    .daily-production-report table { font-size: 9pt; min-width: 0 !important; }
-    .daily-production-report th, .daily-production-report td { padding: 6px !important; }
-    .daily-production-report thead { display: table-header-group; background: #e2e8f0 !important; }
-    .daily-production-report tr { break-inside: avoid; page-break-inside: avoid; }
-    .daily-production-section { break-inside: avoid; }
-    .daily-production-report [data-due-state="overdue"] { background: #fee2e2 !important; }
-    .daily-production-report [data-due-state="today"] { background: #fef3c7 !important; }
-    .daily-production-report [data-due-state="tomorrow"] { background: #dbeafe !important; }
-    .daily-production-report [data-due-state="none"] { background: #f1f5f9 !important; }
-  }`}</style>;
+  const openPdf = async () => {
+    setIsGeneratingPdf(true);
+    setPdfError(null);
+    const pdfWindow = window.open("", "_blank");
+    try {
+      const blob = await apiFetchBlob("/api/reports/daily-production/pdf", { method: "GET" });
+      const objectUrl = URL.createObjectURL(blob);
+      if (pdfWindow) {
+        pdfWindow.location.replace(objectUrl);
+      } else {
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = "daily-production-report.pdf";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (reason) {
+      pdfWindow?.close();
+      setPdfError(reason instanceof Error ? reason.message : "Could not generate the Daily Production List PDF.");
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
 
   if (error) return <main className="mx-auto max-w-6xl p-4 sm:p-6"><div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div></main>;
   if (!report) return <main className="mx-auto max-w-6xl p-4 sm:p-6"><p className="text-sm text-muted-foreground">Loading Daily Production List…</p></main>;
 
-  return <main className="daily-production-report mx-auto max-w-6xl p-4 sm:p-6">{printStyles}
+  return <main className="daily-production-report mx-auto max-w-6xl p-4 sm:p-6">
     <div className="daily-production-no-print mb-5"><Button asChild variant="ghost" size="sm"><Link to={ROUTES.reports}><ArrowLeft className="mr-2 h-4 w-4" />Reports</Link></Button></div>
-    <header className="border-b pb-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-semibold tracking-wide text-primary">{report.organizationName}</p><h1 className="mt-1 text-2xl font-bold tracking-tight">OPEN PRODUCTION REPORT</h1><p className="mt-1 text-sm text-muted-foreground">Daily Production List · As of {formatDueDate(report.asOf)}</p></div><Button className="daily-production-no-print" onClick={() => window.print()}><Printer className="mr-2 h-4 w-4" />Print</Button></div></header>
+    <header className="border-b pb-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-semibold tracking-wide text-primary">{report.organizationName}</p><h1 className="mt-1 text-2xl font-bold tracking-tight">OPEN PRODUCTION REPORT</h1><p className="mt-1 text-sm text-muted-foreground">Daily Production List · As of {formatDueDate(report.asOf)}</p></div><Button className="daily-production-no-print" onClick={() => void openPdf()} disabled={isGeneratingPdf}>{isGeneratingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}{isGeneratingPdf ? "Generating PDF…" : "Print / PDF"}</Button></div></header>
+    {pdfError ? <div role="alert" className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{pdfError}</div> : null}
     <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[
       ["Open Jobs", report.summary.open, ""], ["Due Today", report.summary.dueToday, "bg-yellow-400/15"], ["Due Tomorrow", report.summary.dueTomorrow, "bg-sky-500/15"], ["Overdue", report.summary.overdue, "bg-red-500/15"], ["No Due Date", report.summary.noDueDate, "bg-muted/70"],
     ].map(([label, value, className]) => <div key={String(label)} className={`rounded-lg border bg-card p-4 ${className}`}><div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div><div className="mt-1 text-2xl font-bold tabular-nums">{value}</div></div>)}</section>

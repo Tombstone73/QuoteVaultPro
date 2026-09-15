@@ -1,6 +1,47 @@
 import type { Express } from "express";
 import { getRequestOrganizationId } from "../tenantContext";
 
+type DailyProductionPdfDependencies = {
+  getReport: (organizationId: string) => Promise<any>;
+  generatePdf: (report: any) => Promise<Uint8Array>;
+  buildFilename: (organizationName: string, asOf: string) => string;
+};
+
+async function loadDailyProductionPdfDependencies(): Promise<DailyProductionPdfDependencies> {
+  const [reportService, pdf] = await Promise.all([
+    import("../services/dailyProductionReport"),
+    import("../lib/dailyProductionReportPdf"),
+  ]);
+  return {
+    getReport: reportService.getDailyProductionReport,
+    generatePdf: pdf.generateDailyProductionReportPdfBytes,
+    buildFilename: pdf.buildDailyProductionReportPdfFilename,
+  };
+}
+
+export function createDailyProductionPdfHandler(
+  loadDependencies: () => Promise<DailyProductionPdfDependencies> = loadDailyProductionPdfDependencies,
+) {
+  return async (req: any, res: any) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ success: false, error: "Missing organization context" });
+      }
+      const { getReport, generatePdf, buildFilename } = await loadDependencies();
+      const report = await getReport(organizationId);
+      const pdfBytes = await generatePdf(report);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Disposition", `inline; filename="${buildFilename(report.organizationName, report.asOf)}"`);
+      return res.status(200).send(Buffer.from(pdfBytes));
+    } catch (error) {
+      console.error("[DailyProductionReportPdf] Failed to generate PDF:", error);
+      return res.status(500).json({ success: false, error: "Failed to generate the Daily Production List PDF" });
+    }
+  };
+}
+
 export function registerDailyProductionReportRoutes(
   app: Express,
   middleware: { isAuthenticated: any; tenantContext: any },
@@ -23,4 +64,8 @@ export function registerDailyProductionReportRoutes(
       return res.status(500).json({ success: false, error: "Failed to build the Daily Production List" });
     }
   });
+
+  // Keep report/PDF dependencies behind this authenticated request boundary so a
+  // report-generation error can never affect application startup or login.
+  app.get("/api/reports/daily-production/pdf", isAuthenticated, tenantContext, createDailyProductionPdfHandler());
 }

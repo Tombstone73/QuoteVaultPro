@@ -8,7 +8,11 @@ Object.assign(globalThis, { TextEncoder, TextDecoder });
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const apiRequest = jest.fn();
-jest.mock("@/lib/queryClient", () => ({ apiRequest: (...args: unknown[]) => apiRequest(...args) }));
+const apiFetchBlob = jest.fn();
+jest.mock("@/lib/queryClient", () => ({
+  apiRequest: (...args: unknown[]) => apiRequest(...args),
+  apiFetchBlob: (...args: unknown[]) => apiFetchBlob(...args),
+}));
 
 const { MemoryRouter } = require("react-router-dom");
 const DailyProductionListPage = require("./daily-production-list").default;
@@ -28,19 +32,23 @@ describe("Daily Production List renderer", () => {
   beforeEach(() => {
     container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
     apiRequest.mockResolvedValue({ json: async () => ({ success: true, data: report }) });
-    (window as any).print = jest.fn();
+    apiFetchBlob.mockResolvedValue(new Blob(["%PDF-fixture"], { type: "application/pdf" }));
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: jest.fn(() => "blob:daily-production") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: jest.fn() });
+    window.open = jest.fn(() => ({ location: { replace: jest.fn() }, close: jest.fn() })) as any;
   });
   afterEach(() => { act(() => root.unmount()); container.remove(); jest.clearAllMocks(); });
 
-  test("renders the operational report, urgency, and print layout", async () => {
+  test("renders the operational report, urgency, and generated-PDF action", async () => {
     await act(async () => { root.render(<MemoryRouter><DailyProductionListPage /></MemoryRouter>); });
     expect(container.textContent).toContain("OPEN PRODUCTION REPORT");
     expect(container.textContent).toContain("DUE TODAY");
     expect(container.textContent).toContain("Unclassified");
-    expect(container.querySelector("style")?.textContent).toContain("@page { size: letter portrait");
     const printButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Print"));
-    act(() => printButton?.click());
-    expect(window.print).toHaveBeenCalledTimes(1);
+    await act(async () => { printButton?.click(); });
+    expect(apiFetchBlob).toHaveBeenCalledWith("/api/reports/daily-production/pdf", { method: "GET" });
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
+    expect(container.textContent).not.toContain("Browser Print");
   });
 
   test("uses the requested Overview and breakdown columns", async () => {
