@@ -23,11 +23,13 @@ import {
   invoiceReminderLogs,
   invoiceReminderSettings,
   invoices,
+  orders,
   type InsertInvoiceReminderLog,
   type InvoiceReminderLog,
   type InvoiceReminderSettings,
   type UpdateInvoiceReminderSettings,
 } from '../shared/schema';
+import { canonicalInvoiceCustomerId } from './services/invoiceCustomerProjection';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +79,7 @@ export interface CandidateInvoice {
   customerId: string;
   customerName: string;
   recipientEmail: string | null;
+  customer?: any | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,13 +239,18 @@ export async function getCandidateInvoicesForReminderRun(
       totalCents: invoices.totalCents,
       balanceDueCents: sql<number>`ROUND(${invoices.balanceDue}::numeric * 100)::int`.as('balance_due_cents'),
       balanceDue: invoices.balanceDue,
-      customerId: invoices.customerId,
+      customerId: canonicalInvoiceCustomerId,
       customerName: customers.companyName,
       recipientEmail: customers.email,
+      customer: customers,
     })
     .from(invoices)
+    .leftJoin(orders, and(
+      eq(orders.id, invoices.orderId),
+      eq(orders.organizationId, organizationId),
+    ))
     .innerJoin(customers, and(
-      eq(customers.id, invoices.customerId),
+      eq(customers.id, canonicalInvoiceCustomerId),
       eq(customers.organizationId, organizationId),
     ))
     .where(

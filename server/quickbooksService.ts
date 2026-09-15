@@ -40,6 +40,7 @@ import {
   type QuickBooksCredentialErrorCategory,
 } from './services/quickbooksCredentialManager';
 import { refreshQuickBooksOAuthGrant } from './services/quickbooksOAuthProvider';
+import { getCanonicalInvoiceCustomerContext } from './services/invoiceCustomerProjection';
 
 export { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
 
@@ -1341,11 +1342,8 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
   const status = String((invoice as any).status || '').toLowerCase();
   if (status === 'void') throw new Error('Cannot sync a void invoice');
 
-  const [customer] = await db
-    .select()
-    .from(customers)
-    .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, organizationId)))
-    .limit(1);
+  const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId });
+  const customer = customerContext?.customer ?? null;
   if (!customer) throw new Error('Customer not found');
 
   const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
@@ -1457,11 +1455,8 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     throw err;
   }
 
-  const [customer] = await db
-    .select()
-    .from(customers)
-    .where(and(eq(customers.id, (invoice as any).customerId), eq(customers.organizationId, organizationId)))
-    .limit(1);
+  const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId: invoice.id });
+  const customer = customerContext?.customer ?? null;
   if (!customer) throw new Error('Customer not found for invoice');
 
   const amountCents = Math.max(0, Math.round(Number((payment as any).amountCents || 0)));
@@ -2418,11 +2413,8 @@ export async function processPushInvoices(jobId: string, organizationId: string)
     for (const invoice of localInvoices) {
       try {
         // Get customer's QB ID
-        const [customer] = await db
-          .select()
-          .from(customers)
-          .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, orgId)))
-          .limit(1);
+        const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId: orgId, invoiceId: invoice.id });
+        const customer = customerContext?.customer ?? null;
 
         if (!customer?.externalAccountingId) {
           throw new Error('Customer not synced to QuickBooks');

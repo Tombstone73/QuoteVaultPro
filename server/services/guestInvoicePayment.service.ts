@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import type { Request } from "express";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db } from "../db";
-import { customers, invoiceGuestPaymentTokens, invoices } from "../../shared/schema";
+import { customers, invoiceGuestPaymentTokens, invoices, orders } from "../../shared/schema";
+import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 import { sha256Hex } from "../lib/tokenHash";
 import {
   confirmPortalStripePayment,
@@ -31,10 +32,11 @@ async function resolveGuestScope(rawToken: string): Promise<GuestScope | null> {
   const [row] = await db.select({ token: invoiceGuestPaymentTokens, invoice: invoices, customer: customers })
     .from(invoiceGuestPaymentTokens)
     .innerJoin(invoices, and(eq(invoiceGuestPaymentTokens.invoiceId, invoices.id), eq(invoiceGuestPaymentTokens.organizationId, invoices.organizationId)))
-    .innerJoin(customers, and(eq(invoices.customerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
+    .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, invoices.organizationId)))
+    .innerJoin(customers, and(eq(canonicalInvoiceCustomerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
     .where(and(eq(invoiceGuestPaymentTokens.tokenHash, sha256Hex(rawToken)), isNull(invoiceGuestPaymentTokens.revokedAt), gt(invoiceGuestPaymentTokens.expiresAt, new Date())))
     .limit(1);
-  return row ? { organizationId: row.token.organizationId, customerId: row.invoice.customerId, customer: row.customer, userId: null, contactId: null, invoiceId: row.invoice.id } : null;
+  return row ? { organizationId: row.token.organizationId, customerId: row.customer.id, customer: row.customer, userId: null, contactId: null, invoiceId: row.invoice.id } : null;
 }
 
 async function guestRequest(rawToken: string): Promise<Request | null> {

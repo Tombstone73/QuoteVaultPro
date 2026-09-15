@@ -22,7 +22,7 @@ import {
   organizations,
   users,
 } from '../../shared/schema';
-import { getInvoiceDashboardSummary, getInvoiceEmailStatuses, listInvoicesForOrganization, listInvoicesPageForOrganization } from '../invoicesService';
+import { getInvoiceDashboardSummary, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, listInvoicesPageForOrganization } from '../invoicesService';
 import {
   getInvoiceListReminderInfo,
   upsertInvoiceReminderSettingsForOrg,
@@ -630,6 +630,40 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
 
     const byDueDate = await listInvoicesForOrganization({ organizationId: org.id, sortBy: 'dueDate', sortDir: 'desc' });
     expect(byDueDate.map((row) => row.id)).toEqual([newInvoice.id, oldInvoice.id]);
+  });
+
+  test('uses the linked Order customer as one live identity for detail, list, filtering, search, and sort', async () => {
+    const org = await createTestOrg('live-invoice-customer');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'live-invoice-customer');
+    const formerCustomer = await createTestCustomer(org.id);
+    const currentCustomer = await createTestCustomer(org.id);
+    await db.update(customers).set({ companyName: 'Former Invoice Customer' }).where(eq(customers.id, formerCustomer.id));
+    await db.update(customers).set({ companyName: 'Current Order Customer' }).where(eq(customers.id, currentCustomer.id));
+    const order = await createTestOrder({ orgId: org.id, customerId: formerCustomer.id, userId: user.id, orderNumber: 'LIVE-42' });
+    const invoice = await createTestInvoice({ orgId: org.id, customerId: formerCustomer.id, userId: user.id, orderId: order.id, invoiceNumber: 72042 });
+
+    // Simulates reassignment after billing. The invoice row remains untouched.
+    await db.update(orders).set({ customerId: currentCustomer.id }).where(eq(orders.id, order.id));
+
+    const detail = await getInvoiceWithRelations(invoice.id);
+    expect(detail?.invoice.customerId).toBe(currentCustomer.id);
+    expect(detail?.customer?.companyName).toBe('Current Order Customer');
+
+    await expect(listInvoicesForOrganization({ organizationId: org.id, customerId: currentCustomer.id, search: 'Current Order Customer' }))
+      .resolves.toEqual([expect.objectContaining({ id: invoice.id, customerName: 'Current Order Customer' })]);
+    await expect(listInvoicesForOrganization({ organizationId: org.id, customerId: formerCustomer.id }))
+      .resolves.toEqual([]);
+    await expect(listInvoicesForOrganization({ organizationId: org.id, sortBy: 'customer', sortDir: 'asc' }))
+      .resolves.toEqual([expect.objectContaining({ id: invoice.id, customerName: 'Current Order Customer' })]);
+
+    // A standalone/imported invoice remains owned by its persisted identity.
+    const imported = await createTestInvoice({
+      orgId: org.id, customerId: formerCustomer.id, userId: user.id, invoiceNumber: 72043,
+      importSource: 'quickbooks', isHistorical: true,
+    });
+    await expect(listInvoicesForOrganization({ organizationId: org.id, customerId: formerCustomer.id, search: 'Former Invoice Customer' }))
+      .resolves.toEqual([expect.objectContaining({ id: imported.id, customerName: 'Former Invoice Customer' })]);
   });
 
   test('automation draft invoices appear with linked order and customer context', async () => {

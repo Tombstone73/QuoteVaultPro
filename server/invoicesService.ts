@@ -21,6 +21,7 @@ import {
   writeContactAccountingPromotionAudit,
 } from './services/contactAccountingPromotionService';
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState } from './lib/invoiceAccountingApproval';
+import { canonicalInvoiceCustomerId, getCanonicalInvoiceCustomerContext } from './services/invoiceCustomerProjection';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -433,14 +434,16 @@ export async function listInvoicesPageForOrganization(
   if (!explicitlyFilteringPaidHistorical && opts.includePaidHistorical === false) {
     whereClauses.push(sql`not (${paidHistoricalState})`);
   }
-  if (opts.customerId) whereClauses.push(eq(invoices.customerId, opts.customerId));
+  // Customer list semantics follow the live invoice projection: a native
+  // Order-backed invoice belongs to its Order's current customer.
+  if (opts.customerId) whereClauses.push(eq(canonicalInvoiceCustomerId, opts.customerId));
   if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
   const postedOrIssuedAt = sql<Date>`coalesce(${invoices.issuedAt}, ${invoices.issueDate})`;
   if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
   const columnFilters = opts.columnFilters ?? {};
-  if (columnFilters.excludeCustomerId) whereClauses.push(ne(invoices.customerId, columnFilters.excludeCustomerId));
+  if (columnFilters.excludeCustomerId) whereClauses.push(ne(canonicalInvoiceCustomerId, columnFilters.excludeCustomerId));
   // This is the same order lifecycle boundary shown by Job Status: an open
   // job is linked to an order that is neither terminally closed/canceled nor
   // completed through fulfillment. Invoices without an order stay visible in
@@ -578,13 +581,13 @@ export async function listInvoicesPageForOrganization(
       orderFulfillmentStatus: orders.fulfillmentStatus,
     })
     .from(invoices)
-    .leftJoin(customers, and(
-      eq(customers.id, invoices.customerId),
-      eq(customers.organizationId, opts.organizationId),
-    ))
     .leftJoin(orders, and(
       eq(orders.id, invoices.orderId),
       eq(orders.organizationId, opts.organizationId),
+    ))
+    .leftJoin(customers, and(
+      eq(customers.id, canonicalInvoiceCustomerId),
+      eq(customers.organizationId, opts.organizationId),
     ))
     .leftJoin(customerContacts, and(
       eq(customerContacts.id, orders.contactId),
@@ -600,13 +603,13 @@ export async function listInvoicesPageForOrganization(
   const countQuery = db
     .select({ totalCount: count() })
     .from(invoices)
-    .leftJoin(customers, and(
-      eq(customers.id, invoices.customerId),
-      eq(customers.organizationId, opts.organizationId),
-    ))
     .leftJoin(orders, and(
       eq(orders.id, invoices.orderId),
       eq(orders.organizationId, opts.organizationId),
+    ))
+    .leftJoin(customers, and(
+      eq(customers.id, canonicalInvoiceCustomerId),
+      eq(customers.organizationId, opts.organizationId),
     ))
     .leftJoin(customerContacts, and(
       eq(customerContacts.id, orders.contactId),
@@ -1364,13 +1367,24 @@ export async function appendInvoiceInternalNoteCanonical(input: { organizationId
 export async function getInvoiceWithRelations(id: string) {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, id));
   if (!invoice) return null;
+  const customerContext = await getCanonicalInvoiceCustomerContext({
+    organizationId: invoice.organizationId,
+    invoiceId: id,
+  });
+  if (!customerContext) return null;
   const lineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id));
   const paymentRows = await db
     .select()
     .from(payments)
     .where(and(eq(payments.invoiceId, id), eq(payments.organizationId, (invoice as any).organizationId)));
   const emailTracking = await getInvoiceEmailStatus(id);
-  return { invoice: { ...invoice, ...emailTracking }, lineItems, payments: paymentRows };
+  return {
+    invoice: { ...customerContext.invoice, ...emailTracking },
+    customer: customerContext.customer,
+    customerContext,
+    lineItems,
+    payments: paymentRows,
+  };
 }
 
 export async function applyPayment(invoiceId: string, userId: string, data: { amount: number; method: string; notes?: string }) {

@@ -56,6 +56,7 @@ import { storageApplicationService } from "./storage/StorageApplicationService";
 import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
 import { resolveStripeRuntimeConfig, type StripeBrowserRuntimeConfig } from "./stripeRuntimeConfig.service";
 import { recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "./stripePaymentAttempt.service";
+import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 
 export type PortalSessionDto = {
   userId: string;
@@ -1607,17 +1608,15 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       linkedOrderNumberCore: orders.numberCore,
     })
     .from(invoices)
-    // The relationship itself is also tenant/customer scoped. A malformed
-    // invoice.orderId can therefore never disclose another customer's Order.
+    // Customer access follows the same live invoice projection used by staff.
     .leftJoin(orders, and(
       eq(orders.id, invoices.orderId),
       eq(orders.organizationId, scope.organizationId),
-      eq(orders.customerId, scope.customerId),
     ))
     .where(
       and(
         eq(invoices.organizationId, scope.organizationId),
-        eq(invoices.customerId, scope.customerId),
+        eq(canonicalInvoiceCustomerId, scope.customerId),
         inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
       ),
     )
@@ -1656,13 +1655,12 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
     .leftJoin(orders, and(
       eq(orders.id, invoices.orderId),
       eq(orders.organizationId, scope.organizationId),
-      eq(orders.customerId, scope.customerId),
     ))
     .where(
       and(
         eq(invoices.id, invoiceId),
         eq(invoices.organizationId, scope.organizationId),
-        eq(invoices.customerId, scope.customerId),
+        eq(canonicalInvoiceCustomerId, scope.customerId),
         inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
       ),
     )
@@ -1699,7 +1697,8 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
       isHistorical: invoices.isHistorical,
     })
     .from(invoices)
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, scope.organizationId), eq(invoices.customerId, scope.customerId)))
+    .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, scope.organizationId)))
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, scope.organizationId), eq(canonicalInvoiceCustomerId, scope.customerId)))
     .limit(1);
 
   return row ?? null;
@@ -3409,10 +3408,11 @@ async function loadInvoiceSummariesForOrders(organizationId: string, customerId:
       currency: invoices.currency,
     })
     .from(invoices)
+    .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
     .where(
       and(
         eq(invoices.organizationId, organizationId),
-        eq(invoices.customerId, customerId),
+        eq(canonicalInvoiceCustomerId, customerId),
         inArray(invoices.orderId, orderIds),
         inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
       ),

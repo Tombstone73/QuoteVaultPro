@@ -41,6 +41,7 @@ import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeR
 import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../services/stripeRefundRecovery.service";
 import { applyInvoiceSendSuccessLifecycle } from "../services/invoiceSendLifecycleAutomation";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
+import { getCanonicalInvoiceCustomerContext } from "../services/invoiceCustomerProjection";
 import {
   calculateDueDateFromSuccessfulCustomerSend,
   resolveInvoiceCustomerDeliveryTerms,
@@ -289,11 +290,7 @@ export async function registerMvpInvoicingRoutes(
     }
 
     const invoice: any = rel.invoice;
-    const [customer] = await db
-      .select()
-      .from(customers)
-      .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, input.organizationId)))
-      .limit(1);
+    const customer = (rel as any).customer;
     if (!customer) throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
 
     let orderContact: { firstName: string; lastName: string; email: string | null } | null = null;
@@ -1292,11 +1289,8 @@ export async function registerMvpInvoicingRoutes(
         ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
         : null;
 
-      const [cust] = await db
-        .select()
-        .from(customers)
-        .where(and(eq(customers.id, (inv as any).customerId), eq(customers.organizationId, organizationId)))
-        .limit(1);
+      const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId: inv.id });
+      const cust = customerContext?.customer ?? null;
 
       // Company settings are optional; only include branding fields if present.
       const [orgCompany] = await db

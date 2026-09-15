@@ -45,6 +45,7 @@ import {
 import { desc } from 'drizzle-orm';
 import { getInvoiceOrderContext } from './services/invoiceOrderContext';
 import { hydrateInvoicePdfLineItemsWithArtwork } from './services/invoicePdfArtwork';
+import { getCanonicalInvoiceCustomerContext } from './services/invoiceCustomerProjection';
 
 // ---------------------------------------------------------------------------
 // In-process singleton guard — prevents overlapping job runs.
@@ -216,7 +217,7 @@ async function sendReminderForInvoice(opts: {
     });
     pdfBytes = await deps.generatePdf({
       invoice: fullInv as any,
-      customer: null,
+      customer: inv.customer ?? null,
       companySettings: (orgCompany as any) || null,
       paymentSummary: {
         amountPaidCents: rollup.amountPaidCents,
@@ -367,10 +368,8 @@ export async function sendManualInvoiceReminder(opts: {
   }
 
   // Resolve recipient email from customer record
-  const [customer] = await db
-    .select({ email: customers.email, companyName: customers.companyName })
-    .from(customers)
-    .where(and(eq(customers.id, fullInv.customerId), eq(customers.organizationId, organizationId)));
+  const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId });
+  const customer = customerContext?.customer ?? null;
 
   const recipientEmail = customer?.email ?? null;
   if (!recipientEmail) {
@@ -428,9 +427,10 @@ export async function sendManualInvoiceReminder(opts: {
     totalCents: Number(fullInv.totalCents ?? 0),
     balanceDueCents,
     balanceDue: fullInv.balanceDue ?? null,
-    customerId: fullInv.customerId,
+    customerId: customerContext?.resolvedCustomerId ?? fullInv.customerId,
     customerName: customer?.companyName ?? recipientEmail,
     recipientEmail,
+    customer,
   };
 
   // --- Send -------------------------------------------------------------------

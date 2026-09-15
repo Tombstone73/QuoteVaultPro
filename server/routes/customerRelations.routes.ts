@@ -46,6 +46,7 @@ import {
 } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import { canonicalInvoiceCustomerId } from "../services/invoiceCustomerProjection";
 import {
   CanonicalCustomerContactError,
   canonicalCustomerContactOperations,
@@ -856,7 +857,8 @@ export function registerCustomerRelationsRoutes(
             notesPublic: invoices.notesPublic,
           })
           .from(invoices)
-          .where(and(eq(invoices.organizationId, organizationId), eq(invoices.customerId, customerId), ...dateFilters));
+          .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
+          .where(and(eq(invoices.organizationId, organizationId), eq(canonicalInvoiceCustomerId, customerId), ...dateFilters));
 
         for (const inv of invoiceRows) {
           const refNum = resolveDocumentDisplayNumber({
@@ -924,10 +926,11 @@ export function registerCustomerRelationsRoutes(
           })
           .from(payments)
           .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+          .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
           .where(
             and(
               eq(payments.organizationId, organizationId),
-              eq(invoices.customerId, customerId),
+              eq(canonicalInvoiceCustomerId, customerId),
               // Only include terminal statuses â€” exclude pending/failed/canceled
               sql`${payments.status} IN ('succeeded', 'refunded')`,
               ...dateFilters,
@@ -1043,16 +1046,18 @@ export function registerCustomerRelationsRoutes(
       const allInvoicesForSummary = await db
         .select({ total: invoices.total, balanceDue: invoices.balanceDue, status: invoices.status })
         .from(invoices)
-        .where(and(eq(invoices.organizationId, organizationId), eq(invoices.customerId, customerId)));
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
+        .where(and(eq(invoices.organizationId, organizationId), eq(canonicalInvoiceCustomerId, customerId)));
 
       const allPaymentsForSummary = await db
         .select({ amount: payments.amount, status: payments.status })
         .from(payments)
         .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
         .where(
           and(
             eq(payments.organizationId, organizationId),
-            eq(invoices.customerId, customerId),
+            eq(canonicalInvoiceCustomerId, customerId),
             sql`${payments.status} IN ('succeeded', 'refunded')`,
           ),
         );
@@ -1160,10 +1165,11 @@ export function registerCustomerRelationsRoutes(
           lastInvoiceDate:     sql<string | null>`MAX(${invoices.issueDate})`,
         })
         .from(invoices)
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
         .where(
           and(
             eq(invoices.organizationId, organizationId),
-            eq(invoices.customerId, customerId),
+            eq(canonicalInvoiceCustomerId, customerId),
           ),
         );
 
@@ -1174,10 +1180,11 @@ export function registerCustomerRelationsRoutes(
         })
         .from(payments)
         .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
         .where(
           and(
             eq(payments.organizationId, organizationId),
-            eq(invoices.customerId, customerId),
+            eq(canonicalInvoiceCustomerId, customerId),
             sql`${payments.status} != 'refunded'`,
           ),
         );
@@ -1353,10 +1360,11 @@ export function registerCustomerRelationsRoutes(
           notesPublic:       invoices.notesPublic,
         })
         .from(invoices)
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
         .where(
           and(
             eq(invoices.organizationId, organizationId),
-            eq(invoices.customerId, customerId),
+            eq(canonicalInvoiceCustomerId, customerId),
           ),
         ) : [];
 
@@ -1388,10 +1396,11 @@ export function registerCustomerRelationsRoutes(
         .select({ total: sql<string>`COALESCE(SUM(${payments.amount}::numeric),'0')` })
         .from(payments)
         .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
         .where(
           and(
             eq(payments.organizationId, organizationId),
-            eq(invoices.customerId, customerId),
+            eq(canonicalInvoiceCustomerId, customerId),
             eq(payments.status, "refunded"),
           ),
         );
