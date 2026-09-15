@@ -1,8 +1,11 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -16,8 +19,8 @@ import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
-import { INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
-import { DEFAULT_INVOICE_LIST_SORT_PREFERENCES, clearPersistedInvoiceListSortPreferences, persistInvoiceListSortPreferences, readPersistedInvoiceListSortPreferences } from "@/lib/invoiceListSortPreferences";
+import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
 import { CustomerSelect } from "@/components/CustomerSelect";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
 import {
@@ -117,29 +120,113 @@ const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
   excludeCustomerId: "Excluding",
 };
 
+function toStickyFilters(state: Pick<InvoiceListUrlState, "status" | "includePaidHistorical" | "customerId" | "customerName" | "excludeCustomerName" | "issueDatePreset" | "columnFilters">): InvoiceListStickyFilters {
+  return {
+    ...(state.status !== "all" ? { status: state.status } : {}),
+    ...(state.includePaidHistorical ? { includePaidHistorical: true } : {}),
+    ...(state.customerId ? { customerId: state.customerId } : {}),
+    ...(state.customerName ? { customerName: state.customerName } : {}),
+    ...(state.excludeCustomerName ? { excludeCustomerName: state.excludeCustomerName } : {}),
+    ...(state.issueDatePreset ? { issueDatePreset: state.issueDatePreset } : {}),
+    ...(Object.keys(state.columnFilters).length ? { columnFilters: state.columnFilters } : {}),
+  };
+}
+
+function stickyFiltersToUrlChanges(filters: InvoiceListStickyFilters): Record<string, string | undefined> {
+  return {
+    status: filters.status,
+    includePaidHistorical: filters.includePaidHistorical ? "1" : undefined,
+    customerId: filters.customerId,
+    customerName: filters.customerName,
+    excludeCustomerName: filters.excludeCustomerName,
+    issueDatePreset: filters.issueDatePreset,
+    ...Object.fromEntries(INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.map((key) => [key, filters.columnFilters?.[key]])),
+  };
+}
+
 export default function InvoicesListPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
-  const [sortPreferenceRevision, setSortPreferenceRevision] = useState(0);
+  const [preferencesRevision, setPreferencesRevision] = useState(0);
+  const hydratedPreferenceVisits = useRef(new Set<string>());
   const listState = useMemo(() => parseInvoiceListUrlState(searchParams), [searchParams]);
-  const { search, status: statusFilter, includePaidHistorical, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters } = listState;
+  const invoicePreferenceScope = user?.id ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}` : null;
+  const savedPreferences = useMemo(
+    () => user?.id
+      ? readPersistedInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null)
+      : DEFAULT_INVOICE_LIST_PREFERENCES,
+    [invoicePreferenceScope, preferencesRevision, user?.id, user?.lastActiveOrgId],
+  );
+  const preferences = useMemo(() => resolveInvoiceListViewPreferences(savedPreferences), [savedPreferences]);
+  const hasExplicitFilters = hasExplicitInvoiceListFilters(searchParams);
+  const shouldRestoreStickyFilters = preferences.stickySortingAndFilters && !hasExplicitFilters;
+  const effectiveListState = useMemo<InvoiceListUrlState>(() => {
+    const filters = shouldRestoreStickyFilters ? preferences.filters : {};
+    return {
+      ...listState,
+      status: shouldRestoreStickyFilters ? filters.status || "all" : listState.status,
+      includePaidHistorical: shouldRestoreStickyFilters ? filters.includePaidHistorical === true : listState.includePaidHistorical,
+      customerId: shouldRestoreStickyFilters ? filters.customerId : listState.customerId,
+      customerName: shouldRestoreStickyFilters ? filters.customerName : listState.customerName,
+      excludeCustomerName: shouldRestoreStickyFilters ? filters.excludeCustomerName : listState.excludeCustomerName,
+      issueDatePreset: shouldRestoreStickyFilters ? filters.issueDatePreset : listState.issueDatePreset,
+      columnFilters: shouldRestoreStickyFilters ? filters.columnFilters || {} : listState.columnFilters,
+      sortKey: listState.hasExplicitSort ? listState.sortKey : preferences.sortKey,
+      sortDir: listState.hasExplicitSort ? listState.sortDir : preferences.sortDir,
+      page: shouldRestoreStickyFilters ? 1 : listState.page,
+      pageSize: searchParams.has("pageSize") ? listState.pageSize : preferences.pageSize,
+    };
+  }, [listState, preferences, searchParams, shouldRestoreStickyFilters]);
+  const { search, status: statusFilter, includePaidHistorical, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters, sortKey, sortDir } = effectiveListState;
   const invoiceTableConfig = useTableColumnConfig(
     `global_invoices:org_${user?.lastActiveOrgId ?? "unknown"}:user_${user?.id ?? "anonymous"}`,
     GLOBAL_INVOICE_COLUMNS,
   );
   const visibleColumns = invoiceTableConfig.columns.filter((column) => column.visible);
-  const preferredSort = useMemo(
-    () => user?.id
-      ? readPersistedInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null)
-      : DEFAULT_INVOICE_LIST_SORT_PREFERENCES,
-    [sortPreferenceRevision, user?.id, user?.lastActiveOrgId],
-  );
-  const sortKey = hasExplicitSort ? listState.sortKey : preferredSort.sortKey;
-  const sortDir = hasExplicitSort ? listState.sortDir : preferredSort.sortDir;
+  useEffect(() => {
+    if (!user?.id || !invoicePreferenceScope) return;
+    const visitKey = `${invoicePreferenceScope}:${searchParams.toString()}`;
+    if (hydratedPreferenceVisits.current.has(visitKey)) return;
+    hydratedPreferenceVisits.current.add(visitKey);
+    if (hasExplicitFilters || listState.hasExplicitSort) return;
+
+    const changes: Record<string, string | undefined> = {
+      ...(preferences.stickySortingAndFilters ? {
+        sortBy: preferences.sortKey,
+        sortDir: preferences.sortDir,
+        ...stickyFiltersToUrlChanges(preferences.filters),
+      } : {}),
+      ...(!searchParams.has("pageSize") ? { pageSize: String(preferences.pageSize) } : {}),
+    };
+    const next = updateInvoiceListUrlState(searchParams, changes, preferences.stickySortingAndFilters);
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [hasExplicitFilters, invoicePreferenceScope, listState.hasExplicitSort, preferences, searchParams, setSearchParams, user?.id]);
+
+  const persistPreferencesForUrlState = (nextParams: URLSearchParams, stickyOverride = preferences.stickySortingAndFilters) => {
+    if (!user?.id) return;
+    const nextState = parseInvoiceListUrlState(nextParams);
+    const existing = readPersistedInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null);
+    const nextPreferences: InvoiceListPreferences = stickyOverride
+      ? {
+          version: 1,
+          stickySortingAndFilters: true,
+          sortKey: nextState.sortKey,
+          sortDir: nextState.sortDir,
+          pageSize: nextState.pageSize as InvoiceListPreferences["pageSize"],
+          filters: toStickyFilters(nextState),
+        }
+      : { ...existing, stickySortingAndFilters: false, pageSize: nextState.pageSize as InvoiceListPreferences["pageSize"] };
+    persistInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null, nextPreferences);
+    setPreferencesRevision((current) => current + 1);
+  };
   const updateListState = (changes: Record<string, string | undefined>, resetPage = false) => {
-    setSearchParams((current) => updateInvoiceListUrlState(current, changes, resetPage), { replace: true });
+    setSearchParams((current) => {
+      const next = updateInvoiceListUrlState(current, changes, resetPage);
+      persistPreferencesForUrlState(next);
+      return next;
+    }, { replace: true });
   };
   const setPage = (nextPage: number | ((current: number) => number)) => {
     const resolved = typeof nextPage === "function" ? nextPage(page) : nextPage;
@@ -229,6 +316,7 @@ export default function InvoicesListPage() {
     updateListState({
       search: undefined,
       status: undefined,
+      includePaidHistorical: undefined,
       customerId: undefined,
       customerName: undefined,
       excludeCustomerName: undefined,
@@ -305,19 +393,31 @@ export default function InvoicesListPage() {
 
   const handleSort = (key: InvoiceSortKey) => {
     const next = getNextInvoiceSortState({ sortKey, sortDir }, key);
-    if (user?.id) {
-      persistInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null, { version: 1, sortKey: next.sortKey, sortDir: next.sortDir });
-      setSortPreferenceRevision((current) => current + 1);
-    }
     updateListState({ sortBy: next.sortKey, sortDir: next.sortDir }, true);
   };
 
   const resetSort = () => {
-    if (user?.id) {
-      clearPersistedInvoiceListSortPreferences(user.id, user.lastActiveOrgId ?? null);
-      setSortPreferenceRevision((current) => current + 1);
-    }
     updateListState({ sortBy: undefined, sortDir: undefined }, true);
+  };
+
+  const handleStickySortingAndFiltersChange = (nextStickyValue: boolean) => {
+    if (!user?.id) return;
+    const existing = readPersistedInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null);
+    persistInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null, nextStickyValue
+      ? {
+          version: 1,
+          stickySortingAndFilters: true,
+          sortKey,
+          sortDir,
+          pageSize: pageSize as InvoiceListPreferences["pageSize"],
+          filters: toStickyFilters(effectiveListState),
+        }
+      : {
+          ...existing,
+          stickySortingAndFilters: false,
+          pageSize: pageSize as InvoiceListPreferences["pageSize"],
+        });
+    setPreferencesRevision((current) => current + 1);
   };
 
   const resetTable = () => {
@@ -326,8 +426,8 @@ export default function InvoicesListPage() {
   };
 
   const hasNonDefaultSort = hasExplicitSort
-    || sortKey !== DEFAULT_INVOICE_LIST_SORT_PREFERENCES.sortKey
-    || sortDir !== DEFAULT_INVOICE_LIST_SORT_PREFERENCES.sortDir;
+    || sortKey !== DEFAULT_INVOICE_LIST_PREFERENCES.sortKey
+    || sortDir !== DEFAULT_INVOICE_LIST_PREFERENCES.sortDir;
 
   const renderSortIcon = (key: InvoiceSortKey) => {
     if (sortKey !== key) return <ArrowUpDown className="h-3.5 w-3.5 opacity-50" />;
@@ -622,6 +722,20 @@ export default function InvoicesListPage() {
               <Checkbox checked={includePaidHistorical} onCheckedChange={(checked) => setIncludePaidHistorical(checked === true)} aria-label="Show Paid Historical" />
               <span>Show Paid Historical</span>
             </label>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2" title="Remember sorting and filters for this Invoice list.">
+              <Switch
+                id="invoices-sticky-sorting-and-filters"
+                checked={preferences.stickySortingAndFilters}
+                onCheckedChange={(checked) => handleStickySortingAndFiltersChange(checked === true)}
+                aria-label="Toggle sticky sorting and filters"
+              />
+              <Label htmlFor="invoices-sticky-sorting-and-filters" className="cursor-pointer text-sm text-foreground">
+                Sticky sorting &amp; filters
+              </Label>
+              <Badge variant={preferences.stickySortingAndFilters ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
+                {preferences.stickySortingAndFilters ? "On" : "Off"}
+              </Badge>
+            </div>
             <Popover>
               <PopoverTrigger asChild>
                 <Button type="button" variant="outline" className="gap-2">

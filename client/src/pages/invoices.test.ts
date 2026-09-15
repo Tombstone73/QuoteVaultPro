@@ -100,13 +100,17 @@ describe("Invoices List payment entry point", () => {
     });
   });
 
-  it("keeps a user-scoped global Invoice sort preference while allowing an explicit URL override", () => {
-    expect(invoicesPageSource).toContain("readPersistedInvoiceListSortPreferences");
-    expect(invoicesPageSource).toContain("persistInvoiceListSortPreferences");
-    expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortKey : preferredSort.sortKey");
-    expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortDir : preferredSort.sortDir");
+  it("keeps user-scoped sticky sorting and structured filters while allowing explicit URL state to win", () => {
+    expect(invoicesPageSource).toContain("readPersistedInvoiceListPreferences");
+    expect(invoicesPageSource).toContain("persistInvoiceListPreferences");
+    expect(invoicesPageSource).toContain("hasExplicitInvoiceListFilters");
+    expect(invoicesPageSource).toContain("Sticky sorting &amp; filters");
+    expect(invoicesPageSource).toContain("stickySortingAndFilters");
+    expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortKey : preferences.sortKey");
+    expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortDir : preferences.sortDir");
+    expect(invoicesPageSource).toContain("pageSize: searchParams.has(\"pageSize\") ? listState.pageSize : preferences.pageSize");
     expect(invoicesPageSource).toContain("Reset sort");
-    expect(invoicesPageSource).toContain("clearPersistedInvoiceListSortPreferences");
+    expect(invoicesPageSource).toContain("clearAllFilters");
   });
 
   it("keeps the global filter popover within Radix's available viewport height", () => {

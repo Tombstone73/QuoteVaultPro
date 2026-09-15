@@ -8,6 +8,11 @@ export const INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS: Array<keyof InvoiceListColum
   "jobStatus", "excludeCustomerId",
 ];
 
+const INVOICE_LIST_EXPLICIT_FILTER_PARAM_KEYS = [
+  "status", "includePaidHistorical", "customerId", "customerName", "excludeCustomerName", "issueDatePreset",
+  ...INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS,
+];
+
 const SORT_KEYS: InvoiceSortKey[] = [
   "invoiceNumber", "customer", "contact", "orderNumber", "purchaseOrderNumber", "issueDate", "dueDate",
   "lastSentAt", "status", "approval", "jobStatus", "total", "paid", "balance", "jobName",
@@ -37,9 +42,11 @@ function positiveInteger(value: string | undefined, fallback: number) {
 }
 
 /**
- * The URL is the single persisted source of truth for the global Invoice
+ * Explicit URL state is the source of truth for a shared/global Invoice
  * workspace. Keeping this parsing pure makes a refresh or browser Back
- * reconstruct the exact server query and React Query cache key.
+ * reconstruct the exact server query and React Query cache key; optional
+ * user-scoped sticky preferences are applied by the page only when the URL
+ * does not explicitly provide that state.
  */
 export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUrlState {
   const columnFilters = INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.reduce<InvoiceListColumnFilterQuery>((result, key) => {
@@ -69,6 +76,11 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     pageSize: [25, 50, 100].includes(requestedPageSize) ? requestedPageSize : 50,
     columnFilters,
   };
+}
+
+/** Explicit drilldown filters must always win over saved list preferences. */
+export function hasExplicitInvoiceListFilters(params: URLSearchParams): boolean {
+  return INVOICE_LIST_EXPLICIT_FILTER_PARAM_KEYS.some((key) => params.has(key));
 }
 
 /** Return a normalized copy without blank/default values or stale page state. */

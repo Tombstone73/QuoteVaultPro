@@ -1,4 +1,4 @@
-import { parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { hasExplicitInvoiceListFilters, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
 
 describe("Invoice list URL state", () => {
   it("restores the complete backlog working set from the URL", () => {
@@ -39,5 +39,11 @@ describe("Invoice list URL state", () => {
     expect(parseInvoiceListUrlState(new URLSearchParams())).toMatchObject({ includePaidHistorical: false });
     expect(updateInvoiceListUrlState(new URLSearchParams("page=3&status=paid"), { includePaidHistorical: "1" }, true).toString())
       .toBe("status=paid&includePaidHistorical=1");
+  });
+
+  it("recognizes explicit filter and drilldown parameters without treating search, paging, or sort as sticky-filter overrides", () => {
+    expect(hasExplicitInvoiceListFilters(new URLSearchParams("customerId=customer-1"))).toBe(true);
+    expect(hasExplicitInvoiceListFilters(new URLSearchParams("sendStatus=never_sent"))).toBe(true);
+    expect(hasExplicitInvoiceListFilters(new URLSearchParams("search=ACM&page=2&pageSize=100&sortBy=customer"))).toBe(false);
   });
 });
