@@ -38,6 +38,37 @@ test('the rendered Customer Detail invoice table owns its persistent layout and 
   expect(invoiceTable).toContain('pageSize');
 });
 
+test('the Customer Detail Invoices tab uses the authoritative customer pagination total, not the visible page length', () => {
+  const customerView = source.slice(source.indexOf('export default function EnhancedCustomerView'));
+
+  expect(customerView).toContain('const invoicePage = useInvoicesPage({');
+  expect(customerView).toContain('customerId,');
+  expect(customerView).toContain('pageSize: 50,');
+  expect(customerView).toContain('const invoices = invoicePage.data?.items ?? [];');
+  expect(customerView).toContain('const invoiceTotalCount = invoicePage.data?.pagination?.totalCount ?? invoices.length;');
+  expect(customerView).toContain('{ key: "invoices" as const, label: "Invoices", count: invoiceTotalCount }');
+  expect(customerView).not.toContain('{ key: "invoices" as const, label: "Invoices", count: invoices.length }');
+});
+
+test('the Customer Detail invoice badge is stable across bounded pages and is zero for an empty customer', () => {
+  const invoiceTabCount = (invoicePage: { pagination?: { totalCount?: number } } | undefined, invoices: unknown[]) =>
+    invoicePage?.pagination?.totalCount ?? invoices.length;
+
+  expect(invoiceTabCount({ pagination: { totalCount: 73 } }, Array.from({ length: 50 }))).toBe(73);
+  expect(invoiceTabCount({ pagination: { totalCount: 73 } }, Array.from({ length: 23 }))).toBe(73);
+  expect(invoiceTabCount({ pagination: { totalCount: 0 } }, [])).toBe(0);
+});
+
+test('the Customer Detail invoice table keeps its bounded page and filter-specific rows independent of the tab total', () => {
+  expect(invoiceTable).toContain('const [pageSize, setPageSize] = useState(50);');
+  expect(invoiceTable).toContain('status: statusFilter === "all" ? undefined : statusFilter,');
+  expect(invoiceTable).toContain('search: searchQuery || undefined,');
+  expect(invoiceTable).toContain('page,');
+  expect(invoiceTable).toContain('pageSize,');
+  expect(invoiceTable).toContain('invoices.map((inv: InvoiceListItem) => (');
+  expect(invoiceTable).toContain('setPage((current) => Math.min(pagination.totalPages, current + 1))');
+});
+
 test('the actual Customer Detail reset control imports the supported Lucide RotateCcw icon', () => {
   const lucideImport = source.slice(source.indexOf('from "lucide-react"') - 800, source.indexOf('from "lucide-react"'));
   expect(lucideImport).toContain('RotateCcw');

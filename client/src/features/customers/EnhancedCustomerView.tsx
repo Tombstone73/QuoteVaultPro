@@ -88,7 +88,7 @@ import { useCustomer, type CustomerWithRelations } from "@/hooks/useCustomer";
 import { useAuth } from "@/hooks/useAuth";
 import { documentNumberMatchesSearch, resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { useOrders, type Order } from "@/hooks/useOrders";
-import { useApproveInvoicesForAccounting, useInvoices, useInvoicesPage, type InvoiceListItem } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useInvoicesPage, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
 import {
   CUSTOMER_INVOICE_SORT_FIELDS,
@@ -2872,9 +2872,14 @@ export default function EnhancedCustomerView({
     customerId,
     invoice: invoiceFilter === "all" ? undefined : invoiceFilter,
   });
-  const { data: invoices = [], isLoading: isLoadingInvoices } = useInvoices({
+  const invoicePage = useInvoicesPage({
     customerId,
+    page: 1,
+    pageSize: 50,
   });
+  const invoices = invoicePage.data?.items ?? [];
+  const invoiceTotalCount = invoicePage.data?.pagination?.totalCount ?? invoices.length;
+  const isLoadingInvoices = invoicePage.isLoading;
 
   // Historical customer URLs remain useful after a merge: resolve the
   // archived source record to the retained canonical survivor.
@@ -2903,7 +2908,7 @@ export default function EnhancedCustomerView({
   const tabs = [
     { key: "orders" as const, label: "Orders", count: orders.length },
     { key: "quotes" as const, label: "Quotes", count: quotes.length },
-    { key: "invoices" as const, label: "Invoices", count: invoices.length },
+    { key: "invoices" as const, label: "Invoices", count: invoiceTotalCount },
     ...(!isEmbedded ? [{ key: "transactions" as const, label: "Transactions" }] : []),
     ...(!isEmbedded ? [{ key: "statement" as const, label: "Statement" }] : []),
   ];
