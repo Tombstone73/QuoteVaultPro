@@ -35,18 +35,21 @@ defaults to cloud DEV and never starts a local application. Use these names only
 ```
 PLAYWRIGHT_BASE_URL
 PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN
+PRINTERSHERO_DEV_QA_BACKEND_ORIGIN
+PRINTERSHERO_DEV_QA_EXPECTED_BACKEND_VERSION
 PRINTERSHERO_DEV_QA_EMAIL
 PRINTERSHERO_DEV_QA_PASSWORD
 PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID
-PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG
 ```
 
-For the standard deployment, both origin settings are `https://dev.printershero.com`.
-If DEV moves to another frontend origin, change both settings to that reviewed DEV
-origin. The fixture rejects `printershero.com`, `www.printershero.com`, and
-`api.printershero.com`, then requires `/api/health` to return the approved DEV
-public origin and the authenticated runtime API to classify itself as
-`deployed-dev`. Railway DEV may correctly run with `NODE_ENV=production`.
+For the standard deployment, the reviewed pair is
+`https://dev.printershero.com` and `https://api-dev.printershero.com`.
+The fixture rejects unreviewed and production origins, then calls the V2 backend's
+direct `/health`, `/ready`, and `/version` endpoints before it reads or submits
+credentials. `PRINTERSHERO_DEV_QA_EXPECTED_BACKEND_VERSION` must pin the commit
+being validated. The frontend check is intentionally `/v2/auth/session`: V2
+proxies `/v2/*`, while legacy `/api/*` paths correctly fall through to the V2 SPA.
+Railway DEV may correctly run with `NODE_ENV=production`.
 
 ## Session behavior and safe diagnostics
 
@@ -62,6 +65,16 @@ category, and authenticated-app reachability. It never logs passwords, cookies,
 tokens, or credential values.
 
 ## Running the DEV smoke suite
+
+First run the credential-free deployment gate with the intended DEV commit
+pinned in `PRINTERSHERO_DEV_QA_EXPECTED_BACKEND_VERSION`:
+
+```
+npm run qa:dev-browser:environment
+```
+
+It performs only anonymous GETs and is safe to run before a QA credential is
+available. Once it passes, run the authenticated suite:
 
 ```
 npm run qa:dev-browser

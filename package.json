@@ -175,6 +175,8 @@
     "test:e2e": "playwright test",
     "test:e2e:dev": "playwright test",
     "qa:dev-browser": "playwright test",
+    "qa:dev-browser:config": "tsx e2e/devQaAuth.config.test.ts",
+    "qa:dev-browser:environment": "playwright test --project=dev-environment",
     "v2:quickbooks-queue:pure": "tsx v2/tests/infrastructure/quickBooksBillingQueue.pure.ts && tsx v2/tests/infrastructure/quickBooksQueueRecovery.pure.ts",
     "v2:prepress:hygiene": "tsx v2/tests/infrastructure/prepressQueueHygiene.pure.ts",
     "v2:dev:hygiene:report": "tsx v2/scripts/reportDevHistoricalDataHygiene.ts",

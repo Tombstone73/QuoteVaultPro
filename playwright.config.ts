@@ -60,6 +60,14 @@ export default defineConfig({
       },
       dependencies: ["setup"],
       testMatch: "**/*.spec.ts",
+      testIgnore: "**/dev-qa-environment.spec.ts",
+    },
+
+    // Performs only the V2 DEV frontend/backend identity gate. It has no
+    // authentication dependency and never submits credentials.
+    {
+      name: "dev-environment",
+      testMatch: "**/dev-qa-environment.spec.ts",
     },
   ],
 });
