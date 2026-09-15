@@ -6,11 +6,21 @@ const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "
 describe("Traveler print agent event-driven wake contract", () => {
   const agent = read("windows-print-agent/Program.cs");
   const project = read("windows-print-agent/PrintersHero.PrintAgent.csproj");
+  const realtimeConfiguration = read("windows-print-agent/RealtimeConnectionConfiguration.cs");
 
   test("uses Supabase Realtime directly and never schedules a recurring Railway poll or heartbeat", () => {
     expect(project).toContain('PackageReference Include="Supabase.Realtime"');
-    expect(agent).toContain("new Client(GetRealtimeEndpoint(), new ClientOptions())");
-    expect(agent).toContain("/realtime/v1/websocket");
+    expect(agent).toContain("new Client(realtimeBaseEndpoint, RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey))");
+    expect(agent).toContain("Supabase Realtime endpoint host:");
+    expect(agent).toContain("Supabase publishable key configured: yes.");
+    expect(realtimeConfiguration).toContain('Path = "/realtime/v1"');
+    expect(realtimeConfiguration).toContain("Parameters = new SocketOptionsParameters");
+    expect(realtimeConfiguration).toContain("ApiKey = publishableKey");
+    expect(realtimeConfiguration).not.toContain("/websocket");
+    expect(realtimeConfiguration).not.toContain("apikey=");
+    expect(realtimeConfiguration).not.toContain("vsn=");
+    expect(agent).not.toContain("SetAuth(SupabasePublishableKey)");
+    expect(agent).not.toContain("Bearer {SupabasePublishableKey}");
     expect(agent).not.toContain("QueuePollIntervalMs");
     expect(agent).not.toContain("HeartbeatIntervalMs");
     expect(agent).not.toContain("SendHeartbeatAsync");
@@ -63,5 +73,14 @@ describe("Traveler print agent event-driven wake contract", () => {
       "Traveler navigation succeeded:", "Direct-print source response:",
       "Traveler ready marker reached.", "WebView2 PrintAsync submitted.", "Windows accepted job",
     ]) expect(agent).toContain(marker);
+  });
+
+  test("keeps the agent and setup release version aligned", () => {
+    const setup = read("windows-print-agent/setup-agent.ps1");
+    const readme = read("windows-print-agent/README.md");
+
+    expect(agent).toContain('const string AgentVersion = "1.0.22"');
+    expect(setup).toContain("$script:SetupVersion = '1.0.22'");
+    expect(readme).toContain("Version 1.0.22");
   });
 });

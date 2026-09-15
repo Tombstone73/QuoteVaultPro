@@ -5,6 +5,7 @@
     <PackageReference Include="Supabase.Realtime" Version="7.4.0" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
     <None Update="setup-agent.ps1" CopyToPublishDirectory="PreserveNewest" />
     <None Update="setup-agent.cmd" CopyToPublishDirectory="PreserveNewest" />
     <None Update="README.md" CopyToPublishDirectory="PreserveNewest" />

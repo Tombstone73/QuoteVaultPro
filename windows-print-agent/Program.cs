@@ -17,7 +17,7 @@ record Job(string id, string orderId, int copies, string? printNote, decimal tra
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.21";
+  const string AgentVersion = "1.0.22";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -57,11 +57,7 @@ static class Program {
     var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Token))).ToLowerInvariant();
     return $"printershero:traveler-wake:{tokenHash}";
   }
-  static string GetRealtimeEndpoint() {
-    if (!Uri.TryCreate(SupabaseUrl, UriKind.Absolute, out var origin) || origin.Scheme != Uri.UriSchemeHttps) throw new InvalidOperationException("PRINTERSHERO_SUPABASE_URL must be an HTTPS origin.");
-    var builder = new UriBuilder(origin) { Scheme = Uri.UriSchemeWss, Path = "/realtime/v1/websocket", Query = $"apikey={Uri.EscapeDataString(SupabasePublishableKey)}" };
-    return builder.Uri.ToString();
-  }
+  static string GetRealtimeBaseEndpoint() => RealtimeConnectionConfiguration.GetRealtimeBaseEndpoint(SupabaseUrl);
   static async Task StartRealtimeWakeSubscriber() {
     var retryDelaySeconds = 3;
     while (true) {
@@ -69,7 +65,10 @@ static class Program {
         Interlocked.Exchange(ref RealtimeOpenCount, 0);
         Interlocked.Exchange(ref RealtimeInitialSubscriptionComplete, 0);
         Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0);
-        RealtimeClient = new Client(GetRealtimeEndpoint(), new ClientOptions());
+        var realtimeBaseEndpoint = GetRealtimeBaseEndpoint();
+        Log($"Supabase Realtime endpoint host: {new Uri(realtimeBaseEndpoint).Host}.");
+        Log("Supabase publishable key configured: yes.");
+        RealtimeClient = new Client(realtimeBaseEndpoint, RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey));
         RealtimeClient.AddStateChangedHandler((_, state) => {
           switch (state) {
             case Supabase.Realtime.Constants.SocketState.Open:
@@ -112,7 +111,7 @@ static class Program {
         Volatile.Write(ref RealtimeInitialSubscriptionComplete, 1);
         Log("Supabase Realtime wake subscription established.");
         await RequestQueueDrain("realtime startup catch-up");
-        Log("Queue catch-up completed.");
+        Log("Startup queue catch-up completed.");
         return;
       } catch (Exception ex) {
         RealtimeClient = null;
