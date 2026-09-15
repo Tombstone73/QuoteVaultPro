@@ -25,6 +25,8 @@ describe("direct Traveler printing safety contract", () => {
     expect(bridge).toContain("getOrderTravelerSource(agent.organizationId, job.orderId)");
     expect(bridge).toContain("bridgeAuth");
     expect(source).toContain("The single server-side projection");
+    expect(source).not.toContain("notesInternal");
+    expect(source).not.toContain("internalNotes");
   });
 
   test("missing or invalid bridge credentials cannot read the direct Traveler source", () => {

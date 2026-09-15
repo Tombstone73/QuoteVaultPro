@@ -33,7 +33,6 @@ const travelerSource = {
   contactName: "Jane Doe",
   dueDate: "2026-05-22T00:00:00.000Z",
   priority: "normal",
-  internalNotes: "Pickup, not shipping",
   lineItems: [{ description: "Yard sign", quantity: 25, size: "24 × 18", material: "Coroplast", productionNotes: "Grommets" }],
 };
 
@@ -65,6 +64,17 @@ afterEach(() => {
 });
 
 describe("OrderTravelerPage print-only notes", () => {
+  test("never renders an unsafe internal note even if a legacy payload includes it", async () => {
+    useQueryMock.mockReturnValue({
+      data: { ...travelerSource, internalNotes: "CUSTOMER MUST NEVER SEE THIS" },
+      isLoading: false,
+      error: null,
+    } as any);
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.textContent).not.toContain("CUSTOMER MUST NEVER SEE THIS");
+    expect(container.textContent).toContain("Grommets");
+  });
+
   test("omits the Print Note section when no note is supplied", async () => {
     await renderTraveler();
     expect(container.querySelector('[data-testid="traveler-print-note"]')).toBeNull();

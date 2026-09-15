@@ -408,7 +408,6 @@ export interface OrderTravelerSource {
   contactName?: string | null;
   dueDate?: string | null;
   priority?: string | null;
-  internalNotes?: string | null;
   lineItems: TravelerLineItemSource[];
 }
 
@@ -442,7 +441,6 @@ export const TRAVELER_HEADER_FIELDS: TicketFieldKey[] = [
   "customerName",
   "contactName",
   "dueDate",
-  "internalNotes",
 ];
 
 const TRAVELER_IDENTIFICATION_FIELDS: readonly TicketFieldKey[] = [
@@ -492,8 +490,6 @@ export function buildOrderTravelerData(
         return String(src.contactName || "").trim();
       case "dueDate":
         return formatTicketDate(src.dueDate);
-      case "internalNotes":
-        return String(src.internalNotes || "").trim();
       default:
         return "";
     }

@@ -31,7 +31,6 @@ export async function getOrderTravelerSource(
       jobLabel: orders.label,
       dueDate: orders.dueDate,
       priority: orders.priority,
-      notesInternal: orders.notesInternal,
       contactId: orders.contactId,
       customerName: customers.companyName,
     })
@@ -100,7 +99,6 @@ export async function getOrderTravelerSource(
     contactName,
     dueDate: order.dueDate ?? null,
     priority: order.priority ?? null,
-    internalNotes: order.notesInternal ?? null,
     lineItems: lineItemRows.map((lineItem) => ({
       description: lineItem.description ?? "",
       quantity: Number(lineItem.quantity) || 0,

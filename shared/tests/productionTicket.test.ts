@@ -207,7 +207,6 @@ const baseTraveler: OrderTravelerSource = {
   contactName: "Jane Doe",
   dueDate: "2026-05-22T00:00:00.000Z",
   priority: "normal",
-  internalNotes: "Pickup, not shipping",
   lineItems: [
     { description: "Yard sign", quantity: 25, size: "24 × 18", material: "Coroplast", productionNotes: "Grommets" },
     { description: "Banner", quantity: 2, size: "96 × 36", material: "13oz Vinyl", productionNotes: null },
@@ -234,6 +233,20 @@ describe("buildOrderTravelerData", () => {
     expect(keys).not.toContain("quantity");
     expect(keys).not.toContain("material");
     expect(keys).not.toContain("description");
+  });
+
+  it("never includes internal notes in a customer-visible traveler", () => {
+    const traveler = buildOrderTravelerData({
+      ...baseTraveler,
+      // Deliberately simulate an unsafe legacy payload at the runtime boundary.
+      internalNotes: "CUSTOMER MUST NEVER SEE THIS",
+    } as OrderTravelerSource);
+    expect(traveler.headerRows.map((row) => row.key)).not.toContain("internalNotes");
+    expect(traveler.headerRows.map((row) => row.value).join(" ")).not.toContain("CUSTOMER MUST NEVER SEE THIS");
+  });
+
+  it("keeps production notes on traveler line items", () => {
+    expect(buildOrderTravelerData(baseTraveler).lineItems[0].productionNotes).toBe("Grommets");
   });
 
   it("places the PO directly below the order number", () => {
