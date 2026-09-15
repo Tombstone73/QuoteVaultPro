@@ -1,6 +1,6 @@
 # PrintersHero Windows Traveler Print Agent
 
-Version 1.0.22
+Version 1.0.23
 
 This is the shop-side, outbound-only agent for **Traveler** tickets. It runs
 in the logged-in Windows session because Edge WebView2 and Windows printer

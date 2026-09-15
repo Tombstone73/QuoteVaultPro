@@ -36,3 +36,50 @@ finally
 }
 
 Console.WriteLine("Supabase Realtime 7.4.0 endpoint/options contract passed.");
+
+var postedStaWork = new Queue<Func<Task>>();
+var firstDrainStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var releaseFirstDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var drainCount = 0;
+var concurrentDrains = 0;
+var maxConcurrentDrains = 0;
+var scheduler = new StaQueueDrainScheduler(
+  operation => { postedStaWork.Enqueue(operation); return true; },
+  async _ => {
+    var concurrent = Interlocked.Increment(ref concurrentDrains);
+    maxConcurrentDrains = Math.Max(maxConcurrentDrains, concurrent);
+    var count = Interlocked.Increment(ref drainCount);
+    if (count == 1) {
+      firstDrainStarted.TrySetResult();
+      await releaseFirstDrain.Task;
+    }
+    Interlocked.Decrement(ref concurrentDrains);
+  },
+  _ => { });
+
+var startupCatchup = scheduler.Request("realtime startup catch-up");
+var duplicateWake = scheduler.Request("realtime queue_changed wake");
+Require(postedStaWork.Count == 1, "Startup and duplicate wakes must post only one STA drain.");
+var staDrain = postedStaWork.Dequeue().Invoke();
+await firstDrainStarted.Task;
+var reconnectWake = scheduler.Request("realtime reconnect catch-up");
+Require(postedStaWork.Count == 0, "A wake during an active drain must be coalesced instead of posted concurrently.");
+releaseFirstDrain.TrySetResult();
+await staDrain;
+await Task.WhenAll(startupCatchup, duplicateWake, reconnectWake);
+Require(drainCount == 2, "A wake during an active drain must cause exactly one follow-up drain.");
+Require(maxConcurrentDrains == 1, "No two Traveler queue drains may run concurrently.");
+
+var unavailableDrainCalled = false;
+var unavailableScheduler = new StaQueueDrainScheduler(_ => false, _ => { unavailableDrainCalled = true; return Task.CompletedTask; }, _ => { });
+await AssertFails(unavailableScheduler.Request("dispatcher unavailable"));
+Require(!unavailableDrainCalled, "An unavailable STA dispatcher must not claim or drain jobs.");
+
+Console.WriteLine("Traveler STA dispatch/coalescing contract passed.");
+
+static async Task AssertFails(Task task)
+{
+  try { await task; }
+  catch (InvalidOperationException) { return; }
+  throw new InvalidOperationException("Expected task failure.");
+}

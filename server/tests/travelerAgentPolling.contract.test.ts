@@ -7,6 +7,7 @@ describe("Traveler print agent event-driven wake contract", () => {
   const agent = read("windows-print-agent/Program.cs");
   const project = read("windows-print-agent/PrintersHero.PrintAgent.csproj");
   const realtimeConfiguration = read("windows-print-agent/RealtimeConnectionConfiguration.cs");
+  const staScheduler = read("windows-print-agent/StaQueueDrainScheduler.cs");
 
   test("uses Supabase Realtime directly and never schedules a recurring Railway poll or heartbeat", () => {
     expect(project).toContain('PackageReference Include="Supabase.Realtime"');
@@ -35,14 +36,32 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).not.toContain('Log($"Bearer {Token}")');
   });
 
-  test("catches up on startup and reconnect, while serializing duplicate wakes", () => {
-    expect(agent).toContain('await RequestQueueDrain("realtime startup catch-up")');
-    expect(agent).toContain('RequestQueueDrain("realtime reconnect catch-up")');
-    expect(agent).toContain('RequestQueueDrain("realtime queue_changed wake")');
-    expect(agent).toContain("static readonly SemaphoreSlim QueueDrainGate");
-    expect(agent).toContain("await QueueDrainGate.WaitAsync(0)");
+  test("dispatches startup, reconnect, and Realtime wakes to one explicit STA queue scheduler", () => {
+    expect(agent).toContain("using var staDispatcher = new Control { Visible = false }");
+    expect(agent).toContain("staDispatcher.CreateControl()");
+    expect(agent).toContain("static readonly StaQueueDrainScheduler QueueDrainScheduler");
+    expect(agent).toContain("dispatcher.BeginInvoke");
+    expect(agent).toContain('await ScheduleQueueDrainOnSta("realtime startup catch-up")');
+    expect(agent).toContain('ScheduleQueueDrainOnSta("realtime reconnect catch-up")');
+    expect(agent).toContain('ObserveQueueDrainSignal("realtime queue_changed wake")');
+    expect(agent).not.toContain('RequestQueueDrain("realtime queue_changed wake")');
     expect(agent).toContain("foreach (var job in jobs ?? [])");
     expect(agent).toContain("await Print(job);");
+  });
+
+  test("never lets a Realtime worker create WebView2 or render outside the designated STA", () => {
+    const callbackStart = agent.indexOf("broadcast.AddBroadcastEventHandler");
+    const callbackEnd = agent.indexOf("await channel.Subscribe()", callbackStart);
+    const callback = agent.slice(callbackStart, callbackEnd);
+
+    expect(callback).toContain("ObserveQueueDrainSignal");
+    expect(callback).not.toContain("PrintTraveler");
+    expect(callback).not.toContain("new Form");
+    expect(callback).not.toContain("new WebView2");
+    expect(agent).toContain("Thread.CurrentThread.GetApartmentState() == ApartmentState.STA");
+    expect(agent).toContain("EnsureTravelerStaThread();");
+    expect(agent).toContain("await RunOnTravelerStaAsync(() => PrintTraveler(claim))");
+    expect(staScheduler).toContain("Traveler STA dispatcher is unavailable; queued work was not claimed.");
   });
 
   test("connects the 7.4.0 socket before creating the wake channel and retries initial Realtime failures locally", () => {
@@ -79,8 +98,8 @@ describe("Traveler print agent event-driven wake contract", () => {
     const setup = read("windows-print-agent/setup-agent.ps1");
     const readme = read("windows-print-agent/README.md");
 
-    expect(agent).toContain('const string AgentVersion = "1.0.22"');
-    expect(setup).toContain("$script:SetupVersion = '1.0.22'");
-    expect(readme).toContain("Version 1.0.22");
+    expect(agent).toContain('const string AgentVersion = "1.0.23"');
+    expect(setup).toContain("$script:SetupVersion = '1.0.23'");
+    expect(readme).toContain("Version 1.0.23");
   });
 });

@@ -17,7 +17,7 @@ record Job(string id, string orderId, int copies, string? printNote, decimal tra
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.22";
+  const string AgentVersion = "1.0.23";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -29,8 +29,10 @@ static class Program {
   static readonly HttpClient Http = new();
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
   static readonly HashSet<string> CanonicalTravelerWebHosts = new(StringComparer.OrdinalIgnoreCase) { "www.printershero.com", "dev.printershero.com" };
-  static readonly SemaphoreSlim QueueDrainGate = new(1, 1);
-  static int QueueDrainRequested;
+  static readonly StaQueueDrainScheduler QueueDrainScheduler = new(DispatchQueueDrainToSta, DrainDirectPrintQueue, Log);
+  static Control? StaDispatcher;
+  static int StaDispatcherThreadId;
+  static int AgentShuttingDown;
   static int RealtimeOpenCount;
   static int RealtimeInitialSubscriptionComplete;
   static int RealtimeReconnectCatchupPending;
@@ -41,6 +43,16 @@ static class Program {
     Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
     Log("Agent started.");
     ApplicationConfiguration.Initialize();
+    using var staDispatcher = new Control { Visible = false };
+    staDispatcher.CreateControl();
+    StaDispatcher = staDispatcher;
+    StaDispatcherThreadId = Environment.CurrentManagedThreadId;
+    Application.ApplicationExit += (_, _) => {
+      Interlocked.Exchange(ref AgentShuttingDown, 1);
+      QueueDrainScheduler.Shutdown();
+      StaDispatcher = null;
+    };
+    Log("Traveler STA dispatcher initialized.");
     using var timer = new System.Windows.Forms.Timer { Interval = 1 };
     timer.Tick += async (_, _) => {
       // This is one startup dispatch after WinForms establishes its STA
@@ -53,6 +65,43 @@ static class Program {
     Application.Run(new ApplicationContext());
   }
   static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
+  static bool IsTravelerStaThread() => Environment.CurrentManagedThreadId == StaDispatcherThreadId && Thread.CurrentThread.GetApartmentState() == ApartmentState.STA;
+  static void EnsureTravelerStaThread() {
+    if (!IsTravelerStaThread()) throw new InvalidOperationException("Traveler rendering must run on the designated WinForms STA thread.");
+  }
+  static Task RunOnTravelerStaAsync(Func<Task> operation) {
+    if (IsTravelerStaThread()) return operation();
+    var dispatcher = StaDispatcher;
+    if (Volatile.Read(ref AgentShuttingDown) == 1 || dispatcher is null || dispatcher.IsDisposed || !dispatcher.IsHandleCreated) return Task.FromException(new InvalidOperationException("Traveler STA dispatcher is unavailable; rendering was not started."));
+    var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    try {
+      dispatcher.BeginInvoke(new Action(async () => {
+        try {
+          EnsureTravelerStaThread();
+          await operation();
+          completion.TrySetResult();
+        } catch (Exception ex) { completion.TrySetException(ex); }
+      }));
+    } catch (Exception ex) { completion.TrySetException(ex); }
+    return completion.Task;
+  }
+  static bool DispatchQueueDrainToSta(Func<Task> operation) {
+    var dispatcher = StaDispatcher;
+    if (Volatile.Read(ref AgentShuttingDown) == 1 || dispatcher is null || dispatcher.IsDisposed || !dispatcher.IsHandleCreated) return false;
+    try {
+      dispatcher.BeginInvoke(new Action(async () => {
+        try {
+          EnsureTravelerStaThread();
+          await operation();
+        } catch (Exception ex) { Log($"Traveler STA queue dispatch failed: {ex.Message}"); }
+      }));
+      Log("Queue drain dispatched to STA.");
+      return true;
+    } catch (Exception ex) {
+      Log($"Traveler STA dispatcher unavailable: {ex.Message}");
+      return false;
+    }
+  }
   static string GetWakeTopic() {
     var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Token))).ToLowerInvariant();
     return $"printershero:traveler-wake:{tokenHash}";
@@ -104,13 +153,13 @@ static class Program {
         broadcast.AddBroadcastEventHandler((broadcastSender, response) => {
           if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) {
             Log("Realtime queue_changed wake received.");
-            _ = RequestQueueDrain("realtime queue_changed wake");
+            _ = ObserveQueueDrainSignal("realtime queue_changed wake");
           }
         });
         await channel.Subscribe();
         Volatile.Write(ref RealtimeInitialSubscriptionComplete, 1);
         Log("Supabase Realtime wake subscription established.");
-        await RequestQueueDrain("realtime startup catch-up");
+        await ScheduleQueueDrainOnSta("realtime startup catch-up");
         Log("Startup queue catch-up completed.");
         return;
       } catch (Exception ex) {
@@ -124,19 +173,14 @@ static class Program {
   static async Task CompleteReconnectCatchup() {
     try {
       Log("Supabase Realtime wake subscription restored.");
-      await RequestQueueDrain("realtime reconnect catch-up");
+      await ScheduleQueueDrainOnSta("realtime reconnect catch-up");
       Log("Reconnect queue catch-up completed.");
     } catch (Exception ex) { Log($"Reconnect queue catch-up failed: {ex.Message}"); }
   }
-  static async Task RequestQueueDrain(string reason) {
-    Interlocked.Exchange(ref QueueDrainRequested, 1);
-    if (!await QueueDrainGate.WaitAsync(0)) return;
-    try {
-      do {
-        Interlocked.Exchange(ref QueueDrainRequested, 0);
-        await DrainDirectPrintQueue(reason);
-      } while (Interlocked.Exchange(ref QueueDrainRequested, 0) == 1);
-    } finally { QueueDrainGate.Release(); }
+  static Task ScheduleQueueDrainOnSta(string reason) => QueueDrainScheduler.Request(reason);
+  static async Task ObserveQueueDrainSignal(string reason) {
+    try { await ScheduleQueueDrainOnSta(reason); }
+    catch (Exception ex) { Log($"Queue drain signal failed ({reason}): {ex.Message}"); }
   }
   static async Task DrainDirectPrintQueue(string reason) {
     List<Job>? jobs;
@@ -151,7 +195,7 @@ static class Program {
       await Print(job);
     }
   }
-  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; } if (claim is null) return; Log($"Queue job claimed: {job.id}."); if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); await PrintTraveler(claim); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
+  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; } if (claim is null) return; Log($"Queue job claimed: {job.id}."); if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); await RunOnTravelerStaAsync(() => PrintTraveler(claim)); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
   // The Windows spooler is queried locally; the server never accepts a queue
   // supplied by an operator. Status failures still fail closed at PrintAsync.
   static bool QueueExists(string queue) => PrinterSettings.InstalledPrinters.Cast<string>().Any(name => string.Equals(name, queue, StringComparison.OrdinalIgnoreCase));
@@ -176,6 +220,7 @@ static class Program {
     return travelerUri;
   }
   static async Task PrintTraveler(Claim job) {
+    EnsureTravelerStaThread();
     using var form = new Form { Width = 1, Height = 1, ShowInTaskbar = false, Opacity = 0 };
     using var web = new WebView2 { Dock = DockStyle.Fill };
     form.Controls.Add(web);
