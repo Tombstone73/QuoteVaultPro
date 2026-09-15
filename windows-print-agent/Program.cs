@@ -10,7 +10,11 @@ namespace PrintersHero.PrintAgent;
 record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
 record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 static class Program {
-  const string AgentVersion = "1.0.18";
+  const string AgentVersion = "1.0.19";
+  // Fast enough to make new Travelers feel immediate without busy polling.
+  const int QueuePollIntervalMs = 1500;
+  // Presence monitoring is intentionally independent of the work queue.
+  const int HeartbeatIntervalMs = 60000;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
   static readonly string Token = Environment.GetEnvironmentVariable("PRINTERSHERO_AGENT_TOKEN") ?? "";
   static readonly string TravelerPrinter = (Environment.GetEnvironmentVariable("PRINTERSHERO_TRAVELER_PRINTER") ?? "").Trim();
@@ -18,6 +22,7 @@ static class Program {
   static readonly HttpClient Http = new();
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
   static readonly HashSet<string> CanonicalTravelerWebHosts = new(StringComparer.OrdinalIgnoreCase) { "www.printershero.com", "dev.printershero.com" };
+  static DateTimeOffset nextHeartbeatAt = DateTimeOffset.MinValue;
   [STAThread] static void Main(string[] args) {
     if (args.Contains("--list-printers", StringComparer.OrdinalIgnoreCase)) { foreach (var queue in PrinterSettings.InstalledPrinters.Cast<string>()) Console.WriteLine(queue); return; }
     if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(TravelerPrinter)) throw new InvalidOperationException("PRINTERSHERO_API_BASE_URL, PRINTERSHERO_AGENT_TOKEN, and PRINTERSHERO_TRAVELER_PRINTER are required.");
@@ -30,14 +35,45 @@ static class Program {
       // context. Stopping the timer avoids overlapping WebView2 print jobs.
       timer.Stop();
       try { await Tick(); }
-      finally { timer.Interval = 15000; timer.Start(); }
+      finally { timer.Interval = QueuePollIntervalMs; timer.Start(); }
     };
     timer.Start();
     Application.Run(new ApplicationContext());
   }
   static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
-  static async Task Tick() { try { await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion }); foreach (var job in await Get<List<Job>>("/api/local-bridge/direct-print/jobs") ?? []) await Print(job); } catch (Exception ex) { Log($"Poll failure: {ex.Message}"); } }
-  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch { return; } if (claim is null || string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); await PrintTraveler(claim); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
+  static async Task Tick() {
+    TryHeartbeatIfDue();
+    await PollDirectPrintQueue();
+  }
+  static void TryHeartbeatIfDue() {
+    var now = DateTimeOffset.UtcNow;
+    if (now < nextHeartbeatAt) return;
+    nextHeartbeatAt = now.AddMilliseconds(HeartbeatIntervalMs);
+    _ = SendHeartbeatAsync();
+  }
+  static async Task SendHeartbeatAsync() {
+    try {
+      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion });
+      Log("Heartbeat successful.");
+    } catch (Exception ex) {
+      // A heartbeat outage must not block or disable subsequent queue checks.
+      Log($"Heartbeat failure: {ex.Message}");
+    }
+  }
+  static async Task PollDirectPrintQueue() {
+    List<Job>? jobs;
+    try {
+      jobs = await Get<List<Job>>("/api/local-bridge/direct-print/jobs");
+    } catch (Exception ex) {
+      Log($"Queue poll failure: {ex.Message}");
+      return;
+    }
+    foreach (var job in jobs ?? []) {
+      Log($"Queue job discovered: {job.id}.");
+      await Print(job);
+    }
+  }
+  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; } if (claim is null) return; Log($"Queue job claimed: {job.id}."); if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); await PrintTraveler(claim); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
   // The Windows spooler is queried locally; the server never accepts a queue
   // supplied by an operator. Status failures still fail closed at PrintAsync.
   static bool QueueExists(string queue) => PrinterSettings.InstalledPrinters.Cast<string>().Any(name => string.Equals(name, queue, StringComparison.OrdinalIgnoreCase));
@@ -116,6 +152,7 @@ static class Program {
     var separator = travelerUri.Query.Length > 0 ? "&" : "?";
     var route = $"{travelerUri}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={job.trailingFeedMm}";
     Log($"Traveler navigation host: {travelerUri.Host}.");
+    Log($"Traveler navigation started: {travelerUri.Host}.");
     web.CoreWebView2.Navigate(route);
     await ready.Task.WaitAsync(TimeSpan.FromSeconds(30));
     await WaitForTravelerRender(web, () => sourceStatus);
@@ -125,6 +162,7 @@ static class Program {
     settings.Copies = job.copies;
     settings.ShouldPrintBackgrounds = true;
     settings.ShouldPrintHeaderAndFooter = false;
+    Log("WebView2 PrintAsync submitted.");
     var status = await web.CoreWebView2.PrintAsync(settings);
     Log($"WebView2 print status: {status}.");
     if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}");

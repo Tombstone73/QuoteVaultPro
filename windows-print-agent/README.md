@@ -11,6 +11,12 @@ rendering, and asks Windows to spool it to the mapped queue. `submitted` means
 Windows accepted the spool request; it cannot guarantee paper physically left
 the Epson.
 
+The agent checks the Traveler queue every 1.5 seconds and sends its presence
+heartbeat every 60 seconds. This keeps normal print discovery responsive while
+remaining serial: it never overlaps Traveler rendering or submits duplicate
+jobs. Larger future deployments may use long polling or server push instead of
+frequent polling.
+
 ## Shop workstation setup
 
 No Visual Studio, .NET runtime installation, source editing, or manual task
