@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { capabilityIds } from "../../v2/src/authorization/capabilities";
-import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
+import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_EMAIL, DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
 
 const devEnv = {
@@ -53,6 +53,16 @@ describe("DEV QA full-access provisioning", () => {
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
     expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price", "production.output.reject", "production.run.create", "production.run.execute"]));
     expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "communications.configure"]));
+  });
+
+  test("keeps the M7.8I database administrator floor on a separate non-interactive DEV identity", () => {
+    const plan = devQaM78iPermissionFloorProvisioningPlan(getDevQaProvisioningConfig(devEnv));
+    expect(plan.account.email).toBe(DEV_QA_M78I_PERMISSION_FLOOR_EMAIL);
+    expect(plan.account.email).toContain(".invalid");
+    expect(plan.account.email).not.toBe(devQaM78iOperationalProvisioningPlan(getDevQaProvisioningConfig(devEnv)).account.email);
+    expect(plan.permissionSet).toMatchObject({ name: DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, principalKind: "staff" });
+    expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES);
+    expect(plan.permissionSet.capabilities).toEqual(["permissions.manageSets", "permissions.assignStaff"]);
   });
 
   test("keeps platform and structural ownership outside the V2 QA permission set", () => {

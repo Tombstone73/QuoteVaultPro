@@ -1,7 +1,8 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
+import { devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../../server/lib/devQaProvisioningGuard";
 import { auditLogs, authIdentities, organizations, userOrganizations, users } from "../../shared/schema";
 
@@ -14,7 +15,9 @@ async function provision() {
     throw new Error("PRINTERSHERO_DEV_QA_PERMISSION_PROFILE must be either 'full' or 'm78i'.");
   }
   const plan = permissionProfile === "m78i" ? devQaM78iOperationalProvisioningPlan(config) : devQaFullAccessProvisioningPlan(config);
+  const permissionFloorPlan = permissionProfile === "m78i" ? devQaM78iPermissionFloorProvisioningPlan(config) : undefined;
   const passwordHash = await bcrypt.hash(config.password, 12);
+  const permissionFloorPasswordHash = permissionFloorPlan ? await bcrypt.hash(randomBytes(48).toString("base64url"), 12) : undefined;
   databaseModule = await import("../../server/db");
   const { db } = databaseModule;
 
@@ -26,6 +29,7 @@ async function provision() {
     if (permissionProfile === "m78i" && organization.name !== "PrintersHero M7 QA") {
       throw new Error("The m78i permission profile is restricted to the verified PrintersHero M7 QA organization.");
     }
+    if (permissionFloorPlan?.account.email === plan.account.email) throw new Error("The M7.8I permission-floor identity must remain distinct from the QA browser identity.");
 
     const [existingUser] = await tx.select().from(users).where(eq(users.email, plan.account.email)).limit(1);
     if (existingUser && existingUser.accountType !== "INTERNAL_USER") throw new Error("Configured DEV QA email belongs to a non-internal identity; refusing to modify it.");
@@ -46,6 +50,36 @@ async function provision() {
     await tx.execute(sql`UPDATE user_organizations SET is_active=true,updated_at=${now} WHERE user_id=${user.id} AND organization_id=${config.organizationId}`);
 
     await tx.execute(sql`INSERT INTO v2_permission_organization_state(organization_id) VALUES(${config.organizationId}) ON CONFLICT DO NOTHING`);
+    if (permissionFloorPlan && permissionFloorPasswordHash) {
+      const [existingFloorUser] = await tx.select().from(users).where(eq(users.email, permissionFloorPlan.account.email)).limit(1);
+      if (existingFloorUser && existingFloorUser.accountType !== "INTERNAL_USER") throw new Error("The DEV QA permission-floor email belongs to a non-internal identity; refusing to modify it.");
+      if (existingFloorUser) {
+        const otherFloorMembership = await tx.select({ organizationId: userOrganizations.organizationId }).from(userOrganizations).where(and(eq(userOrganizations.userId, existingFloorUser.id), ne(userOrganizations.organizationId, config.organizationId))).limit(1);
+        if (otherFloorMembership.length > 0) throw new Error("The DEV QA permission-floor identity already has another organization membership; refusing to modify it.");
+      }
+      const floorUser = existingFloorUser
+        ? (await tx.update(users).set({ firstName: permissionFloorPlan.account.firstName, lastName: permissionFloorPlan.account.lastName, role: permissionFloorPlan.account.role, isAdmin: permissionFloorPlan.account.isAdmin, isPlatformAdmin: false, isPlatformDeveloper: false, mustSetPassword: false, lastActiveOrgId: config.organizationId, updatedAt: now }).where(eq(users.id, existingFloorUser.id)).returning())[0]
+        : (await tx.insert(users).values({ email: permissionFloorPlan.account.email, firstName: permissionFloorPlan.account.firstName, lastName: permissionFloorPlan.account.lastName, role: permissionFloorPlan.account.role, isAdmin: permissionFloorPlan.account.isAdmin, isPlatformAdmin: false, isPlatformDeveloper: false, mustSetPassword: false, lastActiveOrgId: config.organizationId }).returning())[0];
+      if (!floorUser) throw new Error("DEV QA permission-floor identity could not be created.");
+      await tx.insert(authIdentities).values({ userId: floorUser.id, provider: "password", passwordHash: permissionFloorPasswordHash, passwordSetAt: now }).onConflictDoUpdate({ target: [authIdentities.userId, authIdentities.provider], set: { passwordHash: permissionFloorPasswordHash, passwordSetAt: now, updatedAt: now } });
+      await tx.insert(userOrganizations).values({ userId: floorUser.id, organizationId: config.organizationId, role: permissionFloorPlan.membership.role, isDefault: true }).onConflictDoUpdate({ target: [userOrganizations.userId, userOrganizations.organizationId], set: { role: permissionFloorPlan.membership.role, isDefault: true, updatedAt: now } });
+      await tx.execute(sql`UPDATE user_organizations SET is_active=true,updated_at=${now} WHERE user_id=${floorUser.id} AND organization_id=${config.organizationId}`);
+      const floorNormalizedName = permissionFloorPlan.permissionSet.name.toLocaleLowerCase("en-US");
+      const existingFloorSet = await tx.execute<{ id: string; source_template_key: string | null; principal_kind: string }>(sql`SELECT id,source_template_key,principal_kind FROM v2_permission_sets WHERE organization_id=${config.organizationId} AND normalized_name=${floorNormalizedName} FOR UPDATE`);
+      let floorPermissionSetId = existingFloorSet.rows[0]?.id;
+      if (existingFloorSet.rows[0] && (existingFloorSet.rows[0].source_template_key !== null || existingFloorSet.rows[0].principal_kind !== permissionFloorPlan.permissionSet.principalKind)) throw new Error("DEV QA permission-floor set name is already reserved by a non-custom Staff set.");
+      if (!floorPermissionSetId) {
+        const insertedFloorSet = await tx.execute<{ id: string }>(sql`INSERT INTO v2_permission_sets(organization_id,name,normalized_name,description,principal_kind) VALUES(${config.organizationId},${permissionFloorPlan.permissionSet.name},${floorNormalizedName},${permissionFloorPlan.permissionSet.description},${permissionFloorPlan.permissionSet.principalKind}) RETURNING id`);
+        floorPermissionSetId = insertedFloorSet.rows[0]?.id;
+      } else {
+        await tx.execute(sql`UPDATE v2_permission_sets SET name=${permissionFloorPlan.permissionSet.name},description=${permissionFloorPlan.permissionSet.description},active=true,updated_at=now() WHERE id=${floorPermissionSetId} AND organization_id=${config.organizationId}`);
+      }
+      if (!floorPermissionSetId) throw new Error("DEV QA permission-floor set could not be created.");
+      await tx.execute(sql`DELETE FROM v2_permission_set_capabilities WHERE organization_id=${config.organizationId} AND permission_set_id=${floorPermissionSetId} AND capability_id NOT IN (${sql.join(permissionFloorPlan.permissionSet.capabilities.map((capability) => sql`${capability}`), sql`, `)})`);
+      for (const capability of permissionFloorPlan.permissionSet.capabilities) await tx.execute(sql`INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES(${config.organizationId},${floorPermissionSetId},${capability}) ON CONFLICT DO NOTHING`);
+      await tx.execute(sql`INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id,assignment_source) VALUES(${config.organizationId},${floorUser.id},${floorPermissionSetId},'dev_qa_full_access') ON CONFLICT(organization_id,user_id,permission_set_id) DO UPDATE SET active=true,assignment_source='dev_qa_full_access',updated_at=now()`);
+      await tx.execute(sql`UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=${config.organizationId} AND user_id=${floorUser.id} AND permission_set_id<>${floorPermissionSetId} AND active=true`);
+    }
     const normalizedName = plan.permissionSet.name.toLocaleLowerCase("en-US");
     const existingSet = await tx.execute<{ id: string; source_template_key: string | null; principal_kind: string }>(sql`SELECT id,source_template_key,principal_kind FROM v2_permission_sets WHERE organization_id=${config.organizationId} AND normalized_name=${normalizedName} FOR UPDATE`);
     let permissionSetId = existingSet.rows[0]?.id;

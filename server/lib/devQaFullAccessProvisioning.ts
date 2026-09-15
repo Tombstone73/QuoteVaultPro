@@ -22,6 +22,20 @@ export const DEV_QA_M78I_PERMISSION_SET_NAME = "DEV QA M7.8I Operations";
 export const DEV_QA_M78I_PERMISSION_SET_DESCRIPTION = "Dedicated DEV-only least-privilege authority for synthetic M7.8I live validation.";
 
 /**
+ * The physical administrator-floor constraint requires one active Staff
+ * identity with both capabilities. This non-interactive `.invalid` identity
+ * exists only in the verified DEV QA tenant so the M7.8I actor need not hold
+ * permission-administration authority.
+ */
+export const DEV_QA_M78I_PERMISSION_FLOOR_EMAIL = "dev-qa-permission-floor@printershero.invalid";
+export const DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES = Object.freeze([
+  "permissions.manageSets",
+  "permissions.assignStaff",
+] as const satisfies readonly Capability[]);
+export const DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME = "DEV QA Permission Floor";
+export const DEV_QA_M78I_PERMISSION_FLOOR_SET_DESCRIPTION = "Dedicated DEV-only non-interactive administrator-floor guardian for M7.8I QA.";
+
+/**
  * The reviewed V2 vocabulary contains tenant-scoped operational capabilities
  * only. Platform administration and organization ownership remain outside this
  * set, on the account and membership models respectively.
@@ -40,6 +54,19 @@ export function devQaFullAccessProvisioningPlan(config: DevQaProvisioningConfig)
 
 export function devQaM78iOperationalProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
   return devQaProvisioningPlan(config, DEV_QA_M78I_PERMISSION_SET_NAME, DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
+}
+
+export function devQaM78iPermissionFloorProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
+  return Object.freeze({
+    account: Object.freeze({ email: DEV_QA_M78I_PERMISSION_FLOOR_EMAIL, firstName: "DEV QA", lastName: "Permission Floor", role: "admin", isAdmin: true, isPlatformAdmin: false, isPlatformDeveloper: false }),
+    membership: Object.freeze({ organizationId: config.organizationId, role: "admin" }),
+    permissionSet: Object.freeze({
+      name: DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME,
+      description: DEV_QA_M78I_PERMISSION_FLOOR_SET_DESCRIPTION,
+      principalKind: "staff",
+      capabilities: DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES,
+    }),
+  });
 }
 
 function devQaProvisioningPlan(
