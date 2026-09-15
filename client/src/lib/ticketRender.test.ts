@@ -57,6 +57,7 @@ describe("THERMAL_PRINT_STYLES", () => {
     expect(THERMAL_FEED_SPACER_DEFAULT).toBe("1.5in");
     expect(THERMAL_PRINT_STYLES).toContain(".thermal-feed-spacer");
     expect(THERMAL_PRINT_STYLES).toContain("var(--thermal-feed-spacer, 1.5in)");
+    expect(THERMAL_PRINT_STYLES).toContain("height: var(--thermal-feed-spacer, 1.5in) !important");
   });
 });
 

@@ -17,11 +17,14 @@ type Align = "left" | "center" | "right";
 export function ThermalPrintPage({
   children,
   feedSpacer = THERMAL_FEED_SPACER_DEFAULT,
+  forceFeedSentinel = false,
   style,
   ready = false,
 }: {
   children: ReactNode;
   feedSpacer?: string;
+  /** Ensures direct Windows print jobs have dark raster content at the feed endpoint. */
+  forceFeedSentinel?: boolean;
   style?: CSSProperties;
   /** Allows the local print agent to wait for canonical React rendering. */
   ready?: boolean;
@@ -44,7 +47,7 @@ export function ThermalPrintPage({
       }}
     >
       {children}
-      <ThermalFeedSpacer height={feedSpacer} />
+      <ThermalFeedSpacer height={feedSpacer} forcePrintableEndMark={forceFeedSentinel} />
     </div>
   );
 }
@@ -178,8 +181,41 @@ export function ThermalQrBlock({
   );
 }
 
-export function ThermalFeedSpacer({ height = THERMAL_FEED_SPACER_DEFAULT }: { height?: string }) {
-  return <div className="thermal-feed-spacer" style={{ "--thermal-feed-spacer": height } as CSSProperties} />;
+export function ThermalFeedSpacer({
+  height = THERMAL_FEED_SPACER_DEFAULT,
+  forcePrintableEndMark = false,
+}: {
+  height?: string;
+  /** Adds a dark raster mark at the bottom without changing the spacer height. */
+  forcePrintableEndMark?: boolean;
+}) {
+  const effectiveFeedMm = height.endsWith("mm") ? height.slice(0, -2) : undefined;
+  return (
+    <div
+      className="thermal-feed-spacer"
+      data-effective-feed-mm={effectiveFeedMm}
+      data-traveler-feed-spacer="true"
+      style={{
+        "--thermal-feed-spacer": height,
+        ...(forcePrintableEndMark ? { position: "relative" } : {}),
+      } as CSSProperties}
+    >
+      {forcePrintableEndMark ? (
+        <span
+          data-traveler-feed-sentinel="true"
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: "2mm",
+            width: "2px",
+            height: "2px",
+            background: "#000",
+          }}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 /** Full-screen centered status message (loading / error states). */

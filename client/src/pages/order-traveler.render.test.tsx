@@ -115,13 +115,36 @@ describe("OrderTravelerPage print-only notes", () => {
     expect(container.querySelector('[data-traveler-ready="true"]')).toBeNull();
   });
 
-  test("adds the job snapshot feed to the standard spacer only for direct printing", async () => {
-    await renderTraveler(new URLSearchParams({ directPrintJobId: "job-feed", feedMm: "12.7" }));
+  test.each([
+    ["0", "38.1mm"],
+    ["20", "58.1mm"],
+    ["50", "88.1mm"],
+  ])("adds %s mm job feed to the standard direct-print spacer", async (feedMm, expectedSpacer) => {
+    await renderTraveler(new URLSearchParams({ directPrintJobId: "job-feed", feedMm }));
     const directArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
-    expect(directArea.style.getPropertyValue("--thermal-feed-spacer")).toBe("50.8mm");
+    const directSpacer = directArea.querySelector('[data-traveler-feed-spacer="true"]') as HTMLElement;
+    expect(directArea.style.getPropertyValue("--thermal-feed-spacer")).toBe(expectedSpacer);
+    expect(directSpacer.dataset.effectiveFeedMm).toBe(expectedSpacer.replace("mm", ""));
+  });
 
+  test("renders a dark feed sentinel inside the direct-print spacer without extending it", async () => {
+    await renderTraveler(new URLSearchParams({ directPrintJobId: "job-feed", feedMm: "20" }));
+    const directArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
+    const directSpacer = directArea.querySelector('[data-traveler-feed-spacer="true"]') as HTMLElement;
+    const sentinel = directSpacer.querySelector('[data-traveler-feed-sentinel="true"]') as HTMLElement;
+
+    expect(sentinel).toBeTruthy();
+    expect(directSpacer.contains(sentinel)).toBe(true);
+    expect(directSpacer.style.getPropertyValue("--thermal-feed-spacer")).toBe("58.1mm");
+    expect(sentinel.style.position).toBe("absolute");
+    expect(sentinel.style.bottom).toBe("0px");
+    expect(sentinel.style.background).toBe("rgb(0, 0, 0)");
+  });
+
+  test("keeps browser-print Travelers free of the direct-print endpoint sentinel", async () => {
     await renderTraveler();
     const browserArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
     expect(browserArea.style.getPropertyValue("--thermal-feed-spacer")).toBe("1.5in");
+    expect(browserArea.querySelector('[data-traveler-feed-sentinel="true"]')).toBeNull();
   });
 });

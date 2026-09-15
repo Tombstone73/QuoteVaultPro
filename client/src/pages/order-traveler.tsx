@@ -81,7 +81,7 @@ type TravelerRendererProps = {
 
 function DirectPrintTravelerRenderer({ orderId, directPrintJobId, printNote, feedMm }: TravelerRendererProps & { directPrintJobId: string }) {
   const source = useOrderTraveler(orderId, directPrintJobId);
-  return <TravelerDocument {...source} orderId={orderId} printNote={printNote} feedMm={feedMm} />;
+  return <TravelerDocument {...source} orderId={orderId} printNote={printNote} feedMm={feedMm} forceFeedSentinel />;
 }
 
 function InteractiveTravelerRenderer({ orderId, printNote, feedMm }: TravelerRendererProps) {
@@ -130,9 +130,10 @@ type TravelerDocumentProps = {
   printNote: string | null;
   feedMm: number;
   controls?: ReactNode;
+  forceFeedSentinel?: boolean;
 };
 
-function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, controls }: TravelerDocumentProps) {
+function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, controls, forceFeedSentinel = false }: TravelerDocumentProps) {
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const template = useMemo(() => loadTicketTemplate(), []);
@@ -170,7 +171,7 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
       {controls}
 
       <div className="mx-auto max-w-md px-4 py-6">
-        <ThermalPrintPage ready feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)}>
+        <ThermalPrintPage ready feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)} forceFeedSentinel={forceFeedSentinel}>
           <ThermalValue align="center" size="normal" style={{ textTransform: "uppercase" }}>
             Order Traveler
           </ThermalValue>

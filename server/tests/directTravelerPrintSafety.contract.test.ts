@@ -123,6 +123,9 @@ describe("direct Traveler printing safety contract", () => {
     expect(schema).toContain("z.coerce.number().min(0).max(100)");
     expect(routes).toContain("trailingFeedMm: destination.trailingFeedMm");
     expect(traveler).toContain("travelerFeedSpacerMm(feedMm)");
+    expect(traveler).toContain("forceFeedSentinel");
+    expect(traveler).toContain("<TravelerDocument {...source} orderId={orderId} printNote={printNote} feedMm={feedMm} forceFeedSentinel />");
+    expect(read("client/src/components/production/ticketPrintPrimitives.tsx")).toContain('data-traveler-feed-sentinel="true"');
     expect(profileForm).toContain("Additional trailing feed (mm)");
     expect(profileForm).toContain("Added after the standard 38.1 mm / 1.5 in tear-off space.");
     expect(agent).toContain("CultureInfo.InvariantCulture");
