@@ -1566,55 +1566,9 @@ export function pbv2ToPricingAddons(
   const tree = asRecord(treeJson);
   if (!tree) throw new Error("Invalid PBV2 treeJson");
 
-  const nodes = extractNodes(tree);
-  const edges = extractEdges(tree);
-
-  const nodesById: Record<string, NodeRec> = {};
-  for (const n of nodes) nodesById[n.id] = n;
-
-  const explicitSelections = (() => {
-    if (!selections) return {};
-    if ((selections as any).explicitSelections && typeof (selections as any).explicitSelections === "object") {
-      return (selections as any).explicitSelections as Record<string, unknown>;
-    }
-    return selections as Record<string, unknown>;
-  })();
-
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
-
-  const inputDefaultsBySelectionKey: Record<string, unknown> = {};
-  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
-  for (const n of nodes) {
-    if (n.status !== "ENABLED") continue;
-    if (n.type !== "INPUT") continue;
-    const payload = extractInputPayload(n.raw);
-    const selectionKey = payload && isNonEmptyString((payload as any).selectionKey) ? String((payload as any).selectionKey) : null;
-    if (!selectionKey) continue;
-    const def = extractInputDefault(n.raw);
-    if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
-
-    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
-    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
-      const constraints = payload ? asRecord((payload as any).constraints) : null;
-      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
-      const options = enumRec ? (enumRec as any).options : undefined;
-      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
-    }
-  }
-
-  const evalCtx: EvalCtx = {
-    selections: explicitSelections,
-    inputDefaultsBySelectionKey,
-    inputEnumOptionsBySelectionKey,
-    computeOutputsByNodeId: {},
-    env: envMap,
-    pricebook: opts?.pricebook,
-  };
-
-  const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
-
-  // Evaluate COMPUTE nodes in dependency order (active subset)
-  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+  const prepared = buildEvalCtxForTree(tree, selections, envMap, opts);
+  const { nodes, explicitSelections, evalCtx, activeNodeIds } = prepared;
 
   // Compute base price from meta.pricingV2 BEFORE adding node/choice deltas.
   // Choice-level pricing overrides resolve here and then additive modifiers run afterward.
@@ -1772,54 +1726,9 @@ export function pbv2ToMaterialEffects(
   if (!tree) throw new Error("Invalid PBV2 treeJson");
 
   const { table: symbolTable } = buildSymbolTable(treeJson);
-
-  const nodes = extractNodes(tree);
-  const edges = extractEdges(tree);
-
-  const nodesById: Record<string, NodeRec> = {};
-  for (const n of nodes) nodesById[n.id] = n;
-
-  const explicitSelections = (() => {
-    if (!selections) return {};
-    if ((selections as any).explicitSelections && typeof (selections as any).explicitSelections === "object") {
-      return (selections as any).explicitSelections as Record<string, unknown>;
-    }
-    return selections as Record<string, unknown>;
-  })();
-
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
-
-  const inputDefaultsBySelectionKey: Record<string, unknown> = {};
-  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
-  for (const n of nodes) {
-    if (n.status !== "ENABLED") continue;
-    if (n.type !== "INPUT") continue;
-    const payload = extractInputPayload(n.raw);
-    const selectionKey = payload && isNonEmptyString((payload as any).selectionKey) ? String((payload as any).selectionKey) : null;
-    if (!selectionKey) continue;
-    const def = extractInputDefault(n.raw);
-    if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
-
-    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
-    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
-      const constraints = payload ? asRecord((payload as any).constraints) : null;
-      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
-      const options = enumRec ? (enumRec as any).options : undefined;
-      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
-    }
-  }
-
-  const evalCtx: EvalCtx = {
-    selections: explicitSelections,
-    inputDefaultsBySelectionKey,
-    inputEnumOptionsBySelectionKey,
-    computeOutputsByNodeId: {},
-    env: envMap,
-    pricebook: opts?.pricebook,
-  };
-
-  const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
-  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+  const prepared = buildEvalCtxForTree(tree, selections, envMap, opts);
+  const { nodes, evalCtx, activeNodeIds } = prepared;
 
   const materials: Array<MaterialEffect & { __idx: number }> = [];
   const activePriceNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "PRICE" && activeNodeIds.has(n.id));
@@ -1886,54 +1795,9 @@ export function pbv2ToChildItemProposals(
   if (!tree) throw new Error("Invalid PBV2 treeJson");
 
   const { table: symbolTable } = buildSymbolTable(treeJson);
-
-  const nodes = extractNodes(tree);
-  const edges = extractEdges(tree);
-
-  const nodesById: Record<string, NodeRec> = {};
-  for (const n of nodes) nodesById[n.id] = n;
-
-  const explicitSelections = (() => {
-    if (!selections) return {};
-    if ((selections as any).explicitSelections && typeof (selections as any).explicitSelections === "object") {
-      return (selections as any).explicitSelections as Record<string, unknown>;
-    }
-    return selections as Record<string, unknown>;
-  })();
-
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
-
-  const inputDefaultsBySelectionKey: Record<string, unknown> = {};
-  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
-  for (const n of nodes) {
-    if (n.status !== "ENABLED") continue;
-    if (n.type !== "INPUT") continue;
-    const payload = extractInputPayload(n.raw);
-    const selectionKey = payload && isNonEmptyString((payload as any).selectionKey) ? String((payload as any).selectionKey) : null;
-    if (!selectionKey) continue;
-    const def = extractInputDefault(n.raw);
-    if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
-
-    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
-    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
-      const constraints = payload ? asRecord((payload as any).constraints) : null;
-      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
-      const options = enumRec ? (enumRec as any).options : undefined;
-      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
-    }
-  }
-
-  const evalCtx: EvalCtx = {
-    selections: explicitSelections,
-    inputDefaultsBySelectionKey,
-    inputEnumOptionsBySelectionKey,
-    computeOutputsByNodeId: {},
-    env: envMap,
-    pricebook: opts?.pricebook,
-  };
-
-  const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
-  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+  const prepared = buildEvalCtxForTree(tree, selections, envMap, opts);
+  const { nodes, evalCtx, activeNodeIds } = prepared;
 
   const childItems: Array<ChildItemProposal & { __idx: number }> = [];
   const activePriceNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "PRICE" && activeNodeIds.has(n.id));

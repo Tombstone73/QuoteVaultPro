@@ -61,8 +61,10 @@ describe("PBV2 canonical zero-option tree", () => {
             value: "yes",
             label: "Grommets",
             pricingImpact: [{ mode: "addPerUnit", centsPerUnit: 200, unit: "perPiece" }],
+            pricingOverride: { mode: "set_base_rate", amount: 250, unit: "perSqft" },
             materialOverride: { materialId: "grommet_material" },
             inventoryConsumption: [{ materialId: "grommet_material", quantityBasis: "each", multiplier: 4 }],
+            workflowTags: ["requires-grommets"],
           }],
           weightImpact: [{ mode: "addFlat", oz: 12 }],
         },
@@ -87,7 +89,11 @@ describe("PBV2 canonical zero-option tree", () => {
     });
     expect(evaluated).toMatchObject({ optionsPrice: 0, selectedOptions: [], optionPriceContributions: [], visibleNodeIds: [] });
     expect(pbv2ToRuntimeSelectionContext(allDisabledTree as any, { grommets: { value: "yes" } })).toMatchObject({
-      selectedChoices: {}, resolvedChoices: {}, visibleNodeIds: [],
+      selectedChoices: {},
+      resolvedChoices: {},
+      visibleNodeIds: [],
+      workflowTags: [],
+      appliedPricingOverrides: [],
     });
 
     // The options evaluator leaves the existing base-price result unchanged;

@@ -242,6 +242,86 @@ function expectOptionRuleError(fn: () => unknown): Pbv2OptionRuleValidationError
 }
 
 describe("PricingService pricing matrix variable resolution", () => {
+  test("uses an enabled Banner Weight default to resolve its pricing row", () => {
+    const tree = {
+      schemaVersion: 2 as const,
+      rootNodeIds: ["banner_weight"],
+      nodes: {
+        banner_weight: {
+          id: "banner_weight",
+          kind: "question" as const,
+          status: "ENABLED" as const,
+          label: "Banner Weight",
+          input: {
+            type: "select" as const,
+            selectionKey: "banner_weight",
+            defaultValue: "13oz",
+          },
+          choices: [{ value: "13oz", label: "13oz" }],
+        },
+      },
+      pricingMatrix: {
+        dimensions: ["banner_weight"],
+        rows: [{ when: { banner_weight: "13oz" }, variables: { base_price: 125 } }],
+      },
+      meta: { pricingV2: { base: { perSqftCents: 100 } } },
+    };
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 56,
+      heightIn: 50,
+      quantity: 1,
+      pbv2ExplicitSelections: {},
+      pricingFormulaOverride: "(ceil(w / 12) * ceil(h / 12)) * base_price",
+      formulaSourceMode: "pricingFormula",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBe(31.25);
+    expect(result.debug?.baseRateUsed).toBe(1.25);
+  });
+
+  test("ignores a stale default for a disabled matrix option and falls back to base pricing", () => {
+    const tree = {
+      schemaVersion: 2 as const,
+      rootNodeIds: [],
+      nodes: {
+        banner_weight: {
+          id: "banner_weight",
+          kind: "question" as const,
+          status: "DISABLED" as const,
+          label: "Banner Weight",
+          input: {
+            type: "select" as const,
+            selectionKey: "banner_weight",
+            defaultValue: "13oz",
+          },
+          choices: [{ value: "13oz", label: "13oz" }],
+        },
+      },
+      pricingMatrix: {
+        dimensions: ["banner_weight"],
+        rows: [{ when: { banner_weight: "13oz" }, variables: { base_price: 125 } }],
+      },
+      meta: { pricingV2: { base: { perSqftCents: 100 } } },
+    };
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 56,
+      heightIn: 50,
+      quantity: 1,
+      pbv2ExplicitSelections: { banner_weight: { value: "13oz" } },
+      pricingFormulaOverride: "(ceil(w / 12) * ceil(h / 12)) * base_price",
+      formulaSourceMode: "pricingFormula",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBe(25);
+    expect(result.debug?.baseRateUsed).toBe(1);
+  });
+
   test.each([
     ["3mm", "choice_single", 30],
     ["3mm", "choice_double", 34.5],

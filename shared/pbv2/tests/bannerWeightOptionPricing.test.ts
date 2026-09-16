@@ -214,4 +214,53 @@ describe("PBV2 banner weight option pricing params", () => {
 
     expect(out.addOnCents).toBe(0);
   });
+
+  test("disabled option defaults are not available to active pricing components", () => {
+    const tree = {
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: ["weight", "price_root"],
+      nodes: [
+        {
+          id: "weight",
+          type: "INPUT",
+          status: "DISABLED",
+          input: {
+            selectionKey: "weight",
+            valueType: "ENUM",
+            defaultValue: "13OZ",
+            constraints: {
+              enum: {
+                options: [{ value: "13OZ", pricingParams: { rateCents: 125 } }],
+              },
+            },
+          },
+        },
+        {
+          id: "price_root",
+          type: "PRICE",
+          status: "ENABLED",
+          price: {
+            components: [{
+              kind: "FLAT",
+              unitPriceRef: {
+                op: "ref",
+                ref: {
+                  kind: "optionValueParamRef",
+                  selectionKey: "weight",
+                  paramPath: "pricingParams.rateCents",
+                  defaultValue: 0,
+                },
+              },
+            }],
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const output = pbv2ToPricingAddons(tree as any, { explicitSelections: { weight: "13OZ" } }, {});
+
+    expect(output.addOnCents).toBe(0);
+  });
 });

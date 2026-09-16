@@ -1617,6 +1617,24 @@ function resolvePricingMatrixVariablesForPricing(
   selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined
 ): ProductOptionPricingMatrixResolution {
   const pricingMatrix = extractProductOptionPricingMatrix(tree);
+  const matrixDimensions = pricingMatrix?.dimensions ?? [];
+  const treeOptionKeys = new Set(collectTreeOptionGroupKeys(tree));
+  const runtimeVisibility = resolveRuntimeVisibility(tree, {
+    schemaVersion: 2,
+    selected: toSelectionEntryMap(selections),
+  });
+  const visibleOptionKeys = new Set(
+    collectVisibleOptionGroupKeys(tree, runtimeVisibility.visibleNodeIds)
+  );
+
+  // A matrix dimension backed by an inactive runtime option must not select a
+  // pricing row from a stale/default value.  Treat that matrix as inactive so
+  // PBV2 falls back to the product's normal base-pricing model.  Dimensions
+  // not represented by a PBV2 option are preserved for legacy compatibility.
+  if (matrixDimensions.some((dimension) => treeOptionKeys.has(dimension) && !visibleOptionKeys.has(dimension))) {
+    return { variables: {}, ignoredVariables: [], errors: [] };
+  }
+
   const resolution = resolveProductOptionPricingMatrix({
     pricingMatrix,
     selections,
@@ -1676,14 +1694,24 @@ function resolveRuleValidatedSelectionsForPricing(
   selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined
 ): { selected: Record<string, { value?: any; note?: string }>; ruleEvaluation?: ProductOptionRuleEvaluationResult } {
   const rules = extractProductOptionRules(tree);
-  if (rules.length === 0) {
-    return { selected: toSelectionEntryMap(selections) };
-  }
-
+  const submittedSelections = toSelectionEntryMap(selections);
   const runtimeVisibility = resolveRuntimeVisibility(tree, {
     schemaVersion: 2,
-    selected: toSelectionEntryMap(selections),
+    selected: submittedSelections,
   });
+
+  if (rules.length === 0) {
+    // Default and stale selection resolution is canonical even when the tree
+    // has no option rules.  Preserve only values that are not owned by a PBV2
+    // node (legacy matrix dimensions); disabled/hidden PBV2 options are
+    // intentionally absent from the effective runtime selection set.
+    const treeOptionKeys = new Set(collectTreeOptionGroupKeys(tree));
+    const selected = toSelectionEntryMap(runtimeVisibility.effectiveSelections);
+    for (const [selectionKey, entry] of Object.entries(submittedSelections)) {
+      if (!treeOptionKeys.has(selectionKey)) selected[selectionKey] = entry;
+    }
+    return { selected };
+  }
 
   const evaluateVisibleRules = (visibility: ResolvedRuntimeVisibility) => evaluateProductOptionRules({
     rules,
