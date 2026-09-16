@@ -254,6 +254,7 @@ export const ROUTES = {
   labels: "/shipping",
   reports: "/reports",
   dailyProductionReport: "/reports/daily-production",
+  accountsReceivableReport: "/reports/accounts-receivable",
   finance: "/payments",
 
   // Misc
