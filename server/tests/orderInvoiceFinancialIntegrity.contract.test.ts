@@ -11,11 +11,11 @@ async function source(file: string) {
 describe("forward Order to Invoice financial integrity", () => {
   it("derives exact customer exposure from invoice lifecycle balances", () => {
     const exposure = buildCustomerCreditExposure("1000.00", [
-      { status: "draft", balanceDue: "125.25" },
-      { status: "sent", balanceDue: "200.10" },
-      { status: "partially_paid", balanceDue: "49.65" },
-      { status: "paid", balanceDue: "0.00" },
-      { status: "void", balanceDue: "999.00" },
+      { status: "draft", remainingCents: 12_525, approvedForAccounting: false },
+      { status: "billed", remainingCents: 20_010, approvedForAccounting: true },
+      { status: "partially_paid", remainingCents: 4_965, approvedForAccounting: true },
+      { status: "paid", remainingCents: 0, approvedForAccounting: true },
+      { status: "void", remainingCents: 99_900, approvedForAccounting: true },
     ]);
 
     expect(exposure).toMatchObject({
@@ -32,7 +32,7 @@ describe("forward Order to Invoice financial integrity", () => {
 
   it("keeps an unconfigured limit distinct from an intentional zero-dollar limit", () => {
     const unset = buildCustomerCreditExposure("0.00", [], { creditLimitConfigured: false });
-    const zero = buildCustomerCreditExposure("0.00", [{ status: "draft", balanceDue: "12.34" }], {
+    const zero = buildCustomerCreditExposure("0.00", [{ status: "draft", remainingCents: 1_234, approvedForAccounting: false }], {
       creditLimitConfigured: true,
     });
 
@@ -54,7 +54,7 @@ describe("forward Order to Invoice financial integrity", () => {
   });
 
   it("counts unbilled active orders in credit exposure but keeps open work operational-only", () => {
-    const exposure = buildCustomerCreditExposure("500.00", [{ status: "sent", balanceDue: "50.00" }], {
+    const exposure = buildCustomerCreditExposure("500.00", [{ status: "billed", remainingCents: 5_000, approvedForAccounting: true }], {
       creditLimitConfigured: true,
       unbilledOpenOrdersCents: 20_000,
       openWorkCents: 35_000,
@@ -62,6 +62,7 @@ describe("forward Order to Invoice financial integrity", () => {
 
     expect(exposure).toMatchObject({
       outstandingArCents: 5_000,
+      pendingBillingCents: 20_000,
       unbilledOpenOrdersCents: 20_000,
       openWorkCents: 35_000,
       creditExposureCents: 25_000,
@@ -95,6 +96,9 @@ describe("forward Order to Invoice financial integrity", () => {
     expect(customerRoutes).toContain("customer_credit_limit_updated");
     expect(creditPolicy).toContain("CREDIT_OVERRIDE_REASON_REQUIRED");
     expect(creditPolicy).toContain("canOverrideCustomerCredit");
+    expect(exposureService).toContain("canonicalInvoiceCustomerId");
+    expect(exposureService).toContain("normalizeInvoiceAccountingDisplay");
+    expect(exposureService).toContain("isInvoiceApprovedForAccounting");
     expect(exposureService).toContain("unbilledOpenOrdersCents");
     expect(exposureService).toContain("openWorkCents");
     expect(schema).toContain('credit_limit_configured_at');

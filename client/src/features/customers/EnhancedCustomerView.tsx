@@ -381,23 +381,19 @@ function CustomerHeader({
             </div>
             
             {/* Invoice-derived financial exposure */}
-            <div className="text-right">
+            <div className="text-right" title="Approved invoice balances still owed.">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Outstanding A/R</div>
               <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.outstandingAr ?? "0")}</div>
             </div>
-            <div className="text-right">
+            <div className="text-right" title="Customer work not yet approved for accounting.">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Pending Billing</div>
               <div className="text-[11px] font-semibold text-titan-warning">{formatCurrency(customer.pendingBilling ?? "0")}</div>
             </div>
-            <div className="text-right">
+            <div className="text-right" title="Outstanding A/R plus pending billing.">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Credit Exposure</div>
               <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditExposure ?? "0")}</div>
             </div>
-            {Number(customer.unbilledOpenOrders ?? 0) > 0 && <div className="text-right">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Unbilled Orders</div>
-              <div className="text-[11px] font-semibold text-titan-warning">{formatCurrency(customer.unbilledOpenOrders ?? "0")}</div>
-            </div>}
-            <div className="text-right">
+            <div className="text-right" title="Current operational work value.">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Open Work</div>
               <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.openWork ?? "0")}</div>
             </div>

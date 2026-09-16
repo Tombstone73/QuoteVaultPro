@@ -1,11 +1,13 @@
 import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 
-import { invoices, orderLineItems, orders, products } from "@shared/schema";
-import { buildCustomerCreditExposure, parseMoneyToCents, type CustomerCreditExposure } from "@shared/customerCreditExposure";
+import { invoices, orderLineItems, orders, payments, products } from "@shared/schema";
+import { buildCustomerCreditExposure, parseMoneyToCents, type CustomerCreditExposure, type CustomerExposureInvoice } from "@shared/customerCreditExposure";
+import { normalizeInvoiceAccountingDisplay } from "@shared/invoiceAccountingDisplay";
 import { db } from "../db";
+import { isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
+import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 
 type CreditCustomer = { id: string; creditLimit?: unknown; creditLimitConfiguredAt?: unknown };
-type CreditInvoice = { customerId: string | null; orderId: string | null; status: string | null; balanceDue: unknown };
 
 const inactiveInvoiceStatuses = ["void", "voided", "cancelled", "canceled"];
 const activeOrderStates = ["open", "production_complete"];
@@ -21,10 +23,23 @@ function emptyExposure(customer: CreditCustomer): CustomerCreditExposure {
   });
 }
 
+async function paymentRowsByInvoice(organizationId: string, invoiceIds: string[]) {
+  const result = new Map<string, any[]>();
+  for (let index = 0; index < invoiceIds.length; index += 500) {
+    const batch = invoiceIds.slice(index, index + 500);
+    const rows = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      inArray(payments.invoiceId, batch),
+    ));
+    for (const payment of rows) result.set(payment.invoiceId, [...(result.get(payment.invoiceId) ?? []), payment]);
+  }
+  return result;
+}
+
 /**
- * Tenant-scoped financial position read model. Invoice balances define A/R and
- * pending billing; orders without any active linked invoice are the legacy
- * safety-net. Open Work is intentionally operational-only.
+ * Tenant-scoped financial position read model. Invoice classification uses the
+ * canonical approval state and payment rollup. Active orders without an active
+ * invoice are the only legacy pending-billing fallback; Open Work is separate.
  */
 export async function getCustomerCreditExposures(
   organizationId: string,
@@ -37,26 +52,18 @@ export async function getCustomerCreditExposures(
   if (customerIds.length === 0) return result;
 
   const [invoiceRows, activeOrders, physicalOrderRows] = await Promise.all([
-    db.select({
-      customerId: invoices.customerId,
-      orderId: invoices.orderId,
-      status: invoices.status,
-      balanceDue: invoices.balanceDue,
-    }).from(invoices).where(and(
-      eq(invoices.organizationId, organizationId),
-      inArray(invoices.customerId, customerIds),
-    )),
-    db.select({
-      id: orders.id,
-      customerId: orders.customerId,
-      total: orders.total,
-    }).from(orders).where(and(
-      eq(orders.organizationId, organizationId),
-      inArray(orders.customerId, customerIds),
-      inArray(orders.state, activeOrderStates as any),
-      isNull(orders.canceledAt),
-      notInArray(orders.status, inactiveOrderStatuses as any),
-    )),
+    db.select({ invoice: invoices, canonicalCustomerId: canonicalInvoiceCustomerId })
+      .from(invoices)
+      .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
+      .where(eq(invoices.organizationId, organizationId)),
+    db.select({ id: orders.id, customerId: orders.customerId, total: orders.total })
+      .from(orders).where(and(
+        eq(orders.organizationId, organizationId),
+        inArray(orders.customerId, customerIds),
+        inArray(orders.state, activeOrderStates as any),
+        isNull(orders.canceledAt),
+        notInArray(orders.status, inactiveOrderStatuses as any),
+      )),
     db.select({ orderId: orderLineItems.orderId })
       .from(orderLineItems)
       .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
@@ -73,15 +80,25 @@ export async function getCustomerCreditExposures(
       )),
   ]);
 
+  const paymentsByInvoice = await paymentRowsByInvoice(organizationId, invoiceRows.map((row) => row.invoice.id));
   const activeInvoiceOrderIds = new Set<string>();
-  const invoiceRowsByCustomer = new Map<string, CreditInvoice[]>();
-  for (const invoice of invoiceRows) {
+  const invoiceRowsByCustomer = new Map<string, CustomerExposureInvoice[]>();
+  for (const row of invoiceRows) {
+    const invoice = row.invoice;
     const status = String(invoice.status || "").toLowerCase();
     if (!inactiveInvoiceStatuses.includes(status) && invoice.orderId) activeInvoiceOrderIds.add(invoice.orderId);
-    if (!invoice.customerId) continue;
-    const rows = invoiceRowsByCustomer.get(invoice.customerId) ?? [];
-    rows.push(invoice);
-    invoiceRowsByCustomer.set(invoice.customerId, rows);
+    const customerId = row.canonicalCustomerId;
+    if (!customerId || !customerIds.includes(customerId)) continue;
+    const display = normalizeInvoiceAccountingDisplay({ ...invoice, payments: paymentsByInvoice.get(invoice.id) ?? [] });
+    const customerInvoices = invoiceRowsByCustomer.get(customerId) ?? [];
+    customerInvoices.push({
+      status: invoice.status,
+      approvedForAccounting: isInvoiceApprovedForAccounting(invoice),
+      remainingCents: display.remainingCents,
+      creditCents: display.creditCents,
+      displayStatus: display.displayStatus,
+    });
+    invoiceRowsByCustomer.set(customerId, customerInvoices);
   }
 
   const physicalOrderIds = new Set(physicalOrderRows.map((row) => row.orderId));

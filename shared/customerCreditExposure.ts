@@ -17,7 +17,17 @@ export type CustomerCreditExposure = {
   availableCredit: string | null;
 };
 
-const postedInvoiceStatuses = new Set(["finalized", "billed", "sent", "partially_paid", "overdue"]);
+export type CustomerExposureInvoice = {
+  status: string | null;
+  /** Set by the server from the canonical accounting-approval projection. */
+  approvedForAccounting?: boolean;
+  /** Canonical payment rollup / imported-QB balance, never a stale balance column. */
+  remainingCents?: number;
+  creditCents?: number;
+  displayStatus?: string;
+  /** Compatibility fallback for callers that have not yet enriched a row. */
+  balanceDue?: unknown;
+};
 
 export function parseMoneyToCents(value: unknown): number {
   if (typeof value === "number") {
@@ -38,29 +48,51 @@ function money(centsValue: number) {
   return (centsValue / 100).toFixed(2);
 }
 
+function isPositiveReceivable(invoice: CustomerExposureInvoice): boolean {
+  const workflowStatus = String(invoice.status || "").trim().toLowerCase();
+  const displayStatus = String(invoice.displayStatus || "").trim().toLowerCase();
+  if (["void", "voided", "cancelled", "canceled", "paid", "credit"].includes(workflowStatus)) return false;
+  if (["paid historical", "credit / refund due", "voided", "paid"].includes(displayStatus)) return false;
+  if ((invoice.creditCents ?? 0) > 0) return false;
+  const remainingCents = invoice.remainingCents ?? parseMoneyToCents(invoice.balanceDue);
+  return remainingCents > 0;
+}
+
+/**
+ * One financial classification per positive obligation. Approval moves an
+ * invoice between A/R and pending billing; it never changes exposure itself.
+ */
+export function classifyCustomerExposureInvoice(invoice: CustomerExposureInvoice): "outstanding_ar" | "pending_billing" | null {
+  if (!isPositiveReceivable(invoice)) return null;
+  return invoice.approvedForAccounting ? "outstanding_ar" : "pending_billing";
+}
+
 export function buildCustomerCreditExposure(
   creditLimit: unknown,
-  invoiceRows: Array<{ status: string | null; balanceDue: unknown }>,
+  invoiceRows: CustomerExposureInvoice[],
   options?: {
     creditLimitConfigured?: boolean;
+    /** Active billable orders that have no active invoice. These belong in Pending Billing. */
     unbilledOpenOrdersCents?: number;
     openWorkCents?: number;
   },
 ): CustomerCreditExposure {
   const totals = { outstandingArCents: 0, pendingBillingCents: 0 };
   for (const invoice of invoiceRows) {
-    const status = String(invoice.status || "").toLowerCase();
-    if (status === "void" || status === "paid") continue;
-    const amount = Math.max(0, parseMoneyToCents(invoice.balanceDue));
-    if (status === "draft") totals.pendingBillingCents += amount;
-    else if (postedInvoiceStatuses.has(status)) totals.outstandingArCents += amount;
+    const remainingCents = Math.max(0, Math.round(invoice.remainingCents ?? parseMoneyToCents(invoice.balanceDue)));
+    const bucket = classifyCustomerExposureInvoice(invoice);
+    if (bucket === "outstanding_ar") totals.outstandingArCents += remainingCents;
+    if (bucket === "pending_billing") totals.pendingBillingCents += remainingCents;
   }
+
   const creditLimitConfigured = options?.creditLimitConfigured ?? (creditLimit !== null && creditLimit !== undefined);
   const creditLimitCents = creditLimitConfigured ? parseMoneyToCents(creditLimit) : null;
   const unbilledOpenOrdersCents = Math.max(0, Math.round(options?.unbilledOpenOrdersCents ?? 0));
   const openWorkCents = Math.max(0, Math.round(options?.openWorkCents ?? 0));
-  const creditExposureCents = totals.outstandingArCents + totals.pendingBillingCents + unbilledOpenOrdersCents;
+  totals.pendingBillingCents += unbilledOpenOrdersCents;
+  const creditExposureCents = totals.outstandingArCents + totals.pendingBillingCents;
   const availableCreditCents = creditLimitCents === null ? null : creditLimitCents - creditExposureCents;
+
   return {
     creditLimitConfigured,
     creditLimitCents,
