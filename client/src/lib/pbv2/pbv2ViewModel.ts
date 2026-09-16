@@ -12,7 +12,7 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
-import type { ChoiceMaterialOverride, ChoicePricingOverride, OptionNodeV2, PricingImpact, VisibilityRule } from '@shared/optionTreeV2';
+import { isEnabledRuntimeOptionNodeV2, type ChoiceMaterialOverride, type ChoicePricingOverride, type OptionNodeV2, type PricingImpact, type VisibilityRule } from '@shared/optionTreeV2';
 import { synchronizeChoiceInventoryConsumptionMaterial } from '@shared/pbv2/materialAuthority';
 import { normalizeLegacyPricingImpact } from './pricing/pricingImpact';
 
@@ -76,13 +76,19 @@ export function ensureRootNodeIds(treeJson: any): any {
   const nodes = Array.isArray(nodesRaw) ? nodesRaw : Object.values(nodesRaw);
   const nodeIds = nodes.map((n: any) => n?.id).filter(Boolean);
   
-  // If no nodes, return as-is
-  if (nodeIds.length === 0) return treeJson;
+  // If no nodes, preserve the canonical optionless representation.
+  if (nodeIds.length === 0) return { ...treeJson, rootNodeIds: [] };
+
+  const runtimeNodes = nodes.filter((node: any) => isEnabledRuntimeOptionNodeV2(node));
+  const runtimeNodeIds = new Set(runtimeNodes.map((node: any) => node.id));
   
   // Build runtime graph: ENABLED edges only
   const edges = Array.isArray(treeJson.edges) ? treeJson.edges : [];
-  const runtimeEdges = edges.filter((e: any) => 
-    e && (e.status || 'ENABLED').toUpperCase() === 'ENABLED'
+  const runtimeEdges = edges.filter((e: any) =>
+    e
+    && (e.status || 'ENABLED').toUpperCase() === 'ENABLED'
+    && runtimeNodeIds.has(e.fromNodeId)
+    && runtimeNodeIds.has(e.toNodeId)
   );
   
   // Nodes pointed to by ENABLED edges
@@ -91,28 +97,14 @@ export function ensureRootNodeIds(treeJson: any): any {
   );
   
   // Runtime roots: ENABLED non-GROUP nodes with no incoming ENABLED edges
-  const runtimeRoots = nodes
-    .filter((n: any) => {
-      if (!n || !n.id) return false;
-      const status = (n.status || 'ENABLED').toUpperCase();
-      if (status !== 'ENABLED') return false;
-      const type = (n.type || '').toUpperCase();
-      if (type === 'GROUP') return false; // NEVER include GROUP in roots
-      return !runtimeToIds.has(n.id);
-    })
+  const runtimeRoots = runtimeNodes
+    .filter((n: any) => !runtimeToIds.has(n.id))
     .map((n: any) => n.id);
   
   // If no runtime roots found, fall back to any ENABLED non-GROUP node
   let finalRoots = runtimeRoots;
   if (finalRoots.length === 0) {
-    finalRoots = nodes
-      .filter((n: any) => {
-        if (!n || !n.id) return false;
-        const status = (n.status || 'ENABLED').toUpperCase();
-        if (status !== 'ENABLED') return false;
-        const type = (n.type || '').toUpperCase();
-        return type !== 'GROUP';
-      })
+    finalRoots = runtimeNodes
       .map((n: any) => n.id);
   }
   
@@ -274,13 +266,13 @@ export function normalizeTreeJson(treeJson: any): any {
     const status = (n?.status || 'ENABLED').toUpperCase();
     return status !== 'DELETED' && (n?.type || '').toUpperCase() === 'GROUP';
   });
-  const liveInputNodes = normalizedNodes.filter((n: any) => {
+  const enabledRuntimeInputNodes = normalizedNodes.filter((n: any) => {
     const status = (n?.status || 'ENABLED').toUpperCase();
     const type = (n?.type || '').toUpperCase();
     const kind = (n?.kind || '').toUpperCase();
-    return status !== 'DELETED' && (type === 'INPUT' || kind === 'QUESTION');
+    return status === 'ENABLED' && (type === 'INPUT' || type === 'OPTION' || kind === 'QUESTION');
   });
-  if (liveGroups.length === 0 && liveInputNodes.length > 0) {
+  if (liveGroups.length === 0 && enabledRuntimeInputNodes.length > 0) {
     const existingIds = new Set<string>([
       ...normalizedNodes.map((n: any) => String(n?.id || '')).filter(Boolean),
       ...normalizedEdges.map((e: any) => String(e?.id || '')).filter(Boolean),
@@ -305,7 +297,7 @@ export function normalizeTreeJson(treeJson: any): any {
 
     normalizedEdges = [
       ...normalizedEdges,
-      ...liveInputNodes.map((node: any, index: number) => ({
+      ...enabledRuntimeInputNodes.map((node: any, index: number) => ({
         id: existingIds.has(`edge_${groupId}_${node.id}`) ? `edge_${groupId}_${node.id}_${index}` : `edge_${groupId}_${node.id}`,
         status: 'DISABLED',
         fromNodeId: groupId,
@@ -1596,77 +1588,9 @@ export function ensureTreeInvariants(treeJson: unknown): any {
     }
   }
 
-  // 5. Root auto-repair - ensure rootNodeIds includes all top-level GROUP nodes
-  const rootNodeIds = Array.isArray((tree as any).rootNodeIds) ? (tree as any).rootNodeIds : [];
-  
-  // Find nodes with incoming edges (any status)
-  const nodesWithIncoming = new Set<string>();
-  for (const edge of edges) {
-    if (edge.status !== 'DELETED' && edge.toNodeId) {
-      nodesWithIncoming.add(edge.toNodeId);
-    }
-  }
-  
-  // Find all ENABLED GROUP nodes (top-level organizational containers)
-  const groupNodes = nodes.filter(n => 
-    n.status === 'ENABLED' && 
-    n.type?.toUpperCase() === 'GROUP'
-  );
-  
-  // Find valid runtime nodes (ENABLED, non-GROUP, non-DELETED)
-  const validRuntimeNodes = nodes.filter(n => 
-    n.status === 'ENABLED' && 
-    n.type?.toUpperCase() !== 'GROUP' &&
-    n.type?.toUpperCase() !== 'DELETED'
-  );
-  
-  // Orphaned nodes are valid runtime nodes without incoming edges
-  const orphanedNodes = validRuntimeNodes.filter(n => !nodesWithIncoming.has(n.id));
-  
-  // Top-level groups are GROUPs without incoming edges
-  const topLevelGroups = groupNodes.filter(n => !nodesWithIncoming.has(n.id));
-
-  // Check if current roots are valid (can be GROUPs or runtime nodes)
-  const validRoots = rootNodeIds.filter((id: string) => {
-    const node = nodesById.get(id);
-    return node && node.status === 'ENABLED';
-  });
-  
-  // Build new root set: top-level GROUPs + orphaned runtime nodes
-  // Priority: If we have GROUPs, use them; otherwise use orphaned nodes
-  let newRootSet: Set<string>;
-  if (topLevelGroups.length > 0) {
-    // Use top-level GROUPs as roots (preferred for builder UI)
-    newRootSet = new Set([...topLevelGroups.map(n => n.id), ...orphanedNodes.map(n => n.id)]);
-  } else {
-    // No GROUPs, use existing valid roots + orphaned runtime nodes
-    newRootSet = new Set([...validRoots, ...orphanedNodes.map(n => n.id)]);
-  }
-  const newRoots = Array.from(newRootSet);
-
-  // Always populate rootNodeIds when empty (critical for visibility)
-  if (rootNodeIds.length === 0) {
-    if (groupNodes.length > 0) {
-      // Use all enabled GROUP nodes as roots
-      (tree as any).rootNodeIds = groupNodes.map(n => n.id);
-      mutated = true;
-    } else if (validRuntimeNodes.length > 0) {
-      // No GROUPs, use first enabled runtime node
-      (tree as any).rootNodeIds = [validRuntimeNodes[0].id];
-      mutated = true;
-    }
-  } else if (newRoots.length > 0 && JSON.stringify(newRoots.sort()) !== JSON.stringify([...rootNodeIds].sort())) {
-    // Roots changed, update
-    (tree as any).rootNodeIds = newRoots;
-    mutated = true;
-  } else if (newRoots.length === 0 && validRuntimeNodes.length === 0 && groupNodes.length === 0) {
-    // No valid nodes at all, clear roots
-    (tree as any).rootNodeIds = [];
-    mutated = true;
-  }
-
-  // Return potentially mutated tree
-  return tree;
+  // 5. Root auto-repair follows the canonical runtime graph only. Disabled
+  // definitions and GROUP nodes are retained but can never become roots.
+  return ensureRootNodeIds({ ...tree, nodes, edges });
 }
 
 /**

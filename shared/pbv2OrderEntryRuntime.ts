@@ -81,9 +81,9 @@ function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
   return {
     ...(treeRecord as any),
     schemaVersion: 2,
-    rootNodeIds: Array.isArray(treeRecord.rootNodeIds) && treeRecord.rootNodeIds.length > 0
+    rootNodeIds: Array.isArray(treeRecord.rootNodeIds)
       ? treeRecord.rootNodeIds.filter((nodeId: unknown): nodeId is string => typeof nodeId === "string" && nodeId.trim().length > 0)
-      : Object.keys(nodes),
+      : [],
     nodes,
     edges: Array.isArray(treeRecord.edges) ? treeRecord.edges : [],
   } as OptionTreeV2;

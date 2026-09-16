@@ -27,7 +27,7 @@ import type { ProductOptionRule } from "@shared/productOptionRules";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import { normalizeTreePricingImpacts } from "@/lib/pbv2/pricing/pricingImpact";
 import { ROUTES } from "@/config/routes";
-import { isCanonicalEmptyOptionTreeV2 } from "@shared/optionTreeV2";
+import { hasEnabledRuntimeOptionNodesV2 } from "@shared/optionTreeV2";
 
 /**
  * Edit-time validation - checks structure without publish-only rules.
@@ -1282,21 +1282,21 @@ export default function PBV2ProductBuilderSectionV2({
     const rootNodeIds = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds : [];
     const rootCount = rootNodeIds.length;
 
-    // A product with no Option Groups uses the canonical empty PBV2 tree. Any
-    // non-empty tree still requires roots that resolve to existing nodes.
+    // Retained disabled definitions and GROUP nodes form an optionless runtime
+    // tree, so only enabled runtime option nodes require roots.
     const schemaVersion = (normalizedTree as any)?.schemaVersion;
-    const isZeroOptionTree = isCanonicalEmptyOptionTreeV2(normalizedTree);
+    const hasRuntimeOptions = hasEnabledRuntimeOptionNodesV2(normalizedTree);
     const isStructurallyValid = 
       schemaVersion === 2 &&
       typeof nodes === 'object' &&
-      (isZeroOptionTree || (rootCount > 0 && rootNodeIds.every((rootId: string) => nodes[rootId] !== undefined)));
+      (!hasRuntimeOptions || (rootCount > 0 && rootNodeIds.every((rootId: string) => nodes[rootId] !== undefined)));
 
     if (!isStructurallyValid) {
       setIsSaving(false);
       isSavingRef.current = false;
       const issues = [];
       if (schemaVersion !== 2) issues.push(`schemaVersion=${schemaVersion} (expected 2)`);
-      if (rootCount === 0 && !isZeroOptionTree) issues.push('rootNodeIds is empty for a non-empty option tree');
+      if (rootCount === 0 && hasRuntimeOptions) issues.push('rootNodeIds is empty for enabled runtime options');
       if (typeof nodes !== 'object') issues.push('nodes is not an object');
       const missingRoots = rootNodeIds.filter((id: string) => !nodes[id]);
       if (missingRoots.length > 0) issues.push(`missing root nodes: ${missingRoots.join(', ')}`);

@@ -271,6 +271,20 @@ export function resolveRuntimeVisibility(
   const allNodeIds = Object.keys(tree.nodes);
   const groupNodeIds = allNodeIds.filter((nodeId) => tree.nodes[nodeId]?.kind === "group");
 
+  // Structural groups with no enabled runtime descendants are retained editor
+  // configuration, not runtime UI. This keeps all-disabled products truly
+  // optionless instead of rendering empty group shells.
+  const groupHasEnabledRuntimeDescendant = (groupId: string, visiting = new Set<string>()): boolean => {
+    if (visiting.has(groupId)) return false;
+    const nextVisiting = new Set(visiting).add(groupId);
+    return (childrenByGroupId[groupId] ?? []).some((childId) => {
+      const child = tree.nodes[childId];
+      if (!child || !isNodeEnabled(child)) return false;
+      if (child.kind !== "group") return true;
+      return groupHasEnabledRuntimeDescendant(childId, nextVisiting);
+    });
+  };
+
   let effectiveSelections: SelectionRecord = { ...explicitSelections };
   let prevSignature = "";
   let prevVisibleSignature = "";
@@ -281,7 +295,9 @@ export function resolveRuntimeVisibility(
       tree,
       groupNodeIds.filter((groupId) => {
         const groupNode = tree.nodes[groupId];
-        return isNodeEnabled(groupNode) && evaluateVisibilityConfig(groupNode.visibility, effectiveSelections);
+        return isNodeEnabled(groupNode)
+          && groupHasEnabledRuntimeDescendant(groupId)
+          && evaluateVisibilityConfig(groupNode.visibility, effectiveSelections);
       })
     );
     let groupsChanged = true;
@@ -412,7 +428,10 @@ export function resolveRuntimeVisibility(
 
   return {
     effectiveSelections,
-    visibleNodeIds: visibleNodeIdSort(tree, allNodeIds.filter((nodeId) => tree.nodes[nodeId] && tree.nodes[nodeId].kind !== "group")),
+    visibleNodeIds: visibleNodeIdSort(tree, allNodeIds.filter((nodeId) => {
+      const node = tree.nodes[nodeId];
+      return Boolean(node && node.kind !== "group" && isNodeEnabled(node));
+    })),
     visibleGroupIds: [],
     visibleChoiceIds: [],
     hiddenSelectionWarnings: [],

@@ -4,7 +4,7 @@ import { errorFinding, warningFinding, infoFinding, type Finding } from "../find
 import type { ConditionRule, ExpressionSpec } from "../expressionSpec";
 import { DEFAULT_VALIDATE_OPTS, type ProductOptionTreeV2Json, type ValidateOpts, type ValidationResult } from "./types";
 import { PBV2_PRICING_MATRIX_PROTECTED_VARIABLES } from "../../productOptionPricingMatrix";
-import { isCanonicalEmptyOptionTreeV2 } from "../../optionTreeV2";
+import { hasEnabledRuntimeOptionNodesV2 } from "../../optionTreeV2";
 
 type PBV2Status = "ENABLED" | "DISABLED" | "DELETED";
 
@@ -1462,8 +1462,7 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
   }
 
   const rootNodeIds = Array.isArray((t as any).rootNodeIds) ? ((t as any).rootNodeIds as unknown[]) : [];
-  const isZeroOptionTree = isCanonicalEmptyOptionTreeV2(t);
-  if (rootNodeIds.length === 0 && !isZeroOptionTree) {
+  if (rootNodeIds.length === 0 && hasEnabledRuntimeOptionNodesV2(t)) {
     findings.push(
       errorFinding({
         code: "PBV2_E_TREE_NO_ROOTS",

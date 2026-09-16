@@ -43,6 +43,7 @@ import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { ObjectStorageService } from "../objectStorage";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
+import { hasEnabledRuntimeOptionNodesV2 } from "@shared/optionTreeV2";
 import type { Finding } from "@shared/pbv2/findings";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "../lib/pbv2OverrideConfig";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
@@ -918,9 +919,9 @@ export function registerProductRoutes(
       const rootCountBefore = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
       const schemaVersion = (treeJson as any).schemaVersion ?? 2;
 
-      // DEFENSIVE: Warn if rootNodeIds is empty but nodes exist (should be fixed client-side)
-      if (nodeCount > 0 && rootCountBefore === 0) {
-        console.warn('[PBV2_DRAFT_PUT] âš ï¸ rootNodeIds is empty but tree has nodes - client should call ensureRootNodeIds', {
+      // Enabled runtime nodes require roots; retained disabled definitions do not.
+      if (hasEnabledRuntimeOptionNodesV2(treeJson) && rootCountBefore === 0) {
+        console.warn('[PBV2_DRAFT_PUT] rootNodeIds is empty for enabled runtime nodes - client should call ensureRootNodeIds', {
           nodeCount,
           edgeCount,
           schemaVersion,

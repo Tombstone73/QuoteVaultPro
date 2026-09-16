@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { applyPatchToTree, createUpdateChoicePatch, createUpdateGroupPatch, createUpdateOptionPatch, normalizeTreeJson, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
+import { applyPatchToTree, createUpdateChoicePatch, createUpdateGroupPatch, createUpdateOptionPatch, ensureRootNodeIds, normalizeTreeJson, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
 
 function makeTextOptionTree() {
   return {
@@ -117,6 +117,34 @@ describe("pbv2ViewModel — text input type", () => {
     expect(model.groups[0].optionIds).toEqual(["imprint"]);
     expect(model.options.imprint).toBeDefined();
     expect(normalized.status).toBe("DRAFT");
+  });
+
+  test("retains all-disabled option definitions without roots and restores a root on re-enable", () => {
+    const tree = {
+      schemaVersion: 2,
+      status: "DRAFT",
+      rootNodeIds: [],
+      nodes: {
+        banner_group: { id: "banner_group", type: "GROUP", kind: "group", status: "ENABLED", label: "Banner" },
+        grommets: {
+          id: "grommets", type: "INPUT", kind: "question", status: "DISABLED", key: "grommets", label: "Grommets",
+          input: { type: "select", selectionKey: "grommets", required: true },
+          choices: [{ value: "yes", label: "Yes", pricingImpact: [{ mode: "addCents", cents: 200 }] }],
+        },
+      },
+      edges: [{ id: "grommets_edge", status: "DISABLED", fromNodeId: "banner_group", toNodeId: "grommets" }],
+    };
+
+    const normalized = normalizeTreeJson(tree);
+    expect(normalized.rootNodeIds).toEqual([]);
+    expect(normalized.nodes.grommets).toMatchObject({ status: "DISABLED", label: "Grommets", choices: [{ value: "yes" }] });
+
+    const reenabled = ensureRootNodeIds({
+      ...normalized,
+      nodes: { ...normalized.nodes, grommets: { ...normalized.nodes.grommets, status: "ENABLED" } },
+    });
+    expect(reenabled.rootNodeIds).toEqual(["grommets"]);
+    expect(reenabled.nodes.grommets.choices).toEqual(normalized.nodes.grommets.choices);
   });
 
   test("Product Intake generated GROUP to INPUT structural edges hydrate into editable groups", () => {

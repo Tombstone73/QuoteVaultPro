@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { getDefaultFormula, getProfile, type FlatGoodsConfig } from "@shared/pricingProfiles";
 import type { Pbv2TierBasis } from "@shared/optionTreeV2";
+import { hasEnabledRuntimeOptionNodesV2 } from "@shared/optionTreeV2";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -703,7 +704,7 @@ const ProductEditorPage = () => {
         const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
         
         // Validate tree structure
-        if (nodeCount > 0 && rootCount === 0) {
+        if (hasEnabledRuntimeOptionNodesV2(normalizedTree) && rootCount === 0) {
           toast({
             title: "PBV2 Save Failed",
             description: "Invalid tree: missing root nodes. Product saved but options not persisted.",

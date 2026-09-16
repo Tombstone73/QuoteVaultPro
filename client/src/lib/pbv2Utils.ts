@@ -88,9 +88,9 @@ export function normalizePbv2Tree(tree: unknown): OptionTreeV2 | null {
     } as OptionNodeV2;
   }
 
-  const rootNodeIds = Array.isArray(treeRecord.rootNodeIds) && treeRecord.rootNodeIds.length > 0
+  const rootNodeIds = Array.isArray(treeRecord.rootNodeIds)
     ? treeRecord.rootNodeIds.filter((nodeId: unknown): nodeId is string => typeof nodeId === "string" && nodeId.trim().length > 0)
-    : Object.keys(normalizedNodes);
+    : [];
 
   if (Object.keys(normalizedNodes).length === 0) {
     if (!isCanonicalEmptyOptionTreeV2(treeRecord)) return null;

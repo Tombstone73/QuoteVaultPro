@@ -468,6 +468,40 @@ export function isCanonicalEmptyOptionTreeV2(tree: unknown): boolean {
     && (edges === undefined || (Array.isArray(edges) && edges.length === 0));
 }
 
+/**
+ * Returns whether a node participates in the PBV2 runtime decision graph.
+ *
+ * GROUP nodes are editor structure only. DISABLED and DELETED definitions are
+ * intentionally retained for later re-enablement, but must have no runtime
+ * validation, pricing, material, inventory, or workflow effect.
+ */
+export function isEnabledRuntimeOptionNodeV2(node: unknown): boolean {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+  const record = node as Record<string, unknown>;
+  const status = typeof record.status === "string" ? record.status.toUpperCase() : "ENABLED";
+  if (status !== "ENABLED") return false;
+
+  const kind = typeof record.kind === "string" ? record.kind.toLowerCase() : "";
+  const type = typeof record.type === "string" ? record.type.toUpperCase() : "";
+  return kind === "question" || type === "INPUT" || type === "OPTION";
+}
+
+/**
+ * Determines whether a tree has an enabled runtime decision graph. A tree can
+ * keep disabled option definitions (and structural groups) while being a valid
+ * optionless product at runtime.
+ */
+export function hasEnabledRuntimeOptionNodesV2(tree: unknown): boolean {
+  if (!tree || typeof tree !== "object" || Array.isArray(tree)) return false;
+  const nodes = (tree as Record<string, unknown>).nodes;
+  const values = Array.isArray(nodes)
+    ? nodes
+    : nodes && typeof nodes === "object"
+      ? Object.values(nodes as Record<string, unknown>)
+      : [];
+  return values.some(isEnabledRuntimeOptionNodeV2);
+}
+
 export type LineItemOptionSelectionsV2 = {
   schemaVersion: 2;
   selected: Record<string, { value?: any; note?: string; origin?: "DEFAULT" | "AI_INFERRED" | "SOURCE_EVIDENCE" | "USER_SELECTED"; evidence?: string | null }>;
@@ -1018,8 +1052,8 @@ export function validateOptionTreeV2(tree: unknown): { ok: true } | { ok: false;
 
   if (!Array.isArray(anyTree.rootNodeIds)) {
     errors.push("rootNodeIds must be an array");
-  } else if (anyTree.rootNodeIds.length === 0 && !isCanonicalEmptyOptionTreeV2(anyTree)) {
-    errors.push("rootNodeIds must be non-empty when the option tree has nodes or edges");
+  } else if (anyTree.rootNodeIds.length === 0 && hasEnabledRuntimeOptionNodesV2(anyTree)) {
+    errors.push("rootNodeIds must be non-empty when the option tree has enabled runtime nodes");
   }
 
   // roots exist in nodes
