@@ -130,7 +130,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
     await this.hooks?.afterAudit?.();
   }
   allocateNumber(organizationId: string) { return this.numbers.allocate(this.client, organizationId, "order"); }
-  async create(input: Parameters<OrderTransaction["create"]>[0], trace?: QuoteConversionTrace): Promise<void> {
+  async create(input: Parameters<OrderTransaction["create"]>[0], trace?: Pick<QuoteConversionTrace, "event" | "failure">): Promise<void> {
     const terms = toSalesDocumentTermsPersistence(input.terms);
     trace?.event("order_insert", "started");
     await this.client.query(

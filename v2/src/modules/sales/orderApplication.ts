@@ -59,6 +59,38 @@ import type { SalesTaxComposition } from "./taxComposition.js";
 import type { SalesDocumentNumber } from "./persistenceContracts.js";
 import type { QuoteConversionTrace } from "./quoteConversionApplication.js";
 
+type OrderOperationTrace = Pick<QuoteConversionTrace, "event" | "failure">;
+
+const safeOrderFailureClass = (cause: unknown): string => {
+  if (cause instanceof V2ApplicationError) return `V2_APPLICATION_ERROR_${cause.code}`;
+  if (cause instanceof TypeError) return "TYPE_ERROR";
+  const code = cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : undefined;
+  if (code && /^[0-9A-Z]{5}$/.test(code)) return `DATABASE_SQLSTATE_${code}`;
+  return "UNEXPECTED_EXCEPTION";
+};
+
+const safeOrderConstraint = (cause: unknown): string | undefined => {
+  const constraint = cause && typeof cause === "object" && "constraint" in cause && typeof cause.constraint === "string" ? cause.constraint : undefined;
+  return constraint && /^[a-z0-9_]{1,128}$/i.test(constraint) ? constraint : undefined;
+};
+
+/**
+ * Records only structural failure facts for canonical direct Order creation.
+ * This deliberately retains no command values, actor information, driver
+ * message, SQL, or credentials; the response remains the stable V2 envelope.
+ */
+const createOrderOperationTrace = (businessRequestId: string | undefined): OrderOperationTrace => {
+  const request = createHash("sha256").update(businessRequestId ?? randomUUID()).digest("hex").slice(0, 16);
+  let stage = "order_request_received";
+  return Object.freeze({
+    event: (next, _result) => { stage = next; },
+    failure: (_stage, cause) => {
+      const constraint = safeOrderConstraint(cause);
+      console.error(`V2_ORDER_OPERATION_TRACE request=${request} stage=${stage} class=${safeOrderFailureClass(cause)}${constraint ? ` constraint=${constraint}` : ""}`);
+    },
+  });
+};
+
 /**
  * This is the server-side Order-entry input. It deliberately contains neither
  * a PBV2 tree nor caller-authored pricing evidence: Products resolves the
@@ -244,7 +276,7 @@ export interface OrderTransaction {
     sellingAdjustment?: SalesOrderAdjustment;
     commercialCharge?: CommercialCharge;
     taxComposition?: SalesTaxComposition;
-  }>, trace?: QuoteConversionTrace): Promise<void>;
+  }>, trace?: Pick<QuoteConversionTrace, "event" | "failure">): Promise<void>;
   read(
     organizationId: OrganizationId,
     orderId: OrderId,
@@ -447,9 +479,13 @@ export class OrderApplicationService {
     context: OperationContext,
     input: CreateOrderInput,
   ): Promise<ApplicationResult<OrderOperationResult>> {
+    const trace = createOrderOperationTrace(context.businessRequest?.id);
     return this.mutate(context, "sales.order.create.v1", input, "order.create", async (tx, request) => {
+      trace.event("customer_reference_validation", "started");
       await validateReference(context.organizationId, tx.customers, input.customerContact);
+      trace.event("order_authorization", "started");
       requireAllowed(this.authority, context, "order.create", input.customerContact.customerId);
+      trace.event("line_correlation_validation", "started");
       const clientLineKeys = new Set<string>();
       for (const line of input.lines) {
         if (line.clientLineKey === undefined) continue;
@@ -459,10 +495,11 @@ export class OrderApplicationService {
           throw new V2ApplicationError("VALIDATION_ERROR", "Order line correlations must be unique.");
         clientLineKeys.add(line.clientLineKey);
       }
-      const lines = await this.buildLines(tx, context, input.customerContact, input.lines);
+      const lines = await this.buildLines(tx, context, input.customerContact, input.lines, [], trace);
       if (!lines.length)
         throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
 
+      trace.event("commercial_terms_resolution", "started");
       const created = await this.createFromCommercialSnapshot(tx, context, request.id, {
         customerContact: input.customerContact,
         purchaseOrderNumber: input.purchaseOrderNumber,
@@ -472,7 +509,7 @@ export class OrderApplicationService {
         sellingAdjustment: validateAdjustment(input.sellingAdjustment),
         commercialCharge: validateCommercialCharge(input.commercialCharge),
         lines,
-      }, "sales.order.create.v1");
+      }, "sales.order.create.v1", trace);
       const lineCorrelations = input.lines.flatMap((line, index) => {
         if (line.clientLineKey === undefined) return [];
         const createdLine = lines[index];
@@ -480,7 +517,7 @@ export class OrderApplicationService {
         return [{ clientLineKey: line.clientLineKey, orderLineId: createdLine.lineId }];
       });
       return lineCorrelations.length ? { ...created, lineCorrelations } : created;
-    });
+    }, trace);
   }
 
   /** A repeat Order keeps commercial decisions but starts a wholly new job. */
@@ -529,7 +566,7 @@ export class OrderApplicationService {
     operationRequestId: string,
     source: FrozenOrderCommercialSource,
     auditOperation: string,
-    trace?: QuoteConversionTrace,
+    trace?: OrderOperationTrace,
   ): Promise<OrderOperationResult> {
     let stage = "order_reference_validation";
     try {
@@ -853,13 +890,16 @@ export class OrderApplicationService {
     customerContact: CustomerContactReference,
     inputs: readonly OrderLineInput[],
     existing: readonly SalesLineSnapshot[] = [],
+    trace?: OrderOperationTrace,
   ): Promise<SalesLineSnapshot[]> {
     const lines: SalesLineSnapshot[] = [];
     for (const [index, input] of inputs.entries()) {
       if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0)
         throw new V2ApplicationError("VALIDATION_ERROR", "Line quantity must be a positive integer.");
+      trace?.event("price_override_authorization", "started");
       if (input.selling && input.selling.kind !== "calculated")
         requireAllowed(this.authority, context, "order.overridePrice");
+      trace?.event("product_configuration_resolution", "started");
       const resolved = await tx.products.resolveActivePricingInput({
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         productId: brandedId<"ProductId">(input.productId),
@@ -868,6 +908,7 @@ export class OrderApplicationService {
         ...(input.dimensions ? { dimensions: input.dimensions } : {}),
       });
       if (!resolved.ok) throw resolved.error;
+      trace?.event("product_taxability_resolution", "started");
       const taxability = await tx.products.resolveCurrentTaxability(
         brandedId<"OrganizationId">(context.organizationId),
         resolved.value.sellableProduct.productId,
@@ -891,6 +932,7 @@ export class OrderApplicationService {
         ?? (customerContact.contactId
           ? (await tx.customers.getContact(brandedId<"OrganizationId">(context.organizationId), customerContact.contactId))?.customerId
           : undefined);
+      trace?.event("customer_pricing_resolution", "started");
       const pricing = tx.customerPricing && customerId
         ? await tx.customerPricing.calculateForCustomer(customerId, pricingRequest)
         : await tx.pricing.calculate(pricingRequest);
@@ -899,6 +941,7 @@ export class OrderApplicationService {
         ? this.sellingInstruction(prior.sellingPriceDecision)
         : input.selling;
       if (inherited && inherited.kind !== "calculated") requireAllowed(this.authority, context, "order.overridePrice");
+      trace?.event("selling_price_decision", "started");
       const freshDecision = calculatedDecision(pricing, context, inherited);
       const decision = !input.selling && prior && prior.sellingPriceDecision.kind !== "calculated"
         ? { ...freshDecision, decidedAt: prior.sellingPriceDecision.decidedAt, authorityReference: prior.sellingPriceDecision.authorityReference }
@@ -1139,13 +1182,16 @@ export class OrderApplicationService {
     command: CreateOrderInput | DuplicateOrderCommand | UpdateOrderInput | CancelOrderCommand | CompleteOrderCommand | ArchiveOrderCommand,
     capability: "order.create" | "order.edit" | "order.cancel",
     work: (tx: OrderTransaction, request: OrderOperationRequest) => Promise<OrderOperationResult>,
+    trace?: OrderOperationTrace,
   ): Promise<ApplicationResult<OrderOperationResult>> {
     try {
+      trace?.event("operation_scope_validation", "started");
       requireOperationPrincipalScope(context);
       if (!context.businessRequest)
         throw new V2ApplicationError("VALIDATION_ERROR", "A business request identity is required.");
       if (command.businessRequestId !== context.businessRequest.id)
         throw new V2ApplicationError("VALIDATION_ERROR", "The command business request identity does not match the operation context.");
+      trace?.event("transaction_reservation", "started");
       return success(await this.runner.transaction(async (tx) => {
         const reservation = await tx.reserve({
           organizationId: context.organizationId,
@@ -1157,7 +1203,9 @@ export class OrderApplicationService {
           ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),
         });
         if (reservation.kind === "replay") return reservation.request.resultJson as OrderOperationResult;
+        trace?.event("operation_execution", "started");
         const result = await work(tx, reservation.request);
+        trace?.event("operation_attribution", "started");
         await tx.attribute({
           organizationId: context.organizationId,
           requestId: reservation.request.id,
@@ -1168,10 +1216,12 @@ export class OrderApplicationService {
           principalSubject: principalSubject(context.principal),
           ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),
         });
+        trace?.event("operation_success_persistence", "started");
         await tx.succeed(context.organizationId, reservation.request.id, result);
         return result;
       }));
     } catch (error) {
+      trace?.failure("order_operation", error);
       return failure(this.error(error));
     }
   }
