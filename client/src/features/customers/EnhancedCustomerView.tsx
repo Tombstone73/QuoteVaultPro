@@ -1845,6 +1845,7 @@ function OrdersTable({
   const allColumns = [
     { id: "orderNumber", label: "Order #", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
     { id: "poNumber", label: "PO #", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
+    { id: "jobName", label: "Job Name", defaultVisible: true, sortable: true, resizable: true, minWidth: 180 },
     { id: "date", label: "Date", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
     { id: "product", label: "Product", defaultVisible: true, sortable: true, resizable: true, minWidth: 150 },
     { id: "amount", label: "Amount", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
@@ -1866,7 +1867,7 @@ function OrdersTable({
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return Array.from(new Set([...parsed, "invoice"]));
+          return Array.from(new Set([...parsed, "jobName", "invoice"]));
         }
       }
     } catch (e) {
@@ -2092,6 +2093,10 @@ function OrdersTable({
               aVal = new Date(a.createdAt).getTime();
               bVal = new Date(b.createdAt).getTime();
               break;
+            case "jobName":
+              aVal = a.label || "";
+              bVal = b.label || "";
+              break;
             case "product":
               const aProduct = a.lineItems?.[0]?.description || a.lineItems?.[0]?.productName || "";
               const bProduct = b.lineItems?.[0]?.description || b.lineItems?.[0]?.productName || "";
@@ -2233,7 +2238,7 @@ function OrdersTable({
   return (
     <>
       <div className="w-full overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
-        <table className="min-w-[1080px] w-full table-auto">
+        <table className="min-w-[1260px] w-full table-auto">
           <thead>
             <tr className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
               {orderedVisibleColumns.map((columnId) => {
@@ -2330,6 +2335,17 @@ function OrdersTable({
                       </span>
                     </td>
                   );
+
+                case "jobName": {
+                  const jobName = order.label || "—";
+                  return (
+                    <td key={columnId} className="min-w-[180px] max-w-sm px-4 py-3" style={{ width: `${width}px` }}>
+                      <span className="block truncate text-titan-sm text-titan-text-primary" title={order.label || undefined}>
+                        {jobName}
+                      </span>
+                    </td>
+                  );
+                }
                   
                 case "date":
                   return (

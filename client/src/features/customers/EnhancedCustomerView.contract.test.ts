@@ -86,7 +86,7 @@ test('the actual Customer Detail orders table uses the same visible Close Job Ov
 
 test('Customer Detail tables preserve primary identifiers and dates while allowing local horizontal overflow', () => {
   expect(ordersTable).toContain('w-full overflow-x-auto');
-  expect(ordersTable).toContain('min-w-[1080px] w-full table-auto');
+  expect(ordersTable).toContain('min-w-[1260px] w-full table-auto');
   expect(ordersTable).not.toContain('table-fixed');
   expect(ordersTable).toContain('min-w-[120px] whitespace-nowrap px-4 py-3');
   expect(ordersTable).toContain('min-w-[132px] whitespace-nowrap px-4 py-3');
@@ -95,6 +95,20 @@ test('Customer Detail tables preserve primary identifiers and dates while allowi
   expect(invoiceTable).toContain('min-w-[1480px] w-full table-auto');
   expect(invoiceTable).toContain('min-w-[132px] whitespace-nowrap px-3 py-3');
   expect(invoiceTable).toContain('min-w-[120px] whitespace-nowrap px-3 py-3');
+});
+
+test('Customer Detail Orders renders the canonical Job Name field without changing the working-set navigation', () => {
+  expect(ordersTable).toContain('{ id: "jobName", label: "Job Name", defaultVisible: true');
+  expect(ordersTable).toContain('return Array.from(new Set([...parsed, "jobName", "invoice"]));');
+  expect(ordersTable).toContain('case "jobName":');
+  expect(ordersTable).toContain('aVal = a.label || "";');
+  expect(ordersTable).toContain('const jobName = order.label || "—";');
+  expect(ordersTable).toContain('title={order.label || undefined}');
+  expect(ordersTable).toContain('min-w-[180px] max-w-sm px-4 py-3');
+
+  const renderJobName = (label: string | null | undefined) => label || "—";
+  expect(renderJobName("Seating Chart")).toBe("Seating Chart");
+  expect(renderJobName(null)).toBe("—");
 });
 
 test('Customer Detail Orders reuse the canonical Global Orders status selector', () => {
