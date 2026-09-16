@@ -17,6 +17,7 @@ jest.mock("qrcode", () => ({ __esModule: true, default: { toDataURL: jest.fn(asy
 jest.mock("@/hooks/useStationPrinter", () => ({ useStationPrinter: mockUseStationPrinter }));
 jest.mock("@/hooks/usePrinterProfiles", () => ({ markPrinterProfileUsed: jest.fn() }));
 jest.mock("@/hooks/useProduction", () => ({ logTravelerPrint: jest.fn() }));
+jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: undefined }) }));
 jest.mock("@/components/production/PrinterPicker", () => ({ PrinterPicker: () => null }));
 jest.mock("@/lib/queryClient", () => ({ apiFetch: mockApiFetch }));
 
