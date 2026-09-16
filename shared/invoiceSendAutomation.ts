@@ -1,3 +1,8 @@
+import {
+  calculateInvoiceDueDateFromTerms,
+  resolveInvoicePaymentTerms,
+} from "./invoicePaymentTerms";
+
 export const INVOICE_DUE_DATE_ON_CUSTOMER_SEND = [
   "keep_existing",
   "recalculate_from_terms",
@@ -13,13 +18,6 @@ export type InvoiceSendAutomationPreferences = {
 export const DEFAULT_INVOICE_SEND_AUTOMATION_PREFERENCES: InvoiceSendAutomationPreferences = {
   approveForAccountingAfterSuccessfulSend: false,
   dueDateOnFirstSuccessfulCustomerSend: "keep_existing",
-};
-
-const PAYMENT_TERM_DAYS: Record<string, number> = {
-  due_on_receipt: 0,
-  net_15: 15,
-  net_30: 30,
-  net_45: 45,
 };
 
 export function resolveInvoiceSendAutomationPreferences(preferences: unknown): InvoiceSendAutomationPreferences {
@@ -46,10 +44,7 @@ export function resolveInvoiceCustomerDeliveryTerms(input: {
   invoiceTerms?: string | null;
   customerPaymentTerms?: string | null;
 }): string {
-  const customerTerms = String(input.customerPaymentTerms || "").trim().toLowerCase();
-  if (customerTerms) return customerTerms;
-  const invoiceTerms = String(input.invoiceTerms || "").trim().toLowerCase();
-  return invoiceTerms || "due_on_receipt";
+  return resolveInvoicePaymentTerms(input);
 }
 
 /** Returns null for custom terms because their already-entered due date is authoritative. */
@@ -57,12 +52,10 @@ export function calculateDueDateFromSuccessfulCustomerSend(input: {
   successfulSentAt: Date;
   terms: string;
 }): Date | null {
-  const days = PAYMENT_TERM_DAYS[String(input.terms || "").trim().toLowerCase()];
-  if (days === undefined) return null;
-
-  const dueDate = new Date(input.successfulSentAt.getTime());
-  dueDate.setUTCDate(dueDate.getUTCDate() + days);
-  return dueDate;
+  return calculateInvoiceDueDateFromTerms({
+    termsStartedAt: input.successfulSentAt,
+    terms: resolveInvoicePaymentTerms({ invoiceTerms: input.terms }),
+  });
 }
 
 export function shouldRecalculateInvoiceDueDateAfterSuccessfulSend(input: {

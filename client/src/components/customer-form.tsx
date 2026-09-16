@@ -12,7 +12,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import type { Customer } from "@shared/schema";
+import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
 
 const primaryContactSchema = z.object({
   id: z.string().optional(), // Include id for updating existing primary contact
@@ -64,6 +66,7 @@ const customerSchema = z.object({
   // Address behavior
   sameAsBilling: z.boolean().default(true),
   creditLimit: z.number().min(0).optional(),
+  paymentTerms: z.enum(["due_on_receipt", "net_15", "net_30", "net_45", "custom"]).default("due_on_receipt"),
   notes: z.string().optional(),
   primaryContact: primaryContactSchema.optional(),
 });
@@ -107,6 +110,7 @@ interface CustomerWithContacts {
   shippingCountry?: string | null;
   creditLimit?: string | number | null;
   creditLimitConfiguredAt?: string | null;
+  paymentTerms?: CustomerPaymentTerm | null;
   notes?: string | null;
   contacts?: Array<{
     id: string;
@@ -128,11 +132,15 @@ interface CustomerFormProps {
 
 export default function CustomerForm({ open, onOpenChange, customer }: CustomerFormProps) {
   const { toast } = useToast();
+  const { user, isAdmin } = useAuth();
   const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
   const [pendingData, setPendingData] = useState<CustomerFormData | null>(null);
   const [artOutputFolder, setArtOutputFolder] = useState("");
+  const canManageCommercialConfiguration = Boolean(
+    isAdmin || ["owner", "admin"].includes(String(user?.role || "").trim().toLowerCase()),
+  );
   useQuery({ queryKey: ["/api/local-bridge/admin/destinations", customer?.id], enabled: !!customer?.id, queryFn: async () => { const response = await fetch(`/api/local-bridge/admin/destinations?customerId=${customer!.id}`, { credentials: "include" }); if (!response.ok) return null; const json = await response.json(); setArtOutputFolder(json.data?.localPath || ""); return json.data; } });
 
   // Extract existing primary contact from customer if editing
@@ -190,6 +198,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
         customer.billingCountry === customer.shippingCountry
       ),
       creditLimit: customer.creditLimitConfiguredAt ? Number(customer.creditLimit ?? 0) : undefined,
+      paymentTerms: customer.paymentTerms || "due_on_receipt",
       notes: customer.notes || "",
       // Pre-populate primary contact when editing (includes id for update)
       primaryContact: existingPrimaryContact ? {
@@ -236,6 +245,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       shippingCountry: "",
       sameAsBilling: true,
       creditLimit: undefined,
+      paymentTerms: "due_on_receipt",
       notes: "",
       primaryContact: {
         firstName: "",
@@ -251,7 +261,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
       // Convert creditLimit to string for database and normalize primaryContact
-      const { primaryContact, sameAsBilling, ...rest } = data;
+      const { primaryContact, sameAsBilling, paymentTerms, ...rest } = data;
 
       const hasPrimaryContact = primaryContact && (
         primaryContact.firstName.trim() !== "" ||
@@ -264,6 +274,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       const payload: any = {
         ...rest,
         ...(rest.creditLimit === undefined ? {} : { creditLimit: rest.creditLimit.toString() }),
+        ...(canManageCommercialConfiguration ? { paymentTerms } : {}),
       };
 
       if (hasPrimaryContact) {
@@ -303,7 +314,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const updateMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
       // Convert creditLimit to string for database
-      const { primaryContact, sameAsBilling, ...rest } = data;
+      const { primaryContact, sameAsBilling, paymentTerms, ...rest } = data;
 
       const hasPrimaryContact = primaryContact && (
         primaryContact.firstName.trim() !== "" ||
@@ -316,6 +327,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       const payload: any = {
         ...rest,
         ...(rest.creditLimit === undefined ? {} : { creditLimit: rest.creditLimit.toString() }),
+        ...(canManageCommercialConfiguration ? { paymentTerms } : {}),
       };
 
       if (hasPrimaryContact) {
@@ -753,6 +765,22 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
           {/* 4. Pricing & Terms */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Pricing & Terms</h3>
+
+            <div>
+              <Label htmlFor="paymentTerms">Payment Terms</Label>
+              <Select
+                value={watch("paymentTerms")}
+                onValueChange={(value) => setValue("paymentTerms", value as CustomerPaymentTerm, { shouldDirty: true })}
+                disabled={!canManageCommercialConfiguration}
+              >
+                <SelectTrigger id="paymentTerms"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CUSTOMER_PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {!canManageCommercialConfiguration && <p className="mt-1 text-xs text-muted-foreground">Only organization owners and admins can change payment terms.</p>}
+              {errors.paymentTerms && <p className="mt-1 text-xs text-red-600">{errors.paymentTerms.message}</p>}
+            </div>
 
             <div>
               <Label htmlFor="pricingTier">Pricing Tier *</Label>

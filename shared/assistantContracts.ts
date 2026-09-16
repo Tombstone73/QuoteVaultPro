@@ -301,6 +301,7 @@ export const assistantCustomerSummaryInputSchema = z.object({
 export const assistantCustomerSummaryResultSchema = z.object({
   customer: assistantEntitySummarySchema,
   active: z.boolean().optional(),
+  paymentTerms: z.string().trim().min(1).max(80).optional(),
   pricingClassification: z.string().trim().min(1).max(160).optional(),
   taxStatus: z.string().trim().min(1).max(160).optional(),
   contactSummary: z.array(z.object({

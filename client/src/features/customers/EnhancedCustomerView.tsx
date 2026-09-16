@@ -117,6 +117,7 @@ import {
   type NormalizedContactPickerResult,
 } from "./contactLinkingUi";
 import { InvoiceRecipientContactControl } from "./InvoiceRecipientContactControl";
+import { customerPaymentTermsLabel } from "@shared/customerCommercialConfiguration";
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -380,6 +381,10 @@ function CustomerHeader({
             <div className="text-right">
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Limit</div>
               <div className="text-[11px] font-semibold text-titan-text-primary">{customer.creditLimitConfigured ? formatCurrency(customer.creditLimit) : "Not set"}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Terms</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{customerPaymentTermsLabel(customer.paymentTerms)}</div>
             </div>
             
             {/* Invoice-derived financial exposure */}

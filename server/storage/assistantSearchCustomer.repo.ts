@@ -65,6 +65,7 @@ export interface AssistantCustomerSummaryRecord {
   companyName: string;
   isActive: boolean | null;
   status: string | null;
+  paymentTerms: string | null;
   route: string;
   freshness: Date | string;
   contacts: AssistantCustomerContactSummary[];
@@ -253,7 +254,7 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
 
   async getCustomerSummary(organizationId: string, customerId: string, activityLimit: number): Promise<AssistantCustomerSummaryRecord | null> {
     const [customer] = await this.dbInstance
-      .select({ id: customers.id, companyName: customers.companyName, isActive: customers.isActive, status: customers.status, updatedAt: customers.updatedAt })
+      .select({ id: customers.id, companyName: customers.companyName, isActive: customers.isActive, status: customers.status, paymentTerms: customers.paymentTerms, updatedAt: customers.updatedAt })
       .from(customers)
       .where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId)))
       .limit(1);
@@ -286,6 +287,7 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
       companyName: customer.companyName,
       isActive: customer.isActive,
       status: customer.status,
+      paymentTerms: customer.paymentTerms,
       route: `/customers/${customer.id}`,
       freshness: customer.updatedAt,
       contacts: contactRows.map((row) => ({ id: row.id, name: `${row.firstName} ${row.lastName}`.trim(), title: row.title, email: row.email, phone: row.phone, isPrimary: row.isPrimary, route: `/contacts/${row.id}`, freshness: row.updatedAt })),

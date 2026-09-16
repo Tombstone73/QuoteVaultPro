@@ -23,6 +23,7 @@ import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryToo
 import { createAssistantOrderSearchToolAdapters } from "./orderSearchTools";
 import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
+import { customerPaymentTermsLabel } from "@shared/customerCommercialConfiguration";
 
 const entityTypes = new Set(["customer", "contact", "order", "quote", "product", "invoice", "production_job"]);
 
@@ -170,6 +171,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
         const data = assistantCustomerSummaryResultSchema.parse({
           customer: customerSummary,
           ...(record.customer.isActive !== null ? { active: record.customer.isActive } : {}),
+          ...(record.customer.paymentTerms ? { paymentTerms: customerPaymentTermsLabel(record.customer.paymentTerms) } : {}),
           ...(record.contacts.length ? { contactSummary: record.contacts.map((contact) => ({
             name: contact.name,
             ...(contact.email ? { email: contact.email } : {}),

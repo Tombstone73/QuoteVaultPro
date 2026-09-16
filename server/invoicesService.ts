@@ -990,7 +990,10 @@ export async function createInvoiceFromOrderInTransaction(
       ? formatSharedInvoiceNumber(orderJobNumber, invoiceSequence!)
       : legacyParts!.displayNumber;
     const issueDate = new Date();
-    const dueDate = calculateDueDate(issueDate, opts.terms, opts.customDueDate || null);
+    // Accounting approval starts the payment clock. Preserve only an explicit
+    // custom due date before approval; standard terms receive their due date
+    // at the first accounting approval instead of at invoice creation.
+    const dueDate = opts.terms === 'custom' ? opts.customDueDate || null : null;
 
     const financialSnapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
 

@@ -2401,7 +2401,7 @@ export async function registerMvpInvoicingRoutes(
       const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
       const result = await approveInvoicesForAccounting({ organizationId, invoiceIds: [String(req.params.id)], actorUserId: userId, actorUserName: userName });
       const row = result.results[0];
-      if (row?.outcome === 'failed') return res.status(404).json({ error: row.reason });
+      if (row?.outcome === 'failed') return res.status(row.code === 'CUSTOM_PAYMENT_TERMS_DUE_DATE_REQUIRED' ? 400 : 404).json({ error: row.reason, code: row.code });
       const refreshed = await getInvoiceWithRelations(String(req.params.id));
       return res.json({ success: true, data: refreshed?.invoice ?? null, result });
     } catch (error: any) {

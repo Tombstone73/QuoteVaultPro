@@ -9,6 +9,7 @@ import {
 import { db } from "../db";
 import { approveInvoicesForAccounting } from "./invoiceAccountingApproval.service";
 import { accountingApprovalRevocationPatch } from "../lib/invoiceAccountingApproval";
+import { hasInvoicePaymentTermsStartedOrApprovalHistory } from "@shared/invoicePaymentTerms";
 
 export type InvoiceSendLifecycleResult = {
   status: string;
@@ -63,7 +64,8 @@ export async function applyInvoiceSendSuccessLifecycle(input: {
     };
 
     let dueDateUpdated = false;
-    if (shouldRecalculateInvoiceDueDateAfterSuccessfulSend({ isFirstSuccessfulCustomerDelivery, automation })) {
+    if (!hasInvoicePaymentTermsStartedOrApprovalHistory(invoice as Record<string, unknown>)
+      && shouldRecalculateInvoiceDueDateAfterSuccessfulSend({ isFirstSuccessfulCustomerDelivery, automation })) {
       const dueDate = calculateDueDateFromSuccessfulCustomerSend({
         successfulSentAt: input.successfulSentAt,
         terms: resolveInvoiceCustomerDeliveryTerms({

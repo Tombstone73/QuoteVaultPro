@@ -1,9 +1,13 @@
-import { and, eq } from 'drizzle-orm';
-import { auditLogs, invoices, organizations } from '@shared/schema';
+import { and, eq, sql } from 'drizzle-orm';
+import { auditLogs, customers, invoices, organizations } from '@shared/schema';
 import { db } from '../db';
 export { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
 import { resolveQuickBooksPreferencesFromOrgPreferences } from '@shared/quickBooksPreferences';
+import {
+  hasInvoicePaymentTermsStartedOrApprovalHistory,
+  resolveFirstInvoiceTermsStart,
+} from '@shared/invoicePaymentTerms';
 
 export async function approveInvoicesForAccounting(input: {
   organizationId: string;
@@ -21,8 +25,9 @@ export async function approveInvoicesForAccounting(input: {
       .limit(1);
     const preferences = (organization?.settings as any)?.preferences;
     const { autoQueueApprovedInvoices } = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
-    const results: Array<{ id: string; outcome: 'approved' | 'skipped' | 'failed'; reason: string | null }> = [];
+    const results: Array<{ id: string; outcome: 'approved' | 'skipped' | 'failed'; reason: string | null; code?: string }> = [];
     for (const invoiceId of uniqueIds) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-accounting-approval:${input.organizationId}:${invoiceId}`}))`);
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
       if (!invoice) { results.push({ id: invoiceId, outcome: 'failed', reason: 'Invoice not found.' }); continue; }
       if (String(invoice.importSource || '').toLowerCase() === 'quickbooks' || invoice.isHistorical) {
@@ -35,6 +40,24 @@ export async function approveInvoicesForAccounting(input: {
         results.push({ id: invoiceId, outcome: 'skipped', reason: 'Invoice is already approved for its current accounting version.' }); continue;
       }
       const now = new Date();
+      const startsTermsOnThisApproval = !hasInvoicePaymentTermsStartedOrApprovalHistory(invoice as Record<string, unknown>);
+      const [customer] = invoice.customerId
+        ? await tx.select({ paymentTerms: customers.paymentTerms }).from(customers).where(and(
+          eq(customers.id, invoice.customerId),
+          eq(customers.organizationId, input.organizationId),
+        )).limit(1)
+        : [null];
+      const termsStart = startsTermsOnThisApproval
+        ? resolveFirstInvoiceTermsStart({
+          customerPaymentTerms: customer?.paymentTerms,
+          invoiceTerms: invoice.terms,
+          approvalAt: now,
+          existingDueDate: invoice.dueDate,
+        })
+        : null;
+      if (termsStart?.validationError) {
+        results.push({ id: invoiceId, outcome: 'failed', reason: termsStart.validationError, code: 'CUSTOM_PAYMENT_TERMS_DUE_DATE_REQUIRED' }); continue;
+      }
       const approvedVersion = Number(invoice.invoiceVersion || 1);
       const hasProviderInvoiceLink = Boolean(String(invoice.qbInvoiceId || invoice.externalAccountingId || '').trim());
       const shouldQueueInitialSync = autoQueueApprovedInvoices && !hasProviderInvoiceLink;
@@ -43,6 +66,11 @@ export async function approveInvoicesForAccounting(input: {
         accountingApprovedByUserId: input.actorUserId,
         accountingApprovedVersion: approvedVersion,
         accountingApprovalRevokedAt: null,
+        ...(termsStart ? {
+          termsStartedAt: now,
+          terms: termsStart.terms,
+          dueDate: termsStart.dueDate,
+        } : {}),
         // Approval changes only local queue state. Existing provider-linked
         // invoices retain their established update/resync behavior.
         ...(shouldQueueInitialSync
@@ -68,6 +96,11 @@ export async function approveInvoicesForAccounting(input: {
           approvedAt: now.toISOString(),
           source: input.source || 'manual',
           quickBooksAutoQueued: shouldQueueInitialSync,
+          ...(termsStart ? {
+            terms: termsStart.terms,
+            termsStartedAt: now.toISOString(),
+            dueDate: termsStart.dueDate?.toISOString() ?? null,
+          } : {}),
         } as any,
       } as any);
       results.push({ id: invoiceId, outcome: 'approved', reason: null });

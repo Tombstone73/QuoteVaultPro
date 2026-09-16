@@ -4950,6 +4950,9 @@ export const invoices = pgTable("invoices", {
   lastSentVia: text("last_sent_via"),
   lastQbSyncedVersion: integer("last_qb_synced_version"),
   terms: varchar("terms", { length: 50 }).notNull().default('due_on_receipt'), // due_on_receipt, net_15, net_30, net_45, custom
+  // First accounting approval is the canonical payment-terms start. This is
+  // intentionally nullable for legacy invoices, which must not be rewritten.
+  termsStartedAt: timestamp("terms_started_at", { withTimezone: true }),
   customTerms: varchar("custom_terms", { length: 255 }),
   issueDate: timestamp("issue_date", { withTimezone: true }).defaultNow().notNull(),
   // Billing lifecycle timestamps

@@ -48,6 +48,7 @@ const repository = {
     companyName: "OTB Graphics",
     isActive: true,
     status: "active",
+    paymentTerms: "net_30",
     route: "/customers/customer_1",
     freshness: new Date("2026-07-21T12:00:00.000Z"),
     contacts: [{
@@ -186,7 +187,7 @@ describe("Stage 2 customer/search assistant tools", () => {
     });
   });
 
-  test("customers.get_summary omits finance and internal fields even when the caller asks for them", async () => {
+  test("customers.get_summary exposes customer-owned payment terms while omitting finance and internal fields", async () => {
     const tool = createCustomerSummaryTool(repository);
     const result = await tool.execute(invocation, { customerId: "customer_1" });
 
@@ -195,6 +196,7 @@ describe("Stage 2 customer/search assistant tools", () => {
     if (result.status !== "success") throw new Error("Expected customer result");
     expect(result.data).not.toHaveProperty("currentBalance");
     expect(result.data).not.toHaveProperty("invoices");
+    expect(result.data.customer).toHaveProperty("paymentTerms", "net_30");
     expect(result.data.customer).not.toHaveProperty("taxExemptCertificateRef");
     expect(result.data.customer).not.toHaveProperty("creditLimit");
     expect(result.data.customer).not.toHaveProperty("pricingTier");

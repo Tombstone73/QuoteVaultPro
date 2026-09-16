@@ -18,6 +18,10 @@ export const CUSTOMER_PAYMENT_TERM_VALUES = [
 
 export type CustomerPaymentTerm = typeof CUSTOMER_PAYMENT_TERM_VALUES[number];
 
+export function customerPaymentTermsLabel(value: string | null | undefined): string {
+  return CUSTOMER_PAYMENT_TERMS.find((term) => term.value === value)?.label ?? "Due on Receipt";
+}
+
 const customerIdsSchema = z.array(z.string().trim().min(1)).min(1).max(100).superRefine((customerIds, context) => {
   if (new Set(customerIds).size !== customerIds.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Customer IDs must not contain duplicates." });

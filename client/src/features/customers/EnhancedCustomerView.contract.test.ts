@@ -7,6 +7,11 @@ const invoiceTable = source.slice(source.indexOf('function InvoicesTable('), sou
 const ordersStart = source.indexOf('function OrdersTable(');
 const ordersTable = source.slice(ordersStart, source.indexOf('function QuotesTable(', ordersStart));
 
+test('Customer Detail displays the shared human-readable payment terms', () => {
+  expect(source).toContain('import { customerPaymentTermsLabel } from "@shared/customerCommercialConfiguration";');
+  expect(source).toContain('customerPaymentTermsLabel(customer.paymentTerms)');
+});
+
 test('the actual Customer Detail invoice table renders the operational invoice fields and shared direct actions', () => {
   for (const label of [
     'Invoice #', 'Job / Order', 'PO #', 'Order #', 'Invoice Date', 'Last Sent', 'Due Date',

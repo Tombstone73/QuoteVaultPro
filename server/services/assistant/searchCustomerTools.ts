@@ -7,6 +7,7 @@ import {
   type AssistantSearchCustomerRepository,
   type AssistantSearchRecord,
 } from "../../storage/assistantSearchCustomer.repo";
+import { CUSTOMER_PAYMENT_TERM_VALUES } from "@shared/customerCommercialConfiguration";
 
 const safeIdentifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 const freshnessSchema = z.string().datetime();
@@ -44,6 +45,7 @@ export const customerSummaryToolResultSchema = z.object({
     companyName: z.string().min(1).max(255),
     isActive: z.boolean().nullable(),
     status: z.string().max(100).nullable(),
+    paymentTerms: z.enum(CUSTOMER_PAYMENT_TERM_VALUES).nullable(),
     route: z.string().regex(/^\/customers\/[A-Za-z0-9_-]+$/),
     freshness: freshnessSchema,
   }),
@@ -97,6 +99,7 @@ function normalizedCustomerSummary(record: AssistantCustomerSummaryRecord) {
       companyName: record.companyName,
       isActive: record.isActive,
       status: record.status,
+      paymentTerms: record.paymentTerms,
       route: record.route,
       freshness: toFreshness(record.freshness),
     },
@@ -106,8 +109,9 @@ function normalizedCustomerSummary(record: AssistantCustomerSummaryRecord) {
 }
 
 /**
- * Read-only, tenant-scoped adapter. This deliberately omits balances, invoices,
- * payment data, tax documents, internal notes, and any finance-only field.
+ * Read-only, tenant-scoped adapter. It deliberately omits balances, invoices,
+ * payment data, tax documents, and internal notes while retaining the
+ * customer-owned payment-term configuration staff need to answer terms questions.
  */
 export function createSearchGlobalTool(repository: AssistantSearchCustomerRepository = new DrizzleAssistantSearchCustomerRepository()) {
   return {
@@ -151,7 +155,7 @@ export function createCustomerSummaryTool(repository: AssistantSearchCustomerRep
       resultSchema: customerSummaryToolResultSchema,
       maxResults: ASSISTANT_SEARCH_MAX_RESULTS_PER_CATEGORY,
       sourceLinks: "required",
-      financeFields: "omitted",
+      financeFields: "omitted_except_customer_payment_terms",
     },
     async execute(invocation: TrustedAssistantToolInvocation, rawInput: unknown): Promise<AssistantToolExecution<z.infer<typeof customerSummaryToolResultSchema> | { customerId: string }>> {
       const input = customerSummaryToolInputSchema.parse(rawInput);
