@@ -723,7 +723,6 @@ export default function InvoicesListPage() {
                 <SelectItem value="paid">Paid</SelectItem>
                 <SelectItem value="paid_historical">Paid Historical</SelectItem>
                 <SelectItem value="overdue">Overdue</SelectItem>
-                <SelectItem value="billed">Billed</SelectItem>
                 <SelectItem value="void">Void</SelectItem>
               </SelectContent>
             </Select>

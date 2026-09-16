@@ -76,6 +76,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("Show Paid Historical");
     expect(invoicesPageSource).toContain('value="unpaid"');
     expect(invoicesPageSource).toContain('>Unpaid</SelectItem>');
+    expect(invoicesPageSource).not.toContain('<SelectItem value="billed">Billed</SelectItem>');
     expect(invoicesPageSource).toContain('value="paid_historical"');
     expect(invoicesPageSource).toContain("includePaidHistorical");
     expect(invoiceHooksSource).toContain("includePaidHistorical");
