@@ -24,4 +24,6 @@ assert.match(replacements,/PostgresOperationRequestRepository/,"replacement retr
 assert.match(replacements,/createOrReadReplacementInvoice/,"billable creation atomically creates the canonical Invoice");
 assert.match(replacements,/A billable replacement Invoice already exists and cannot be cancelled/,"billable to no-charge reversal fails closed");
 assert.match(drafts,/replacement_obligation_id IS NULL/,"ordinary Order Invoice synchronization excludes immutable replacement drafts");
+assert.match(migration,/v2_billing_invoices_one_primary_draft_per_order_uidx[\s\S]*WHERE invoice_state='draft' AND replacement_obligation_id IS NULL/,"0285 uniquely identifies only a primary draft Invoice");
+assert.match(drafts,/ON CONFLICT \(organization_id,sales_order_document_id\)\s+WHERE invoice_state='draft' AND replacement_obligation_id IS NULL/,"the base-draft writer exactly matches the 0285 primary-draft conflict arbiter");
 console.log("billable replacement Invoice persistence contracts passed.");

@@ -120,7 +120,8 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
       ) VALUES(
         $1,$2,$3,'draft',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18::jsonb,$19::jsonb
       )
-      ON CONFLICT (organization_id,sales_order_document_id) WHERE invoice_state='draft'
+      ON CONFLICT (organization_id,sales_order_document_id)
+      WHERE invoice_state='draft' AND replacement_obligation_id IS NULL
       DO NOTHING
       RETURNING id,synchronization_version`,
       [
