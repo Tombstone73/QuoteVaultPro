@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn } from "@/lib/utils";
@@ -438,6 +439,27 @@ export default function Orders() {
   const hasNext = isPaginated ? ordersData.hasNext : false;
   const hasPrev = isPaginated ? ordersData.hasPrev : false;
 
+  const orderNavigationSource = useMemo(() => {
+    const params = new URLSearchParams();
+    if (debouncedSearch) params.set("search", debouncedSearch);
+    if (!isDashboardDueDrilldown && stateFilter !== "all") params.set("state", stateFilter);
+    if (statusPillIdsForQuery !== undefined) params.set("statusPillIds", statusPillIdsForQuery.join(","));
+    if (!isDashboardDueDrilldown && priorityFilter !== "all") params.set("priority", priorityFilter);
+    if (dueFilter) params.set("due", dueFilter);
+    if (invoiceFilter !== "all") params.set("invoice", invoiceFilter);
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
+    params.set("sortBy", sortKey);
+    params.set("sortDir", sortDirection);
+    return `/orders?${params.toString()}`;
+  }, [debouncedSearch, dueFilter, invoiceFilter, isDashboardDueDrilldown, page, pageSize, priorityFilter, sortDirection, sortKey, stateFilter, statusPillIdsForQuery]);
+  const orderDetailPath = (row: OrderRow) => {
+    // Production and proof are currently client-side projections of one
+    // bounded page. Do not present misleading cross-page navigation for them.
+    if (productionFilter !== "all" || proofFilter !== "all") return ROUTES.orders.detail(row.id);
+    return buildListDetailPath("order", row.id, orderNavigationSource, (page - 1) * pageSize + Math.max(0, orders.indexOf(row)));
+  };
+
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
 
   // Core identity/state/pill/priority filtering is server-side and paginated.
@@ -781,7 +803,7 @@ export default function Orders() {
       case "orderNumber": {
         const { displayNumber, isTest } = getDisplayOrderNumber(row);
         return (
-          <Link to={ROUTES.orders.detail(row.id)} state={{ referrer: buildReferrer(location) }} className="text-sm text-blue-600 hover:underline font-medium flex items-center gap-1.5">
+          <Link to={orderDetailPath(row)} state={{ referrer: buildReferrer(location) }} className="text-sm text-blue-600 hover:underline font-medium flex items-center gap-1.5">
             <span>{displayNumber}</span>
             {isTest && (
               <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
@@ -954,7 +976,7 @@ export default function Orders() {
               variant="ghost"
               className="h-7 w-7 p-0"
               title="View order"
-              onClick={() => navigate(ROUTES.orders.detail(row.id), { state: { referrer: buildReferrer(location) } })}
+              onClick={() => navigate(orderDetailPath(row), { state: { referrer: buildReferrer(location) } })}
             >
               <Eye className="w-4 h-4" />
             </Button>
@@ -1333,7 +1355,7 @@ export default function Orders() {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={(e) => {
                         if (!isOrdersRowNavigationExcluded(e.target)) {
-                          navigate(ROUTES.orders.detail(order.id), { state: { referrer: buildReferrer(location) } });
+                          navigate(orderDetailPath(order), { state: { referrer: buildReferrer(location) } });
                         }
                       }}
                     >

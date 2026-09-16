@@ -82,6 +82,8 @@ import { orchestrateOrderSave } from "@/pages/orderSaveOrchestration";
 import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
 import BackNavControls from "@/components/BackNavControls";
+import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
+import { useListDetailNavigation } from "@/lib/listDetailNavigation";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
@@ -246,6 +248,8 @@ export default function OrderDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const orderId = params.id;
+  const listNavigation = useListDetailNavigation("order", orderId);
   const isOrderEditRoute = location.pathname.endsWith("/edit");
   const { registerGuard, guardedNavigate, getGuardDiagnostics } = useNavigationGuard();
   const { onSmartBack } = useSmartBack();
@@ -348,7 +352,6 @@ export default function OrderDetail() {
     return () => clearTimeout(timer);
   }, [shipToAutofillQuery]);
 
-  const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
   const { data: inboundAttachmentAudit = [] } = useQuery<OrderInboundAttachmentAudit[]>({
     queryKey: ["/api/orders", orderId, "inbound-attachments"],
@@ -2132,7 +2135,7 @@ export default function OrderDetail() {
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
             <BackNavControls
-              onBack={onSmartBack}
+              onBack={() => listNavigation.context ? guardedNavigate(listNavigation.context.source) : onSmartBack()}
               onSectionHome={() => guardedNavigate("/orders")}
               sectionLabel="Orders"
             />
@@ -2144,7 +2147,7 @@ export default function OrderDetail() {
             </div>
           </div>
 
-          <div className="flex flex-1 items-center justify-center px-4">
+            <div className="flex flex-1 items-center justify-center px-4">
             <OrderStatusPillSelector
               orderId={order.id}
               currentState={order.state as OrderState}
@@ -2153,9 +2156,20 @@ export default function OrderDetail() {
               disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
               className="h-10 w-[260px] rounded-full text-base"
             />
-          </div>
+            </div>
 
-          <div className="flex items-center gap-3">
+            <ListDetailNavigator
+              label="order"
+              position={listNavigation.position}
+              total={listNavigation.total}
+              loading={listNavigation.isLoading}
+              canPrevious={listNavigation.canPrevious}
+              canNext={listNavigation.canNext}
+              onPrevious={() => void listNavigation.go(-1)}
+              onNext={() => void listNavigation.go(1)}
+            />
+
+            <div className="flex items-center gap-3">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
                 <Link to={ROUTES.orders.detail(order.id)}>

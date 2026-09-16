@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
 import { CustomerSelect } from "@/components/CustomerSelect";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
@@ -147,6 +148,7 @@ function stickyFiltersToUrlChanges(filters: InvoiceListStickyFilters): Record<st
 export default function InvoicesListPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const [preferencesRevision, setPreferencesRevision] = useState(0);
@@ -283,6 +285,12 @@ export default function InvoicesListPage() {
 
   const filteredInvoices = invoiceResponse?.items || [];
   const pagination = invoiceResponse?.pagination;
+  const invoiceDetailPath = (invoice: InvoiceListItem) => buildListDetailPath(
+    "invoice",
+    invoice.id,
+    `${location.pathname}${location.search}`,
+    (page - 1) * pageSize + Math.max(0, filteredInvoices.indexOf(invoice)),
+  );
   const summary = invoiceResponse?.summary;
   const totalCount = pagination?.totalCount ?? 0;
   const totalPages = pagination?.totalPages ?? 1;
@@ -609,7 +617,7 @@ export default function InvoicesListPage() {
       case "jobName": return <TitanTableCell key={column.id} className="max-w-[240px]"><div className="truncate" title={textOrEmpty(invoice.jobName || invoice.orderName)}>{textOrEmpty(invoice.jobName || invoice.orderName)}</div></TitanTableCell>;
       case "purchaseOrderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.purchaseOrderNumber)}>{textOrEmpty(invoice.purchaseOrderNumber)}</div></TitanTableCell>;
       case "orderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.orderNumber)}><OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} /></div></TitanTableCell>;
-      case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={`/invoices/${invoice.id}`} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: (invoice as any).displayNumber, numberCore: (invoice as any).numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
+      case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={invoiceDetailPath(invoice)} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: (invoice as any).displayNumber, numberCore: (invoice as any).numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
       case "issueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.issueDate)}</TitanTableCell>;
       case "dueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.dueDate)}</TitanTableCell>;
       case "status": return <TitanTableCell key={column.id}><StatusPill variant={getStatusVariant(invoice.status)}>{invoice.displayStatus || statusLabels[invoice.status] || invoice.status}</StatusPill></TitanTableCell>;
@@ -834,7 +842,7 @@ export default function InvoicesListPage() {
             <TitanTableBody>
               {isLoading && <TitanTableLoading colSpan={visibleColumns.length} message="Loading invoices..." />}
               {!isLoading && filteredInvoices.length === 0 && <TitanTableEmpty colSpan={visibleColumns.length} icon={<FileText className="h-12 w-12" />} message="No invoices found" action={isAdminOrOwner ? <Button variant="outline" size="sm" asChild><Link to={ROUTES.orders.list}><Plus className="mr-2 h-4 w-4" />Create from Order</Link></Button> : undefined} />}
-              {!isLoading && filteredInvoices.map((invoice) => <TitanTableRow key={invoice.id} clickable onClick={() => navigate(`/invoices/${invoice.id}`)}>{visibleColumns.map((column) => renderInvoiceCell(invoice, column))}</TitanTableRow>)}
+              {!isLoading && filteredInvoices.map((invoice) => <TitanTableRow key={invoice.id} clickable onClick={() => navigate(invoiceDetailPath(invoice))}>{visibleColumns.map((column) => renderInvoiceCell(invoice, column))}</TitanTableRow>)}
             </TitanTableBody>
             {false && <>
             <TitanTableHeader>
@@ -889,7 +897,7 @@ export default function InvoicesListPage() {
                 <TitanTableRow
                   key={invoice.id}
                   clickable
-                  onClick={() => navigate(`/invoices/${invoice.id}`)}
+                  onClick={() => navigate(invoiceDetailPath(invoice))}
                 >
                   <TitanTableCell onClick={(e) => e.stopPropagation()}>
                     <Checkbox
@@ -931,7 +939,7 @@ export default function InvoicesListPage() {
                   </TitanTableCell>
                   <TitanTableCell className="font-medium">
                     <Link
-                      to={`/invoices/${invoice.id}`}
+                      to={invoiceDetailPath(invoice)}
                       className="text-titan-accent hover:underline"
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -995,7 +1003,7 @@ export default function InvoicesListPage() {
                       {canTakePaymentFromInvoiceList(invoice) ? (
                         <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
                       ) : null}
-                      <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip>
+                      <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={invoiceDetailPath(invoice)} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip>
                     </div>
                     </TooltipProvider>
                   </TitanTableCell>

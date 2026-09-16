@@ -26,6 +26,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
+import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
+import { useListDetailNavigation } from "@/lib/listDetailNavigation";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useInvoice, useQueueInvoiceQbSync, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
@@ -200,6 +202,7 @@ export default function InvoiceDetailPage() {
   const queryClient = useQueryClient();
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
+  const listNavigation = useListDetailNavigation("invoice", invoiceId);
   const queueQbSync = useQueueInvoiceQbSync();
   const approveForAccounting = useApproveInvoicesForAccounting();
   const markSent = useMarkInvoiceSent();
@@ -1919,7 +1922,7 @@ export default function InvoiceDetailPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <div className="flex items-center gap-3 min-w-0">
               <Button variant="outline" size="icon" asChild>
-                <Link to="/invoices">
+                <Link to={listNavigation.context?.source ?? "/invoices"}>
                   <ArrowLeft className="h-4 w-4" />
                 </Link>
               </Button>
@@ -1942,6 +1945,19 @@ export default function InvoiceDetailPage() {
                   </div>
                 ) : null}
               </div>
+            </div>
+
+            <div className="sm:ml-auto">
+              <ListDetailNavigator
+                label="invoice"
+                position={listNavigation.position}
+                total={listNavigation.total}
+                loading={listNavigation.isLoading}
+                canPrevious={listNavigation.canPrevious}
+                canNext={listNavigation.canNext}
+                onPrevious={() => void listNavigation.go(-1)}
+                onNext={() => void listNavigation.go(1)}
+              />
             </div>
 
             {qbWarningMessage ? (
