@@ -20,6 +20,14 @@ export const DEV_QA_M78I_OPERATIONAL_CAPABILITIES = Object.freeze([
 ] as const satisfies readonly Capability[]);
 export const DEV_QA_M78I_PERMISSION_SET_NAME = "DEV QA M7.8I Operations";
 export const DEV_QA_M78I_PERMISSION_SET_DESCRIPTION = "Dedicated DEV-only least-privilege authority for synthetic M7.8I live validation.";
+/** One-shot fixture setup only; immediately converge back to m78i after publish. */
+export const DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES = Object.freeze([
+  ...DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
+  "pricing.configure",
+  "pricing.publish",
+] as const satisfies readonly Capability[]);
+export const DEV_QA_M78I_FIXTURE_PRICING_SET_NAME = "DEV QA M7.8I Fixture Pricing Setup";
+export const DEV_QA_M78I_FIXTURE_PRICING_SET_DESCRIPTION = "Temporary DEV-only pricing authority to publish the marked M7.8I synthetic fixture Product.";
 
 /**
  * The physical administrator-floor constraint requires one active Staff
@@ -54,6 +62,10 @@ export function devQaFullAccessProvisioningPlan(config: DevQaProvisioningConfig)
 
 export function devQaM78iOperationalProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
   return devQaProvisioningPlan(config, DEV_QA_M78I_PERMISSION_SET_NAME, DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
+}
+
+export function devQaM78iFixturePricingProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
+  return devQaProvisioningPlan(config, DEV_QA_M78I_FIXTURE_PRICING_SET_NAME, DEV_QA_M78I_FIXTURE_PRICING_SET_DESCRIPTION, DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES);
 }
 
 export function devQaM78iPermissionFloorProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {

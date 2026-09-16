@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { capabilityIds } from "../../v2/src/authorization/capabilities";
-import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_EMAIL, DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
+import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES, DEV_QA_M78I_FIXTURE_PRICING_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_EMAIL, DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iFixturePricingProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
 
 const devEnv = {
@@ -63,6 +63,15 @@ describe("DEV QA full-access provisioning", () => {
     expect(plan.permissionSet).toMatchObject({ name: DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, principalKind: "staff" });
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES);
     expect(plan.permissionSet.capabilities).toEqual(["permissions.manageSets", "permissions.assignStaff"]);
+  });
+
+  test("limits temporary fixture pricing authority to the two publish prerequisites", () => {
+    const plan = devQaM78iFixturePricingProvisioningPlan(getDevQaProvisioningConfig(devEnv));
+    expect(plan.permissionSet.name).toBe(DEV_QA_M78I_FIXTURE_PRICING_SET_NAME);
+    expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES);
+    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["pricing.configure", "pricing.publish"]));
+    expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 2);
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
   });
 
   test("keeps platform and structural ownership outside the V2 QA permission set", () => {
