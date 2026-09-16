@@ -17,6 +17,7 @@ import {
   useMarkOrderReadyForPickupMutation,
   useRecordPickupHandoffMutation,
 } from "@/hooks/useFulfillment";
+import { PickupTravelerPrintDialog } from "@/components/fulfillment/PickupTravelerPrintDialog";
 
 /** The order is the operator workspace. Shipment and pickup rows are execution evidence. */
 export default function FulfillmentWorkspacePage() {
@@ -33,6 +34,7 @@ export default function FulfillmentWorkspacePage() {
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
   const [note, setNote] = useState("");
   const [pickupRequestId, setPickupRequestId] = useState<string | null>(null);
+  const [pickupTravelerOpen, setPickupTravelerOpen] = useState(false);
   const detail = detailQuery.data;
   const queryError = detailQuery.isError ? toFulfillmentError(detailQuery.error) : null;
   const loadState = getFulfillmentWorkspaceLoadState({ orderId, isLoading: detailQuery.isLoading, isError: detailQuery.isError, errorStatus: queryError?.status, hasDetail: !!detail });
@@ -47,6 +49,10 @@ export default function FulfillmentWorkspacePage() {
   const methodLabel = isPickup ? "Pickup" : "Shipping";
   const shipmentId = createdShipmentId || workspaceMode.singleDraftShipmentId;
   const pickupPending = recordPickupHandoff.isPending || createPickupTicket.isPending;
+  const pickupTravelerLines = detail.lineItems.flatMap((item) => {
+    const quantity = Math.floor(Number(pickupQuantityByLine[item.id] || 0));
+    return quantity > 0 ? [{ orderLineItemId: item.id, description: item.productName || item.description || "Line item", quantity }] : [];
+  });
   const fulfillmentNotes = detail.events.filter((event) => event.eventType === "FULFILLMENT_NOTE");
 
   const showError = (title: string, error: unknown) => toast({ title, description: toFulfillmentError(error).message, variant: "destructive" });
@@ -126,8 +132,10 @@ export default function FulfillmentWorkspacePage() {
           {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
-      {isPickup && detail.remainingQuantity > 0 && <div className="flex justify-end border-t px-4 py-3"><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
+      {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupTravelerOpen(true)}>Print Pickup Travelers</button><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
     </section>
+
+    {isPickup && <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} />}
 
     {!isPickup && <section className="space-y-3"><div className="rounded-xl border bg-card p-4"><h2 className="font-bold"><Truck className="mr-2 inline h-4 w-4" />Shipping</h2><p className="mt-1 text-sm text-muted-foreground">{shipmentId ? "Allocate what is leaving in the shipment package." : "Start a shipment to record what physically leaves the shop."}</p></div>{shipmentId && <FulfillmentShipmentEditor shipmentId={shipmentId} embedded onMutationComplete={() => detailQuery.refetch()} />}{workspaceMode.combinedShipments.map((shipment) => <div key={shipment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div><p className="font-semibold">Included in combined shipment {shipment.shipmentReference || shipment.id} · {shipment.status}</p><p className="text-sm text-muted-foreground">Shared by {shipment.orderCount} orders.</p></div><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.shipmentDetail(shipment.id))}>Open Combined Shipment</button></div>)}</section>}
 

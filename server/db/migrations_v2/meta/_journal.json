@@ -1380,6 +1380,13 @@
       "when": 1788048000048,
       "tag": "0201_local_print_agent_configuration",
       "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1788048000049,
+      "tag": "0202_pickup_traveler_print_context",
+      "breakpoints": true
     }
   ]
 }

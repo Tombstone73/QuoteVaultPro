@@ -8708,6 +8708,8 @@ export const directPrintJobs = pgTable("direct_print_jobs", {
   agentId: varchar("agent_id").notNull().references(() => localBridgeAgents.id, { onDelete: "restrict" }),
   documentType: varchar("document_type", { length: 40 }).notNull().default("traveler"),
   copies: integer("copies").notNull(), printNote: varchar("print_note", { length: 1000 }),
+  /** Durable, print-only document data (for example a pickup traveler batch). */
+  printContext: jsonb("print_context").$type<Record<string, unknown> | null>(),
   trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
   status: varchar("status", { length: 20 }).notNull().$type<typeof directPrintJobStatusValues[number]>().default("queued"),
   attempts: integer("attempts").notNull().default(0), claimedAt: timestamp("claimed_at", { withTimezone: true }), submittedAt: timestamp("submitted_at", { withTimezone: true }), failedAt: timestamp("failed_at", { withTimezone: true }), lastError: text("last_error"),

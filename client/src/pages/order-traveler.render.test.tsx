@@ -157,4 +157,29 @@ describe("OrderTravelerPage print-only notes", () => {
     expect(browserArea.style.getPropertyValue("--thermal-feed-spacer")).toBe("1.5in");
     expect(browserArea.querySelector('[data-traveler-feed-sentinel="true"]')).toBeNull();
   });
+
+  test("renders one customer-safe pickup tag per box with print-only quantities", async () => {
+    useQueryMock.mockReturnValue({
+      data: {
+        ...travelerSource,
+        internalNotes: "DO NOT PRINT",
+        pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 8, lineQuantities: [{ orderLineItemId: "line-1", quantity: 250 }] },
+        lineItems: [{ ...travelerSource.lineItems[0], orderLineItemId: "line-1", quantity: 250 }],
+      }, isLoading: false, error: null,
+    } as any);
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(8);
+    expect(container.textContent).toContain("Box 1 of 8");
+    expect(container.textContent).toContain("Box 8 of 8");
+    expect(container.textContent).toContain("Pickup Qty: 250");
+    expect(container.textContent).not.toContain("DO NOT PRINT");
+    expect(container.querySelectorAll('[data-traveler-feed-sentinel="true"]')).toHaveLength(0);
+  });
+
+  test("keeps a feed sentinel on every direct-print pickup tag", async () => {
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 2, lineQuantities: [{ orderLineItemId: "line-1", quantity: 250 }] }, lineItems: [{ ...travelerSource.lineItems[0], quantity: 250 }] }, isLoading: false, error: null } as any);
+    mockSearchParams = new URLSearchParams({ directPrintJobId: "pickup-job", feedMm: "20" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.querySelectorAll('[data-traveler-feed-sentinel="true"]')).toHaveLength(2);
+  });
 });

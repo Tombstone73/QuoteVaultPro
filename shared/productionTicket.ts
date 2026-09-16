@@ -389,11 +389,23 @@ export function buildTicketData(
 
 /** Raw per-line-item values for an order traveler, before formatting. */
 export interface TravelerLineItemSource {
+  /** Stable identity used only to apply a server-validated print-only override. */
+  orderLineItemId?: string;
   description: string;
   quantity: number;
   size?: string | null;
   material?: string | null;
   productionNotes?: string | null;
+}
+
+/**
+ * Immutable, print-only context for a pickup traveler batch. It deliberately
+ * does not correspond to an order or fulfillment mutation.
+ */
+export interface PickupTravelerPrintContext {
+  fulfillmentMode: "pickup";
+  lineQuantities: Array<{ orderLineItemId: string; quantity: number }>;
+  boxCount: number;
 }
 
 /** Raw order-level values for an order traveler. */
@@ -408,6 +420,7 @@ export interface OrderTravelerSource {
   contactName?: string | null;
   dueDate?: string | null;
   priority?: string | null;
+  pickupPrintContext?: PickupTravelerPrintContext | null;
   lineItems: TravelerLineItemSource[];
 }
 

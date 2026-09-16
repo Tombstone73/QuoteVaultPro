@@ -49,6 +49,7 @@ jest.mock("@/hooks/useFulfillment", () => ({
 }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
 jest.mock("@/pages/fulfillment-shipment-detail", () => ({ FulfillmentShipmentEditor: () => <div /> }));
+jest.mock("@/components/fulfillment/PickupTravelerPrintDialog", () => ({ PickupTravelerPrintDialog: ({ lines, open }: any) => open ? <div data-testid="pickup-traveler-dialog">{JSON.stringify(lines)}</div> : null }));
 
 const { MemoryRouter, Route, Routes } = require("react-router-dom") as typeof import("react-router-dom");
 const Page = require("./fulfillment-workspace").default;
@@ -120,6 +121,16 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     ] }));
     expect(detail.pickupHandoffs).toHaveLength(1);
     expect(detail.pickupHandoffs[0].items).toHaveLength(2);
+    act(() => root.unmount());
+  });
+
+  test("prints the current unsaved pickup quantities without recording a handoff", async () => {
+    detail = makeDetail(); const { container, root } = render();
+    await act(async () => { change(container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement, "250"); });
+    await act(async () => { Simulate.click(button(container, "Print Pickup Travelers")); });
+    expect(container.querySelector('[data-testid="pickup-traveler-dialog"]')?.textContent).toContain('"quantity":250');
+    expect(recordHandoff).not.toHaveBeenCalled();
+    expect(detail.lineItems[0].production.pickedUpQuantity).toBe(0);
     act(() => root.unmount());
   });
 

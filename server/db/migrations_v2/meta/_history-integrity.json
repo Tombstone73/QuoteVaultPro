@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 197,
+  "entryCount": 198,
   "immutableThrough": {
-    "idx": 202,
-    "when": 1788048000048,
-    "tag": "0201_local_print_agent_configuration"
+    "idx": 203,
+    "when": 1788048000049,
+    "tag": "0202_pickup_traveler_print_context"
   },
-  "canonicalSha256": "ba50b0923b5d46ad8a4266f4e4ce67130e3a3863a253ccac2015ba13461c20f8"
+  "canonicalSha256": "1dbc6d805e9838e91eaa625de0ab855e0e4e578db924a71e844416af63ee10de"
 }

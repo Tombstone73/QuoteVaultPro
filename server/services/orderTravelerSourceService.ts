@@ -12,7 +12,7 @@ import {
   collectLineItemProductionMaterialIds,
   resolveLineItemMaterialDisplayLabel,
 } from "../routes/flatStockNesting.shared";
-import type { OrderTravelerSource } from "@shared/productionTicket";
+import type { OrderTravelerSource, PickupTravelerPrintContext } from "@shared/productionTicket";
 
 /**
  * The single server-side projection used by both an authenticated browser and
@@ -22,6 +22,7 @@ import type { OrderTravelerSource } from "@shared/productionTicket";
 export async function getOrderTravelerSource(
   organizationId: string,
   orderId: string,
+  pickupPrintContext?: PickupTravelerPrintContext | null,
 ): Promise<OrderTravelerSource | null> {
   const orderRows = await db
     .select({
@@ -90,18 +91,15 @@ export async function getOrderTravelerSource(
     for (const material of materialRows) materialNameById.set(material.id, material.name);
   }
 
-  return {
-    orderId: order.id,
-    orderNumber: order.orderNumber,
-    poNumber: order.poNumber ?? null,
-    jobLabel: order.jobLabel ?? null,
-    customerName: String(order.customerName || "—"),
-    contactName,
-    dueDate: order.dueDate ?? null,
-    priority: order.priority ?? null,
-    lineItems: lineItemRows.map((lineItem) => ({
+  const requestedPickupQuantityByLine = pickupPrintContext
+    ? new Map(pickupPrintContext.lineQuantities.map((item) => [item.orderLineItemId, item.quantity]))
+    : null;
+  const travelerLineItems = lineItemRows
+    .filter((lineItem) => !requestedPickupQuantityByLine || requestedPickupQuantityByLine.has(lineItem.id))
+    .map((lineItem) => ({
+      orderLineItemId: lineItem.id,
       description: lineItem.description ?? "",
-      quantity: Number(lineItem.quantity) || 0,
+      quantity: requestedPickupQuantityByLine?.get(lineItem.id) ?? (Number(lineItem.quantity) || 0),
       size: lineItem.width && lineItem.height ? `${lineItem.width} × ${lineItem.height}` : null,
       material: resolveLineItemMaterialDisplayLabel({
         lineItem,
@@ -111,6 +109,18 @@ export async function getOrderTravelerSource(
         primaryMaterialName: lineItem.productPrimaryMaterialId ? materialNameById.get(lineItem.productPrimaryMaterialId) ?? null : null,
       }),
       productionNotes: lineItem.productionNotes ?? null,
-    })),
+    }));
+
+  return {
+    orderId: order.id,
+    orderNumber: order.orderNumber,
+    poNumber: order.poNumber ?? null,
+    jobLabel: order.jobLabel ?? null,
+    customerName: String(order.customerName || "—"),
+    contactName,
+    dueDate: order.dueDate ?? null,
+    priority: order.priority ?? null,
+    pickupPrintContext: pickupPrintContext ?? null,
+    lineItems: travelerLineItems,
   };
 }

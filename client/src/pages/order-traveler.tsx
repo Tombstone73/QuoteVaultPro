@@ -159,6 +159,8 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
     if (!data) return null;
     return buildOrderTravelerData(data, template);
   }, [data, template]);
+  const pickupContext = data?.pickupPrintContext?.fulfillmentMode === "pickup" ? data.pickupPrintContext : null;
+  const boxIndexes = pickupContext ? Array.from({ length: pickupContext.boxCount }, (_, index) => index + 1) : [null];
   if (isLoading) return <CenteredMessage>Loading order traveler...</CenteredMessage>;
   if (error || !data || !traveler) {
     return <CenteredMessage>Failed to load order traveler.</CenteredMessage>;
@@ -171,10 +173,12 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
       {controls}
 
       <div className="mx-auto max-w-md px-4 py-6">
-        <ThermalPrintPage ready feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)} forceFeedSentinel={forceFeedSentinel}>
+        {boxIndexes.map((boxIndex) => (
+          <ThermalPrintPage ready key={boxIndex ?? "standard"} feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)} forceFeedSentinel={forceFeedSentinel} style={boxIndex && boxIndex > 1 ? { marginTop: "8mm", breakBefore: "page" } : undefined}>
           <ThermalValue align="center" size="normal" style={{ textTransform: "uppercase" }}>
-            Order Traveler
+            {pickupContext ? "Pickup Traveler" : "Order Traveler"}
           </ThermalValue>
+          {pickupContext && boxIndex ? <><ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>Box {boxIndex} of {pickupContext.boxCount}</ThermalValue><ThermalDivider heavy /></> : null}
           <ThermalDivider heavy />
 
           {traveler.headerRows.map((row) => (
@@ -194,7 +198,7 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
 
           <ThermalDivider heavy />
           <ThermalLabel>
-            Line Items ({traveler.lineItemCount}) - Total Qty {traveler.totalQuantity}
+            Line Items ({traveler.lineItemCount}) - {pickupContext ? "Pickup Qty" : "Total Qty"} {traveler.totalQuantity}
           </ThermalLabel>
           {traveler.lineItems.length === 0 ? (
             <ThermalValue size="normal" style={{ margin: "1.5mm 0" }}>
@@ -220,7 +224,7 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
                     lineHeight: 1.1,
                   }}
                 >
-                  <span>Qty: {li.quantity}</span>
+                  <span>{pickupContext ? "Pickup Qty" : "Qty"}: {li.quantity}</span>
                   <span style={{ textAlign: "right" }}>{li.size}</span>
                 </div>
                 <div style={{ fontSize: "15px", fontWeight: 900, lineHeight: 1.15, marginTop: "1mm" }}>
@@ -243,7 +247,8 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
             instruction="Scan to open order in Printers Hero"
             timestamp={`Printed ${new Date().toLocaleString()}`}
           />
-        </ThermalPrintPage>
+          </ThermalPrintPage>
+        ))}
       </div>
     </div>
   );

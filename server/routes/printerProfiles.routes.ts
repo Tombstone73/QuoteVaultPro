@@ -7,6 +7,18 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { directPrintJobs, localBridgeAgents, orders, printerProfiles } from "@shared/schema";
 import { publishPrintAgentWake } from "../services/printAgentWake";
+import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
+import type { PickupTravelerPrintContext } from "@shared/productionTicket";
+
+const pickupTravelerPrintSchema = z.object({
+  destinationId: z.string().min(1),
+  boxCount: z.coerce.number().int().min(1).max(100),
+  lineQuantities: z.array(z.object({
+    orderLineItemId: z.string().min(1),
+    quantity: z.coerce.number().int().positive(),
+  })).min(1).max(100),
+  requestKey: z.string().min(1).max(160).optional(),
+});
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -80,6 +92,49 @@ export function registerPrinterProfileRoutes(
       const wake = await publishPrintAgentWake(agent.tokenHash);
       res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
     } catch (error) { sendError(res, error, "Failed to queue Traveler print"); }
+  });
+
+  // Pickup tags use the same durable Traveler job and Windows agent. The
+  // print-only context is validated against current remaining quantities but
+  // never writes fulfillment, order, or line-item state.
+  app.post("/api/orders/:orderId/direct-print/pickup-travelers", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const orderId = String(req.params.orderId || "");
+      const parsed = pickupTravelerPrintSchema.parse(req.body || {});
+      const requestKey = String(req.header("Idempotency-Key") || parsed.requestKey || "").trim();
+      if (!organizationId || !orderId || !requestKey || requestKey.length > 160) {
+        return res.status(400).json({ success: false, code: "PICKUP_TRAVELER_VALIDATION", error: "A valid pickup traveler print request is required." });
+      }
+
+      const detail = await canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId);
+      if (detail.fulfillmentType !== "PICKUP") {
+        return res.status(409).json({ success: false, code: "PICKUP_TRAVELER_NOT_PICKUP", error: "Pickup travelers are available only for pickup orders." });
+      }
+      const remainingByLine = new Map(detail.lineItems.map((line) => [line.id, line.production.remainingQuantity]));
+      const seen = new Set<string>();
+      for (const item of parsed.lineQuantities) {
+        const remaining = remainingByLine.get(item.orderLineItemId);
+        if (seen.has(item.orderLineItemId) || remaining === undefined || item.quantity > remaining) {
+          return res.status(400).json({ success: false, code: "PICKUP_TRAVELER_QUANTITY_INVALID", error: "Pickup quantities must be positive, unique line items, and no greater than the current remaining quantity." });
+        }
+        seen.add(item.orderLineItemId);
+      }
+
+      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, parsed.destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`)).limit(1);
+      if (!destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Traveler destination is not available for direct printing." });
+      const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
+      if (!agent?.configuredTravelerPrinterName || agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ success: false, code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The Print Agent's selected Traveler printer does not match this destination." });
+
+      const printContext: PickupTravelerPrintContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: parsed.boxCount };
+      // Copies remains one: the canonical traveler page renders one sequential
+      // label per box so each tag receives its own deterministic box number.
+      const created = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId: destination.id, agentId: agent.id, documentType: "pickup_traveler", copies: 1, printContext, trailingFeedMm: destination.trailingFeedMm, requestKey, createdByUserId: getUserId(req.user) ?? null }).onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
+      const job = created[0] ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.requestKey, requestKey))).limit(1))[0];
+      if (!job) return res.status(500).json({ success: false, code: "PICKUP_TRAVELER_CREATE_FAILED", error: "Could not queue pickup travelers." });
+      const wake = await publishPrintAgentWake(agent.tokenHash);
+      return res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, boxCount: parsed.boxCount, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
+    } catch (error) { return sendError(res, error, "Failed to queue pickup travelers"); }
   });
 
   app.post("/api/printer-profiles", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
