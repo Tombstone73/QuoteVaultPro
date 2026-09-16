@@ -68,13 +68,14 @@ export function useListDetailNavigation(entity: ListNavigationEntity, recordId: 
     if (targetIndex < 0 || targetIndex >= snapshot.total) return;
     const target = await fetchRecordAt(entity, context.source, targetIndex);
     if (!target.item) return;
-    navigate(buildListDetailPath(entity, target.item.id, context.source, targetIndex));
+    navigate(buildListDetailPath(entity, target.item.id, context.source, targetIndex, context.returnTo));
   };
 
   const total = current.data?.total ?? 0;
   const currentMatches = current.data?.item?.id === recordId;
   return {
     context,
+    backPath: context?.returnTo ?? context?.source ?? null,
     position: currentMatches && context ? context.index + 1 : null,
     total,
     isLoading: current.isLoading,

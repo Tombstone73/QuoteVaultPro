@@ -83,3 +83,15 @@ test('the actual Customer Detail orders table uses the same visible Close Job Ov
   expect(ordersTable).toContain('Traveler');
   expect(ordersTable).not.toContain('DropdownMenu');
 });
+
+test('Customer Detail rows open canonical workspaces with customer-scoped list context and a safe customer return path', () => {
+  expect(invoiceTable).toContain('buildListDetailPath(');
+  expect(invoiceTable).toContain('invoiceNavigationSource');
+  expect(invoiceTable).toContain('invoiceReturnPath');
+  expect(invoiceTable).toContain('customerId, page: String(page), pageSize: String(pageSize)');
+  expect(ordersTable).toContain('buildListDetailPath(');
+  expect(ordersTable).toContain('orderNavigationSource');
+  expect(ordersTable).toContain('orderReturnPath');
+  expect(ordersTable).toContain('customerId, page: "1", pageSize: "50"');
+  expect(source).toContain('tab === "orders" || tab === "quotes" || tab === "invoices"');
+});

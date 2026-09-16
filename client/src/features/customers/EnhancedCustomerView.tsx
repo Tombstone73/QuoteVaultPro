@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
@@ -101,6 +101,7 @@ import {
   type CustomerInvoiceTableSortPreference,
 } from "@/lib/customerInvoiceTablePreferences";
 import { ROUTES } from "@/config/routes";
+import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
@@ -1813,6 +1814,7 @@ function CustomerStatsGrid({
 }
 
 function OrdersTable({
+  customerId,
   orders,
   searchQuery,
   statusFilter,
@@ -1821,6 +1823,7 @@ function OrdersTable({
   quoteCount,
   invoiceFilter,
 }: {
+  customerId: string;
   orders: Order[];
   searchQuery: string;
   statusFilter: string;
@@ -2115,6 +2118,33 @@ function OrdersTable({
     
     return result;
   }, [orders, searchQuery, statusFilter, sorting]);
+  const orderNavigationSource = useMemo(() => {
+    const params = new URLSearchParams({ customerId, page: "1", pageSize: "50" });
+    if (searchQuery) params.set("search", searchQuery);
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (invoiceFilter && invoiceFilter !== "all") params.set("invoice", invoiceFilter);
+    const primarySort = sorting.length === 1 ? sorting[0] : null;
+    const canonicalSortBy = primarySort?.id === "orderNumber" || primarySort?.id === "amount" || primarySort?.id === "status"
+      ? ({ orderNumber: "orderNumber", amount: "total", status: "status" } as const)[primarySort.id]
+      : undefined;
+    if (canonicalSortBy) {
+      params.set("sortBy", canonicalSortBy);
+      params.set("sortDir", primarySort!.desc ? "desc" : "asc");
+    }
+    return `/orders?${params.toString()}`;
+  }, [customerId, invoiceFilter, searchQuery, sorting, statusFilter]);
+  const orderReturnParams = new URLSearchParams({ tab: "orders" });
+  if (searchQuery) orderReturnParams.set("search", searchQuery);
+  if (statusFilter !== "all") orderReturnParams.set("status", statusFilter);
+  if (invoiceFilter && invoiceFilter !== "all") orderReturnParams.set("invoice", invoiceFilter);
+  const orderReturnPath = `${ROUTES.customers.detail(customerId)}?${orderReturnParams.toString()}`;
+  const orderDetailPath = (order: Order) => buildListDetailPath(
+    "order",
+    order.id,
+    orderNavigationSource,
+    Math.max(0, filteredOrders.indexOf(order)),
+    orderReturnPath,
+  );
 
   const createFirstInvoiceMutation = useMutation({
     mutationFn: async (orderId: string) => {
@@ -2360,7 +2390,7 @@ function OrdersTable({
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => navigate(ROUTES.orders.detail(order.id))}
+                          onClick={() => navigate(orderDetailPath(order))}
                           aria-label={`View order ${order.orderNumber}`}
                         >
                           <Eye className="mr-1.5 h-4 w-4" />View Order
@@ -2393,7 +2423,7 @@ function OrdersTable({
               <tr
                 key={order.id}
                 className="border-b border-titan-border-subtle last:border-0 hover:bg-titan-bg-table-row transition-colors cursor-pointer"
-                onClick={() => navigate(ROUTES.orders.detail(order.id))}
+                onClick={() => navigate(orderDetailPath(order))}
               >
                 {orderedVisibleColumns.map(columnId => renderCell(columnId))}
               </tr>
@@ -2695,6 +2725,23 @@ function InvoicesTable({
   const invoices = invoicePage.data?.items ?? [];
   const pagination = invoicePage.data?.pagination;
   const visibleColumns = columnConfig.columns.filter((column) => column.visible);
+  const invoiceNavigationSource = useMemo(() => {
+    const params = new URLSearchParams({ customerId, page: String(page), pageSize: String(pageSize), sortBy: customerInvoiceSortApiField(sortPreference.sortBy), sortDir: sortPreference.sortDir });
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (searchQuery) params.set("search", searchQuery);
+    return `/invoices?${params.toString()}`;
+  }, [customerId, page, pageSize, searchQuery, sortPreference.sortBy, sortPreference.sortDir, statusFilter]);
+  const invoiceReturnParams = new URLSearchParams({ tab: "invoices" });
+  if (searchQuery) invoiceReturnParams.set("search", searchQuery);
+  if (statusFilter !== "all") invoiceReturnParams.set("status", statusFilter);
+  const invoiceReturnPath = `${ROUTES.customers.detail(customerId)}?${invoiceReturnParams.toString()}`;
+  const invoiceDetailPath = (invoice: InvoiceListItem) => buildListDetailPath(
+    "invoice",
+    invoice.id,
+    invoiceNavigationSource,
+    (page - 1) * pageSize + Math.max(0, invoices.indexOf(invoice)),
+    invoiceReturnPath,
+  );
 
   const approvalLabel = (invoice: any) => {
     const currentVersion = Number(invoice.invoiceVersion || 1);
@@ -2756,7 +2803,7 @@ function InvoicesTable({
             <tr
               key={inv.id}
               className="border-b border-titan-border-subtle last:border-0 hover:bg-titan-bg-table-row transition-colors cursor-pointer"
-              onClick={() => navigate(ROUTES.invoices.detail(inv.id))}
+              onClick={() => navigate(invoiceDetailPath(inv))}
             >
               {visibleColumns.map((column) => {
                 switch (column.id) {
@@ -2772,7 +2819,7 @@ function InvoicesTable({
                   case "total": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">{formatCurrency(inv.displayTotal || inv.total)}</td>;
                   case "balance": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-warning">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? inv.total)}</td>;
                   case "invoiceStatus": return <td key={column.id} className="whitespace-nowrap px-3 py-3"><span className={cn("inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border", getStatusStyle(inv.status))}>{inv.displayStatus || formatStatusLabel(inv.status)}</span></td>;
-                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(ROUTES.invoices.detail(inv.id))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}{canCloseJobOverride(inv, isAdminOrOwner) ? <Button variant="outline" size="sm" onClick={() => setOverrideTarget({ orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) })}><ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override</Button> : null}</div></td>;
+                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(invoiceDetailPath(inv))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}{canCloseJobOverride(inv, isAdminOrOwner) ? <Button variant="outline" size="sm" onClick={() => setOverrideTarget({ orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) })}><ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override</Button> : null}</div></td>;
                   default: return null;
                 }
               })}
@@ -2854,6 +2901,7 @@ export default function EnhancedCustomerView({
   notFoundFallback,
 }: EnhancedCustomerViewProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [activeTab, setActiveTab] = useState<TabType>("orders");
   const [period, setPeriod] = useState<TimePeriod>("month");
   const [searchQuery, setSearchQuery] = useState("");
@@ -2861,6 +2909,18 @@ export default function EnhancedCustomerView({
   const [invoiceFilter, setInvoiceFilter] = useState<"all" | "no_invoice" | "has_invoice">("all");
 
   const isEmbedded = layoutMode === "embedded";
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const tab = params.get("tab");
+    if (tab === "orders" || tab === "quotes" || tab === "invoices" || (!isEmbedded && (tab === "transactions" || tab === "statement"))) {
+      setActiveTab(tab);
+    }
+    const invoice = params.get("invoice");
+    setSearchQuery(params.get("search") || "");
+    setStatusFilter(params.get("status") || "all");
+    setInvoiceFilter(invoice === "no_invoice" || invoice === "has_invoice" ? invoice : "all");
+  }, [isEmbedded, location.search]);
 
   // Data fetching
   const { data: customer, isLoading: isLoadingCustomer } = useCustomer(customerId);
@@ -3067,6 +3127,7 @@ export default function EnhancedCustomerView({
                 </div>
               ) : (
                 <OrdersTable
+                  customerId={customer.id}
                   orders={orders}
                   searchQuery={searchQuery}
                   statusFilter={statusFilter}

@@ -2135,7 +2135,7 @@ export default function OrderDetail() {
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
             <BackNavControls
-              onBack={() => listNavigation.context ? guardedNavigate(listNavigation.context.source) : onSmartBack()}
+              onBack={() => listNavigation.backPath ? guardedNavigate(listNavigation.backPath) : onSmartBack()}
               onSectionHome={() => guardedNavigate("/orders")}
               sectionLabel="Orders"
             />

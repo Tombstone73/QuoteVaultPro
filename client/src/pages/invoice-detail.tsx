@@ -1922,7 +1922,7 @@ export default function InvoiceDetailPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <div className="flex items-center gap-3 min-w-0">
               <Button variant="outline" size="icon" asChild>
-                <Link to={listNavigation.context?.source ?? "/invoices"}>
+                <Link to={listNavigation.backPath ?? "/invoices"}>
                   <ArrowLeft className="h-4 w-4" />
                 </Link>
               </Button>
