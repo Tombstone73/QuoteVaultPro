@@ -1,11 +1,24 @@
 import { describe, expect, test } from '@jest/globals';
 import {
+  INVOICE_UNPAID_DISPLAY_STATUS,
+  isInvoiceAccountingDisplayUnpaid,
   normalizeInvoiceAccountingDisplay,
   normalizeQuickBooksLineItemsSnapshot,
   resolveInvoicePdfFinancialSummary,
 } from '../invoiceAccountingDisplay';
 
 describe('normalizeInvoiceAccountingDisplay', () => {
+  test('identifies only the exact customer-facing Unpaid accounting display state', () => {
+    for (const status of ['draft', 'finalized', 'sent', 'billed', 'overdue', 'paid', 'partially_paid']) {
+      expect(isInvoiceAccountingDisplayUnpaid({ totalCents: 10000, status, payments: [] })).toBe(true);
+    }
+    expect(isInvoiceAccountingDisplayUnpaid({ totalCents: 10000, status: 'billed', payments: [{ status: 'succeeded', amountCents: 2500 }] })).toBe(false);
+    expect(isInvoiceAccountingDisplayUnpaid({ totalCents: 10000, status: 'billed', payments: [{ status: 'succeeded', amountCents: 12500 }] })).toBe(false);
+    expect(isInvoiceAccountingDisplayUnpaid({ totalCents: 10000, status: 'void', payments: [] })).toBe(false);
+    expect(isInvoiceAccountingDisplayUnpaid({ totalCents: 10000, status: 'paid', importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '100.00' })).toBe(false);
+    expect(INVOICE_UNPAID_DISPLAY_STATUS).toBe('Unpaid');
+  });
+
   test('TitanOS billed invoice with no payments ignores stale zero balance due', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: null,

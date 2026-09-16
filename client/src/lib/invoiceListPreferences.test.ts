@@ -117,4 +117,14 @@ describe("Invoice list preferences", () => {
     }, storage);
     expect(readPersistedInvoiceListPreferences("user-1", "org-1", storage).filters).toEqual({});
   });
+
+  it("persists the Unpaid status filter without special client-side handling", () => {
+    const storage = createStorage();
+    persistInvoiceListPreferences("user-1", "org-1", {
+      ...DEFAULT_INVOICE_LIST_PREFERENCES,
+      stickySortingAndFilters: true,
+      filters: { status: "unpaid" },
+    }, storage);
+    expect(readPersistedInvoiceListPreferences("user-1", "org-1", storage).filters).toEqual({ status: "unpaid" });
+  });
 });

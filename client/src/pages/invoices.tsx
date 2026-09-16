@@ -717,6 +717,7 @@ export default function InvoicesListPage() {
                 <SelectItem value="draft">Needs Review / Drafts</SelectItem>
                 <SelectItem value="finalized">Finalized</SelectItem>
                 <SelectItem value="sent">Sent</SelectItem>
+                <SelectItem value="unpaid">Unpaid</SelectItem>
                 <SelectItem value="partially_paid">Partially Paid</SelectItem>
                 <SelectItem value="credit">Credit / Refund Due</SelectItem>
                 <SelectItem value="paid">Paid</SelectItem>

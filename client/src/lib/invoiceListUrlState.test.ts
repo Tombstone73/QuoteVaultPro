@@ -72,6 +72,12 @@ describe("Invoice list URL state", () => {
       .toBe("status=paid&includePaidHistorical=1");
   });
 
+  it("keeps the canonical Unpaid status as an explicit, page-resetting URL filter", () => {
+    expect(parseInvoiceListUrlState(new URLSearchParams("status=unpaid&page=3&pageSize=50"))).toMatchObject({ status: "unpaid", page: 3, pageSize: 50 });
+    expect(updateInvoiceListUrlState(new URLSearchParams("status=paid&page=3&pageSize=50"), { status: "unpaid" }, true).toString())
+      .toBe("status=unpaid&pageSize=50");
+  });
+
   it("recognizes explicit filter and drilldown parameters without treating search, paging, or sort as sticky-filter overrides", () => {
     expect(hasExplicitInvoiceListFilters(new URLSearchParams("customerId=customer-1"))).toBe(true);
     expect(hasExplicitInvoiceListFilters(new URLSearchParams("sendStatus=never_sent"))).toBe(true);

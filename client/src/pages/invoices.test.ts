@@ -74,6 +74,8 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("excludeCustomerId");
     expect(invoiceHooksSource).toContain("jobStatus");
     expect(invoicesPageSource).toContain("Show Paid Historical");
+    expect(invoicesPageSource).toContain('value="unpaid"');
+    expect(invoicesPageSource).toContain('>Unpaid</SelectItem>');
     expect(invoicesPageSource).toContain('value="paid_historical"');
     expect(invoicesPageSource).toContain("includePaidHistorical");
     expect(invoiceHooksSource).toContain("includePaidHistorical");

@@ -332,6 +332,29 @@ function canonicalInvoiceRemainingCentsExpression(organizationId: string) {
   end`;
 }
 
+/**
+ * Database equivalent of `displayStatus === 'Unpaid'` from
+ * normalizeInvoiceAccountingDisplay(). This deliberately filters by the
+ * canonical accounting projection rather than the raw workflow status.
+ */
+function canonicalInvoiceUnpaidDisplayExpression(organizationId: string) {
+  const remainingCents = canonicalInvoiceRemainingCentsExpression(organizationId);
+  const totalCents = sql`greatest(0, coalesce(${invoices.totalCents}, 0))`;
+  const isQuickBooks = sql`lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'`;
+  const isHistorical = sql`coalesce(${invoices.isHistorical}, false)`;
+  const isVoided = sql`lower(coalesce(${invoices.status}, '')) in ('void', 'voided')`;
+
+  // Native invoices are Unpaid precisely when their settlement rollup has no
+  // paid amount (remaining equals the non-negative total). Imported invoices
+  // use the QuickBooks balance snapshot and only display Unpaid when they are
+  // non-historical, still have a balance, and have no paid portion.
+  return sql`not (${isVoided}) and (
+    (not (${isQuickBooks}) and ${remainingCents} >= ${totalCents})
+    or (${isQuickBooks} and not (${isHistorical}) and ${remainingCents} > 0
+      and greatest(0, ${totalCents} - ${remainingCents}) <= 0)
+  )`;
+}
+
 function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: string) {
   switch (sortBy) {
     case 'invoiceNumber':
@@ -426,7 +449,9 @@ export async function listInvoicesPageForOrganization(
     and lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
     and coalesce(${invoices.isHistorical}, false)`;
   const explicitlyFilteringPaidHistorical = opts.status === 'paid_historical';
+  const explicitlyFilteringUnpaid = opts.status === 'unpaid';
   if (explicitlyFilteringPaidHistorical) whereClauses.push(paidHistoricalState);
+  else if (explicitlyFilteringUnpaid) whereClauses.push(canonicalInvoiceUnpaidDisplayExpression(opts.organizationId));
   else if (opts.statuses?.length) whereClauses.push(inArray(invoices.status, [...opts.statuses]));
   else if (opts.status) whereClauses.push(eq(invoices.status, opts.status));
   // The global working list intentionally hides only the canonical

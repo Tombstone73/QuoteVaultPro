@@ -59,6 +59,9 @@ export type InvoiceAccountingDisplay = {
   importedQuickBooksPaymentSummary: ImportedQuickBooksPaymentSummary;
 };
 
+/** The exact customer-facing status used by the Global Invoice Unpaid filter. */
+export const INVOICE_UNPAID_DISPLAY_STATUS = 'Unpaid';
+
 /** Customer-facing invoice totals derived from the UI's accounting projection. */
 export type InvoicePdfFinancialSummary = {
   totalCents: number;
@@ -282,7 +285,7 @@ export function normalizeInvoiceAccountingDisplay(
     } else if (displayRemainingCents <= 0) {
       displayStatus = 'Paid';
     } else if (displayPaidCents <= 0) {
-      displayStatus = 'Unpaid';
+      displayStatus = INVOICE_UNPAID_DISPLAY_STATUS;
     } else {
       displayStatus = 'Partially Paid';
     }
@@ -291,7 +294,7 @@ export function normalizeInvoiceAccountingDisplay(
   } else if (!rawStatus) {
     if (isFullyPaid) displayStatus = 'Paid';
     else if (displayPaidCents > 0) displayStatus = 'Partially Paid';
-    else displayStatus = 'Unpaid';
+    else displayStatus = INVOICE_UNPAID_DISPLAY_STATUS;
   } else if (rawStatus === 'paid' || rawStatus === 'partially_paid') {
     displayStatus = paymentStatusLabel;
   } else {
@@ -322,6 +325,14 @@ export function normalizeInvoiceAccountingDisplay(
     productionWorkflowDisabled: isImportedFromQuickBooks,
     importedQuickBooksPaymentSummary,
   };
+}
+
+/**
+ * Keep consumers that need the canonical accounting status from reimplementing
+ * "unpaid" as a raw invoice workflow value.
+ */
+export function isInvoiceAccountingDisplayUnpaid(invoice: InvoiceAccountingDisplayInput): boolean {
+  return normalizeInvoiceAccountingDisplay(invoice).displayStatus === INVOICE_UNPAID_DISPLAY_STATUS;
 }
 
 export function computeInvoiceAccountingDisplay(

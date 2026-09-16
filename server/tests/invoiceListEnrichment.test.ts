@@ -318,6 +318,73 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
       .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ invoiceNumber: 810200 })] });
   });
 
+  test('filters the exact Unpaid accounting display state across pages and composes it with backlog filters', async () => {
+    const org = await createTestOrg('unpaid-display-filter');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'unpaid-display-filter');
+    const customer = await createTestCustomer(org.id);
+    const openOrder = await createTestOrder({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderNumber: 'ORD-UNPAID-FILTER',
+    });
+    const dueDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = Array.from({ length: 71 }, (_, index) => ({
+      organizationId: org.id, customerId: customer.id, orderId: openOrder.id,
+      invoiceNumber: 812000 + index, status: 'billed', terms: 'net_30', dueDate,
+      totalCents: 10000, balanceDue: '100.00', subtotalCents: 10000, taxCents: 0, shippingCents: 0,
+      total: '100.00', subtotal: '100.00', tax: '0', amountPaid: '0.00', createdByUserId: user.id,
+    }));
+    const nativeUnpaid = await db.insert(invoices).values(rows as any).returning();
+    await db.update(invoices).set({ invoiceVersion: 1, accountingApprovedVersion: 1, accountingApprovedAt: new Date() })
+      .where(eq(invoices.id, nativeUnpaid[0].id));
+    const overdueUnpaid = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 812071, status: 'overdue', balanceDue: '100.00', amountPaid: '0.00',
+    });
+    const importedUnpaid = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 812072, status: 'billed', importSource: 'quickbooks', isHistorical: false,
+      qbImportBalanceDue: '100.00', balanceDue: '100.00', amountPaid: '0.00',
+    });
+    const partial = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 812073, status: 'billed', balanceDue: '100.00', amountPaid: '0.00',
+    });
+    const paid = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 812074, status: 'paid', balanceDue: '0.00', amountPaid: '100.00',
+    });
+    await db.insert(payments).values([
+      { organizationId: org.id, invoiceId: partial.id, provider: 'manual', method: 'check', status: 'succeeded', amount: '25.00', amountCents: 2500, createdByUserId: user.id },
+      { organizationId: org.id, invoiceId: paid.id, provider: 'manual', method: 'check', status: 'succeeded', amount: '100.00', amountCents: 10000, createdByUserId: user.id },
+    ] as any);
+    await createTestInvoice({ orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id, invoiceNumber: 812075, status: 'void' });
+    await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, orderId: openOrder.id,
+      invoiceNumber: 812076, status: 'paid', importSource: 'quickbooks', isHistorical: true,
+      qbImportBalanceDue: '100.00', balanceDue: '100.00', amountPaid: '0.00',
+    });
+
+    const first = await listInvoicesPageForOrganization({
+      organizationId: org.id, status: 'unpaid', includePaidHistorical: true, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 50, offset: 0,
+    });
+    const second = await listInvoicesPageForOrganization({
+      organizationId: org.id, status: 'unpaid', includePaidHistorical: true, sortBy: 'invoiceNumber', sortDir: 'asc', limit: 50, offset: 50,
+    });
+    expect(first).toMatchObject({ totalCount: 73, totalPages: 2 });
+    expect(first.items).toHaveLength(50);
+    expect(second).toMatchObject({ totalCount: 73, totalPages: 2 });
+    expect(second.items).toHaveLength(23);
+    const unpaidIds = [...first.items, ...second.items].map((item) => item.id);
+    expect(unpaidIds).toEqual(expect.arrayContaining([overdueUnpaid.id, importedUnpaid.id]));
+    expect(unpaidIds).not.toContain(partial.id);
+    expect(unpaidIds).not.toContain(paid.id);
+
+    await expect(listInvoicesPageForOrganization({
+      organizationId: org.id, status: 'unpaid', customerId: customer.id, limit: 50,
+      columnFilters: { jobStatus: 'open', accountingApproval: 'approved', sendStatus: 'never_sent' },
+    })).resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: nativeUnpaid[0].id })] });
+  });
+
   test('hides only canonical Paid Historical invoices by default across tenant pages and composes with backlog filters', async () => {
     const org = await createTestOrg('paid-historical-list');
     cleanupOrgIds.push(org.id);
