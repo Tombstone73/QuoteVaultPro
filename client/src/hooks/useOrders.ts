@@ -92,6 +92,7 @@ export type Order = {
   contactId: string | null;
   status: string;
   state?: string | null;
+  statusPillId?: string | null;
   statusPillValue?: string | null;
   workflowStatusId?: string | null;
   canonicalState?: "new" | "active" | "ready" | "completed" | "canceled" | "on_hold" | string | null;

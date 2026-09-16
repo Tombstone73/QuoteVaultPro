@@ -84,6 +84,33 @@ test('the actual Customer Detail orders table uses the same visible Close Job Ov
   expect(ordersTable).not.toContain('DropdownMenu');
 });
 
+test('Customer Detail tables preserve primary identifiers and dates while allowing local horizontal overflow', () => {
+  expect(ordersTable).toContain('w-full overflow-x-auto');
+  expect(ordersTable).toContain('min-w-[1080px] w-full table-auto');
+  expect(ordersTable).not.toContain('table-fixed');
+  expect(ordersTable).toContain('min-w-[120px] whitespace-nowrap px-4 py-3');
+  expect(ordersTable).toContain('min-w-[132px] whitespace-nowrap px-4 py-3');
+
+  expect(invoiceTable).toContain('w-full overflow-x-auto');
+  expect(invoiceTable).toContain('min-w-[1480px] w-full table-auto');
+  expect(invoiceTable).toContain('min-w-[132px] whitespace-nowrap px-3 py-3');
+  expect(invoiceTable).toContain('min-w-[120px] whitespace-nowrap px-3 py-3');
+});
+
+test('Customer Detail Orders reuse the canonical Global Orders status selector', () => {
+  expect(source).toContain('import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";');
+  expect(ordersTable).toContain('<OrdersListStatusCell row={order} />');
+  expect(ordersTable).not.toContain('getStatusStyle(order.status)');
+  expect(ordersTable).not.toContain('formatStatusLabel(order.status)');
+});
+
+test('Customer Detail Invoice numbers are canonical, fully readable, and open the canonical detail route', () => {
+  expect(invoiceTable).toContain('resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber })');
+  expect(invoiceTable).toContain('onClick={(event) => { event.stopPropagation(); navigate(invoiceDetailPath(inv)); }}');
+  expect(invoiceTable).toContain('title={`Open invoice ${resolveDocumentDisplayNumber(');
+  expect(invoiceTable).toContain('min-w-[132px] whitespace-nowrap px-3 py-3');
+});
+
 test('Customer Detail rows open canonical workspaces with customer-scoped list context and a safe customer return path', () => {
   expect(invoiceTable).toContain('buildListDetailPath(');
   expect(invoiceTable).toContain('invoiceNavigationSource');

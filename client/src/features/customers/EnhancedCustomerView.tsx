@@ -108,6 +108,7 @@ import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { apiRequest } from "@/lib/queryClient";
 import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
 import { canCloseJobOverride, CloseJobOverrideDialog, getOrderJobStatus, type CloseJobOverrideTarget } from "@/components/orders/CloseJobOverrideDialog";
+import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
 import {
   buildLinkExistingContactPayload,
   canSubmitLinkContact,
@@ -2231,8 +2232,8 @@ function OrdersTable({
 
   return (
     <>
-      <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl overflow-hidden">
-        <table className="w-full table-fixed">
+      <div className="w-full overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
+        <table className="min-w-[1080px] w-full table-auto">
           <thead>
             <tr className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
               {orderedVisibleColumns.map((columnId) => {
@@ -2310,7 +2311,7 @@ function OrdersTable({
               switch (columnId) {
                 case "orderNumber":
                   return (
-                    <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}>
+                    <td key={columnId} className="min-w-[120px] whitespace-nowrap px-4 py-3" style={{ width: `${width}px` }}>
                       <span className="text-titan-sm font-medium text-titan-accent">
                         {resolveDocumentDisplayNumber({
                           displayNumber: order.displayNumber,
@@ -2323,8 +2324,8 @@ function OrdersTable({
                 
                 case "poNumber":
                   return (
-                    <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}>
-                      <span className="text-titan-sm font-mono text-titan-text-secondary">
+                    <td key={columnId} className="min-w-[100px] px-4 py-3" style={{ width: `${width}px` }}>
+                      <span className="block truncate text-titan-sm font-mono text-titan-text-secondary" title={order.poNumber || undefined}>
                         {order.poNumber || "—"}
                       </span>
                     </td>
@@ -2332,7 +2333,7 @@ function OrdersTable({
                   
                 case "date":
                   return (
-                    <td key={columnId} className="px-4 py-3 text-titan-sm text-titan-text-secondary" style={{ width: `${width}px` }}>
+                    <td key={columnId} className="min-w-[132px] whitespace-nowrap px-4 py-3 text-titan-sm text-titan-text-secondary" style={{ width: `${width}px` }}>
                       {formatDate(order.createdAt)}
                     </td>
                   );
@@ -2344,7 +2345,7 @@ function OrdersTable({
                         <div className="w-6 h-6 bg-purple-500/20 rounded-titan-sm flex items-center justify-center">
                           <Package className="w-3 h-3 text-purple-400" />
                         </div>
-                        <span className="text-titan-sm text-titan-text-primary truncate" style={{ maxWidth: `${width - 60}px` }}>
+                      <span className="text-titan-sm text-titan-text-primary truncate" title={firstProduct} style={{ maxWidth: `${width - 60}px` }}>
                           {firstProduct}
                         </span>
                       </div>
@@ -2353,22 +2354,15 @@ function OrdersTable({
                   
                 case "amount":
                   return (
-                    <td key={columnId} className="px-4 py-3 text-titan-sm font-medium text-titan-success" style={{ width: `${width}px` }}>
+                    <td key={columnId} className="whitespace-nowrap px-4 py-3 text-titan-sm font-medium text-titan-success" style={{ width: `${width}px` }}>
                       {formatCurrency(order.total)}
                     </td>
                   );
                   
                 case "status":
                   return (
-                    <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}>
-                      <span
-                        className={cn(
-                          "inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border",
-                          getStatusStyle(order.status)
-                        )}
-                      >
-                        {formatStatusLabel(order.status)}
-                      </span>
+                    <td key={columnId} className="min-w-[176px] px-4 py-3" style={{ width: `${width}px` }}>
+                      <OrdersListStatusCell row={order} />
                     </td>
                   );
 
@@ -2382,9 +2376,9 @@ function OrdersTable({
                   return <td key={columnId} className="px-4 py-3" onClick={(event) => event.stopPropagation()} style={{ width: `${width}px` }}><div className="flex items-center gap-1.5"><button type="button" className="text-titan-sm font-medium text-titan-accent hover:underline" onClick={() => navigate(ROUTES.invoices.detail(primaryInvoice.id))}>{invoiceLabel}</button>{linkedInvoices.length > 1 ? <span className="text-xs text-titan-text-secondary">+{linkedInvoices.length - 1}</span> : null}</div></td>;
                 }
                   
-                case "actions":
-                  return (
-                    <td key={columnId} className="px-4 py-3" onClick={(e) => e.stopPropagation()} style={{ width: `${width}px` }}>
+                  case "actions":
+                    return (
+                    <td key={columnId} className="min-w-[320px] whitespace-nowrap px-4 py-3" onClick={(e) => e.stopPropagation()} style={{ width: `${width}px` }}>
                       <div className="flex min-w-max flex-wrap items-center gap-2">
                         {(order.invoiceSummary?.invoiceCount ?? 0) === 0 ? <Button variant="outline" size="sm" disabled={!order.invoiceCreationEligibility?.canCreate || createFirstInvoiceMutation.isPending} title={order.invoiceCreationEligibility?.canCreate ? "Create the first linked invoice" : order.invoiceCreationEligibility?.reason || "This Order cannot create an invoice."} onClick={() => createFirstInvoiceMutation.mutate(order.id)}>{createFirstInvoiceMutation.isPending ? "Creating…" : "Create Invoice"}</Button> : null}
                         <Button
@@ -2782,8 +2776,8 @@ function InvoicesTable({
       <p className="text-sm text-titan-text-secondary">Invoice layout and sorting apply across all customers.</p>
       <Button variant="outline" size="sm" onClick={() => setColumnsOpen(true)}><Settings2 className="mr-1.5 h-4 w-4" aria-hidden="true" />Columns</Button>
     </div>
-    <div className="overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
-      <table className="min-w-max w-full">
+    <div className="w-full overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
+      <table className="min-w-[1480px] w-full table-auto">
         <thead>
           <tr className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
             {visibleColumns.map((column) => {
@@ -2807,11 +2801,11 @@ function InvoicesTable({
             >
               {visibleColumns.map((column) => {
                 switch (column.id) {
-                  case "invoiceNumber": return <td key={column.id} className="whitespace-nowrap px-3 py-3"><span className="text-titan-sm font-medium text-titan-accent">{resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber }) || inv.invoiceNumber}</span></td>;
-                  case "jobOrder": return <td key={column.id} className="max-w-56 px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.jobName || inv.orderName || inv.orderNumber || "—"}</td>;
-                  case "poNumber": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.purchaseOrderNumber || "—"}</td>;
-                  case "orderNumber": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.orderNumber || "—"}</td>;
-                  case "invoiceDate": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.issueDate || inv.createdAt)}</td>;
+                  case "invoiceNumber": return <td key={column.id} className="min-w-[132px] whitespace-nowrap px-3 py-3"><button type="button" className="text-titan-sm font-medium text-titan-accent hover:underline" onClick={(event) => { event.stopPropagation(); navigate(invoiceDetailPath(inv)); }} title={`Open invoice ${resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber }) || inv.invoiceNumber}`}>{resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber }) || inv.invoiceNumber}</button></td>;
+                  case "jobOrder": { const jobOrder = inv.jobName || inv.orderName || inv.orderNumber || "—"; return <td key={column.id} className="min-w-[180px] max-w-sm px-3 py-3 text-titan-sm text-titan-text-secondary"><span className="block truncate" title={jobOrder}>{jobOrder}</span></td>; }
+                  case "poNumber": return <td key={column.id} className="min-w-[110px] px-3 py-3 text-titan-sm text-titan-text-secondary"><span className="block truncate" title={inv.purchaseOrderNumber || undefined}>{inv.purchaseOrderNumber || "—"}</span></td>;
+                  case "orderNumber": return <td key={column.id} className="min-w-[120px] whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.orderNumber || "—"}</td>;
+                  case "invoiceDate": return <td key={column.id} className="min-w-[132px] whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.issueDate || inv.createdAt)}</td>;
                   case "lastSent": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.lastSentAt ? formatDate(inv.lastSentAt) : "Not sent"}</td>;
                   case "dueDate": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.dueDate)}</td>;
                   case "approval": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{approvalLabel(inv)}</td>;
