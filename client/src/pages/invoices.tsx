@@ -19,7 +19,7 @@ import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
-import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
 import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
 import { CustomerSelect } from "@/components/CustomerSelect";
@@ -253,7 +253,7 @@ export default function InvoicesListPage() {
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
     includePaidHistorical,
-    search: search.trim() || undefined,
+    search: normalizeInvoiceListSearchQuery(search),
     sortBy: sortKey,
     sortDir,
     page,

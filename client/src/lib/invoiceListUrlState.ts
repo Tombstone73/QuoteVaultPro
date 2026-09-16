@@ -36,6 +36,9 @@ export type InvoiceListUrlState = {
 
 const read = (params: URLSearchParams, key: string) => params.get(key)?.trim() || undefined;
 
+/** Keep the controlled input's in-progress whitespace; normalize only for API reads. */
+export const normalizeInvoiceListSearchQuery = (search: string): string | undefined => search.trim() || undefined;
+
 function positiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value || "", 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -60,7 +63,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
   const requestedPageSize = positiveInteger(read(params, "pageSize"), 50);
 
   return {
-    search: read(params, "search") || "",
+    search: params.get("search") ?? "",
     status: read(params, "status") || "all",
     includePaidHistorical: read(params, "includePaidHistorical") === "1",
     customerId: read(params, "customerId"),
