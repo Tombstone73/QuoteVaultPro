@@ -52,7 +52,7 @@ import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestrat
 import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
 import { resolveInvoiceDetailJobContext } from "@/lib/invoiceDetailJobContext";
 import { hasReconciledStripePayment } from "@shared/stripePaymentSettlement";
-import { isNestedInvoiceLineItem } from "@shared/invoiceLinePresentation";
+import { isNestedInvoiceLineItem, resolveInvoiceLinePresentation } from "@shared/invoiceLinePresentation";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -365,7 +365,14 @@ export default function InvoiceDetailPage() {
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus === 'draft' && !(isImportedFromQuickBooks && isHistoricalImport);
   const canEditFinancial = canEditInvoice && !isImportedFromQuickBooks;
+  const canEditInvoiceReceivable = !!invoice
+    && isStaffUser
+    && ['draft', 'billed', 'finalized', 'sent', 'partially_paid'].includes(invoiceStatus)
+    && !isImportedFromQuickBooks;
   const detailsLockMessage = getInvoiceEditLockMessage(invoiceStatus, "details");
+  const receivableLockMessage = isImportedFromQuickBooks
+    ? "Imported QuickBooks invoices are read-only for terms and due date."
+    : getInvoiceEditLockMessage(invoiceStatus, "receivable");
   const financialLockMessage = getInvoiceEditLockMessage(invoiceStatus, "financial");
   const notesLockMessage = getInvoiceEditLockMessage(invoiceStatus, "notes");
 
@@ -1289,7 +1296,7 @@ export default function InvoiceDetailPage() {
   }, [stripePayOpen, isLoading, invoiceId]);
 
   const commitTerms = async (next: string) => {
-    if (!invoiceId || !invoice || !canEditInvoice) return;
+    if (!invoiceId || !invoice || !canEditInvoiceReceivable) return;
     const normalized = next || 'due_on_receipt';
     if (String((invoice as any).terms || 'due_on_receipt') === normalized) return;
 
@@ -1304,7 +1311,7 @@ export default function InvoiceDetailPage() {
   };
 
   const commitDueDate = async () => {
-    if (!invoiceId || !invoice || !canEditInvoice) return;
+    if (!invoiceId || !invoice || !canEditInvoiceReceivable) return;
     const existing = invoice.dueDate ? format(new Date(invoice.dueDate as any), 'yyyy-MM-dd') : '';
     const next = dueDateDraft.trim();
     if (existing === next) return;
@@ -2402,15 +2409,13 @@ export default function InvoiceDetailPage() {
                         </TableRow>
                       ) : lineItems.map((item) => {
                         const isNestedChild = isNestedInvoiceLineItem(item, invoiceLineItems);
+                        const presentation = resolveInvoiceLinePresentation(item);
                         return (
                         <TableRow key={item.id} className={isNestedChild ? "bg-muted/20" : undefined}>
                           <TableCell className={isNestedChild ? "pl-8" : undefined}>
-                            <div className="font-medium">{item.description}</div>
-                            {item.width && item.height && (
-                              <div className="text-sm text-muted-foreground">
-                                {item.width}" × {item.height}"
-                              </div>
-                            )}
+                            <div className="font-medium">{presentation.primaryLabel}</div>
+                            {presentation.secondaryLabel && <div className="text-sm text-muted-foreground">{presentation.secondaryLabel}</div>}
+                            {presentation.dimensionsLabel && <div className="text-sm text-muted-foreground">{presentation.dimensionsLabel}</div>}
                           </TableCell>
                           <TableCell>{item.quantity}</TableCell>
                           <TableCell>{formatCurrency(item.unitPrice)}</TableCell>
@@ -3292,7 +3297,7 @@ export default function InvoiceDetailPage() {
                       setTermsDraft(v);
                       void commitTerms(v);
                     }}
-                    disabled={!canEditInvoice || updateInvoice.isPending}
+                    disabled={!canEditInvoiceReceivable || updateInvoice.isPending}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select terms" />
@@ -3315,13 +3320,13 @@ export default function InvoiceDetailPage() {
                     value={dueDateDraft}
                     onChange={(e) => setDueDateDraft(e.target.value)}
                     onBlur={() => void commitDueDate()}
-                    disabled={!canEditInvoice || updateInvoice.isPending}
+                    disabled={!canEditInvoiceReceivable || updateInvoice.isPending}
                   />
                 </div>
 
-                {!canEditInvoice && (
+                {!canEditInvoiceReceivable && (
                   <div className="text-xs text-muted-foreground">
-                    {detailsLockMessage}
+                    {receivableLockMessage}
                   </div>
                 )}
               </CardContent>

@@ -12,6 +12,7 @@ import {
 } from './services/documentNumberingService';
 import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
 import { getBillableBundleRoots } from './services/lineItemBundles';
+import { hydrateInvoiceLineItemsWithProductIdentity } from './services/invoiceLinePresentation.service';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
 import { getInvoiceFinancialPaymentEligibility } from '../shared/paymentOrchestration';
@@ -1400,7 +1401,11 @@ export async function getInvoiceWithRelations(id: string) {
     invoiceId: id,
   });
   if (!customerContext) return null;
-  const lineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id));
+  const storedLineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id));
+  const lineItems = await hydrateInvoiceLineItemsWithProductIdentity({
+    organizationId: invoice.organizationId,
+    lineItems: storedLineItems as any,
+  });
   const paymentRows = await db
     .select()
     .from(payments)

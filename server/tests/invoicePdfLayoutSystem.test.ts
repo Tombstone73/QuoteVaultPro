@@ -139,6 +139,36 @@ describe('Invoice PDF v1 layout system', () => {
     expect(getInvoicePdfWatermarkState('Partially Paid')).toBeNull();
   });
 
+  test('uses product identity and omits meaningless zero dimensions in customer-facing line output', async () => {
+    const bytes = await generateInvoicePdfBytes({
+      invoice: {
+        invoiceNumber: 20231,
+        status: 'billed',
+        currency: 'USD',
+        issueDate: '2026-09-16T00:00:00.000Z',
+        dueDate: '2026-10-16T00:00:00.000Z',
+        subtotalCents: 40000,
+        totalCents: 40000,
+      },
+      customer: { companyName: 'Customer' },
+      companySettings: { companyName: 'Titan Printing' },
+      paymentSummary: { totalCents: 40000, amountPaidCents: 0, amountDueCents: 40000, statusLabel: 'Unpaid' },
+      lineItems: [{
+        productName: 'Heavy Duty Yard Stakes',
+        description: '0.00\" × 0.00\"',
+        width: 0,
+        height: 0,
+        quantity: 100,
+        unitPriceCents: 400,
+        lineTotalCents: 40000,
+      }],
+    } as any);
+
+    const pdfText = readPdfContentStream(bytes);
+    expect(pdfText).toContain('Heavy Duty Yard Stakes');
+    expect(pdfText).not.toContain('0.00\" × 0.00\"');
+  });
+
   test('uses the imported QuickBooks display number in a historical invoice PDF', async () => {
     const bytes = await generateInvoicePdfBytes({
       invoice: {

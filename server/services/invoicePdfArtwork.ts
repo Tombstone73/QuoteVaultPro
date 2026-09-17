@@ -1,5 +1,6 @@
 import { lineItemArtworkReadResolver } from "./artwork/LineItemArtworkReadResolver";
 import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
+import { hydrateInvoiceLineItemsWithProductIdentity } from "./invoiceLinePresentation.service";
 
 const MAX_PDF_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 
@@ -18,11 +19,12 @@ function toPdfThumbnailDataUrl(file: { buffer: Buffer; mimeType: string } | null
 export async function hydrateInvoicePdfLineItemsWithArtwork<T extends Record<string, any>>(input: {
   organizationId: string;
   lineItems: T[];
-}): Promise<Array<T & { thumbnailDataUrl?: string | null }>> {
+}): Promise<Array<T & { productName: string | null; thumbnailDataUrl?: string | null }>> {
+  const identifiedLines = await hydrateInvoiceLineItemsWithProductIdentity(input);
   const lineItemIds = Array.from(new Set(input.lineItems
     .map((line) => typeof line.orderLineItemId === "string" ? line.orderLineItemId : null)
     .filter((id): id is string => Boolean(id))));
-  if (!lineItemIds.length) return input.lineItems;
+  if (!lineItemIds.length) return identifiedLines;
 
   let resolutions;
   try {
@@ -33,7 +35,7 @@ export async function hydrateInvoicePdfLineItemsWithArtwork<T extends Record<str
     });
   } catch (error) {
     console.warn("[InvoicePdfArtwork] Canonical artwork resolution unavailable", { organizationId: input.organizationId, error });
-    return input.lineItems;
+    return identifiedLines;
   }
 
   const thumbnails = new Map<string, string | null>();
@@ -53,7 +55,7 @@ export async function hydrateInvoicePdfLineItemsWithArtwork<T extends Record<str
     }
   }));
 
-  return input.lineItems.map((line) => {
+  return identifiedLines.map((line) => {
     const lineItemId = typeof line.orderLineItemId === "string" ? line.orderLineItemId : null;
     const thumbnailDataUrl = lineItemId ? thumbnails.get(lineItemId) : null;
     return thumbnailDataUrl ? { ...line, thumbnailDataUrl } : line;

@@ -14,7 +14,7 @@ import {
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 import { getCustomerVisibleBundleLines } from '../services/lineItemBundles';
-import { isNestedInvoiceLineItem } from '../../shared/invoiceLinePresentation';
+import { isNestedInvoiceLineItem, resolveInvoiceLinePresentation } from '../../shared/invoiceLinePresentation';
 import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';
 
 type CompanySettingsLike = CompanyDocumentBrandingInput & {
@@ -69,7 +69,10 @@ type InvoiceLineItemLike = {
   unitPrice?: string | number | null;
   totalPrice?: string | number | null;
   name?: string | null;
+  productName?: string | null;
   sku?: string | null;
+  width?: number | string | null;
+  height?: number | string | null;
   // v1-safe thumbnail strategy: data URLs only (no remote fetch)
   thumbnailDataUrl?: string | null;
   parentLineItemId?: string | null;
@@ -778,11 +781,13 @@ export async function generateInvoicePdfBytes(
     const unitCents = hourlyTerms?.rateCents ?? (li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice));
     const totalCents = li?.lineTotalCents != null ? toSafeCents(li.lineTotalCents) : toCentsFromDecimal(li?.totalPrice);
 
-    const descRaw = (li?.description || li?.name || '').toString().trim() || '-';
+    const presentation = resolveInvoiceLinePresentation(li);
     const sku = (li?.sku || '').toString().trim();
 
     const unitLine = unitCents > 0 ? `${hourlyTerms ? "Rate" : "Unit"}: ${fmtMoney(unitCents, currency)}${hourlyTerms ? "/hr" : ""}` : '';
-    const baseDesc = sku ? `${descRaw}\nSKU: ${sku}${unitLine ? `\n${unitLine}` : ''}` : `${descRaw}${unitLine ? `\n${unitLine}` : ''}`;
+    const detailLines = [presentation.secondaryLabel, presentation.dimensionsLabel, sku ? `SKU: ${sku}` : null, unitLine]
+      .filter((line): line is string => Boolean(line));
+    const baseDesc = [presentation.primaryLabel, ...detailLines].join('\n');
 
     const childIndent = isNestedInvoiceLineItem(li, lineItems) ? 14 : 0;
     const descriptionX = xDesc + childIndent;
@@ -843,7 +848,7 @@ export async function generateInvoicePdfBytes(
     let descY = rowTopY - 11;
     for (let i = 0; i < descLines.length; i++) {
       const line = descLines[i];
-      const isMeta = line.startsWith('SKU:') || line.startsWith('Unit:') || line.startsWith('Rate:');
+      const isMeta = line !== presentation.primaryLabel;
       drawText(line, {
         x: descriptionX,
         y: descY,

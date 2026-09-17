@@ -16,4 +16,12 @@ describe("invoice edit lock copy", () => {
     expect(getInvoiceEditLockMessage("paid", "details")).toBe("Paid and void invoices cannot be edited.");
     expect(getInvoiceEditLockMessage("void", "financial")).toBe("Paid and void invoices cannot be edited.");
   });
+
+  test("receivable fields remain editable through normal sent and billed states", () => {
+    expect(getInvoiceEditLockMessage("billed", "receivable")).toBe("");
+    expect(getInvoiceEditLockMessage("finalized", "receivable")).toBe("");
+    expect(getInvoiceEditLockMessage("sent", "receivable")).toBe("");
+    expect(getInvoiceEditLockMessage("partially_paid", "receivable")).toBe("");
+    expect(getInvoiceEditLockMessage("void", "receivable")).toBe("Paid and void invoices cannot be edited.");
+  });
 });

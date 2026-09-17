@@ -42,6 +42,7 @@ import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../
 import { applyInvoiceSendSuccessLifecycle } from "../services/invoiceSendLifecycleAutomation";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
 import { getCanonicalInvoiceCustomerContext } from "../services/invoiceCustomerProjection";
+import { calculateInvoiceDueDateFromTerms, resolveInvoicePaymentTerms } from "../../shared/invoicePaymentTerms";
 import {
   calculateDueDateFromSuccessfulCustomerSend,
   resolveInvoiceCustomerDeliveryTerms,
@@ -2856,17 +2857,15 @@ export async function registerMvpInvoicingRoutes(
       if (requestKeys.some((key) => forbiddenFinancialKeys.includes(key))) {
         return res.status(400).json({ error: "Invoice financial totals are derived from canonical lines and payments.", code: "INVOICE_FINANCIAL_PATCH_FORBIDDEN" });
       }
-      const safeCanonicalKeys = new Set(["terms", "customDueDate", "notesPublic"]);
+      // Terms and due date are receivable fields. They intentionally flow through
+      // the version/reapproval path below instead of the draft-only safe patch.
+      const safeCanonicalKeys = new Set(["notesPublic"]);
       if (userId && existingStatus === "draft" && !isImportedQuickBooks && requestKeys.length > 0 && requestKeys.every((key) => safeCanonicalKeys.has(key))) {
-        const customDueDate = typeof req.body.customDueDate === "string" ? new Date(req.body.customDueDate) : undefined;
-        if (customDueDate && Number.isNaN(customDueDate.getTime())) return res.status(400).json({ error: "Invalid customDueDate" });
         const result = await canonicalInvoiceOperations.updateSafeDraft({
           organizationId,
           actorUserId: userId,
           invoiceId: id,
           patch: {
-            ...(typeof req.body.terms === "string" ? { terms: req.body.terms } : {}),
-            ...(customDueDate ? { customDueDate } : {}),
             ...(typeof req.body.notesPublic === "string" ? { notesPublic: req.body.notesPublic } : {}),
           } as any,
         });
@@ -2876,15 +2875,20 @@ export async function registerMvpInvoicingRoutes(
       const updates: any = {};
       if (typeof req.body.notesPublic === "string") updates.notesPublic = req.body.notesPublic;
       if (typeof req.body.notesInternal === "string") updates.notesInternal = req.body.notesInternal;
-      if (typeof req.body.terms === "string") updates.terms = req.body.terms;
+      const requestedTerms = typeof req.body.terms === "string"
+        ? resolveInvoicePaymentTerms({ invoiceTerms: req.body.terms })
+        : undefined;
+      if (typeof req.body.terms === "string" && requestedTerms !== String(req.body.terms).trim().toLowerCase()) {
+        return res.status(400).json({ error: "Invalid invoice payment terms", code: "INVOICE_TERMS_INVALID" });
+      }
+      if (requestedTerms !== undefined) updates.terms = requestedTerms;
 
       let nextDueDate: Date | undefined;
       if (typeof req.body.customDueDate === "string") {
         const d = new Date(req.body.customDueDate);
-        if (!Number.isNaN(d.getTime())) {
-          nextDueDate = d;
-          updates.dueDate = d;
-        }
+        if (Number.isNaN(d.getTime())) return res.status(400).json({ error: "Invalid customDueDate", code: "INVOICE_DUE_DATE_INVALID" });
+        nextDueDate = d;
+        updates.dueDate = d;
       }
 
       // Customer/customer-visible identity changes
@@ -2904,13 +2908,35 @@ export async function registerMvpInvoicingRoutes(
       const financialUpdates: any = {};
       const hasFinancialBody = false;
       const hasCustomerChange = typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId;
-      const hasTermsChange = typeof req.body.terms === "string" && req.body.terms !== existing.terms;
+      const hasTermsChange = requestedTerms !== undefined && requestedTerms !== existing.terms;
+
+      const receivableEditableStatuses = new Set(["draft", "billed", "finalized", "sent", "partially_paid"]);
+      if ((hasTermsChange || typeof req.body.customDueDate === "string") && !receivableEditableStatuses.has(existingStatus)) {
+        return res.status(400).json({
+          error: "Terms and due date cannot be edited for this invoice status.",
+          code: "INVOICE_RECEIVABLE_FIELDS_LOCKED",
+        });
+      }
+
+      if (hasTermsChange && nextDueDate === undefined && existing.termsStartedAt && requestedTerms !== "custom") {
+        nextDueDate = calculateInvoiceDueDateFromTerms({
+          termsStartedAt: new Date(existing.termsStartedAt),
+          terms: requestedTerms!,
+        }) || undefined;
+        if (nextDueDate) updates.dueDate = nextDueDate;
+      }
+      if (hasTermsChange && requestedTerms === "custom" && nextDueDate === undefined && !existing.dueDate) {
+        return res.status(400).json({
+          error: "Custom payment terms require a manually entered due date.",
+          code: "CUSTOM_PAYMENT_TERMS_DUE_DATE_REQUIRED",
+        });
+      }
 
       const existingDueMs = existing.dueDate ? new Date(existing.dueDate as any).getTime() : null;
       const nextDueMs = nextDueDate ? nextDueDate.getTime() : null;
       const hasDueDateChange = nextDueDate !== undefined && existingDueMs !== nextDueMs;
 
-      if (existingStatus !== "draft" && (hasFinancialBody || hasCustomerChange || hasTermsChange || hasDueDateChange)) {
+      if (existingStatus !== "draft" && (hasFinancialBody || hasCustomerChange)) {
         return res.status(400).json({
           error: "Finalized and sent invoices are locked. Void this invoice or create a revised invoice in a future revision workflow.",
           code: "INVOICE_LOCKED_FINALIZED",
@@ -2930,6 +2956,7 @@ export async function registerMvpInvoicingRoutes(
           computedNextTotalCents !== Number(existing.totalCents || 0)
         )) ||
         hasCustomerChange ||
+        hasTermsChange ||
         hasDueDateChange;
 
       const nextInvoiceVersion = financialOrCustomerVisibleChanged ? existingInvoiceVersion + 1 : existingInvoiceVersion;
