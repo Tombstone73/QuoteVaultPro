@@ -25,6 +25,7 @@ describe("Traveler printer preference contract", () => {
     expect(routes).toContain("supportedDocuments} ? 'traveler'");
     expect(routes).toContain('eq(localBridgeAgents.status, "active")');
     expect(routes).toContain("configuredTravelerPrinterName === destination.windowsQueueName");
+    expect(routes).toContain('item.agentStatus === "active"');
   });
 
   test("keeps Traveler preferences separate from Quick Note printing", () => {

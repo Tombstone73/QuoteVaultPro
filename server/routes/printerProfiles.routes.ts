@@ -123,11 +123,11 @@ export function registerPrinterProfileRoutes(
   app.get("/api/direct-print/traveler-destinations", isAuthenticated, tenantContext, async (req: any, res) => {
     const organizationId = getRequestOrganizationId(req);
     if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, trailingFeedMm: printerProfiles.trailingFeedMm, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId, agentName: localBridgeAgents.name, lastSeenAt: localBridgeAgents.lastSeenAt, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`));
+    const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, trailingFeedMm: printerProfiles.trailingFeedMm, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId, agentName: localBridgeAgents.name, agentStatus: localBridgeAgents.status, lastSeenAt: localBridgeAgents.lastSeenAt, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`));
     // Realtime wake keeps a durable queue viable while a workstation is
     // temporarily disconnected. `lastSeenAt` is therefore informational,
     // never a gate that makes an otherwise mapped destination unqueueable.
-    res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName) })) });
+    res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.agentStatus === "active" && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName) })) });
   });
 
   // This preference is intentionally separate from Quick Note destinations:
