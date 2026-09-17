@@ -13,8 +13,8 @@ export function registerAccountsReceivableReportRoutes(app: Express, middleware:
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
-      const { getAccountsReceivableReport } = await import('../services/accountsReceivableReport');
-      const report = await getAccountsReceivableReport({ organizationId, page: Number(req.query.page) || 1, pageSize: Number(req.query.pageSize) || 50, sortBy: queryString(req.query.sortBy) as any, sortDir: queryString(req.query.sortDir) === 'desc' ? 'desc' : 'asc', filters: { customerId: queryString(req.query.customerId), agingBucket: queryString(req.query.agingBucket) as any, invoiceStatus: queryString(req.query.invoiceStatus), sendStatus: queryString(req.query.sendStatus) as any, jobStatus: queryString(req.query.jobStatus) as any } });
+      const { getAccountsReceivableReport, normalizeAccountsReceivableSort } = await import('../services/accountsReceivableReport');
+      const report = await getAccountsReceivableReport({ organizationId, page: Number(req.query.page) || 1, pageSize: Number(req.query.pageSize) || 50, sortBy: normalizeAccountsReceivableSort(queryString(req.query.sortBy)), sortDir: queryString(req.query.sortDir) === 'desc' ? 'desc' : 'asc', filters: { customerId: queryString(req.query.customerId), agingBucket: queryString(req.query.agingBucket) as any, invoiceStatus: queryString(req.query.invoiceStatus), sendStatus: queryString(req.query.sendStatus) as any, jobStatus: queryString(req.query.jobStatus) as any } });
       const customerOptions = Array.from(new Map(report.rows.filter((row) => row.customerId && row.customerName).map((row) => [row.customerId!, row.customerName!])).entries()).map(([id, name]) => ({ id, name }));
       return res.json({ success: true, data: { ...report, rows: undefined, customerOptions } });
     } catch (error) { console.error('[AccountsReceivableReport] Failed:', error); return res.status(500).json({ success: false, error: 'Failed to build Accounts Receivable report' }); }
@@ -24,8 +24,8 @@ export function registerAccountsReceivableReportRoutes(app: Express, middleware:
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
-      const { getAccountsReceivableReport } = await import('../services/accountsReceivableReport');
-      const report = await getAccountsReceivableReport({ organizationId, sortBy: queryString(req.query.sortBy) as any, sortDir: queryString(req.query.sortDir) === 'desc' ? 'desc' : 'asc', filters: { customerId: queryString(req.query.customerId), agingBucket: queryString(req.query.agingBucket) as any, invoiceStatus: queryString(req.query.invoiceStatus), sendStatus: queryString(req.query.sendStatus) as any, jobStatus: queryString(req.query.jobStatus) as any } });
+      const { getAccountsReceivableReport, normalizeAccountsReceivableSort } = await import('../services/accountsReceivableReport');
+      const report = await getAccountsReceivableReport({ organizationId, sortBy: normalizeAccountsReceivableSort(queryString(req.query.sortBy)), sortDir: queryString(req.query.sortDir) === 'desc' ? 'desc' : 'asc', filters: { customerId: queryString(req.query.customerId), agingBucket: queryString(req.query.agingBucket) as any, invoiceStatus: queryString(req.query.invoiceStatus), sendStatus: queryString(req.query.sendStatus) as any, jobStatus: queryString(req.query.jobStatus) as any } });
       const filename = `accounts-receivable-${report.asOf}`;
       if (req.params.format === 'csv') {
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');

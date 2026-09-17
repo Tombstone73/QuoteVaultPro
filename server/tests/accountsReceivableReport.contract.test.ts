@@ -20,6 +20,10 @@ describe('Accounts Receivable report contract', () => {
     expect(route).toContain('report.rows.map(reportRow)');
     expect(route).toContain('buildSimpleXlsx');
     expect(route).toContain('sendStatus');
+    expect(route).toContain('normalizeAccountsReceivableSort');
+    expect(source('server/services/accountsReceivableReport.ts')).toContain("'jobName'");
+    expect(source('server/services/accountsReceivableReport.ts')).toContain("'purchaseOrderNumber'");
+    expect(source('server/services/accountsReceivableReport.ts')).toContain('normalizeAccountsReceivableSort(input.sortBy)');
   });
 
   test('adds a standard Reports shortcut and the direct report route', () => {

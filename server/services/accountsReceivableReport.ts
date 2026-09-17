@@ -24,7 +24,7 @@ export type AccountsReceivableFilters = {
   jobStatus?: 'open' | 'complete';
 };
 
-export type AccountsReceivableSort = 'customer' | 'invoiceNumber' | 'orderNumber' | 'issueDate' | 'dueDate' | 'daysPastDue' | 'invoiceStatus' | 'sendStatus' | 'total' | 'paid' | 'balance';
+export type AccountsReceivableSort = 'customer' | 'invoiceNumber' | 'orderNumber' | 'jobName' | 'purchaseOrderNumber' | 'issueDate' | 'dueDate' | 'daysPastDue' | 'agingBucket' | 'invoiceStatus' | 'sendStatus' | 'total' | 'paid' | 'balance';
 export type AccountsReceivableReport = { asOf: string; rows: AccountsReceivableRow[]; pageRows: AccountsReceivableRow[]; summary: AccountsReceivableSummary; page: number; pageSize: number; totalCount: number; totalPages: number; filters: AccountsReceivableFilters; };
 
 function calendarDateInTimezone(now: Date, timezone: string): string {
@@ -61,9 +61,12 @@ function sortRows(rows: AccountsReceivableRow[], sortBy: AccountsReceivableSort,
       case 'customer': return row.customerName || '';
       case 'invoiceNumber': return row.invoiceNumber;
       case 'orderNumber': return row.orderNumber || '';
+      case 'jobName': return row.jobName || '';
+      case 'purchaseOrderNumber': return row.purchaseOrderNumber || '';
       case 'issueDate': return row.issueDate || '9999-12-31';
       case 'dueDate': return row.dueDate || '9999-12-31';
       case 'daysPastDue': return row.daysPastDue ?? -1;
+      case 'agingBucket': return row.agingBucket;
       case 'invoiceStatus': return row.invoiceStatus;
       case 'sendStatus': return row.sendStatus;
       case 'total': return row.totalCents;
@@ -73,6 +76,11 @@ function sortRows(rows: AccountsReceivableRow[], sortBy: AccountsReceivableSort,
     }
   };
   return [...rows].sort((left, right) => String(key(left)).localeCompare(String(key(right)), undefined, { numeric: true }) * multiplier);
+}
+
+export function normalizeAccountsReceivableSort(value: unknown): AccountsReceivableSort {
+  const valid: AccountsReceivableSort[] = ['customer', 'invoiceNumber', 'orderNumber', 'jobName', 'purchaseOrderNumber', 'issueDate', 'dueDate', 'daysPastDue', 'agingBucket', 'invoiceStatus', 'sendStatus', 'total', 'paid', 'balance'];
+  return valid.includes(value as AccountsReceivableSort) ? value as AccountsReceivableSort : 'dueDate';
 }
 
 async function paymentRowsByInvoice(organizationId: string, invoiceIds: string[]) {
@@ -137,7 +145,7 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
     if (filters.jobStatus && row.jobStatus !== filters.jobStatus) continue;
     rows.push(row);
   }
-  const sorted = sortRows(rows, input.sortBy ?? 'dueDate', input.sortDir ?? 'asc');
+  const sorted = sortRows(rows, normalizeAccountsReceivableSort(input.sortBy), input.sortDir ?? 'asc');
   const pageSize = Math.min(Math.max(input.pageSize ?? 50, 1), 200);
   const page = Math.max(input.page ?? 1, 1);
   return { asOf, rows: sorted, pageRows: pageAccountsReceivableRows(sorted, page, pageSize), summary: summarizeAccountsReceivable(sorted), page, pageSize, totalCount: sorted.length, totalPages: Math.max(1, Math.ceil(sorted.length / pageSize)), filters };

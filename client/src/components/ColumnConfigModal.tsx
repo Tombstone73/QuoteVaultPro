@@ -16,6 +16,7 @@ interface ColumnConfigModalProps {
   columns: Column[];
   onSave: (columns: Column[]) => void;
   title?: string;
+  defaultColumns?: Column[];
 }
 
 export default function ColumnConfigModal({ 
@@ -23,7 +24,8 @@ export default function ColumnConfigModal({
   onOpenChange, 
   columns, 
   onSave,
-  title = "Configure Columns"
+  title = "Configure Columns",
+  defaultColumns,
 }: ColumnConfigModalProps) {
   const [localColumns, setLocalColumns] = useState<Column[]>(columns);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -61,7 +63,7 @@ export default function ColumnConfigModal({
   };
 
   const handleReset = () => {
-    setLocalColumns(columns);
+    setLocalColumns(defaultColumns ?? columns);
   };
 
   return (
