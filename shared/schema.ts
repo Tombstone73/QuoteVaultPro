@@ -2355,6 +2355,7 @@ export const printerProfiles = pgTable("printer_profiles", {
   supportedDocuments: jsonb("supported_documents").$type<string[]>().notNull().default(sql`'["traveler"]'::jsonb`),
   defaultCopies: integer("default_copies").notNull().default(1),
   trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
+  receiptWidthMm: numeric("receipt_width_mm", { precision: 7, scale: 2 }).notNull().default("80"),
   scope: varchar("scope", { length: 40 }).notNull().default("organization").$type<typeof printerProfileScopeValues[number]>(),
   isActive: boolean("is_active").notNull().default(true),
   isDefault: boolean("is_default").notNull().default(false),
@@ -8717,7 +8718,6 @@ export const directPrintJobs = pgTable("direct_print_jobs", {
   /** Durable, print-only document data (for example a pickup traveler batch). */
   printContext: jsonb("print_context").$type<Record<string, unknown> | null>(),
   trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
-  receiptWidthMm: numeric("receipt_width_mm", { precision: 7, scale: 2 }).notNull().default("80"),
   status: varchar("status", { length: 20 }).notNull().$type<typeof directPrintJobStatusValues[number]>().default("queued"),
   attempts: integer("attempts").notNull().default(0), claimedAt: timestamp("claimed_at", { withTimezone: true }), submittedAt: timestamp("submitted_at", { withTimezone: true }), failedAt: timestamp("failed_at", { withTimezone: true }), lastError: text("last_error"),
   requestKey: varchar("request_key", { length: 160 }).notNull(),
