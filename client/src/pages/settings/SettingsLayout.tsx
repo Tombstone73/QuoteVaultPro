@@ -71,6 +71,7 @@ import { StationStepEditor } from "@/components/production/StationStepEditor";
 import { JobStatusSettings } from "@/components/job-status-settings";
 import { InvoiceRemindersTab } from "@/components/admin-settings";
 import { CompanyInfoInvoiceBrandingCard } from "@/components/settings/CompanyInfoInvoiceBrandingCard";
+import { SalesTaxSettingsCard } from "@/components/settings/SalesTaxSettingsCard";
 import {
   OrderStatusPillSettings,
   WorkflowStatusAutomationSettings,
@@ -359,6 +360,7 @@ export function CompanySettings() {
       </TitanCard>
 
       <CompanyInfoInvoiceBrandingCard />
+      <SalesTaxSettingsCard />
     </div>
   );
 }

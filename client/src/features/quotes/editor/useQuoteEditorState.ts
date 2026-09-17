@@ -69,6 +69,7 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
         variantId: item.variantId,
         variantName: item.variantName,
         productType: item.productType || 'wide_roll',
+        isTaxableSnapshot: (item as any).isTaxableSnapshot ?? (item as any).product?.isTaxable ?? true,
         status: (item as any).status || 'active',
         width: Number.parseFloat(item.width),
         height: Number.parseFloat(item.height),
@@ -512,8 +513,17 @@ export function useQuoteEditorState() {
         [lineItems]
     );
 
+    const productTaxabilityById = useMemo(
+        () => new Map((products ?? []).map((product) => [product.id, product.isTaxable !== false])),
+        [products]
+    );
+
     const effectiveTaxRate = useMemo(() => {
-        // Quote-level overrides take precedence
+        // Organization-level disablement always wins. Document overrides then
+        // take precedence over customer settings, followed by the org default.
+        if (organization?.taxEnabled === false) {
+            return 0;
+        }
         if (quoteTaxExempt === true) {
             return 0;
         }
@@ -552,8 +562,13 @@ export function useQuoteEditorState() {
             subtotalCents
         );
 
-        // Tax = computed from taxable subtotal * current taxRate (respect tax exempt)
-        const taxableBaseCents = Math.max(0, subtotalCents - discountCents);
+        // Tax applies only to product-taxable lines. Discounts are allocated to
+        // the taxable portion first, matching the server aggregate calculation.
+        const taxableLineSubtotalCents = activeLineItems.reduce((sum, item) => {
+            const isTaxable = item.isTaxableSnapshot ?? productTaxabilityById.get(item.productId) ?? true;
+            return isTaxable ? sum + hydrateLineItemEditPricingState(item).effectiveTotalCents : sum;
+        }, 0);
+        const taxableBaseCents = Math.max(0, taxableLineSubtotalCents - Math.min(discountCents, taxableLineSubtotalCents));
         const taxCents = Math.round(taxableBaseCents * effectiveTaxRate);
 
         // Grand Total = taxableBase + tax + shipping
@@ -567,7 +582,7 @@ export function useQuoteEditorState() {
             tax: taxCents / 100,
             grandTotal: grandTotalCents / 100,
         };
-    }, [activeLineItems, effectiveDiscount, effectiveTaxRate, shippingCents]);
+    }, [activeLineItems, effectiveDiscount, effectiveTaxRate, productTaxabilityById, shippingCents]);
 
     // Extract individual values for backward compatibility
     const subtotal = computedTotals.subtotal;
@@ -1507,6 +1522,7 @@ export function useQuoteEditorState() {
                     variantId: payload.variantId || null,
                     variantName: payload.variantName || null,
                     productType: payload.productType,
+                    isTaxableSnapshot: product?.isTaxable ?? true,
                     width: payload.width,
                     height: payload.height,
                     quantity: payload.quantity,
@@ -1554,6 +1570,7 @@ export function useQuoteEditorState() {
                 variantId: selectedVariantId,
                 variantName: variant?.name || null,
                 productType: "wide_roll",
+                isTaxableSnapshot: product?.isTaxable ?? true,
                 width: widthVal,
                 height: heightVal,
                 quantity: quantityVal,
@@ -1621,6 +1638,7 @@ export function useQuoteEditorState() {
                 variantId: selectedVariantId || null,
                 variantName: variant?.name || null,
                 productType: "wide_roll",
+                isTaxableSnapshot: product.isTaxable ?? true,
                 width: widthVal,
                 height: heightVal,
                 quantity: quantityVal,

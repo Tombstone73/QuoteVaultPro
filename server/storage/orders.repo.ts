@@ -2407,9 +2407,11 @@ export class OrdersRepository {
             notesInternal: options?.notesInternal ? String(options.notesInternal) : null,
             createdByUserId,
             lineItems: orderLineItemsData,
-            taxRate: quote.taxRate ? parseFloat(quote.taxRate.toString()) : undefined,
-            taxAmount: quote.taxAmount ? parseFloat(quote.taxAmount) : undefined,
-            taxableSubtotal: quote.taxableSubtotal ? parseFloat(quote.taxableSubtotal) : undefined,
+            // Preserve a saved quote's tax snapshot, including intentional
+            // zero-rate/exempt quotes, during conversion.
+            taxRate: quote.taxRate != null ? parseFloat(quote.taxRate.toString()) : undefined,
+            taxAmount: quote.taxAmount != null ? parseFloat(quote.taxAmount) : undefined,
+            taxableSubtotal: quote.taxableSubtotal != null ? parseFloat(quote.taxableSubtotal) : undefined,
             shippingCents: quote.shippingCents ?? 0,
             productionIntakePolicy: options?.productionIntakePolicy,
             ...orderSnapshot,

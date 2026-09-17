@@ -56,6 +56,8 @@ export type QuoteLineItemDraft = {
   notes?: string;
   productOptions?: any[];
   status?: "draft" | "active" | "canceled";
+  /** Captured from the product when the line is saved; false means no line tax. */
+  isTaxableSnapshot?: boolean | null;
   pendingAttachments?: File[]; // TEMP: Files selected but not yet uploaded
   pendingOrderAttachments?: Array<{
     uploadId: string;

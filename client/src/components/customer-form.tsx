@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import type { Customer } from "@shared/schema";
 import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
+import { taxRateDecimalFromPercent, taxRatePercentFromDecimal } from "@shared/salesTax";
 
 const primaryContactSchema = z.object({
   id: z.string().optional(), // Include id for updating existing primary contact
@@ -167,7 +168,10 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       // Tax fields
       isTaxExempt: customer.isTaxExempt || false,
       alwaysRequireProof: customer.alwaysRequireProof || false,
-      taxRateOverride: customer.taxRateOverride ? parseFloat(customer.taxRateOverride.toString()) : undefined,
+      // Rates persist as decimals (0.07), while this form accepts percentages (7.00).
+      taxRateOverride: customer.taxRateOverride != null
+        ? taxRatePercentFromDecimal(customer.taxRateOverride)
+        : undefined,
       taxExemptReason: customer.taxExemptReason || "",
       taxExemptCertificateRef: customer.taxExemptCertificateRef || "",
       email: customer.email || "",
@@ -261,7 +265,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
       // Convert creditLimit to string for database and normalize primaryContact
-      const { primaryContact, sameAsBilling, paymentTerms, ...rest } = data;
+      const { primaryContact, sameAsBilling, paymentTerms, taxRateOverride, ...rest } = data;
 
       const hasPrimaryContact = primaryContact && (
         primaryContact.firstName.trim() !== "" ||
@@ -274,6 +278,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       const payload: any = {
         ...rest,
         ...(rest.creditLimit === undefined ? {} : { creditLimit: rest.creditLimit.toString() }),
+        ...(taxRateOverride === undefined ? {} : { taxRateOverride: taxRateDecimalFromPercent(taxRateOverride) }),
         ...(canManageCommercialConfiguration ? { paymentTerms } : {}),
       };
 
@@ -314,7 +319,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const updateMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
       // Convert creditLimit to string for database
-      const { primaryContact, sameAsBilling, paymentTerms, ...rest } = data;
+      const { primaryContact, sameAsBilling, paymentTerms, taxRateOverride, ...rest } = data;
 
       const hasPrimaryContact = primaryContact && (
         primaryContact.firstName.trim() !== "" ||
@@ -327,6 +332,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       const payload: any = {
         ...rest,
         ...(rest.creditLimit === undefined ? {} : { creditLimit: rest.creditLimit.toString() }),
+        ...(taxRateOverride === undefined ? {} : { taxRateOverride: taxRateDecimalFromPercent(taxRateOverride) }),
         ...(canManageCommercialConfiguration ? { paymentTerms } : {}),
       };
 

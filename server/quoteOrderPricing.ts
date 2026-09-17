@@ -104,7 +104,7 @@ export async function calculateQuoteOrderTotals(
     customer: customer
       ? {
           isTaxExempt: customer.isTaxExempt ?? false,
-          taxRateOverride: customer.taxRateOverride
+          taxRateOverride: customer.taxRateOverride != null
             ? parseFloat(customer.taxRateOverride.toString())
             : null,
         }

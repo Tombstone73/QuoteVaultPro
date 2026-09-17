@@ -94,6 +94,17 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     keywords: ["invoice", "payment", "billing", "remittance"],
   },
   {
+    id: "sales-tax",
+    kind: "setting",
+    label: "Sales Tax",
+    category: "Company",
+    section: "Company Settings",
+    description: "Enable sales tax and set the organization default tax rate.",
+    route: "/settings/company",
+    anchor: "sales-tax",
+    keywords: ["tax", "sales tax", "tax rate", "taxable", "exempt"],
+  },
+  {
     id: "proofing-policy",
     kind: "setting",
     label: "Proofing Policy",

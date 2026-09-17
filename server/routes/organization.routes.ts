@@ -54,6 +54,11 @@ import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileSer
 import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
 import { resolveInvoiceSendAutomationPreferences } from "@shared/invoiceSendAutomation";
 
+const salesTaxSettingsSchema = z.object({
+  taxEnabled: z.boolean(),
+  defaultTaxRate: z.number().finite().min(0).max(0.3),
+});
+
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
@@ -143,6 +148,69 @@ export function registerOrganizationRoutes(
     } catch (error) {
       console.error("Error fetching current organization:", error);
       res.status(500).json({ message: "Failed to fetch organization" });
+    }
+  });
+
+  // Sales tax is organization-owned configuration. Rates use decimal storage
+  // (0.07 = 7%) so pricing services can consume the value without conversion.
+  app.get('/api/organization/tax-settings', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(403).json({ message: "No organization context" });
+
+      const [organization] = await db.select({
+        taxEnabled: organizations.taxEnabled,
+        defaultTaxRate: organizations.defaultTaxRate,
+      }).from(organizations).where(eq(organizations.id, organizationId)).limit(1);
+      if (!organization) return res.status(404).json({ message: "Organization not found" });
+
+      return res.json({
+        taxEnabled: organization.taxEnabled !== false,
+        defaultTaxRate: Number(organization.defaultTaxRate ?? 0),
+      });
+    } catch (error) {
+      console.error("Error fetching organization tax settings:", error);
+      return res.status(500).json({ message: "Failed to fetch sales tax settings" });
+    }
+  });
+
+  app.patch('/api/organization/tax-settings', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(403).json({ message: "No organization context" });
+      const parsed = salesTaxSettingsSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: fromZodError(parsed.error).message });
+
+      const [updated] = await db.update(organizations).set({
+        taxEnabled: parsed.data.taxEnabled,
+        defaultTaxRate: parsed.data.defaultTaxRate.toFixed(4),
+        updatedAt: new Date(),
+      }).where(eq(organizations.id, organizationId)).returning({
+        taxEnabled: organizations.taxEnabled,
+        defaultTaxRate: organizations.defaultTaxRate,
+      });
+      if (!updated) return res.status(404).json({ message: "Organization not found" });
+
+      const userId = getUserId(req.user);
+      if (userId) {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          actionType: "organization.sales_tax.updated",
+          entityType: "organization",
+          entityId: organizationId,
+          description: "Updated organization sales tax settings",
+          newValues: parsed.data,
+        });
+      }
+
+      return res.json({
+        taxEnabled: updated.taxEnabled !== false,
+        defaultTaxRate: Number(updated.defaultTaxRate ?? 0),
+      });
+    } catch (error) {
+      console.error("Error updating organization tax settings:", error);
+      return res.status(500).json({ message: "Failed to update sales tax settings" });
     }
   });
 

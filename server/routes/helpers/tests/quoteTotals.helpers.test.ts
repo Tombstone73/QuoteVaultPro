@@ -34,6 +34,23 @@ describe("calculateQuoteAggregateTotals", () => {
     });
   });
 
+  test("keeps non-taxable product snapshots out of the tax base", () => {
+    expect(
+      calculateQuoteAggregateTotals({
+        lineItems: [
+          { linePrice: 100, status: "active", isTaxableSnapshot: true },
+          { linePrice: 25, status: "active", isTaxableSnapshot: false },
+        ],
+        taxRate: 0.07,
+      }),
+    ).toEqual({
+      subtotal: 125,
+      taxableSubtotal: 100,
+      taxAmount: 7,
+      totalPrice: 132,
+    });
+  });
+
   test("keeps golden PBV2 repriced line values as quote aggregate source of truth", () => {
     expect(
       calculateQuoteAggregateTotals({

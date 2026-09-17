@@ -14,3 +14,9 @@ test("Customer Edit loads, shows, and conditionally saves the shared payment-ter
   expect(source).toContain('...(canManageCommercialConfiguration ? { paymentTerms } : {}),');
   expect(source).toContain('Only organization owners and admins can change payment terms.');
 });
+
+test("Customer tax override displays percentages but persists canonical decimal rates", () => {
+  expect(source).toContain('taxRatePercentFromDecimal(customer.taxRateOverride)');
+  expect(source).toContain('taxRateDecimalFromPercent(taxRateOverride)');
+  expect(source).toContain('Tax Rate Override (%)');
+});

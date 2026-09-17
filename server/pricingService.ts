@@ -371,28 +371,20 @@ export interface TaxResolutionContext {
 /**
  * Resolve the effective tax rate for a transaction.
  * 
- * SaaS Tax Precedence:
+ * V1 Tax Precedence:
  * 1. If tax is disabled globally → 0%
  * 2. If customer is tax exempt → 0%
- * 3. If customer has a tax rate override → use override (ignores zones)
- * 4. If no shipTo address or organizationId → fallback to companyDefaultTaxRate
- * 5. Check organization nexus in shipTo state → if no nexus, 0%
- * 6. Find applicable tax zone for shipTo address
- * 7. If product has tax category, check for zone+category rule override
- * 8. Otherwise → use zone.combinedRate or fallback to companyDefaultTaxRate
+ * 3. If customer has a tax rate override → use override
+ * 4. Otherwise → use the organization default tax rate
  * 
  * @param ctx - Tax resolution context
  * @returns Effective tax rate as decimal (0.07 for 7%)
  */
 export async function resolveTaxRate(ctx: TaxResolutionContext): Promise<number> {
   const {
-    organizationId,
     taxEnabled,
     companyDefaultTaxRate,
     customer,
-    product,
-    shipFrom,
-    shipTo,
   } = ctx;
 
   // 1) Global tax switch
@@ -401,7 +393,7 @@ export async function resolveTaxRate(ctx: TaxResolutionContext): Promise<number>
   // 2) Customer exemptions
   if (customer?.isTaxExempt) return 0;
 
-  // 3) Customer-specific override (takes precedence over all zone logic)
+  // 3) Customer-specific override
   if (customer?.taxRateOverride != null && customer.taxRateOverride >= 0) {
     const override = typeof customer.taxRateOverride === 'number' 
       ? customer.taxRateOverride 
@@ -410,66 +402,11 @@ export async function resolveTaxRate(ctx: TaxResolutionContext): Promise<number>
     return !isNaN(override) && override >= 0 ? override : 0;
   }
 
-  // 4) Fallback if no advanced tax data available
-  if (!organizationId || !shipTo?.state) {
-    return companyDefaultTaxRate ?? 0;
-  }
-
-  // Lazy-load taxRepo to avoid circular dependencies
-  const taxRepo = await import("./taxRepo");
-
-  // 5) Check organization nexus – if org has no nexus in shipTo state, no tax
-  const hasNexus = await taxRepo.orgHasNexusIn({
-    organizationId,
-    country: shipTo.country ?? "US",
-    state: shipTo.state,
-  });
-
-  if (!hasNexus) {
-    return 0;
-  }
-
-  // 6) Find applicable tax zone for shipTo address
-  const zone = await taxRepo.findApplicableTaxZone({
-    organizationId,
-    country: shipTo.country ?? "US",
-    state: shipTo.state,
-    county: shipTo.county,
-    city: shipTo.city,
-    postalCode: shipTo.postalCode,
-  });
-
-  // If no zone found, fall back to org default
-  if (!zone) {
-    return companyDefaultTaxRate ?? 0;
-  }
-
-  let rate = parseFloat(zone.combinedRate || "0");
-
-  // 7) Apply product-category-specific rule if available
-  if (product?.taxCategoryId) {
-    const rule = await taxRepo.getTaxRuleForZoneAndCategory({
-      organizationId,
-      taxZoneId: zone.id,
-      taxCategoryId: product.taxCategoryId,
-    });
-
-    if (rule) {
-      // If rule says non-taxable, return 0
-      if (!rule.taxable) {
-        return 0;
-      }
-      // If rule has rate override, use it
-      if (rule.rateOverride != null) {
-        rate = parseFloat(rule.rateOverride.toString());
-      }
-    }
-  }
-
-  // 8) Final rate validation
-  if (rate < 0) rate = 0;
-
-  return rate;
+  // 4) The organization default is the V1 final fallback. Product taxability
+  // is applied per line by the caller; optional nexus/zone data must not make
+  // an organization's configured default unpredictable.
+  const configuredRate = Number(companyDefaultTaxRate);
+  return Number.isFinite(configuredRate) && configuredRate >= 0 ? configuredRate : 0;
 }
 
 /**
@@ -507,7 +444,9 @@ export function calculateLineTax(options: {
   if (!options.isTaxable) return 0;
   if (options.taxRate <= 0) return 0;
   
-  return options.lineTotal * options.taxRate;
+  // Line tax is a currency amount. Round at the line boundary so the saved
+  // line snapshot and aggregate total cannot drift from floating-point noise.
+  return Math.round(options.lineTotal * options.taxRate * 100) / 100;
 }
 
 /**
