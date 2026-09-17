@@ -396,8 +396,29 @@ function mockCustomerListQuery() {
     },
     isLoading: false,
     isFetching: false,
+    isError: false,
+    error: null,
+    refetch: jest.fn(),
   } as any);
 }
+
+test("Customer list shows a retryable load error instead of the empty state when its query fails", () => {
+  const refetch = jest.fn();
+  useQueryMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, isError: true, error: new Error("backend unavailable"), refetch } as any);
+  act(() => root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" />));
+  expect(container.textContent).toContain("Unable to load customers");
+  expect(container.textContent).not.toContain("No customers found");
+  const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry");
+  act(() => retry?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(refetch).toHaveBeenCalledTimes(1);
+});
+
+test("Customer list keeps the empty state for a successful zero-customer response", () => {
+  useQueryMock.mockReturnValue({ data: { customers: [], pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1, hasNextPage: false, hasPreviousPage: false } }, isLoading: false, isFetching: false, isError: false, error: null, refetch: jest.fn() } as any);
+  act(() => root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" />));
+  expect(container.textContent).toContain("No customers found");
+  expect(container.textContent).not.toContain("Unable to load customers");
+});
 
 function getCustomerPageSizeSelect() {
   return Array.from(container.querySelectorAll("select")).find((select) =>

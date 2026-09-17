@@ -348,7 +348,7 @@ export default function CustomerList({
     pageSize,
   };
 
-  const { data, isLoading, isFetching } = useQuery<CustomerListResult<Customer>>({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery<CustomerListResult<Customer>>({
     queryKey: buildCustomerListQueryKey(queryState),
     queryFn: async () => {
       const params = buildCustomerListSearchParams(queryState);
@@ -483,6 +483,15 @@ export default function CustomerList({
         <Loader2 className="h-5 w-5 animate-spin text-primary" />
         <span className="text-sm text-muted-foreground">Loading customers...</span>
       </div>
+    </div>
+  );
+
+  const errorState = (
+    <div className="flex flex-col items-center justify-center py-12 px-6 text-center" role="alert">
+      <Building2 className="w-12 h-12 mb-3 text-destructive/70" />
+      <h3 className="font-medium mb-1 text-foreground">Unable to load customers</h3>
+      <p className="text-sm mb-4 text-muted-foreground">Please try again.</p>
+      <Button type="button" size="sm" onClick={() => void refetch()} disabled={isFetching}>Retry</Button>
     </div>
   );
 
@@ -818,7 +827,7 @@ export default function CustomerList({
 
       {!collapse && (
         <div data-testid="customer-list-body">
-          {isLoading ? loadingState : customers.length === 0 ? emptyState : viewMode === "enhanced" ? enhancedTable : splitList}
+          {isLoading ? loadingState : (isError || Boolean(error)) ? errorState : customers.length === 0 ? emptyState : viewMode === "enhanced" ? enhancedTable : splitList}
         </div>
       )}
 

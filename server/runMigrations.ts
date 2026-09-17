@@ -218,6 +218,12 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // Migration 0205 — customer and invoice payment reads select this relation.
+  // Verify the physical contract immediately after migration so a partial or
+  // skipped deploy cannot masquerade as an empty customer list.
+  { type: "table_exists", table: "customer_payment_batches", label: "customer_payment_batches table" },
+  { type: "column_exists", table: "payments", column: "customer_payment_batch_id", label: "payments.customer_payment_batch_id" },
+  { type: "index_exists", index: "payments_customer_payment_batch_id_idx", label: "payments customer payment batch index" },
   // Migration 0191 backs the durable invoice email queue. If a deploy is
   // serving the quick-send UI without these tables, fail startup explicitly
   // instead of accepting an enqueue request that cannot be processed.
