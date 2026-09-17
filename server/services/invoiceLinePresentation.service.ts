@@ -17,7 +17,7 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
     .map((line) => typeof line.orderLineItemId === 'string' ? line.orderLineItemId : null)
     .filter((id): id is string => Boolean(id)))];
   const sourceLines = orderLineItemIds.length
-    ? await db.select({ id: orderLineItems.id, productId: orderLineItems.productId, name: orderLineItems.name })
+    ? await db.select({ id: orderLineItems.id, productId: orderLineItems.productId })
       .from(orderLineItems)
       .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
       .where(and(eq(orders.organizationId, input.organizationId), inArray(orderLineItems.id, orderLineItemIds)))
@@ -37,7 +37,6 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
     const sourceLine = sourceLineById.get(line.orderLineItemId);
     const productName = productNameById.get(line.productId)
       || productNameById.get(sourceLine?.productId)
-      || sourceLine?.name
       || line.name
       || null;
     return { ...line, productName };

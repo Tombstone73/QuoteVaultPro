@@ -201,7 +201,7 @@ export default function InvoiceDetailPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data, isLoading, refetch } = useInvoice(invoiceId);
+  const { data, isLoading, isError, error, refetch } = useInvoice(invoiceId);
   const listNavigation = useListDetailNavigation("invoice", invoiceId);
   const queueQbSync = useQueueInvoiceQbSync();
   const approveForAccounting = useApproveInvoicesForAccounting();
@@ -1285,8 +1285,10 @@ export default function InvoiceDetailPage() {
   };
 
   const showLoading = isLoading;
-  const showNotFound = !isLoading && (!data || !invoice);
-  const isReady = !showLoading && !showNotFound && !!invoice;
+  const isNotFound = !isLoading && isError && (error as any)?.status === 404;
+  const showLoadError = !isLoading && isError && !isNotFound;
+  const showNotFound = !isLoading && !isError && (!data || !invoice);
+  const isReady = !showLoading && !showNotFound && !showLoadError && !!invoice;
 
   useEffect(() => {
     // DEV-only sanity check: prove the dialog stays mounted across refetch/loading transitions.
@@ -1465,6 +1467,12 @@ export default function InvoiceDetailPage() {
           <div className="text-center py-12">Loading invoice...</div>
         ) : showNotFound ? (
           <div className="text-center py-12">Invoice not found</div>
+        ) : showLoadError ? (
+          <div className="mx-auto max-w-md space-y-3 py-12 text-center">
+            <p className="font-medium">Unable to load invoice</p>
+            <p className="text-sm text-muted-foreground">{(error as Error)?.message || "Please try again."}</p>
+            <Button variant="outline" onClick={() => void refetch()}>Retry</Button>
+          </div>
         ) : isReady ? (
           (() => {
             const inv = invoice as NonNullable<typeof invoice>;

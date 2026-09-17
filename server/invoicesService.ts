@@ -1402,10 +1402,22 @@ export async function getInvoiceWithRelations(id: string) {
   });
   if (!customerContext) return null;
   const storedLineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id));
-  const lineItems = await hydrateInvoiceLineItemsWithProductIdentity({
-    organizationId: invoice.organizationId,
-    lineItems: storedLineItems as any,
-  });
+  // Product identity is presentation enrichment only. An invoice snapshot must
+  // remain readable when a historical source line/product is gone or a
+  // presentation query encounters a schema/runtime mismatch.
+  let lineItems: any[] = storedLineItems as any[];
+  try {
+    lineItems = await hydrateInvoiceLineItemsWithProductIdentity({
+      organizationId: invoice.organizationId,
+      lineItems: storedLineItems as any,
+    });
+  } catch (error: any) {
+    console.warn("[InvoiceLinePresentation] enrichment failed; using invoice snapshots", {
+      invoiceId: id,
+      organizationId: invoice.organizationId,
+      message: String(error?.message || error),
+    });
+  }
   const paymentRows = await db
     .select()
     .from(payments)

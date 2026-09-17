@@ -224,6 +224,13 @@ export function useInvoicesPage(filters: {
   });
 }
 
+export class InvoiceDetailRequestError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "InvoiceDetailRequestError";
+  }
+}
+
 // Get invoice detail
 export function useInvoice(id: string | undefined) {
   return useQuery({
@@ -233,7 +240,10 @@ export function useInvoice(id: string | undefined) {
       // Invoice financial state must be authoritative after a payment settles.
       // Avoid accepting a browser-cached representation during settlement.
       const res = await apiFetch(`/api/invoices/${id}`, { credentials: 'include', cache: 'no-store' });
-      if (!res.ok) throw new Error('Failed to fetch invoice');
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new InvoiceDetailRequestError(body?.error || 'Unable to load invoice', res.status);
+      }
       const data = await res.json();
       return data.data as InvoiceWithRelations;
     },
