@@ -43,7 +43,7 @@ jest.mock("@/components/ui/select", () => ({
 }));
 
 import { TravelerPrintDialog } from "./TravelerPrintDialog";
-import { readPersistedTravelerPrinterPreferences } from "@/lib/travelerPrinterPreferences";
+import { persistTravelerPrinterPreferences } from "@/lib/travelerPrinterPreferences";
 
 const useQueryMock = jest.mocked(useQuery);
 const destinations = [
@@ -61,7 +61,11 @@ beforeEach(() => {
   root = createRoot(container);
   localStorage.clear();
   mockToast.mockReset();
-  useQueryMock.mockReturnValue({ data: destinations, isLoading: false } as any);
+  useQueryMock.mockImplementation((options: any) => (
+    options.queryKey[0] === "/api/direct-print/traveler-destinations"
+      ? { data: destinations, isLoading: false, isSuccess: true }
+      : { data: { defaultDestinationId: null, hasSavedDefault: false }, isLoading: false, isSuccess: true }
+  ) as any);
   (globalThis as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ success: true }) }));
   Object.defineProperty(globalThis, "crypto", {
     configurable: true,
@@ -76,7 +80,7 @@ afterEach(() => {
 });
 
 describe("TravelerPrintDialog", () => {
-  test("preserves print fields and saves the selected direct-print profile only after a successful checked print", async () => {
+  test("preserves print fields and saves the selected direct-print profile to the server only after a successful checked print", async () => {
     await act(async () => {
       root.render(<TravelerPrintDialog orderId="order-1" open onOpenChange={() => undefined} />);
       await Promise.resolve();
@@ -101,6 +105,23 @@ describe("TravelerPrintDialog", () => {
       method: "POST",
       body: expect.stringContaining('"destinationId":"prepress"'),
     }));
-    expect(readPersistedTravelerPrinterPreferences("user-a", "org-a").defaultDestinationId).toBe("prepress");
+    expect(fetch).toHaveBeenCalledWith("/api/direct-print/traveler-preferences", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ defaultDestinationId: "prepress" }),
+    }));
+  });
+
+  test("migrates a valid legacy browser-only choice when no server preference exists", async () => {
+    persistTravelerPrinterPreferences("user-a", "org-a", { version: 1, defaultDestinationId: "shipping" });
+
+    await act(async () => {
+      root.render(<TravelerPrintDialog orderId="order-1" open onOpenChange={() => undefined} />);
+      await Promise.resolve();
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/direct-print/traveler-preferences", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ defaultDestinationId: "shipping" }),
+    }));
   });
 });

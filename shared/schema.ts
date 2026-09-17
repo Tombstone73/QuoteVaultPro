@@ -7485,6 +7485,8 @@ export const listSettings = pgTable('list_settings', {
     columnOrder?: string[];
     columnVisible?: Record<string, boolean>;
     dateFormat?: string; // 'MM/DD/YY', 'DD/MM/YY', 'MMM D, YYYY', etc.
+    /** Used by small, user-scoped operational preferences such as Traveler printing. */
+    defaultDestinationId?: string;
   }>().notNull().default(sql`'{}'::jsonb`),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

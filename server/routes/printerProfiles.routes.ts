@@ -5,7 +5,8 @@ import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { directPrintJobs, localBridgeAgents, orders, printerProfiles } from "@shared/schema";
+import { directPrintJobs, listSettings, localBridgeAgents, orders, printerProfiles } from "@shared/schema";
+import { TRAVELER_PRINTER_PREFERENCE_LIST_KEY, travelerPrinterPreferenceSchema } from "@shared/travelerPrinterPreferences";
 import { publishPrintAgentWake } from "../services/printAgentWake";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import type { PickupTravelerPrintContext } from "@shared/productionTicket";
@@ -67,6 +68,31 @@ function sendError(res: any, error: unknown, fallback: string) {
   });
 }
 
+async function getAvailableTravelerDestination(organizationId: string, destinationId: string) {
+  const [destination] = await db.select({
+    id: printerProfiles.id,
+    printAgentId: printerProfiles.printAgentId,
+    windowsQueueName: printerProfiles.windowsQueueName,
+  }).from(printerProfiles).where(and(
+    eq(printerProfiles.id, destinationId),
+    eq(printerProfiles.organizationId, organizationId),
+    eq(printerProfiles.isActive, true),
+    sql`${printerProfiles.supportedDocuments} ? 'traveler'`,
+  )).limit(1);
+  if (!destination?.printAgentId || !destination.windowsQueueName) return null;
+
+  const [agent] = await db.select({ configuredTravelerPrinterName: localBridgeAgents.configuredTravelerPrinterName })
+    .from(localBridgeAgents)
+    .where(and(
+      eq(localBridgeAgents.id, destination.printAgentId),
+      eq(localBridgeAgents.organizationId, organizationId),
+      eq(localBridgeAgents.status, "active"),
+    ))
+    .limit(1);
+
+  return agent?.configuredTravelerPrinterName === destination.windowsQueueName ? destination : null;
+}
+
 export function registerPrinterProfileRoutes(
   app: Express,
   middleware: {
@@ -102,6 +128,57 @@ export function registerPrinterProfileRoutes(
     // temporarily disconnected. `lastSeenAt` is therefore informational,
     // never a gate that makes an otherwise mapped destination unqueueable.
     res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName) })) });
+  });
+
+  // This preference is intentionally separate from Quick Note destinations:
+  // Traveler selection is a per-user, per-organization operational default.
+  app.get("/api/direct-print/traveler-preferences", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(401).json({ success: false, error: "Authentication is required" });
+      const [stored] = await db.select({ settingsJson: listSettings.settingsJson })
+        .from(listSettings)
+        .where(and(
+          eq(listSettings.organizationId, organizationId),
+          eq(listSettings.userId, userId),
+          eq(listSettings.listKey, TRAVELER_PRINTER_PREFERENCE_LIST_KEY),
+        ))
+        .limit(1);
+      const savedDestinationId = typeof stored?.settingsJson?.defaultDestinationId === "string"
+        ? stored.settingsJson.defaultDestinationId
+        : null;
+      return res.json({ success: true, data: { defaultDestinationId: savedDestinationId, hasSavedDefault: Boolean(savedDestinationId) } });
+    } catch (error) {
+      return sendError(res, error, "Could not load your Traveler printer preference");
+    }
+  });
+
+  app.put("/api/direct-print/traveler-preferences", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(401).json({ success: false, error: "Authentication is required" });
+      const { defaultDestinationId } = travelerPrinterPreferenceSchema.parse(req.body || {});
+      const destination = await getAvailableTravelerDestination(organizationId, defaultDestinationId);
+      if (!destination) {
+        return res.status(409).json({ success: false, code: "TRAVELER_DESTINATION_UNAVAILABLE", error: "This Traveler destination is not available for your organization." });
+      }
+      const settingsJson = { defaultDestinationId: destination.id };
+      await db.insert(listSettings).values({
+        organizationId,
+        userId,
+        listKey: TRAVELER_PRINTER_PREFERENCE_LIST_KEY,
+        settingsJson,
+        updatedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: [listSettings.organizationId, listSettings.userId, listSettings.listKey],
+        set: { settingsJson, updatedAt: new Date() },
+      });
+      return res.json({ success: true, data: { defaultDestinationId: destination.id, hasSavedDefault: true } });
+    } catch (error) {
+      return sendError(res, error, "Could not save your Traveler printer preference");
+    }
   });
 
   app.post("/api/orders/:orderId/direct-print/traveler", isAuthenticated, tenantContext, async (req: any, res) => {

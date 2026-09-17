@@ -10,10 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import {
-  persistTravelerPrinterPreferences,
   readPersistedTravelerPrinterPreferences,
   resolveTravelerPrinterDestinationId,
 } from "@/lib/travelerPrinterPreferences";
+import type { TravelerPrinterPreferenceResponse } from "@shared/travelerPrinterPreferences";
 import { ROUTES } from "@/config/routes";
 
 type Destination = {
@@ -62,6 +62,17 @@ export function TravelerPrintDialog({
     },
   });
 
+  const preferenceQuery = useQuery<TravelerPrinterPreferenceResponse>({
+    queryKey: ["/api/direct-print/traveler-preferences"],
+    enabled: open && Boolean(user?.id),
+    queryFn: async () => {
+      const response = await fetch("/api/direct-print/traveler-preferences", { credentials: "include" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not load Traveler preference");
+      return body.data;
+    },
+  });
+
   const destinations = query.data ?? [];
   const selected = destinations.find((destination) => destination.id === destinationId);
 
@@ -73,18 +84,36 @@ export function TravelerPrintDialog({
   }, [open]);
 
   useEffect(() => {
-    if (!open || !destinations.length || resolvedPreferenceScope.current === preferenceScope) return;
+    if (!open || !destinations.length || preferenceQuery.isLoading || resolvedPreferenceScope.current === preferenceScope) return;
 
-    const preferences = user?.id
-      ? readPersistedTravelerPrinterPreferences(user.id, user.lastActiveOrgId)
-      : undefined;
-    const resolvedDestinationId = resolveTravelerPrinterDestinationId(destinations, preferences?.defaultDestinationId);
+    const savedDestinationId = preferenceQuery.data?.defaultDestinationId;
+    const localDestinationId = user?.id && preferenceQuery.isSuccess && !preferenceQuery.data?.hasSavedDefault
+      ? readPersistedTravelerPrinterPreferences(user.id, user.lastActiveOrgId).defaultDestinationId
+      : null;
+    const resolvedDestinationId = resolveTravelerPrinterDestinationId(destinations, savedDestinationId ?? localDestinationId);
     const target = destinations.find((destination) => destination.id === resolvedDestinationId);
 
     setDestinationId(resolvedDestinationId);
     if (target) setCopies(String(target.defaultCopies || 1));
     resolvedPreferenceScope.current = preferenceScope;
-  }, [destinations, open, preferenceScope, user?.id, user?.lastActiveOrgId]);
+
+    // One-time migration from the old browser-only value. The server becomes
+    // authoritative as soon as it accepts this still-valid destination.
+    if (preferenceQuery.isSuccess && !preferenceQuery.data?.hasSavedDefault && localDestinationId && localDestinationId === resolvedDestinationId) {
+      void saveTravelerPrinterPreference(localDestinationId).catch(() => undefined);
+    }
+  }, [destinations, open, preferenceQuery.data?.defaultDestinationId, preferenceQuery.data?.hasSavedDefault, preferenceQuery.isLoading, preferenceQuery.isSuccess, preferenceScope, user?.id, user?.lastActiveOrgId]);
+
+  async function saveTravelerPrinterPreference(defaultDestinationId: string) {
+    const response = await fetch("/api/direct-print/traveler-preferences", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ defaultDestinationId }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not save Traveler preference");
+  }
 
   function selectDestination(id: string) {
     setDestinationId(id);
@@ -114,10 +143,15 @@ export function TravelerPrintDialog({
       if (!response.ok) throw new Error(body.error || "Direct print could not be queued");
 
       if (setAsDefault && user?.id) {
-        persistTravelerPrinterPreferences(user.id, user.lastActiveOrgId, {
-          version: 1,
-          defaultDestinationId: selected.id,
-        });
+        try {
+          await saveTravelerPrinterPreference(selected.id);
+        } catch (preferenceError: any) {
+          toast({
+            title: "Traveler sent, but default was not saved",
+            description: preferenceError.message,
+            variant: "destructive",
+          });
+        }
       }
 
       pendingRequestKey.current = null;
