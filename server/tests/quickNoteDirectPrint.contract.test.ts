@@ -27,4 +27,11 @@ describe("Quick Note durable direct-print contract", () => {
     expect(route).toContain('supportsDirectPrintDocument(destination, "quick_note")');
     expect(route).toContain('document === "quick_note"');
   });
+  test("requires a Quick Note-capable agent before creating a job", () => {
+    expect(route).toContain('agentVersion: localBridgeAgents.agentVersion');
+    expect(route).toContain('quickNoteSupported');
+    expect(route).toContain('PRINT_AGENT_UPDATE_REQUIRED');
+    expect(route).toContain('supportsQuickNoteAgent(agent.agentVersion)');
+    expect(route).toContain("before it can print Quick Notes.");
+  });
 });

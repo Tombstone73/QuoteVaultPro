@@ -219,6 +219,10 @@ if ($webViewVersion) {
   throw 'Install Microsoft Edge WebView2 Runtime, then run setup-agent.ps1 again.'
 }
 
+if (-not $TravelerPrinter) {
+  $savedTravelerPrinter = [Environment]::GetEnvironmentVariable('PRINTERSHERO_TRAVELER_PRINTER', 'User')
+  if (-not [string]::IsNullOrWhiteSpace($savedTravelerPrinter)) { $TravelerPrinter = $savedTravelerPrinter }
+}
 $selectedPrinter = Select-TravelerPrinter $TravelerPrinter
 if (-not $AgentToken) {
   $savedAgentToken = [Environment]::GetEnvironmentVariable('PRINTERSHERO_AGENT_TOKEN', 'User')

@@ -5,9 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 
 const toast = jest.fn(); const user = { id: "staff-a", lastActiveOrgId: "org-a" };
 jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn() }));
-jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user }) }));
+jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user, isAdmin: true }) }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
+jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("@/components/ui/dialog", () => ({ Dialog: ({ children }: any) => <>{children}</>, DialogContent: ({ children }: any) => <div>{children}</div>, DialogDescription: ({ children }: any) => <p>{children}</p>, DialogFooter: ({ children }: any) => <footer>{children}</footer>, DialogHeader: ({ children }: any) => <header>{children}</header>, DialogTitle: ({ children }: any) => <h2>{children}</h2> }));
 jest.mock("@/components/ui/button", () => ({ Button: ({ children, ...props }: any) => <button {...props}>{children}</button> }));
 jest.mock("@/components/ui/input", () => ({ Input: (props: any) => <input {...props} /> }));
@@ -30,4 +31,5 @@ describe("QuickNotePrintDialog", () => {
  test("preserves typed multiline content after an unavailable printer failure so retry is possible",async()=>{jest.mocked(apiFetch).mockResolvedValue({ok:false,json:async()=>({error:"offline"})} as any);await render();await type("#quick-note-body","Keep upright\nDo not stack");await act(async()=>{Array.from(container.querySelectorAll("button")).find(x=>x.textContent==="Print Note")?.click();await Promise.resolve();});expect((container.querySelector("#quick-note-body") as HTMLTextAreaElement).value).toBe("Keep upright\nDo not stack");expect(toast).toHaveBeenCalledWith(expect.objectContaining({variant:"destructive"}));});
  test("shows an explicit destination error and retries without closing",async()=>{const refetch=jest.fn();queryMock.mockReturnValue({data:undefined,isLoading:false,error:new Error("network"),refetch} as any);const onOpenChange=jest.fn();await act(async()=>{root.render(<QuickNotePrintDialog open onOpenChange={onOpenChange}/>);});expect(container.textContent).toContain("Could not load Quick Note destinations.");await act(async()=>{Array.from(container.querySelectorAll("button")).find(x=>x.textContent==="Retry")?.click();});expect(refetch).toHaveBeenCalledTimes(1);Array.from(container.querySelectorAll("button")).find(x=>x.textContent==="Cancel")?.click();expect(onOpenChange).toHaveBeenCalledWith(false);});
  test("shows a configuration state when no Quick Note destinations exist",async()=>{queryMock.mockReturnValue({data:[],isLoading:false,error:null,refetch:jest.fn()} as any);await render();expect(container.textContent).toContain("No Quick Note destinations are configured.");});
+ test("identifies an outdated Print Agent instead of presenting Quick Note as queueable",async()=>{queryMock.mockReturnValue({data:[{...destinations[0],available:false,agentVersion:"1.0.23",quickNoteSupported:false,unavailableReason:"PRINT_AGENT_UPDATE_REQUIRED"}],isLoading:false,error:null,refetch:jest.fn()} as any);await render();expect(container.textContent).toContain("Print Agent update required");expect(container.textContent).toContain("Download Print Agent Update");expect(Array.from(container.querySelectorAll("button")).find(x=>x.textContent==="Print Note")?.disabled).toBe(true);});
 });

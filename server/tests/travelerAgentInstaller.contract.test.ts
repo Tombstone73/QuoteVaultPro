@@ -65,6 +65,9 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
     expect(agent).toContain("Traveler navigation host:");
     expect(agent).toContain("Direct-print source response:");
+    expect(agent).toContain("Quick Note navigation succeeded.");
+    expect(agent).toContain("Quick Note render ready.");
+    expect(agent).toContain("Quick Note WebView2 print status:");
   });
 
   test("uses the existing task manager for install, diagnostics, and uninstall", () => {
@@ -114,6 +117,8 @@ describe("Traveler print agent installer contract", () => {
     expect(localBridgeSettings).toContain('dark:text-amber-100');
     expect(localBridgeSettings).toContain('Traveler printer:');
     expect(localBridgeSettings).toContain('Awaiting setup');
+    expect(localBridgeSettings).toContain('Print Agent version:');
+    expect(localBridgeSettings).toContain('Cloud deployment does not update the executable installed on this Windows machine.');
     expect(routes).toContain('eq(localBridgeAgents.status, "active")');
   });
 

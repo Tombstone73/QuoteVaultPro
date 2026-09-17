@@ -56,9 +56,9 @@ export default function LocalBridgeSettings() {
       </div>
       <div className="space-y-2 rounded border p-4">
         <h3 className="font-medium">Traveler Print Agent</h3>
-        <p className="text-sm text-muted-foreground">Download the self-contained Windows agent used to print Travelers to a configured local printer. It includes the .NET runtime; WebView2 and the printer driver remain workstation requirements.</p>
+        <p className="text-sm text-muted-foreground">Download the self-contained Windows agent used to print Travelers and Quick Notes to a configured local printer. It includes the .NET runtime; WebView2 and the printer driver remain workstation requirements. Cloud deployment does not update the executable installed on this Windows machine.</p>
         <Button asChild><a href={travelerAgentDownloadUrl}>Download Traveler Print Agent</a></Button>
-        <ol className="list-decimal pl-5 text-sm"><li>Extract the ZIP to a stable local folder on the print workstation.</li><li>Run setup-agent.cmd.</li><li>Select the Traveler printer and paste a newly created pairing token.</li><li>Confirm this page shows the configured workstation and Traveler printer.</li></ol>
+        <ol className="list-decimal pl-5 text-sm"><li>For an update, extract the ZIP over the existing stable agent folder, then run setup-agent.cmd.</li><li>The installer reuses the saved API URL, pairing token, Traveler printer, realtime configuration, and Windows startup task; do not create a new token unless the existing one was revoked.</li><li>Confirm this page shows the configured workstation, Traveler printer, and current agent version.</li></ol>
       </div>
       <div className="space-y-2 rounded border p-4">
         <h3 className="font-medium">Legacy Local Bridge Agent</h3>
@@ -89,6 +89,7 @@ export default function LocalBridgeSettings() {
               <p className="font-medium">{agent.name}</p>
               <p className="text-sm text-muted-foreground">Traveler printer: <span className="font-medium text-foreground">{agent.configuredTravelerPrinterName || "Not configured"}</span></p>
               <p className="text-sm text-muted-foreground">Workstation: {agent.machineLabel || "Not paired yet"} · <span className={paired ? "font-medium text-emerald-700 dark:text-emerald-300" : "font-medium text-amber-700 dark:text-amber-300"}>{connection}</span></p>
+              <p className="text-sm text-muted-foreground">Print Agent version: <span className="font-medium text-foreground">{agent.agentVersion || "Not reported"}</span></p>
               {agent.lastSeenAt ? <p className="text-xs text-muted-foreground">Last activity: {new Date(agent.lastSeenAt).toLocaleString()}</p> : null}
             </div>
             <Button variant="destructive" size="sm" onClick={() => revoke.mutate(agent.id)}>Revoke</Button>
