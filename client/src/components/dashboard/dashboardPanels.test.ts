@@ -11,4 +11,11 @@ describe("Dashboard due-date drilldown targets", () => {
       href: "/orders?due=tomorrow",
     });
   });
+
+  test("opens overdue invoices through the canonical A/R overdue filter", () => {
+    expect(getPanelOpenTarget("invoices_overdue")).toEqual({
+      label: "Open Accounts Receivable",
+      href: "/reports/accounts-receivable?overdue=true",
+    });
+  });
 });

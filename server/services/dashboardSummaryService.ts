@@ -2,6 +2,7 @@ import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { invoices, materials, orders, payments, productionJobs, quotes, vendors } from "@shared/schema";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
+import { getAccountsReceivableReport } from "./accountsReceivableReport";
 import {
   activeOrderDuePredicates,
   businessDateForOrderDueFilter,
@@ -162,6 +163,9 @@ export async function getDashboardSummary(organizationId: string, now = new Date
   const organizationTimezone = await getOrganizationTimezone(organizationId);
   const dueToday = businessDateForOrderDueFilter("today", now, organizationTimezone);
   const dueTomorrow = businessDateForOrderDueFilter("tomorrow", now, organizationTimezone);
+  // One authoritative A/R projection supplies both dashboard overdue metrics.
+  // It owns approval, remaining-balance, historical, and tenant-business-date semantics.
+  const accountsReceivableReport = getAccountsReceivableReport({ organizationId, now });
 
   const summary: DashboardSummary = {
     ...DEFAULT_SUMMARY,
@@ -222,18 +226,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
         ),
     );
 
-    summary.criticalAlerts.overdueInvoices = await countFrom(
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.organizationId, organizationId),
-            not(inArray(invoices.status, ["paid", "void"])),
-            lt(invoices.dueDate, now),
-          ),
-        ),
-    );
+    summary.criticalAlerts.overdueInvoices = (await accountsReceivableReport).summary.overdueInvoiceCount;
   } catch (error) {
     console.error("[dashboard-summary] criticalAlerts failed:", error);
   }
@@ -362,19 +355,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
         ),
     );
 
-    const overdueAmountRows = await db
-      .select({ cents: sql<number>`coalesce(sum(round(${invoices.balanceDue} * 100)), 0)::int` })
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.organizationId, organizationId),
-          eq(invoices.isHistorical, false),
-          sql`${invoices.balanceDue}::numeric > 0`,
-          not(inArray(invoices.status, ["void"])),
-          lt(invoices.dueDate, now),
-        ),
-      );
-    summary.fulfillmentFinance.overdueAmountCents = Number(overdueAmountRows[0]?.cents ?? 0);
+    summary.fulfillmentFinance.overdueAmountCents = (await accountsReceivableReport).summary.overdueOutstandingCents;
 
     const collectedTodayRows = await db
       .select({ cents: sql<number>`coalesce(sum(${payments.amountCents}), 0)::int` })

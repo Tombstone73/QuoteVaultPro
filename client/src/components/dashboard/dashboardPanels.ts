@@ -76,7 +76,7 @@ export function getPanelOpenTarget(panel: DashboardPanel): { label: string; href
     case "quotes_pending":
       return { label: "Open in Quotes", href: `${ROUTES.quotes.list}?status=pending_approval` };
     case "invoices_overdue":
-      return { label: "Open in Invoices", href: `${ROUTES.invoices.list}?status=overdue` };
+      return { label: "Open Accounts Receivable", href: `${ROUTES.reports}/accounts-receivable?overdue=true` };
     case "invoices_unpaid":
       return { label: "Open in Invoices", href: ROUTES.invoices.list };
     case "low_inventory_items":

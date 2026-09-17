@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowDown, ArrowLeft, ArrowUp, ChevronsUpDown, Download, FileSpreadsheet, Loader2, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -12,12 +12,12 @@ import { arReportDefaultColumns, defaultArReportTablePreferences, getArReportPre
 import type { AccountsReceivableRow, AccountsReceivableSummary, ArAgingBucket } from '@shared/accountsReceivableReport';
 
 type ReportData = { asOf: string; pageRows: AccountsReceivableRow[]; summary: AccountsReceivableSummary; page: number; totalCount: number; totalPages: number; customerOptions: Array<{ id: string; name: string }> };
-type Filters = { customerId: string; agingBucket: string; invoiceStatus: string; sendStatus: string; jobStatus: string };
+type Filters = { customerId: string; agingBucket: string; invoiceStatus: string; sendStatus: string; jobStatus: string; overdueOnly: boolean };
 const money = (cents: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
 const agingLabels: Record<ArAgingBucket, string> = { current: 'Current', '1-30': '1–30 Days', '31-60': '31–60 Days', '61-90': '61–90 Days', '90+': '90+ Days', no_due_date: 'No Due Date' };
 const sortableValues = new Set<ArReportSort>(arReportDefaultColumns.flatMap((column) => column.sortBy ? [column.sortBy] : []));
 
-function query(filters: Filters, sortBy: ArReportSort, sortDir: 'asc' | 'desc', page: number) { const params = new URLSearchParams({ page: String(page), pageSize: '50', sortBy, sortDir }); Object.entries(filters).forEach(([key, value]) => { if (value && value !== 'all') params.set(key, value); }); return params.toString(); }
+function query(filters: Filters, sortBy: ArReportSort, sortDir: 'asc' | 'desc', page: number) { const params = new URLSearchParams({ page: String(page), pageSize: '50', sortBy, sortDir }); Object.entries(filters).forEach(([key, value]) => { if (key === 'overdueOnly') { if (value) params.set('overdue', 'true'); } else if (value && value !== 'all') params.set(key, String(value)); }); return params.toString(); }
 function width(column: ArReportColumn) { return { width: column.width, minWidth: column.minWidth, maxWidth: column.maxWidth }; }
 function Cell({ row, column }: { row: AccountsReceivableRow; column: ArReportColumn }) {
   const cls = `px-3 py-3 ${column.numeric ? 'text-right tabular-nums whitespace-nowrap' : ''}`;
@@ -42,9 +42,10 @@ function Header({ column, sortBy, sortDir, onSort, onResize }: { column: ArRepor
 }
 
 export default function AccountsReceivableReportPage() {
+  const [searchParams] = useSearchParams();
   const { user } = useAuth(); const { activeOrgId } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const preferenceKey = React.useMemo(() => user?.id && activeOrgId ? getArReportPreferenceStorageKey(user.id, activeOrgId) : null, [activeOrgId, user?.id]); const defaults = React.useMemo(() => defaultArReportTablePreferences(), []);
-  const [filters, setFilters] = React.useState<Filters>({ customerId: 'all', agingBucket: 'all', invoiceStatus: 'all', sendStatus: 'all', jobStatus: 'all' }); const [columns, setColumns] = React.useState<ArReportColumn[]>(defaults.columns); const [sortBy, setSortBy] = React.useState<ArReportSort>(defaults.sortBy); const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>(defaults.sortDir); const [hydratedKey, setHydratedKey] = React.useState<string | null>(null); const [columnConfigOpen, setColumnConfigOpen] = React.useState(false); const [page, setPage] = React.useState(1); const [data, setData] = React.useState<ReportData | null>(null); const [error, setError] = React.useState<string | null>(null); const [exporting, setExporting] = React.useState<string | null>(null);
+  const [filters, setFilters] = React.useState<Filters>({ customerId: 'all', agingBucket: 'all', invoiceStatus: 'all', sendStatus: 'all', jobStatus: 'all', overdueOnly: searchParams.get('overdue') === 'true' }); const [columns, setColumns] = React.useState<ArReportColumn[]>(defaults.columns); const [sortBy, setSortBy] = React.useState<ArReportSort>(defaults.sortBy); const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>(defaults.sortDir); const [hydratedKey, setHydratedKey] = React.useState<string | null>(null); const [columnConfigOpen, setColumnConfigOpen] = React.useState(false); const [page, setPage] = React.useState(1); const [data, setData] = React.useState<ReportData | null>(null); const [error, setError] = React.useState<string | null>(null); const [exporting, setExporting] = React.useState<string | null>(null);
   React.useEffect(() => { if (!preferenceKey) { setHydratedKey(null); return; } const fallback = defaultArReportTablePreferences(); try { const saved = JSON.parse(localStorage.getItem(preferenceKey) || 'null'); setColumns(normalizeArReportColumns(saved?.columns)); setSortBy(sortableValues.has(saved?.sortBy) ? saved.sortBy : fallback.sortBy); setSortDir(saved?.sortDir === 'desc' ? 'desc' : 'asc'); } catch { setColumns(fallback.columns); setSortBy(fallback.sortBy); setSortDir(fallback.sortDir); } setHydratedKey(preferenceKey); }, [preferenceKey]);
   React.useEffect(() => { if (preferenceKey && hydratedKey === preferenceKey) localStorage.setItem(preferenceKey, JSON.stringify({ columns, sortBy, sortDir })); }, [columns, hydratedKey, preferenceKey, sortBy, sortDir]);
   const requestQuery = React.useMemo(() => query(filters, sortBy, sortDir, page), [filters, page, sortBy, sortDir]); React.useEffect(() => { void (async () => { setError(null); try { const response = await apiRequest('GET', `/api/reports/accounts-receivable?${requestQuery}`); const body = await response.json() as { data?: ReportData }; setData(body.data ?? null); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not load Accounts Receivable'); } })(); }, [requestQuery]);

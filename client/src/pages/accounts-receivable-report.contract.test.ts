@@ -11,6 +11,12 @@ test('A/R report uses the full application content width and a local horizontal 
   expect(page).toContain('min-w-full table-fixed');
 });
 
+test('A/R report honors the canonical overdue query supplied by dashboard drilldowns', () => {
+  expect(page).toContain("useSearchParams");
+  expect(page).toContain("searchParams.get('overdue') === 'true'");
+  expect(page).toContain("params.set('overdue', 'true')");
+});
+
 test('A/R report renders saved visible columns with resizing, canonical sorting, and unchanged full exports', () => {
   expect(page).toContain('columns.filter((column) => column.enabled)');
   expect(page).toContain('cursor-col-resize');

@@ -8,6 +8,7 @@ import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingAppro
 import { normalizeInvoiceAccountingDisplay } from '@shared/invoiceAccountingDisplay';
 import {
   getAccountsReceivableAging,
+  isAccountsReceivableRowOverdue,
   pageAccountsReceivableRows,
   qualifiesForAccountsReceivable,
   summarizeAccountsReceivable,
@@ -22,6 +23,7 @@ export type AccountsReceivableFilters = {
   invoiceStatus?: string;
   sendStatus?: 'never_sent' | 'sent' | 'updated_after_sent';
   jobStatus?: 'open' | 'complete';
+  overdueOnly?: boolean;
 };
 
 export type AccountsReceivableSort = 'customer' | 'invoiceNumber' | 'orderNumber' | 'jobName' | 'purchaseOrderNumber' | 'issueDate' | 'dueDate' | 'daysPastDue' | 'agingBucket' | 'invoiceStatus' | 'sendStatus' | 'total' | 'paid' | 'balance';
@@ -143,6 +145,7 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
     if (filters.invoiceStatus && filters.invoiceStatus !== 'all' && row.invoiceStatus.toLowerCase().replace(/\s+/g, '_') !== filters.invoiceStatus) continue;
     if (filters.sendStatus && row.sendStatus !== mapSendStatus(filters.sendStatus === 'never_sent' ? 'not_sent' : filters.sendStatus === 'updated_after_sent' ? 'sent_outdated' : 'sent_current')) continue;
     if (filters.jobStatus && row.jobStatus !== filters.jobStatus) continue;
+    if (filters.overdueOnly && !isAccountsReceivableRowOverdue(row)) continue;
     rows.push(row);
   }
   const sorted = sortRows(rows, normalizeAccountsReceivableSort(input.sortBy), input.sortDir ?? 'asc');

@@ -12,6 +12,7 @@ import { useFulfillmentQueueQuery } from "@/hooks/useFulfillment";
 import { DASHBOARD_PANELS, getPanelOpenTarget, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { formatOrderDate } from "@/lib/orderDate";
+import type { AccountsReceivableRow } from "@shared/accountsReceivableReport";
 
 type QuoteRow = {
   id: string;
@@ -39,6 +40,7 @@ type LowInventoryItem = {
 type LowInventoryResponse = {
   items?: LowInventoryItem[];
 };
+type OverdueInvoicesResponse = { pageRows?: AccountsReceivableRow[]; totalCount?: number };
 
 function formatDate(value?: string | null) {
   if (!value) return "—";
@@ -97,6 +99,17 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
     ? { due: dueFilter, page: 1, pageSize: 200, includeThumbnails: false, sortBy: "dueDate", sortDir: "asc" }
     : undefined);
   const invoicesQuery = useInvoices();
+  const overdueInvoicesQuery = useQuery<OverdueInvoicesResponse>({
+    queryKey: ["dashboard", "invoices", "overdue"],
+    queryFn: async () => {
+      const response = await fetch("/api/reports/accounts-receivable?overdue=true&page=1&pageSize=200&sortBy=dueDate&sortDir=asc", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load overdue invoice details");
+      const body = await response.json();
+      return body?.data ?? {};
+    },
+    enabled: panel === "invoices_overdue",
+    staleTime: 60_000,
+  });
   const fulfillmentQueueQuery = useFulfillmentQueueQuery({
     type: "all",
     status: "all",
@@ -167,33 +180,29 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
   }, [dueFilter, ordersQuery.data, panel]);
 
   const filteredInvoices = useMemo(() => {
+    if (panel === "invoices_overdue") return overdueInvoicesQuery.data?.pageRows ?? [];
     const list = Array.isArray(invoicesQuery.data) ? invoicesQuery.data : [];
-    const now = new Date();
 
     return list.filter((inv: any) => {
       const status = String(inv?.status || "").toLowerCase();
       switch (panel) {
-        case "invoices_overdue": {
-          if (status === "overdue") return true;
-          if (status === "paid" || status === "void") return false;
-          const due = inv?.dueDate ? new Date(inv.dueDate) : null;
-          return !!due && due < now;
-        }
         case "invoices_unpaid":
           return status !== "paid" && status !== "void";
         default:
           return false;
       }
     });
-  }, [invoicesQuery.data, panel]);
+  }, [invoicesQuery.data, overdueInvoicesQuery.data?.pageRows, panel]);
 
   const isLoading =
     panel === "quotes_pending"
       ? quotesQuery.isLoading
       : panel === "low_inventory_items"
         ? lowInventoryQuery.isLoading
-      : panel === "invoices_overdue" || panel === "invoices_unpaid"
-        ? invoicesQuery.isLoading
+      : panel === "invoices_overdue"
+        ? overdueInvoicesQuery.isLoading
+        : panel === "invoices_unpaid"
+          ? invoicesQuery.isLoading
         : panel === "ready_to_ship"
           ? fulfillmentQueueQuery.isLoading
         : panel === "my_work"
@@ -205,8 +214,10 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
       ? (quotesQuery.error as Error | null)?.message
       : panel === "low_inventory_items"
         ? (lowInventoryQuery.error as Error | null)?.message
-      : panel === "invoices_overdue" || panel === "invoices_unpaid"
-        ? (invoicesQuery.error as Error | null)?.message
+      : panel === "invoices_overdue"
+        ? (overdueInvoicesQuery.error as Error | null)?.message
+        : panel === "invoices_unpaid"
+          ? (invoicesQuery.error as Error | null)?.message
         : panel === "ready_to_ship"
           ? (fulfillmentQueueQuery.error as Error | null)?.message
         : panel === "my_work"
@@ -383,10 +394,10 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
               ) : filteredInvoices.map((inv: any) => (
                 <TableRow key={inv.id} className="cursor-pointer" onClick={() => navigate(ROUTES.invoices.detail(inv.id), { state: { referrer: buildReferrer(location) } })}>
                   <TableCell className="font-medium">#{inv.invoiceNumber ?? "—"}</TableCell>
-                  <TableCell>{inv.displayStatus || inv.status || "—"}</TableCell>
+                  <TableCell>{inv.invoiceStatus || inv.displayStatus || inv.status || "—"}</TableCell>
                   <TableCell>{formatDate(inv.dueDate)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(inv.displayTotal ?? inv.total)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? (Number(inv.total || 0) - Number(inv.amountPaid || 0)))}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(inv.totalCents != null ? inv.totalCents / 100 : inv.displayTotal ?? inv.total)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(inv.remainingCents != null ? inv.remainingCents / 100 : inv.displayRemaining ?? inv.balanceDue ?? (Number(inv.total || 0) - Number(inv.amountPaid || 0)))}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

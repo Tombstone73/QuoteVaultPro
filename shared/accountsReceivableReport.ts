@@ -77,12 +77,17 @@ export function summarizeAccountsReceivable(rows: AccountsReceivableRow[]): Acco
   for (const row of rows) {
     totalOutstandingCents += row.remainingCents;
     agingCents[row.agingBucket] += row.remainingCents;
-    if (row.daysPastDue && row.daysPastDue > 0) {
+    if (isAccountsReceivableRowOverdue(row)) {
       overdueOutstandingCents += row.remainingCents;
       overdueInvoiceCount += 1;
     }
   }
   return { totalOutstandingCents, invoiceCount: rows.length, overdueOutstandingCents, overdueInvoiceCount, agingCents };
+}
+
+/** A/R rows already satisfy approval, balance, void, and historical rules. */
+export function isAccountsReceivableRowOverdue(row: Pick<AccountsReceivableRow, 'dueDate' | 'daysPastDue'>): boolean {
+  return Boolean(row.dueDate) && (row.daysPastDue ?? 0) > 0;
 }
 
 /** Browser payloads stay bounded; totals remain derived from the complete filtered result. */

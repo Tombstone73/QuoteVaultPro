@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { getAccountsReceivableAging, pageAccountsReceivableRows, qualifiesForAccountsReceivable, summarizeAccountsReceivable, type AccountsReceivableRow } from '../accountsReceivableReport';
+import { getAccountsReceivableAging, isAccountsReceivableRowOverdue, pageAccountsReceivableRows, qualifiesForAccountsReceivable, summarizeAccountsReceivable, type AccountsReceivableRow } from '../accountsReceivableReport';
 
 const row = (overrides: Partial<AccountsReceivableRow> = {}): AccountsReceivableRow => ({
   id: 'invoice-1', customerId: 'customer-1', customerName: 'Acme', contactName: null, invoiceNumber: 'INV-1', orderId: null, orderNumber: null, jobName: null, purchaseOrderNumber: null, issueDate: '2026-09-01', dueDate: '2026-09-16', daysPastDue: 0, agingBucket: 'current', invoiceStatus: 'Unpaid', approvalStatus: 'Approved', sendStatus: 'Never Sent', terms: 'net_30', totalCents: 10000, paidCents: 0, remainingCents: 10000, lastSentAt: null, qbSyncStatus: 'not_synced', jobStatus: 'no linked order', ...overrides,
@@ -14,6 +14,13 @@ describe('Accounts Receivable aging', () => {
 
   test('keeps missing due dates separate without inventing a date', () => {
     expect(getAccountsReceivableAging(null, '2026-09-16')).toEqual({ agingBucket: 'no_due_date', daysPastDue: null });
+  });
+
+  test('marks only dates before the organization business date as overdue', () => {
+    expect(isAccountsReceivableRowOverdue(row({ dueDate: '2026-09-15', daysPastDue: 1 }))).toBe(true);
+    expect(isAccountsReceivableRowOverdue(row({ dueDate: '2026-09-16', daysPastDue: 0 }))).toBe(false);
+    expect(isAccountsReceivableRowOverdue(row({ dueDate: '2026-09-17', daysPastDue: 0 }))).toBe(false);
+    expect(isAccountsReceivableRowOverdue(row({ dueDate: null, daysPastDue: null, agingBucket: 'no_due_date' }))).toBe(false);
   });
 
   test('reconciles full-dataset outstanding and aging totals independently of page rows', () => {
