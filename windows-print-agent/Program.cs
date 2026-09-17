@@ -56,6 +56,7 @@ static class Program {
         throw new InvalidOperationException("Traveler STA dispatcher did not become ready.");
       }
       Log($"Traveler STA dispatcher ready on thread {StaDispatcherThreadId}.");
+      _ = ReportAgentPresenceAsync();
       _ = ObserveRealtimeStartup();
     };
     staDispatcher.FormClosed += (_, _) => {
@@ -67,6 +68,14 @@ static class Program {
     Application.Run(staDispatcher);
   }
   static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
+  // This is a one-time startup registration, not a recurring heartbeat. The
+  // paired token scopes the version update to this Windows agent alone.
+  static async Task ReportAgentPresenceAsync() {
+    try {
+      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion });
+      Log($"Agent version {AgentVersion} registered with PrintersHero.");
+    } catch (Exception ex) { Log($"Agent version registration failed: {ex.Message}"); }
+  }
   static bool IsTravelerStaThread() => Environment.CurrentManagedThreadId == StaDispatcherThreadId && Thread.CurrentThread.GetApartmentState() == ApartmentState.STA;
   static void EnsureTravelerStaThread() {
     if (!IsTravelerStaThread()) throw new InvalidOperationException("Traveler rendering must run on the designated WinForms STA thread.");

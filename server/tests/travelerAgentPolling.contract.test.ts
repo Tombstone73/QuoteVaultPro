@@ -25,9 +25,18 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).not.toContain("Bearer {SupabasePublishableKey}");
     expect(agent).not.toContain("QueuePollIntervalMs");
     expect(agent).not.toContain("HeartbeatIntervalMs");
-    expect(agent).not.toContain("SendHeartbeatAsync");
-    expect(agent).not.toContain('Post("/api/local-bridge/heartbeat"');
+    expect(agent).not.toContain("HeartbeatIntervalMs");
     expect(agent).not.toContain("timer.Interval =");
+  });
+
+  test("reports the compiled version once at startup without adding a recurring heartbeat", () => {
+    const presenceStart = agent.indexOf("static async Task ReportAgentPresenceAsync()");
+    const presenceEnd = agent.indexOf("static bool IsTravelerStaThread", presenceStart);
+    const presence = agent.slice(presenceStart, presenceEnd);
+    expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion })');
+    expect(presence).toContain("Agent version {AgentVersion} registered");
+    expect(presence).not.toContain("Task.Delay");
+    expect(agent).toContain("_ = ReportAgentPresenceAsync();");
   });
 
   test("derives a high-entropy agent-specific wake topic without logging tokens or topics", () => {
@@ -97,7 +106,7 @@ describe("Traveler print agent event-driven wake contract", () => {
   test("does not reconnect a healthy Realtime subscription when local startup catch-up fails", () => {
     const subscriptionEstablished = agent.indexOf('Log("Supabase Realtime wake subscription established.")');
     const transportRetry = agent.indexOf("Supabase Realtime startup failed; retrying locally");
-    const transportLoopExit = agent.indexOf("\n    }\n    try {", transportRetry);
+    const transportLoopExit = agent.indexOf("    try {", transportRetry);
     const startupCatchup = agent.indexOf('await ScheduleQueueDrainOnSta("realtime startup catch-up")', transportLoopExit);
     const startupCatchupFailure = agent.indexOf("Startup queue catch-up failed:", startupCatchup);
 

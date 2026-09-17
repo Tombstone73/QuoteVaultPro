@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { MINIMUM_QUICK_NOTE_AGENT_VERSION, supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
+import { isNumericAgentVersion, MINIMUM_QUICK_NOTE_AGENT_VERSION, supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
 
 describe("Quick Note Print Agent capability", () => {
   test("accepts the minimum and newer numeric versions", () => {
@@ -13,5 +13,11 @@ describe("Quick Note Print Agent capability", () => {
     expect(supportsQuickNoteAgent("1.0.9")).toBe(false);
     expect(supportsQuickNoteAgent(null)).toBe(false);
     expect(supportsQuickNoteAgent("latest")).toBe(false);
+  });
+
+  test("accepts only numeric versions for persisted agent identity reporting", () => {
+    expect(isNumericAgentVersion("1.0.24")).toBe(true);
+    expect(isNumericAgentVersion("installer-check")).toBe(false);
+    expect(isNumericAgentVersion(undefined)).toBe(false);
   });
 });

@@ -132,6 +132,13 @@ function Test-AgentRunning {
   return $null -ne (Get-Process -Name 'PrintersHero.PrintAgent' -ErrorAction SilentlyContinue | Select-Object -First 1)
 }
 
+function Get-ServerAgentVersion([string]$BaseUrl, [string]$Token) {
+  $heartbeat = Invoke-AgentApi $BaseUrl $Token '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME }
+  if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful diagnostic status.' }
+  $data = ($heartbeat.Body | ConvertFrom-Json -ErrorAction Stop).data
+  return [string]$data.agentVersion
+}
+
 function Invoke-AgentCheck {
   $ok = $true
   $webViewVersion = Get-WebView2RuntimeVersion
@@ -153,8 +160,7 @@ function Invoke-AgentCheck {
   $ok = (Write-Check 'Agent running' $running) -and $ok
   if ($configurationPresent) {
     try {
-      $heartbeat = Invoke-AgentApi $baseUrl $token '/api/local-bridge/heartbeat' @{ name = $env:COMPUTERNAME; agentVersion = 'installer-check' }
-      if (-not (Test-SuccessStatus $heartbeat)) { throw 'PrintersHero returned an unsuccessful diagnostic status.' }
+      $null = Get-ServerAgentVersion $baseUrl $token
       $ok = (Write-Check 'PrintersHero authenticated diagnostic successful' $true) -and $ok
     } catch {
       $ok = (Write-Check 'PrintersHero authenticated diagnostic successful' $false 'Could not authenticate or reach PrintersHero') -and $ok
@@ -275,4 +281,29 @@ Start-Sleep -Seconds 2
 Write-Host ''
 Write-Host 'PrintersHero Traveler Print Agent'
 if (-not (Invoke-AgentCheck)) { throw 'Installation checks did not all pass. Review the failed items above.' }
-Write-Host 'Setup complete. In PrintersHero, use Print Traveler to send one test ticket.'
+
+$serverAgentVersion = $null
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+  try {
+    $serverAgentVersion = Get-ServerAgentVersion $ApiBaseUrl $env:PRINTERSHERO_AGENT_TOKEN
+    if ($serverAgentVersion -eq $script:SetupVersion) { break }
+  } catch { }
+  Start-Sleep -Seconds 2
+}
+
+Write-Host ''
+Write-Host 'PrintersHero Print Agent installed successfully.' -ForegroundColor Green
+Write-Host ("Version: {0}" -f $script:SetupVersion)
+Write-Host ("Machine: {0}" -f $env:COMPUTERNAME)
+Write-Host ("Printer: {0}" -f $selectedPrinter)
+Write-Host ("Startup task: {0}" -f $(if (Test-TaskInstalled) { 'Installed' } else { 'Not installed' }))
+Write-Host ("Agent process: {0}" -f $(if (Test-AgentRunning) { 'Running' } else { 'Not running' }))
+if ($serverAgentVersion -eq $script:SetupVersion) {
+  Write-Host 'PrintersHero connection: Connected'
+  Write-Host ("Server recognizes agent version: {0}" -f $serverAgentVersion)
+} else {
+  Write-Host 'PrintersHero connection: Version not yet confirmed' -ForegroundColor Yellow
+  Write-Host 'Agent installed, but PrintersHero has not yet confirmed the running agent version.' -ForegroundColor Yellow
+}
+
+if (-not $NonInteractive) { [void](Read-Host 'Press Enter to close') }

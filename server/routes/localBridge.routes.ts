@@ -12,6 +12,7 @@ import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../lib/directTravelerPrintUrl";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getPrintAgentRealtimeConfiguration } from "../services/printAgentWake";
+import { isNumericAgentVersion } from "../lib/directPrintAgentCapabilities";
 import type { PickupTravelerPrintContext } from "@shared/productionTicket";
 
 const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
@@ -63,7 +64,16 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
     if (!packagePath) return res.status(404).json({ error: "Traveler Print Agent package unavailable" });
     return res.download(packagePath, travelerPrintAgentPackageName);
   });
-  app.post("/api/local-bridge/heartbeat", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name), agentVersion: req.body?.agentVersion || null, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id)); res.json({ success: true, data: { status: "active" } }); });
+  app.post("/api/local-bridge/heartbeat", bridgeAuth, async (req: any, res) => {
+    const agent = req.bridgeAgent;
+    const reportedVersion = typeof req.body?.agentVersion === "string" ? req.body.agentVersion.trim() : undefined;
+    // Diagnostics may prove that a paired machine is reachable, but only the
+    // executable may replace its known version. Invalid/missing values retain
+    // the version already tied to this token's single agent identity.
+    const agentVersion = isNumericAgentVersion(reportedVersion) ? reportedVersion : agent.agentVersion;
+    await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name), agentVersion, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id));
+    res.json({ success: true, data: { status: "active", agentVersion } });
+  });
   // The installer may configure only its own paired agent. It never sends the
   // printer inventory to the server; only the explicit selection is persisted.
   app.post("/api/local-bridge/direct-print/configuration", bridgeAuth, async (req: any, res) => {

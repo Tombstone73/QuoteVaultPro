@@ -62,6 +62,12 @@ describe("Traveler print agent installer contract", () => {
     expect(agent).toContain("JsonSerializer.Deserialize<string>(pageStateJson)");
     expect(agent).toContain('const string AgentVersion = "1.0.24"');
     expect(setup).toContain("PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY");
+    expect(setup).not.toContain("installer-check");
+    expect(setup).toContain("Get-ServerAgentVersion");
+    expect(setup).toContain("Server recognizes agent version:");
+    expect(setup).toContain("Agent installed, but PrintersHero has not yet confirmed the running agent version.");
+    expect(setup).toContain("Press Enter to close");
+    expect(setup).toContain("if (-not $NonInteractive) { [void](Read-Host 'Press Enter to close') }");
     expect(setup).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
     expect(agent).toContain("Traveler navigation host:");
     expect(agent).toContain("Direct-print source response:");

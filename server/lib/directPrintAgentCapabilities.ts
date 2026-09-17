@@ -9,6 +9,10 @@ function parseNumericVersion(version: string | null | undefined): number[] | nul
   return values.every(Number.isSafeInteger) ? values : null;
 }
 
+export function isNumericAgentVersion(version: string | null | undefined): boolean {
+  return parseNumericVersion(version) !== null;
+}
+
 export function isAgentVersionAtLeast(version: string | null | undefined, minimumVersion: string): boolean {
   const actual = parseNumericVersion(version);
   const minimum = parseNumericVersion(minimumVersion);
