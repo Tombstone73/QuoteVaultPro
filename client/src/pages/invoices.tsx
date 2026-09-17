@@ -46,6 +46,7 @@ import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { InvoiceEmailSendDialog } from "@/components/invoices/InvoiceEmailSendDialog";
 import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 import { OrderNumberLink } from "@/components/orders/OrderNumberLink";
+import { MultiInvoicePaymentDialog } from "@/components/invoices/MultiInvoicePaymentDialog";
 
 const EMPTY_VALUE = "\u2014";
 
@@ -249,6 +250,7 @@ export default function InvoicesListPage() {
   const [reviewJob, setReviewJob] = useState<{ id: string; invoiceId: string; label: string; source: 'direct' | 'queue' } | null>(null);
   const [approvingInvoiceId, setApprovingInvoiceId] = useState<string | null>(null);
   const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
+  const [customerPaymentOpen, setCustomerPaymentOpen] = useState(false);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -670,6 +672,7 @@ export default function InvoicesListPage() {
               <Button variant="outline" onClick={handleApproveSelected} disabled={selectedCount === 0 || approveInvoices.isPending}>
                 {approveInvoices.isPending ? 'Approving…' : `Approve Selected${selectedCount ? ` (${selectedCount})` : ''}`}
               </Button>
+              <Button variant="outline" onClick={() => setCustomerPaymentOpen(true)} disabled={selectedCount === 0}>Add Payment{selectedCount ? ` (${selectedCount})` : ''}</Button>
               <Button asChild>
                 <Link to={ROUTES.orders.list}>
                   <Plus className="mr-2 h-4 w-4" />
@@ -682,6 +685,7 @@ export default function InvoicesListPage() {
       />
 
       <ContentLayout>
+        <MultiInvoicePaymentDialog open={customerPaymentOpen} onOpenChange={setCustomerPaymentOpen} invoiceIds={[...selectedInvoiceIds]} onSuccess={() => setSelectedInvoiceIds(new Set())} />
         {showTotals && (
           <div className="grid divide-y rounded-titan-lg border border-titan-border-subtle bg-titan-bg-card shadow-titan-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4" data-testid="invoice-summary-strip">
             <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Total Outstanding</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary ? formatCurrency(summary.totalOutstandingCents / 100) : EMPTY_VALUE}</div></div>

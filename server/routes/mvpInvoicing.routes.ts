@@ -33,6 +33,7 @@ import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoice
 import { approveInvoicesForAccounting } from "../services/invoiceAccountingApproval.service";
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
+import { customerPaymentAllocationModes } from "../../shared/customerPaymentAllocation";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
@@ -1343,6 +1344,20 @@ export async function registerMvpInvoicingRoutes(
       console.error('Error generating invoice PDF:', error);
       return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
     }
+  });
+
+  // ------------------------------------------------------------
+  // One customer payment allocated across selected invoice balances.
+  // This route deliberately never delegates to the single-invoice payment route.
+  // ------------------------------------------------------------
+  const customerPaymentSchema = z.object({ invoiceIds: z.array(z.string().min(1)).min(1).max(100), amountCents: z.coerce.number().int().positive(), allocationMode: z.enum(customerPaymentAllocationModes), customAllocations: z.array(z.object({ invoiceId: z.string().min(1), amountCents: z.coerce.number().int().nonnegative() })).optional(), method: manualPaymentMethodSchema.optional(), appliedAt: z.string().optional(), notes: z.string().max(5000).optional(), reference: z.string().max(255).optional(), expectedRemainingCents: z.record(z.string(), z.coerce.number().int().nonnegative()).optional() });
+  app.post('/api/invoices/customer-payment/preview', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); const body = customerPaymentSchema.omit({ method: true, appliedAt: true, notes: true, reference: true, expectedRemainingCents: true }).parse(req.body || {}); return res.json({ success: true, data: await canonicalPaymentOperations.previewCustomerPayment({ organizationId, ...body }) }); }
+    catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer payment.', code: error.code }); }
+  });
+  app.post('/api/invoices/customer-payment', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); if (!actorUserId) return res.status(401).json({ error: 'Missing user' }); const body = customerPaymentSchema.extend({ method: manualPaymentMethodSchema }).parse(req.body || {}); const appliedAt = body.appliedAt ? new Date(body.appliedAt) : new Date(); if (Number.isNaN(appliedAt.getTime())) return res.status(400).json({ error: 'Invalid appliedAt' }); const idempotencyKey = String(req.headers['idempotency-key'] || '').trim(); if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' }); if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(body.method)) return res.status(400).json({ error: 'Unsupported manual payment method' }); return res.json({ success: true, data: await canonicalPaymentOperations.recordCustomerPayment({ organizationId, actorUserId, ...body, appliedAt, idempotencyKey: `ui:${idempotencyKey}` }) }); }
+    catch (error: any) { const notFound = error?.code === 'INVOICE_NOT_FOUND' || error?.code === 'ORDER_NOT_FOUND'; return res.status(notFound ? 404 : error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to record customer payment.', code: error.code }); }
   });
 
   // ------------------------------------------------------------

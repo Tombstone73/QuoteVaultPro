@@ -1,5 +1,7 @@
 import { computeInvoicePaymentRollup } from "@shared/rollups/invoicePaymentRollup";
 import { appendPaymentNoteCanonical, getInvoiceWithRelations, recordManualPaymentCanonical, type CanonicalInternalManualPaymentMethod } from "../../invoicesService";
+import { previewCustomerPayment, recordCustomerPayment } from "./customerPaymentOperations";
+import type { CustomerPaymentAllocation, CustomerPaymentAllocationMode } from "../../../shared/customerPaymentAllocation";
 
 export const canonicalManualPaymentMethodValues = ["cash", "check", "wire", "bank_transfer", "ach", "other"] as const;
 export type CanonicalManualPaymentMethod = typeof canonicalManualPaymentMethodValues[number];
@@ -20,5 +22,7 @@ export class CanonicalPaymentOperations {
   addInternalNote(input: { organizationId: string; actorUserId: string; paymentId: string; note: string }) {
     return appendPaymentNoteCanonical({ organizationId: input.organizationId, paymentId: input.paymentId, userId: input.actorUserId, note: input.note });
   }
+  previewCustomerPayment(input: { organizationId: string; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[] }) { return previewCustomerPayment(input); }
+  recordCustomerPayment(input: { organizationId: string; actorUserId: string; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[]; method: CanonicalManualPaymentMethod; appliedAt: Date; notes?: string; reference?: string; idempotencyKey: string; expectedRemainingCents?: Record<string, number> }) { return recordCustomerPayment(input); }
 }
 export const canonicalPaymentOperations = new CanonicalPaymentOperations();

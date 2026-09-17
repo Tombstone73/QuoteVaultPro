@@ -5362,10 +5362,24 @@ export type UpdateInvoiceLineItem = z.infer<typeof updateInvoiceLineItemSchema>;
 export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 
 // Payments table (applied to invoices)
+export const customerPaymentBatches = pgTable("customer_payment_batches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  amountCents: integer("amount_cents").notNull(),
+  method: varchar("method", { length: 50 }).notNull(),
+  allocationMode: varchar("allocation_mode", { length: 32 }).notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  reference: text("reference"), notes: text("notes"), appliedAt: timestamp("applied_at", { withTimezone: true }).notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(), updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [uniqueIndex("customer_payment_batches_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey), index("customer_payment_batches_customer_idx").on(table.organizationId, table.customerId)]);
+
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  customerPaymentBatchId: varchar("customer_payment_batch_id").references(() => customerPaymentBatches.id, { onDelete: 'restrict' }),
   provider: varchar("provider", { length: 20 }).notNull().default('manual'), // manual | stripe | eps
   status: varchar("status", { length: 20 }).notNull().default('succeeded'), // pending | succeeded | failed | canceled | refunded
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
@@ -5409,6 +5423,7 @@ export const payments = pgTable("payments", {
 }, (table) => [
   index("payments_organization_id_idx").on(table.organizationId),
   index("payments_invoice_id_idx").on(table.invoiceId),
+  index("payments_customer_payment_batch_id_idx").on(table.customerPaymentBatchId),
   index("payments_provider_idx").on(table.provider),
   index("payments_status_idx").on(table.status),
   uniqueIndex("payments_org_stripe_payment_intent_id_uidx").on(table.organizationId, table.stripePaymentIntentId),

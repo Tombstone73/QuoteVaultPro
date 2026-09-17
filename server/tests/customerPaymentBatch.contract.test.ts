@@ -1,0 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
+const read = (file: string) => fs.readFileSync(path.resolve(process.cwd(), file), "utf8");
+test("customer payment batch uses one canonical transaction with tenant, idempotency, stale and QuickBooks safeguards", () => { const source = read("server/services/billing/customerPaymentOperations.ts"); expect(source).toContain("customerPaymentBatches"); expect(source).toContain("CUSTOMER_MISMATCH"); expect(source).toContain("PAYMENT_ALLOCATION_STALE"); expect(source).toContain("syncStatus: \"skipped\""); expect(source).toContain("providerIdempotencyKey"); expect(source).toContain("reconcileOrderAutoCloseFailSoft"); });
+test("invoice list uses a grouped endpoint instead of the single invoice payment mutation", () => { const dialog = read("client/src/components/invoices/MultiInvoicePaymentDialog.tsx"); expect(dialog).toContain("/api/invoices/customer-payment"); expect(dialog).toContain("useRecordCustomerInvoicePayment"); expect(dialog).not.toContain("useRecordManualInvoicePayment"); });

@@ -307,6 +307,18 @@ export function useRecordManualInvoicePayment() {
   });
 }
 
+/** One server-authoritative customer payment batch; never loops invoice requests in the browser. */
+export function useRecordCustomerInvoicePayment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { invoiceIds: string[]; amountCents: number; allocationMode: 'oldest_first' | 'proportional' | 'custom'; customAllocations?: { invoiceId: string; amountCents: number }[]; method: string; appliedAt?: string; notes?: string; reference?: string; expectedRemainingCents: Record<string, number> }) => {
+      const response = await apiFetch('/api/invoices/customer-payment', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, credentials: 'include', body: JSON.stringify(payload) });
+      const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error((data as any).error || 'Failed to record customer payment'); return data;
+    },
+    onSuccess: (_, payload) => { queryClient.invalidateQueries({ queryKey: ['invoices'] }); payload.invoiceIds.forEach((id) => { queryClient.invalidateQueries({ queryKey: ['invoices', id] }); queryClient.invalidateQueries({ queryKey: ['invoicePayments', id] }); }); queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] }); queryClient.invalidateQueries({ queryKey: ['accounts-receivable-report'] }); queryClient.invalidateQueries({ queryKey: ['customerFinancialExposure'] }); },
+  });
+}
+
 export function useVoidInvoicePayment() {
   const queryClient = useQueryClient();
   return useMutation({
