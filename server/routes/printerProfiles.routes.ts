@@ -31,6 +31,28 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+type DirectPrintProfile = {
+  isActive?: boolean | null;
+  printAgentId?: string | null;
+  supportedDocuments?: string[] | null;
+  windowsQueueName?: string | null;
+};
+
+// Quick Notes were introduced after existing Traveler printer profiles. A
+// mapped, active Traveler profile is therefore a compatible Quick Note
+// destination unless an operator has opted into a Quick Note-specific profile.
+// Keep Traveler itself explicit so Quick Note-only profiles never become
+// Traveler destinations.
+function supportsDirectPrintDocument(profile: DirectPrintProfile, document: "traveler" | "quick_note") {
+  const supportedDocuments = profile.supportedDocuments ?? [];
+  if (supportedDocuments.includes(document)) return true;
+  return document === "quick_note"
+    && profile.isActive === true
+    && supportedDocuments.includes("traveler")
+    && Boolean(profile.printAgentId)
+    && Boolean(profile.windowsQueueName);
+}
+
 function sendError(res: any, error: unknown, fallback: string) {
   if (error instanceof z.ZodError) {
     return res.status(400).json({ success: false, code: "PRINTER_PROFILE_VALIDATION_ERROR", error: "Invalid printer profile data", details: error.errors });
@@ -106,7 +128,7 @@ export function registerPrinterProfileRoutes(
     try {
       organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, code: "QUICK_NOTE_DESTINATIONS_UNAVAILABLE", error: "Could not load Quick Note destinations." });
-      const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, receiptWidthMm: printerProfiles.receiptWidthMm, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'quick_note'`));
+      const destinations = (await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, receiptWidthMm: printerProfiles.receiptWidthMm, isDefault: printerProfiles.isDefault, isActive: printerProfiles.isActive, supportedDocuments: printerProfiles.supportedDocuments, agentId: printerProfiles.printAgentId, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true)))).filter((item) => supportsDirectPrintDocument({ isActive: item.isActive, supportedDocuments: item.supportedDocuments, printAgentId: item.agentId, windowsQueueName: item.queueMapped }, "quick_note"));
       return res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName) })) });
     } catch (error) {
       const databaseError = error as { code?: unknown; message?: unknown };
@@ -127,8 +149,8 @@ export function registerPrinterProfileRoutes(
       const headline = parsed.headline.trim(); const note = parsed.note.trim();
       const requestKey = String(req.header("Idempotency-Key") || parsed.requestKey || "").trim();
       if (!organizationId || (!headline && !note) || !requestKey || requestKey.length > 160) return res.status(400).json({ success: false, code: "QUICK_NOTE_VALIDATION", error: "Enter a headline or note, select a destination, and provide a valid print request key." });
-      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, parsed.destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'quick_note'`)).limit(1);
-      if (!destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Quick Note destination is not available for direct printing." });
+      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, parsed.destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true))).limit(1);
+      if (!destination || !supportsDirectPrintDocument(destination, "quick_note") || !destination.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Quick Note destination is not available for direct printing." });
       const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
       if (!agent?.configuredTravelerPrinterName || agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ success: false, code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The Print Agent's selected printer does not match this destination." });
       const printContext = { headline, body: note, receiptWidthMm: Number(destination.receiptWidthMm) || 80 };

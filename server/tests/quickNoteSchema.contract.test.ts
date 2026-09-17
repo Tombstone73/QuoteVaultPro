@@ -22,10 +22,15 @@ describe("Quick Note schema contract", () => {
     expect(jobs).toContain('orderId: varchar("order_id").references');
   });
 
-  test("destinations filter for Quick Note support, retain availability, and safely report database failures", () => {
+  test("destinations accept explicit Quick Note support or mapped legacy Traveler support, retain availability, and safely report database failures", () => {
     const route = read("server/routes/printerProfiles.routes.ts");
     expect(route).toContain("printerProfiles.receiptWidthMm");
-    expect(route).toContain("supportedDocuments} ? 'quick_note'");
+    expect(route).toContain('function supportsDirectPrintDocument');
+    expect(route).toContain('if (supportedDocuments.includes(document)) return true');
+    expect(route).toContain('supportedDocuments.includes("traveler")');
+    expect(route).toContain('Boolean(profile.printAgentId)');
+    expect(route).toContain('Boolean(profile.windowsQueueName)');
+    expect(route).toContain('supportsDirectPrintDocument(destination, "quick_note")');
     expect(route).toContain("available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName)");
     expect(route).toContain('operation: "list_quick_note_destinations"');
     expect(route).toContain('code: "QUICK_NOTE_DESTINATIONS_UNAVAILABLE"');

@@ -22,4 +22,9 @@ describe("Quick Note durable direct-print contract", () => {
     expect(route).toContain('code: "QUICK_NOTE_DESTINATIONS_UNAVAILABLE"');
     expect(route).toContain('error: "Could not load Quick Note destinations."');
   });
+  test("uses the same legacy Traveler compatibility rule when listing and queueing Quick Notes", () => {
+    expect(route).toContain('supportsDirectPrintDocument({ isActive: item.isActive, supportedDocuments: item.supportedDocuments, printAgentId: item.agentId, windowsQueueName: item.queueMapped }, "quick_note")');
+    expect(route).toContain('supportsDirectPrintDocument(destination, "quick_note")');
+    expect(route).toContain('document === "quick_note"');
+  });
 });
