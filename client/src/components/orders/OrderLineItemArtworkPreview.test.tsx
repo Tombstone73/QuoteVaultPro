@@ -45,4 +45,38 @@ describe("OrderLineItemArtworkPreview", () => {
       host.remove();
     }
   });
+
+  test("uses a lazy derivative image and falls back safely when it cannot render", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      await act(async () => {
+        root.render(
+          <OrderLineItemArtworkPreview
+            lineNumber={4}
+            thumbnailUrl="/api/artwork/file-records/file-4/content?variant=thumbnail"
+            totalCount={1}
+            size="expanded"
+            target={{ fileRecordId: "file-4" }}
+            onOpenArtwork={jest.fn()}
+          />,
+        );
+      });
+
+      const image = host.querySelector("img") as HTMLImageElement;
+      expect(image.getAttribute("loading")).toBe("lazy");
+      expect(image.src).toContain("variant=thumbnail");
+
+      await act(async () => {
+        image.dispatchEvent(new Event("error", { bubbles: true }));
+      });
+      expect(host.querySelector("img")).toBeNull();
+      expect(host.querySelector("svg")).toBeTruthy();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
 });

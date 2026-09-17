@@ -12,6 +12,8 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   ChevronDown,
@@ -62,6 +64,11 @@ import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 import { useScheduleOrderLineItemsForProduction } from "@/hooks/useProduction";
 import { buildProofingLineItemPath, shouldOfferProofingNavigation } from "@/lib/proofingNavigation";
 import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
+import {
+  DEFAULT_ORDER_DETAIL_DISPLAY_PREFERENCES,
+  persistOrderDetailDisplayPreferences,
+  readPersistedOrderDetailDisplayPreferences,
+} from "@/lib/orderDetailDisplayPreferences";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
@@ -595,15 +602,36 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 }, ref) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
+  const { user, isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
   const { preferences: orgPreferences } = useOrgPreferences();
   const canSeeDebug = isAdmin || isPlatformAdmin || isPlatformDeveloper;
   const [showLineItemDebug, setShowLineItemDebug] = useState(false);
+  const [showOrderLineThumbnails, setShowOrderLineThumbnails] = useState(false);
+  const [displayPreferencesLoadedScope, setDisplayPreferencesLoadedScope] = useState<string | null>(null);
+  const displayPreferenceScope = user?.id ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}` : null;
   const [productionBypassTarget, setProductionBypassTarget] = useState<OrderLineItem | null>(null);
   const [productionBypassReason, setProductionBypassReason] = useState("");
   const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
   const [parentLinkTarget, setParentLinkTarget] = useState<OrderLineItem | null>(null);
   const [selectedParentLineItemId, setSelectedParentLineItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user?.id || !displayPreferenceScope) {
+      setDisplayPreferencesLoadedScope(null);
+      setShowOrderLineThumbnails(DEFAULT_ORDER_DETAIL_DISPLAY_PREFERENCES.showOrderLineThumbnails);
+      return;
+    }
+    setShowOrderLineThumbnails(readPersistedOrderDetailDisplayPreferences(user.id, user.lastActiveOrgId ?? null).showOrderLineThumbnails);
+    setDisplayPreferencesLoadedScope(displayPreferenceScope);
+  }, [displayPreferenceScope, user?.id, user?.lastActiveOrgId]);
+
+  useEffect(() => {
+    if (!user?.id || !displayPreferenceScope || displayPreferencesLoadedScope !== displayPreferenceScope) return;
+    persistOrderDetailDisplayPreferences(user.id, user.lastActiveOrgId ?? null, {
+      version: 1,
+      showOrderLineThumbnails,
+    });
+  }, [displayPreferenceScope, displayPreferencesLoadedScope, showOrderLineThumbnails, user?.id, user?.lastActiveOrgId]);
 
   const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
@@ -2747,6 +2775,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               {actionNeededCount > 0 && <span>{actionNeededCount} need action</span>}
             </div>
           </div>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="order-detail-show-thumbnails" className="cursor-pointer whitespace-nowrap text-sm font-normal">
+              Show thumbnails
+            </Label>
+            <Switch
+              id="order-detail-show-thumbnails"
+              checked={showOrderLineThumbnails}
+              onCheckedChange={setShowOrderLineThumbnails}
+              aria-label="Show thumbnails"
+            />
+          </div>
           
           {!readOnly && (
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -2956,7 +2995,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     ? "Clear the production-focused view before reordering line items."
                     : undefined;
 
-                  const thumbnailNode = heroThumbUrls.length ? (
+                  const compactThumbnailNode = heroThumbUrls.length ? (
                     <OrderLineItemArtworkPreview
                       lineNumber={lineNumber}
                       thumbnailUrl={heroThumbUrls[0]}
@@ -2999,6 +3038,35 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   ) : (
                     <LineItemThumbnail parentId={orderId} lineItemId={item.id} parentType="order" />
                   );
+
+                  const expandedPreviewEntries = previewTargets
+                    .map((target, index) => ({
+                      target,
+                      thumbnailUrl: getThumbSrc({ previewThumbnailUrl: target.thumbnailUrl }) ?? previewThumbUrls[index] ?? null,
+                    }))
+                    .filter((entry): entry is { target: { artworkId: string; fileRecordId: string; thumbnailUrl: string }; thumbnailUrl: string } => Boolean(entry.thumbnailUrl));
+                  const thumbnailNode = showOrderLineThumbnails ? (
+                    expandedPreviewEntries.length > 0 ? (
+                      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2" data-testid={`order-line-artwork-thumbnails-${item.id}`}>
+                        {expandedPreviewEntries.map(({ target, thumbnailUrl }, index) => (
+                          <OrderLineItemArtworkPreview
+                            key={`${target.fileRecordId}-${index}`}
+                            lineNumber={lineNumber}
+                            thumbnailUrl={thumbnailUrl}
+                            totalCount={1}
+                            size="expanded"
+                            target={{ fileRecordId: target.fileRecordId, artworkId: target.artworkId, thumbnailUrl }}
+                            onOpenArtwork={(viewerTarget) => setArtworkViewerTarget({ ...viewerTarget, lineItemId: String(item.id) })}
+                          />
+                        ))}
+                      </div>
+                    ) : lineItemAssetsKnownForItem ? (
+                      <div className="flex h-24 w-32 shrink-0 flex-col items-center justify-center rounded border border-dashed border-border/70 bg-muted/20 text-xs text-muted-foreground sm:h-28 sm:w-36" data-testid={`order-line-no-art-${item.id}`}>
+                        <FileText className="mb-1 h-5 w-5" aria-hidden="true" />
+                        No art
+                      </div>
+                    ) : compactThumbnailNode
+                  ) : compactThumbnailNode;
 
                   const itemRequiresProduction = !childItem && selectableProductionLineItemIdSet.has(String(item.id));
                   const isSelectedForProduction = selectedForProduction.has(item.id);
