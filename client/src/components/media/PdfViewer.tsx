@@ -15,6 +15,8 @@ export function PdfViewer({ viewerUrl, downloadUrl, filename }: PdfViewerProps) 
   const embedViewerUrl = (() => {
     const raw = (viewerUrl || "").toString();
     if (!raw) return raw;
+    // Blob URLs are already browser-local PDF bytes. Do not treat them as application URLs.
+    if (raw.startsWith("blob:")) return raw;
 
     const hashIndex = raw.indexOf("#");
     const base = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;

@@ -38,6 +38,14 @@ describe("deployment-bound API routing", () => {
       .toBe("https://api.printershero.com/api/local-bridge/admin/agent-package");
   });
 
+  it("routes invoice PDF requests to the canonical API origin in both deployments", () => {
+    const invoicePdf = "/api/invoices/invoice_123/pdf";
+    expect(`${expectedApiOriginForWebHost("printershero.com")}${invoicePdf}`)
+      .toBe("https://api.printershero.com/api/invoices/invoice_123/pdf");
+    expect(`${expectedApiOriginForWebHost("dev.printershero.com")}${invoicePdf}`)
+      .toBe("https://api-dev.printershero.com/api/invoices/invoice_123/pdf");
+  });
+
   it("does not retain a Vercel rewrite capable of sending application traffic to DEV", () => {
     const vercelConfig = readFileSync("vercel.json", "utf8");
     expect(vercelConfig).not.toContain("api-dev.printershero.com");

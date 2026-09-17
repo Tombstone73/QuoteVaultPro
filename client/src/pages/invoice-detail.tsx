@@ -15,6 +15,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PdfViewer } from "@/components/media/PdfViewer";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { useInvoicePdfPreview } from "@/hooks/useInvoicePdfPreview";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -237,8 +238,6 @@ export default function InvoiceDetailPage() {
   const [pendingStripeRefunds, setPendingStripeRefunds] = useState<Record<string, { targetRefundedCents: number }>>({});
 
   const [recordPaymentErrors, setRecordPaymentErrors] = useState<{ amount?: string; method?: string; reference?: string; methodDescription?: string }>({});
-  const [pdfLoadState, setPdfLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const [manualAmount, setManualAmount] = useState<string>('');
   const [manualMethod, setManualMethod] = useState<TakePaymentMethod>('credit_card');
@@ -356,6 +355,7 @@ export default function InvoiceDetailPage() {
   const invoicePdfFilename = (invoice as any)?.invoiceNumber
     ? `invoice-${String((invoice as any).invoiceNumber)}.pdf`
     : 'invoice.pdf';
+  const invoicePdfPreview = useInvoicePdfPreview(invoicePdfViewUrl, pdfOpen);
 
   const canRecordPayment = !!invoice && isStaffUser && financialPaymentEligibility.payable && !paymentActionsLocked;
   const epsHostedAvailable =
@@ -722,75 +722,6 @@ export default function InvoiceDetailPage() {
       toast({ title: 'EPS payment failed', description: error.message, variant: 'destructive' });
     }
   };
-
-  useEffect(() => {
-    if (!pdfOpen) {
-      setPdfLoadState('idle');
-      setPdfError(null);
-      return;
-    }
-
-    if (!invoicePdfViewUrl) {
-      setPdfLoadState('error');
-      setPdfError('PDF not available.');
-      return;
-    }
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        setPdfLoadState('loading');
-        setPdfError(null);
-
-        const res = await fetch(invoicePdfViewUrl, {
-          method: 'GET',
-          credentials: 'include',
-          headers: {
-            Accept: 'application/pdf',
-          },
-        });
-
-        if (!res.ok) {
-          throw new Error(`PDF request failed (${res.status})`);
-        }
-
-        const contentType = String(res.headers.get('content-type') || '').toLowerCase();
-        if (!contentType.includes('application/pdf')) {
-          throw new Error('PDF response was not application/pdf');
-        }
-
-        // Read only the first chunk to validate the %PDF signature, then cancel to avoid downloading the full file twice.
-        const reader = res.body?.getReader();
-        const first = reader ? await reader.read() : null;
-        if (reader) {
-          try {
-            await reader.cancel();
-          } catch {
-            // ignore
-          }
-        }
-
-        const buf = first?.value ? new Uint8Array(first.value) : new Uint8Array();
-        const isPdf = buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
-        if (!isPdf) {
-          throw new Error('PDF signature check failed');
-        }
-
-        if (cancelled) return;
-        setPdfLoadState('ready');
-      } catch (e: any) {
-        if (cancelled) return;
-        setPdfLoadState('error');
-        setPdfError(e?.message || 'Failed to load PDF');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfOpen, invoicePdfViewUrl]);
 
   const requestVoidPayment = (payment: any) => {
     setSelectedPaymentToVoid(payment);
@@ -2054,23 +1985,24 @@ export default function InvoiceDetailPage() {
             <DialogHeader>
               <DialogTitle>Invoice PDF</DialogTitle>
             </DialogHeader>
-            {pdfLoadState === 'loading' ? (
+            {invoicePdfPreview.state === 'loading' ? (
               <div className="text-sm text-muted-foreground">Loading PDF…</div>
-            ) : pdfLoadState === 'error' ? (
+            ) : invoicePdfPreview.state === 'error' ? (
               <div className="space-y-2">
-                <div className="text-sm text-destructive">PDF not available.</div>
-                {pdfError ? <div className="text-xs text-muted-foreground">{pdfError}</div> : null}
+                <div className="text-sm text-destructive">Unable to load invoice PDF</div>
+                {invoicePdfPreview.error ? <div className="text-xs text-muted-foreground">{invoicePdfPreview.error}</div> : null}
+                <Button variant="outline" onClick={invoicePdfPreview.retry}>Retry</Button>
                 {invoicePdfDownloadUrl ? (
                   <Button
                     variant="outline"
                     onClick={() => void downloadFileFromUrl(invoicePdfDownloadUrl, invoicePdfFilename)}
                   >
-                    Try Download
+                    Download PDF
                   </Button>
                 ) : null}
               </div>
-            ) : invoicePdfViewUrl ? (
-              <PdfViewer viewerUrl={invoicePdfViewUrl} downloadUrl={invoicePdfDownloadUrl} filename={invoicePdfFilename} />
+            ) : invoicePdfPreview.previewUrl ? (
+              <PdfViewer viewerUrl={invoicePdfPreview.previewUrl} downloadUrl={invoicePdfDownloadUrl} filename={invoicePdfFilename} />
             ) : (
               <div className="text-sm text-muted-foreground">PDF not available.</div>
             )}
