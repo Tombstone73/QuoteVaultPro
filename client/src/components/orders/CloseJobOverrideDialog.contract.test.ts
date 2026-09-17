@@ -10,6 +10,16 @@ test('Close Job Override uses the canonical preview before deciding whether prod
   expect(source).toContain('/reconcile-historical-fulfillment');
 });
 
+test('Close Job Override requires a live bootstrap acknowledgement only when production has no owner', () => {
+  expect(source).toContain('productionStarted: boolean');
+  expect(source).toContain('activeProductionJobCount: number');
+  expect(source).toContain('requiresProductionBootstrap: boolean');
+  expect(source).toContain('confirmProductionBootstrap: true');
+  expect(source).toContain('closeJobOverride: true');
+  expect(source).toContain('I understand production will be started and completed by this override.');
+  expect(source).toContain('previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged');
+});
+
 test('Close Job Override turns structured backend failures into an operator-safe message', () => {
   expect(source).toContain('function overrideErrorDescription');
   expect(source).toContain('one or more physical line items still need production completion');

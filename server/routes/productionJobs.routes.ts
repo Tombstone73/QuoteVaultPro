@@ -291,7 +291,7 @@ export async function completeProductionJobWorkflow(
     /** Order-level supervisory completion of never-started work. This records
      * explicit bypass provenance and must not consume materials that were not used. */
     manualOverride?: {
-      source: "order_complete_production_override";
+      source: "order_complete_production_override" | "close_job_override_production_bootstrap";
       bypassedPrerequisites: string[];
     } | null;
     auditUserName?: string | null;

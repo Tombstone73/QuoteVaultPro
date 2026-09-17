@@ -43,6 +43,9 @@ test('the reconciliation preview reports live quantity deltas before confirmatio
   expect(preview).toContain('remainingFulfillmentQuantity');
   expect(preview).toContain('listLineEligibility');
   expect(preview).toContain('productionComplete: remainingProductionQuantity === 0');
+  expect(preview).toContain('productionStarted');
+  expect(preview).toContain('activeProductionJobCount');
+  expect(preview).toContain('requiresProductionBootstrap');
 });
 
 test('invoice list enriches Customer Detail with invoice snapshot PO and linked Order state', () => {

@@ -27,7 +27,8 @@ describe("Order Complete Production override contract", () => {
   });
 
   test("records bypass provenance and avoids fabricated materials for manual work", () => {
-    expect(route).toContain('source = "order_complete_production_override"');
+    expect(route).toContain('"order_complete_production_override" as const');
+    expect(route).toContain('"close_job_override_production_bootstrap" as const');
     expect(route).toContain("production_prerequisites_bypassed");
     expect(route).toContain("ORDER_PRODUCTION_PREREQUISITES_BYPASSED");
     expect(route).toContain('designStatus: args.bypassedStages.includes("Design") ? "bypassed"');

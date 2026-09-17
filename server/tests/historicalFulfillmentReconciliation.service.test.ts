@@ -119,3 +119,44 @@ test("historical reconciliation completes fulfilled-only backlog without billing
   expect(audits).toEqual([expect.objectContaining({ actionType: "ORDER_HISTORICAL_FULFILLMENT_RECONCILED" })]);
   expect(billingAutomationService.ensureOrderBackedInvoiceForOrderTrigger).not.toHaveBeenCalled();
 });
+
+test("historical reconciliation preview identifies a physical order that needs production bootstrap", async () => {
+  const fakeDb = {
+    select: jest.fn()
+      .mockImplementationOnce(() => selectChain([{
+        id: "order-1",
+        state: "open",
+        status: "new",
+        canceledAt: null,
+        fulfillmentStatus: "pending",
+      }]))
+      .mockImplementationOnce(() => ({
+        from: () => ({ where: async () => [] }),
+      })),
+  };
+  const service = new FulfillmentService({
+    dbInstance: fakeDb as any,
+    dashboardRepo: {
+      listLineEligibility: jest.fn(async () => [{
+        id: "line-1",
+        orderId: "order-1",
+        projection: {
+          requiresFulfillment: true,
+          orderedQuantity: 5,
+          productionCompleteQuantity: 0,
+          fulfilledQuantity: 0,
+        },
+      }]),
+    } as any,
+    shipmentRepo: {} as any,
+    pickupRepo: {} as any,
+  });
+
+  await expect(service.getHistoricalFulfillmentReconciliationPreview("org-1", "order-1")).resolves.toMatchObject({
+    productionStarted: false,
+    activeProductionJobCount: 0,
+    requiresProductionBootstrap: true,
+    remainingProductionQuantity: 5,
+    remainingFulfillmentQuantity: 5,
+  });
+});

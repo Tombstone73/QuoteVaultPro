@@ -287,6 +287,9 @@ const customerUploadPrimaryArtworkCandidateSchema = z.object({
 
 const completeProductionRequestSchema = z.object({
     confirmBypass: z.literal(true).optional(),
+    confirmProductionBootstrap: z.literal(true).optional(),
+    closeJobOverride: z.literal(true).optional(),
+    sourceInvoiceId: z.string().uuid().optional(),
 }).strict();
 
 const historicalFulfillmentReconciliationSchema = z.object({
@@ -345,9 +348,14 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
     bypassedStages: string[];
     actorUserId: string;
     actorUserName: string | null;
+    closeJobOverride?: boolean;
+    sourceInvoiceId?: string | null;
+    productionBootstrap?: boolean;
 }) {
     const now = new Date();
-    const source = "order_complete_production_override" as const;
+    const source = args.closeJobOverride
+        ? "close_job_override_production_bootstrap" as const
+        : "order_complete_production_override" as const;
     const activeJob = args.activePrerequisiteJob;
 
     if (activeJob) {
@@ -427,6 +435,25 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
         } as any)
         .where(eq(orderLineItems.id, args.line.id));
 
+    // The canonical job completion workflow requires the parent to be in
+    // production.  Keep this transition in the same transaction as the
+    // administrative owner bootstrap, so a never-started Order never appears
+    // in a live shop queue between separate requests.
+    await tx
+        .update(orders)
+        .set({
+            state: "open",
+            status: "in_production",
+            routingTarget: null,
+            productionCompletedAt: null,
+            updatedAt: now,
+        } as any)
+        .where(and(
+            eq(orders.organizationId, args.organizationId),
+            eq(orders.id, args.orderId),
+            eq(orders.state, "open"),
+        ));
+
     const route = await resolvePostPrepressProductionRoute({
         organizationId: args.organizationId,
         productTypeId: args.line.productTypeId,
@@ -486,6 +513,8 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
             bypassedStages: args.bypassedStages,
             productionJobId: productionOwner.jobId,
             prerequisiteJobId: activeJob?.id ?? null,
+            productionBootstrap: args.productionBootstrap === true,
+            sourceInvoiceId: args.sourceInvoiceId ?? null,
         },
     } as any);
 
@@ -3362,6 +3391,8 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ success: false, message: request.error.issues[0]?.message || "Invalid Complete Production request" });
             }
             const confirmBypass = request.data.confirmBypass === true;
+            const confirmProductionBootstrap = request.data.confirmProductionBootstrap === true;
+            const closeJobOverride = request.data.closeJobOverride === true;
             if (confirmBypass && !hasAdminOrOwnerOperationalRole(req)) {
                 return res.status(403).json({
                     success: false,
@@ -3390,7 +3421,7 @@ export async function registerOrderRoutes(
                         code: "INVALID_STATE",
                     });
                 }
-                if (order.status !== "in_production") {
+                if (order.status !== "in_production" && !confirmBypass) {
                     throw Object.assign(new Error(`Cannot complete production while order status is ${order.status}. Move the order into production first.`), {
                         statusCode: 409,
                         code: "PARENT_ORDER_NOT_IN_PRODUCTION",
@@ -3526,15 +3557,25 @@ export async function registerOrderRoutes(
                             if (activeJobs.length > 0) break; // Fulfillment owns the physical handoff; never complete it here.
 
                             const bypassedStages = bypassesByLineId.get(line.id);
-                            if (bypassedStages && confirmBypass) {
+                            if (confirmBypass) {
+                                if (closeJobOverride && !confirmProductionBootstrap) {
+                                    throw Object.assign(new Error("Production has not been started for this line. Confirm the production bootstrap before continuing."), {
+                                        statusCode: 409,
+                                        code: "PRODUCTION_BOOTSTRAP_CONFIRMATION_REQUIRED",
+                                        details: { lineItemId: line.id },
+                                    });
+                                }
                                 await bypassOrderProductionPrerequisites(tx, {
                                     organizationId,
                                     orderId,
                                     line,
                                     activePrerequisiteJob: null,
-                                    bypassedStages,
+                                    bypassedStages: bypassedStages ?? [],
                                     actorUserId: userId,
                                     actorUserName: userName || null,
+                                    closeJobOverride,
+                                    sourceInvoiceId: request.data.sourceInvoiceId ?? null,
+                                    productionBootstrap: true,
                                 });
                                 manuallyCompletedLineIds.add(line.id);
                                 continue;
@@ -3591,6 +3632,8 @@ export async function registerOrderRoutes(
                                     bypassedStages,
                                     actorUserId: userId,
                                     actorUserName: userName || null,
+                                    closeJobOverride,
+                                    sourceInvoiceId: request.data.sourceInvoiceId ?? null,
                                 });
                                 manuallyCompletedLineIds.add(line.id);
                                 continue;
@@ -3614,7 +3657,9 @@ export async function registerOrderRoutes(
                             skipProduction: "auto",
                             manualOverride: manuallyCompletedLineIds.has(line.id)
                                 ? {
-                                    source: "order_complete_production_override" as const,
+                                    source: closeJobOverride
+                                        ? "close_job_override_production_bootstrap" as const
+                                        : "order_complete_production_override" as const,
                                     bypassedPrerequisites: bypassesByLineId.get(line.id) ?? [],
                                 }
                                 : null,

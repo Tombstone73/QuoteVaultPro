@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
-import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
+import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, productionJobs, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo, resolveExistingActorUserId } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
@@ -116,6 +116,16 @@ export class FulfillmentService {
       (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.fulfilledQuantity),
       0,
     );
+    const productionJobRows = await this.dbInstance
+      .select({ stationKey: productionJobs.stationKey, status: productionJobs.status })
+      .from(productionJobs)
+      .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId)));
+    const nonFulfillmentProductionJobs = productionJobRows.filter((job) => String(job.stationKey || '').toLowerCase() !== 'fulfillment');
+    const activeProductionJobCount = nonFulfillmentProductionJobs.filter((job) =>
+      !['done', 'void', 'canceled', 'cancelled'].includes(String(job.status || '').toLowerCase()),
+    ).length;
+    const productionStarted = nonFulfillmentProductionJobs.length > 0;
+    const requiresProductionBootstrap = remainingProductionQuantity > 0 && activeProductionJobCount === 0;
 
     return {
       orderState: order.state,
@@ -125,6 +135,9 @@ export class FulfillmentService {
       physicalLineCount: physicalLines.length,
       remainingProductionQuantity,
       remainingFulfillmentQuantity,
+      productionStarted,
+      activeProductionJobCount,
+      requiresProductionBootstrap,
       // The line projection is the canonical quantity source used by the
       // reconciliation itself. Do not make the dialog choose a different
       // answer from a possibly stale aggregate Order state.

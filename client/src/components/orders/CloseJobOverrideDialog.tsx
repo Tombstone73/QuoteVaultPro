@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export type CloseJobOverrideTarget = {
   orderId: string;
@@ -29,6 +30,9 @@ type HistoricalFulfillmentPreview = {
   remainingFulfillmentQuantity: number;
   productionComplete: boolean;
   alreadyOperationallyComplete: boolean;
+  productionStarted: boolean;
+  activeProductionJobCount: number;
+  requiresProductionBootstrap: boolean;
 };
 
 function overrideErrorDescription(error: unknown): string {
@@ -85,6 +89,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
   const queryClient = useQueryClient();
   const [reason, setReason] = React.useState<"historical_backlog_cleanup" | "completed_outside_printershero" | "other">("historical_backlog_cleanup");
   const [note, setNote] = React.useState("");
+  const [productionBootstrapAcknowledged, setProductionBootstrapAcknowledged] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const orderId = target?.orderId;
   const previewQuery = useQuery<HistoricalFulfillmentPreview>({
@@ -100,6 +105,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
   const resetAndClose = () => {
     setReason("historical_backlog_cleanup");
     setNote("");
+    setProductionBootstrapAcknowledged(false);
     onOpenChange(false);
   };
 
@@ -113,12 +119,21 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
       toast({ variant: "destructive", title: "Reason required", description: "Add a note when selecting Other." });
       return;
     }
+    if (previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged) {
+      toast({ variant: "destructive", title: "Production acknowledgement required", description: "Confirm the production bootstrap before running Close Job Override." });
+      return;
+    }
     setIsSubmitting(true);
     try {
       // Production completion remains owned by the canonical Order operation.
       // This reconciliation then handles only the remaining fulfillment work.
       if (!previewQuery.data?.productionComplete) {
-        await apiRequest("POST", `/api/orders/${target.orderId}/complete-production`, { confirmBypass: true });
+        await apiRequest("POST", `/api/orders/${target.orderId}/complete-production`, {
+          confirmBypass: true,
+          ...(previewQuery.data?.requiresProductionBootstrap ? { confirmProductionBootstrap: true } : {}),
+          closeJobOverride: true,
+          sourceInvoiceId: target.invoiceId || undefined,
+        });
       }
       await apiRequest("POST", `/api/orders/${target.orderId}/reconcile-historical-fulfillment`, {
         reason,
@@ -159,7 +174,17 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
           {previewQuery.data ? <div className="rounded-md border p-3">
             <p>Remaining production: <strong>{previewQuery.data.remainingProductionQuantity}</strong></p>
             <p>Remaining fulfillment: <strong>{previewQuery.data.remainingFulfillmentQuantity}</strong></p>
+            <p>Production started: <strong>{previewQuery.data.productionStarted ? "Yes" : "No"}</strong></p>
+            <p>Active production jobs: <strong>{previewQuery.data.activeProductionJobCount}</strong></p>
             <p className="mt-2 text-muted-foreground">No shipment, tracking, pickup handoff, delivery evidence, invoice, payment, email, QuickBooks update, or billing automation will be created.</p>
+          </div> : null}
+          {previewQuery.data?.requiresProductionBootstrap ? <div className="space-y-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3">
+            <p className="font-medium">{previewQuery.data.productionStarted ? "Production has no active owner for this Order." : "Production has not been started for this Order."}</p>
+            <p className="text-muted-foreground">Continuing will administratively create and resolve the required production ownership, mark the remaining production complete, and then reconcile fulfillment.</p>
+            <label className="flex items-start gap-2" htmlFor="close-job-override-production-bootstrap">
+              <Checkbox id="close-job-override-production-bootstrap" checked={productionBootstrapAcknowledged} onCheckedChange={(value) => setProductionBootstrapAcknowledged(value === true)} />
+              <span>I understand production will be started and completed by this override.</span>
+            </label>
           </div> : null}
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="historical-reconciliation-reason">Reason</label>
@@ -175,7 +200,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
         </div> : null}
         <DialogFooter>
           <Button variant="outline" disabled={isSubmitting} onClick={close}><X className="mr-1.5 h-4 w-4" aria-hidden="true" />Cancel</Button>
-          <Button disabled={isSubmitting || previewQuery.isLoading || previewQuery.isError || previewQuery.data?.canceled || previewQuery.data?.alreadyOperationallyComplete} onClick={() => void submit()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : "Close Job Override"}</Button>
+          <Button disabled={isSubmitting || previewQuery.isLoading || previewQuery.isError || previewQuery.data?.canceled || previewQuery.data?.alreadyOperationallyComplete || (previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged)} onClick={() => void submit()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : "Close Job Override"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
