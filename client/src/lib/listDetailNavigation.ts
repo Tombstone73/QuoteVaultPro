@@ -2,7 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiFetch } from "@/lib/queryClient";
 import { buildListDetailPath, parseListDetailContext, type ListNavigationEntity } from "@/lib/listDetailNavigationContext";
-export { buildListDetailPath, parseListDetailContext, type ListDetailContext, type ListNavigationEntity } from "@/lib/listDetailNavigationContext";
+export {
+  buildDetailReturnPath,
+  buildListDetailPath,
+  parseDetailReturnPath,
+  parseListDetailContext,
+  resolveDetailBackPath,
+  type ListDetailContext,
+  type ListNavigationEntity,
+} from "@/lib/listDetailNavigationContext";
 
 type ListRecord = { id: string };
 type InvoiceResponse = { data?: ListRecord[]; pagination?: { totalCount?: number } };

@@ -57,7 +57,6 @@ import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
-import { useSmartBack } from "@/hooks/useSmartBack";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
   notifyBrowserRouterOfCurrentUrlSoon,
@@ -83,7 +82,7 @@ import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
 import BackNavControls from "@/components/BackNavControls";
 import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
-import { useListDetailNavigation } from "@/lib/listDetailNavigation";
+import { parseDetailReturnPath, resolveDetailBackPath, useListDetailNavigation } from "@/lib/listDetailNavigation";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
@@ -250,9 +249,11 @@ export default function OrderDetail() {
   const [searchParams] = useSearchParams();
   const orderId = params.id;
   const listNavigation = useListDetailNavigation("order", orderId);
+  const detailReturnTo = parseDetailReturnPath(searchParams);
+  const orderDetailPath = `${ROUTES.orders.detail(orderId ?? "")}${location.search}`;
+  const orderBackPath = resolveDetailBackPath(detailReturnTo, listNavigation.backPath, "/orders");
   const isOrderEditRoute = location.pathname.endsWith("/edit");
   const { registerGuard, guardedNavigate, getGuardDiagnostics } = useNavigationGuard();
-  const { onSmartBack } = useSmartBack();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -1482,7 +1483,7 @@ export default function OrderDetail() {
       setDraftLineItemTotalsCents({});
       setPendingOrderPatch({});
       logOrderDirtyAudit("after-clear-before-navigate");
-      const postSavePath = isOrderEditRoute ? ROUTES.orders.detail(orderId) : ROUTES.orders.list;
+      const postSavePath = isOrderEditRoute ? orderDetailPath : ROUTES.orders.list;
       navigate(postSavePath);
       notifyBrowserRouterOfCurrentUrlSoon();
       recoverBrowserRouterMismatchSoon({
@@ -2135,7 +2136,7 @@ export default function OrderDetail() {
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
             <BackNavControls
-              onBack={() => listNavigation.backPath ? guardedNavigate(listNavigation.backPath) : onSmartBack()}
+              onBack={() => guardedNavigate(orderBackPath)}
               onSectionHome={() => guardedNavigate("/orders")}
               sectionLabel="Orders"
             />
@@ -2172,7 +2173,7 @@ export default function OrderDetail() {
             <div className="flex items-center gap-3">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
-                <Link to={ROUTES.orders.detail(order.id)}>
+                <Link to={orderDetailPath}>
                   View Order
                 </Link>
               </Button>

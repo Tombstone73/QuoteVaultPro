@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ToastAction } from "@/components/ui/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
-import { useListDetailNavigation } from "@/lib/listDetailNavigation";
+import { buildDetailReturnPath, useListDetailNavigation } from "@/lib/listDetailNavigation";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useInvoice, useQueueInvoiceQbSync, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
@@ -195,6 +195,7 @@ const statusLabels: Record<string, string> = {
 export default function InvoiceDetailPage() {
   const params = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const invoiceId = (params as any)?.id as string | undefined;
   const { user } = useAuth();
@@ -203,6 +204,7 @@ export default function InvoiceDetailPage() {
 
   const { data, isLoading, isError, error, refetch } = useInvoice(invoiceId);
   const listNavigation = useListDetailNavigation("invoice", invoiceId);
+  const invoiceDetailPath = `${location.pathname}${location.search}`;
   const queueQbSync = useQueueInvoiceQbSync();
   const approveForAccounting = useApproveInvoicesForAccounting();
   const markSent = useMarkInvoiceSent();
@@ -2357,10 +2359,10 @@ export default function InvoiceDetailPage() {
                         {invoice.orderId ? (
                           <>
                             <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
-                              <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
+                              <Link to={buildDetailReturnPath(`/orders/${invoice.orderId}`, invoiceDetailPath)}>View Order</Link>
                             </Button>
                             <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
-                              <Link to={`/orders/${invoice.orderId}/edit?focus=pricing`}>Edit Order Pricing</Link>
+                              <Link to={buildDetailReturnPath(`/orders/${invoice.orderId}/edit?focus=pricing`, invoiceDetailPath)}>Edit Order Pricing</Link>
                             </Button>
                           </>
                         ) : null}

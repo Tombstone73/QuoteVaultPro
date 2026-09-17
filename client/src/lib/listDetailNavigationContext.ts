@@ -11,11 +11,34 @@ const allowedSourcePath: Record<ListNavigationEntity, string> = {
   order: "/orders",
 };
 
+const allowedDetailReturnPath = [
+  /^\/invoices\/[^/?#]+$/,
+  /^\/customers\/[^/?#]+$/,
+];
+
 function validCustomerReturnPath(value: string | null): string | null {
   if (!value) return null;
   try {
     const url = new URL(value, window.location.origin);
     if (url.origin !== window.location.origin || !/^\/customers\/[^/]+$/.test(url.pathname)) return null;
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detail-to-detail navigation may return only to a known staff detail route.
+ * This deliberately does not accept arbitrary internal paths as redirects.
+ */
+function validDetailReturnPath(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value, window.location.origin);
+    if (
+      url.origin !== window.location.origin ||
+      !allowedDetailReturnPath.some((pattern) => pattern.test(url.pathname))
+    ) return null;
     return `${url.pathname}${url.search}`;
   } catch {
     return null;
@@ -56,4 +79,25 @@ export function buildListDetailPath(
   const validatedReturnTo = validCustomerReturnPath(returnTo ?? null);
   if (validatedReturnTo) params.set("listReturnTo", validatedReturnTo);
   return `${allowedSourcePath[entity]}/${recordId}?${params.toString()}`;
+}
+
+/** Adds a validated detail return path while preserving destination query parameters. */
+export function buildDetailReturnPath(path: string, returnTo?: string): string {
+  const destination = new URL(path, window.location.origin);
+  const validatedReturnTo = validDetailReturnPath(returnTo ?? null);
+  if (destination.origin !== window.location.origin || !validatedReturnTo) return path;
+  destination.searchParams.set("detailReturnTo", validatedReturnTo);
+  return `${destination.pathname}${destination.search}`;
+}
+
+export function parseDetailReturnPath(params: URLSearchParams): string | null {
+  return validDetailReturnPath(params.get("detailReturnTo"));
+}
+
+export function resolveDetailBackPath(
+  detailReturnTo: string | null,
+  listBackPath: string | null,
+  fallbackPath: string,
+): string {
+  return detailReturnTo ?? listBackPath ?? fallbackPath;
 }
