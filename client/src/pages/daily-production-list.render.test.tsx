@@ -54,10 +54,15 @@ describe("Daily Production List renderer", () => {
   test("uses the requested Overview and breakdown columns", async () => {
     await act(async () => { root.render(<MemoryRouter><DailyProductionListPage /></MemoryRouter>); });
     expect(container.querySelector("thead")?.textContent).toContain("Roll / Flatbed");
+    expect(container.querySelector("thead th[aria-label='Check off']")).toBeTruthy();
+    expect(container.querySelectorAll(".daily-production-checkoff")).toHaveLength(1);
+    expect(container.querySelectorAll("input[type='checkbox']")).toHaveLength(0);
+    expect(container.querySelector(".daily-production-report-row")?.className).toContain("break-inside-avoid");
     const breakdown = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Production Breakdown");
     await act(async () => { breakdown?.click(); });
     const sections = Array.from(container.querySelectorAll("section.daily-production-section"));
     expect(sections).toHaveLength(2);
+    expect(container.querySelectorAll(".daily-production-checkoff")).toHaveLength(1);
     for (const section of sections) {
       expect(section.textContent).not.toContain("Roll / Flatbed");
       expect(section.textContent).not.toContain("Production");

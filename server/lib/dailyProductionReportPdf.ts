@@ -18,29 +18,31 @@ const ROW_COLORS = {
 };
 
 type Column = {
-  key: "due" | "order" | "customer" | "job" | "quantity" | "destination" | "fulfillment";
+  key: "checkoff" | "due" | "order" | "customer" | "job" | "quantity" | "destination" | "fulfillment";
   label: string;
   width: number;
   align?: "left" | "right";
 };
 
 const OVERVIEW_COLUMNS: Column[] = [
-  { key: "due", label: "Due", width: 58 },
-  { key: "order", label: "Order", width: 50 },
-  { key: "customer", label: "Customer", width: 112 },
-  { key: "job", label: "PO / Job", width: 110 },
+  { key: "checkoff", label: "", width: 18 },
+  { key: "due", label: "Due", width: 56 },
+  { key: "order", label: "Order", width: 48 },
+  { key: "customer", label: "Customer", width: 104 },
+  { key: "job", label: "PO / Job", width: 104 },
   { key: "quantity", label: "Qty", width: 34, align: "right" },
-  { key: "destination", label: "Roll / Flatbed", width: 86 },
-  { key: "fulfillment", label: "Fulfillment", width: 102 },
+  { key: "destination", label: "Roll / Flatbed", width: 84 },
+  { key: "fulfillment", label: "Fulfillment", width: 104 },
 ];
 
 const BREAKDOWN_COLUMNS: Column[] = [
-  { key: "due", label: "Due", width: 62 },
-  { key: "order", label: "Order", width: 50 },
-  { key: "customer", label: "Customer", width: 140 },
-  { key: "job", label: "PO / Job", width: 144 },
+  { key: "checkoff", label: "", width: 18 },
+  { key: "due", label: "Due", width: 60 },
+  { key: "order", label: "Order", width: 48 },
+  { key: "customer", label: "Customer", width: 134 },
+  { key: "job", label: "PO / Job", width: 138 },
   { key: "quantity", label: "Qty", width: 34, align: "right" },
-  { key: "fulfillment", label: "Fulfillment", width: 122 },
+  { key: "fulfillment", label: "Fulfillment", width: 120 },
 ];
 
 const dueLabels: Record<DailyProductionReportRow["dueState"], string> = {
@@ -121,6 +123,7 @@ function jobLabel(row: DailyProductionReportRow): string {
 function rowCellLines(row: DailyProductionReportRow, column: Column, font: PDFFont): string[] {
   const width = column.width - 6;
   switch (column.key) {
+    case "checkoff": return [];
     case "due": return [formatDate(row.dueDate), dueLabels[row.dueState]];
     case "order": return wrapText(row.orderNumber, font, 8.5, width);
     case "customer": return wrapText(row.customerName, font, 8.5, width);
@@ -199,8 +202,10 @@ class DailyProductionPdfWriter {
     let x = MARGIN;
     for (const column of columns) {
       const text = column.label;
-      const width = this.bold.widthOfTextAtSize(text, 7);
-      this.page.drawText(text, { x: column.align === "right" ? x + column.width - width - 3 : x + 3, y: this.y - 12, size: 7, font: this.bold, color: rgb(1, 1, 1) });
+      if (text) {
+        const width = this.bold.widthOfTextAtSize(text, 7);
+        this.page.drawText(text, { x: column.align === "right" ? x + column.width - width - 3 : x + 3, y: this.y - 12, size: 7, font: this.bold, color: rgb(1, 1, 1) });
+      }
       x += column.width;
     }
     this.y -= height;
@@ -215,6 +220,19 @@ class DailyProductionPdfWriter {
     this.page.drawRectangle({ x: MARGIN, y: this.y - height, width: this.contentWidth, height, color: ROW_COLORS[row.dueState], borderColor: RULE, borderWidth: 0.35 });
     let x = MARGIN;
     for (const column of columns) {
+      if (column.key === "checkoff") {
+        const size = 12;
+        this.page.drawRectangle({
+          x: x + (column.width - size) / 2,
+          y: this.y - (height + size) / 2,
+          width: size,
+          height: size,
+          borderColor: rgb(0, 0, 0),
+          borderWidth: 1,
+        });
+        x += column.width;
+        continue;
+      }
       const lines = rowCellLines(row, column, this.regular);
       lines.forEach((line, index) => {
         const size = column.key === "due" && index === 1 ? 6.5 : 8.5;

@@ -45,14 +45,15 @@ function ReportTable({ rows, title, showProduction = true }: { rows: DailyProduc
     <div className="overflow-x-auto rounded-lg border">
       <table className="w-full min-w-[760px] text-left text-sm">
         <thead className="bg-muted/60 text-xs uppercase tracking-wide text-muted-foreground"><tr>
-          <th className="px-3 py-3 font-semibold">Due</th><th className="px-3 py-3 font-semibold">Order</th><th className="px-3 py-3 font-semibold">Customer</th><th className="px-3 py-3 font-semibold">PO / Job</th><th className="px-3 py-3 text-right font-semibold">Qty</th>{showProduction ? <th className="px-3 py-3 font-semibold">Roll / Flatbed</th> : null}<th className="px-3 py-3 font-semibold">Fulfillment</th>
+          <th scope="col" aria-label="Check off" className="w-10 px-3 py-3 font-semibold" /><th className="px-3 py-3 font-semibold">Due</th><th className="px-3 py-3 font-semibold">Order</th><th className="px-3 py-3 font-semibold">Customer</th><th className="px-3 py-3 font-semibold">PO / Job</th><th className="px-3 py-3 text-right font-semibold">Qty</th>{showProduction ? <th className="px-3 py-3 font-semibold">Roll / Flatbed</th> : null}<th className="px-3 py-3 font-semibold">Fulfillment</th>
         </tr></thead>
-        <tbody>{rows.length ? rows.map((row) => <tr key={`${title ?? "overview"}-${row.orderId}`} data-due-state={row.dueState} className={`border-t align-top ${urgencyClass[row.dueState]}`}>
+        <tbody>{rows.length ? rows.map((row) => <tr key={`${title ?? "overview"}-${row.orderId}`} data-due-state={row.dueState} className={`daily-production-report-row break-inside-avoid border-t align-top ${urgencyClass[row.dueState]}`}>
+          <td className="w-10 px-3 py-3 text-center align-middle"><span aria-hidden="true" className="daily-production-checkoff inline-block h-4 w-4 border border-solid border-black print:[-webkit-print-color-adjust:exact] print:[print-color-adjust:exact]" /></td>
           <td className="px-3 py-3"><div className="font-medium">{formatDueDate(row.dueDate)}</div><div className="mt-1 text-[11px] font-bold tracking-wide">{dueLabel[row.dueState]}</div></td>
           <td className="px-3 py-3 font-medium tabular-nums">{row.orderNumber}</td><td className="px-3 py-3">{row.customerName}</td>
           <td className="px-3 py-3 text-muted-foreground">{[row.jobLabel, row.poNumber].filter(Boolean).join(" · ") || "—"}</td><td className="px-3 py-3 text-right font-medium tabular-nums">{row.quantity}</td>
           {showProduction ? <td className="px-3 py-3">{destinationLabel[row.destination]}</td> : null}<td className="px-3 py-3">{row.fulfillment}</td>
-        </tr>) : <tr><td colSpan={showProduction ? 7 : 6} className="px-3 py-8 text-center text-muted-foreground">No qualifying production items.</td></tr>}</tbody>
+        </tr>) : <tr><td colSpan={showProduction ? 8 : 7} className="px-3 py-8 text-center text-muted-foreground">No qualifying production items.</td></tr>}</tbody>
       </table>
     </div>
   </section>;
@@ -105,6 +106,10 @@ export default function DailyProductionListPage() {
   if (!report) return <main className="mx-auto max-w-6xl p-4 sm:p-6"><p className="text-sm text-muted-foreground">Loading Daily Production List…</p></main>;
 
   return <main className="daily-production-report mx-auto max-w-6xl p-4 sm:p-6">
+    <style>{`@media print {
+      .daily-production-report-row { break-inside: avoid; page-break-inside: avoid; }
+      .daily-production-checkoff { border-color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }`}</style>
     <div className="daily-production-no-print mb-5"><Button asChild variant="ghost" size="sm"><Link to={ROUTES.reports}><ArrowLeft className="mr-2 h-4 w-4" />Reports</Link></Button></div>
     <header className="border-b pb-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-semibold tracking-wide text-primary">{report.organizationName}</p><h1 className="mt-1 text-2xl font-bold tracking-tight">OPEN PRODUCTION REPORT</h1><p className="mt-1 text-sm text-muted-foreground">Daily Production List · As of {formatDueDate(report.asOf)}</p></div><Button className="daily-production-no-print" onClick={() => void openPdf()} disabled={isGeneratingPdf}>{isGeneratingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}{isGeneratingPdf ? "Generating PDF…" : "Print / PDF"}</Button></div></header>
     {pdfError ? <div role="alert" className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{pdfError}</div> : null}

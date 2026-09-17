@@ -35,18 +35,21 @@ function report(rows: DailyProductionReportRow[]): DailyProductionReport {
   };
 }
 
-function extractText(bytes: Uint8Array): string {
+function extractContentStreams(bytes: Uint8Array): string {
   const source = Buffer.from(bytes).toString("latin1");
   return [...source.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)].map((match) => {
     try {
-      const stream = inflateSync(Buffer.from(match[1], "latin1")).toString("latin1");
-      return [...stream.matchAll(/<([0-9a-fA-F]+)>\s*Tj/g)]
-        .map((hex) => Buffer.from(hex[1], "hex").toString("latin1"))
-        .join(" ");
+      return inflateSync(Buffer.from(match[1], "latin1")).toString("latin1");
     } catch {
       return "";
     }
   }).join(" ");
+}
+
+function extractText(bytes: Uint8Array): string {
+  return [...extractContentStreams(bytes).matchAll(/<([0-9a-fA-F]+)>\s*Tj/g)]
+    .map((hex) => Buffer.from(hex[1], "hex").toString("latin1"))
+    .join(" ");
 }
 
 describe("Daily Production List PDF", () => {
@@ -84,6 +87,18 @@ describe("Daily Production List PDF", () => {
     }
     expect(text).toContain("(CONTINUED)");
     expect(text).toContain("PO-THIS-IS-AN-EXTRA-LONG");
+  });
+
+  test("draws one black outlined checkoff square for each printed job row", async () => {
+    const bytes = await generateDailyProductionReportPdfBytes(report([
+      row(1),
+      row(2, { destination: "flatbed" }),
+      row(3, { destination: "unclassified" }),
+    ]));
+
+    const squares = extractContentStreams(bytes).match(/0 0 m\n0 12 l\n12 12 l\n12 0 l\nh\nS/g) ?? [];
+    // Overview has every row; Roll and Flatbed repeat only their routed row.
+    expect(squares).toHaveLength(5);
   });
 
   test("uses a safe, useful generated filename", () => {
