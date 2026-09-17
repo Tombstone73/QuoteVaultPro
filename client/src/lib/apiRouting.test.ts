@@ -61,6 +61,14 @@ describe("deployment-bound API routing", () => {
     expect(customerList).toContain("apiFetch(\"/api/customers/bulk-commercial-configuration\"");
   });
 
+  it("routes Quick Note destination and submission requests through the canonical API client", () => {
+    const quickNote = readFileSync("client/src/components/production/QuickNotePrintDialog.tsx", "utf8");
+    expect(quickNote).toContain('apiFetch("/api/direct-print/quick-note-destinations"');
+    expect(quickNote).toContain('apiFetch("/api/direct-print/quick-note"');
+    expect(quickNote).not.toMatch(/\bfetch\(\s*[`'"]\/api\/direct-print\/quick-note/);
+    expect(quickNote).toContain('"Idempotency-Key": key');
+  });
+
   it("keeps the legacy raw-fetch compatibility layer behind the canonical resolver", () => {
     const appBootstrap = readFileSync("client/src/main.tsx", "utf8");
     expect(appBootstrap).toContain("installUrlAwareFetch()");

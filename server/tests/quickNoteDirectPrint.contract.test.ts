@@ -17,4 +17,9 @@ describe("Quick Note durable direct-print contract", () => {
     expect(bridge).toContain('jobs/:id/quick-note');
     expect(bridge).toContain('job.documentType !== "quick_note"');
   });
+  test("uses a structured, non-internal error response for destination loading failures", () => {
+    expect(route).toContain('app.get("/api/direct-print/quick-note-destinations"');
+    expect(route).toContain('code: "QUICK_NOTE_DESTINATIONS_UNAVAILABLE"');
+    expect(route).toContain('error: "Could not load Quick Note destinations."');
+  });
 });

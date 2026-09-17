@@ -9,16 +9,120 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/queryClient";
 import { persistQuickNotePrinterPreferences, readPersistedQuickNotePrinterPreferences, resolveTravelerPrinterDestinationId } from "@/lib/quickNotePrinterPreferences";
+
 type Destination = { id: string; displayName: string; location: string | null; defaultCopies: number; isDefault: boolean; available: boolean };
+const DESTINATION_REQUEST_TIMEOUT_MS = 10_000;
+
+async function readJson(response: Response) {
+  try { return await response.json(); } catch { return {}; }
+}
+
 export function QuickNotePrintDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
- const { user } = useAuth(); const { toast } = useToast(); const [headline,setHeadline]=useState(""); const [note,setNote]=useState(""); const [copies,setCopies]=useState("1"); const [destinationId,setDestinationId]=useState(""); const [saveDefault,setSaveDefault]=useState(false); const [submitting,setSubmitting]=useState(false); const requestKey=useRef<string|null>(null); const resolved=useRef<string|null>(null); const scope=user?.id?`${user.lastActiveOrgId ?? "unknown"}:${user.id}`:"anonymous";
- const query=useQuery<Destination[]>({ queryKey:["/api/direct-print/quick-note-destinations"], enabled:open, queryFn:async()=>{const r=await fetch("/api/direct-print/quick-note-destinations",{credentials:"include"}); const b=await r.json(); if(!r.ok) throw new Error(b.error||"Could not load Quick Note destinations"); return b.data;} }); const destinations=query.data??[]; const selected=destinations.find(x=>x.id===destinationId);
- const normalizeCopies=(value:number)=>String(Math.min(25,Math.max(1,Number.isInteger(value)?value:1)));
- useEffect(()=>{if(!open||!destinations.length||resolved.current===scope)return; const p=user?.id?readPersistedQuickNotePrinterPreferences(user.id,user.lastActiveOrgId):undefined; const id=resolveTravelerPrinterDestinationId(destinations,p?.defaultDestinationId); setDestinationId(id); const d=destinations.find(x=>x.id===id); if(d)setCopies(normalizeCopies(d.defaultCopies)); resolved.current=scope;},[open,destinations,scope,user?.id,user?.lastActiveOrgId]);
- useEffect(()=>{if(!open){requestKey.current=null;resolved.current=null;setSaveDefault(false);}},[open]);
- const choose=(id:string)=>{requestKey.current=null;setDestinationId(id); const d=destinations.find(x=>x.id===id); if(d)setCopies(normalizeCopies(d.defaultCopies));}; const hasContent=Boolean(headline.trim()||note.trim());
- async function submit(){const n=Number(copies); if(!selected?.available||!Number.isInteger(n)||n<1||n>25||!hasContent){toast({title:"Enter a note and select an available destination.",variant:"destructive"});return;} const key=requestKey.current??crypto.randomUUID();requestKey.current=key;setSubmitting(true); try {const r=await fetch("/api/direct-print/quick-note",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json","Idempotency-Key":key},body:JSON.stringify({destinationId,copies:n,headline,note,requestKey:key})});const b=await r.json();if(!r.ok)throw new Error(b.error||"Quick Note could not be queued");if(saveDefault&&user?.id)persistQuickNotePrinterPreferences(user.id,user.lastActiveOrgId,{version:1,defaultDestinationId:selected.id});toast({title:"Quick Note queued",description:`${n} ${n===1?"copy":"copies"} sent to ${selected.displayName}.`});requestKey.current=null;setHeadline("");setNote("");onOpenChange(false);}catch(error:any){toast({title:"Quick Note printer is unavailable",description:error.message,variant:"destructive"});}finally{setSubmitting(false);}}
- const revise=(set:(value:string)=>void)=>(value:string)=>{requestKey.current=null;set(value);};
- return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Quick Note</DialogTitle><DialogDescription>Print a short adhesive or receipt-style note without changing an order.</DialogDescription></DialogHeader>{query.isLoading?<p className="text-sm text-muted-foreground">Loading destinations…</p>:query.error?<p className="text-sm text-destructive">Could not load Quick Note destinations. Close and retry.</p>:!destinations.length?<p className="text-sm text-muted-foreground">No Quick Note destinations are configured.</p>:<div className="space-y-4"><div className="space-y-1.5"><Label htmlFor="quick-note-headline">Headline <span className="text-muted-foreground">(optional)</span></Label><Input id="quick-note-headline" value={headline} maxLength={240} onChange={e=>revise(setHeadline)(e.target.value)} /></div><div className="space-y-1.5"><Label htmlFor="quick-note-body">Note <span className="text-muted-foreground">(optional)</span></Label><Textarea id="quick-note-body" value={note} maxLength={4000} onChange={e=>revise(setNote)(e.target.value)} /></div><div className="space-y-1.5"><Label>Printer / Destination</Label><Select value={destinationId} onValueChange={choose}><SelectTrigger><SelectValue placeholder="Select a destination"/></SelectTrigger><SelectContent>{destinations.map(d=><SelectItem key={d.id} value={d.id} disabled={!d.available}>{d.displayName}{d.location?` — ${d.location}`:""}{d.available?"":" (offline)"}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2 pt-1"><Checkbox id="set-default-quick-note-printer" checked={saveDefault} onCheckedChange={v=>setSaveDefault(v===true)}/><Label htmlFor="set-default-quick-note-printer" className="cursor-pointer text-sm font-normal">Set as my default Quick Note printer</Label></div></div><div className="space-y-1.5"><Label htmlFor="quick-note-copies">Copies</Label><Input id="quick-note-copies" type="number" min="1" max="25" value={copies} onChange={e=>{requestKey.current=null;setCopies(e.target.value)}}/></div></div>}<DialogFooter><Button variant="outline" onClick={()=>onOpenChange(false)}>Cancel</Button><Button onClick={()=>void submit()} disabled={query.isLoading||!!query.error||!destinations.length||submitting||!hasContent||!selected?.available}>{submitting?"Queueing…":"Print Note"}</Button></DialogFooter></DialogContent></Dialog>;
+  const { user, isAdmin } = useAuth();
+  const { toast } = useToast();
+  const [headline, setHeadline] = useState("");
+  const [note, setNote] = useState("");
+  const [copies, setCopies] = useState("1");
+  const [destinationId, setDestinationId] = useState("");
+  const [saveDefault, setSaveDefault] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const requestKey = useRef<string | null>(null);
+  const resolved = useRef<string | null>(null);
+  const scope = user?.id ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}` : "anonymous";
+
+  const query = useQuery<Destination[]>({
+    queryKey: ["/api/direct-print/quick-note-destinations"],
+    enabled: open,
+    queryFn: async ({ signal }) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), DESTINATION_REQUEST_TIMEOUT_MS);
+      const abort = () => controller.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        const response = await apiFetch("/api/direct-print/quick-note-destinations", { credentials: "include", signal: controller.signal });
+        const body = await readJson(response);
+        if (!response.ok) throw new Error(body.error || "Could not load Quick Note destinations");
+        return Array.isArray(body.data) ? body.data : [];
+      } catch (error) {
+        if (controller.signal.aborted) throw new Error("Could not load Quick Note destinations");
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
+        signal.removeEventListener("abort", abort);
+      }
+    },
+  });
+
+  const destinations = query.data ?? [];
+  const selected = destinations.find((destination) => destination.id === destinationId);
+  const normalizeCopies = (value: number) => String(Math.min(25, Math.max(1, Number.isInteger(value) ? value : 1)));
+
+  useEffect(() => {
+    if (!open || !destinations.length || resolved.current === scope) return;
+    const preferences = user?.id ? readPersistedQuickNotePrinterPreferences(user.id, user.lastActiveOrgId) : undefined;
+    const id = resolveTravelerPrinterDestinationId(destinations, preferences?.defaultDestinationId);
+    setDestinationId(id);
+    const destination = destinations.find((item) => item.id === id);
+    if (destination) setCopies(normalizeCopies(destination.defaultCopies));
+    resolved.current = scope;
+  }, [open, destinations, scope, user?.id, user?.lastActiveOrgId]);
+
+  useEffect(() => {
+    if (open) return;
+    requestKey.current = null;
+    resolved.current = null;
+    setSaveDefault(false);
+  }, [open]);
+
+  const choose = (id: string) => {
+    requestKey.current = null;
+    setDestinationId(id);
+    const destination = destinations.find((item) => item.id === id);
+    if (destination) setCopies(normalizeCopies(destination.defaultCopies));
+  };
+  const hasContent = Boolean(headline.trim() || note.trim());
+
+  async function submit() {
+    const parsedCopies = Number(copies);
+    if (!selected?.available || !Number.isInteger(parsedCopies) || parsedCopies < 1 || parsedCopies > 25 || !hasContent) {
+      toast({ title: "Enter a note and select an available destination.", variant: "destructive" });
+      return;
+    }
+
+    const key = requestKey.current ?? crypto.randomUUID();
+    requestKey.current = key;
+    setSubmitting(true);
+    try {
+      const response = await apiFetch("/api/direct-print/quick-note", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body: JSON.stringify({ destinationId, copies: parsedCopies, headline, note, requestKey: key }),
+      });
+      const body = await readJson(response);
+      if (!response.ok) throw new Error(body.error || "Quick Note could not be queued");
+      if (saveDefault && user?.id) persistQuickNotePrinterPreferences(user.id, user.lastActiveOrgId, { version: 1, defaultDestinationId: selected.id });
+      toast({ title: "Quick Note queued", description: `${parsedCopies} ${parsedCopies === 1 ? "copy" : "copies"} sent to ${selected.displayName}.` });
+      requestKey.current = null;
+      setHeadline("");
+      setNote("");
+      onOpenChange(false);
+    } catch (error: any) {
+      toast({ title: "Quick Note printer is unavailable", description: error.message, variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const revise = (set: (value: string) => void) => (value: string) => { requestKey.current = null; set(value); };
+
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Quick Note</DialogTitle><DialogDescription>Print a short adhesive or receipt-style note without changing an order.</DialogDescription></DialogHeader>
+    {query.isLoading ? <p className="text-sm text-muted-foreground">Loading destinations…</p>
+      : query.error ? <div className="space-y-3"><p className="text-sm text-destructive">Could not load Quick Note destinations.</p><Button type="button" variant="outline" onClick={() => void query.refetch()}>Retry</Button></div>
+      : !destinations.length ? <div className="space-y-3"><p className="text-sm text-muted-foreground">No Quick Note destinations are configured.</p>{isAdmin ? <Button type="button" variant="outline" onClick={() => { window.location.href = "/settings/printers"; }}>Manage printer profiles</Button> : null}</div>
+      : <div className="space-y-4"><div className="space-y-1.5"><Label htmlFor="quick-note-headline">Headline <span className="text-muted-foreground">(optional)</span></Label><Input id="quick-note-headline" value={headline} maxLength={240} onChange={(event) => revise(setHeadline)(event.target.value)} /></div><div className="space-y-1.5"><Label htmlFor="quick-note-body">Note <span className="text-muted-foreground">(optional)</span></Label><Textarea id="quick-note-body" value={note} maxLength={4000} onChange={(event) => revise(setNote)(event.target.value)} /></div><div className="space-y-1.5"><Label>Printer / Destination</Label><Select value={destinationId} onValueChange={choose}><SelectTrigger><SelectValue placeholder="Select a destination" /></SelectTrigger><SelectContent>{destinations.map((destination) => <SelectItem key={destination.id} value={destination.id} disabled={!destination.available}>{destination.displayName}{destination.location ? ` — ${destination.location}` : ""}{destination.available ? "" : " (offline)"}</SelectItem>)}</SelectContent></Select><div className="flex items-center gap-2 pt-1"><Checkbox id="set-default-quick-note-printer" checked={saveDefault} onCheckedChange={(value) => setSaveDefault(value === true)} /><Label htmlFor="set-default-quick-note-printer" className="cursor-pointer text-sm font-normal">Set as my default Quick Note printer</Label></div></div><div className="space-y-1.5"><Label htmlFor="quick-note-copies">Copies</Label><Input id="quick-note-copies" type="number" min="1" max="25" value={copies} onChange={(event) => { requestKey.current = null; setCopies(event.target.value); }} /></div></div>}
+    <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={() => void submit()} disabled={query.isLoading || !!query.error || !destinations.length || submitting || !hasContent || !selected?.available}>{submitting ? "Queueing…" : "Print Note"}</Button></DialogFooter>
+  </DialogContent></Dialog>;
 }
