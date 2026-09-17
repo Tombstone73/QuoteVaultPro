@@ -4,8 +4,11 @@ export type DailyProductionDestination = "roll" | "flatbed" | "mixed" | "unclass
 
 export type DailyProductionFulfillment = "Ship" | "Pickup" | "Delivery" | "Unknown";
 
+export type DailyProductionReportView = "overview" | "roll" | "flatbed" | "fulfillment";
+
 export type DailyProductionReportRow = {
   orderId: string;
+  customerId: string | null;
   orderNumber: string;
   customerName: string;
   jobLabel: string | null;
@@ -31,6 +34,7 @@ export type DailyProductionReport = {
   overview: DailyProductionReportRow[];
   roll: DailyProductionReportRow[];
   flatbed: DailyProductionReportRow[];
+  fulfillment: DailyProductionReportRow[];
   diagnostics: {
     unclassifiedProductionLines: number;
     mixedOrders: number;

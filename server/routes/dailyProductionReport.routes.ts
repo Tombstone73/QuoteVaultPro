@@ -1,9 +1,10 @@
 import type { Express } from "express";
 import { getRequestOrganizationId } from "../tenantContext";
+import type { DailyProductionReportView } from "@shared/dailyProductionReport";
 
 type DailyProductionPdfDependencies = {
   getReport: (organizationId: string) => Promise<any>;
-  generatePdf: (report: any) => Promise<Uint8Array>;
+  generatePdf: (report: any, view: DailyProductionReportView) => Promise<Uint8Array>;
   buildFilename: (organizationName: string, asOf: string) => string;
 };
 
@@ -24,13 +25,17 @@ export function createDailyProductionPdfHandler(
 ) {
   return async (req: any, res: any) => {
     try {
+      const view = req.query?.view;
+      if (!pdfViewIsValid(view)) {
+        return res.status(400).json({ success: false, error: "Invalid Daily Production report view" });
+      }
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
         return res.status(500).json({ success: false, error: "Missing organization context" });
       }
       const { getReport, generatePdf, buildFilename } = await loadDependencies();
       const report = await getReport(organizationId);
-      const pdfBytes = await generatePdf(report);
+      const pdfBytes = await generatePdf(report, view);
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("Content-Disposition", `inline; filename="${buildFilename(report.organizationName, report.asOf)}"`);
@@ -40,6 +45,10 @@ export function createDailyProductionPdfHandler(
       return res.status(500).json({ success: false, error: "Failed to generate the Daily Production List PDF" });
     }
   };
+}
+
+function pdfViewIsValid(value: unknown): value is DailyProductionReportView {
+  return value === "overview" || value === "roll" || value === "flatbed" || value === "fulfillment";
 }
 
 export function registerDailyProductionReportRoutes(

@@ -6,7 +6,7 @@ import { ROUTES } from "@/config/routes";
 import { apiFetchBlob, apiRequest } from "@/lib/queryClient";
 import type { DailyProductionReport, DailyProductionReportRow } from "@shared/dailyProductionReport";
 
-type View = "overview" | "breakdown";
+type View = "overview" | "roll" | "flatbed" | "fulfillment";
 
 const dueLabel: Record<DailyProductionReportRow["dueState"], string> = {
   overdue: "OVERDUE",
@@ -39,7 +39,7 @@ function formatDueDate(value: string | null): string {
     .format(new Date(Date.UTC(year, month - 1, day)));
 }
 
-function ReportTable({ rows, title, showProduction = true }: { rows: DailyProductionReportRow[]; title?: string; showProduction?: boolean }) {
+function ReportTable({ rows, title, showProduction = true, emptyLabel = "No qualifying production items." }: { rows: DailyProductionReportRow[]; title: string; showProduction?: boolean; emptyLabel?: string }) {
   return <section className={title ? "daily-production-section mt-6" : "daily-production-section"}>
     {title ? <h2 className="mb-3 text-lg font-semibold">{title}</h2> : null}
     <div className="overflow-x-auto rounded-lg border">
@@ -50,10 +50,10 @@ function ReportTable({ rows, title, showProduction = true }: { rows: DailyProduc
         <tbody>{rows.length ? rows.map((row) => <tr key={`${title ?? "overview"}-${row.orderId}`} data-due-state={row.dueState} className={`daily-production-report-row break-inside-avoid border-t align-top ${urgencyClass[row.dueState]}`}>
           <td className="w-10 px-3 py-3 text-center align-middle"><span aria-hidden="true" className="daily-production-checkoff inline-block h-4 w-4 border border-solid border-black print:[-webkit-print-color-adjust:exact] print:[print-color-adjust:exact]" /></td>
           <td className="px-3 py-3"><div className="font-medium">{formatDueDate(row.dueDate)}</div><div className="mt-1 text-[11px] font-bold tracking-wide">{dueLabel[row.dueState]}</div></td>
-          <td className="px-3 py-3 font-medium tabular-nums">{row.orderNumber}</td><td className="px-3 py-3">{row.customerName}</td>
+          <td className="px-3 py-3 font-medium tabular-nums"><Link className="text-primary hover:underline" to={ROUTES.orders.detail(row.orderId)}>{row.orderNumber}</Link></td><td className="px-3 py-3">{row.customerId ? <Link className="text-primary hover:underline" to={ROUTES.customers.detail(row.customerId)}>{row.customerName}</Link> : row.customerName}</td>
           <td className="px-3 py-3 text-muted-foreground">{[row.jobLabel, row.poNumber].filter(Boolean).join(" · ") || "—"}</td><td className="px-3 py-3 text-right font-medium tabular-nums">{row.quantity}</td>
           {showProduction ? <td className="px-3 py-3">{destinationLabel[row.destination]}</td> : null}<td className="px-3 py-3">{row.fulfillment}</td>
-        </tr>) : <tr><td colSpan={showProduction ? 8 : 7} className="px-3 py-8 text-center text-muted-foreground">No qualifying production items.</td></tr>}</tbody>
+        </tr>) : <tr><td colSpan={showProduction ? 8 : 7} className="px-3 py-8 text-center text-muted-foreground">{emptyLabel}</td></tr>}</tbody>
       </table>
     </div>
   </section>;
@@ -81,7 +81,7 @@ export default function DailyProductionListPage() {
     setPdfError(null);
     const pdfWindow = window.open("", "_blank");
     try {
-      const blob = await apiFetchBlob("/api/reports/daily-production/pdf", { method: "GET" });
+      const blob = await apiFetchBlob(`/api/reports/daily-production/pdf?view=${view}`, { method: "GET" });
       const objectUrl = URL.createObjectURL(blob);
       if (pdfWindow) {
         pdfWindow.location.replace(objectUrl);
@@ -113,11 +113,14 @@ export default function DailyProductionListPage() {
     <div className="daily-production-no-print mb-5"><Button asChild variant="ghost" size="sm"><Link to={ROUTES.reports}><ArrowLeft className="mr-2 h-4 w-4" />Reports</Link></Button></div>
     <header className="border-b pb-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-semibold tracking-wide text-primary">{report.organizationName}</p><h1 className="mt-1 text-2xl font-bold tracking-tight">OPEN PRODUCTION REPORT</h1><p className="mt-1 text-sm text-muted-foreground">Daily Production List · As of {formatDueDate(report.asOf)}</p></div><Button className="daily-production-no-print" onClick={() => void openPdf()} disabled={isGeneratingPdf}>{isGeneratingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}{isGeneratingPdf ? "Generating PDF…" : "Print / PDF"}</Button></div></header>
     {pdfError ? <div role="alert" className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{pdfError}</div> : null}
-    <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[
+    {view === "overview" ? <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[
       ["Open Jobs", report.summary.open, ""], ["Due Today", report.summary.dueToday, "bg-yellow-400/15"], ["Due Tomorrow", report.summary.dueTomorrow, "bg-sky-500/15"], ["Overdue", report.summary.overdue, "bg-red-500/15"], ["No Due Date", report.summary.noDueDate, "bg-muted/70"],
-    ].map(([label, value, className]) => <div key={String(label)} className={`rounded-lg border bg-card p-4 ${className}`}><div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div><div className="mt-1 text-2xl font-bold tabular-nums">{value}</div></div>)}</section>
-    {report.diagnostics.unclassifiedProductionLines > 0 ? <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"><AlertCircle className="h-4 w-4 shrink-0 text-amber-600" /><span>{report.diagnostics.unclassifiedProductionLines} production line{report.diagnostics.unclassifiedProductionLines === 1 ? " is" : "s are"} not routed to Roll or Flatbed. They remain visible in Overview as Unclassified.</span></div> : null}
-    <div className="daily-production-no-print mt-6 inline-flex rounded-lg border bg-card p-1"><Button size="sm" variant={view === "overview" ? "default" : "ghost"} onClick={() => setView("overview")}>Overview</Button><Button size="sm" variant={view === "breakdown" ? "default" : "ghost"} onClick={() => setView("breakdown")}>Production Breakdown</Button></div>
-    {view === "overview" ? <ReportTable rows={report.overview} /> : <><ReportTable title="Roll Printing" rows={report.roll} showProduction={false} /><ReportTable title="Flatbed Printing" rows={report.flatbed} showProduction={false} /></>}
+    ].map(([label, value, className]) => <div key={String(label)} className={`rounded-lg border bg-card p-4 ${className}`}><div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div><div className="mt-1 text-2xl font-bold tabular-nums">{value}</div></div>)}</section> : null}
+    {view === "overview" && report.diagnostics.unclassifiedProductionLines > 0 ? <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"><AlertCircle className="h-4 w-4 shrink-0 text-amber-600" /><span>{report.diagnostics.unclassifiedProductionLines} production line{report.diagnostics.unclassifiedProductionLines === 1 ? " is" : "s are"} not routed to Roll or Flatbed. They remain visible in Overview as Unclassified.</span></div> : null}
+    <div className="daily-production-no-print mt-6 inline-flex flex-wrap rounded-lg border bg-card p-1"><Button size="sm" variant={view === "overview" ? "default" : "ghost"} onClick={() => setView("overview")}>Overview</Button><Button size="sm" variant={view === "roll" ? "default" : "ghost"} onClick={() => setView("roll")}>Roll Printing</Button><Button size="sm" variant={view === "flatbed" ? "default" : "ghost"} onClick={() => setView("flatbed")}>Flatbed Printing</Button><Button size="sm" variant={view === "fulfillment" ? "default" : "ghost"} onClick={() => setView("fulfillment")}>Fulfillment</Button></div>
+    {view === "overview" ? <ReportTable title="Overview" rows={report.overview} /> : null}
+    {view === "roll" ? <ReportTable title="Roll Printing" rows={report.roll} showProduction={false} /> : null}
+    {view === "flatbed" ? <ReportTable title="Flatbed Printing" rows={report.flatbed} showProduction={false} /> : null}
+    {view === "fulfillment" ? <ReportTable title="Fulfillment" rows={report.fulfillment} showProduction={false} emptyLabel="No outstanding fulfillment items." /> : null}
   </main>;
 }

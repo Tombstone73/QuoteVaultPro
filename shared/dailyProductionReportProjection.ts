@@ -10,6 +10,7 @@ import type {
 
 export type DailyProductionReportSourceRow = {
   orderId: string;
+  customerId?: string | null;
   orderNumber: string;
   displayNumber: string | null;
   jobNumber: number | null;
@@ -25,6 +26,21 @@ export type DailyProductionReportSourceRow = {
   workflowIntent: string | null;
   defaultStationKey: string | null;
   jobStationKey: string | null;
+};
+
+/** Canonical, already-aggregated outstanding physical fulfillment work. */
+export type DailyProductionFulfillmentSourceRow = {
+  orderId: string;
+  customerId: string | null;
+  orderNumber: string;
+  displayNumber: string | null;
+  jobNumber: number | null;
+  label: string | null;
+  poNumber: string | null;
+  customerName: string | null;
+  dueDate: string | null;
+  shippingMethod: string | null;
+  remainingQuantity: number;
 };
 
 type Station = "roll" | "flatbed";
@@ -103,6 +119,7 @@ export function buildDailyProductionReport(input: {
   asOf: string;
   timezone: string;
   rows: DailyProductionReportSourceRow[];
+  fulfillmentRows?: DailyProductionFulfillmentSourceRow[];
 }): DailyProductionReport {
   const ordersById = new Map<string, OrderSource>();
 
@@ -111,6 +128,7 @@ export function buildDailyProductionReport(input: {
     if (!order) {
       order = {
         orderId: row.orderId,
+        customerId: row.customerId ?? null,
         orderNumber: row.displayNumber || row.orderNumber || (row.jobNumber ? String(row.jobNumber) : "—"),
         customerName: row.customerName?.trim() || "Unknown customer",
         jobLabel: row.label?.trim() || null,
@@ -143,6 +161,7 @@ export function buildDailyProductionReport(input: {
   const overview: DailyProductionReportRow[] = [];
   const roll: DailyProductionReportRow[] = [];
   const flatbed: DailyProductionReportRow[] = [];
+  const fulfillment: DailyProductionReportRow[] = [];
   let unclassifiedProductionLines = 0;
   let nonstandardFulfillmentOrders = 0;
 
@@ -181,6 +200,7 @@ export function buildDailyProductionReport(input: {
 
     const base: DailyProductionReportRow = {
       orderId: order.orderId,
+      customerId: order.customerId,
       orderNumber: order.orderNumber,
       customerName: order.customerName,
       jobLabel: order.jobLabel,
@@ -199,6 +219,24 @@ export function buildDailyProductionReport(input: {
   }
 
   const sortedOverview = sortDailyProductionRows(overview);
+  for (const row of input.fulfillmentRows ?? []) {
+    const quantity = Math.max(0, Number(row.remainingQuantity) || 0);
+    if (quantity <= 0) continue;
+    const dueDate = orderBusinessDatePart(row.dueDate);
+    fulfillment.push({
+      orderId: row.orderId,
+      customerId: row.customerId,
+      orderNumber: row.displayNumber || row.orderNumber || (row.jobNumber ? String(row.jobNumber) : "—"),
+      customerName: row.customerName?.trim() || "Unknown customer",
+      jobLabel: row.label?.trim() || null,
+      poNumber: row.poNumber?.trim() || null,
+      dueDate,
+      dueState: getDailyProductionDueState(dueDate, input.asOf),
+      quantity,
+      destination: "none",
+      fulfillment: normalizeFulfillment(row.shippingMethod),
+    });
+  }
   return {
     organizationName: input.organizationName,
     asOf: input.asOf,
@@ -213,6 +251,7 @@ export function buildDailyProductionReport(input: {
     overview: sortedOverview,
     roll: sortDailyProductionRows(roll),
     flatbed: sortDailyProductionRows(flatbed),
+    fulfillment: sortDailyProductionRows(fulfillment),
     diagnostics: {
       unclassifiedProductionLines,
       mixedOrders: sortedOverview.filter((row) => row.destination === "mixed").length,

@@ -21,9 +21,10 @@ const report = {
   organizationName: "Titan Graphics", asOf: "2026-09-14", timezone: "America/Indiana/Indianapolis",
   summary: { open: 2, dueToday: 1, dueTomorrow: 0, overdue: 1, noDueDate: 0 },
   diagnostics: { unclassifiedProductionLines: 1, mixedOrders: 0, nonstandardFulfillmentOrders: 0, activeOrdersOutsideReportStatus: 0 },
-  overview: [{ orderId: "1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship" }],
-  roll: [{ orderId: "1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship" }],
+  overview: [{ orderId: "1", customerId: "customer-1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship" }],
+  roll: [{ orderId: "1", customerId: "customer-1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship" }],
   flatbed: [],
+  fulfillment: [{ orderId: "2", customerId: "customer-2", orderNumber: "1002", customerName: "Beta", jobLabel: null, poNumber: null, dueDate: "2026-09-15", dueState: "tomorrow", quantity: 4, destination: "none", fulfillment: "Delivery" }],
 };
 
 describe("Daily Production List renderer", () => {
@@ -46,27 +47,43 @@ describe("Daily Production List renderer", () => {
     expect(container.textContent).toContain("Unclassified");
     const printButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Print"));
     await act(async () => { printButton?.click(); });
-    expect(apiFetchBlob).toHaveBeenCalledWith("/api/reports/daily-production/pdf", { method: "GET" });
+    expect(apiFetchBlob).toHaveBeenCalledWith("/api/reports/daily-production/pdf?view=overview", { method: "GET" });
     expect(window.open).toHaveBeenCalledWith("", "_blank");
     expect(container.textContent).not.toContain("Browser Print");
   });
 
-  test("uses the requested Overview and breakdown columns", async () => {
+  test("uses four isolated report tabs, direct links, and physical checkoffs", async () => {
     await act(async () => { root.render(<MemoryRouter><DailyProductionListPage /></MemoryRouter>); });
     expect(container.querySelector("thead")?.textContent).toContain("Roll / Flatbed");
     expect(container.querySelector("thead th[aria-label='Check off']")).toBeTruthy();
     expect(container.querySelectorAll(".daily-production-checkoff")).toHaveLength(1);
     expect(container.querySelectorAll("input[type='checkbox']")).toHaveLength(0);
     expect(container.querySelector(".daily-production-report-row")?.className).toContain("break-inside-avoid");
-    const breakdown = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Production Breakdown");
-    await act(async () => { breakdown?.click(); });
+    expect(container.textContent).toContain("Roll Printing");
+    expect(container.textContent).toContain("Flatbed Printing");
+    expect(container.textContent).toContain("Fulfillment");
+    expect(container.querySelector("a[href='/orders/1']"))?.toBeTruthy();
+    expect(container.querySelector("a[href='/customers/customer-1']"))?.toBeTruthy();
+    const fulfillment = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Fulfillment");
+    await act(async () => { fulfillment?.click(); });
     const sections = Array.from(container.querySelectorAll("section.daily-production-section"));
-    expect(sections).toHaveLength(2);
+    expect(sections).toHaveLength(1);
     expect(container.querySelectorAll(".daily-production-checkoff")).toHaveLength(1);
-    for (const section of sections) {
-      expect(section.textContent).not.toContain("Roll / Flatbed");
-      expect(section.textContent).not.toContain("Production");
-      expect(section.textContent).toContain("Fulfillment");
+    expect(sections[0].textContent).toContain("1002");
+    expect(sections[0].textContent).not.toContain("1001");
+    expect(container.textContent).not.toContain("Open Jobs");
+    expect(container.textContent).not.toContain("not routed to Roll or Flatbed");
+  });
+
+  test("requests a PDF for each selected department view", async () => {
+    await act(async () => { root.render(<MemoryRouter><DailyProductionListPage /></MemoryRouter>); });
+    const print = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Print"));
+    for (const [label, view] of [["Overview", "overview"], ["Roll Printing", "roll"], ["Flatbed Printing", "flatbed"], ["Fulfillment", "fulfillment"]] as const) {
+      const tab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === label);
+      await act(async () => { tab?.click(); });
+      await act(async () => { print()?.click(); });
+      expect(apiFetchBlob).toHaveBeenLastCalledWith(`/api/reports/daily-production/pdf?view=${view}`, { method: "GET" });
+      if (view !== "overview") expect(container.textContent).not.toContain("Open Jobs");
     }
   });
 });

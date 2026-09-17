@@ -1,5 +1,11 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
-import type { DailyProductionReport, DailyProductionReportRow } from "@shared/dailyProductionReport";
+import type { DailyProductionReport, DailyProductionReportRow, DailyProductionReportView } from "@shared/dailyProductionReport";
+
+export const DAILY_PRODUCTION_REPORT_VIEWS = ["overview", "roll", "flatbed", "fulfillment"] as const satisfies readonly DailyProductionReportView[];
+
+export function isDailyProductionReportView(value: unknown): value is DailyProductionReportView {
+  return typeof value === "string" && (DAILY_PRODUCTION_REPORT_VIEWS as readonly string[]).includes(value);
+}
 
 const LETTER: [number, number] = [612, 792];
 const MARGIN = 30;
@@ -154,13 +160,21 @@ class DailyProductionPdfWriter {
     this.newPage();
   }
 
-  drawPacketHeader(report: DailyProductionReport): void {
+  drawPacketHeader(report: DailyProductionReport, view: DailyProductionReportView): void {
+    const reportTitle: Record<DailyProductionReportView, string> = {
+      overview: "OPEN PRODUCTION REPORT",
+      roll: "ROLL PRINTING REPORT",
+      flatbed: "FLATBED PRINTING REPORT",
+      fulfillment: "FULFILLMENT REPORT",
+    };
     this.page.drawText(safeText(report.organizationName) || "PrintersHero", { x: MARGIN, y: this.y, size: 14, font: this.bold, color: NAVY });
     this.y -= 22;
-    this.page.drawText("OPEN PRODUCTION REPORT", { x: MARGIN, y: this.y, size: 18, font: this.bold, color: TEXT });
+    this.page.drawText(reportTitle[view], { x: MARGIN, y: this.y, size: 18, font: this.bold, color: TEXT });
     this.y -= 14;
     this.page.drawText(`Daily Production List | As of ${formatDate(report.asOf)}`, { x: MARGIN, y: this.y, size: 9.5, font: this.regular, color: MUTED });
     this.y -= 16;
+
+    if (view !== "overview") return;
 
     const boxes = [
       ["OPEN JOBS", report.summary.open, rgb(0.97, 0.98, 0.99)],
@@ -251,7 +265,7 @@ class DailyProductionPdfWriter {
     this.y -= height;
   }
 
-  renderTable(title: string, rows: DailyProductionReportRow[], columns: Column[]): void {
+  renderTable(title: string, rows: DailyProductionReportRow[], columns: Column[], emptyLabel = "No qualifying production items."): void {
     const drawStart = (continued = false) => {
       const firstHeight = rows.length ? this.rowHeight(rows[0], columns) : 27;
       this.ensure(21 + 18 + firstHeight);
@@ -261,7 +275,7 @@ class DailyProductionPdfWriter {
 
     drawStart();
     if (!rows.length) {
-      this.page.drawText("No qualifying production items.", { x: MARGIN + 5, y: this.y - 15, size: 9, font: this.regular, color: MUTED });
+      this.page.drawText(emptyLabel, { x: MARGIN + 5, y: this.y - 15, size: 9, font: this.regular, color: MUTED });
       this.y -= 28;
       return;
     }
@@ -288,7 +302,7 @@ class DailyProductionPdfWriter {
   }
 }
 
-export async function generateDailyProductionReportPdfBytes(report: DailyProductionReport): Promise<Uint8Array> {
+export async function generateDailyProductionReportPdfBytes(report: DailyProductionReport, view: DailyProductionReportView = "overview"): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -298,10 +312,11 @@ export async function generateDailyProductionReportPdfBytes(report: DailyProduct
   doc.setProducer("PrintersHero");
 
   const writer = new DailyProductionPdfWriter(doc, regular, bold);
-  writer.drawPacketHeader(report);
-  writer.renderTable("OVERVIEW", report.overview, OVERVIEW_COLUMNS);
-  writer.renderTable("ROLL PRINTING", report.roll, BREAKDOWN_COLUMNS);
-  writer.renderTable("FLATBED PRINTING", report.flatbed, BREAKDOWN_COLUMNS);
+  writer.drawPacketHeader(report, view);
+  if (view === "overview") writer.renderTable("OVERVIEW", report.overview, OVERVIEW_COLUMNS);
+  if (view === "roll") writer.renderTable("ROLL PRINTING", report.roll, BREAKDOWN_COLUMNS);
+  if (view === "flatbed") writer.renderTable("FLATBED PRINTING", report.flatbed, BREAKDOWN_COLUMNS);
+  if (view === "fulfillment") writer.renderTable("FULFILLMENT", report.fulfillment, BREAKDOWN_COLUMNS, "No outstanding fulfillment items.");
   writer.drawFooters(report.asOf);
   return doc.save({ useObjectStreams: false });
 }

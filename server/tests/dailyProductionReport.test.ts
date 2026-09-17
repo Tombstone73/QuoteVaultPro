@@ -24,6 +24,13 @@ describe("Daily Production List projection", () => {
   test("classifies Flatbed-only production", () => expect(report([{ ...base, defaultStationKey: "flat_bed" }]).overview[0].destination).toBe("flatbed"));
   test("shows a mixed order once in Overview", () => expect(report([{ ...base, jobStationKey: "roll" }, { ...base, lineItemId: "line-2", jobStationKey: "flatbed" }]).overview).toHaveLength(1));
   test("shows a mixed order in both breakdown sections", () => { const result = report([{ ...base, jobStationKey: "roll" }, { ...base, lineItemId: "line-2", quantity: 4, jobStationKey: "flatbed" }]); expect(result.roll).toHaveLength(1); expect(result.flatbed).toHaveLength(1); });
+  test("projects outstanding canonical fulfillment independently of production rows", () => {
+    const result = buildDailyProductionReport({ organizationName: "Titan Graphics", asOf: "2026-09-14", timezone: "America/Indiana/Indianapolis", rows: [], fulfillmentRows: [
+      { orderId: "fulfillment-1", customerId: "customer-1", orderNumber: "2001", displayNumber: null, jobNumber: null, label: null, poNumber: null, customerName: "Fulfill Me", dueDate: "2026-09-14", shippingMethod: "delivery", remainingQuantity: 3 },
+      { orderId: "complete-1", customerId: "customer-2", orderNumber: "2002", displayNumber: null, jobNumber: null, label: null, poNumber: null, customerName: "Complete", dueDate: "2026-09-14", shippingMethod: "ship", remainingQuantity: 0 },
+    ] });
+    expect(result.fulfillment).toEqual([expect.objectContaining({ orderId: "fulfillment-1", customerId: "customer-1", quantity: 3, fulfillment: "Delivery" })]);
+  });
   test("counts summary metrics by unique Order", () => expect(report([base, { ...base, lineItemId: "line-2" }]).summary.open).toBe(1));
   test("uses station-specific quantities in breakdowns", () => { const result = report([{ ...base, jobStationKey: "roll" }, { ...base, lineItemId: "line-2", quantity: 4, jobStationKey: "flatbed" }]); expect(result.roll[0].quantity).toBe(3); expect(result.flatbed[0].quantity).toBe(4); });
   test("classifies overdue dates", () => expect(getDailyProductionDueState("2026-09-13", "2026-09-14")).toBe("overdue"));
@@ -43,5 +50,7 @@ describe("Daily Production List projection", () => {
     expect(source).toContain("eq(orderStatusPills.organizationId, orders.organizationId)");
     expect(source).toContain("inArray(orderStatusPills.key, reportStatusKeys)");
     expect(source).not.toContain('eq(orders.state, "open")');
+    expect(source).toContain("FulfillmentDashboardRepo(db).listLineEligibility");
+    expect(source).toContain("line.projection.remainingQuantity <= 0");
   });
 });

@@ -14,6 +14,7 @@ import {
 import type { DailyProductionReport } from "@shared/dailyProductionReport";
 import { buildDailyProductionReport } from "@shared/dailyProductionReportProjection";
 import { DAILY_PRODUCTION_STATUS_KEYS } from "./dailyProductionReportStatus";
+import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 
 export { buildDailyProductionReport, getDailyProductionDueState, sortDailyProductionRows } from "@shared/dailyProductionReportProjection";
 
@@ -50,12 +51,13 @@ export async function getDailyProductionReport(organizationId: string): Promise<
     ),
   );
 
-  const [organization, timezone, rows] = await Promise.all([
+  const [organization, timezone, rows, fulfillmentCandidates] = await Promise.all([
     db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, organizationId)).limit(1),
     getOrganizationTimezone(organizationId),
     db
       .select({
         orderId: orders.id,
+        customerId: orders.customerId,
         orderNumber: orders.orderNumber,
         displayNumber: orders.displayNumber,
         jobNumber: orders.jobNumber,
@@ -90,13 +92,44 @@ export async function getDailyProductionReport(organizationId: string): Promise<
         isQualifiedCurrentStatus,
         isNull(orders.canceledAt),
       )),
+    db
+      .select({
+        orderId: orders.id,
+        customerId: orders.customerId,
+        orderNumber: orders.orderNumber,
+        displayNumber: orders.displayNumber,
+        jobNumber: orders.jobNumber,
+        label: orders.label,
+        poNumber: orders.poNumber,
+        customerName: customers.companyName,
+        dueDate: orders.dueDate,
+        shippingMethod: orders.shippingMethod,
+      })
+      .from(orders)
+      .leftJoin(customers, eq(customers.id, orders.customerId))
+      .where(and(eq(orders.organizationId, organizationId), isNull(orders.canceledAt))),
   ]);
+
+  // Fulfillment is deliberately independent of production/order status. The canonical
+  // eligibility projection owns the remaining-quantity semantics for physical work.
+  const eligibility = fulfillmentCandidates.length
+    ? await new FulfillmentDashboardRepo(db).listLineEligibility(organizationId, { orderIds: fulfillmentCandidates.map((order) => order.orderId) })
+    : [];
+  const remainingByOrderId = new Map<string, number>();
+  for (const line of eligibility) {
+    if (!line.projection.requiresFulfillment || line.projection.remainingQuantity <= 0) continue;
+    remainingByOrderId.set(line.orderId, (remainingByOrderId.get(line.orderId) ?? 0) + line.projection.remainingQuantity);
+  }
 
   const report = buildDailyProductionReport({
     organizationName: organization[0]?.name || "PrintersHero",
     asOf: calendarDateInTimezone(new Date(), timezone),
     timezone,
     rows,
+    fulfillmentRows: fulfillmentCandidates.map((order) => ({
+      ...order,
+      remainingQuantity: remainingByOrderId.get(order.orderId) ?? 0,
+    })),
   });
 
   return {
