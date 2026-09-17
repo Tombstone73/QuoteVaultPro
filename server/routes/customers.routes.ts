@@ -312,7 +312,7 @@ export function registerCustomerRoutes(
       if (!organizationId) return res.status(500).json({ success: false, error: { code: "MISSING_ORGANIZATION_CONTEXT", message: "Missing organization context" } });
       if (!actorUserId) return res.status(401).json({ success: false, error: { code: "ACTOR_REQUIRED", message: "Authenticated user is required" } });
       if (!canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole)) {
-        return res.status(403).json({ success: false, error: { code: "CUSTOMER_COMMERCIAL_CONFIGURATION_FORBIDDEN", message: "Organization Owner or Admin permission is required to change customer terms or credit limits." } });
+        return res.status(403).json({ success: false, error: { code: "CUSTOMER_COMMERCIAL_CONFIGURATION_FORBIDDEN", message: "Organization Owner or Admin permission is required to change customer terms, credit limits, or tax status." } });
       }
       const update = bulkCustomerCommercialConfigurationSchema.parse(req.body ?? {});
       const result = await updateCustomersCommercialConfiguration({ organizationId, actorUserId, update });

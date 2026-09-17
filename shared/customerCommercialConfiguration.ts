@@ -41,6 +41,11 @@ export const bulkCustomerCommercialConfigurationSchema = z.discriminatedUnion("o
     // at zero while creditLimitConfiguredAt distinguishes it from a real $0.
     creditLimit: z.number().finite().min(0).max(99_999_999.99).nullable(),
   }).strict(),
+  z.object({
+    customerIds: customerIdsSchema,
+    operation: z.literal("set_tax_status"),
+    isTaxExempt: z.boolean(),
+  }).strict(),
 ]);
 
 export type BulkCustomerCommercialConfigurationInput = z.infer<typeof bulkCustomerCommercialConfigurationSchema>;

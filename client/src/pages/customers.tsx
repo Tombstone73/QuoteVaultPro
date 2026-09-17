@@ -202,6 +202,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
               search={search}
               viewMode="split"
               canManageCommercialConfiguration={canManageCommercialConfiguration}
+              canBulkSetCustomerTaxStatus={canManageCommercialConfiguration}
               preferenceUserId={user?.id}
             />
           </div>
@@ -298,6 +299,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 onTypeFilterChange={setTypeFilter}
                 showFilterControls={false}
                 canManageCommercialConfiguration={canManageCommercialConfiguration}
+                canBulkSetCustomerTaxStatus={canManageCommercialConfiguration}
                 preferenceUserId={user?.id}
               />
             </DataCard>
@@ -331,6 +333,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
               onTypeFilterChange={setTypeFilter}
               showFilterControls={false}
               canManageCommercialConfiguration={canManageCommercialConfiguration}
+              canBulkSetCustomerTaxStatus={canManageCommercialConfiguration}
               preferenceUserId={user?.id}
             />
           </DataCard>

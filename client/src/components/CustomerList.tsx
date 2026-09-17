@@ -39,6 +39,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -94,6 +95,7 @@ type Customer = {
   creditLimit?: string | null;
   creditLimitConfigured?: boolean;
   paymentTerms?: string | null;
+  isTaxExempt?: boolean;
   createdAt: string;
   updatedAt?: string | null;
   orderCount?: number;
@@ -172,6 +174,8 @@ interface CustomerListProps {
   onTypeFilterChange?: (value: string) => void;
   showFilterControls?: boolean;
   canManageCommercialConfiguration?: boolean;
+  /** Kept separate so a future tenant-setup capability can gate tax status without changing table logic. */
+  canBulkSetCustomerTaxStatus?: boolean;
   preferenceUserId?: string | null;
 }
 
@@ -189,11 +193,13 @@ export default function CustomerList({
   onTypeFilterChange,
   showFilterControls = true,
   canManageCommercialConfiguration = false,
+  canBulkSetCustomerTaxStatus,
   preferenceUserId,
 }: CustomerListProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const selectionEnabled = Boolean(onMergeCustomers || canManageCommercialConfiguration);
+  const canSetCustomerTaxStatus = canBulkSetCustomerTaxStatus ?? canManageCommercialConfiguration;
+  const selectionEnabled = Boolean(onMergeCustomers || canManageCommercialConfiguration || canSetCustomerTaxStatus);
   const [localStatusFilter, setLocalStatusFilter] = useState<string>("all");
   const [localTypeFilter, setLocalTypeFilter] = useState<string>("all");
   const statusFilter = controlledStatusFilter ?? localStatusFilter;
@@ -205,10 +211,11 @@ export default function CustomerList({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
-  const [bulkDialog, setBulkDialog] = useState<"terms" | "credit" | null>(null);
+  const [bulkDialog, setBulkDialog] = useState<"terms" | "credit" | "tax" | null>(null);
   const [bulkPaymentTerms, setBulkPaymentTerms] = useState<CustomerPaymentTerm>("due_on_receipt");
   const [bulkCreditLimitDraft, setBulkCreditLimitDraft] = useState("");
   const [bulkCreditLimitNotSet, setBulkCreditLimitNotSet] = useState(false);
+  const [bulkTaxExempt, setBulkTaxExempt] = useState(true);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [editingCreditCustomerId, setEditingCreditCustomerId] = useState<string | null>(null);
   const [editingTermsCustomerId, setEditingTermsCustomerId] = useState<string | null>(null);
@@ -221,6 +228,7 @@ export default function CustomerList({
     { id: "email", label: "Email", defaultVisible: true },
     { id: "phone", label: "Phone", defaultVisible: true },
     { id: "status", label: "Status", defaultVisible: true },
+    { id: "taxStatus", label: "Tax Status", defaultVisible: false },
     { id: "customerType", label: "Customer Type", defaultVisible: true },
     { id: "updatedAt", label: "Last Updated", defaultVisible: true },
     ...(canManageCommercialConfiguration ? [
@@ -264,6 +272,15 @@ export default function CustomerList({
   const toggleColumn = (columnId: string) => setVisibleColumns((current) =>
     current.includes(columnId) ? current.filter((id) => id !== columnId) : [...current, columnId],
   );
+  const moveColumn = (columnId: string, direction: -1 | 1) => setVisibleColumns((current) => {
+    const fromIndex = current.indexOf(columnId);
+    const toIndex = fromIndex + direction;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= current.length) return current;
+    const next = [...current];
+    [next[fromIndex], next[toIndex]] = [next[toIndex], next[fromIndex]];
+    return next;
+  });
+  const orderedVisibleColumns = visibleColumns.filter((columnId) => supportedColumns.some((column) => column.id === columnId));
 
   const updateCustomerMutation = useMutation({
     mutationFn: async ({ customerId, patch }: { customerId: string; patch: Record<string, unknown> }) => {
@@ -292,7 +309,7 @@ export default function CustomerList({
   });
 
   const bulkCommercialUpdateMutation = useMutation({
-    mutationFn: async (payload: { operation: "set_payment_terms"; paymentTerms: CustomerPaymentTerm } | { operation: "set_credit_limit"; creditLimit: number | null }) => {
+    mutationFn: async (payload: { operation: "set_payment_terms"; paymentTerms: CustomerPaymentTerm } | { operation: "set_credit_limit"; creditLimit: number | null } | { operation: "set_tax_status"; isTaxExempt: boolean }) => {
       const response = await apiFetch("/api/customers/bulk-commercial-configuration", {
         method: "POST",
         credentials: "include",
@@ -309,7 +326,7 @@ export default function CustomerList({
       setBulkDialog(null);
       setBulkError(null);
       toast({
-        title: variables.operation === "set_payment_terms" ? "Payment terms updated" : "Credit limit updated",
+        title: variables.operation === "set_payment_terms" ? "Payment terms updated" : variables.operation === "set_credit_limit" ? "Credit limit updated" : "Tax status updated",
         description: `${result?.updatedCount ?? 0} customer${result?.updatedCount === 1 ? "" : "s"} updated.`,
       });
     },
@@ -384,7 +401,7 @@ export default function CustomerList({
     return next;
   });
 
-  const openBulkDialog = (dialog: "terms" | "credit") => {
+  const openBulkDialog = (dialog: "terms" | "credit" | "tax") => {
     setBulkError(null);
     setBulkDialog(dialog);
   };
@@ -543,13 +560,19 @@ export default function CustomerList({
               <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
               <DropdownMenuSeparator />
               {supportedColumns.map((column) => (
-                <DropdownMenuCheckboxItem
-                  key={column.id}
-                  checked={isColumnVisible(column.id)}
-                  onCheckedChange={() => toggleColumn(column.id)}
-                >
-                  {column.label}
-                </DropdownMenuCheckboxItem>
+                <div key={column.id} className="flex items-center">
+                  <DropdownMenuCheckboxItem
+                    className="flex-1"
+                    checked={isColumnVisible(column.id)}
+                    onCheckedChange={() => toggleColumn(column.id)}
+                  >
+                    {column.label}
+                  </DropdownMenuCheckboxItem>
+                  {isColumnVisible(column.id) && <>
+                    <DropdownMenuItem aria-label={`Move ${column.label} left`} disabled={orderedVisibleColumns.indexOf(column.id) === 0} onSelect={() => moveColumn(column.id, -1)}>←</DropdownMenuItem>
+                    <DropdownMenuItem aria-label={`Move ${column.label} right`} disabled={orderedVisibleColumns.indexOf(column.id) === orderedVisibleColumns.length - 1} onSelect={() => moveColumn(column.id, 1)}>→</DropdownMenuItem>
+                  </>}
+                </div>
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
@@ -574,6 +597,7 @@ export default function CustomerList({
             <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("terms")}>Set Terms</Button>
             <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("credit")}>Set Credit Limit</Button>
           </>}
+          {canSetCustomerTaxStatus && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("tax")}>Set Tax Status</Button>}
           {selectedCustomerIds.size === 2 && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onMergeCustomers(Array.from(selectedCustomerIds))}><GitMerge className="w-3.5 h-3.5 mr-1" />Merge</Button>}
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setSelectedCustomerIds(new Set())}>Clear Selection</Button>
         </>}
@@ -656,20 +680,28 @@ export default function CustomerList({
     </Button>
   );
 
+  const renderEnhancedHeader = (columnId: string) => {
+    switch (columnId) {
+      case "company": return <TableHead key={columnId}>{sortHeader("Company Name", "name")}</TableHead>;
+      case "primaryContact": return <TableHead key={columnId}>{sortHeader("Primary Contact", "primaryContact")}</TableHead>;
+      case "email": return <TableHead key={columnId}>{sortHeader("Email", "email")}</TableHead>;
+      case "phone": return <TableHead key={columnId}>{sortHeader("Phone", "phone")}</TableHead>;
+      case "status": return <TableHead key={columnId}>{sortHeader("Status", "status")}</TableHead>;
+      case "taxStatus": return <TableHead key={columnId}>Tax Status</TableHead>;
+      case "customerType": return <TableHead key={columnId}>{sortHeader("Customer Type", "customerType")}</TableHead>;
+      case "updatedAt": return <TableHead key={columnId}>{sortHeader("Last Updated", "updatedAt", "desc")}</TableHead>;
+      case "paymentTerms": return <TableHead key={columnId} className="w-[150px]">Terms</TableHead>;
+      case "credit": return <TableHead key={columnId} className="w-[210px]">Credit</TableHead>;
+      default: return null;
+    }
+  };
+
   const enhancedTable = (
     <Table data-testid="customer-enhanced-table">
       <TableHeader>
         <TableRow>
           {selectionEnabled && <TableHead className="w-10" onClick={(event) => event.stopPropagation()}><Checkbox aria-label="Select visible customers" checked={visibleSelectionState} onCheckedChange={toggleVisibleCustomerSelection} /></TableHead>}
-          {isColumnVisible("company") && <TableHead>{sortHeader("Company Name", "name")}</TableHead>}
-          {isColumnVisible("primaryContact") && <TableHead>{sortHeader("Primary Contact", "primaryContact")}</TableHead>}
-          {isColumnVisible("email") && <TableHead>{sortHeader("Email", "email")}</TableHead>}
-          {isColumnVisible("phone") && <TableHead>{sortHeader("Phone", "phone")}</TableHead>}
-          {isColumnVisible("status") && <TableHead>{sortHeader("Status", "status")}</TableHead>}
-          {isColumnVisible("customerType") && <TableHead>{sortHeader("Customer Type", "customerType")}</TableHead>}
-          {isColumnVisible("updatedAt") && <TableHead>{sortHeader("Last Updated", "updatedAt", "desc")}</TableHead>}
-          {canManageCommercialConfiguration && isColumnVisible("paymentTerms") && <TableHead className="w-[150px]">Terms</TableHead>}
-          {canManageCommercialConfiguration && isColumnVisible("credit") && <TableHead className="w-[210px]">Credit</TableHead>}
+          {orderedVisibleColumns.map(renderEnhancedHeader)}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -688,19 +720,17 @@ export default function CustomerList({
               data-state={selectedCustomerId === customer.id ? "selected" : undefined}
             >
               {selectionEnabled && <TableCell onClick={(event) => event.stopPropagation()}><Checkbox aria-label={`Select ${customer.companyName}`} checked={selectedCustomerIds.has(customer.id)} onCheckedChange={() => toggleCustomerSelection(customer.id)} /></TableCell>}
-              {isColumnVisible("company") && <TableCell className="font-medium">{customer.companyName}</TableCell>}
-              {isColumnVisible("primaryContact") && <TableCell>{contactName || "-"}</TableCell>}
-              {isColumnVisible("email") && <TableCell className="max-w-[220px] truncate">{email}</TableCell>}
-              {isColumnVisible("phone") && <TableCell>{phone}</TableCell>}
-              {isColumnVisible("status") && <TableCell>
-                <Badge variant="outline" className={`capitalize ${getStatusBadgeClass(status)}`}>
-                  {status.replace("_", " ")}
-                </Badge>
-              </TableCell>}
-              {isColumnVisible("customerType") && <TableCell className="capitalize">{customer.customerType || "-"}</TableCell>}
-              {isColumnVisible("updatedAt") && <TableCell>{formatDate(customer.updatedAt || customer.createdAt)}</TableCell>}
-              {canManageCommercialConfiguration && isColumnVisible("paymentTerms") && (
-                <TableCell onClick={(event) => event.stopPropagation()}>
+              {orderedVisibleColumns.map((columnId) => {
+                if (columnId === "company") return <TableCell key={columnId} className="font-medium">{customer.companyName}</TableCell>;
+                if (columnId === "primaryContact") return <TableCell key={columnId}>{contactName || "-"}</TableCell>;
+                if (columnId === "email") return <TableCell key={columnId} className="max-w-[220px] truncate">{email}</TableCell>;
+                if (columnId === "phone") return <TableCell key={columnId}>{phone}</TableCell>;
+                if (columnId === "status") return <TableCell key={columnId}><Badge variant="outline" className={`capitalize ${getStatusBadgeClass(status)}`}>{status.replace("_", " ")}</Badge></TableCell>;
+                if (columnId === "taxStatus") return <TableCell key={columnId}><Badge variant="outline" className={customer.isTaxExempt ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}>{customer.isTaxExempt ? "Exempt" : "Taxable"}</Badge></TableCell>;
+                if (columnId === "customerType") return <TableCell key={columnId} className="capitalize">{customer.customerType || "-"}</TableCell>;
+                if (columnId === "updatedAt") return <TableCell key={columnId}>{formatDate(customer.updatedAt || customer.createdAt)}</TableCell>;
+                if (columnId === "paymentTerms") return (
+                <TableCell key={columnId} onClick={(event) => event.stopPropagation()}>
                   <Select
                     value={customer.paymentTerms || "due_on_receipt"}
                     disabled={updateCustomerMutation.isPending}
@@ -719,9 +749,10 @@ export default function CustomerList({
                   </Select>
                   {editingTermsCustomerId === customer.id && editError && <p role="alert" className="mt-1 max-w-[180px] text-[10px] text-destructive">{editError}</p>}
                 </TableCell>
-              )}
-              {canManageCommercialConfiguration && isColumnVisible("credit") && (
-                <TableCell onClick={(event) => event.stopPropagation()}>
+                );
+                if (columnId !== "credit") return null;
+                return (
+                <TableCell key={columnId} onClick={(event) => event.stopPropagation()}>
                   {editingCreditCustomerId === customer.id ? (
                     <div className="flex items-center gap-1">
                       <Input
@@ -772,7 +803,8 @@ export default function CustomerList({
                   )}
                   {editingCreditCustomerId === customer.id && editError && <p role="alert" className="mt-1 max-w-[180px] text-[10px] text-destructive">{editError}</p>}
                 </TableCell>
-              )}
+                );
+              })}
             </TableRow>
           );
         })}
@@ -834,6 +866,27 @@ export default function CustomerList({
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setBulkDialog(null)}>Cancel</Button>
             <Button type="button" disabled={bulkCommercialUpdateMutation.isPending} onClick={applyBulkCreditLimit}>Apply</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDialog === "tax"} onOpenChange={(open) => { if (!open) { setBulkDialog(null); setBulkError(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set Tax Status</DialogTitle>
+            <DialogDescription>Apply to {selectedCustomerIds.size} selected customer{selectedCustomerIds.size === 1 ? "" : "s"}.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Select value={bulkTaxExempt ? "exempt" : "taxable"} onValueChange={(value) => { setBulkTaxExempt(value === "exempt"); setBulkError(null); }}>
+              <SelectTrigger aria-label="Bulk tax status"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="exempt">Tax Exempt</SelectItem><SelectItem value="taxable">Taxable</SelectItem></SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground">{bulkTaxExempt ? "These customers will no longer be charged the organization's default sales tax unless a document-level override explicitly changes the transaction." : "These customers will use their configured customer tax override, or the organization default tax rate when no customer override exists."}</p>
+          </div>
+          {bulkError && <p role="alert" className="text-sm text-destructive">{bulkError}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button type="button" disabled={bulkCommercialUpdateMutation.isPending} onClick={() => bulkCommercialUpdateMutation.mutate({ operation: "set_tax_status", isTaxExempt: bulkTaxExempt })}>Apply</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

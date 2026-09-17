@@ -9,6 +9,11 @@ import CustomerList from "@/components/CustomerList";
 import { useContacts, useCreateContact, useDeleteContact, useUpdateContact } from "@/hooks/useContacts";
 import { useQuery } from "@tanstack/react-query";
 
+jest.mock("@/lib/queryClient", () => ({
+  apiFetch: jest.fn(),
+  queryClient: { invalidateQueries: jest.fn() },
+}));
+
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a>,
   useNavigate: () => jest.fn(),
@@ -148,7 +153,7 @@ jest.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: any) => <div>{children}</div>,
   DropdownMenuCheckboxItem: ({ children, checked, onCheckedChange, ...props }: any) => <label {...props}><input type="checkbox" checked={checked} onChange={(event) => onCheckedChange?.(event.currentTarget.checked)} />{children}</label>,
   DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
-  DropdownMenuItem: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+  DropdownMenuItem: ({ children, onSelect, ...props }: any) => <button {...props} onClick={() => onSelect?.()}>{children}</button>,
   DropdownMenuLabel: ({ children }: any) => <span>{children}</span>,
   DropdownMenuSeparator: () => <hr />,
   DropdownMenuTrigger: ({ children }: any) => <>{children}</>,
@@ -374,6 +379,7 @@ function mockCustomerListQuery() {
         phone: null,
         status: "active",
         customerType: "business",
+        isTaxExempt: index === 0,
         currentBalance: "0",
         availableCredit: "0",
         createdAt: new Date().toISOString(),
@@ -546,6 +552,42 @@ test("Customer list does not expose financial columns to lower-permission list u
   expect(container.textContent).toContain("Columns");
   expect(container.textContent).not.toContain("Terms");
   expect(container.textContent).not.toContain("Credit");
+});
+
+test("Customer list exposes Tax Status as a persisted configurable column", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" preferenceUserId="tax-column-admin" />);
+  });
+
+  expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).not.toContain("Tax Status");
+  const taxStatusChoice = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.includes("Tax Status"));
+  act(() => Simulate.change(taxStatusChoice?.querySelector("input") as HTMLInputElement, { target: { checked: true } } as any));
+
+  expect(Array.from(container.querySelectorAll("th")).map((head) => head.textContent)).toContain("Tax Status");
+  expect(container.textContent).toContain("Exempt");
+  expect(container.textContent).toContain("Taxable");
+  expect(window.localStorage.getItem("titanos.customers.listColumns.tax-column-admin")).toContain("taxStatus");
+
+  const moveTaxStatusLeft = container.querySelector("button[aria-label='Move Tax Status left']") as HTMLButtonElement;
+  act(() => moveTaxStatusLeft.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  const headers = Array.from(container.querySelectorAll("th")).map((head) => head.textContent);
+  expect(headers.indexOf("Tax Status")).toBeLessThan(headers.indexOf("Last Updated"));
+});
+
+test("Customer list gates Set Tax Status separately for future tenant setup controls", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" onMergeCustomers={jest.fn()} canBulkSetCustomerTaxStatus />);
+  });
+
+  const firstCheckbox = container.querySelector("input[aria-label='Select Customer 1']") as HTMLInputElement;
+  act(() => Simulate.change(firstCheckbox, { target: { checked: true } } as any));
+  const action = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Set Tax Status");
+  expect(action).toBeTruthy();
+  act(() => action?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(container.textContent).toContain("Apply to 1 selected customer.");
+  expect(container.textContent).toContain("These customers will no longer be charged the organization's default sales tax");
 });
 
 test("Customer selection header selects and deselects only the visible enhanced-table rows", () => {

@@ -21,6 +21,10 @@ describe("bulk customer commercial configuration", () => {
     expect(service).toContain("paymentTerms: input.update.paymentTerms");
     expect(service).toContain("creditLimitConfiguredAt: configuredAt");
     expect(service).toContain("customer_credit_limit_updated");
+    expect(service).toContain("operation === \"set_tax_status\"");
+    expect(service).toContain("isTaxExempt: input.update.isTaxExempt");
+    expect(service).toContain("customer_tax_status_updated");
+    expect(service).not.toContain("taxRateOverride: input.update");
     expect(service).not.toContain("invoices");
     expect(service).not.toContain("payments");
   });

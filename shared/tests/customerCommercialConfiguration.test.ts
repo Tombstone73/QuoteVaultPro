@@ -15,6 +15,12 @@ describe("bulk customer commercial configuration contract", () => {
     expect(bulkCustomerCommercialConfigurationSchema.parse({ customerIds: ["customer-1"], operation: "set_credit_limit", creditLimit: null }).creditLimit).toBeNull();
   });
 
+  test("accepts an explicit tax-status update without accepting unrelated commercial fields", () => {
+    expect(bulkCustomerCommercialConfigurationSchema.parse({ customerIds: ["customer-1"], operation: "set_tax_status", isTaxExempt: true })).toMatchObject({ operation: "set_tax_status", isTaxExempt: true });
+    expect(bulkCustomerCommercialConfigurationSchema.parse({ customerIds: ["customer-1"], operation: "set_tax_status", isTaxExempt: false })).toMatchObject({ operation: "set_tax_status", isTaxExempt: false });
+    expect(bulkCustomerCommercialConfigurationSchema.safeParse({ customerIds: ["customer-1"], operation: "set_tax_status", isTaxExempt: true, taxRateOverride: 0.06 }).success).toBe(false);
+  });
+
   test.each([
     [{ customerIds: [], operation: "set_payment_terms", paymentTerms: "net_30" }],
     [{ customerIds: ["customer-1", "customer-1"], operation: "set_payment_terms", paymentTerms: "net_30" }],
