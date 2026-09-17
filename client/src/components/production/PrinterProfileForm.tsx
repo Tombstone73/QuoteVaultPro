@@ -46,6 +46,10 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
   const [windowsQueueName, setWindowsQueueName] = useState("");
   const [defaultCopies, setDefaultCopies] = useState("1");
   const [trailingFeedMm, setTrailingFeedMm] = useState("0");
+  const [receiptWidthMm, setReceiptWidthMm] = useState("80");
+  const [intendedUse, setIntendedUse] = useState("production_ticket");
+  const [supportsTraveler, setSupportsTraveler] = useState(true);
+  const [supportsQuickNote, setSupportsQuickNote] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [isDefault, setIsDefault] = useState(false);
 
@@ -55,22 +59,26 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     setStationRoute(profile?.stationRoute ?? "");
     setLocation(profile?.location ?? ""); setWindowsQueueName(profile?.windowsQueueName ?? "");
     setDefaultCopies(String(profile?.defaultCopies ?? 1)); setTrailingFeedMm(String(profile?.trailingFeedMm ?? 0));
+    setReceiptWidthMm(String((profile as any)?.receiptWidthMm ?? 80));
+    setIntendedUse(profile?.intendedUse ?? toIntendedUse(profile?.printerType ?? defaultType));
+    setSupportsTraveler(profile?.supportedDocuments?.includes("traveler") ?? true);
+    setSupportsQuickNote(profile?.supportedDocuments?.includes("quick_note") ?? false);
     setIsActive(profile?.isActive ?? true);
     setIsDefault(profile?.isDefault ?? false);
   }, [defaultType, profile]);
 
   const saving = createMutation.isPending || updateMutation.isPending;
-  const canSave = displayName.trim().length > 0 && !saving;
+  const canSave = displayName.trim().length > 0 && (supportsTraveler || supportsQuickNote) && !saving;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const payload: PrinterProfileInput = {
       displayName: displayName.trim(),
       printerType,
-      intendedUse: toIntendedUse(printerType),
+      intendedUse,
       stationRoute: stationRoute.trim() || null,
       location: location.trim() || null, windowsQueueName: windowsQueueName.trim() || null,
-      supportedDocuments: ["traveler"], defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm),
+      supportedDocuments: ([supportsTraveler && "traveler", supportsQuickNote && "quick_note"].filter(Boolean) as string[]), defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm), receiptWidthMm: Number(receiptWidthMm),
       scope: "organization",
       isActive,
       isDefault: isActive && isDefault,
@@ -91,6 +99,16 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
         <div className="space-y-1.5"><Label>Windows printer queue</Label><Input value={windowsQueueName} onChange={(event) => setWindowsQueueName(event.target.value)} placeholder="Select from the paired agent inventory" /></div>
         <div className="space-y-1.5"><Label>Default copies</Label><Input type="number" min="1" max="99" value={defaultCopies} onChange={(event) => setDefaultCopies(event.target.value)} /></div>
         <div className="space-y-1.5"><Label>Additional trailing feed (mm)</Label><Input type="number" min="0" max="100" step="0.1" value={trailingFeedMm} onChange={(event) => setTrailingFeedMm(event.target.value)} placeholder="12.7 for 0.5 in" /><p className="text-xs text-titan-text-secondary">Added after the standard 38.1 mm / 1.5 in tear-off space.</p></div>
+        <div className="space-y-1.5"><Label>Receipt width (mm)</Label><Input type="number" min="40" max="120" step="0.1" value={receiptWidthMm} onChange={(event) => setReceiptWidthMm(event.target.value)} /></div>
+        <div className="space-y-1.5">
+          <Label>Intended use</Label>
+          <Input value={intendedUse} onChange={(event) => setIntendedUse(event.target.value)} placeholder="production_ticket or quick_note" />
+        </div>
+        <div className="space-y-2 rounded-md border border-titan-border p-3">
+          <Label>Supported documents</Label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsTraveler} onChange={(event) => setSupportsTraveler(event.target.checked)} /> Traveler</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsQuickNote} onChange={(event) => setSupportsQuickNote(event.target.checked)} /> Quick Note</label>
+        </div>
         <div className="space-y-1.5">
           <Label>Printer type</Label>
           <Select value={printerType} onValueChange={(value) => setPrinterType(value as PrinterProfileInput["printerType"])}>
@@ -118,7 +136,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
         </div>
       </div>
       <p className="text-xs text-titan-text-secondary">
-        Traveler destinations are mapped to a paired Windows Print Agent. Queue names are resolved server-side and are never supplied by an operator at print time.
+        Direct-print destinations are mapped to a paired Windows Print Agent. Select at least one supported document; queue names are resolved server-side and are never supplied by an operator at print time.
       </p>
       <div className="flex justify-end gap-2">
         {onCancel && <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>Cancel</Button>}

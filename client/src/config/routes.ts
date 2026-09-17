@@ -122,6 +122,9 @@ export const ROUTES = {
     edit: (id: string) => `/orders/${id}/edit`,
     traveler: (id: string) => `/orders/${id}/traveler`,
   },
+  print: {
+    quickNote: "/print/quick-note",
+  },
 
   inboundOrders: {
     list: "/inbound-orders",

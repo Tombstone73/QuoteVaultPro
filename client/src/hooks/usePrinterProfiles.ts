@@ -16,6 +16,7 @@ export interface PrinterProfile {
   supportedDocuments?: string[];
   defaultCopies?: number;
   trailingFeedMm?: string | number;
+  receiptWidthMm?: string | number;
   scope: "organization";
   isActive: boolean;
   isDefault: boolean;
@@ -35,6 +36,7 @@ export interface PrinterProfileInput {
   supportedDocuments?: string[];
   defaultCopies?: number;
   trailingFeedMm?: number;
+  receiptWidthMm?: number;
   scope?: "organization";
   isActive: boolean;
   isDefault: boolean;

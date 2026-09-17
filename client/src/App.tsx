@@ -56,6 +56,7 @@ import ProductionJobDetailPage from "@/pages/production-job-detail";
 import ProductionTicketPage from "@/pages/production-ticket";
 import OrderTravelerPage from "@/pages/order-traveler";
 import DirectPrintTravelerRoute from "@/pages/direct-print-traveler-route";
+import DirectPrintQuickNoteRoute from "@/pages/direct-print-quick-note-route";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
@@ -163,6 +164,7 @@ function Router() {
         {/* The shell is public only for a claimed direct-print job. Its source
             endpoint remains protected by the Local Bridge bearer token. */}
         <Route path="/orders/:orderId/traveler" element={<DirectPrintTravelerRoute />} />
+        <Route path="/print/quick-note" element={<DirectPrintQuickNoteRoute />} />
         {/* Public legal/support pages */}
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />

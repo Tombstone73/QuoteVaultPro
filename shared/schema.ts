@@ -2383,14 +2383,17 @@ export const insertPrinterProfileSchema = createInsertSchema(printerProfiles).om
 }).extend({
   displayName: z.string().trim().min(1).max(160),
   printerType: z.enum(printerProfileTypeValues),
+  // Existing tenants use additional intended-use labels; Quick Note extends,
+  // rather than narrows, that established configuration surface.
   intendedUse: z.string().trim().min(1).max(80).default("production_ticket"),
   stationRoute: z.string().trim().max(120).optional().nullable(),
   location: z.string().trim().max(160).optional().nullable(),
   windowsQueueName: z.string().trim().max(255).optional().nullable(),
   printAgentId: z.string().trim().min(1).optional().nullable(),
-  supportedDocuments: z.array(z.enum(["traveler"])).min(1).default(["traveler"]),
+  supportedDocuments: z.array(z.enum(["traveler", "quick_note"])).min(1).default(["traveler"]),
   defaultCopies: z.number().int().min(1).max(99).default(1),
   trailingFeedMm: z.coerce.number().min(0).max(100).default(0),
+  receiptWidthMm: z.coerce.number().min(40).max(120).default(80),
   scope: z.enum(printerProfileScopeValues).default("organization"),
   isActive: z.boolean().default(true),
   isDefault: z.boolean().default(false),
@@ -8706,7 +8709,7 @@ export const directPrintJobStatusValues = ["queued", "claimed", "rendering", "su
 export const directPrintJobs = pgTable("direct_print_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: "cascade" }),
   destinationId: varchar("destination_id").notNull().references(() => printerProfiles.id, { onDelete: "restrict" }),
   agentId: varchar("agent_id").notNull().references(() => localBridgeAgents.id, { onDelete: "restrict" }),
   documentType: varchar("document_type", { length: 40 }).notNull().default("traveler"),
@@ -8714,6 +8717,7 @@ export const directPrintJobs = pgTable("direct_print_jobs", {
   /** Durable, print-only document data (for example a pickup traveler batch). */
   printContext: jsonb("print_context").$type<Record<string, unknown> | null>(),
   trailingFeedMm: numeric("trailing_feed_mm", { precision: 7, scale: 2 }).notNull().default("0"),
+  receiptWidthMm: numeric("receipt_width_mm", { precision: 7, scale: 2 }).notNull().default("80"),
   status: varchar("status", { length: 20 }).notNull().$type<typeof directPrintJobStatusValues[number]>().default("queued"),
   attempts: integer("attempts").notNull().default(0), claimedAt: timestamp("claimed_at", { withTimezone: true }), submittedAt: timestamp("submitted_at", { withTimezone: true }), failedAt: timestamp("failed_at", { withTimezone: true }), lastError: text("last_error"),
   requestKey: varchar("request_key", { length: 160 }).notNull(),

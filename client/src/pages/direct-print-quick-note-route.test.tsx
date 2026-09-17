@@ -1,0 +1,11 @@
+import React from "react";
+import { act } from "react-dom/test-utils";
+import { createRoot } from "react-dom/client";
+import { describe, expect, jest, test } from "@jest/globals";
+const source = { data: { headline: "Fragile", body: "Keep upright\nDo not stack", receiptWidthMm: 58 }, isLoading: false, error: null };
+jest.mock("@tanstack/react-query", () => ({ useQuery: () => source }));
+jest.mock("react-router-dom", () => ({ useSearchParams: () => [new URLSearchParams({ directPrintJobId: "job-1", feedMm: "12" })] }));
+jest.mock("@/pages/order-traveler", () => ({ hasValidDirectPrintJobId: () => true }));
+jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
+import QuickNote from "./direct-print-quick-note-route";
+describe("DirectPrintQuickNoteRoute", () => { test("renders only note content with regular wrapped body and profile width", async () => { const el=document.createElement("div"); const root=createRoot(el); await act(async()=>root.render(<QuickNote/>)); const content=el.querySelector('[data-testid="quick-note-content"]'); expect(content?.textContent).toContain("Fragile"); expect(content?.textContent).toContain("Keep upright"); const area=el.querySelector('#ticket-print-area') as HTMLElement; expect(area.style.width).toBe("58mm"); expect((content?.children[1] as HTMLElement).style.fontWeight).toBe("400"); root.unmount(); }); });

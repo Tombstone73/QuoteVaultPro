@@ -13,8 +13,8 @@ using Supabase.Realtime.Broadcast;
 using Supabase.Realtime.Models;
 
 namespace PrintersHero.PrintAgent;
-record Job(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
-record Claim(string id, string orderId, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
+record Job(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
+record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
   const string AgentVersion = "1.0.24";
@@ -227,7 +227,7 @@ static class Program {
       await Print(job);
     }
   }
-  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; } if (claim is null) return; Log($"Queue job claimed: {job.id}."); if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); await RunOnTravelerStaAsync(() => PrintTraveler(claim)); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
+  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; } if (claim is null) return; Log($"Queue job claimed: {job.id} ({claim.documentType ?? "traveler"})."); if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); if (string.Equals(claim.documentType, "quick_note", StringComparison.Ordinal)) await RunOnTravelerStaAsync(() => PrintQuickNote(claim)); else await RunOnTravelerStaAsync(() => PrintTraveler(claim)); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
   // The Windows spooler is queried locally; the server never accepts a queue
   // supplied by an operator. Status failures still fail closed at PrintAsync.
   static bool QueueExists(string queue) => PrinterSettings.InstalledPrinters.Cast<string>().Any(name => string.Equals(name, queue, StringComparison.OrdinalIgnoreCase));
@@ -247,9 +247,30 @@ static class Program {
   static Uri GetTravelerNavigationUri(Claim job) {
     if (string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var travelerUri)) throw new InvalidOperationException("PrintersHero did not return an absolute Traveler web URL.");
     if (travelerUri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(travelerUri.Host)) throw new InvalidOperationException("PrintersHero returned a noncanonical Traveler web URL.");
+    if (string.IsNullOrWhiteSpace(job.orderId)) throw new InvalidOperationException("Traveler print job is missing its order id.");
     var expectedPath = $"/orders/{Uri.EscapeDataString(job.orderId)}/traveler";
     if (!string.Equals(travelerUri.AbsolutePath, expectedPath, StringComparison.Ordinal) || !string.Equals(GetQueryParameter(travelerUri, "directPrintJobId"), job.id, StringComparison.Ordinal)) throw new InvalidOperationException("PrintersHero returned an invalid Traveler print route.");
     return travelerUri;
+  }
+  static Uri GetQuickNoteNavigationUri(Claim job) {
+    if (string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var noteUri)) throw new InvalidOperationException("PrintersHero did not return an absolute Quick Note web URL.");
+    if (noteUri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(noteUri.Host)) throw new InvalidOperationException("PrintersHero returned a noncanonical Quick Note web URL.");
+    if (!string.Equals(noteUri.AbsolutePath, "/print/quick-note", StringComparison.Ordinal) || !string.Equals(GetQueryParameter(noteUri, "directPrintJobId"), job.id, StringComparison.Ordinal)) throw new InvalidOperationException("PrintersHero returned an invalid Quick Note print route.");
+    return noteUri;
+  }
+  static async Task PrintQuickNote(Claim job) {
+    EnsureTravelerStaThread();
+    using var form = new Form { Width = 1, Height = 1, ShowInTaskbar = false, Opacity = 0 };
+    using var web = new WebView2 { Dock = DockStyle.Fill }; form.Controls.Add(web); form.Show(); await web.EnsureCoreWebView2Async();
+    var apiOrigin = GetApiOrigin().GetLeftPart(UriPartial.Authority); var noteUri = GetQuickNoteNavigationUri(job);
+    web.CoreWebView2.AddWebResourceRequestedFilter($"{apiOrigin}/*", CoreWebView2WebResourceContext.All);
+    web.CoreWebView2.WebResourceRequested += (_, e) => { if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var requestUri) && string.Equals(requestUri.GetLeftPart(UriPartial.Authority), apiOrigin, StringComparison.OrdinalIgnoreCase) && requestUri.AbsolutePath.StartsWith("/api/local-bridge/direct-print/jobs/", StringComparison.OrdinalIgnoreCase)) e.Request.Headers.SetHeader("Authorization", $"Bearer {Token}"); };
+    var tokenJson = JsonSerializer.Serialize(Token); var apiOriginJson = JsonSerializer.Serialize(apiOrigin);
+    await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync($@"(()=>{{const token={tokenJson};const origin={apiOriginJson};const f=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const u=new URL(typeof input==='string'?input:input.url,window.location.href);if(u.origin===origin&&u.pathname.startsWith('/api/local-bridge/direct-print/jobs/')){{const h=new Headers(init.headers);h.set('Authorization','Bearer '+token);return f(input,{{...init,headers:h}});}}return f(input,init);}};}})();");
+    var ready = new TaskCompletionSource(); web.CoreWebView2.NavigationCompleted += (_, e) => { if (e.IsSuccess) ready.TrySetResult(); else ready.TrySetException(new InvalidOperationException("Quick Note render navigation failed.")); };
+    var additionalFeedMm = NormalizeAdditionalTrailingFeedMm(job.trailingFeedMm); var separator = noteUri.Query.Length > 0 ? "&" : "?"; web.CoreWebView2.Navigate($"{noteUri}{separator}feedMm={additionalFeedMm.ToString("0.##", CultureInfo.InvariantCulture)}"); await ready.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    var deadline = DateTime.UtcNow.AddSeconds(30); var quickNoteReady = false; while (DateTime.UtcNow < deadline) { var rendered = await web.ExecuteScriptAsync("Boolean(document.querySelector('[data-traveler-ready=\\\"true\\\"]'))"); if (rendered.Contains("true", StringComparison.OrdinalIgnoreCase)) { quickNoteReady = true; break; } await Task.Delay(100); }; if (!quickNoteReady) throw new InvalidOperationException("Quick Note content did not finish rendering.");
+    var settings = web.CoreWebView2.Environment.CreatePrintSettings(); settings.PrinterName = job.queueName; settings.Copies = job.copies; settings.ShouldPrintBackgrounds = true; settings.ShouldPrintHeaderAndFooter = false; var status = await web.CoreWebView2.PrintAsync(settings); if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}");
   }
   static async Task PrintTraveler(Claim job) {
     EnsureTravelerStaThread();

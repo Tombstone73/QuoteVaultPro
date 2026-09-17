@@ -36,7 +36,7 @@ export const THERMAL_PRINT_STYLES = `
     position: absolute;
     left: 0;
     top: 0;
-    width: 80mm !important;
+    width: var(--thermal-paper-width, 80mm) !important;
     margin: 0 !important;
     padding: 3mm !important;
     box-sizing: border-box !important;

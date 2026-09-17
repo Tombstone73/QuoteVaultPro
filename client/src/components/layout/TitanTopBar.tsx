@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useLocation } from "react-router-dom";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
-import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X, Bug } from "lucide-react";
+import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X, Bug, StickyNote } from "lucide-react";
 import { BugReportModal } from "@/components/bug-report/BugReportModal";
 import { cn } from "@/lib/utils";
 import { useAuth, useLogout } from "@/hooks/useAuth";
@@ -22,6 +22,7 @@ import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { isProd, getEnvLabel } from "@/lib/appEnv";
 import { RuntimeEnvironmentBadge } from "@/components/runtime/RuntimeEnvironmentBadge";
 import { AssistantLauncher } from "@/features/assistant";
+import { QuickNotePrintDialog } from "@/components/production/QuickNotePrintDialog";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -116,6 +117,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const [searchQuery, setSearchQuery] = React.useState("");
   const [showSearchResults, setShowSearchResults] = React.useState(false);
   const [bugReportOpen, setBugReportOpen] = React.useState(false);
+  const [quickNoteOpen, setQuickNoteOpen] = React.useState(false);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const searchContainerRef = React.useRef<HTMLDivElement>(null);
 
@@ -309,6 +311,10 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         {/* Org Switcher (multi-org users only) */}
         <OrgSwitcher />
 
+        <Button variant="ghost" size="icon" className="h-9 w-9 text-muted-foreground hover:text-foreground" title="Quick Note" aria-label="Quick Note" onClick={() => setQuickNoteOpen(true)}>
+          <StickyNote className="h-4 w-4" />
+        </Button>
+
         {/* Send feedback */}
         <Button
           variant="ghost"
@@ -378,6 +384,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
     {/* Feedback modal rendered outside header to avoid stacking context issues. */}
     <BugReportModal open={bugReportOpen} onClose={() => setBugReportOpen(false)} />
+    <QuickNotePrintDialog open={quickNoteOpen} onOpenChange={setQuickNoteOpen} />
     </div>
   );
 }

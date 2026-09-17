@@ -19,6 +19,13 @@ const pickupTravelerPrintSchema = z.object({
   })).min(1).max(100),
   requestKey: z.string().min(1).max(160).optional(),
 });
+const quickNotePrintSchema = z.object({
+  destinationId: z.string().min(1),
+  headline: z.string().max(240).optional().default(""),
+  note: z.string().max(4000).optional().default(""),
+  copies: z.coerce.number().int().min(1).max(25),
+  requestKey: z.string().min(1).max(160).optional(),
+});
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -92,6 +99,37 @@ export function registerPrinterProfileRoutes(
       const wake = await publishPrintAgentWake(agent.tokenHash);
       res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
     } catch (error) { sendError(res, error, "Failed to queue Traveler print"); }
+  });
+
+  app.get("/api/direct-print/quick-note-destinations", isAuthenticated, tenantContext, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+    const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location, defaultCopies: printerProfiles.defaultCopies, receiptWidthMm: printerProfiles.receiptWidthMm, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName, queueMapped: printerProfiles.windowsQueueName }).from(printerProfiles).leftJoin(localBridgeAgents, eq(printerProfiles.printAgentId, localBridgeAgents.id)).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'quick_note'`));
+    res.json({ success: true, data: destinations.map((item) => ({ ...item, available: Boolean(item.agentId && item.queueMapped && item.configuredQueueName && item.queueMapped === item.configuredQueueName) })) });
+  });
+
+  app.post("/api/direct-print/quick-note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const parsed = quickNotePrintSchema.parse(req.body || {});
+      const headline = parsed.headline.trim(); const note = parsed.note.trim();
+      const requestKey = String(req.header("Idempotency-Key") || parsed.requestKey || "").trim();
+      if (!organizationId || (!headline && !note) || !requestKey || requestKey.length > 160) return res.status(400).json({ success: false, code: "QUICK_NOTE_VALIDATION", error: "Enter a headline or note, select a destination, and provide a valid print request key." });
+      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, parsed.destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'quick_note'`)).limit(1);
+      if (!destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ success: false, code: "DIRECT_PRINT_UNAVAILABLE", error: "This Quick Note destination is not available for direct printing." });
+      const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
+      if (!agent?.configuredTravelerPrinterName || agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ success: false, code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The Print Agent's selected printer does not match this destination." });
+      const printContext = { headline, body: note, receiptWidthMm: Number(destination.receiptWidthMm) || 80 };
+      const created = await db.insert(directPrintJobs).values({ organizationId, orderId: null, destinationId: destination.id, agentId: agent.id, documentType: "quick_note", copies: parsed.copies, printContext, trailingFeedMm: destination.trailingFeedMm, requestKey, createdByUserId: getUserId(req.user) ?? null }).onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
+      const job = created[0] ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.requestKey, requestKey))).limit(1))[0];
+      if (!job) return res.status(500).json({ success: false, code: "QUICK_NOTE_CREATE_FAILED", error: "Could not create the Quick Note print job." });
+      const existingContext = job.printContext as { headline?: unknown; body?: unknown } | null;
+      if (!created[0] && (job.documentType !== "quick_note" || job.destinationId !== destination.id || job.copies !== parsed.copies || existingContext?.headline !== headline || existingContext?.body !== note)) {
+        return res.status(409).json({ success: false, code: "QUICK_NOTE_IDEMPOTENCY_CONFLICT", error: "This print request key was already used for different Quick Note content." });
+      }
+      const wake = await publishPrintAgentWake(agent.tokenHash);
+      return res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
+    } catch (error) { return sendError(res, error, "Failed to queue Quick Note print"); }
   });
 
   // Pickup tags use the same durable Traveler job and Windows agent. The

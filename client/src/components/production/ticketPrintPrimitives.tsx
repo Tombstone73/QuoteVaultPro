@@ -17,19 +17,21 @@ type Align = "left" | "center" | "right";
 export function ThermalPrintPage({
   children,
   feedSpacer = THERMAL_FEED_SPACER_DEFAULT,
+  paperWidth = THERMAL_PAPER_WIDTH,
   forceFeedSentinel = false,
   style,
   ready = false,
 }: {
   children: ReactNode;
   feedSpacer?: string;
+  paperWidth?: string;
   /** Ensures direct Windows print jobs have dark raster content at the feed endpoint. */
   forceFeedSentinel?: boolean;
   style?: CSSProperties;
   /** Allows the local print agent to wait for canonical React rendering. */
   ready?: boolean;
 }) {
-  const feedSpacerStyle = { "--thermal-feed-spacer": feedSpacer } as CSSProperties;
+  const feedSpacerStyle = { "--thermal-feed-spacer": feedSpacer, "--thermal-paper-width": paperWidth } as CSSProperties;
   return (
     <div
       id={THERMAL_PRINT_AREA_ID}
@@ -37,7 +39,7 @@ export function ThermalPrintPage({
       className="mx-auto bg-white text-black"
       style={{
         ...feedSpacerStyle,
-        width: THERMAL_PAPER_WIDTH,
+        width: paperWidth,
         padding: THERMAL_PAGE_PADDING,
         fontFamily: "Arial, Helvetica, sans-serif",
         color: "#000",
@@ -104,7 +106,7 @@ export function ThermalValue({
     <div
       style={{
         fontSize,
-        fontWeight: strong ? 900 : 700,
+        fontWeight: strong ? 900 : 400,
         lineHeight: 1.12,
         textAlign: align,
         color: "#000",
