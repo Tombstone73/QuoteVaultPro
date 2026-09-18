@@ -74,6 +74,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("excludeCustomerId");
     expect(invoiceHooksSource).toContain("jobStatus");
     expect(invoicesPageSource).toContain("Show Paid Historical");
+    expect(invoicesPageSource).toContain("Show Canceled");
     expect(invoicesPageSource).toContain("InvoiceCategoricalFilter");
     expect(invoicesPageSource).toContain("INVOICE_STATUS_OPTIONS");
     expect(invoicesPageSource).toContain("ACCOUNTING_APPROVAL_OPTIONS");
@@ -83,6 +84,8 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("updated_after_sent");
     expect(invoicesPageSource).toContain("includePaidHistorical");
     expect(invoiceHooksSource).toContain("includePaidHistorical");
+    expect(invoicesPageSource).toContain("includeCanceled");
+    expect(invoiceHooksSource).toContain("includeCanceled");
   });
 
   it("uses a separate persisted Global Invoice column layout with required Invoice and Actions columns", () => {

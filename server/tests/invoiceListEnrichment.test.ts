@@ -458,6 +458,68 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
     expect(storedHistorical).toEqual({ status: 'paid', isHistorical: true });
   });
 
+  test('hides voided invoice lifecycle records by default while keeping cancellation visibility independent from paid history and backlog filters', async () => {
+    const org = await createTestOrg('canceled-invoice-list');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'canceled-invoice-list');
+    const customer = await createTestCustomer(org.id);
+    const active = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber: 811801, status: 'billed',
+    });
+    const voidNeverSent = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber: 811802, status: 'void',
+    });
+    const voidApprovedNeverSent = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber: 811803, status: 'void',
+    });
+    const legacyVoided = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber: 811804, status: 'voided',
+    });
+    const historicalPaid = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber: 811805, status: 'paid',
+      balanceDue: '0.00', amountPaid: '100.00', importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '0.00',
+    });
+    await db.update(invoices).set({ accountingApprovedAt: new Date(), accountingApprovedVersion: 1, invoiceVersion: 1 })
+      .where(eq(invoices.id, voidApprovedNeverSent.id));
+
+    const defaultPage = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: false, includeCanceled: false, limit: 50,
+    });
+    expect(defaultPage).toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: active.id })] });
+    expect(defaultPage.items.map((item) => item.id)).not.toContain(voidNeverSent.id);
+    expect(defaultPage.items.map((item) => item.id)).not.toContain(voidApprovedNeverSent.id);
+    expect(defaultPage.items.map((item) => item.id)).not.toContain(legacyVoided.id);
+    expect(defaultPage.items.map((item) => item.id)).not.toContain(historicalPaid.id);
+
+    const canceledIncluded = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: false, includeCanceled: true, limit: 50,
+    });
+    expect(canceledIncluded).toMatchObject({ totalCount: 4 });
+    expect(canceledIncluded.items.map((item) => item.id)).toEqual(expect.arrayContaining([active.id, voidNeverSent.id, voidApprovedNeverSent.id, legacyVoided.id]));
+    expect(canceledIncluded.items.map((item) => item.id)).not.toContain(historicalPaid.id);
+
+    const historicalIncluded = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: true, includeCanceled: false, limit: 50,
+    });
+    expect(historicalIncluded).toMatchObject({ totalCount: 2 });
+    expect(historicalIncluded.items.map((item) => item.id)).toEqual(expect.arrayContaining([active.id, historicalPaid.id]));
+    expect(historicalIncluded.items.map((item) => item.id)).not.toContain(voidNeverSent.id);
+    expect(historicalIncluded.items.map((item) => item.id)).not.toContain(voidApprovedNeverSent.id);
+    expect(historicalIncluded.items.map((item) => item.id)).not.toContain(legacyVoided.id);
+
+    const approvedNeverSent = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: false, includeCanceled: true, limit: 50,
+      columnFilters: { accountingApproval: 'approved', sendStatus: 'never_sent' },
+    });
+    expect(approvedNeverSent).toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: voidApprovedNeverSent.id })] });
+
+    const hiddenApprovedNeverSent = await listInvoicesPageForOrganization({
+      organizationId: org.id, includePaidHistorical: false, includeCanceled: false, limit: 50,
+      columnFilters: { accountingApproval: 'approved', sendStatus: 'never_sent' },
+    });
+    expect(hiddenApprovedNeverSent).toMatchObject({ totalCount: 0, items: [] });
+  });
+
   test('composes customer, contact, order, date, sent-state, and money filters across the full tenant', async () => {
     const org = await createTestOrg('column-filters');
     cleanupOrgIds.push(org.id);

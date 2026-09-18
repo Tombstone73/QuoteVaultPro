@@ -285,6 +285,8 @@ export interface ListInvoicesForOrganizationOptions {
   /** Include the canonical QuickBooks historical-paid state in the working list.
    * An explicit `paid_historical` status always takes precedence. */
   includePaidHistorical?: boolean;
+  /** Include voided invoice lifecycle records in the global working list. */
+  includeCanceled?: boolean;
   /** A bounded allowlist used by analytical consumers. It is still combined
    * with the trusted organization predicate below. */
   statuses?: readonly string[];
@@ -518,6 +520,13 @@ export async function listInvoicesPageForOrganization(
   // Paid Historical state by default. Ordinary paid invoices remain visible.
   if (!explicitlyFilteringPaidHistorical && opts.includePaidHistorical === false) {
     whereClauses.push(sql`not (${paidHistoricalState})`);
+  }
+  // V1's canonical canceled-invoice lifecycle is `void`; older records may
+  // use the legacy `voided` spelling. Keep both out of the operational list
+  // unless the caller explicitly asks to include canceled records.
+  const canceledInvoiceState = sql`lower(coalesce(${invoices.status}, '')) in ('void', 'voided')`;
+  if (opts.includeCanceled === false) {
+    whereClauses.push(sql`not (${canceledInvoiceState})`);
   }
   // Customer list semantics follow the live invoice projection: a native
   // Order-backed invoice belongs to its Order's current customer.

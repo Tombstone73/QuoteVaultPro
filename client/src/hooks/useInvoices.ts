@@ -168,6 +168,7 @@ export function useInvoices(filters?: {
 export function useInvoicesPage(filters: {
   status?: string;
   includePaidHistorical?: boolean;
+  includeCanceled?: boolean;
   customerId?: string;
   orderId?: string;
   search?: string;
@@ -192,6 +193,7 @@ export function useInvoicesPage(filters: {
       const params = new URLSearchParams();
       if (filters?.status) params.append('status', filters.status);
       if (filters?.includePaidHistorical) params.append('includePaidHistorical', '1');
+      if (filters?.includeCanceled) params.append('includeCanceled', '1');
       if (filters?.customerId) params.append('customerId', filters.customerId);
       if (filters?.orderId) params.append('orderId', filters.orderId);
       if (filters?.search) params.append('search', filters.search);

@@ -6,6 +6,7 @@ export type InvoiceListPageSize = 25 | 50 | 100;
 export type InvoiceListStickyFilters = {
   status?: string;
   includePaidHistorical?: boolean;
+  includeCanceled?: boolean;
   customerId?: string;
   customerName?: string;
   excludeCustomerName?: string;
@@ -74,6 +75,7 @@ function normalizeFilters(value: unknown): InvoiceListStickyFilters {
   const filters: InvoiceListStickyFilters = {
     status: nonBlankString(raw.status),
     includePaidHistorical: typeof raw.includePaidHistorical === "boolean" ? raw.includePaidHistorical : undefined,
+    includeCanceled: typeof raw.includeCanceled === "boolean" ? raw.includeCanceled : undefined,
     customerId: nonBlankString(raw.customerId),
     customerName: nonBlankString(raw.customerName),
     excludeCustomerName: nonBlankString(raw.excludeCustomerName),

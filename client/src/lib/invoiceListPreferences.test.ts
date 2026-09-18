@@ -30,6 +30,7 @@ describe("Invoice list preferences", () => {
       filters: {
         status: "overdue",
         includePaidHistorical: true,
+        includeCanceled: true,
         customerId: "customer-1",
         customerName: "Acme",
         columnFilters: { sendStatus: "never_sent", balanceMin: "100" },
@@ -44,6 +45,7 @@ describe("Invoice list preferences", () => {
       filters: {
         status: "overdue",
         includePaidHistorical: true,
+        includeCanceled: true,
         customerId: "customer-1",
         customerName: "Acme",
         columnFilters: { sendStatus: "never_sent", balanceMin: "100" },

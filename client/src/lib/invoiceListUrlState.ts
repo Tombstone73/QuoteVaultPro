@@ -9,7 +9,7 @@ export const INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS: Array<keyof InvoiceListColum
 ];
 
 const INVOICE_LIST_EXPLICIT_FILTER_PARAM_KEYS = [
-  "status", "includePaidHistorical", "customerId", "customerName", "excludeCustomerName", "issueDatePreset",
+  "status", "includePaidHistorical", "includeCanceled", "customerId", "customerName", "excludeCustomerName", "issueDatePreset",
   ...INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS,
 ];
 
@@ -26,6 +26,7 @@ export type InvoiceListUrlState = {
   search: string;
   status: string;
   includePaidHistorical: boolean;
+  includeCanceled: boolean;
   customerId: string | undefined;
   customerName: string | undefined;
   excludeCustomerName: string | undefined;
@@ -80,6 +81,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     search: params.get("search") ?? "",
     status: normalizeInvoiceListDiscreteFilter(read(params, "status")) || "all",
     includePaidHistorical: read(params, "includePaidHistorical") === "1",
+    includeCanceled: read(params, "includeCanceled") === "1",
     customerId: read(params, "customerId"),
     customerName: read(params, "customerName"),
     excludeCustomerName: read(params, "excludeCustomerName"),

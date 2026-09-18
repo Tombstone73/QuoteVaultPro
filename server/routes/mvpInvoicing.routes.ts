@@ -2137,6 +2137,7 @@ export async function registerMvpInvoicingRoutes(
       const sortBy = req.query.sortBy as string | undefined;
       const sortDir = req.query.sortDir as string | undefined;
       const includePaidHistorical = invoiceListQueryBoolean(req.query.includePaidHistorical, 'includePaidHistorical');
+      const includeCanceled = invoiceListQueryBoolean(req.query.includeCanceled, 'includeCanceled');
       const columnFilters = invoiceListColumnFilters(req.query);
       const includeSummary = String(req.query.includeSummary || '') === '1';
       const requestedPageSize = Number.parseInt(String(req.query.pageSize ?? req.query.limit ?? "50"), 10);
@@ -2157,6 +2158,7 @@ export async function registerMvpInvoicingRoutes(
         sortBy,
         sortDir,
         includePaidHistorical,
+        includeCanceled,
         columnFilters,
         limit,
         offset,

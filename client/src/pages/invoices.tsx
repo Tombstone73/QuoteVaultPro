@@ -200,10 +200,11 @@ function formatColumnFilterValue(key: keyof InvoiceListColumnFilterQuery, value:
   return value;
 }
 
-function toStickyFilters(state: Pick<InvoiceListUrlState, "status" | "includePaidHistorical" | "customerId" | "customerName" | "excludeCustomerName" | "issueDatePreset" | "columnFilters">): InvoiceListStickyFilters {
+function toStickyFilters(state: Pick<InvoiceListUrlState, "status" | "includePaidHistorical" | "includeCanceled" | "customerId" | "customerName" | "excludeCustomerName" | "issueDatePreset" | "columnFilters">): InvoiceListStickyFilters {
   return {
     ...(state.status !== "all" ? { status: state.status } : {}),
     ...(state.includePaidHistorical ? { includePaidHistorical: true } : {}),
+    ...(state.includeCanceled ? { includeCanceled: true } : {}),
     ...(state.customerId ? { customerId: state.customerId } : {}),
     ...(state.customerName ? { customerName: state.customerName } : {}),
     ...(state.excludeCustomerName ? { excludeCustomerName: state.excludeCustomerName } : {}),
@@ -216,6 +217,7 @@ function stickyFiltersToUrlChanges(filters: InvoiceListStickyFilters): Record<st
   return {
     status: filters.status,
     includePaidHistorical: filters.includePaidHistorical ? "1" : undefined,
+    includeCanceled: filters.includeCanceled ? "1" : undefined,
     customerId: filters.customerId,
     customerName: filters.customerName,
     excludeCustomerName: filters.excludeCustomerName,
@@ -249,6 +251,7 @@ export default function InvoicesListPage() {
       ...listState,
       status: shouldRestoreStickyFilters ? filters.status || "all" : listState.status,
       includePaidHistorical: shouldRestoreStickyFilters ? filters.includePaidHistorical === true : listState.includePaidHistorical,
+      includeCanceled: shouldRestoreStickyFilters ? filters.includeCanceled === true : listState.includeCanceled,
       customerId: shouldRestoreStickyFilters ? filters.customerId : listState.customerId,
       customerName: shouldRestoreStickyFilters ? filters.customerName : listState.customerName,
       excludeCustomerName: shouldRestoreStickyFilters ? filters.excludeCustomerName : listState.excludeCustomerName,
@@ -260,7 +263,7 @@ export default function InvoicesListPage() {
       pageSize: searchParams.has("pageSize") ? listState.pageSize : preferences.pageSize,
     };
   }, [listState, preferences, searchParams, shouldRestoreStickyFilters]);
-  const { search, status: statusFilter, includePaidHistorical, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters, sortKey, sortDir } = effectiveListState;
+  const { search, status: statusFilter, includePaidHistorical, includeCanceled, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters, sortKey, sortDir } = effectiveListState;
   const invoiceTableConfig = useTableColumnConfig(
     `global_invoices:org_${user?.lastActiveOrgId ?? "unknown"}:user_${user?.id ?? "anonymous"}`,
     GLOBAL_INVOICE_COLUMNS,
@@ -317,6 +320,7 @@ export default function InvoicesListPage() {
   const setSearch = (nextSearch: string) => updateListState({ search: nextSearch }, true);
   const setStatusFilter = (nextStatus: string) => updateListState({ status: nextStatus === "all" ? undefined : nextStatus }, true);
   const setIncludePaidHistorical = (nextValue: boolean) => updateListState({ includePaidHistorical: nextValue ? "1" : undefined }, true);
+  const setIncludeCanceled = (nextValue: boolean) => updateListState({ includeCanceled: nextValue ? "1" : undefined }, true);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
@@ -333,6 +337,7 @@ export default function InvoicesListPage() {
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
     includePaidHistorical,
+    includeCanceled,
     search: normalizeInvoiceListSearchQuery(search),
     sortBy: sortKey,
     sortDir,
@@ -388,6 +393,7 @@ export default function InvoicesListPage() {
   const activeFilters = [
     search ? { key: "search", label: "Search", value: search } : null,
     statusFilter !== "all" ? { key: "status", label: "Status", value: labelDiscreteValues(statusFilter, INVOICE_STATUS_OPTIONS) } : null,
+    includeCanceled ? { key: "includeCanceled", label: "Canceled", value: "Shown" } : null,
     customerId ? { key: "customerId", label: "Customer", value: customerName || "Selected customer" } : null,
     columnFilters.excludeCustomerId ? { key: "excludeCustomerId", label: "Excluding", value: excludeCustomerName || "Selected customer" } : null,
     ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: formatColumnFilterValue(key, String(value)) })),
@@ -413,6 +419,7 @@ export default function InvoicesListPage() {
       search: undefined,
       status: undefined,
       includePaidHistorical: undefined,
+      includeCanceled: undefined,
       customerId: undefined,
       customerName: undefined,
       excludeCustomerName: undefined,
@@ -424,6 +431,7 @@ export default function InvoicesListPage() {
   const clearActiveFilter = (key: string) => {
     if (key === "search") return updateListState({ search: undefined }, true);
     if (key === "status") return updateListState({ status: undefined }, true);
+    if (key === "includeCanceled") return updateListState({ includeCanceled: undefined }, true);
     if (key === "customerId") return updateListState({ customerId: undefined, customerName: undefined }, true);
     if (key === "excludeCustomerId") return updateListState({ excludeCustomerId: undefined, excludeCustomerName: undefined }, true);
     setColumnFilter(key as keyof InvoiceListColumnFilterQuery, "");
@@ -803,6 +811,10 @@ export default function InvoicesListPage() {
             <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include QuickBooks invoices in the canonical Paid Historical state">
               <Checkbox checked={includePaidHistorical} onCheckedChange={(checked) => setIncludePaidHistorical(checked === true)} aria-label="Show Paid Historical" />
               <span>Show Paid Historical</span>
+            </label>
+            <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include voided invoice lifecycle records">
+              <Checkbox checked={includeCanceled} onCheckedChange={(checked) => setIncludeCanceled(checked === true)} aria-label="Show Canceled" />
+              <span>Show Canceled</span>
             </label>
             <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2" title="Remember sorting and filters for this Invoice list.">
               <Switch
