@@ -38,8 +38,17 @@ async function load(tx: any, organizationId: string, ids: string[]) {
 function allocations(rows: any[], input: Input) {
   const customers = new Set(rows.map((x) => x.owner.customerId));
   if (customers.size !== 1) throw new CustomerPaymentOperationError("CUSTOMER_MISMATCH", "Selected invoices must belong to the same customer.");
-  try { return allocateCustomerPayment({ invoices: rows.map((x) => ({ invoiceId: x.invoice.id, remainingCents: x.rollup.amountDueCents, dueDate: x.invoice.dueDate, issueDate: x.invoice.issueDate, invoiceNumber: x.invoice.invoiceNumber })), amountCents: input.amountCents, mode: input.allocationMode, customAllocations: input.customAllocations }); }
-  catch (error: any) { throw new CustomerPaymentOperationError(error.message === "Overpayment not allowed." ? "OVERPAYMENT_NOT_ALLOWED" : "ALLOCATION_INVALID", error.message, 400); }
+  const totalOutstandingCents = rows.reduce((sum, row) => sum + row.rollup.amountDueCents, 0);
+  try {
+    const result = allocateCustomerPayment({ invoices: rows.map((x) => ({ invoiceId: x.invoice.id, remainingCents: x.rollup.amountDueCents, dueDate: x.invoice.dueDate, issueDate: x.invoice.issueDate, invoiceNumber: x.invoice.invoiceNumber })), amountCents: input.amountCents, mode: input.allocationMode, customAllocations: input.customAllocations });
+    const totalAllocatedCents = result.reduce((sum, allocation) => sum + allocation.amountCents, 0);
+    if (totalAllocatedCents > input.amountCents || totalAllocatedCents > totalOutstandingCents) throw new CustomerPaymentOperationError("ALLOCATION_EXCEEDS_OUTSTANDING", "Payment allocations cannot exceed the payment or current invoice balances.", 400);
+    return result;
+  }
+  catch (error: any) {
+    if (error instanceof CustomerPaymentOperationError) throw error;
+    throw new CustomerPaymentOperationError(error.message === "Overpayment not allowed." ? "OVERPAYMENT_NOT_ALLOWED" : "ALLOCATION_INVALID", error.message, 400);
+  }
 }
 export async function previewCustomerPayment(input: Omit<Input, "actorUserId" | "idempotencyKey" | "method" | "appliedAt">) {
   assertInput({ ...input, actorUserId: "preview", idempotencyKey: "preview", method: "other", appliedAt: new Date() });
