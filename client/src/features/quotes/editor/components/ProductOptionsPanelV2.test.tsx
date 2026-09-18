@@ -270,6 +270,62 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.querySelectorAll("select")).toHaveLength(2);
   });
 
+  test("uses a non-empty internal value for an optional select's empty choice", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["finish"],
+      nodes: {
+        finish: {
+          id: "finish",
+          kind: "question",
+          label: "Finish",
+          input: { type: "select", selectionKey: "finish", constraints: { select: { allowEmpty: true, emptyLabel: "No finish" } } },
+          choices: [{ value: "gloss", label: "Gloss" }],
+        },
+      },
+    };
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2 tree={tree} selections={{ schemaVersion: 2, selected: {} }} onSelectionsChange={jest.fn()} />,
+      );
+    });
+
+    const options = Array.from(container.querySelectorAll("option"));
+    expect(options.map((option) => option.value)).not.toContain("");
+    expect(options.map((option) => option.textContent)).toContain("No finish");
+  });
+
+  test("skips malformed legacy choice values without crashing the quote editor", () => {
+    const tree = {
+      schemaVersion: 2,
+      rootNodeIds: ["material"],
+      nodes: {
+        material: {
+          id: "material",
+          kind: "question",
+          label: "Material",
+          input: { type: "select", selectionKey: "material" },
+          choices: [
+            { value: "", label: "Broken empty" },
+            { value: "   ", label: "Broken whitespace" },
+            { value: "vinyl", label: "Vinyl" },
+            { value: "vinyl", label: "Duplicate vinyl" },
+          ],
+        },
+      },
+    } as any;
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2 tree={tree} selections={{ schemaVersion: 2, selected: {} }} onSelectionsChange={jest.fn()} />,
+      );
+    });
+
+    expect(container.textContent).toContain("Some options are unavailable because this product configuration is invalid.");
+    expect(Array.from(container.querySelectorAll("option")).map((option) => option.value)).toEqual(["vinyl"]);
+  });
+
   test("stores typed and pasted textarea values as strings and reloads them unchanged", () => {
     const tree: OptionTreeV2 = {
       schemaVersion: 2,

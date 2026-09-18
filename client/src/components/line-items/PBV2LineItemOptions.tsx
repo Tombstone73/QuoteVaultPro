@@ -1,6 +1,7 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { filterPbv2ChoicesForRuntime, hasInvalidPbv2RuntimeChoices } from "@shared/pbv2OrderEntryRuntime";
 
 /**
  * PBV2LineItemOptions - Minimal component to render PBV2 option questions in line items
@@ -113,6 +114,9 @@ export function PBV2LineItemOptions({ pbv2SnapshotJson, selections, onSelectionC
             );
           }
 
+          const choices = filterPbv2ChoicesForRuntime(node.id, node.choices ?? []);
+          const hasInvalidChoices = hasInvalidPbv2RuntimeChoices(node.choices ?? []);
+
           return (
             <div key={node.id} className="space-y-1.5">
               <Label htmlFor={`pbv2-${node.id}`}>
@@ -127,13 +131,14 @@ export function PBV2LineItemOptions({ pbv2SnapshotJson, selections, onSelectionC
                   <SelectValue placeholder="Select an option..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {node.choices!.map((choice) => (
+                  {choices.map((choice) => (
                     <SelectItem key={choice.value} value={choice.value}>
                       {choice.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {hasInvalidChoices ? <SetupWarning message="Some options are unavailable because this product configuration is invalid. Ask an administrator to repair the product." /> : null}
             </div>
           );
         })}

@@ -276,7 +276,7 @@ function validateOptionConfiguration(tree: Record<string, any>, strict: boolean)
   }
   const existingFindings = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS).findings.filter((finding: any) => {
     const code = String(finding?.code ?? "");
-    return code.startsWith("PBV2_E_TREE_DUPLICATE") || code === "PBV2_E_TREE_KEY_COLLISION" || code.startsWith("PBV2_E_INPUT_") || code === "PBV2_E_SELECTION_KEY_COLLISION" || code === "PBV2_E_CHOICE_VALUE_DUPLICATE";
+    return code.startsWith("PBV2_E_TREE_DUPLICATE") || code === "PBV2_E_TREE_KEY_COLLISION" || code.startsWith("PBV2_E_INPUT_") || code === "PBV2_E_SELECTION_KEY_COLLISION" || code === "PBV2_E_CHOICE_VALUE_REQUIRED" || code === "PBV2_E_CHOICE_VALUE_DUPLICATE";
   });
   return [...findings, ...existingFindings];
 }

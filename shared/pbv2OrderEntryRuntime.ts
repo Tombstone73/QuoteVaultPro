@@ -135,7 +135,7 @@ function getChoiceOrder(choice: any, fallback: number): number {
   return explicit ?? 1_000_000 + fallback;
 }
 
-export function sortPbv2Choices<T extends { value?: string; label?: string }>(choices: T[] | null | undefined): T[] {
+export function sortPbv2Choices<T extends { value?: unknown; label?: string }>(choices: T[] | null | undefined): T[] {
   return (choices ?? [])
     .map((choice, index) => ({ choice, index }))
     .sort((a, b) => {
@@ -147,16 +147,32 @@ export function sortPbv2Choices<T extends { value?: string; label?: string }>(ch
     .map((entry) => entry.choice);
 }
 
-export function filterPbv2ChoicesForRuntime<T extends { value?: string; label?: string }>(
+export function isValidPbv2RuntimeChoiceValue(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function hasInvalidPbv2RuntimeChoices(choices: Array<{ value?: unknown }> | null | undefined): boolean {
+  const seen = new Set<string>();
+  for (const choice of choices ?? []) {
+    if (!isValidPbv2RuntimeChoiceValue(choice?.value) || seen.has(choice.value)) return true;
+    seen.add(choice.value);
+  }
+  return false;
+}
+
+export function filterPbv2ChoicesForRuntime<T extends { value?: unknown; label?: string }>(
   nodeId: string,
   choices: T[] | null | undefined,
   visibleChoiceIds?: Iterable<string> | null,
 ): T[] {
   const sortedChoices = sortPbv2Choices(choices);
-  if (!visibleChoiceIds) return sortedChoices;
-
   const visibleChoiceIdSet = visibleChoiceIds instanceof Set ? visibleChoiceIds : new Set(visibleChoiceIds);
-  return sortedChoices.filter((choice) => visibleChoiceIdSet.has(`${nodeId}:${String(choice.value ?? "")}`));
+  const seen = new Set<string>();
+  return sortedChoices.filter((choice) => {
+    if (!isValidPbv2RuntimeChoiceValue(choice.value) || seen.has(choice.value)) return false;
+    seen.add(choice.value);
+    return !visibleChoiceIds || visibleChoiceIdSet.has(`${nodeId}:${choice.value}`);
+  });
 }
 
 export function sortPbv2NodeIdsByBuilderOrder(tree: OptionTreeV2 | null | undefined, nodeIds: string[]): string[] {

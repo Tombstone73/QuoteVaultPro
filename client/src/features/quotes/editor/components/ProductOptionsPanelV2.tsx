@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
-import { filterPbv2ChoicesForRuntime, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
+import { filterPbv2ChoicesForRuntime, hasInvalidPbv2RuntimeChoices, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
 import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
 import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 
@@ -54,6 +54,13 @@ function isRenderableInputType(inputType: string): boolean {
 
 function getRuntimeChoices(node: OptionNodeV2, visibleChoiceIds?: string[] | null) {
   return filterPbv2ChoicesForRuntime(node.id, node.choices ?? [], visibleChoiceIds);
+}
+
+function emptySelectSentinel(choices: Array<{ value?: unknown }>): string {
+  let value = "__pbv2_empty_selection__";
+  const used = new Set(choices.map((choice) => choice.value));
+  while (used.has(value)) value += "_";
+  return value;
 }
 
 /**
@@ -767,17 +774,20 @@ export function ProductOptionsPanelV2({
 
             if (inputType === "select") {
               const choices = getRuntimeChoices(node, runtimeVisibility?.visibleChoiceIds ?? null);
-
               const allowEmpty = node.input.constraints?.select?.allowEmpty === true;
               const emptyLabel = node.input.constraints?.select?.emptyLabel ?? "(None)";
+              const emptyValue = emptySelectSentinel(choices);
+              const selectValue = allowEmpty && String(currentValue ?? "") === "" ? emptyValue : String(currentValue ?? "");
+              const hasInvalidChoices = hasInvalidPbv2RuntimeChoices(node.choices ?? []);
 
               return (
                 <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
+                  {hasInvalidChoices ? <div role="alert" className="text-xs text-amber-700 dark:text-amber-300">Some options are unavailable because this product configuration is invalid. Ask an administrator to repair the product.</div> : null}
                   <Select
-                    value={String(currentValue ?? "")}
+                    value={selectValue}
                     onValueChange={(val) => {
-                      if (val === "" && allowEmpty) setNodeValue(node, "");
+                      if (val === emptyValue && allowEmpty) setNodeValue(node, "");
                       else setNodeValue(node, val);
                     }}
                   >
@@ -786,7 +796,7 @@ export function ProductOptionsPanelV2({
                     </SelectTrigger>
                     <SelectContent>
                       {allowEmpty ? (
-                        <SelectItem value="">{emptyLabel}</SelectItem>
+                        <SelectItem value={emptyValue}>{emptyLabel}</SelectItem>
                       ) : null}
                       {choices.map((c) => (
                         <SelectItem key={c.value} value={c.value}>

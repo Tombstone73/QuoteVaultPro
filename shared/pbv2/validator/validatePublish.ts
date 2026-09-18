@@ -3028,20 +3028,27 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
       }
 
       const choiceValue = isNonEmptyString((choice as any).value) ? String((choice as any).value) : null;
-      if (choiceValue) {
-        if (seenChoiceValues.has(choiceValue)) {
-          findings.push(
-            errorFinding({
-              code: "PBV2_E_CHOICE_VALUE_DUPLICATE",
-              message: `Choice value '${choiceValue}' must be unique within its node`,
-              path: `${cPath}.value`,
-              entityId: n.id,
-              context: { value: choiceValue },
-            })
-          );
-        }
-        seenChoiceValues.add(choiceValue);
+      if (!choiceValue) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_VALUE_REQUIRED",
+            message: "Choice value must be a non-empty string",
+            path: `${cPath}.value`,
+            entityId: n.id,
+          })
+        );
+      } else if (seenChoiceValues.has(choiceValue)) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_CHOICE_VALUE_DUPLICATE",
+            message: `Choice value '${choiceValue}' must be unique within its node`,
+            path: `${cPath}.value`,
+            entityId: n.id,
+            context: { value: choiceValue },
+          })
+        );
       }
+      if (choiceValue) seenChoiceValues.add(choiceValue);
 
       const priceDeltaCents = (choice as any).priceDeltaCents;
       if (priceDeltaCents !== undefined && (!Number.isInteger(priceDeltaCents) || !Number.isFinite(priceDeltaCents))) {

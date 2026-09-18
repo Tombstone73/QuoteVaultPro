@@ -51,6 +51,31 @@ describe("pbv2/validator/validatePublish", () => {
     expect(result.errors.some((f) => f.code === "PBV2_E_TREE_NO_ROOTS")).toBe(true);
   });
 
+  test.each([
+    ["empty", ""],
+    ["whitespace", "   "],
+    ["missing", undefined],
+  ])("choice values must be non-empty strings: %s", (_label, value) => {
+    const tree = makeMaterialOverrideTree({ value });
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_CHOICE_VALUE_REQUIRED" }),
+    ]));
+  });
+
+  test("choice values must be unique within a node", () => {
+    const tree = makeMaterialOverrideTree();
+    tree.nodes[0].choices.push({ value: "acm", label: "Duplicate ACM" });
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "PBV2_E_CHOICE_VALUE_DUPLICATE" }),
+    ]));
+  });
+
   test("Root referencing GROUP => ERROR", () => {
     const tree = {
       status: "DRAFT",

@@ -135,7 +135,7 @@ export function validateComplexProductSpecification(spec: ComplexProductSpecific
   if (spec.pricing.kind === "two_dimensional_unresolved") errors.push("Are these prices per piece or per square foot?");
   else if (measurementModeForComplexProductSpecification(spec) === "unresolved") errors.push(measurementModeQuestion);
   const keys = new Set<string>();
-  for (const group of spec.optionGroups) { if (!group.proposalKey || keys.has(group.proposalKey)) errors.push("Option group keys must be unique."); keys.add(group.proposalKey); const values = group.values.map((value) => normalize(value.value).toLowerCase()); if (!group.values.length || new Set(values).size !== values.length) errors.push(`Option values for ${group.name} must be non-empty and unique.`); }
+  for (const group of spec.optionGroups) { if (!group.proposalKey || keys.has(group.proposalKey)) errors.push("Option group keys must be unique."); keys.add(group.proposalKey); const values = group.values.map((value) => normalize(value.value).toLowerCase()); if (!group.values.length || values.some((value) => !value) || new Set(values).size !== values.length) errors.push(`Option values for ${group.name} must be non-empty and unique.`); }
   const [rowGroup, columnGroup] = spec.optionGroups;
   if (spec.pricing.rowKey !== rowGroup.proposalKey || spec.pricing.columnKey !== columnGroup.proposalKey) errors.push("Matrix dimensions must refer to the two declared option groups.");
   const expectedRows = rowGroup.values.map((value) => value.value); const expectedColumns = columnGroup.values.map((value) => value.value);
