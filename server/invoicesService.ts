@@ -23,6 +23,7 @@ import {
 } from './services/contactAccountingPromotionService';
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState } from './lib/invoiceAccountingApproval';
 import { canonicalInvoiceCustomerId, getCanonicalInvoiceCustomerContext } from './services/invoiceCustomerProjection';
+import { deriveInvoiceCustomerSendStatus, type InvoiceCustomerSendStatus } from '../shared/invoiceCustomerSendStatus';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -39,22 +40,14 @@ const TERM_OFFSETS: Record<string, number> = {
 //
 // NOTE: reminder sends must NOT count toward this status — only type='invoice_send'
 // rows in invoice_email_logs should be queried here.
-export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
+export type { InvoiceCustomerSendStatus } from '../shared/invoiceCustomerSendStatus';
+/** Email-only compatibility type. Customer-facing reads use InvoiceCustomerSendStatus. */
+export type InvoiceEmailStatus = InvoiceCustomerSendStatus;
 
-export function deriveInvoiceEmailStatus(
-  invoice: { invoiceVersion?: number | null; lastSentVersion?: number | null; lastSentAt?: Date | string | null },
-): InvoiceEmailStatus {
-  if (!invoice.lastSentAt) {
-    return 'not_sent';
-  }
+export const deriveInvoiceSendStatus = deriveInvoiceCustomerSendStatus;
 
-  const revision = Math.max(1, Number(invoice.invoiceVersion || 1));
-  // Historical sends that predate lastSentVersion cannot be reconstructed
-  // safely. Treat their current persisted document revision as the sent
-  // revision rather than making unrelated operational updates look stale.
-  const sentRevision = Math.max(1, Number(invoice.lastSentVersion || revision));
-  return revision > sentRevision ? 'sent_outdated' : 'sent_current';
-}
+/** @deprecated Email diagnostics retain this alias; customer send state should use deriveInvoiceSendStatus. */
+export const deriveInvoiceEmailStatus = deriveInvoiceSendStatus;
 
 export async function createInvoiceEmailLog(input: InsertInvoiceEmailLog): Promise<void> {
   await db.insert(invoiceEmailLogs).values(input as any);
@@ -176,6 +169,69 @@ export async function getInvoiceEmailStatuses(
   }
 
   return result;
+}
+
+export type InvoiceCustomerSendTracking = {
+  /** Durable aggregate checkpoint: manual, portal, or successful email delivery. */
+  lastSentAt: Date | null;
+  lastSentVia: 'email' | 'manual' | 'portal' | null;
+  customerSendStatus: InvoiceCustomerSendStatus;
+  /** Truthful email-channel evidence only; manual/portal marks deliberately leave this null. */
+  lastInvoiceEmailRecipient: string | null;
+  lastSuccessfulEmailAt: Date | null;
+};
+
+/**
+ * Customer-send read model. The Invoice row is authoritative for current
+ * writes; a successful original-email log is a legacy fallback for older rows
+ * that predate the aggregate fields. Email queue state remains separate.
+ */
+export async function getInvoiceSendStatuses(
+  invoiceRows: Array<{
+    id: string;
+    invoiceVersion?: number | null;
+    lastSentVersion?: number | null;
+    lastSentAt?: Date | string | null;
+    lastSentVia?: string | null;
+  }>,
+  organizationId?: string,
+): Promise<Map<string, InvoiceCustomerSendTracking>> {
+  const result = new Map<string, InvoiceCustomerSendTracking>();
+  if (invoiceRows.length === 0) return result;
+
+  const emailStatuses = await getInvoiceEmailStatuses(invoiceRows, organizationId);
+  for (const invoice of invoiceRows) {
+    const persistedLastSentAt = invoice.lastSentAt ? new Date(invoice.lastSentAt) : null;
+    const emailEvidence = emailStatuses.get(invoice.id);
+    const lastSentAt = persistedLastSentAt ?? emailEvidence?.lastSentAt ?? null;
+    const lastSentVia = persistedLastSentAt
+      ? (invoice.lastSentVia === 'manual' || invoice.lastSentVia === 'portal' || invoice.lastSentVia === 'email' ? invoice.lastSentVia : null)
+      : emailEvidence?.lastSentAt ? 'email' : null;
+    result.set(invoice.id, {
+      lastSentAt,
+      lastSentVia,
+      customerSendStatus: deriveInvoiceSendStatus({ ...invoice, lastSentAt }),
+      lastInvoiceEmailRecipient: emailEvidence?.lastInvoiceEmailRecipient ?? null,
+      lastSuccessfulEmailAt: emailEvidence?.lastSentAt ?? null,
+    });
+  }
+  return result;
+}
+
+export async function getInvoiceSendStatus(invoiceId: string): Promise<InvoiceCustomerSendTracking> {
+  const [invoice] = await db
+    .select({
+      id: invoices.id,
+      invoiceVersion: invoices.invoiceVersion,
+      lastSentVersion: invoices.lastSentVersion,
+      lastSentAt: invoices.lastSentAt,
+      lastSentVia: invoices.lastSentVia,
+    })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  if (!invoice) throw new Error('Invoice not found');
+  return (await getInvoiceSendStatuses([invoice])).get(invoice.id)!;
 }
 
 export type InvoiceListSortBy =
@@ -378,7 +434,7 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
     case 'dueDate':
       return sql`coalesce(${invoices.dueDate}, '9999-12-31'::timestamptz)`;
     case 'lastSentAt':
-      return sql`coalesce((
+      return sql`coalesce(${invoices.lastSentAt}, (
         select max(${invoiceEmailLogs.sentAt})
         from ${invoiceEmailLogs}
         where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
@@ -527,11 +583,9 @@ export async function listInvoicesPageForOrganization(
   if (columnFilters.issueDateToExclusive) whereClauses.push(sql`${invoices.issueDate} < ${columnFilters.issueDateToExclusive}`);
   if (columnFilters.dueDateFrom) whereClauses.push(sql`${invoices.dueDate} >= ${columnFilters.dueDateFrom}`);
   if (columnFilters.dueDateToExclusive) whereClauses.push(sql`${invoices.dueDate} < ${columnFilters.dueDateToExclusive}`);
-  // Keep SQL filtering exactly aligned with deriveInvoiceEmailStatus() and the
-  // Last Sent badge: a customer-visible invoice revision is stale only when it
-  // is newer than the revision that was sent. Operational updates such as
-  // accounting approval intentionally do not affect this state.
-  const lastSuccessfulInvoiceSendAt = sql<Date | null>`(
+  // The Invoice checkpoint is the canonical customer-send aggregate. Successful
+  // original email logs are fallback evidence for historical rows that lack it.
+  const legacySuccessfulInvoiceSendAt = sql<Date | null>`(
     select max(${invoiceEmailLogs.sentAt})
     from ${invoiceEmailLogs}
     where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
@@ -539,27 +593,17 @@ export async function listInvoicesPageForOrganization(
       and ${invoiceEmailLogs.type} = 'invoice_send'
       and ${invoiceEmailLogs.status} = 'sent'
   )`;
+  const effectiveLastSentAt = sql<Date | null>`coalesce(${invoices.lastSentAt}, ${legacySuccessfulInvoiceSendAt})`;
+  const effectiveLastSentVersion = sql<number>`coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`;
   const sendStatusPredicates = categoricalValues(columnFilters.sendStatus).map((sendStatus) => {
-    if (sendStatus === 'never_sent') return sql`${lastSuccessfulInvoiceSendAt} is null`;
-    if (sendStatus === 'sent') return sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) <= coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`;
-    return sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) > coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`;
+    if (sendStatus === 'never_sent') return sql`${effectiveLastSentAt} is null`;
+    if (sendStatus === 'sent') return sql`${effectiveLastSentAt} is not null and coalesce(${invoices.invoiceVersion}, 1) <= ${effectiveLastSentVersion}`;
+    return sql`${effectiveLastSentAt} is not null and coalesce(${invoices.invoiceVersion}, 1) > ${effectiveLastSentVersion}`;
   });
   if (sendStatusPredicates.length === 1) whereClauses.push(sendStatusPredicates[0]);
   if (sendStatusPredicates.length > 1) whereClauses.push(or(...sendStatusPredicates));
-  if (columnFilters.lastSent === 'sent') whereClauses.push(sql`exists (
-    select 1 from ${invoiceEmailLogs}
-    where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
-      and ${invoiceEmailLogs.organizationId} = ${opts.organizationId}
-      and ${invoiceEmailLogs.type} = 'invoice_send'
-      and ${invoiceEmailLogs.status} = 'sent'
-  )`);
-  if (columnFilters.lastSent === 'not_sent') whereClauses.push(sql`not exists (
-    select 1 from ${invoiceEmailLogs}
-    where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
-      and ${invoiceEmailLogs.organizationId} = ${opts.organizationId}
-      and ${invoiceEmailLogs.type} = 'invoice_send'
-      and ${invoiceEmailLogs.status} = 'sent'
-  )`);
+  if (columnFilters.lastSent === 'sent') whereClauses.push(sql`${effectiveLastSentAt} is not null`);
+  if (columnFilters.lastSent === 'not_sent') whereClauses.push(sql`${effectiveLastSentAt} is null`);
   const balanceCents = canonicalInvoiceRemainingCentsExpression(opts.organizationId);
   const paidCents = sql`greatest(0, coalesce(${invoices.totalCents}, 0) - ${balanceCents})`;
   if (columnFilters.totalMinCents != null) whereClauses.push(sql`${invoices.totalCents} >= ${columnFilters.totalMinCents}`);
@@ -1433,9 +1477,9 @@ export async function getInvoiceWithRelations(id: string) {
     .select()
     .from(payments)
     .where(and(eq(payments.invoiceId, id), eq(payments.organizationId, (invoice as any).organizationId)));
-  const emailTracking = await getInvoiceEmailStatus(id);
+  const sendTracking = await getInvoiceSendStatus(id);
   return {
-    invoice: { ...customerContext.invoice, ...emailTracking },
+    invoice: { ...customerContext.invoice, ...sendTracking },
     customer: customerContext.customer,
     customerContext,
     lineItems,

@@ -3,7 +3,7 @@ import { db } from '../db';
 import { customerContacts, customers, invoices, orders, payments } from '@shared/schema';
 import { canonicalInvoiceCustomerId } from './invoiceCustomerProjection';
 import { getOrganizationTimezone } from './orderDueDateService';
-import { getInvoiceEmailStatuses } from '../invoicesService';
+import { getInvoiceSendStatuses } from '../invoicesService';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
 import { normalizeInvoiceAccountingDisplay } from '@shared/invoiceAccountingDisplay';
 import {
@@ -110,9 +110,15 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
   ]);
   const asOf = calendarDateInTimezone(input.now ?? new Date(), timezone);
   const invoiceIds = sourceRows.map((row) => row.invoice.id);
-  const [paymentsByInvoice, emailStatuses] = await Promise.all([
+  const [paymentsByInvoice, sendStatuses] = await Promise.all([
     paymentRowsByInvoice(input.organizationId, invoiceIds),
-    getInvoiceEmailStatuses(sourceRows.map((row) => ({ id: row.invoice.id, invoiceVersion: row.invoice.invoiceVersion, lastSentVersion: row.invoice.lastSentVersion })), input.organizationId),
+    getInvoiceSendStatuses(sourceRows.map((row) => ({
+      id: row.invoice.id,
+      invoiceVersion: row.invoice.invoiceVersion,
+      lastSentVersion: row.invoice.lastSentVersion,
+      lastSentAt: row.invoice.lastSentAt,
+      lastSentVia: row.invoice.lastSentVia,
+    })), input.organizationId),
   ]);
   const rows: AccountsReceivableRow[] = [];
   for (const source of sourceRows) {
@@ -126,8 +132,8 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
       creditCents: display.creditCents,
       displayStatus: display.displayStatus,
     })) continue;
-    const emailStatus = emailStatuses.get(invoice.id);
-    const sendStatus = mapSendStatus(emailStatus?.emailStatus);
+    const sendTracking = sendStatuses.get(invoice.id);
+    const sendStatus = mapSendStatus(sendTracking?.customerSendStatus);
     const aging = getAccountsReceivableAging(isoDate(invoice.dueDate, timezone), asOf);
     const row: AccountsReceivableRow = {
       id: invoice.id, customerId: source.customer?.id ?? null, customerName: source.customer?.companyName ?? null,
@@ -138,7 +144,7 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
       issueDate: isoDate(invoice.issuedAt || invoice.issueDate, timezone), dueDate: isoDate(invoice.dueDate, timezone), ...aging,
       invoiceStatus: display.displayStatus, approvalStatus: 'Approved', sendStatus, terms: invoice.customTerms || invoice.terms,
       totalCents: display.totalCents, paidCents: display.paidCents, remainingCents: display.remainingCents,
-      lastSentAt: emailStatus?.lastSentAt ? new Date(emailStatus.lastSentAt).toISOString() : null, qbSyncStatus: invoice.qbSyncStatus || invoice.syncStatus || 'not_synced', jobStatus: mapJobStatus(source.order),
+      lastSentAt: sendTracking?.lastSentAt ? new Date(sendTracking.lastSentAt).toISOString() : null, qbSyncStatus: invoice.qbSyncStatus || invoice.syncStatus || 'not_synced', jobStatus: mapJobStatus(source.order),
     };
     if (filters.customerId && row.customerId !== filters.customerId) continue;
     if (filters.agingBucket && row.agingBucket !== filters.agingBucket) continue;

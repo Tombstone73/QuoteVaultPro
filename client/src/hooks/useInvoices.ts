@@ -29,12 +29,15 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAcc
   orderStatus: string | null;
   orderStatusPillValue: string | null;
   orderFulfillmentStatus: string | null;
-  // Email send tracking (original invoice send only — reminders excluded)
+  // Canonical customer-send checkpoint (email, manual acknowledgement, or portal delivery).
   lastSentAt: string | null;
+  lastSentVia?: 'email' | 'manual' | 'portal' | null;
   lastInvoiceEmailRecipient: string | null;
-  emailStatus: InvoiceEmailStatus;
-  // Queue state is diagnostic only. Last Sent remains populated exclusively
-  // after the provider-successful canonical email log is written.
+  /** Customer send state may be satisfied by email, manual acknowledgement, or portal delivery. */
+  customerSendStatus?: InvoiceEmailStatus;
+  /** Deprecated compatibility field; use customerSendStatus for customer-facing state. */
+  emailStatus?: InvoiceEmailStatus;
+  // Queue state is diagnostic only and does not determine customer send state.
   emailDeliveryStatus: InvoiceEmailDeliveryStatus | null;
   emailDeliveryJobId: string | null;
   emailDeliveryFailureReason: string | null;
@@ -108,6 +111,8 @@ export type InvoiceListColumnFilterQuery = {
 
 export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
   lastSentAt?: string | null;
+  lastSentVia?: 'email' | 'manual' | 'portal' | null;
+  customerSendStatus?: InvoiceEmailStatus;
   emailStatus?: InvoiceEmailStatus;
 }
 

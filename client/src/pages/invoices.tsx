@@ -83,7 +83,7 @@ const statusLabels: Record<string, string> = {
   void: "Void",
 };
 
-const emailStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "muted" | "info" | "warning" }> = {
+const customerSendStatusMeta: Record<InvoiceEmailStatus, { label: string; variant: "muted" | "info" | "warning" }> = {
   not_sent: { label: "Not Sent", variant: "muted" },
   sent_current: { label: "Sent", variant: "info" },
   sent_outdated: { label: "Updated After Sent", variant: "warning" },
@@ -600,11 +600,11 @@ export default function InvoicesListPage() {
     }
   };
 
-  const getEmailDeliveryStatus = (invoice: { emailDeliveryStatus?: string | null; emailStatus: InvoiceEmailStatus }) => {
+  const getEmailDeliveryStatus = (invoice: { emailDeliveryStatus?: string | null; customerSendStatus?: InvoiceEmailStatus; emailStatus?: InvoiceEmailStatus }) => {
     const queueStatus = String(invoice.emailDeliveryStatus || "").toLowerCase() as keyof typeof deliveryStatusMeta;
     return queueStatus && deliveryStatusMeta[queueStatus]
       ? deliveryStatusMeta[queueStatus]
-      : emailStatusMeta[invoice.emailStatus];
+      : customerSendStatusMeta[invoice.customerSendStatus || invoice.emailStatus || 'not_sent'];
   };
   const queueStatusLabel = (status: string) => deliveryStatusMeta[status as keyof typeof deliveryStatusMeta]?.label || status;
 

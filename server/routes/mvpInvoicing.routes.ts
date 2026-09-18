@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
-import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceSendStatus, getInvoiceSendStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -2101,12 +2101,14 @@ export async function registerMvpInvoicingRoutes(
       const rows = invoicePage.items;
 
       const invoiceIds = rows.map((row) => row.id);
-      const [emailStatuses, emailDeliveryStates] = await Promise.all([
-        getInvoiceEmailStatuses(
+      const [sendStatuses, emailDeliveryStates] = await Promise.all([
+        getInvoiceSendStatuses(
           rows.map((row) => ({
             id: row.id,
             invoiceVersion: (row as any).invoiceVersion,
             lastSentVersion: (row as any).lastSentVersion,
+            lastSentAt: (row as any).lastSentAt,
+            lastSentVia: (row as any).lastSentVia,
           })),
           organizationId,
         ),
@@ -2153,15 +2155,17 @@ export async function registerMvpInvoicingRoutes(
         data: rows.map((row) => withNormalizedInvoiceDisplay(
           {
             ...row,
-            ...(emailStatuses.get(row.id) || {
+            ...(sendStatuses.get(row.id) || {
               lastSentAt: null,
+              lastSentVia: null,
+              customerSendStatus: 'not_sent' as const,
               lastInvoiceEmailRecipient: null,
-              emailStatus: 'not_sent' as const,
+              lastSuccessfulEmailAt: null,
             }),
             ...(() => {
               const currentDelivery = resolveCurrentInvoiceEmailDeliveryState({
                 queueState: emailDeliveryStates.get(row.id),
-                lastSuccessfulDeliveryAt: emailStatuses.get(row.id)?.lastSentAt,
+                lastSuccessfulDeliveryAt: sendStatuses.get(row.id)?.lastSuccessfulEmailAt,
               });
               return currentDelivery ? {
                 emailDeliveryJobId: currentDelivery.id,
@@ -2268,8 +2272,8 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
       if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
 
-      const emailTracking = await getInvoiceEmailStatus(req.params.id);
-      const normalizedInvoice = withNormalizedInvoiceDisplay({ ...(rel.invoice as any), ...emailTracking }, rel.payments as any);
+      const sendTracking = await getInvoiceSendStatus(req.params.id);
+      const normalizedInvoice = withNormalizedInvoiceDisplay({ ...(rel.invoice as any), ...sendTracking }, rel.payments as any);
       const normalizedQuickBooksLines = normalizeQuickBooksLineItemsSnapshot((rel.invoice as any).qbLineItemsSnapshot);
 
       if (normalizedInvoice.isImportedFromQuickBooks) {
