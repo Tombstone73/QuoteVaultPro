@@ -891,20 +891,20 @@ export default function InvoicesListPage() {
             {isAdminOrOwner ? <Button type="button" variant="outline" size="sm" onClick={() => setEmailQueueOpen(true)} data-testid="invoice-email-queue-open">
               <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.needsReview ? ` (${emailQueue.data.counts.needsReview} review)` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
             </Button> : null}
+            {activeFilters.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1" aria-label="Active invoice column filters" data-testid="invoice-active-filter-chips">
+                {activeFilters.map(({ key, label, value }) => (
+                  <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => clearActiveFilter(key)}>
+                    {label}: {value} <X className="h-3 w-3" />
+                  </Button>
+                ))}
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={clearAllFilters}>Clear all</Button>
+              </div>
+            )}
             <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
               {renderPaginationControls("top")}
             </div>
           </div>
-          {activeFilters.length > 0 && (
-            <div className="flex flex-wrap gap-2 border-t border-titan-border-subtle px-3 pb-3 pt-2" aria-label="Active invoice column filters">
-              {activeFilters.map(({ key, label, value }) => (
-                <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => clearActiveFilter(key)}>
-                  {label}: {value} <X className="h-3 w-3" />
-                </Button>
-              ))}
-              <Button type="button" variant="ghost" size="sm" className="h-7" onClick={clearAllFilters}>Clear all</Button>
-            </div>
-          )}
         </DataCard>
 
         {/* Invoices Table */}

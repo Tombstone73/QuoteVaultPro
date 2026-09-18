@@ -119,6 +119,15 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("clearAllFilters");
   });
 
+  it("keeps active filter chips inside the wrapping Invoice toolbar without reserving a separate filter strip", () => {
+    expect(invoicesPageSource).toContain('data-testid="invoice-active-filter-chips"');
+    expect(invoicesPageSource).toContain('className="flex flex-wrap items-center gap-1" aria-label="Active invoice column filters"');
+    expect(invoicesPageSource).toContain('className="flex flex-wrap items-center gap-2 p-3" data-testid="invoice-toolbar"');
+    expect(invoicesPageSource).toContain('onClick={() => clearActiveFilter(key)}');
+    expect(invoicesPageSource).toContain('onClick={clearAllFilters}>Clear all</Button>');
+    expect(invoicesPageSource).not.toContain('border-t border-titan-border-subtle px-3 pb-3 pt-2');
+  });
+
   it("keeps the global filter popover within Radix's available viewport height", () => {
     expect(invoicesPageSource).toContain("--radix-popover-content-available-height");
     expect(invoicesPageSource).toContain("overflow-y-auto overscroll-contain");
