@@ -109,6 +109,10 @@ function getFieldLabel(structured: StructuredTimelineEvent): string {
       return "Fulfillment";
     case "customerNotes":
       return "Customer Notes";
+    case "contact":
+      return "Contact";
+    case "flags":
+      return "Flags";
 
     case "description":
       return "Description";

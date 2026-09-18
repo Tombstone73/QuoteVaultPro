@@ -17,12 +17,13 @@ const resolveOrderCustomerContactIds = jest.fn<(...args: any[]) => Promise<any>>
 const synchronizeOrderBackedInvoiceFromOrderInTransaction = jest.fn<(...args: any[]) => Promise<any>>();
 const updateOrder = jest.fn<(...args: any[]) => Promise<any>>();
 const auditValues = jest.fn<(...args: any[]) => Promise<any>>();
+const select = jest.fn();
 
 jest.unstable_mockModule("@shared/schema", () => ({ auditLogs: {}, orders: {} }));
 jest.unstable_mockModule("drizzle-orm", () => ({ and: jest.fn(), eq: jest.fn() }));
 jest.unstable_mockModule("../db", () => ({
   db: {
-    select: jest.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [existingOrder] }) }) })),
+    select,
     insert: jest.fn(() => ({ values: auditValues })),
   },
 }));
@@ -49,6 +50,7 @@ beforeEach(() => {
   resolveOrderCustomerContactIds.mockResolvedValue({ customerId: "customer-2", contactId: "contact-2" });
   updateOrder.mockImplementation(async (_organizationId, _orderId, changes) => ({ ...existingOrder, ...changes }));
   auditValues.mockResolvedValue(undefined);
+  select.mockImplementation(() => ({ from: () => ({ where: () => ({ limit: async () => [existingOrder] }) }) }));
 });
 
 describe("canonical editable Order header updates", () => {
@@ -103,5 +105,21 @@ describe("canonical editable Order header updates", () => {
       existingOrderTotalCents: 0,
     }));
     expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orderId: "order-1" }));
+  });
+
+  test("keeps a completed Order metadata correction outside the invoice synchronization path", async () => {
+    const completed = { ...existingOrder, status: "completed" };
+    select.mockImplementationOnce(() => ({ from: () => ({ where: () => ({ limit: async () => [completed] }) }) }));
+
+    await canonicalOrderOperations.updateEditableHeader({
+      organizationId: "org-1",
+      actorUserId: "user-1",
+      orderId: "order-1",
+      allowNonNew: true,
+      changes: { poNumber: "POST-COMPLETION-PO" } as any,
+    });
+
+    expect(updateOrder).toHaveBeenCalledWith("org-1", "order-1", { poNumber: "POST-COMPLETION-PO" });
+    expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).not.toHaveBeenCalled();
   });
 });

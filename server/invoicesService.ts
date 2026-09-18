@@ -1227,6 +1227,12 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     totalCents: snapshot.totalCents,
   };
   const financialState = computeInvoiceFinancialState(nextInvoice, paymentRows as any);
+  if (financialState.amountPaidCents > 0) {
+    throw Object.assign(
+      new Error("Commercial corrections are not allowed after a payment has been applied. Create a separate adjustment or additional invoice instead."),
+      { code: "ORDER_INVOICE_PAYMENT_LOCKED", statusCode: 409 },
+    );
+  }
   const hasQuickBooksLink = Boolean(String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || "").trim());
   const nextInvoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;
   const [updated] = await tx.update(invoices).set({

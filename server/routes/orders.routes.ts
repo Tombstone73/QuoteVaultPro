@@ -187,6 +187,7 @@ import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCusto
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
 import { normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
+import { classifyTerminalOrderPatch } from "@shared/terminalOrderEditPolicy";
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
@@ -2792,16 +2793,30 @@ export async function registerOrderRoutes(
                 req.body.shippingCents = normalizedShipping.shippingCents;
             }
 
-            // Check if order is terminal (completed/canceled)
-            const isTerminal = existingOrder.status === 'completed' || existingOrder.status === 'canceled';
+            // Terminal Orders retain a narrow, auditable metadata correction path.
+            // Financial/customer/workflow changes remain subject to the existing
+            // Admin/Owner override and canonical Order -> Invoice synchronization.
+            const isCanceled = isCanceledOrder(existingOrder);
+            const isCompleted = !isCanceled && (
+                existingOrder.status === 'completed' ||
+                existingOrder.state === 'closed' ||
+                existingOrder.state === 'production_complete'
+            );
+            const terminalPatchClassification = classifyTerminalOrderPatch(req.body ?? {});
 
-            // Enforce allowCompletedOrderEdits setting for terminal orders
-            if (isTerminal) {
+            if (isCanceled) {
+                return res.status(403).json({
+                    message: "Cancelled orders only allow append-only historical notes. Use the dedicated recovery workflow for other changes.",
+                    code: "ORDER_CANCELLED_EDIT_RESTRICTED",
+                });
+            }
+
+            if (isCompleted && terminalPatchClassification === "high_risk") {
                 const isAdminOrOwnerResult = ['owner', 'admin'].includes(userRole);
 
                 if (!isAdminOrOwnerResult) {
                     return res.status(403).json({
-                        message: "Cannot edit completed or canceled orders",
+                        message: "This completed-order change can affect commercial or customer identity history and requires an Admin or Owner.",
                         code: "ORDER_LOCKED"
                     });
                 }
@@ -2818,7 +2833,7 @@ export async function registerOrderRoutes(
 
                 if (!allowCompletedOrderEdits) {
                     return res.status(403).json({
-                        message: "Editing completed/canceled orders is disabled. Enable 'Allow Completed Order Edits' in organization settings.",
+                        message: "High-risk completed-order corrections are disabled. Enable 'Allow Completed Order Edits' in organization settings for an Admin or Owner override.",
                         code: "ORDER_LOCKED_SETTING_DISABLED"
                     });
                 }
@@ -3005,6 +3020,11 @@ export async function registerOrderRoutes(
                     const from = toNullableString((oldOrder as any).label);
                     const to = toNullableString((order as any).label);
                     if (from !== to) diffs.push({ fieldKey: 'jobLabel', fromValue: from ?? '', toValue: to ?? '' });
+                }
+                {
+                    const from = toNullableString((oldOrder as any).contactId);
+                    const to = toNullableString((order as any).contactId);
+                    if (from !== to) diffs.push({ fieldKey: 'contact', fromValue: from ?? '', toValue: to ?? '' });
                 }
                 {
                     const from = toNullableString((oldOrder as any).priority);
@@ -4270,7 +4290,20 @@ export async function registerOrderRoutes(
             const { listLabel } = req.body;
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ message: "Order not found" });
+            const [previous] = await db.select({ listLabel: orderListNotes.listLabel }).from(orderListNotes).where(and(eq(orderListNotes.organizationId, organizationId), eq(orderListNotes.orderId, orderId))).limit(1);
             const [updated] = await db.insert(orderListNotes).values({ organizationId, orderId, listLabel: listLabel || null, updatedByUserId: userId }).onConflictDoUpdate({ target: [orderListNotes.organizationId, orderListNotes.orderId], set: { listLabel: listLabel || null, updatedByUserId: userId, updatedAt: new Date() } }).returning();
+            if ((previous?.listLabel ?? null) !== (updated.listLabel ?? null)) {
+                await storage.createOrderAuditLog({
+                    orderId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    actionType: 'order.field_changed',
+                    fromStatus: null,
+                    toStatus: null,
+                    note: null,
+                    metadata: { structuredEvent: { eventType: 'order.field_changed', entityType: 'order', entityId: orderId, displayLabel: `Order ${order.displayNumber || order.orderNumber}`, fieldKey: 'flags', fromValue: previous?.listLabel ?? '', toValue: updated.listLabel ?? '', actorUserId: userId, createdAt: new Date().toISOString() } },
+                });
+            }
             res.json({ success: true, listLabel: updated.listLabel });
         } catch (error) {
             console.error("Error updating order list note:", error);
@@ -6629,11 +6662,30 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user) ?? null;
             const parsed = insertOrderInternalNoteSchema.parse(req.body ?? {});
 
-            const note = await addOrderInternalNote({
-                organizationId,
-                orderId: String(req.params.orderId),
-                userId,
-                values: parsed,
+            const orderId = String(req.params.orderId);
+            const note = await db.transaction(async (tx) => {
+                const created = await addOrderInternalNote({
+                    organizationId,
+                    orderId,
+                    userId,
+                    values: parsed,
+                    executor: tx,
+                });
+
+                if (!created) return null;
+
+                await new OrdersRepository(tx).createOrderAuditLog({
+                    orderId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    actionType: 'order.internal_note_added',
+                    fromStatus: null,
+                    toStatus: null,
+                    note: parsed.noteText,
+                    metadata: { appendOnly: true, noteId: created.id },
+                });
+
+                return created;
             });
 
             if (!note) {
@@ -8153,6 +8205,7 @@ export async function registerOrderRoutes(
             return res.json(enrichLineItemWithEffectivePricing(lineItem as any));
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
             console.error("[OrderCommercialPricing] Failed", error);
             return res.status(500).json({ message: "Failed to correct line item pricing" });
         }

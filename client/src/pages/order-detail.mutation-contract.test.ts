@@ -34,13 +34,23 @@ describe("Order mutation UI contract", () => {
     const orderDetail = await source("client/src/pages/order-detail.tsx");
 
     expect(orderDetail).toContain('aria-label="Select order contact"');
-    expect(orderDetail).toContain("disabled={!canEditOrder || !order?.customerId || updateOrder.isPending}");
+    expect(orderDetail).toContain("disabled={!canEditSafeOrderMetadata || !order?.customerId || updateOrder.isPending}");
     expect(orderDetail).toContain("onSelect={() => saveOrderOwner({ contactId: contact.id })}");
     expect(orderDetail).toContain("onSelect={() => saveOrderOwner({ contactId: null })}");
     expect(orderDetail).toContain("Unable to load contacts. Retry");
     expect(orderDetail).toContain("to={`/contacts/${order.contact.id}`}");
     expect(orderDetail).not.toContain("isEditingContact");
     expect(orderDetail).not.toContain("enterContactEdit");
+  });
+
+  it("keeps notes and safe metadata available after completion without unlocking commercial controls", async () => {
+    const orderDetail = await source("client/src/pages/order-detail.tsx");
+
+    expect(orderDetail).toContain("const canEditSafeOrderMetadata = Boolean(order && !orderIsCanceled);");
+    expect(orderDetail).toContain("const canAppendOrderInternalNote = Boolean(order);");
+    expect(orderDetail).toContain("{canAppendOrderInternalNote && !isAddingOrderInternalNote ? (");
+    expect(orderDetail).toContain("disabled={!canEditSafeOrderMetadata || updateOrder.isPending}");
+    expect(orderDetail).toContain("{isOrderEditRoute && orderIsCanceled && (");
   });
 
   it("does not misreport a completed deletion when only the post-mutation refresh fails", async () => {

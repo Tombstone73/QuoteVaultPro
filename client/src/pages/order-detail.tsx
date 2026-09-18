@@ -770,6 +770,10 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  // Completed Orders can still receive narrow, auditable metadata corrections.
+  // Cancelled Orders remain restricted to append-only notes.
+  const canEditSafeOrderMetadata = Boolean(order && !orderIsCanceled);
+  const canAppendOrderInternalNote = Boolean(order);
   const canEditCommercialPricing = Boolean(order && isAdminOrOwner && isOrderCommerciallyEditable(order));
   const canShowCancelOrder = Boolean(order && !orderIsCanceled);
   const canCancelOrder = Boolean(canShowCancelOrder && isAdminOrOwner && cancellationEligibilityQuery.data?.canCancel);
@@ -857,7 +861,7 @@ export default function OrderDetail() {
   routeLocationRef.current = location;
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
-    if (!canEditOrder) return;
+    if (!canEditSafeOrderMetadata) return;
     setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
   };
 
@@ -947,7 +951,7 @@ export default function OrderDetail() {
   };
 
   const enterFulfillmentEdit = () => {
-    if (!canEditOrder) return;
+    if (!canEditSafeOrderMetadata) return;
     setIsEditingCustomer(false);
     setIsEditingFulfillment(true);
   };
@@ -1101,6 +1105,7 @@ export default function OrderDetail() {
     : customerContacts;
 
   const saveOrderOwner = (changes: { customerId?: string | null; contactId?: string | null }) => {
+    if (!canEditSafeOrderMetadata) return;
     updateOrder.mutate(changes, {
       onSuccess: () => {
         setIsCustomerPickerOpen(false);
@@ -1324,7 +1329,7 @@ export default function OrderDetail() {
       setFlags(next);
       setFlagInput("");
 
-      if (!canEditOrder) return;
+      if (!canEditSafeOrderMetadata) return;
       try {
         await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
@@ -1343,7 +1348,7 @@ export default function OrderDetail() {
       void (async () => {
         const next = flags.slice(0, -1);
         setFlags(next);
-        if (!canEditOrder) return;
+        if (!canEditSafeOrderMetadata) return;
         try {
           await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
         } catch {
@@ -1357,7 +1362,7 @@ export default function OrderDetail() {
     void (async () => {
       const next = flags.filter((f) => f !== flag);
       setFlags(next);
-      if (!canEditOrder) return;
+      if (!canEditSafeOrderMetadata) return;
       try {
         await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
@@ -2208,14 +2213,14 @@ export default function OrderDetail() {
           </div>
         </div>
 
-        {isOrderEditRoute && !canEditOrder && (
+        {isOrderEditRoute && orderIsCanceled && (
           <div className="mb-4 rounded-titan-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <div>
-                <div className="font-semibold">Order editing is locked</div>
+                <div className="font-semibold">Cancelled order corrections are restricted</div>
                 <div>
-                  Completed and cancelled orders are read-only for normal operations. Existing history remains available.
+                  Add append-only internal notes as needed. Commercial and operational corrections require the dedicated recovery workflow.
                 </div>
               </div>
             </div>
@@ -2464,7 +2469,7 @@ export default function OrderDetail() {
                             aria-label="Select order contact"
                             aria-expanded={isContactPickerOpen}
                             className="w-full justify-between font-normal h-9"
-                            disabled={!canEditOrder || !order?.customerId || updateOrder.isPending}
+                            disabled={!canEditSafeOrderMetadata || !order?.customerId || updateOrder.isPending}
                           >
                             <span className="truncate">
                               {!order?.customerId
@@ -2668,7 +2673,7 @@ export default function OrderDetail() {
                         }
                       }}
                       className="h-8 w-auto min-w-[120px]"
-                      disabled={!canEditOrder || updateOrder.isPending}
+                      disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
                       placeholder="—"
                     />
                   </div>
@@ -2686,7 +2691,7 @@ export default function OrderDetail() {
                         }
                       }}
                       className="h-8 w-full min-w-0"
-                      disabled={!canEditOrder || updateOrder.isPending}
+                      disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
                       placeholder="—"
                     />
                   </div>
@@ -2696,7 +2701,7 @@ export default function OrderDetail() {
                     <Select 
                       value={order.priority} 
                       onValueChange={handlePriorityChange} 
-                      disabled={!canEditOrder || updateOrder.isPending}
+                      disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
                     >
                       <SelectTrigger className="h-8 w-auto min-w-[100px]">
                         <SelectValue />
@@ -2731,7 +2736,7 @@ export default function OrderDetail() {
                     ) : (
                       <div className="inline-flex items-center gap-2 shrink-0">
                         <div className="text-sm whitespace-nowrap">{formatOrderDate(order.dueDate, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</div>
-                        {canEditOrder && (
+                        {canEditSafeOrderMetadata && (
                           <Button
                             size="icon"
                             variant="ghost"
@@ -2766,7 +2771,7 @@ export default function OrderDetail() {
                     ) : (
                       <div className="inline-flex items-center gap-2 shrink-0">
                         <div className="text-sm whitespace-nowrap">{formatOrderDate(order.promisedDate, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</div>
-                        {canEditOrder && (
+                        {canEditSafeOrderMetadata && (
                           <Button
                             size="icon"
                             variant="ghost"
@@ -2794,7 +2799,7 @@ export default function OrderDetail() {
                       {flags.map((t) => (
                         <Badge key={t} variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center gap-1">
                           {t}
-                          {canEditOrder && !updateOrder.isPending && (
+                          {canEditSafeOrderMetadata && !updateOrder.isPending && (
                             <button
                               type="button"
                               onClick={() => removeFlag(t)}
@@ -2807,7 +2812,7 @@ export default function OrderDetail() {
                         </Badge>
                       ))}
 
-                      {!canEditOrder || updateOrder.isPending || updateListNoteMutation.isPending ? (
+                      {!canEditSafeOrderMetadata || updateOrder.isPending || updateListNoteMutation.isPending ? (
                         flags.length === 0 ? (
                           <span className="text-xs text-muted-foreground">—</span>
                         ) : null
@@ -2833,7 +2838,7 @@ export default function OrderDetail() {
                       <div className="text-sm font-medium">Internal Notes</div>
                       <div className="text-xs text-muted-foreground">Staff only</div>
                     </div>
-                    {canEditOrder && !isAddingOrderInternalNote ? (
+                    {canAppendOrderInternalNote && !isAddingOrderInternalNote ? (
                       <Button type="button" size="sm" variant="ghost" onClick={() => setIsAddingOrderInternalNote(true)}>
                         Add note
                       </Button>
@@ -2864,7 +2869,7 @@ export default function OrderDetail() {
                     </details>
                   ) : null}
 
-                  {canEditOrder && isAddingOrderInternalNote ? (
+                  {canAppendOrderInternalNote && isAddingOrderInternalNote ? (
                     <div className="mt-3 space-y-2">
                       <Textarea
                         value={orderInternalNoteDraft}
@@ -3027,7 +3032,7 @@ export default function OrderDetail() {
                     {order.fulfillmentStatus && (
                       <FulfillmentStatusBadge status={order.fulfillmentStatus as any} />
                     )}
-                    {canEditOrder && !isEditingFulfillment && (
+                    {canEditSafeOrderMetadata && !isEditingFulfillment && (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -3057,7 +3062,7 @@ export default function OrderDetail() {
                       <Textarea
                         placeholder="Add pickup instructions, contact info, dock hours, etc."
                         defaultValue={order.shippingInstructions ?? ""}
-                        disabled={!canEditOrder || !isEditingFulfillment}
+                        disabled={!canEditSafeOrderMetadata || !isEditingFulfillment}
                         onBlur={(e) => {
                           const nextValue = normalizeNullableString(e.target.value);
                           if ((order.shippingInstructions ?? null) === nextValue) return;
@@ -3171,7 +3176,7 @@ export default function OrderDetail() {
                           </div>
                         )}
 
-                        {!isEditingFulfillment ? (
+                        {!isEditingFulfillment || !canEditOrder ? (
                           <div className="space-y-1 text-sm text-muted-foreground">
                             {(order.shipToCompany || order.shipToName) && (
                               <div className="text-foreground">
@@ -3340,6 +3345,20 @@ export default function OrderDetail() {
                             </div>
                           </div>
                         )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Shipping instructions</label>
+                        <Textarea
+                          placeholder="Add delivery instructions, dock hours, contact information, etc."
+                          defaultValue={order.shippingInstructions ?? ""}
+                          disabled={!canEditSafeOrderMetadata || !isEditingFulfillment}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shippingInstructions ?? null) === nextValue) return;
+                            void applyOrderPatch({ shippingInstructions: nextValue });
+                          }}
+                        />
                       </div>
 
                       {/* Shipping / Delivery Price */}
