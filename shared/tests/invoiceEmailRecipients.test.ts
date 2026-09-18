@@ -1,6 +1,7 @@
 import {
   buildInvoiceEmailRecipients,
   isValidInvoiceRecipientEmail,
+  normalizeExplicitInvoiceRecipientEmails,
 } from "../invoiceEmailRecipients";
 
 describe("invoice email recipients", () => {
@@ -27,6 +28,13 @@ describe("invoice email recipients", () => {
     ])).toEqual([
       { source: "customer_contact", name: "Valid", email: "valid@example.com" },
     ]);
+  });
+
+  test("normalizes explicit one-send recipients without accepting invalid or duplicate addresses", () => {
+    expect(normalizeExplicitInvoiceRecipientEmails(["Aidan@controlgroup.biz", "aidan@controlgroup.biz", "billing@example.com"]))
+      .toEqual(["Aidan@controlgroup.biz", "billing@example.com"]);
+    expect(() => normalizeExplicitInvoiceRecipientEmails([])).toThrow("Select at least one valid recipient");
+    expect(() => normalizeExplicitInvoiceRecipientEmails(["valid@example.com", "not-an-email"])).toThrow("Enter only valid recipient");
   });
 
   test("uses the established inline email validation format", () => {

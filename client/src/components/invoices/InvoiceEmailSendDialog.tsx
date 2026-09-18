@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useInvoiceEmailDraft, useInvoiceEmailRecipients, useSendInvoice } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
-import { isValidInvoiceRecipientEmail } from "@shared/invoiceEmailRecipients";
+import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail } from "@shared/invoiceEmailRecipients";
 
 type InvoiceEmailSendDialogProps = {
   invoiceId: string;
@@ -28,6 +29,8 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
   const invoiceEmailRecipients = useInvoiceEmailRecipients(invoiceId, open);
   const invoiceEmailDraft = useInvoiceEmailDraft(invoiceId, open);
   const [selectedRecipientEmail, setSelectedRecipientEmail] = useState("");
+  const [selectedConfiguredRecipientEmails, setSelectedConfiguredRecipientEmails] = useState<string[]>([]);
+  const [recipientsInitializedForOpen, setRecipientsInitializedForOpen] = useState(false);
   const [manualRecipientEmail, setManualRecipientEmail] = useState("");
   const [recipientEmailError, setRecipientEmailError] = useState<string | null>(null);
   const [unapprovedOverrideRequired, setUnapprovedOverrideRequired] = useState(false);
@@ -36,25 +39,31 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
   const [draftInitializedForOpen, setDraftInitializedForOpen] = useState(false);
 
   const recipientOptions = invoiceEmailRecipients.data?.recipients ?? [];
-  const defaultRecipient = invoiceEmailRecipients.data?.defaultRecipient ?? null;
   const selectedRecipient = recipientOptions.find(
     (recipient) => recipient.email.toLowerCase() === selectedRecipientEmail.toLowerCase(),
-  ) ?? defaultRecipient;
+  ) ?? null;
   const trimmedManualRecipientEmail = manualRecipientEmail.trim();
   const manualRecipientInvalid = Boolean(trimmedManualRecipientEmail)
     && !isValidInvoiceRecipientEmail(trimmedManualRecipientEmail);
-  const resolvedRecipientEmail = trimmedManualRecipientEmail || selectedRecipient?.email || null;
-  const resolvedRecipientName = trimmedManualRecipientEmail
-    ? "One-time recipient"
-    : (selectedRecipient?.name || null);
-  const usingConfiguredRecipients = !trimmedManualRecipientEmail
-    && Boolean(defaultRecipient?.email)
-    && selectedRecipientEmail === defaultRecipient?.email;
+  const selectedConfiguredRecipients = recipientOptions.filter((recipient) =>
+    selectedConfiguredRecipientEmails.includes(recipient.email.toLowerCase()),
+  );
+  const finalRecipients = buildInvoiceEmailRecipients([
+    ...selectedConfiguredRecipients,
+    ...(selectedRecipient ? [selectedRecipient] : []),
+    ...(trimmedManualRecipientEmail ? [{ email: trimmedManualRecipientEmail, name: "One-time recipient", source: "one_time" as const }] : []),
+  ]);
+  const finalRecipientEmails = finalRecipients.map((recipient) => recipient.email);
 
   useEffect(() => {
-    if (!open || selectedRecipientEmail || !defaultRecipient?.email) return;
-    setSelectedRecipientEmail(defaultRecipient.email);
-  }, [defaultRecipient?.email, open, selectedRecipientEmail]);
+    if (!open) {
+      if (recipientsInitializedForOpen) setRecipientsInitializedForOpen(false);
+      return;
+    }
+    if (recipientsInitializedForOpen || invoiceEmailRecipients.isLoading || !invoiceEmailRecipients.data) return;
+    setSelectedConfiguredRecipientEmails(recipientOptions.map((recipient) => recipient.email.toLowerCase()));
+    setRecipientsInitializedForOpen(true);
+  }, [invoiceEmailRecipients.data, invoiceEmailRecipients.isLoading, open, recipientOptions, recipientsInitializedForOpen]);
 
   useEffect(() => {
     if (!open) {
@@ -71,6 +80,8 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
 
   const resetCompose = () => {
     setSelectedRecipientEmail("");
+    setSelectedConfiguredRecipientEmails([]);
+    setRecipientsInitializedForOpen(false);
     setManualRecipientEmail("");
     setRecipientEmailError(null);
     setUnapprovedOverrideRequired(false);
@@ -85,19 +96,17 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
   };
 
   const handleSend = async (allowUnapproved = false) => {
-    if (!resolvedRecipientEmail || manualRecipientInvalid) {
+    if (finalRecipientEmails.length === 0 || manualRecipientInvalid) {
       setRecipientEmailError(
         manualRecipientInvalid
           ? "Enter a valid email address."
-          : "Choose a customer email or enter another valid email address.",
+          : "Select at least one recipient or enter another valid email address.",
       );
       return;
     }
     if (!draftInitializedForOpen || !subject.trim() || !message.trim()) return;
     try {
-      await sendInvoice.mutateAsync(usingConfiguredRecipients
-        ? { id: invoiceId, allowUnapproved, subject, message }
-        : { id: invoiceId, toEmail: resolvedRecipientEmail, allowUnapproved, subject, message });
+      await sendInvoice.mutateAsync({ id: invoiceId, recipientEmails: finalRecipientEmails, allowUnapproved, subject, message });
       toast({ title: "Invoice sent", description: "The invoice email was accepted for delivery." });
       handleOpenChange(false);
       onSent?.();
@@ -123,28 +132,38 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
             <div className="text-xs font-medium text-muted-foreground">Sending to</div>
             {invoiceEmailRecipients.isLoading ? (
               <div className="mt-1 text-sm text-muted-foreground">Resolving recipient…</div>
-            ) : usingConfiguredRecipients ? (
+            ) : finalRecipients.length > 0 ? (
               <div className="mt-1 min-w-0 space-y-2">
-                <div className="text-sm font-medium">{recipientOptions.length} configured invoice recipient{recipientOptions.length === 1 ? "" : "s"}</div>
+                <div className="text-sm font-medium">{selectedConfiguredRecipients.length} configured invoice recipient{selectedConfiguredRecipients.length === 1 ? "" : "s"} selected</div>
                 <div className="space-y-1.5">
                   {recipientOptions.map((recipient) => (
-                    <div key={recipient.email.toLowerCase()} className="min-w-0">
+                    <label key={recipient.email.toLowerCase()} className="flex min-w-0 items-start gap-2 rounded-sm py-0.5 text-sm">
+                      <Checkbox
+                        checked={selectedConfiguredRecipientEmails.includes(recipient.email.toLowerCase())}
+                        onCheckedChange={(checked) => setSelectedConfiguredRecipientEmails((current) => checked === true
+                          ? Array.from(new Set([...current, recipient.email.toLowerCase()]))
+                          : current.filter((email) => email !== recipient.email.toLowerCase()))}
+                        aria-label={`Send invoice to ${recipient.email}`}
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{recipient.name || recipient.email}</span>
+                        <span className="block break-all text-xs text-muted-foreground">{recipient.email}</span>
+                      </span>
+                    </label>
+                  ))}
+                  {finalRecipients.filter((recipient) => !recipientOptions.some((configured) => configured.email.toLowerCase() === recipient.email.toLowerCase())).map((recipient) => (
+                    <div key={recipient.email.toLowerCase()} className="min-w-0 pl-6">
                       <div className="truncate text-sm font-medium">{recipient.name || recipient.email}</div>
-                      <a className="block break-all text-xs text-primary underline-offset-2 hover:underline" href={`mailto:${recipient.email}`}>{recipient.email}</a>
+                      <div className="break-all text-xs text-muted-foreground">{recipient.email}</div>
                     </div>
                   ))}
                 </div>
-              </div>
-            ) : resolvedRecipientEmail ? (
-              <div className="mt-1 min-w-0">
-                <div className="truncate text-sm font-medium">{resolvedRecipientName || resolvedRecipientEmail}</div>
-                <a className="block truncate text-sm text-primary underline-offset-2 hover:underline" href={`mailto:${resolvedRecipientEmail}`}>{resolvedRecipientEmail}</a>
               </div>
             ) : <div className="mt-1 text-sm text-muted-foreground">No recipient selected</div>}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="invoice-customer-email">Choose customer email</Label>
-            <Select value={selectedRecipientEmail} onValueChange={(email) => { setSelectedRecipientEmail(email); setManualRecipientEmail(""); setRecipientEmailError(null); }} disabled={invoiceEmailRecipients.isLoading || recipientOptions.length === 0}>
+            <Select value={selectedRecipientEmail} onValueChange={(email) => { setSelectedRecipientEmail(email); setRecipientEmailError(null); }} disabled={invoiceEmailRecipients.isLoading || recipientOptions.length === 0}>
               <SelectTrigger id="invoice-customer-email"><SelectValue placeholder={invoiceEmailRecipients.isLoading ? "Loading customer emails…" : "No saved customer email"} /></SelectTrigger>
               <SelectContent>{recipientOptions.map((recipient) => <SelectItem key={recipient.email.toLowerCase()} value={recipient.email}>{recipient.name} — {recipient.email}</SelectItem>)}</SelectContent>
             </Select>
@@ -178,7 +197,7 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
             <Button variant="destructive" onClick={() => void handleSend(true)} disabled={sendInvoice.isPending || !draftInitializedForOpen}>{sendInvoice.isPending ? "Sending..." : "Send Anyway"}</Button>
           </> : <>
             <DialogClose asChild><Button variant="outline" onClick={() => resetCompose()} disabled={sendInvoice.isPending}>Cancel</Button></DialogClose>
-            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || invoiceEmailDraft.isFetching || invoiceEmailDraft.isError || !draftInitializedForOpen || !resolvedRecipientEmail || manualRecipientInvalid}>{sendInvoice.isPending ? "Sending..." : "Send"}</Button>
+            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || invoiceEmailDraft.isFetching || invoiceEmailDraft.isError || !draftInitializedForOpen || finalRecipientEmails.length === 0 || manualRecipientInvalid}>{sendInvoice.isPending ? "Sending..." : "Send"}</Button>
           </>}
         </DialogFooter>
       </DialogContent>

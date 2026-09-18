@@ -33,6 +33,11 @@ jest.mock("@/components/ui/select", () => ({
   SelectTrigger: ({ children, id }: any) => <div id={id}>{children}</div>,
   SelectValue: ({ placeholder }: any) => <span>{placeholder}</span>,
 }));
+jest.mock("@/components/ui/checkbox", () => ({
+  Checkbox: ({ checked, onCheckedChange, ...props }: any) => (
+    <input type="checkbox" checked={checked} onChange={(event) => onCheckedChange(event.target.checked)} {...props} />
+  ),
+}));
 
 import { InvoiceEmailSendDialog } from "./InvoiceEmailSendDialog";
 
@@ -83,6 +88,14 @@ async function changeComposeField(id: string, value: string) {
   });
 }
 
+async function toggleConfiguredRecipient(email: string) {
+  const checkbox = container.querySelector(`[aria-label="Send invoice to ${email}"]`) as HTMLInputElement;
+  await act(async () => {
+    checkbox.click();
+    await Promise.resolve();
+  });
+}
+
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div");
@@ -121,6 +134,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
 
     expect(sendMutation).toHaveBeenCalledWith({
       id: "invoice-1",
+      recipientEmails: ["jess@brainstormprint.com"],
       allowUnapproved: false,
       subject: "Paid Invoice #20469 for your records",
       message: "Thank you for your payment.\nThis copy is for your records.",
@@ -145,35 +159,73 @@ describe("InvoiceEmailSendDialog recipients", () => {
     });
   });
 
-  test("shows only a saved-email override and preserves its single-address send payload", async () => {
+  test("defaults every configured invoice recipient to checked and sends all of them", async () => {
     configureRecipients(recipients.slice(0, 2));
     await renderDialog();
-    await act(async () => { selectRecipient("john@brainstormprint.com"); await Promise.resolve(); });
-
     const targets = container.querySelector('[data-testid="invoice-send-targets"]')?.textContent || "";
-    expect(targets).toContain("John Smith");
-    expect(targets).toContain("john@brainstormprint.com");
-    expect(targets).not.toContain("2 configured invoice recipients");
-    expect(targets).not.toContain("Jessica Selzer");
+    expect(targets).toContain("2 configured invoice recipients selected");
+    expect((container.querySelector('[aria-label="Send invoice to jess@brainstormprint.com"]') as HTMLInputElement).checked).toBe(true);
+    expect((container.querySelector('[aria-label="Send invoice to john@brainstormprint.com"]') as HTMLInputElement).checked).toBe(true);
 
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
-    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ id: "invoice-1", toEmail: "john@brainstormprint.com", allowUnapproved: false }));
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ id: "invoice-1", recipientEmails: ["jess@brainstormprint.com", "john@brainstormprint.com"] }));
   });
 
-  test("shows only a one-time manual recipient and restores configured recipients after it is cleared", async () => {
+  test("adds a one-time recipient without changing configured-recipient selections", async () => {
     configureRecipients(recipients.slice(0, 2));
     await renderDialog();
     await changeManualEmail("one-time@example.com");
     const manualTargets = container.querySelector('[data-testid="invoice-send-targets"]')?.textContent || "";
     expect(manualTargets).toContain("One-time recipient");
     expect(manualTargets).toContain("one-time@example.com");
-    expect(manualTargets).not.toContain("2 configured invoice recipients");
+    expect(manualTargets).toContain("2 configured invoice recipients selected");
 
     await changeManualEmail("");
     const configuredTargets = container.querySelector('[data-testid="invoice-send-targets"]')?.textContent || "";
-    expect(configuredTargets).toContain("2 configured invoice recipients");
+    expect(configuredTargets).toContain("2 configured invoice recipients selected");
     expect(configuredTargets).toContain("Jessica Selzer");
     expect(configuredTargets).toContain("John Smith");
+  });
+
+  test("sends only configured recipients checked for this send", async () => {
+    configureRecipients(recipients.slice(0, 2));
+    await renderDialog();
+    await toggleConfiguredRecipient("john@brainstormprint.com");
+
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["jess@brainstormprint.com"] }));
+  });
+
+  test("blocks send when every configured recipient is unchecked and no other recipient exists", async () => {
+    configureRecipients(recipients.slice(0, 2));
+    await renderDialog();
+    await toggleConfiguredRecipient("jess@brainstormprint.com");
+    await toggleConfiguredRecipient("john@brainstormprint.com");
+
+    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    send.click();
+    expect(sendMutation).not.toHaveBeenCalled();
+  });
+
+  test("uses only a one-time recipient after all configured recipients are unchecked", async () => {
+    configureRecipients(recipients.slice(0, 2));
+    await renderDialog();
+    await toggleConfiguredRecipient("jess@brainstormprint.com");
+    await toggleConfiguredRecipient("john@brainstormprint.com");
+    await changeManualEmail("one-time@example.com");
+
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["one-time@example.com"] }));
+  });
+
+  test("deduplicates a one-time address that matches a configured recipient", async () => {
+    configureRecipients(recipients.slice(0, 2));
+    await renderDialog();
+    await changeManualEmail("JESS@brainstormprint.com");
+
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["jess@brainstormprint.com", "john@brainstormprint.com"] }));
   });
 
   test("keeps the all-configured recipient send payload unchanged", async () => {

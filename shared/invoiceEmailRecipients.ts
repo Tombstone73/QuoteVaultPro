@@ -3,7 +3,8 @@ export type InvoiceEmailRecipientSource =
   | "customer_primary_contact"
   | "billing_contact"
   | "customer_account"
-  | "customer_contact";
+  | "customer_contact"
+  | "one_time";
 
 export type InvoiceEmailRecipient = {
   email: string;
@@ -48,4 +49,23 @@ export function buildInvoiceEmailRecipients(
   }
 
   return recipients;
+}
+
+/**
+ * Validates the recipient list explicitly chosen for one invoice send. This is
+ * intentionally separate from saved recipient resolution: it must never
+ * silently re-add contacts the operator unchecked in the dialog.
+ */
+export function normalizeExplicitInvoiceRecipientEmails(values: unknown[]): string[] {
+  if (values.some((value) => !isValidInvoiceRecipientEmail(value))) {
+    throw new Error("Enter only valid recipient email addresses");
+  }
+  const recipients = buildInvoiceEmailRecipients(values.map((email) => ({
+    email: email as string,
+    source: "one_time" as const,
+  })));
+  if (recipients.length === 0) {
+    throw new Error("Select at least one valid recipient email address");
+  }
+  return recipients.map((recipient) => recipient.email);
 }

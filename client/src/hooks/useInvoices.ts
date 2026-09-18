@@ -638,9 +638,10 @@ export function useMarkInvoiceSent() {
 export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, toEmail, allowUnapproved = false, subject, message }: {
+    mutationFn: async ({ id, toEmail, recipientEmails, allowUnapproved = false, subject, message }: {
       id: string;
       toEmail?: string;
+      recipientEmails?: string[];
       allowUnapproved?: boolean;
       subject?: string;
       message?: string;
@@ -648,7 +649,7 @@ export function useSendInvoice() {
       const res = await apiFetch(`/api/invoices/${id}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ toEmail, allowUnapproved, subject, message }),
+        body: JSON.stringify({ toEmail, recipientEmails, allowUnapproved, subject, message }),
         credentials: 'include',
       });
       if (!res.ok) {

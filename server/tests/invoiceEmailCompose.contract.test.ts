@@ -13,6 +13,8 @@ describe("single Invoice email compose contract", () => {
     expect(start).toBeGreaterThan(-1);
     expect(endpoint).toContain("resolveInvoiceEmailRecipientsForOperations");
     expect(endpoint).toContain("buildInvoiceEmailComposeContext");
+    expect(endpoint).toContain("[Invoice Email Draft] failed");
+    expect(endpoint).toContain("INVOICE_EMAIL_DRAFT_FAILED");
     expect(endpoint).not.toContain("createInvoiceEmailLog");
     expect(endpoint).not.toContain("applyInvoiceSendSuccessLifecycle");
     expect(endpoint).not.toContain("emailService.sendEmail");

@@ -34,7 +34,7 @@ import { approveInvoicesForAccounting } from "../services/invoiceAccountingAppro
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { customerPaymentAllocationModes } from "../../shared/customerPaymentAllocation";
-import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
+import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, normalizeExplicitInvoiceRecipientEmails, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
@@ -409,6 +409,7 @@ export async function registerMvpInvoicingRoutes(
     userId?: string | null;
     userName?: string | null;
     toEmail?: string | null;
+    recipientEmails?: unknown;
     deliveryJobId?: string | null;
     allowUnapproved?: boolean;
     subject?: unknown;
@@ -426,7 +427,15 @@ export async function registerMvpInvoicingRoutes(
       );
     }
 
-    const requestedRecipient = input.toEmail == null ? null : String(input.toEmail).trim();
+    let requestedRecipients: string[] | null = null;
+    if (Array.isArray(input.recipientEmails)) {
+      try {
+        requestedRecipients = normalizeExplicitInvoiceRecipientEmails(input.recipientEmails);
+      } catch (error: any) {
+        throw Object.assign(new Error(error?.message || "Enter only valid recipient email addresses"), { statusCode: 400 });
+      }
+    }
+    const requestedRecipient = requestedRecipients?.[0] ?? (input.toEmail == null ? null : String(input.toEmail).trim());
     if (requestedRecipient && !isValidInvoiceRecipientEmail(requestedRecipient)) {
       throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
     }
@@ -440,14 +449,16 @@ export async function registerMvpInvoicingRoutes(
     });
     let inv: any = recipientResolution.invoice;
     const cust: any = recipientResolution.customer;
-    if (!requestedRecipient && recipientResolution.recipients.length > 1) {
+    const recipientsToSend = requestedRecipients
+      ?? (requestedRecipient ? [requestedRecipient] : recipientResolution.recipients.map((recipient) => recipient.email));
+    if (recipientsToSend.length > 1) {
       const deliveries = [];
-      for (const recipient of recipientResolution.recipients) {
-        deliveries.push(await sendInvoiceEmailForOperations({ ...input, toEmail: recipient.email }));
+      for (const recipientEmail of recipientsToSend) {
+        deliveries.push(await sendInvoiceEmailForOperations({ ...input, recipientEmails: undefined, toEmail: recipientEmail }));
       }
       return {
-        recipientEmail: recipientResolution.recipients[0]?.email ?? null,
-        recipientEmails: recipientResolution.recipients.map((recipient) => recipient.email),
+        recipientEmail: recipientsToSend[0] ?? null,
+        recipientEmails: recipientsToSend,
         deliveries,
       };
     }
@@ -3148,9 +3159,19 @@ export async function registerMvpInvoicingRoutes(
       });
       return res.json({ success: true, data: composeContext.draft });
     } catch (error: any) {
-      return res.status(Number(error.statusCode || error.status || 500)).json({
+      const statusCode = Number(error.statusCode || error.status || 500);
+      console.error("[Invoice Email Draft] failed", {
+        invoiceId: String(req.params.id || ""),
+        organizationId,
+        statusCode,
+        code: error?.code,
+        message: error?.message,
+        stack: error?.stack,
+      });
+      return res.status(statusCode).json({
         success: false,
-        error: error.message || "Unable to prepare invoice email",
+        code: error?.code || "INVOICE_EMAIL_DRAFT_FAILED",
+        error: statusCode === 404 ? (error.message || "Invoice not found") : "Unable to prepare invoice email",
       });
     }
   });
@@ -3236,7 +3257,7 @@ export async function registerMvpInvoicingRoutes(
 
       const userId = getUserId(req.user);
       const { id } = req.params;
-      const { toEmail, allowUnapproved, subject, message } = req.body || {};
+      const { toEmail, recipientEmails, allowUnapproved, subject, message } = req.body || {};
       const userName = String(req.user?.firstName && req.user?.lastName
         ? `${req.user.firstName} ${req.user.lastName}`
         : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
@@ -3246,6 +3267,7 @@ export async function registerMvpInvoicingRoutes(
         userId: userId || null,
         userName,
         toEmail: toEmail == null ? null : String(toEmail),
+        recipientEmails,
         allowUnapproved: allowUnapproved === true,
         subject,
         message,
