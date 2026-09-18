@@ -11,8 +11,10 @@ import { afterEach, beforeAll, describe, expect, test } from '@jest/globals';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
+  auditLogs,
   customerContacts,
   customers,
+  invoiceEmailDeliveryJobs,
   invoiceEmailLogs,
   invoiceReminderLogs,
   invoiceReminderSettings,
@@ -22,7 +24,7 @@ import {
   organizations,
   users,
 } from '../../shared/schema';
-import { getInvoiceDashboardSummary, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, listInvoicesPageForOrganization } from '../invoicesService';
+import { getInvoiceDashboardSummary, getInvoiceEmailStatuses, getInvoiceSendStatuses, getInvoiceWithRelations, listInvoicesForOrganization, listInvoicesPageForOrganization, markInvoicesSentCanonical } from '../invoicesService';
 import {
   getInvoiceListReminderInfo,
   upsertInvoiceReminderSettingsForOrg,
@@ -599,6 +601,65 @@ describe('listInvoicesForOrganization — review queue enrichment/search/sort', 
       .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: neverSent.id })] });
     await expect(listInvoicesPageForOrganization({ organizationId: org.id, customerId: otherCustomer.id, limit: 50, columnFilters: { sendStatus: 'never_sent' } }))
       .resolves.toMatchObject({ totalCount: 1, items: [expect.objectContaining({ id: otherCustomerNeverSent.id })] });
+  });
+
+  test('bulk manual mark as sent preserves canonical checkpoints without creating email evidence or delivery work', async () => {
+    const org = await createTestOrg('bulk-mark-sent');
+    cleanupOrgIds.push(org.id);
+    const user = await createTestUser(org.id, 'bulk-mark-sent');
+    const customer = await createTestCustomer(org.id);
+    const invoiceRows = await Promise.all([811901, 811902, 811903].map((invoiceNumber) => createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber, status: 'billed',
+    })));
+
+    const result = await markInvoicesSentCanonical({ organizationId: org.id, invoiceIds: invoiceRows.map((invoice) => invoice.id), userId: user.id, via: 'manual' });
+    expect(result).toEqual({ selected: 3, marked: 3, skipped: [] });
+
+    const storedRows = await db.select({
+      id: invoices.id,
+      status: invoices.status,
+      invoiceVersion: invoices.invoiceVersion,
+      lastSentAt: invoices.lastSentAt,
+      lastSentVersion: invoices.lastSentVersion,
+      lastSentVia: invoices.lastSentVia,
+    }).from(invoices).where(inArray(invoices.id, invoiceRows.map((invoice) => invoice.id)));
+    expect(storedRows).toHaveLength(3);
+    storedRows.forEach((invoice) => {
+      expect(invoice.status).toBe('sent');
+      expect(invoice.lastSentAt).not.toBeNull();
+      expect(invoice.lastSentVia).toBe('manual');
+      expect(invoice.lastSentVersion).toBe(Number(invoice.invoiceVersion || 1));
+    });
+    expect(await db.select({ id: invoiceEmailLogs.id }).from(invoiceEmailLogs).where(inArray(invoiceEmailLogs.invoiceId, invoiceRows.map((invoice) => invoice.id)))).toEqual([]);
+    expect(await db.select({ id: invoiceEmailDeliveryJobs.id }).from(invoiceEmailDeliveryJobs).where(inArray(invoiceEmailDeliveryJobs.invoiceId, invoiceRows.map((invoice) => invoice.id)))).toEqual([]);
+    const audits = await db.select({ entityId: auditLogs.entityId, actionType: auditLogs.actionType, newValues: auditLogs.newValues })
+      .from(auditLogs)
+      .where(and(eq(auditLogs.organizationId, org.id), inArray(auditLogs.entityId, invoiceRows.map((invoice) => invoice.id))));
+    expect(audits).toHaveLength(3);
+    audits.forEach((audit) => expect(audit).toMatchObject({ actionType: 'invoice_marked_sent', newValues: expect.objectContaining({ via: 'manual', source: 'bulk' }) }));
+
+    const neverSent = await listInvoicesPageForOrganization({
+      organizationId: org.id, includeCanceled: false, limit: 50, columnFilters: { sendStatus: 'never_sent' },
+    });
+    invoiceRows.forEach((invoice) => expect(neverSent.items.map((row) => row.id)).not.toContain(invoice.id));
+
+    await db.update(invoices).set({ invoiceVersion: 2 }).where(eq(invoices.id, invoiceRows[0].id));
+    await db.update(invoices).set({ accountingApprovedAt: new Date(), accountingApprovedVersion: 1 }).where(eq(invoices.id, invoiceRows[1].id));
+    const sendStates = await getInvoiceSendStatuses([
+      { id: invoiceRows[0].id, invoiceVersion: 2, lastSentVersion: 1, lastSentAt: storedRows.find((invoice) => invoice.id === invoiceRows[0].id)?.lastSentAt, lastSentVia: 'manual' },
+      { id: invoiceRows[1].id, invoiceVersion: 1, lastSentVersion: 1, lastSentAt: storedRows.find((invoice) => invoice.id === invoiceRows[1].id)?.lastSentAt, lastSentVia: 'manual' },
+    ], org.id);
+    expect(sendStates.get(invoiceRows[0].id)?.customerSendStatus).toBe('sent_outdated');
+    expect(sendStates.get(invoiceRows[1].id)?.customerSendStatus).toBe('sent_current');
+
+    const imported = await createTestInvoice({
+      orgId: org.id, customerId: customer.id, userId: user.id, invoiceNumber: 811904, status: 'paid', importSource: 'quickbooks', isHistorical: true,
+    });
+    const mixed = await markInvoicesSentCanonical({ organizationId: org.id, invoiceIds: [invoiceRows[2].id, imported.id, 'missing-invoice'], userId: user.id, via: 'manual' });
+    expect(mixed).toMatchObject({ selected: 3, marked: 1, skipped: expect.arrayContaining([
+      expect.objectContaining({ invoiceId: imported.id, code: 'INVOICE_IMPORTED_READ_ONLY' }),
+      expect.objectContaining({ invoiceId: 'missing-invoice', code: 'INVOICE_NOT_FOUND' }),
+    ]) });
   });
 
   test('derives tenant-wide dashboard facts from canonical payment and QuickBooks balance rules', async () => {

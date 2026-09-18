@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { auditLogs, invoices, orderLineItems, orders, products } from "@shared/schema";
 import { db } from "../../db";
-import { appendInvoiceInternalNoteCanonical, createInvoiceFromOrderInTransaction, markInvoiceSentCanonical, updateInvoiceSafeDraftCanonical, type CanonicalSafeInvoiceDraftPatch } from "../../invoicesService";
+import { appendInvoiceInternalNoteCanonical, createInvoiceFromOrderInTransaction, markInvoiceSentCanonical, markInvoicesSentCanonical, updateInvoiceSafeDraftCanonical, type CanonicalSafeInvoiceDraftPatch } from "../../invoicesService";
 import { isCanceledOrder } from "../../../shared/operationalState";
 import { recomputeOrderBillingStatus, resolveInvoiceFinancialEligibility } from "../orderBillingService";
 
@@ -94,6 +94,7 @@ export class CanonicalInvoiceOperations {
   }
   updateSafeDraft(input: { organizationId: string; actorUserId: string; invoiceId: string; patch: CanonicalSafeInvoiceDraftPatch }) { return updateInvoiceSafeDraftCanonical({ organizationId: input.organizationId, invoiceId: input.invoiceId, userId: input.actorUserId, patch: input.patch }); }
   markSent(input: { organizationId: string; actorUserId: string; invoiceId: string; via?: "email" | "manual" | "portal" }) { return markInvoiceSentCanonical({ organizationId: input.organizationId, invoiceId: input.invoiceId, userId: input.actorUserId, via: input.via }); }
+  markSentBulk(input: { organizationId: string; actorUserId: string; invoiceIds: string[]; via?: "email" | "manual" | "portal" }) { return markInvoicesSentCanonical({ organizationId: input.organizationId, invoiceIds: input.invoiceIds, userId: input.actorUserId, via: input.via }); }
   addInternalNote(input: { organizationId: string; actorUserId: string; invoiceId: string; note: string }) { return appendInvoiceInternalNoteCanonical({ organizationId: input.organizationId, invoiceId: input.invoiceId, userId: input.actorUserId, note: input.note }); }
 }
 export const canonicalInvoiceOperations = new CanonicalInvoiceOperations();

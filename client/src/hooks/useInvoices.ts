@@ -636,6 +636,37 @@ export function useMarkInvoiceSent() {
   });
 }
 
+export type BulkMarkInvoicesSentResult = {
+  selected: number;
+  marked: number;
+  skipped: Array<{ invoiceId: string; reason: string; code: string }>;
+};
+
+/** Marks selected invoices as externally/manual sent without creating email work. */
+export function useBulkMarkInvoicesSent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (invoiceIds: string[]) => {
+      if (!invoiceIds.length) throw new Error('Select at least one invoice to mark as sent');
+      const response = await apiFetch('/api/invoices/mark-sent/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoiceIds }),
+        credentials: 'include',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Failed to mark selected invoices as sent');
+      return payload.data as BulkMarkInvoicesSentResult;
+    },
+    onSuccess: (_, invoiceIds) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      invoiceIds.forEach((id) => queryClient.invalidateQueries({ queryKey: ['invoices', id] }));
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/timeline'] });
+    },
+  });
+}
+
 // Send invoice via email
 export function useSendInvoice() {
   const queryClient = useQueryClient();

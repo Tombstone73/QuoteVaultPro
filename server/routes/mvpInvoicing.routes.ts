@@ -3403,6 +3403,34 @@ export async function registerMvpInvoicingRoutes(
   // ------------------------------------------------------------
   // Mark invoice as sent (read-only semantics; does not change financial status)
   // ------------------------------------------------------------
+  app.post("/api/invoices/mark-sent/bulk", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      const invoiceIds = Array.isArray(req.body?.invoiceIds)
+        ? Array.from(new Set(req.body.invoiceIds.map((id: unknown) => String(id || "").trim()).filter(Boolean)))
+        : [];
+      if (!organizationId || !userId) return res.status(401).json({ success: false, error: "Missing organization or user context" });
+      if (!invoiceIds.length) return res.status(400).json({ success: false, error: "Select at least one invoice to mark as sent" });
+      if (invoiceIds.length > 100) return res.status(400).json({ success: false, error: "Select no more than 100 invoices at a time" });
+
+      const result = await canonicalInvoiceOperations.markSentBulk({
+        organizationId,
+        actorUserId: userId,
+        invoiceIds,
+        via: "manual",
+      });
+      return res.json({
+        success: true,
+        data: result,
+        message: `${result.marked} invoice${result.marked === 1 ? "" : "s"} marked as sent${result.skipped.length ? `, ${result.skipped.length} skipped` : ""}`,
+      });
+    } catch (error: any) {
+      console.error("[Invoice Bulk Mark Sent] failed:", error);
+      return res.status(error?.statusCode || 500).json({ success: false, error: error?.message || "Failed to mark selected invoices as sent", code: error?.code });
+    }
+  });
+
   app.post("/api/invoices/:id/mark-sent", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);

@@ -1423,20 +1423,70 @@ export async function updateInvoiceSafeDraftCanonical(input: {
   });
 }
 
+type CanonicalInvoiceSendMarkerInput = {
+  organizationId: string;
+  invoiceId: string;
+  userId: string;
+  via?: "email" | "manual" | "portal";
+  bulk?: boolean;
+};
+
+export type MarkInvoicesSentCanonicalResult = {
+  selected: number;
+  marked: number;
+  skipped: Array<{ invoiceId: string; reason: string; code: string }>;
+};
+
+async function markInvoiceSentCanonicalInTransaction(tx: any, input: CanonicalInvoiceSendMarkerInput) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${input.organizationId}:${input.invoiceId}`}))`);
+  const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+  const status = String(invoice.status || "").toLowerCase();
+  if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
+  const now = new Date();
+  const via = input.via ?? "manual";
+  const nextStatus = ["void", "paid", "partially_paid", "credit"].includes(status) ? status : "sent";
+  const invoiceVersion = Number((invoice as any).invoiceVersion || 1);
+  const [updated] = await tx.update(invoices).set({ status: nextStatus as any, lastSentAt: now, lastSentVersion: invoiceVersion, lastSentVia: via, updatedAt: now } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+  await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_marked_sent", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Marked invoice as sent through the canonical Invoice operation.", newValues: { via, invoiceVersion, source: input.bulk ? "bulk" : "single" } as any } as any);
+  return updated;
+}
+
 /** Canonical status-only send marker; never changes payment or financial state. */
-export async function markInvoiceSentCanonical(input: { organizationId: string; invoiceId: string; userId: string; via?: "email" | "manual" | "portal" }) {
+export async function markInvoiceSentCanonical(input: CanonicalInvoiceSendMarkerInput) {
+  return db.transaction((tx) => markInvoiceSentCanonicalInTransaction(tx, input));
+}
+
+/**
+ * Bounded bulk adapter for the canonical send marker. Each row retains the
+ * same checkpoint and audit semantics as a single manual mark; expected
+ * stale-selection failures are reported without fabricating an email event.
+ */
+export async function markInvoicesSentCanonical(input: {
+  organizationId: string;
+  invoiceIds: string[];
+  userId: string;
+  via?: "email" | "manual" | "portal";
+}): Promise<MarkInvoicesSentCanonicalResult> {
+  const invoiceIds = Array.from(new Set(input.invoiceIds.map((id) => String(id || "").trim()).filter(Boolean))).sort();
+  if (!invoiceIds.length) throw Object.assign(new Error("Select at least one invoice to mark as sent."), { code: "INVOICE_SELECTION_REQUIRED" });
+
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${input.organizationId}:${input.invoiceId}`}))`);
-    const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
-    if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
-    const status = String(invoice.status || "").toLowerCase();
-    if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
-    const now = new Date();
-    const via = input.via ?? "manual";
-    const nextStatus = ["void", "paid", "partially_paid", "credit"].includes(status) ? status : "sent";
-    const [updated] = await tx.update(invoices).set({ status: nextStatus as any, lastSentAt: now, lastSentVersion: Number((invoice as any).invoiceVersion || 1), lastSentVia: via, updatedAt: now } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
-    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_marked_sent", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Marked invoice as sent through the canonical Invoice operation.", newValues: { via, invoiceVersion: Number((invoice as any).invoiceVersion || 1) } as any } as any);
-    return updated;
+    const skipped: MarkInvoicesSentCanonicalResult["skipped"] = [];
+    let marked = 0;
+    for (const invoiceId of invoiceIds) {
+      try {
+        await markInvoiceSentCanonicalInTransaction(tx, { ...input, invoiceId, bulk: true });
+        marked += 1;
+      } catch (error: any) {
+        if (error?.code === "INVOICE_NOT_FOUND" || error?.code === "INVOICE_IMPORTED_READ_ONLY") {
+          skipped.push({ invoiceId, reason: error.message, code: error.code });
+          continue;
+        }
+        throw error;
+      }
+    }
+    return { selected: invoiceIds.length, marked, skipped };
   });
 }
 

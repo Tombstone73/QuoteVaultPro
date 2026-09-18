@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, Settings2, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useApproveInvoicesForAccounting, useBatchSendInvoices, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
+import { useApproveInvoicesForAccounting, useBatchSendInvoices, useBulkMarkInvoicesSent, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { endOfMonth, format, startOfMonth, subDays, subMonths } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -333,6 +333,7 @@ export default function InvoicesListPage() {
   const [approvingInvoiceId, setApprovingInvoiceId] = useState<string | null>(null);
   const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
   const [customerPaymentOpen, setCustomerPaymentOpen] = useState(false);
+  const [markSelectedSentOpen, setMarkSelectedSentOpen] = useState(false);
 
   const { data: invoiceResponse, isLoading, isError, error } = useInvoicesPage({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -351,6 +352,7 @@ export default function InvoicesListPage() {
   const resolveEmailDeliveryReview = useResolveInvoiceEmailDeliveryReview();
   const emailQueue = useInvoiceEmailQueue(emailQueueOpen, emailQueueView, emailQueuePage);
   const approveInvoices = useApproveInvoicesForAccounting();
+  const bulkMarkInvoicesSent = useBulkMarkInvoicesSent();
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -608,6 +610,22 @@ export default function InvoicesListPage() {
     }
   };
 
+  const confirmBulkMarkSent = async () => {
+    const invoiceIds = Array.from(selectedInvoiceIds);
+    if (!invoiceIds.length) return;
+    try {
+      const result = await bulkMarkInvoicesSent.mutateAsync(invoiceIds);
+      toast({
+        title: 'Invoices marked as sent',
+        description: `${result.marked} marked as sent${result.skipped.length ? `; ${result.skipped.length} skipped.` : '.'}`,
+      });
+      setSelectedInvoiceIds(new Set());
+      setMarkSelectedSentOpen(false);
+    } catch (error: any) {
+      toast({ title: 'Mark as sent failed', description: error.message, variant: 'destructive' });
+    }
+  };
+
   const getEmailDeliveryStatus = (invoice: { emailDeliveryStatus?: string | null; customerSendStatus?: InvoiceEmailStatus; emailStatus?: InvoiceEmailStatus }) => {
     const queueStatus = String(invoice.emailDeliveryStatus || "").toLowerCase() as keyof typeof deliveryStatusMeta;
     return queueStatus && deliveryStatusMeta[queueStatus]
@@ -762,6 +780,9 @@ export default function InvoicesListPage() {
               <Button variant="outline" onClick={handleBatchSend} disabled={selectedCount === 0 || batchSendInvoices.isPending}>
                 <Mail className="mr-2 h-4 w-4" />
                 {batchSendInvoices.isPending ? "Preparing..." : `Send Selected${selectedCount ? ` (${selectedCount})` : ""}`}
+              </Button>
+              <Button variant="outline" onClick={() => setMarkSelectedSentOpen(true)} disabled={selectedCount === 0 || bulkMarkInvoicesSent.isPending}>
+                {bulkMarkInvoicesSent.isPending ? 'Marking…' : `Mark as Sent${selectedCount ? ` (${selectedCount})` : ''}`}
               </Button>
               <Button variant="outline" onClick={handleApproveSelected} disabled={selectedCount === 0 || approveInvoices.isPending}>
                 {approveInvoices.isPending ? 'Approving…' : `Approve Selected${selectedCount ? ` (${selectedCount})` : ''}`}
@@ -1102,6 +1123,22 @@ export default function InvoicesListPage() {
 
         {renderPagination("bottom")}
       </ContentLayout>
+      <Dialog open={markSelectedSentOpen} onOpenChange={(open) => { if (!open && !bulkMarkInvoicesSent.isPending) setMarkSelectedSentOpen(false); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark invoices as sent?</DialogTitle>
+            <DialogDescription>
+              This will mark {selectedCount} selected invoice{selectedCount === 1 ? '' : 's'} as sent without sending an email.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={bulkMarkInvoicesSent.isPending} onClick={() => setMarkSelectedSentOpen(false)}>Cancel</Button>
+            <Button type="button" disabled={selectedCount === 0 || bulkMarkInvoicesSent.isPending} onClick={() => void confirmBulkMarkSent()}>
+              {bulkMarkInvoicesSent.isPending ? 'Marking…' : 'Mark as Sent'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={columnsOpen} onOpenChange={setColumnsOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>Global Invoice Columns</DialogTitle><DialogDescription>Choose the columns and order used by the Global Invoice backlog. This does not affect Customer Detail tables.</DialogDescription></DialogHeader>

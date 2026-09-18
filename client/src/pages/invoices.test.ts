@@ -88,6 +88,17 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("includeCanceled");
   });
 
+  it("uses the selected-invoice workflow to manually mark invoices sent without invoking email delivery", () => {
+    expect(invoicesPageSource).toContain("Mark as Sent");
+    expect(invoicesPageSource).toContain("Mark invoices as sent?");
+    expect(invoicesPageSource).toContain("This will mark {selectedCount} selected invoice");
+    expect(invoicesPageSource).toContain("confirmBulkMarkSent");
+    expect(invoicesPageSource).toContain("useBulkMarkInvoicesSent");
+    expect(invoiceHooksSource).toContain("/api/invoices/mark-sent/bulk");
+    expect(invoiceHooksSource).toContain("queryClient.invalidateQueries({ queryKey: ['invoices'] })");
+    expect(invoiceHooksSource).toContain("Select at least one invoice to mark as sent");
+  });
+
   it("uses a separate persisted Global Invoice column layout with required Invoice and Actions columns", () => {
     expect(invoicesPageSource).toContain("GLOBAL_INVOICE_COLUMNS");
     expect(invoicesPageSource).toContain("global_invoices:org_");
