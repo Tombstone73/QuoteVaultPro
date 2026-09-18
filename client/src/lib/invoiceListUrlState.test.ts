@@ -1,4 +1,4 @@
-import { hasExplicitInvoiceListFilters, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { hasExplicitInvoiceListFilters, normalizeInvoiceListDiscreteFilter, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
 
 describe("Invoice list URL state", () => {
   it.each([
@@ -76,6 +76,23 @@ describe("Invoice list URL state", () => {
     expect(parseInvoiceListUrlState(new URLSearchParams("status=unpaid&page=3&pageSize=50"))).toMatchObject({ status: "unpaid", page: 3, pageSize: 50 });
     expect(updateInvoiceListUrlState(new URLSearchParams("status=paid&page=3&pageSize=50"), { status: "unpaid" }, true).toString())
       .toBe("status=unpaid&pageSize=50");
+  });
+
+  it("round-trips canonical multi-select approval and send-status filters through the URL", () => {
+    const state = parseInvoiceListUrlState(new URLSearchParams("accountingApproval=approved&sendStatus=never_sent,updated_after_sent&status=unpaid,partially_paid&page=4"));
+    expect(state).toMatchObject({
+      status: "unpaid,partially_paid",
+      page: 4,
+      columnFilters: { accountingApproval: "approved", sendStatus: "never_sent,updated_after_sent" },
+    });
+
+    const next = updateInvoiceListUrlState(new URLSearchParams("page=4"), {
+      accountingApproval: "approved",
+      sendStatus: "never_sent,updated_after_sent,never_sent",
+      status: "unpaid,partially_paid",
+    }, true);
+    expect(next.toString()).toBe("accountingApproval=approved&sendStatus=never_sent%2Cupdated_after_sent&status=unpaid%2Cpartially_paid");
+    expect(normalizeInvoiceListDiscreteFilter("never_sent,,updated_after_sent,never_sent")).toBe("never_sent,updated_after_sent");
   });
 
   it("recognizes explicit filter and drilldown parameters without treating search, paging, or sort as sticky-filter overrides", () => {

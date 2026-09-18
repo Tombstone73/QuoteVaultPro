@@ -196,6 +196,20 @@ function invoiceListQueryText(value: unknown): string | undefined {
   return trimmed ? trimmed.slice(0, 200) : undefined;
 }
 
+/** Accept legacy single-value query parameters as well as deterministic CSV or
+ * repeated categorical values. Values are de-duplicated without manufacturing
+ * an empty IN() predicate downstream. */
+function invoiceListQueryValues(value: unknown, allowed: readonly string[], label: string): string[] | undefined {
+  const rawValues = Array.isArray(value) ? value : [value];
+  const values = [...new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
+    .map((item) => item.trim())
+    .filter(Boolean))];
+  if (values.some((item) => !allowed.includes(item))) {
+    throw Object.assign(new Error(`Invalid ${label} filter`), { statusCode: 400 });
+  }
+  return values.length ? values : undefined;
+}
+
 function invoiceListQueryDate(value: unknown, boundary: 'start' | 'endExclusive'): Date | undefined {
   const raw = invoiceListQueryText(value);
   if (!raw) return undefined;
@@ -226,22 +240,13 @@ function invoiceListQueryBoolean(value: unknown, label: string): boolean {
 }
 
 function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListColumnFilters {
-  const accountingApproval = invoiceListQueryText(query.accountingApproval);
-  if (accountingApproval && !['approved', 'not_approved', 'needs_reapproval'].includes(accountingApproval)) {
-    throw Object.assign(new Error('Invalid accounting approval filter'), { statusCode: 400 });
-  }
+  const accountingApproval = invoiceListQueryValues(query.accountingApproval, ['approved', 'not_approved', 'needs_reapproval'], 'accounting approval');
   const lastSent = invoiceListQueryText(query.lastSent);
   if (lastSent && lastSent !== 'sent' && lastSent !== 'not_sent') {
     throw Object.assign(new Error('Invalid Last Sent filter'), { statusCode: 400 });
   }
-  const sendStatus = invoiceListQueryText(query.sendStatus);
-  if (sendStatus && !['never_sent', 'sent', 'updated_after_sent'].includes(sendStatus)) {
-    throw Object.assign(new Error('Invalid Send Status filter'), { statusCode: 400 });
-  }
-  const jobStatus = invoiceListQueryText(query.jobStatus);
-  if (jobStatus && !['open', 'complete'].includes(jobStatus)) {
-    throw Object.assign(new Error('Invalid Job Status filter'), { statusCode: 400 });
-  }
+  const sendStatus = invoiceListQueryValues(query.sendStatus, ['never_sent', 'sent', 'updated_after_sent'], 'Send Status');
+  const jobStatus = invoiceListQueryValues(query.jobStatus, ['open', 'complete'], 'Job Status');
   return {
     accountingApproval: accountingApproval as InvoiceListColumnFilters['accountingApproval'],
     customer: invoiceListQueryText(query.customer),
@@ -2062,7 +2067,7 @@ export async function registerMvpInvoicingRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const status = req.query.status as string | undefined;
+      const statusValues = invoiceListQueryValues(req.query.status, ['draft', 'finalized', 'sent', 'unpaid', 'partially_paid', 'credit', 'paid', 'paid_historical', 'overdue', 'billed', 'void'], 'status');
       const customerId = req.query.customerId as string | undefined;
       const orderId = req.query.orderId as string | undefined;
       const search = req.query.search as string | undefined;
@@ -2081,7 +2086,8 @@ export async function registerMvpInvoicingRoutes(
 
       const [invoicePage, summary] = await Promise.all([listInvoicesPageForOrganization({
         organizationId,
-        status,
+        status: statusValues?.length === 1 ? statusValues[0] : undefined,
+        statuses: statusValues && statusValues.length > 1 ? statusValues : undefined,
         customerId,
         orderId,
         search,

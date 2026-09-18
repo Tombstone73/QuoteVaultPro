@@ -59,8 +59,10 @@ test('invoice UI exposes approval list/detail controls and server-side filter', 
   expect(list).toContain('handleApproveInvoice');
   expect(list).toContain("await approveInvoices.mutateAsync([invoice.id])");
   expect(list).toContain('>Approved</TitanTableHead>');
-  expect(list).toContain('All accounting approvals');
+  expect(list).toContain('Accounting Approval');
+  expect(list).toContain('ACCOUNTING_APPROVAL_OPTIONS');
+  expect(list).toContain('Approved + Unsent');
   expect(detail).toContain('Accounting Approval');
   expect(detail).toContain('Approved for Accounting');
-  expect(invoiceService).toContain("columnFilters.accountingApproval === 'approved'");
+  expect(invoiceService).toContain('accountingApprovalPredicates');
 });

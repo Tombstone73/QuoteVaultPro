@@ -127,4 +127,16 @@ describe("Invoice list preferences", () => {
     }, storage);
     expect(readPersistedInvoiceListPreferences("user-1", "org-1", storage).filters).toEqual({ status: "unpaid" });
   });
+
+  it("persists the Approved plus Never Sent working set in sticky filters", () => {
+    const storage = createStorage();
+    persistInvoiceListPreferences("user-1", "org-1", {
+      ...DEFAULT_INVOICE_LIST_PREFERENCES,
+      stickySortingAndFilters: true,
+      filters: { columnFilters: { accountingApproval: "approved", sendStatus: "never_sent" } },
+    }, storage);
+    expect(readPersistedInvoiceListPreferences("user-1", "org-1", storage).filters).toEqual({
+      columnFilters: { accountingApproval: "approved", sendStatus: "never_sent" },
+    });
+  });
 });

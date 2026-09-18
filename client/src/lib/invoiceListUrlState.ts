@@ -18,6 +18,10 @@ const SORT_KEYS: InvoiceSortKey[] = [
   "lastSentAt", "status", "approval", "jobStatus", "total", "paid", "balance", "jobName",
 ];
 
+const DISCRETE_MULTI_VALUE_PARAM_KEYS = new Set<string>([
+  "status", "accountingApproval", "sendStatus", "jobStatus",
+]);
+
 export type InvoiceListUrlState = {
   search: string;
   status: string;
@@ -36,6 +40,14 @@ export type InvoiceListUrlState = {
 
 const read = (params: URLSearchParams, key: string) => params.get(key)?.trim() || undefined;
 
+/** Canonical, shareable CSV form for discrete filters. Existing single values
+ * remain unchanged; blank segments and duplicate selections are removed. */
+export function normalizeInvoiceListDiscreteFilter(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const values = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+  return values.length ? values.join(",") : undefined;
+}
+
 /** Keep the controlled input's in-progress whitespace; normalize only for API reads. */
 export const normalizeInvoiceListSearchQuery = (search: string): string | undefined => search.trim() || undefined;
 
@@ -53,7 +65,9 @@ function positiveInteger(value: string | undefined, fallback: number) {
  */
 export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUrlState {
   const columnFilters = INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.reduce<InvoiceListColumnFilterQuery>((result, key) => {
-    const value = read(params, key);
+    const value = DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
+      ? normalizeInvoiceListDiscreteFilter(read(params, key))
+      : read(params, key);
     if (value) result[key] = value as never;
     return result;
   }, {});
@@ -64,7 +78,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
 
   return {
     search: params.get("search") ?? "",
-    status: read(params, "status") || "all",
+    status: normalizeInvoiceListDiscreteFilter(read(params, "status")) || "all",
     includePaidHistorical: read(params, "includePaidHistorical") === "1",
     customerId: read(params, "customerId"),
     customerName: read(params, "customerName"),
@@ -94,7 +108,10 @@ export function updateInvoiceListUrlState(
 ) {
   const next = new URLSearchParams(current);
   for (const [key, value] of Object.entries(changes)) {
-    if (value?.trim()) next.set(key, value);
+    const normalized = DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
+      ? normalizeInvoiceListDiscreteFilter(value)
+      : value?.trim() ? value : undefined;
+    if (normalized) next.set(key, normalized);
     else next.delete(key);
   }
   if (resetPage) next.delete("page");

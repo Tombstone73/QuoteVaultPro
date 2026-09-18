@@ -74,10 +74,13 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("excludeCustomerId");
     expect(invoiceHooksSource).toContain("jobStatus");
     expect(invoicesPageSource).toContain("Show Paid Historical");
-    expect(invoicesPageSource).toContain('value="unpaid"');
-    expect(invoicesPageSource).toContain('>Unpaid</SelectItem>');
-    expect(invoicesPageSource).not.toContain('<SelectItem value="billed">Billed</SelectItem>');
-    expect(invoicesPageSource).toContain('value="paid_historical"');
+    expect(invoicesPageSource).toContain("InvoiceCategoricalFilter");
+    expect(invoicesPageSource).toContain("INVOICE_STATUS_OPTIONS");
+    expect(invoicesPageSource).toContain("ACCOUNTING_APPROVAL_OPTIONS");
+    expect(invoicesPageSource).toContain("Approved + Unsent");
+    expect(invoicesPageSource).toContain("applyApprovedUnsentQuickFilter");
+    expect(invoicesPageSource).toContain('accountingApproval: "approved", sendStatus: "never_sent"');
+    expect(invoicesPageSource).toContain("updated_after_sent");
     expect(invoicesPageSource).toContain("includePaidHistorical");
     expect(invoiceHooksSource).toContain("includePaidHistorical");
   });

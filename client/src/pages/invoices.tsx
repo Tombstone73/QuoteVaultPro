@@ -100,6 +100,7 @@ const deliveryStatusMeta = {
 } as const;
 
 const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
+  accountingApproval: "Approval",
   customer: "Customer",
   contact: "Contact",
   jobName: "Job / Order",
@@ -121,6 +122,83 @@ const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
   jobStatus: "Jobs",
   excludeCustomerId: "Excluding",
 };
+
+const INVOICE_STATUS_OPTIONS = [
+  ["draft", "Needs Review / Drafts"], ["finalized", "Finalized"], ["sent", "Sent"],
+  ["unpaid", "Unpaid"], ["partially_paid", "Partially Paid"], ["credit", "Credit / Refund Due"],
+  ["paid", "Paid"], ["paid_historical", "Paid Historical"], ["overdue", "Overdue"],
+  ["billed", "Billed"], ["void", "Void"],
+] as const;
+const ACCOUNTING_APPROVAL_OPTIONS = [["approved", "Approved"], ["not_approved", "Not Approved"], ["needs_reapproval", "Needs Reapproval"]] as const;
+const SEND_STATUS_OPTIONS = [["never_sent", "Never Sent"], ["sent", "Sent"], ["updated_after_sent", "Updated After Sent"]] as const;
+const JOB_STATUS_OPTIONS = [["open", "Open Jobs"], ["complete", "Complete Jobs"]] as const;
+
+function discreteValues(value?: string): string[] {
+  return value ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
+}
+
+function labelDiscreteValues(value: string, options: readonly (readonly [string, string])[]) {
+  const labels = new Map(options);
+  return discreteValues(value).map((item) => labels.get(item) || item).join(", ");
+}
+
+function InvoiceCategoricalFilter({
+  label,
+  value,
+  options,
+  onChange,
+  className,
+}: {
+  label: string;
+  value?: string;
+  options: readonly (readonly [string, string])[];
+  onChange: (value: string) => void;
+  className?: string;
+}) {
+  const selected = discreteValues(value);
+  const selectedSet = new Set(selected);
+  const selectedLabel = selected.length ? labelDiscreteValues(selected.join(","), options) : "All";
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="outline" className={className} aria-label={`${label} filter`}>
+          <Filter className="mr-2 h-4 w-4" />{label}: {selectedLabel}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-2" align="start">
+        <div className="mb-1 flex items-center justify-between px-2 py-1">
+          <span className="text-sm font-medium">{label}</span>
+          <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => onChange("")} disabled={selected.length === 0}>Clear</Button>
+        </div>
+        <div className="space-y-1">
+          {options.map(([optionValue, optionLabel]) => (
+            <label key={optionValue} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted">
+              <Checkbox
+                checked={selectedSet.has(optionValue)}
+                onCheckedChange={(checked) => {
+                  const nextValues = new Set(selected);
+                  if (checked === true) nextValues.add(optionValue);
+                  else nextValues.delete(optionValue);
+                  // Always write the option order, regardless of click order,
+                  // so URLs, sticky filters, and shared links are stable.
+                  onChange(options.map(([value]) => value).filter((item) => nextValues.has(item)).join(","));
+                }}
+              />
+              <span>{optionLabel}</span>
+            </label>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function formatColumnFilterValue(key: keyof InvoiceListColumnFilterQuery, value: string) {
+  if (key === "accountingApproval") return labelDiscreteValues(value, ACCOUNTING_APPROVAL_OPTIONS);
+  if (key === "sendStatus") return labelDiscreteValues(value, SEND_STATUS_OPTIONS);
+  if (key === "jobStatus") return labelDiscreteValues(value, JOB_STATUS_OPTIONS);
+  return value;
+}
 
 function toStickyFilters(state: Pick<InvoiceListUrlState, "status" | "includePaidHistorical" | "customerId" | "customerName" | "excludeCustomerName" | "issueDatePreset" | "columnFilters">): InvoiceListStickyFilters {
   return {
@@ -309,10 +387,10 @@ export default function InvoicesListPage() {
     .filter(([key, value]) => Boolean(value) && key !== "excludeCustomerId");
   const activeFilters = [
     search ? { key: "search", label: "Search", value: search } : null,
-    statusFilter !== "all" ? { key: "status", label: "Status", value: statusLabels[statusFilter] || statusFilter } : null,
+    statusFilter !== "all" ? { key: "status", label: "Status", value: labelDiscreteValues(statusFilter, INVOICE_STATUS_OPTIONS) } : null,
     customerId ? { key: "customerId", label: "Customer", value: customerName || "Selected customer" } : null,
     columnFilters.excludeCustomerId ? { key: "excludeCustomerId", label: "Excluding", value: excludeCustomerName || "Selected customer" } : null,
-    ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: String(value) })),
+    ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: formatColumnFilterValue(key, String(value)) })),
   ].filter(Boolean) as Array<{ key: string; label: string; value: string }>;
 
   const setColumnFilter = (key: keyof InvoiceListColumnFilterQuery, value: string) => {
@@ -320,6 +398,14 @@ export default function InvoicesListPage() {
       [key]: value || undefined,
       ...(key === "issueDateFrom" || key === "issueDateTo" ? { issueDatePreset: undefined } : {}),
     }, true);
+  };
+
+  const setCategoricalColumnFilter = (key: "accountingApproval" | "sendStatus" | "jobStatus", value: string) => {
+    setColumnFilter(key, value);
+  };
+
+  const applyApprovedUnsentQuickFilter = () => {
+    updateListState({ accountingApproval: "approved", sendStatus: "never_sent" }, true);
   };
 
   const clearAllFilters = () => {
@@ -710,26 +796,10 @@ export default function InvoicesListPage() {
               }}
               containerClassName="min-w-[16rem] max-w-xl flex-1 basis-[22rem]"
             />
-            <Select value={statusFilter} onValueChange={(nextStatus) => {
-              setStatusFilter(nextStatus);
-            }}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="draft">Needs Review / Drafts</SelectItem>
-                <SelectItem value="finalized">Finalized</SelectItem>
-                <SelectItem value="sent">Sent</SelectItem>
-                <SelectItem value="unpaid">Unpaid</SelectItem>
-                <SelectItem value="partially_paid">Partially Paid</SelectItem>
-                <SelectItem value="credit">Credit / Refund Due</SelectItem>
-                <SelectItem value="paid">Paid</SelectItem>
-                <SelectItem value="paid_historical">Paid Historical</SelectItem>
-                <SelectItem value="overdue">Overdue</SelectItem>
-                <SelectItem value="void">Void</SelectItem>
-              </SelectContent>
-            </Select>
+            <InvoiceCategoricalFilter label="Invoice Status" value={statusFilter === "all" ? "" : statusFilter} options={INVOICE_STATUS_OPTIONS} onChange={(value) => setStatusFilter(value || "all")} className="min-w-[180px] justify-start" />
+            <Button type="button" variant="outline" className="gap-2" onClick={applyApprovedUnsentQuickFilter} data-testid="invoice-quick-filter-approved-unsent">
+              <Check className="h-4 w-4" />Approved + Unsent
+            </Button>
             <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include QuickBooks invoices in the canonical Paid Historical state">
               <Checkbox checked={includePaidHistorical} onCheckedChange={(checked) => setIncludePaidHistorical(checked === true)} aria-label="Show Paid Historical" />
               <span>Show Paid Historical</span>
@@ -767,6 +837,12 @@ export default function InvoicesListPage() {
                   </div>
                   <Button type="button" variant="ghost" size="sm" onClick={clearAllFilters} disabled={activeFilters.length === 0}>Clear all</Button>
                 </div>
+                <div className="mb-4 grid gap-3 border-b pb-4 sm:grid-cols-2">
+                  <InvoiceCategoricalFilter label="Accounting Approval" value={columnFilters.accountingApproval} options={ACCOUNTING_APPROVAL_OPTIONS} onChange={(value) => setCategoricalColumnFilter("accountingApproval", value)} className="justify-between" />
+                  <InvoiceCategoricalFilter label="Send Status" value={columnFilters.sendStatus} options={SEND_STATUS_OPTIONS} onChange={(value) => setCategoricalColumnFilter("sendStatus", value)} className="justify-between" />
+                  <InvoiceCategoricalFilter label="Invoice Status" value={statusFilter === "all" ? "" : statusFilter} options={INVOICE_STATUS_OPTIONS} onChange={(value) => setStatusFilter(value || "all")} className="justify-between" />
+                  <InvoiceCategoricalFilter label="Job Status" value={columnFilters.jobStatus} options={JOB_STATUS_OPTIONS} onChange={(value) => setCategoricalColumnFilter("jobStatus", value)} className="justify-between" />
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <CustomerSelect value={customerId || null} onChange={setCustomerFilter} autoFocus={false} label="Customer / Company" placeholder="All customers" />
                   <CustomerSelect value={columnFilters.excludeCustomerId || null} onChange={setExcludedCustomerFilter} autoFocus={false} label="Exclude customer" placeholder="Do not exclude a customer" />
@@ -781,8 +857,6 @@ export default function InvoicesListPage() {
                   <label className="grid gap-1 text-sm"><span>Issue date to</span><Input type="date" value={columnFilters.issueDateTo || ""} onChange={(event) => setColumnFilter("issueDateTo", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Due date from</span><Input type="date" value={columnFilters.dueDateFrom || ""} onChange={(event) => setColumnFilter("dueDateFrom", event.target.value)} /></label>
                   <label className="grid gap-1 text-sm"><span>Due date to</span><Input type="date" value={columnFilters.dueDateTo || ""} onChange={(event) => setColumnFilter("dueDateTo", event.target.value)} /></label>
-                  <label className="grid gap-1 text-sm"><span>Send Status</span><Select value={columnFilters.sendStatus || "all"} onValueChange={(value) => setColumnFilter("sendStatus", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All</SelectItem><SelectItem value="never_sent">Never Sent</SelectItem><SelectItem value="sent">Sent</SelectItem><SelectItem value="updated_after_sent">Updated After Sent</SelectItem></SelectContent></Select></label>
-                  <label className="grid gap-1 text-sm"><span>Jobs</span><Select value={columnFilters.jobStatus || "all"} onValueChange={(value) => setColumnFilter("jobStatus", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Jobs</SelectItem><SelectItem value="open">Open Jobs</SelectItem><SelectItem value="complete">Complete Jobs</SelectItem></SelectContent></Select></label>
                 </div>
                 <div className="mt-4 border-t pt-4">
                   <div className="mb-2 text-sm font-medium">Amount ranges</div>
@@ -818,10 +892,6 @@ export default function InvoicesListPage() {
               <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.needsReview ? ` (${emailQueue.data.counts.needsReview} review)` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
             </Button> : null}
             <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
-              <Select value={columnFilters.accountingApproval || "all"} onValueChange={(value) => setColumnFilter("accountingApproval", value === "all" ? "" : value)}>
-                <SelectTrigger className="w-[190px]" aria-label="Accounting approval filter"><SelectValue placeholder="Accounting approval" /></SelectTrigger>
-                <SelectContent><SelectItem value="all">All accounting approvals</SelectItem><SelectItem value="approved">Approved for Accounting</SelectItem><SelectItem value="not_approved">Not Approved</SelectItem><SelectItem value="needs_reapproval">Needs Reapproval</SelectItem></SelectContent>
-              </Select>
               {renderPaginationControls("top")}
             </div>
           </div>

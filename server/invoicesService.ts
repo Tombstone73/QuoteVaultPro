@@ -198,7 +198,7 @@ export type InvoiceListSortBy =
 export type InvoiceListSortDir = 'asc' | 'desc';
 
 export type InvoiceListColumnFilters = {
-  accountingApproval?: 'approved' | 'not_approved' | 'needs_reapproval';
+  accountingApproval?: 'approved' | 'not_approved' | 'needs_reapproval' | ('approved' | 'not_approved' | 'needs_reapproval')[];
   customer?: string;
   contact?: string;
   jobName?: string;
@@ -210,7 +210,7 @@ export type InvoiceListColumnFilters = {
   dueDateFrom?: Date;
   dueDateToExclusive?: Date;
   /** Mirrors deriveInvoiceEmailStatus using successful original invoice sends only. */
-  sendStatus?: 'never_sent' | 'sent' | 'updated_after_sent';
+  sendStatus?: 'never_sent' | 'sent' | 'updated_after_sent' | ('never_sent' | 'sent' | 'updated_after_sent')[];
   /** Legacy two-state filter retained for existing callers. */
   lastSent?: 'sent' | 'not_sent';
   totalMinCents?: number;
@@ -219,7 +219,7 @@ export type InvoiceListColumnFilters = {
   paidMaxCents?: number;
   balanceMinCents?: number;
   balanceMaxCents?: number;
-  jobStatus?: 'open' | 'complete';
+  jobStatus?: 'open' | 'complete' | ('open' | 'complete')[];
   excludeCustomerId?: string;
 };
 
@@ -449,12 +449,15 @@ export async function listInvoicesPageForOrganization(
   const paidHistoricalState = sql`lower(coalesce(${invoices.status}, '')) = 'paid'
     and lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
     and coalesce(${invoices.isHistorical}, false)`;
-  const explicitlyFilteringPaidHistorical = opts.status === 'paid_historical';
-  const explicitlyFilteringUnpaid = opts.status === 'unpaid';
-  if (explicitlyFilteringPaidHistorical) whereClauses.push(paidHistoricalState);
-  else if (explicitlyFilteringUnpaid) whereClauses.push(canonicalInvoiceUnpaidDisplayExpression(opts.organizationId));
-  else if (opts.statuses?.length) whereClauses.push(inArray(invoices.status, [...opts.statuses]));
-  else if (opts.status) whereClauses.push(eq(invoices.status, opts.status));
+  const requestedStatuses = opts.statuses?.length ? [...new Set(opts.statuses)] : opts.status ? [opts.status] : [];
+  const explicitlyFilteringPaidHistorical = requestedStatuses.includes('paid_historical');
+  const statusPredicates = requestedStatuses.map((status) => {
+    if (status === 'paid_historical') return paidHistoricalState;
+    if (status === 'unpaid') return canonicalInvoiceUnpaidDisplayExpression(opts.organizationId);
+    return eq(invoices.status, status);
+  });
+  if (statusPredicates.length === 1) whereClauses.push(statusPredicates[0]);
+  if (statusPredicates.length > 1) whereClauses.push(or(...statusPredicates));
   // The global working list intentionally hides only the canonical
   // Paid Historical state by default. Ordinary paid invoices remain visible.
   if (!explicitlyFilteringPaidHistorical && opts.includePaidHistorical === false) {
@@ -469,6 +472,7 @@ export async function listInvoicesPageForOrganization(
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
   const columnFilters = opts.columnFilters ?? {};
+  const categoricalValues = <T,>(value: T | readonly T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? [...new Set(value)] : [value];
   if (columnFilters.excludeCustomerId) whereClauses.push(ne(canonicalInvoiceCustomerId, columnFilters.excludeCustomerId));
   // This is the same order lifecycle boundary shown by Job Status: an open
   // job is linked to an order that is neither terminally closed/canceled nor
@@ -476,16 +480,19 @@ export async function listInvoicesPageForOrganization(
   // All Jobs, but never enter an operational backlog view.
   const terminalJob = sql`lower(coalesce(${orders.state}, '')) in ('closed', 'canceled')
     or lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered')`;
-  if (columnFilters.jobStatus === 'open') {
-    whereClauses.push(sql`${invoices.orderId} is not null and not (${terminalJob})`);
-  }
-  if (columnFilters.jobStatus === 'complete') {
-    whereClauses.push(sql`${invoices.orderId} is not null and (${terminalJob})`);
-  }
+  const jobStatusPredicates = categoricalValues(columnFilters.jobStatus).map((status) => status === 'open'
+    ? sql`${invoices.orderId} is not null and not (${terminalJob})`
+    : sql`${invoices.orderId} is not null and (${terminalJob})`);
+  if (jobStatusPredicates.length === 1) whereClauses.push(jobStatusPredicates[0]);
+  if (jobStatusPredicates.length > 1) whereClauses.push(or(...jobStatusPredicates));
   const currentAccountingApproval = sql`${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}`;
-  if (columnFilters.accountingApproval === 'approved') whereClauses.push(currentAccountingApproval);
-  if (columnFilters.accountingApproval === 'needs_reapproval') whereClauses.push(sql`${invoices.accountingApprovalRevokedAt} is not null or (${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovedVersion} is distinct from ${invoices.invoiceVersion})`);
-  if (columnFilters.accountingApproval === 'not_approved') whereClauses.push(sql`not (${currentAccountingApproval}) and ${invoices.accountingApprovalRevokedAt} is null`);
+  const accountingApprovalPredicates = categoricalValues(columnFilters.accountingApproval).map((approval) => {
+    if (approval === 'approved') return currentAccountingApproval;
+    if (approval === 'needs_reapproval') return sql`${invoices.accountingApprovalRevokedAt} is not null or (${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovedVersion} is distinct from ${invoices.invoiceVersion})`;
+    return sql`not (${currentAccountingApproval}) and ${invoices.accountingApprovalRevokedAt} is null`;
+  });
+  if (accountingApprovalPredicates.length === 1) whereClauses.push(accountingApprovalPredicates[0]);
+  if (accountingApprovalPredicates.length > 1) whereClauses.push(or(...accountingApprovalPredicates));
   const contains = (value: string | undefined) => {
     const trimmed = String(value || '').trim();
     return trimmed ? `%${trimmed}%` : null;
@@ -532,15 +539,13 @@ export async function listInvoicesPageForOrganization(
       and ${invoiceEmailLogs.type} = 'invoice_send'
       and ${invoiceEmailLogs.status} = 'sent'
   )`;
-  if (columnFilters.sendStatus === 'never_sent') {
-    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is null`);
-  }
-  if (columnFilters.sendStatus === 'sent') {
-    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) <= coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`);
-  }
-  if (columnFilters.sendStatus === 'updated_after_sent') {
-    whereClauses.push(sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) > coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`);
-  }
+  const sendStatusPredicates = categoricalValues(columnFilters.sendStatus).map((sendStatus) => {
+    if (sendStatus === 'never_sent') return sql`${lastSuccessfulInvoiceSendAt} is null`;
+    if (sendStatus === 'sent') return sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) <= coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`;
+    return sql`${lastSuccessfulInvoiceSendAt} is not null and coalesce(${invoices.invoiceVersion}, 1) > coalesce(${invoices.lastSentVersion}, ${invoices.invoiceVersion}, 1)`;
+  });
+  if (sendStatusPredicates.length === 1) whereClauses.push(sendStatusPredicates[0]);
+  if (sendStatusPredicates.length > 1) whereClauses.push(or(...sendStatusPredicates));
   if (columnFilters.lastSent === 'sent') whereClauses.push(sql`exists (
     select 1 from ${invoiceEmailLogs}
     where ${invoiceEmailLogs.invoiceId} = ${invoices.id}
