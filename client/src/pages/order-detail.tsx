@@ -234,6 +234,17 @@ function hasAnyStagedChanges(stagedPatch: Record<string, any>): boolean {
   return Object.keys(stagedPatch).length > 0;
 }
 
+function formatCustomerPaymentTerms(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    due_on_receipt: "Due on receipt",
+    net_15: "Net 15",
+    net_30: "Net 30",
+    net_45: "Net 45",
+    custom: "Custom terms",
+  };
+  return labels[value || ""] || value || "—";
+}
+
 const ORDER_DETAIL_DEV_DIAGNOSTICS =
   typeof process !== "undefined" && process.env?.NODE_ENV === "development";
 
@@ -297,7 +308,6 @@ export default function OrderDetail() {
   
   // Per-section edit states (replaces global editMode)
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
-  const [isEditingContact, setIsEditingContact] = useState(false);
   const [isEditingFulfillment, setIsEditingFulfillment] = useState(false);
   const [isShipToAutofillOpen, setIsShipToAutofillOpen] = useState(false);
   const [shipToAutofillQuery, setShipToAutofillQuery] = useState("");
@@ -339,12 +349,6 @@ export default function OrderDetail() {
       setIsCustomerPickerOpen(true);
     }
   }, [isEditingCustomer]);
-
-  useEffect(() => {
-    if (isEditingContact) {
-      setIsContactPickerOpen(true);
-    }
-  }, [isEditingContact]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -937,25 +941,14 @@ export default function OrderDetail() {
   const enterCustomerEdit = () => {
     if (!canEditOrder) return;
     setIsEditingCustomer(true);
-    setIsEditingContact(false);
     setIsEditingFulfillment(false);
     // Open customer picker immediately
     setIsCustomerPickerOpen(true);
   };
 
-  const enterContactEdit = () => {
-    if (!canEditOrder) return;
-    setIsEditingCustomer(false);
-    setIsEditingContact(true);
-    setIsEditingFulfillment(false);
-    // Open contact picker immediately
-    setIsContactPickerOpen(true);
-  };
-
   const enterFulfillmentEdit = () => {
     if (!canEditOrder) return;
     setIsEditingCustomer(false);
-    setIsEditingContact(false);
     setIsEditingFulfillment(true);
   };
 
@@ -1012,7 +1005,6 @@ export default function OrderDetail() {
 
   const exitAllEditModes = () => {
     setIsEditingCustomer(false);
-    setIsEditingContact(false);
     setIsEditingFulfillment(false);
   };
 
@@ -1030,7 +1022,11 @@ export default function OrderDetail() {
   });
 
   // Fetch contacts for the current customer
-  const { data: customerContacts = [] } = useQuery({
+  const {
+    data: customerContacts = [],
+    isError: isCustomerContactsError,
+    refetch: refetchCustomerContacts,
+  } = useQuery({
     queryKey: ["/api/customers", order?.customerId, "contacts"],
     queryFn: async () => {
       if (!order?.customerId) return [];
@@ -2352,6 +2348,7 @@ export default function OrderDetail() {
                               </HoverCardTrigger>
                               <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
                                 <div className="space-y-2">
+                                  <div className="text-sm font-semibold text-foreground">{customerCompanyName || "Customer"}</div>
                                   {hasBillAddress && (
                                     <div className="text-sm">
                                       <div className="font-medium text-foreground">Billing</div>
@@ -2366,6 +2363,22 @@ export default function OrderDetail() {
                                       {metaPhone && <div className="font-mono break-words">{formatPhoneForDisplay(metaPhone)}</div>}
                                     </div>
                                   )}
+                                  {order.customer && (order.customer.paymentTerms || typeof order.customer.isTaxExempt === "boolean") && (
+                                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-border pt-2 text-xs">
+                                      {order.customer.paymentTerms && (
+                                        <>
+                                          <dt className="text-muted-foreground">Terms</dt>
+                                          <dd className="text-right text-foreground">{formatCustomerPaymentTerms(order.customer.paymentTerms)}</dd>
+                                        </>
+                                      )}
+                                      {typeof order.customer.isTaxExempt === "boolean" && (
+                                        <>
+                                          <dt className="text-muted-foreground">Tax status</dt>
+                                          <dd className="text-right text-foreground">{order.customer.isTaxExempt ? "Exempt" : "Taxable"}</dd>
+                                        </>
+                                      )}
+                                    </dl>
+                                  )}
                                 </div>
                               </HoverCardContent>
                             </HoverCard>
@@ -2376,7 +2389,8 @@ export default function OrderDetail() {
                               size="icon"
                               className="h-6 w-6 shrink-0"
                               onClick={enterCustomerEdit}
-                              title="Edit Customer"
+                              aria-label="Change customer"
+                              title="Change customer"
                             >
                               <Edit className="h-3 w-3" />
                             </Button>
@@ -2436,43 +2450,58 @@ export default function OrderDetail() {
                     <Separator />
 
                     <div className="space-y-2">
-                      {isEditingContact ? (
-                        <div className="space-y-2">
-                          <Popover
-                            open={isContactPickerOpen}
-                            onOpenChange={(open) => {
-                              setIsContactPickerOpen(open);
-                              if (!open) exitAllEditModes();
-                            }}
+                      <Popover
+                        open={isContactPickerOpen}
+                        onOpenChange={(open) => {
+                          setIsContactPickerOpen(open);
+                          if (!open) setContactSearchQuery("");
+                        }}
+                      >
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            role="combobox"
+                            aria-label="Select order contact"
+                            aria-expanded={isContactPickerOpen}
+                            className="w-full justify-between font-normal h-9"
+                            disabled={!canEditOrder || !order?.customerId || updateOrder.isPending}
                           >
-                            <PopoverTrigger asChild>
-                              <Button
-                                variant="outline"
-                                role="combobox"
-                                aria-expanded={isContactPickerOpen}
-                                className="w-full justify-between font-normal h-9"
-                                disabled={!order?.customerId}
-                              >
-                                <span className="truncate">
-                                  {!order?.customerId
-                                    ? "Select a customer first"
-                                    : contactNameFromContact || "Select contact..."}
-                                </span>
-                                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-[350px] p-0" align="start">
-                              <Command shouldFilter={false}>
-                                <CommandInput
-                                  placeholder="Search contacts..."
-                                  value={contactSearchQuery}
-                                  onValueChange={setContactSearchQuery}
-                                  autoFocus
-                                />
-                                <CommandList>
-                                  <CommandEmpty>
-                                    {!order?.customerId ? "Select a customer first" : "No contacts found."}
-                                  </CommandEmpty>
+                            <span className="truncate">
+                              {!order?.customerId
+                                ? "Select a customer first"
+                                : contactNameFromContact || "Select contact..."}
+                            </span>
+                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[350px] p-0" align="start">
+                          <Command shouldFilter={false}>
+                            <CommandInput
+                              placeholder="Search contacts..."
+                              value={contactSearchQuery}
+                              onValueChange={setContactSearchQuery}
+                              autoFocus
+                            />
+                            <CommandList>
+                              {isCustomerContactsError ? (
+                                <CommandItem
+                                  value="retry-contact-load"
+                                  onSelect={() => void refetchCustomerContacts()}
+                                >
+                                  Unable to load contacts. Retry
+                                </CommandItem>
+                              ) : (
+                                <>
+                                  {order?.contactId && (
+                                    <CommandItem
+                                      value="no-contact"
+                                      onSelect={() => saveOrderOwner({ contactId: null })}
+                                    >
+                                      <Check className="mr-2 h-4 w-4 opacity-0" />
+                                      No contact
+                                    </CommandItem>
+                                  )}
+                                  <CommandEmpty>No contacts found.</CommandEmpty>
                                   {filteredContacts.map((contact: any) => {
                                     const contactName = [contact.firstName, contact.lastName]
                                       .filter(Boolean)
@@ -2481,9 +2510,7 @@ export default function OrderDetail() {
                                       <CommandItem
                                         key={contact.id}
                                         value={contactName}
-                                        onSelect={() => {
-                                          saveOrderOwner({ contactId: contact.id });
-                                        }}
+                                        onSelect={() => saveOrderOwner({ contactId: contact.id })}
                                       >
                                         <Check
                                           className={cn(
@@ -2500,34 +2527,28 @@ export default function OrderDetail() {
                                       </CommandItem>
                                     );
                                   })}
-                                </CommandList>
-                              </Command>
-                            </PopoverContent>
-                          </Popover>
-                        </div>
-                      ) : order.contact?.id && contactNameFromContact ? (
-                        <>
-                          <div className="flex items-start justify-between gap-2">
+                                </>
+                              )}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+
+                      {order.contact?.id && contactNameFromContact ? (
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
                             <HoverCard openDelay={150} closeDelay={50}>
                               <HoverCardTrigger asChild>
-                                <Link
-                                  to={`/contacts/${order.contact.id}`}
-                                  className="text-sm font-semibold text-foreground hover:underline flex-1 min-w-0 truncate"
-                                  title={contactNameFromContact}
-                                >
+                                <span className="min-w-0 truncate text-xs font-medium text-foreground" title={contactNameFromContact}>
                                   {contactNameFromContact}
-                                </Link>
+                                </span>
                               </HoverCardTrigger>
                               <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
                                 <div className="space-y-2">
                                   {(order.contact?.email || contactLinePhone) && (
                                     <div className="text-xs text-muted-foreground">
-                                      {order.contact?.email && (
-                                        <div className="font-mono break-words">{order.contact.email}</div>
-                                      )}
-                                      {contactLinePhone && (
-                                        <div className="font-mono break-words">{formatPhoneForDisplay(contactLinePhone)}</div>
-                                      )}
+                                      {order.contact?.email && <div className="font-mono break-words">{order.contact.email}</div>}
+                                      {contactLinePhone && <div className="font-mono break-words">{formatPhoneForDisplay(contactLinePhone)}</div>}
                                     </div>
                                   )}
                                   {(order.contact as any)?.street1 && (
@@ -2537,64 +2558,35 @@ export default function OrderDetail() {
                                         (order.contact as any)?.street2,
                                         [(order.contact as any)?.city, (order.contact as any)?.state].filter(Boolean).join(", "),
                                         (order.contact as any)?.postalCode,
-                                      ]
-                                        .filter(Boolean)
-                                        .join("\n")}
+                                      ].filter(Boolean).join("\n")}
                                     </div>
                                   )}
                                 </div>
                               </HoverCardContent>
                             </HoverCard>
-                            {canEditOrder && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 shrink-0"
-                                onClick={enterContactEdit}
-                                title="Edit Contact"
+                            <Button asChild variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-xs">
+                              <Link
+                                to={`/contacts/${order.contact.id}`}
+                                state={{ referrer: buildReferrer(location) }}
+                                aria-label={`Open ${contactNameFromContact}`}
                               >
-                                <Edit className="h-3 w-3" />
-                              </Button>
-                            )}
+                                Open <ExternalLink className="ml-1 h-3 w-3" />
+                              </Link>
+                            </Button>
                           </div>
                           {order.contact?.email && (
-                            <div className="text-[11px] leading-4">
-                              <a
-                                href={`mailto:${order.contact.email}`}
-                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
-                                title={order.contact.email}
-                              >
-                                {order.contact.email}
-                              </a>
-                            </div>
+                            <a href={`mailto:${order.contact.email}`} className="block text-[11px] leading-4 font-mono text-muted-foreground hover:text-foreground hover:underline" title={order.contact.email}>
+                              {order.contact.email}
+                            </a>
                           )}
                           {contactLinePhone && (
-                            <div className="text-[11px] leading-4">
-                              <a
-                                href={phoneToTelHref(contactLinePhone)}
-                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
-                                title={contactLinePhone}
-                              >
-                                {formatPhoneForDisplay(contactLinePhone)}
-                              </a>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="text-sm text-muted-foreground">—</span>
-                          {canEditOrder && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 shrink-0"
-                              onClick={enterContactEdit}
-                              title="Edit Contact"
-                            >
-                              <Edit className="h-3 w-3" />
-                            </Button>
+                            <a href={phoneToTelHref(contactLinePhone)} className="block text-[11px] leading-4 font-mono text-muted-foreground hover:text-foreground hover:underline" title={contactLinePhone}>
+                              {formatPhoneForDisplay(contactLinePhone)}
+                            </a>
                           )}
                         </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">No contact selected</p>
                       )}
                     </div>
                   </div>
