@@ -52,7 +52,15 @@ function allocations(rows: any[], input: Input) {
 }
 export async function previewCustomerPayment(input: Omit<Input, "actorUserId" | "idempotencyKey" | "method" | "appliedAt">) {
   assertInput({ ...input, actorUserId: "preview", idempotencyKey: "preview", method: "other", appliedAt: new Date() });
-  return db.transaction(async (tx) => { const rows = await load(tx, input.organizationId, input.invoiceIds); const result = allocations(rows, input as Input); return { customerId: rows[0].owner.customerId, totalOutstandingCents: rows.reduce((sum, x) => sum + x.rollup.amountDueCents, 0), allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, status: x.invoice.status })) }; });
+  return db.transaction(async (tx) => {
+    const rows = await load(tx, input.organizationId, input.invoiceIds);
+    const totalOutstandingCents = rows.reduce((sum, row) => sum + row.rollup.amountDueCents, 0);
+    // Preview accepts tendered cash. Only the capped amount is allocated; the
+    // record mutation still receives the applied amount and rejects overpayment.
+    const appliedAmountCents = Math.min(input.amountCents, totalOutstandingCents);
+    const result = allocations(rows, { ...input, amountCents: appliedAmountCents } as Input);
+    return { customerId: rows[0].owner.customerId, totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, status: x.invoice.status })) };
+  });
 }
 export async function recordCustomerPayment(input: Input) {
   assertInput(input);

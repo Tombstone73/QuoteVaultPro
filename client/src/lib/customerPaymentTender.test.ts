@@ -13,6 +13,10 @@ describe("customer payment tender calculations", () => {
     expect(resolveCustomerPaymentAmounts(486700, parseTenderedAmountCents("5000")!)).toEqual({ appliedAmountCents: 486700, remainingBalanceCents: 0, changeDueCents: 13300 });
   });
 
+  test("allows a $5,000 tender against $4,910.75 and leaves $89.25 as change", () => {
+    expect(resolveCustomerPaymentAmounts(491075, parseTenderedAmountCents("5000.00")!)).toEqual({ appliedAmountCents: 491075, remainingBalanceCents: 0, changeDueCents: 8925 });
+  });
+
   test("preserves cents exactly and rejects malformed or non-positive input at the caller", () => {
     expect(resolveCustomerPaymentAmounts(9995, parseTenderedAmountCents("100.00")!)).toEqual({ appliedAmountCents: 9995, remainingBalanceCents: 0, changeDueCents: 5 });
     expect(parseTenderedAmountCents("1.999")).toBeNull();
