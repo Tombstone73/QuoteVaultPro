@@ -258,6 +258,9 @@ export const ROUTES = {
   reports: "/reports",
   dailyProductionReport: "/reports/daily-production",
   accountsReceivableReport: "/reports/accounts-receivable",
+  payments: {
+    list: "/payments",
+  },
   finance: "/payments",
 
   // Misc

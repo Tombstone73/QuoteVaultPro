@@ -29,7 +29,7 @@ export type DashboardSummary = {
     invoicesUnpaid: number | null;
     overdueAmountCents: number | null;
     collectedTodayCents: number | null;
-    collectedWeekCents: number | null;
+    collectedMonthCents: number | null;
   };
 };
 

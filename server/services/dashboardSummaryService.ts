@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { invoices, materials, orders, payments, productionJobs, quotes, vendors } from "@shared/schema";
+import { invoices, materials, orders, productionJobs, quotes, vendors } from "@shared/schema";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { getAccountsReceivableReport } from "./accountsReceivableReport";
 import {
@@ -8,6 +8,7 @@ import {
   businessDateForOrderDueFilter,
   getOrganizationTimezone,
 } from "./orderDueDateService";
+import { listPayments } from "./paymentListService";
 
 export type DashboardSummary = {
   criticalAlerts: {
@@ -38,7 +39,7 @@ export type DashboardSummary = {
     invoicesUnpaid: number | null;
     overdueAmountCents: number | null;
     collectedTodayCents: number | null;
-    collectedWeekCents: number | null;
+    collectedMonthCents: number | null;
   };
 };
 
@@ -80,7 +81,7 @@ const DEFAULT_SUMMARY: DashboardSummary = {
     invoicesUnpaid: null,
     overdueAmountCents: null,
     collectedTodayCents: null,
-    collectedWeekCents: null,
+    collectedMonthCents: null,
   },
 };
 
@@ -102,14 +103,6 @@ function startOfDay(date: Date): Date {
 function addDays(date: Date, days: number): Date {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
-  return d;
-}
-
-function startOfWeekMonday(date: Date): Date {
-  const d = startOfDay(date);
-  const day = d.getDay(); // 0=Sun, 1=Mon
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
   return d;
 }
 
@@ -157,7 +150,6 @@ export async function getLowInventoryDashboardItems(
 export async function getDashboardSummary(organizationId: string, now = new Date()): Promise<DashboardSummary> {
   const todayStart = startOfDay(now);
   const tomorrowStart = addDays(todayStart, 1);
-  const weekStart = startOfWeekMonday(now);
   const todayStartIso = todayStart.toISOString();
   const tomorrowStartIso = tomorrowStart.toISOString();
   const organizationTimezone = await getOrganizationTimezone(organizationId);
@@ -357,31 +349,14 @@ export async function getDashboardSummary(organizationId: string, now = new Date
 
     summary.fulfillmentFinance.overdueAmountCents = (await accountsReceivableReport).summary.overdueOutstandingCents;
 
-    const collectedTodayRows = await db
-      .select({ cents: sql<number>`coalesce(sum(${payments.amountCents}), 0)::int` })
-      .from(payments)
-      .where(
-        and(
-          eq(payments.organizationId, organizationId),
-          eq(payments.status, "succeeded"),
-          gte(payments.appliedAt, todayStart),
-          lt(payments.appliedAt, tomorrowStart),
-        ),
-      );
-    summary.fulfillmentFinance.collectedTodayCents = Number(collectedTodayRows[0]?.cents ?? 0);
-
-    const collectedWeekRows = await db
-      .select({ cents: sql<number>`coalesce(sum(${payments.amountCents}), 0)::int` })
-      .from(payments)
-      .where(
-        and(
-          eq(payments.organizationId, organizationId),
-          eq(payments.status, "succeeded"),
-          gte(payments.appliedAt, weekStart),
-          lt(payments.appliedAt, tomorrowStart),
-        ),
-      );
-    summary.fulfillmentFinance.collectedWeekCents = Number(collectedWeekRows[0]?.cents ?? 0);
+    // The dashboard and Payments page deliberately share the same succeeded-payment
+    // predicate and organization-local date windows.
+    const [todayCollections, monthCollections] = await Promise.all([
+      listPayments({ organizationId, datePreset: "today", pageSize: 1, now }),
+      listPayments({ organizationId, datePreset: "this-month", pageSize: 1, now }),
+    ]);
+    summary.fulfillmentFinance.collectedTodayCents = todayCollections.summary.totalCollectedCents;
+    summary.fulfillmentFinance.collectedMonthCents = monthCollections.summary.totalCollectedCents;
   } catch (error) {
     console.error("[dashboard-summary] fulfillmentFinance failed:", error);
   }

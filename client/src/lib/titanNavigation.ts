@@ -120,7 +120,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     sectionKey: "accounting",
     items: [
       { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list, badge: true },
-      { id: "payments", name: "Finance", icon: CreditCard, path: "/payments" },
+      { id: "payments", name: "Payments", icon: CreditCard, path: ROUTES.payments.list },
       { id: "quickbooks", name: "QuickBooks", icon: BookOpen, path: ROUTES.settings.integrations, roles: ["admin", "owner"] },
     ],
   },

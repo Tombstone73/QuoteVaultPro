@@ -1,7 +1,9 @@
 import { DollarSign, Truck } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { DashboardPanel } from "@/components/dashboard/dashboardPanels";
+import { ROUTES } from "@/config/routes";
 
 type FulfillmentFinanceCardProps = {
   readyToShip?: number | null;
@@ -10,7 +12,7 @@ type FulfillmentFinanceCardProps = {
   overdueLabel?: string | null;
   overdueAmountCents?: number | null;
   collectedTodayCents?: number | null;
-  collectedWeekCents?: number | null;
+  collectedMonthCents?: number | null;
   collectionsPulsePercent?: number | null;
   selectedPanel?: DashboardPanel;
   onSelectPanel?: (panel: DashboardPanel) => void;
@@ -32,13 +34,13 @@ export default function FulfillmentFinanceCard({
   overdueLabel,
   overdueAmountCents,
   collectedTodayCents,
-  collectedWeekCents,
+  collectedMonthCents,
   collectionsPulsePercent,
   selectedPanel,
   onSelectPanel,
 }: FulfillmentFinanceCardProps) {
   const pulseWidth = Math.min(100, Math.max(0, collectionsPulsePercent ?? 0));
-  const showCollections = collectedTodayCents != null || collectedWeekCents != null;
+  const showCollections = collectedTodayCents != null || collectedMonthCents != null;
 
   return (
     <Card className="border-border bg-card h-full">
@@ -58,17 +60,17 @@ export default function FulfillmentFinanceCard({
               <DollarSign className="h-3.5 w-3.5" />
               Collections Pulse
             </div>
-            <div className="mb-2 flex items-center justify-between text-sm">
+            <Link to={`${ROUTES.payments.list}?datePreset=today`} className="mb-2 flex items-center justify-between rounded px-1 py-0.5 text-sm hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <span className="text-muted-foreground">Collected Today</span>
               <span className="font-semibold">{formatCurrency(collectedTodayCents)}</span>
-            </div>
+            </Link>
             <div className="mb-2 h-1.5 w-full rounded-full bg-muted">
               <div className="h-1.5 rounded-full bg-emerald-500" style={{ width: `${pulseWidth}%` }} />
             </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">This Week</span>
-              <span className="font-semibold">{formatCurrency(collectedWeekCents)}</span>
-            </div>
+            <Link to={`${ROUTES.payments.list}?datePreset=this-month`} className="flex items-center justify-between rounded px-1 py-0.5 text-sm hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <span className="text-muted-foreground">This Month</span>
+              <span className="font-semibold">{formatCurrency(collectedMonthCents)}</span>
+            </Link>
           </div>
         )}
 
