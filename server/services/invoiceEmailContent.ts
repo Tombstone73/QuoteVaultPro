@@ -7,6 +7,88 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#039;");
 }
 
+export const INVOICE_EMAIL_SUBJECT_MAX_LENGTH = 250;
+export const INVOICE_EMAIL_MESSAGE_MAX_LENGTH = 10_000;
+
+export type InvoiceEmailDraft = {
+  subject: string;
+  message: string;
+};
+
+/**
+ * The human-authored portion of an Invoice email. Links, CTAs, attachment
+ * handling, and the transactional shell are intentionally not part of this
+ * draft: those stay under server control at send time.
+ */
+export function buildInvoiceEmailDraft(input: {
+  invoiceNumber: string;
+  companyName: string;
+  customerName: string;
+  totalFormatted: string;
+  dueDate?: string | null;
+}): InvoiceEmailDraft {
+  const dueSentence = input.dueDate
+    ? `Payment is due ${input.dueDate}.`
+    : "Payment is due according to the invoice terms.";
+  return {
+    subject: `Invoice #${input.invoiceNumber} from ${input.companyName}`,
+    message: [
+      `Dear ${input.customerName},`,
+      "",
+      `Please find attached Invoice #${input.invoiceNumber} from ${input.companyName} for $${input.totalFormatted}.`,
+      dueSentence,
+      "",
+      `If you have any questions about this invoice, please contact ${input.companyName}.`,
+    ].join("\n"),
+  };
+}
+
+function invalidComposeField(message: string, code: string): Error & { statusCode: number; code: string } {
+  return Object.assign(new Error(message), { statusCode: 400, code });
+}
+
+/**
+ * Validates browser-supplied plain-text overrides without treating browser
+ * defaults as authoritative. Newlines are retained for both HTML and text.
+ */
+export function resolveInvoiceEmailCompose(input: {
+  draft: InvoiceEmailDraft;
+  subject?: unknown;
+  message?: unknown;
+}): InvoiceEmailDraft & { customizedSubject: boolean; customizedMessage: boolean } {
+  const subjectProvided = input.subject != null;
+  const messageProvided = input.message != null;
+  if (subjectProvided && typeof input.subject !== "string") {
+    throw invalidComposeField("Subject must be text.", "INVOICE_EMAIL_SUBJECT_INVALID");
+  }
+  if (messageProvided && typeof input.message !== "string") {
+    throw invalidComposeField("Message must be text.", "INVOICE_EMAIL_MESSAGE_INVALID");
+  }
+
+  const subject = subjectProvided ? String(input.subject).trim() : input.draft.subject;
+  // Normalize only line endings so staff-entered paragraph breaks are
+  // preserved exactly across the HTML and plain-text representations.
+  const message = messageProvided ? String(input.message).replace(/\r\n?/g, "\n") : input.draft.message;
+  if (!subject) throw invalidComposeField("Subject is required.", "INVOICE_EMAIL_SUBJECT_REQUIRED");
+  if (subject.length > INVOICE_EMAIL_SUBJECT_MAX_LENGTH) {
+    throw invalidComposeField(`Subject must be ${INVOICE_EMAIL_SUBJECT_MAX_LENGTH} characters or fewer.`, "INVOICE_EMAIL_SUBJECT_TOO_LONG");
+  }
+  if (!message.trim()) throw invalidComposeField("Message is required.", "INVOICE_EMAIL_MESSAGE_REQUIRED");
+  if (message.length > INVOICE_EMAIL_MESSAGE_MAX_LENGTH) {
+    throw invalidComposeField(`Message must be ${INVOICE_EMAIL_MESSAGE_MAX_LENGTH} characters or fewer.`, "INVOICE_EMAIL_MESSAGE_TOO_LONG");
+  }
+  return {
+    subject,
+    message,
+    customizedSubject: subject !== input.draft.subject,
+    customizedMessage: message !== input.draft.message,
+  };
+}
+
+function plainTextToHtml(value: string): string {
+  return escapeHtml(value).replace(/\r\n?|\n/g, "<br>\n");
+}
+
 export function buildInvoicePortalInvoiceUrl(input: {
   publicWebOrigin: string | null;
   invoiceId: string;
@@ -55,6 +137,8 @@ export function buildInvoiceEmailHtml(input: {
   portalMode?: "active" | "setup" | "login";
   hasBalanceDue?: boolean;
   guestPaymentUrl?: string | null;
+  /** Plain-text operator message; arbitrary HTML is never accepted here. */
+  message?: string | null;
 }): string {
   const invoiceNumber = escapeHtml(input.invoiceNumber);
   const companyName = escapeHtml(input.companyName);
@@ -68,6 +152,13 @@ export function buildInvoiceEmailHtml(input: {
     : "";
   const portalUrl = input.portalUrl ? escapeHtml(input.portalUrl) : null;
   const guestPaymentUrl = input.guestPaymentUrl ? escapeHtml(input.guestPaymentUrl) : null;
+  const humanMessage = plainTextToHtml(input.message || buildInvoiceEmailDraft({
+    invoiceNumber: input.invoiceNumber,
+    companyName: input.companyName,
+    customerName: input.customerName,
+    totalFormatted: input.totalFormatted,
+    dueDate: input.dueDate,
+  }).message);
   const canPay = input.hasBalanceDue ?? Boolean(input.paymentUrl);
   const ctaLabel = canPay ? "View &amp; Pay Invoice" : "View Invoice";
   const portalSection = (guestPaymentUrl || portalUrl)
@@ -97,10 +188,7 @@ export function buildInvoiceEmailHtml(input: {
   </div>
 
   <div style="padding: 20px 0;">
-    <p>Dear ${customerName},</p>
-    <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
-    <p>Payment is due ${dueDate}.</p>${orderContextSection}${portalSection}
-    <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
+    <p style="margin: 0 0 16px 0;">${humanMessage}</p>${orderContextSection}${portalSection}
   </div>
 
   <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
@@ -121,8 +209,17 @@ export function buildInvoiceEmailPlainText(input: {
   portalUrl?: string | null;
   guestPaymentUrl?: string | null;
   canPayOnline?: boolean;
+  /** Same plain-text operator message that is rendered safely into HTML. */
+  message?: string | null;
 }): string {
   const cta = input.canPayOnline ? "View & Pay Invoice" : "View Invoice";
   const portalLine = `${input.guestPaymentUrl && input.canPayOnline ? `\nPay Invoice:\n${input.guestPaymentUrl}\n` : ""}${input.portalUrl ? `\n${cta === "View & Pay Invoice" ? "Customer Portal" : cta}:\n${input.portalUrl}\n` : ""}`;
-  return `Invoice #${input.invoiceNumber}\n\nDear ${input.customerName},\n\nPlease find attached Invoice #${input.invoiceNumber} from ${input.companyName} for $${input.totalFormatted}. Payment is due ${input.dueDate}.${portalLine}\nIf you have questions about this invoice, please contact ${input.companyName}.`;
+  const message = input.message || buildInvoiceEmailDraft({
+    invoiceNumber: input.invoiceNumber,
+    companyName: input.companyName,
+    customerName: input.customerName,
+    totalFormatted: input.totalFormatted,
+    dueDate: input.dueDate,
+  }).message;
+  return `Invoice #${input.invoiceNumber}\n\n${message}${portalLine}`;
 }

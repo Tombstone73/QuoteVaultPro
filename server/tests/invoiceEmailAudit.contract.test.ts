@@ -39,6 +39,20 @@ describe('invoice email audit contract', () => {
     expect((entry.newValues as any).sentWithUnapprovedOverride).toBe(true);
   });
 
+  it('records whether subject or message content was customized without storing the message body', () => {
+    const entry = buildInvoiceEmailSentAudit({
+      organizationId: 'org-1', invoiceId: 'invoice-1', invoiceNumber: 'INV-1001',
+      actorUserId: 'user-1', actorName: 'Dale', recipientEmail: 'accounting@example.com',
+      invoiceVersion: 3, messageId: 'message-1', sentAt,
+      subject: 'Paid Invoice #1001 for your records', customizedSubject: true, customizedMessage: true,
+    });
+
+    expect(entry.newValues).toMatchObject({
+      subject: 'Paid Invoice #1001 for your records', customizedSubject: true, customizedMessage: true,
+    });
+    expect(JSON.stringify(entry.newValues)).not.toContain('message body');
+  });
+
   it('builds a successful audit only after the delivery call path', () => {
     const source = readFileSync('server/routes/mvpInvoicing.routes.ts', 'utf8');
     expect(source.indexOf('messageId = await emailService.sendEmail')).toBeGreaterThan(-1);

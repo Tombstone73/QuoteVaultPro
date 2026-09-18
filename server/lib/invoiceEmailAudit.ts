@@ -9,6 +9,9 @@ export type InvoiceEmailSentAuditInput = {
   messageId: string | null;
   sentAt: Date;
   sentWithUnapprovedOverride?: boolean;
+  subject?: string;
+  customizedSubject?: boolean;
+  customizedMessage?: boolean;
 };
 
 /** A durable, operator-readable audit record created only after email delivery succeeds. */
@@ -28,6 +31,9 @@ export function buildInvoiceEmailSentAudit(input: InvoiceEmailSentAuditInput) {
       recipientEmail: input.recipientEmail,
       messageId: input.messageId,
       sentWithUnapprovedOverride: Boolean(input.sentWithUnapprovedOverride),
+      subject: input.subject || null,
+      customizedSubject: Boolean(input.customizedSubject),
+      customizedMessage: Boolean(input.customizedMessage),
     },
     createdAt: input.sentAt,
   };

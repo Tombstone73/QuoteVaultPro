@@ -24,7 +24,7 @@ import { getPaymentSettings } from "../services/payments/paymentProvider.service
 import { resolveOrderPayment } from "../services/payments/paymentOrchestrator.service";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
-import { buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalInvoiceUrl } from "../services/invoiceEmailContent";
+import { buildInvoiceEmailDraft, buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalInvoiceUrl, resolveInvoiceEmailCompose } from "../services/invoiceEmailContent";
 import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
 import { resolveInvoiceEmailPortalDestination } from "../services/customerPortalAccessService";
 import { hydrateInvoicePdfLineItemsWithArtwork } from "../services/invoicePdfArtwork";
@@ -356,6 +356,53 @@ export async function registerMvpInvoicingRoutes(
     return { invoice, customer, recipients, defaultRecipient: recipients[0] ?? null };
   }
 
+  /**
+   * Builds the same server-owned default compose state used by delivery. The
+   * projected first-send due date is deliberately not persisted here (or by
+   * the draft endpoint); only provider-success lifecycle work can do that.
+   */
+  function buildInvoiceEmailComposeContext(input: {
+    invoice: any;
+    customer: any;
+    companyName: string;
+    organizationSettings: unknown;
+    now: Date;
+  }) {
+    const automation = resolveInvoiceSendAutomationPreferences((input.organizationSettings as any)?.preferences);
+    const projectedDueDate = shouldRecalculateInvoiceDueDateAfterSuccessfulSend({
+      isFirstSuccessfulCustomerDelivery: !input.invoice.lastSentAt,
+      automation,
+    })
+      ? calculateDueDateFromSuccessfulCustomerSend({
+        successfulSentAt: input.now,
+        terms: resolveInvoiceCustomerDeliveryTerms({
+          invoiceTerms: input.invoice.terms,
+          customerPaymentTerms: input.customer.paymentTerms,
+        }),
+      })
+      : null;
+    const invoiceForCustomerDelivery = projectedDueDate
+      ? { ...input.invoice, dueDate: projectedDueDate }
+      : input.invoice;
+    const invoiceNumber = String(input.invoice.displayNumber || input.invoice.invoiceNumber || input.invoice.id);
+    const dueDate = projectedDueDate
+      ? null
+      : invoiceForCustomerDelivery.dueDate
+        ? new Date(invoiceForCustomerDelivery.dueDate).toLocaleDateString()
+        : null;
+    return {
+      invoiceForCustomerDelivery,
+      invoiceNumber,
+      draft: buildInvoiceEmailDraft({
+        invoiceNumber,
+        companyName: input.companyName,
+        customerName: input.customer.companyName || input.customer.email || "Valued Customer",
+        totalFormatted: (Number(input.invoice.totalCents || 0) / 100).toFixed(2),
+        dueDate,
+      }),
+    };
+  }
+
   async function sendInvoiceEmailForOperations(input: {
     organizationId: string;
     invoiceId: string;
@@ -364,6 +411,8 @@ export async function registerMvpInvoicingRoutes(
     toEmail?: string | null;
     deliveryJobId?: string | null;
     allowUnapproved?: boolean;
+    subject?: unknown;
+    message?: unknown;
   }) {
     const logQueueDeliveryStage = (stage: string, detail: Record<string, unknown> = {}) => {
       if (!input.deliveryJobId) return;
@@ -409,7 +458,6 @@ export async function registerMvpInvoicingRoutes(
 
     const startingStatus = String(inv.status || "").toLowerCase();
     if (startingStatus === "void") throw Object.assign(new Error("Void invoices cannot be sent"), { statusCode: 400 });
-    if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
     const sentWithUnapprovedOverride = !isInvoiceApprovedForAccounting(inv);
     if (sentWithUnapprovedOverride && !input.allowUnapproved) {
       throw Object.assign(new Error("Approve this invoice before sending, or explicitly choose Send Anyway."), {
@@ -423,23 +471,23 @@ export async function registerMvpInvoicingRoutes(
       db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId)),
       db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1),
     ]);
-    const sendAutomation = resolveInvoiceSendAutomationPreferences((organization?.settings as any)?.preferences);
     const successfulSendCandidateAt = new Date();
-    const projectedDueDate = shouldRecalculateInvoiceDueDateAfterSuccessfulSend({
-      isFirstSuccessfulCustomerDelivery: !inv.lastSentAt,
-      automation: sendAutomation,
-    })
-      ? calculateDueDateFromSuccessfulCustomerSend({
-        successfulSentAt: successfulSendCandidateAt,
-        terms: resolveInvoiceCustomerDeliveryTerms({
-          invoiceTerms: inv.terms,
-          customerPaymentTerms: cust.paymentTerms,
-        }),
-      })
-      : null;
+    const companyName = orgCompany?.companyName || "QuoteVaultPro";
+    const composeContext = buildInvoiceEmailComposeContext({
+      invoice: inv,
+      customer: cust,
+      companyName,
+      organizationSettings: organization?.settings,
+      now: successfulSendCandidateAt,
+    });
     // This is only a document preview. Durable invoice state is updated by the
     // post-provider-success lifecycle handler below, never when Send is pressed.
-    const invoiceForCustomerDelivery = projectedDueDate ? { ...inv, dueDate: projectedDueDate } : inv;
+    const invoiceForCustomerDelivery = composeContext.invoiceForCustomerDelivery;
+    const compose = resolveInvoiceEmailCompose({
+      draft: composeContext.draft,
+      subject: input.subject,
+      message: input.message,
+    });
     const lineItems = await db
       .select()
       .from(invoiceLineItems)
@@ -476,7 +524,7 @@ export async function registerMvpInvoicingRoutes(
       job,
     });
 
-    const invoiceNumber = (inv as any).displayNumber || ((inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id);
+    const invoiceNumber = composeContext.invoiceNumber;
     const filename = `invoice-${invoiceNumber}.pdf`;
     let pdfAttachment;
     try {
@@ -517,7 +565,6 @@ export async function registerMvpInvoicingRoutes(
       ? `${publicWebOrigin}/pay/invoice/${encodeURIComponent(await issueGuestInvoicePaymentToken({ organizationId: input.organizationId, invoiceId: inv.id, createdByUserId: input.userId }))}`
       : null;
 
-    const companyName = orgCompany?.companyName || "QuoteVaultPro";
     const customerName = cust.companyName || cust.email || "Valued Customer";
     const totalFormatted = (Number(inv.totalCents || 0) / 100).toFixed(2);
     const dueDate = invoiceForCustomerDelivery.dueDate ? new Date(invoiceForCustomerDelivery.dueDate).toLocaleDateString() : "upon receipt";
@@ -532,6 +579,7 @@ export async function registerMvpInvoicingRoutes(
       portalUrl,
       hasBalanceDue: canInvoiceBePaidOnline,
       guestPaymentUrl,
+      message: compose.message,
     });
     const emailText = buildInvoiceEmailPlainText({
       invoiceNumber,
@@ -542,6 +590,7 @@ export async function registerMvpInvoicingRoutes(
       portalUrl,
       canPayOnline: canInvoiceBePaidOnline,
       guestPaymentUrl,
+      message: compose.message,
     });
 
     const now = successfulSendCandidateAt;
@@ -551,7 +600,7 @@ export async function registerMvpInvoicingRoutes(
       logQueueDeliveryStage("gmail_send_invoked");
       messageId = await emailService.sendEmail(input.organizationId, {
         to: recipientEmail,
-        subject: `Invoice #${invoiceNumber} from ${companyName}`,
+        subject: compose.subject,
         html: emailHtml,
         text: emailText,
         attachments: [
@@ -641,6 +690,9 @@ export async function registerMvpInvoicingRoutes(
         messageId,
         sentAt: now,
         sentWithUnapprovedOverride,
+        subject: compose.subject,
+        customizedSubject: compose.customizedSubject,
+        customizedMessage: compose.customizedMessage,
       }) as any);
     } catch (auditError) {
       console.error("Audit log failed:", auditError);
@@ -3071,6 +3123,38 @@ export async function registerMvpInvoicingRoutes(
     }
   });
 
+  // Compose is read-only. It deliberately shares the server's canonical
+  // Invoice/customer context without creating delivery logs, portal tokens,
+  // first-send due-date updates, or any Invoice mutation.
+  app.get("/api/invoices/:id/email-draft", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const resolution = await resolveInvoiceEmailRecipientsForOperations({
+        organizationId,
+        invoiceId: req.params.id,
+      });
+      const [[orgCompany], [organization]] = await Promise.all([
+        db.select().from(companySettings).where(eq(companySettings.organizationId, organizationId)),
+        db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, organizationId)).limit(1),
+      ]);
+      const composeContext = buildInvoiceEmailComposeContext({
+        invoice: resolution.invoice,
+        customer: resolution.customer,
+        companyName: orgCompany?.companyName || "QuoteVaultPro",
+        organizationSettings: organization?.settings,
+        now: new Date(),
+      });
+      return res.json({ success: true, data: composeContext.draft });
+    } catch (error: any) {
+      return res.status(Number(error.statusCode || error.status || 500)).json({
+        success: false,
+        error: error.message || "Unable to prepare invoice email",
+      });
+    }
+  });
+
   // Replays a durably captured provider observation only. It retrieves no
   // provider data and therefore cannot initiate or repeat a charge/refund.
   app.post('/api/payments/stripe/events/:eventId/reconcile', isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
@@ -3152,7 +3236,7 @@ export async function registerMvpInvoicingRoutes(
 
       const userId = getUserId(req.user);
       const { id } = req.params;
-      const { toEmail, allowUnapproved } = req.body || {};
+      const { toEmail, allowUnapproved, subject, message } = req.body || {};
       const userName = String(req.user?.firstName && req.user?.lastName
         ? `${req.user.firstName} ${req.user.lastName}`
         : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
@@ -3163,6 +3247,8 @@ export async function registerMvpInvoicingRoutes(
         userName,
         toEmail: toEmail == null ? null : String(toEmail),
         allowUnapproved: allowUnapproved === true,
+        subject,
+        message,
       });
       return res.json({ success: true, data: result, message: "Invoice sent" });
     } catch (error: any) {

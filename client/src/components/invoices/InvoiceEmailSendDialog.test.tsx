@@ -3,12 +3,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
 const mockUseInvoiceEmailRecipients = jest.fn();
+const mockUseInvoiceEmailDraft = jest.fn();
 const mockUseSendInvoice = jest.fn();
 const mockToast = jest.fn();
 let selectRecipient = (_email: string) => undefined;
 
 jest.mock("@/hooks/useInvoices", () => ({
   useInvoiceEmailRecipients: mockUseInvoiceEmailRecipients,
+  useInvoiceEmailDraft: mockUseInvoiceEmailDraft,
   useSendInvoice: mockUseSendInvoice,
 }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: mockToast }) }));
@@ -57,6 +59,7 @@ async function renderDialog() {
   await act(async () => {
     root.render(<InvoiceEmailSendDialog invoiceId="invoice-1" open onOpenChange={jest.fn()} />);
     await Promise.resolve();
+    await Promise.resolve();
   });
 }
 
@@ -70,6 +73,16 @@ async function changeManualEmail(value: string) {
   });
 }
 
+async function changeComposeField(id: string, value: string) {
+  const input = container.querySelector(`#${id}`) as HTMLInputElement | HTMLTextAreaElement;
+  await act(async () => {
+    const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div");
@@ -78,6 +91,13 @@ beforeEach(() => {
   sendMutation = jest.fn().mockResolvedValue({});
   mockUseSendInvoice.mockReturnValue({ mutateAsync: sendMutation, isPending: false });
   mockUseInvoiceEmailRecipients.mockReset();
+  mockUseInvoiceEmailDraft.mockReset();
+  mockUseInvoiceEmailDraft.mockReturnValue({
+    data: { subject: "Invoice #20469 from Titan Graphics", message: "Dear Brainstorm Print,\n\nPlease find attached Invoice #20469." },
+    isLoading: false,
+    isError: false,
+    refetch: jest.fn(),
+  });
   mockToast.mockReset();
   selectRecipient = () => undefined;
 });
@@ -89,6 +109,24 @@ afterEach(() => {
 });
 
 describe("InvoiceEmailSendDialog recipients", () => {
+  test("loads the server-owned draft and submits staff edits", async () => {
+    configureRecipients(recipients.slice(0, 1));
+    await renderDialog();
+
+    expect((container.querySelector("#invoice-email-subject") as HTMLInputElement).value).toBe("Invoice #20469 from Titan Graphics");
+    expect((container.querySelector("#invoice-email-message") as HTMLTextAreaElement).value).toContain("Dear Brainstorm Print");
+    await changeComposeField("invoice-email-subject", "Paid Invoice #20469 for your records");
+    await changeComposeField("invoice-email-message", "Thank you for your payment.\nThis copy is for your records.");
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+
+    expect(sendMutation).toHaveBeenCalledWith({
+      id: "invoice-1",
+      allowUnapproved: false,
+      subject: "Paid Invoice #20469 for your records",
+      message: "Thank you for your payment.\nThis copy is for your records.",
+    });
+  });
+
   test("shows the configured recipient's name and email", async () => {
     configureRecipients(recipients.slice(0, 1));
     await renderDialog();
@@ -119,7 +157,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     expect(targets).not.toContain("Jessica Selzer");
 
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
-    expect(sendMutation).toHaveBeenCalledWith({ id: "invoice-1", toEmail: "john@brainstormprint.com", allowUnapproved: false });
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ id: "invoice-1", toEmail: "john@brainstormprint.com", allowUnapproved: false }));
   });
 
   test("shows only a one-time manual recipient and restores configured recipients after it is cleared", async () => {
@@ -142,7 +180,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     configureRecipients(recipients.slice(0, 2));
     await renderDialog();
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
-    expect(sendMutation).toHaveBeenCalledWith({ id: "invoice-1", allowUnapproved: false });
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ id: "invoice-1", allowUnapproved: false }));
   });
 
   test("preserves loading and empty recipient states", async () => {
@@ -154,5 +192,38 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await renderDialog();
     expect(container.textContent).toContain("No recipient selected");
     expect(container.textContent).toContain("No saved customer email is available for this invoice.");
+  });
+
+  test("keeps edits for an unapproved Send Anyway retry", async () => {
+    configureRecipients(recipients.slice(0, 1));
+    const approvalError = Object.assign(new Error("Approval required"), { code: "INVOICE_APPROVAL_REQUIRED" });
+    sendMutation.mockRejectedValueOnce(approvalError).mockResolvedValueOnce({});
+    await renderDialog();
+    await changeComposeField("invoice-email-message", "Custom approval-safe note");
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(container.textContent).toContain("Send Unapproved Invoice?");
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send Anyway") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(sendMutation).toHaveBeenLastCalledWith(expect.objectContaining({ allowUnapproved: true, message: "Custom approval-safe note" }));
+  });
+
+  test("shows a retryable compose error instead of a blank email", async () => {
+    configureRecipients(recipients.slice(0, 1));
+    const refetch = jest.fn();
+    mockUseInvoiceEmailDraft.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch });
+    await renderDialog();
+    expect(container.textContent).toContain("Unable to prepare invoice email");
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  test("retains edits after an ordinary failed send so staff can retry", async () => {
+    configureRecipients(recipients.slice(0, 1));
+    sendMutation.mockRejectedValueOnce(new Error("Provider unavailable"));
+    await renderDialog();
+    await changeComposeField("invoice-email-message", "Please keep this note for the retry.");
+    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Invoice send failed" }));
+    expect((container.querySelector("#invoice-email-message") as HTMLTextAreaElement).value).toBe("Please keep this note for the retry.");
   });
 });

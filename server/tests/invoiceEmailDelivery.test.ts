@@ -4,7 +4,7 @@ import { PDFDocument } from "pdf-lib";
 import { buildRawMessage, normalizeEmailAttachments } from "../lib/emailMime";
 import { generateInvoicePdfBytes } from "../lib/invoicePdf";
 import { createInvoicePdfEmailAttachment, INVOICE_PDF_CONTENT_TYPE } from "../services/invoiceEmailAttachment";
-import { buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
+import { buildInvoiceEmailDraft, buildInvoiceEmailHtml, buildInvoiceEmailPlainText, buildInvoicePortalInvoiceUrl, buildInvoicePortalPaymentUrl, resolveInvoiceEmailCompose } from "../services/invoiceEmailContent";
 
 async function generateValidInvoicePdf() {
   return generateInvoicePdfBytes({
@@ -28,6 +28,49 @@ async function generateValidInvoicePdf() {
 }
 
 describe("invoice email delivery", () => {
+  test("uses the same customized plain-text message in safe HTML while retaining transactional links", () => {
+    const message = "Thank you for your payment.\n<script>alert('not executable')</script>";
+    const html = buildInvoiceEmailHtml({
+      invoiceNumber: "INV-EDITED", companyName: "Test Print Shop", customerName: "Test Customer",
+      totalFormatted: "25.00", dueDate: "upon receipt", message,
+      portalUrl: "https://app.example.test/portal/invoices/invoice-edited",
+      guestPaymentUrl: "https://app.example.test/pay/invoice/opaque-token", hasBalanceDue: true,
+    });
+    const text = buildInvoiceEmailPlainText({
+      invoiceNumber: "INV-EDITED", companyName: "Test Print Shop", customerName: "Test Customer",
+      totalFormatted: "25.00", dueDate: "upon receipt", message,
+      portalUrl: "https://app.example.test/portal/invoices/invoice-edited",
+      guestPaymentUrl: "https://app.example.test/pay/invoice/opaque-token", canPayOnline: true,
+    });
+
+    expect(html).toContain("Thank you for your payment.<br>");
+    expect(html).toContain("&lt;script&gt;alert(&#039;not executable&#039;)&lt;/script&gt;");
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("Pay Invoice");
+    expect(text).toContain(message);
+    expect(text).toContain("Pay Invoice:");
+  });
+
+  test("validates compose overrides without trusting browser defaults", () => {
+    const draft = buildInvoiceEmailDraft({
+      invoiceNumber: "INV-20469", companyName: "Titan Graphics", customerName: "Brainstorm Print", totalFormatted: "126.75",
+    });
+    const composed = resolveInvoiceEmailCompose({
+      draft,
+      subject: "Paid Invoice #20469 for your records",
+      message: "Thank you for your payment.\r\nThis copy is for your records.",
+    });
+
+    expect(composed).toMatchObject({
+      subject: "Paid Invoice #20469 for your records",
+      message: "Thank you for your payment.\nThis copy is for your records.",
+      customizedSubject: true,
+      customizedMessage: true,
+    });
+    expect(() => resolveInvoiceEmailCompose({ draft, subject: "x".repeat(251) })).toThrow(/250 characters/i);
+    expect(() => resolveInvoiceEmailCompose({ draft, message: "x".repeat(10_001) })).toThrow(/10000 characters/i);
+  });
+
   test("uses valid renderer bytes for the PDF email attachment", async () => {
     const attachment = await createInvoicePdfEmailAttachment({
       filename: "invoice-INV-20000.pdf",

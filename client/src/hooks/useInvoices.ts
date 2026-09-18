@@ -638,11 +638,17 @@ export function useMarkInvoiceSent() {
 export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, toEmail, allowUnapproved = false }: { id: string; toEmail?: string; allowUnapproved?: boolean }) => {
+    mutationFn: async ({ id, toEmail, allowUnapproved = false, subject, message }: {
+      id: string;
+      toEmail?: string;
+      allowUnapproved?: boolean;
+      subject?: string;
+      message?: string;
+    }) => {
       const res = await apiFetch(`/api/invoices/${id}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ toEmail, allowUnapproved }),
+        body: JSON.stringify({ toEmail, allowUnapproved, subject, message }),
         credentials: 'include',
       });
       if (!res.ok) {
@@ -666,6 +672,11 @@ export type InvoiceEmailRecipientsResponse = {
   defaultRecipient: InvoiceEmailRecipient | null;
 };
 
+export type InvoiceEmailDraftResponse = {
+  subject: string;
+  message: string;
+};
+
 export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
   return useQuery<InvoiceEmailRecipientsResponse>({
     queryKey: ['invoices', invoiceId, 'email-recipients'],
@@ -674,6 +685,22 @@ export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
       const response = await apiFetch(`/api/invoices/${invoiceId}/email-recipients`, { credentials: 'include' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Failed to load invoice email recipients');
+      return payload.data;
+    },
+  });
+}
+
+/** Loads the server-owned default human message for the interactive single-send dialog. */
+export function useInvoiceEmailDraft(invoiceId?: string, enabled = true) {
+  return useQuery<InvoiceEmailDraftResponse>({
+    queryKey: ['invoices', invoiceId, 'email-draft'],
+    enabled: Boolean(invoiceId) && enabled,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    queryFn: async () => {
+      const response = await apiFetch(`/api/invoices/${invoiceId}/email-draft`, { credentials: 'include' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Unable to prepare invoice email');
       return payload.data;
     },
   });
