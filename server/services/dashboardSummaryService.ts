@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lt, not, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { invoices, materials, orders, productionJobs, quotes, vendors } from "@shared/schema";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
@@ -40,6 +40,11 @@ export type DashboardSummary = {
     overdueAmountCents: number | null;
     collectedTodayCents: number | null;
     collectedMonthCents: number | null;
+    invoicesSent: {
+      today: { count: number; totalCents: number };
+      thisWeek: { count: number; totalCents: number };
+      thisMonth: { count: number; totalCents: number };
+    };
   };
 };
 
@@ -82,6 +87,7 @@ const DEFAULT_SUMMARY: DashboardSummary = {
     overdueAmountCents: null,
     collectedTodayCents: null,
     collectedMonthCents: null,
+    invoicesSent: { today: { count: 0, totalCents: 0 }, thisWeek: { count: 0, totalCents: 0 }, thisMonth: { count: 0, totalCents: 0 } },
   },
 };
 
@@ -109,6 +115,38 @@ function addDays(date: Date, days: number): Date {
 async function countFrom(query: Promise<Array<{ count: number }>>): Promise<number> {
   const rows = await query;
   return Number(rows[0]?.count ?? 0);
+}
+
+export async function getInvoicesSentDashboardMetrics(input: { organizationId: string; timezone: string; now: Date }) {
+  // The timestamp boundaries are calculated by PostgreSQL in the organization's
+  // timezone, avoiding browser and server-host-local day/week/month semantics.
+  const localNow = sql`${input.now}::timestamptz AT TIME ZONE ${input.timezone}`;
+  const start = (unit: "day" | "week" | "month") =>
+    sql`date_trunc(${unit}, ${localNow}) AT TIME ZONE ${input.timezone}`;
+  const validSentInvoice = and(
+    eq(invoices.organizationId, input.organizationId),
+    isNotNull(invoices.lastSentAt),
+    not(inArray(invoices.status, ["void", "voided", "canceled", "cancelled"])),
+  );
+  const aggregate = (windowStart: SQL) =>
+    db
+      .select({
+        count: sql<number>`count(*)::int`,
+        totalCents: sql<number>`coalesce(sum(${invoices.totalCents}), 0)::bigint`,
+      })
+      .from(invoices)
+      .where(and(validSentInvoice, gte(invoices.lastSentAt, windowStart), lt(invoices.lastSentAt, input.now)));
+
+  const [today, thisWeek, thisMonth] = await Promise.all([
+    aggregate(start("day")),
+    aggregate(start("week")),
+    aggregate(start("month")),
+  ]);
+  const normalize = (row: { count: number; totalCents: number } | undefined) => ({
+    count: Number(row?.count ?? 0),
+    totalCents: Number(row?.totalCents ?? 0),
+  });
+  return { today: normalize(today[0]), thisWeek: normalize(thisWeek[0]), thisMonth: normalize(thisMonth[0]) };
 }
 
 export async function getLowInventoryDashboardItems(
@@ -357,6 +395,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
     ]);
     summary.fulfillmentFinance.collectedTodayCents = todayCollections.summary.totalCollectedCents;
     summary.fulfillmentFinance.collectedMonthCents = monthCollections.summary.totalCollectedCents;
+    summary.fulfillmentFinance.invoicesSent = await getInvoicesSentDashboardMetrics({ organizationId, timezone: organizationTimezone, now });
   } catch (error) {
     console.error("[dashboard-summary] fulfillmentFinance failed:", error);
   }

@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { DashboardPanel } from "@/components/dashboard/dashboardPanels";
 import { ROUTES } from "@/config/routes";
+import { useState } from "react";
 
 type FulfillmentFinanceCardProps = {
   readyToShip?: number | null;
@@ -13,6 +14,7 @@ type FulfillmentFinanceCardProps = {
   overdueAmountCents?: number | null;
   collectedTodayCents?: number | null;
   collectedMonthCents?: number | null;
+  invoicesSent?: { today: { count: number; totalCents: number }; thisWeek: { count: number; totalCents: number }; thisMonth: { count: number; totalCents: number } };
   collectionsPulsePercent?: number | null;
   selectedPanel?: DashboardPanel;
   onSelectPanel?: (panel: DashboardPanel) => void;
@@ -35,12 +37,15 @@ export default function FulfillmentFinanceCard({
   overdueAmountCents,
   collectedTodayCents,
   collectedMonthCents,
+  invoicesSent,
   collectionsPulsePercent,
   selectedPanel,
   onSelectPanel,
 }: FulfillmentFinanceCardProps) {
+  const [sentPeriod, setSentPeriod] = useState<"today" | "thisWeek" | "thisMonth">("thisWeek");
   const pulseWidth = Math.min(100, Math.max(0, collectionsPulsePercent ?? 0));
   const showCollections = collectedTodayCents != null || collectedMonthCents != null;
+  const selectedSent = invoicesSent?.[sentPeriod] ?? null;
 
   return (
     <Card className="border-border bg-card h-full">
@@ -73,6 +78,16 @@ export default function FulfillmentFinanceCard({
             </Link>
           </div>
         )}
+
+        <div className="rounded-md border border-border bg-muted/30 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground"><DollarSign className="h-3.5 w-3.5" />Invoices Sent</div>
+            <select aria-label="Invoices sent period" value={sentPeriod} onChange={(event) => setSentPeriod(event.target.value as typeof sentPeriod)} className="h-7 rounded border border-border bg-background px-1 text-xs">
+              <option value="today">Today</option><option value="thisWeek">This Week</option><option value="thisMonth">This Month</option>
+            </select>
+          </div>
+          <div className="flex items-end justify-between"><span className="text-sm text-muted-foreground">{selectedSent ? `${selectedSent.count} invoice${selectedSent.count === 1 ? "" : "s"}` : "—"}</span><span className="text-lg font-semibold">{selectedSent ? formatCurrency(selectedSent.totalCents) : "—"}</span></div>
+        </div>
 
         <div className="space-y-2">
           <button

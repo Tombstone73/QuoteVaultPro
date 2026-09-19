@@ -30,6 +30,7 @@ export type DashboardSummary = {
     overdueAmountCents: number | null;
     collectedTodayCents: number | null;
     collectedMonthCents: number | null;
+    invoicesSent: { today: { count: number; totalCents: number }; thisWeek: { count: number; totalCents: number }; thisMonth: { count: number; totalCents: number } };
   };
 };
 
