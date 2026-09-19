@@ -25,6 +25,15 @@ describe("line item bundles", () => {
       .toMatchObject({ childCalculatedTotalCents: 1975, effectiveTotalCents: 2500, totalPrice: 25 });
   });
 
+  it("excludes historically removed lines from current commercial totals and customer rendering", () => {
+    const active = { id: "active", lineItemRole: "standalone", linePrice: "12.50", status: "new" };
+    const removed = { id: "removed", lineItemRole: "standalone", linePrice: "99.00", status: "cancelled" };
+
+    expect(getBillableBundleRoots([active, removed]).map((line) => line.id)).toEqual(["active"]);
+    expect(getCustomerVisibleBundleLines([active, removed]).map((line) => line.id)).toEqual(["active"]);
+    expect(calculateBundleChildTotalCents([{ ...removed, status: "voided" }, active])).toBe(1250);
+  });
+
   it("does not double count hidden children in quote totals", () => {
     const parent = { id: "parent", lineItemRole: "parent", linePrice: "19.75", isTaxableSnapshot: true };
     expect(getBillableBundleRoots([parent, ...children])).toEqual([parent]);

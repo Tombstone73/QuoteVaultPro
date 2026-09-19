@@ -24,7 +24,9 @@ describe("Order mutation atomicity", () => {
     ]);
 
     expect(routes).toContain("new OrdersRepository(tx).createOrderLineItem");
-    expect(routes).toContain("new OrdersRepository(tx).deleteOrderLineItem");
+    expect(routes).toContain("const repository = new OrdersRepository(tx);");
+    expect(routes).toContain("repository.deleteOrderLineItem(lineItemId)");
+    expect(routes).toContain("getLineItemHistoricalDependencyTypes");
     expect(routes).toContain("recalculateEditableOrderFinancialsInTransaction(tx");
     expect(routes).toContain("recomputeOrderBillingStatus({ organizationId, orderId: String(ownedLineItem.orderId), executor: tx })");
     expect(taxService).toContain("export async function recalculateEditableOrderFinancialsInTransaction");

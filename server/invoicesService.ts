@@ -1271,10 +1271,6 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     String((invoice as any).customerId ?? "") !== String((order as any).customerId ?? (invoice as any).customerId ?? "");
   if (!lineSnapshotsChanged && !financialChanged) return { status: "unchanged" as const, invoice };
 
-  if (lineSnapshotsChanged) {
-    await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
-    if (desiredRows.length) await tx.insert(invoiceLineItems).values(desiredRows as any);
-  }
   const paymentRows = await tx.select().from(payments).where(and(
     eq(payments.invoiceId, invoice.id),
     eq(payments.organizationId, input.organizationId),
@@ -1286,10 +1282,25 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   };
   const financialState = computeInvoiceFinancialState(nextInvoice, paymentRows as any);
   if (financialState.amountPaidCents > 0) {
-    throw Object.assign(
-      new Error("Commercial corrections are not allowed after a payment has been applied. Create a separate adjustment or additional invoice instead."),
-      { code: "ORDER_INVOICE_PAYMENT_LOCKED", statusCode: 409 },
-    );
+    // Keep settled invoice/payment history immutable without rolling back the
+    // authorised Order correction that revealed the commercial delta.
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId ?? null,
+      actionType: "order_paid_invoice_adjustment_required",
+      entityType: "invoice",
+      entityId: invoice.id,
+      entityName: String(invoice.displayNumber || invoice.invoiceNumber),
+      description: "An Order correction changed the commercial snapshot after payment; create an adjustment or additional invoice instead of rewriting settled invoice history.",
+      oldValues: { invoiceTotalCents: invoice.totalCents, amountPaidCents: financialState.amountPaidCents } as any,
+      newValues: { orderSnapshotTotalCents: snapshot.totalCents, amountPaidCents: financialState.amountPaidCents, reconciliationState: "PAID_INVOICE_ADJUSTMENT_REQUIRED" } as any,
+    } as any);
+    return { status: "paid_invoice_adjustment_required" as const, invoiceId: invoice.id };
+  }
+
+  if (lineSnapshotsChanged) {
+    await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
+    if (desiredRows.length) await tx.insert(invoiceLineItems).values(desiredRows as any);
   }
   const hasQuickBooksLink = Boolean(String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || "").trim());
   const nextInvoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;

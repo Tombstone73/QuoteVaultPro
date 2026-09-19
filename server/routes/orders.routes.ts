@@ -33,6 +33,10 @@ import {
     productionEvents,
     productionRunMembers,
     productionRuns,
+    shipmentItems,
+    pickupHandoffItems,
+    fulfillmentChecklistItems,
+    fulfillmentReadyQuantities,
     productTypes,
     insertOrderSchema,
     updateOrderSchema,
@@ -662,7 +666,8 @@ export const ROUTING_EDIT_INTAKE_SAFE_STATES = [
     "on_hold",
 ] as const;
 
-const LINE_ITEM_EDIT_LOCKED_STATES = new Set(["completed", "complete", "canceled", "cancelled"]);
+const LINE_ITEM_EDIT_LOCKED_STATES = new Set(["canceled", "cancelled", "void", "voided"]);
+const LINE_ITEM_ROUTING_LOCKED_STATES = new Set(["completed", "complete", "canceled", "cancelled", "void", "voided"]);
 const ACTIVE_LINE_ITEM_EDIT_WARNING_STATES = new Set([
     "ready_for_prepress",
     "in_prepress",
@@ -676,9 +681,33 @@ const ACTIVE_LINE_ITEM_EDIT_WARNING_STATES = new Set([
 export function canEditLineItemRouting(args: {
     workflowState?: string | null;
     hasActiveJob: boolean;
+    hasHistoricalDependencies?: boolean;
 }): boolean {
     const currentWorkflowState = String(args.workflowState || "new").trim().toLowerCase();
-    return !LINE_ITEM_EDIT_LOCKED_STATES.has(currentWorkflowState);
+    // Product/routing changes can create a new physical obligation. Completed
+    // work must be replaced, not silently treated as never produced.
+    if (["completed", "complete"].includes(currentWorkflowState)) {
+        return !args.hasHistoricalDependencies;
+    }
+    return !LINE_ITEM_ROUTING_LOCKED_STATES.has(currentWorkflowState);
+}
+
+async function getLineItemHistoricalDependencyTypes(tx: any, input: { organizationId: string; lineItemId: string }) {
+    const { organizationId, lineItemId } = input;
+    const probes = await Promise.all([
+        tx.select({ id: productionJobs.id }).from(productionJobs).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId))).limit(1),
+        tx.select({ id: productionEvents.id }).from(productionEvents).where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.orderLineItemId, lineItemId))).limit(1),
+        tx.select({ id: productionRunMembers.id }).from(productionRunMembers).where(and(eq(productionRunMembers.organizationId, organizationId), eq(productionRunMembers.orderLineItemId, lineItemId))).limit(1),
+        tx.select({ id: orderMaterialUsage.id }).from(orderMaterialUsage).where(eq(orderMaterialUsage.orderLineItemId, lineItemId)).limit(1),
+        tx.select({ id: shipmentItems.id }).from(shipmentItems).where(and(eq(shipmentItems.organizationId, organizationId), eq(shipmentItems.orderLineItemId, lineItemId))).limit(1),
+        tx.select({ id: pickupHandoffItems.id }).from(pickupHandoffItems).where(and(eq(pickupHandoffItems.organizationId, organizationId), eq(pickupHandoffItems.orderLineItemId, lineItemId))).limit(1),
+        tx.select({ id: fulfillmentChecklistItems.id }).from(fulfillmentChecklistItems).where(and(eq(fulfillmentChecklistItems.organizationId, organizationId), eq(fulfillmentChecklistItems.lineItemId, lineItemId))).limit(1),
+        tx.select({ id: fulfillmentReadyQuantities.id }).from(fulfillmentReadyQuantities).where(and(eq(fulfillmentReadyQuantities.organizationId, organizationId), eq(fulfillmentReadyQuantities.orderLineItemId, lineItemId))).limit(1),
+        tx.select({ id: lineItemFiles.id }).from(lineItemFiles).where(and(eq(lineItemFiles.organizationId, organizationId), eq(lineItemFiles.lineItemId, lineItemId))).limit(1),
+        tx.select({ id: assetLinks.id }).from(assetLinks).where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.parentType, "order_line_item"), eq(assetLinks.parentId, lineItemId))).limit(1),
+    ]);
+    return ["production_job", "production_event", "production_run", "material_usage", "shipment", "pickup_handoff", "fulfillment_checklist", "fulfillment_ready_quantity", "line_item_file", "artwork_asset"]
+        .filter((type, index) => probes[index].length > 0);
 }
 
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
@@ -2793,9 +2822,10 @@ export async function registerOrderRoutes(
                 req.body.shippingCents = normalizedShipping.shippingCents;
             }
 
-            // Terminal Orders retain a narrow, auditable metadata correction path.
-            // Financial/customer/workflow changes remain subject to the existing
-            // Admin/Owner override and canonical Order -> Invoice synchronization.
+            // Completion is operational history, not a blanket commercial lock.
+            // State transitions remain on their dedicated route and every field
+            // change below is auditable; Admin/Owner authorize consequential
+            // post-completion corrections.
             const isCanceled = isCanceledOrder(existingOrder);
             const isCompleted = !isCanceled && (
                 existingOrder.status === 'completed' ||
@@ -2804,9 +2834,9 @@ export async function registerOrderRoutes(
             );
             const terminalPatchClassification = classifyTerminalOrderPatch(req.body ?? {});
 
-            if (isCanceled) {
+            if (isCanceled && terminalPatchClassification === "high_risk") {
                 return res.status(403).json({
-                    message: "Cancelled orders only allow append-only historical notes. Use the dedicated recovery workflow for other changes.",
+                    message: "Cancelled orders allow metadata corrections, but commercial or customer-identity changes require the dedicated recovery workflow.",
                     code: "ORDER_CANCELLED_EDIT_RESTRICTED",
                 });
             }
@@ -2821,22 +2851,6 @@ export async function registerOrderRoutes(
                     });
                 }
 
-                // Admin/Owner must have setting enabled
-                const [org] = await db
-                    .select({ settings: organizations.settings })
-                    .from(organizations)
-                    .where(eq(organizations.id, organizationId))
-                    .limit(1);
-
-                const preferences = (org?.settings as any)?.preferences || {};
-                const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
-
-                if (!allowCompletedOrderEdits) {
-                    return res.status(403).json({
-                        message: "High-risk completed-order corrections are disabled. Enable 'Allow Completed Order Edits' in organization settings for an Admin or Owner override.",
-                        code: "ORDER_LOCKED_SETTING_DISABLED"
-                    });
-                }
             }
 
             // Validate customerId if provided
@@ -7986,7 +8000,7 @@ export async function registerOrderRoutes(
             if ((error as any)?.code === 'PRODUCT_PRICE_NOT_CONFIGURED') {
                 return res.status(422).json({ message: (error as any).message, code: 'PRODUCT_PRICE_NOT_CONFIGURED' });
             }
-            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
             console.error('[ORDER_LINE_ITEM_CREATE] Error:', error);
             res.status(500).json({
                 message: (req.body as any)?.duplicateSourceLineItemId
@@ -8252,7 +8266,7 @@ export async function registerOrderRoutes(
             const oldLineItemWorkflowState = String((oldLineItem as any).workflowState || "new").trim().toLowerCase();
             if (LINE_ITEM_EDIT_LOCKED_STATES.has(oldLineItemStatus) || LINE_ITEM_EDIT_LOCKED_STATES.has(oldLineItemWorkflowState)) {
                 return res.status(409).json({
-                    message: "Completed or cancelled line items are locked for editing.",
+                    message: "Cancelled or voided line items are locked for editing.",
                     code: "LINE_ITEM_EDIT_LOCKED",
                 });
             }
@@ -8265,6 +8279,15 @@ export async function registerOrderRoutes(
                 Boolean(activeJob) ||
                 ACTIVE_LINE_ITEM_EDIT_WARNING_STATES.has(oldLineItemStatus) ||
                 ACTIVE_LINE_ITEM_EDIT_WARNING_STATES.has(oldLineItemWorkflowState);
+            const isCompletedLineItem = ["completed", "complete"].includes(oldLineItemStatus)
+                || ["completed", "complete"].includes(oldLineItemWorkflowState);
+            // Completed lines without operational evidence can safely be
+            // corrected through the normal editor. Once production/fulfillment
+            // evidence exists, a physical change must be made as a replacement
+            // line so the historical obligation remains true.
+            const historicalDependencyTypes = isCompletedLineItem
+                ? await getLineItemHistoricalDependencyTypes(db, { organizationId, lineItemId })
+                : [];
             const submittedFields = Object.keys(updateData).filter((field) => updateData[field] !== undefined);
             const requestedRequiresDesign = updateData.requiresDesign;
             const requestedRequiresPrepress = updateData.requiresPrepress;
@@ -8283,10 +8306,11 @@ export async function registerOrderRoutes(
                 if (!canEditLineItemRouting({
                     workflowState: (oldLineItem as any).workflowState,
                     hasActiveJob: Boolean(activeJob),
+                    hasHistoricalDependencies: historicalDependencyTypes.length > 0,
                 })) {
                     throw Object.assign(
-                        new Error("Cannot change Design/Prepress routing after active workflow has started. Use workflow transitions instead."),
-                        { statusCode: 409 },
+                        new Error("This completed line has production or fulfillment history. Remove it and add a replacement line for a physical correction."),
+                        { statusCode: 409, code: "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" },
                     );
                 }
 
@@ -8349,6 +8373,13 @@ export async function registerOrderRoutes(
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideMode") ||
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValueCents") ||
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValuePercent");
+
+            if (isCompletedLineItem && pricingFieldsChanged && historicalDependencyTypes.length > 0) {
+                throw Object.assign(
+                    new Error("This completed line has production or fulfillment history. Remove it and add a replacement line for a physical correction."),
+                    { statusCode: 409, code: "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" },
+                );
+            }
 
             if (!pricingFieldsChanged) {
                 const incomingSnapshotTotalCents = Number((updateData as any)?.pbv2SnapshotJson?.pricing?.totalCents);
@@ -8702,6 +8733,26 @@ export async function registerOrderRoutes(
                         },
                     });
                 }
+
+                if (isCompletedLineItem && diffs.length > 0) {
+                    await storage.createOrderAuditLog({
+                        orderId: lineItem.orderId,
+                        orderLineItemId: lineItem.id,
+                        userId,
+                        userName,
+                        actionType: 'line_item.corrected_after_completion',
+                        fromStatus: oldLineItemWorkflowState,
+                        toStatus: String((lineItem as any).workflowState || oldLineItemWorkflowState),
+                        note: 'A completed line item received an audited commercial correction.',
+                        metadata: {
+                            eventType: 'line_item.corrected_after_completion',
+                            lineItemId: lineItem.id,
+                            changedFields: diffs.map((d) => d.fieldKey),
+                            historicalDependencyTypes,
+                            createdAt: nowIso,
+                        },
+                    });
+                }
             }
 
             // Auto-schedule production job when productId changes and new product type has sendToProductionDefault=true.
@@ -8756,7 +8807,7 @@ export async function registerOrderRoutes(
                     debug: (error as any).debug,
                 });
             }
-            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
             res.status(500).json({ message: "Failed to update order line item" });
         }
     });
@@ -9513,26 +9564,84 @@ export async function registerOrderRoutes(
             const lineItemId = String(req.params.id);
             const ownership = await db.transaction(async (tx) => {
                 const [ownedLineItem] = await tx
-                    .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
+                    .select({
+                        id: orderLineItems.id,
+                        orderId: orderLineItems.orderId,
+                        status: orderLineItems.status,
+                        workflowState: orderLineItems.workflowState,
+                        description: orderLineItems.description,
+                    })
                     .from(orderLineItems)
                     .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
                     .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
-                    .limit(1);
+                .limit(1);
                 if (!ownedLineItem) return null;
 
-                await new OrdersRepository(tx).deleteOrderLineItem(lineItemId);
+                const activeJob = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
+                if (activeJob) {
+                    throw Object.assign(
+                        new Error("This line item is in active production. Resolve its workflow before removing it."),
+                        { statusCode: 409, code: "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED" },
+                    );
+                }
+
+                const historicalDependencyTypes = await getLineItemHistoricalDependencyTypes(tx, { organizationId, lineItemId });
+                const repository = new OrdersRepository(tx);
+                const userId = getUserId(req.user) ?? null;
+                const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email || null;
+                const removedHistorically = historicalDependencyTypes.length > 0;
+
+                if (removedHistorically) {
+                    // Keep physical production, material, shipment, and pickup
+                    // facts intact. The central billable-line helper excludes
+                    // this cancelled line from Order and live Invoice totals.
+                    await tx.update(orderLineItems).set({
+                        status: "canceled",
+                        workflowState: "canceled",
+                        updatedAt: new Date(),
+                    }).where(eq(orderLineItems.id, lineItemId));
+                    await repository.createOrderAuditLog({
+                        orderId: String(ownedLineItem.orderId),
+                        orderLineItemId: lineItemId,
+                        userId,
+                        userName,
+                        actionType: "line_item.removed_after_completion",
+                        fromStatus: String(ownedLineItem.workflowState || ownedLineItem.status || "completed"),
+                        toStatus: "canceled",
+                        note: "Line item was commercially removed while its downstream operational history was retained.",
+                        metadata: { lineItemId, historicalDependencyTypes, removalMode: "historical_cancellation" },
+                    });
+                } else {
+                    await repository.deleteOrderLineItem(lineItemId);
+                    await repository.createOrderAuditLog({
+                        orderId: String(ownedLineItem.orderId),
+                        userId,
+                        userName,
+                        actionType: "line_item.deleted",
+                        fromStatus: String(ownedLineItem.workflowState || ownedLineItem.status || "new"),
+                        toStatus: null,
+                        note: "Line item was removed before it acquired downstream operational history.",
+                        metadata: { lineItemId, removalMode: "hard_delete" },
+                    });
+                }
                 await recalculateEditableOrderFinancialsInTransaction(tx, {
                     organizationId,
                     orderId: String(ownedLineItem.orderId),
-                    actorUserId: getUserId(req.user) ?? null,
+                    actorUserId: userId,
                 });
                 await recomputeOrderBillingStatus({ organizationId, orderId: String(ownedLineItem.orderId), executor: tx });
-                return ownedLineItem;
+                return { ...ownedLineItem, removalMode: removedHistorically ? "historical_cancellation" : "hard_delete" };
             });
 
             if (!ownership) return res.status(404).json({ message: "Order line item not found" });
-            res.json({ message: "Order line item deleted successfully" });
+            res.json({
+                message: ownership.removalMode === "historical_cancellation"
+                    ? "Order line item removed from commercial totals; operational history was retained"
+                    : "Order line item deleted successfully",
+                removalMode: ownership.removalMode,
+            });
         } catch (error) {
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
             res.status(500).json({ message: "Failed to delete order line item" });
         }
     });

@@ -19,9 +19,17 @@ export function getLineItemCents(line: BundleLineItem): number {
   return toCents(line.totalPrice ?? line.linePrice);
 }
 
+/** A cancelled/voided line remains for operational history, but not for the
+ * Order's current commercial snapshot. */
+export function isCommerciallyRemovedLine(line: Pick<BundleLineItem, "status">): boolean {
+  return ["canceled", "cancelled", "void", "voided"].includes(
+    String(line.status ?? "").trim().toLowerCase(),
+  );
+}
+
 export function calculateBundleChildTotalCents(children: BundleLineItem[]): number {
   return children
-    .filter((line) => line.status !== "canceled")
+    .filter((line) => !isCommerciallyRemovedLine(line))
     .reduce((total, line) => total + getLineItemCents(line), 0);
 }
 
@@ -33,14 +41,15 @@ export function calculateBundleChildTotalCents(children: BundleLineItem[]): numb
  * This distinction prevents a linked existing child from disappearing from
  * billing after its parent's standalone price is intentionally left unchanged.
  */
-type BundleMembership = Pick<BundleLineItem, "id" | "parentLineItemId" | "lineItemRole" | "childDisplayMode">;
+type BundleMembership = Pick<BundleLineItem, "id" | "parentLineItemId" | "lineItemRole" | "childDisplayMode" | "status">;
 
 export function getBillableBundleRoots<T extends BundleMembership>(lineItems: T[]): T[] {
-  const byId = new Map<string, T>(lineItems
+  const activeLines = lineItems.filter((line) => !isCommerciallyRemovedLine(line));
+  const byId = new Map<string, T>(activeLines
     .filter((line): line is T & { id: string } => typeof line.id === "string")
     .map((line) => [line.id, line]));
 
-  return lineItems.filter((line) => {
+  return activeLines.filter((line) => {
     if (!line.parentLineItemId) return true;
     const parent = byId.get(String(line.parentLineItemId));
     // Only a dedicated wrapper owns a child's commercial total. If the
@@ -51,10 +60,11 @@ export function getBillableBundleRoots<T extends BundleMembership>(lineItems: T[
 }
 
 export function getCustomerVisibleBundleLines<T extends BundleMembership>(lineItems: T[]): T[] {
-  const byId = new Map<string, T>(lineItems
+  const activeLines = lineItems.filter((line) => !isCommerciallyRemovedLine(line));
+  const byId = new Map<string, T>(activeLines
     .filter((line): line is T & { id: string } => typeof line.id === "string")
     .map((line) => [line.id, line]));
-  return lineItems.filter((line) => {
+  return activeLines.filter((line) => {
     if (line.lineItemRole !== "child" && !line.parentLineItemId) return true;
     const parent = line.parentLineItemId ? byId.get(line.parentLineItemId) : undefined;
     // A normal sales line can have operationally linked child lines without

@@ -764,15 +764,15 @@ export default function OrderDetail() {
     : null;
   const cancellationDateLabel = order?.canceledAt ? format(new Date(order.canceledAt), "MMM d, yyyy h:mm a") : null;
   
-  // Admin/Owner override: allow editing terminal orders if setting enabled
-  const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
+  // Completion is operational history, not a blanket commercial lock. Server
+  // mutation routes independently authorize every correction.
   const requireLineItemsDone = (preferences?.orders?.requireAllLineItemsDoneToComplete
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
-  const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  // Completed Orders can still receive narrow, auditable metadata corrections.
-  // Cancelled Orders remain restricted to append-only notes.
-  const canEditSafeOrderMetadata = Boolean(order && !orderIsCanceled);
+  const canEditOrder = Boolean(order && (baseCanEditOrder || (isAdminOrOwner && isOrderCommerciallyEditable(order))));
+  // Safe header metadata is correctable even after cancellation; the server
+  // still blocks cancelled commercial/customer-identity recovery.
+  const canEditSafeOrderMetadata = Boolean(order);
   const canAppendOrderInternalNote = Boolean(order);
   const canEditCommercialPricing = Boolean(order && isAdminOrOwner && isOrderCommerciallyEditable(order));
   const canShowCancelOrder = Boolean(order && !orderIsCanceled);

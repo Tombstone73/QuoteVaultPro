@@ -872,7 +872,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const lineItemAssetsAssociationKnown = lineItemPreviewsQuery.isSuccess;
 
   const activeLineItems = useMemo(
-    () => sortOrderLineItemsByPersistedOrder(displayLineItems.filter((li) => showHistoricalCanceledLineItems || li.status !== "canceled") as any[]) as OrderLineItem[],
+    () => sortOrderLineItemsByPersistedOrder(displayLineItems.filter((li) => showHistoricalCanceledLineItems || !["canceled", "cancelled", "void", "voided"].includes(String(li.status ?? "").toLowerCase())) as any[]) as OrderLineItem[],
     [displayLineItems, showHistoricalCanceledLineItems]
   );
 
@@ -882,7 +882,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       const status = String((item as any)?.status ?? "").toLowerCase();
       const workflowState = String((item as any)?.workflowState ?? "new").toLowerCase();
-      const lockedStates = new Set(["completed", "complete", "canceled", "cancelled"]);
+      // Completion is historical operational state, not a commercial edit lock.
+      const lockedStates = new Set(["canceled", "cancelled", "void", "voided"]);
 
       return !lockedStates.has(status) && !lockedStates.has(workflowState);
     },
