@@ -7,6 +7,9 @@ import {
   customerContactLinks,
   customerContacts,
   customerCreditTransactions,
+  customerAccountCredits,
+  customerAccountCreditApplications,
+  customerAccountCreditApplicationBatches,
   customerMergeOperations,
   customerNotes,
   customerPortalAccess,
@@ -505,6 +508,9 @@ export async function mergeDuplicateCustomers(input: {
 
     counts.notesMoved = Number((await tx.update(customerNotes).set({ customerId: survivor.id, updatedAt: new Date() }).where(eq(customerNotes.customerId, duplicate.id)).returning({ id: customerNotes.id })).length);
     counts.creditTransactionsMoved = Number((await tx.update(customerCreditTransactions).set({ customerId: survivor.id }).where(eq(customerCreditTransactions.customerId, duplicate.id)).returning({ id: customerCreditTransactions.id })).length);
+    counts.accountCreditsMoved = Number((await tx.update(customerAccountCredits).set({ customerId: survivor.id }).where(and(eq(customerAccountCredits.organizationId, input.organizationId), eq(customerAccountCredits.customerId, duplicate.id))).returning({ id: customerAccountCredits.id })).length);
+    counts.accountCreditApplicationsMoved = Number((await tx.update(customerAccountCreditApplications).set({ customerId: survivor.id }).where(and(eq(customerAccountCreditApplications.organizationId, input.organizationId), eq(customerAccountCreditApplications.customerId, duplicate.id))).returning({ id: customerAccountCreditApplications.id })).length);
+    counts.accountCreditApplicationBatchesMoved = Number((await tx.update(customerAccountCreditApplicationBatches).set({ customerId: survivor.id }).where(and(eq(customerAccountCreditApplicationBatches.organizationId, input.organizationId), eq(customerAccountCreditApplicationBatches.customerId, duplicate.id))).returning({ id: customerAccountCreditApplicationBatches.id })).length);
 
     const archivedNote = [
       duplicate.notes,

@@ -240,11 +240,18 @@ function CustomerHeader({
 }: CustomerHeaderProps) {
   const [showEditForm, setShowEditForm] = useState(false);
   const [showLocalStorageDialog, setShowLocalStorageDialog] = useState(false);
+  const [accountCreditMode, setAccountCreditMode] = useState<"advance" | "issued" | null>(null);
+  const [accountCreditAmount, setAccountCreditAmount] = useState("");
+  const [accountCreditMethod, setAccountCreditMethod] = useState("check");
+  const [accountCreditReason, setAccountCreditReason] = useState("");
+  const [accountCreditNotes, setAccountCreditNotes] = useState("");
   const [localCompanyFolderPath, setLocalCompanyFolderPath] = useState(customer.localCompanyFolderPath ?? "");
   const primaryContact = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const accountCreditQuery = useQuery({ queryKey: ["/api/customers", customer.id, "account-credit"], queryFn: async () => { const response = await fetch(`/api/customers/${customer.id}/account-credit`, { credentials: "include" }); if (!response.ok) throw new Error("Unable to load account credit"); return response.json() as Promise<{ availableCents: number }>; } });
+  const accountCreditMutation = useMutation({ mutationFn: async () => { const amountCents = Math.round(Number(accountCreditAmount) * 100); if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("Enter a positive amount."); const endpoint = accountCreditMode === "advance" ? "advance" : "issue"; const response = await fetch(`/api/customers/${customer.id}/account-credit/${endpoint}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(accountCreditMode === "advance" ? { amountCents, receivedMethod: accountCreditMethod, notes: accountCreditNotes } : { amountCents, reason: accountCreditReason, notes: accountCreditNotes }) }); const payload = await response.json().catch(() => null); if (!response.ok) throw new Error(payload?.message || "Unable to save account credit"); return payload; }, onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/customers", customer.id, "account-credit"] }); setAccountCreditMode(null); setAccountCreditAmount(""); setAccountCreditNotes(""); setAccountCreditReason(""); toast({ title: "Account credit recorded" }); }, onError: (error: Error) => toast({ title: "Unable to save account credit", description: error.message, variant: "destructive" }) });
 
   const cityState = useMemo(() => {
     const parts = [customer.shippingCity, customer.shippingState]
@@ -386,6 +393,10 @@ function CustomerHeader({
               <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Terms</div>
               <div className="text-[11px] font-semibold text-titan-text-primary">{customerPaymentTermsLabel(customer.paymentTerms)}</div>
             </div>
+            <div className="text-right" title="Customer-held funds and issued value available for explicit invoice settlement.">
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Account Credit</div>
+              <div className="text-[11px] font-semibold text-teal-400">{formatCurrency((accountCreditQuery.data?.availableCents || 0) / 100)}</div>
+            </div>
             
             {/* Invoice-derived financial exposure */}
             <div className="text-right" title="Approved invoice balances still owed.">
@@ -422,6 +433,8 @@ function CustomerHeader({
             onEditCustomer={() => setShowEditForm(true)}
             onLocalStorage={!isEmbedded ? () => setShowLocalStorageDialog(true) : undefined}
             onSwitchTab={onSwitchTab}
+            onRecordCustomerFunds={() => setAccountCreditMode("advance")}
+            onIssueCustomerCredit={() => setAccountCreditMode("issued")}
           />
           {!isEmbedded && (
             <Button
@@ -442,6 +455,9 @@ function CustomerHeader({
           )}
         </div>
       </div>
+      <Dialog open={accountCreditMode !== null} onOpenChange={(open) => !open && setAccountCreditMode(null)}>
+        <DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>{accountCreditMode === "advance" ? "Record Customer Funds" : "Issue Customer Credit"}</DialogTitle><DialogDescription>{accountCreditMode === "advance" ? "Record money received before it is applied to an invoice." : "Issue non-cash customer account credit without changing a paid invoice."}</DialogDescription></DialogHeader><div className="space-y-3"><div><Label>Amount</Label><Input inputMode="decimal" value={accountCreditAmount} onChange={(event) => setAccountCreditAmount(event.target.value)} placeholder="0.00" /></div>{accountCreditMode === "advance" ? <div><Label>Payment Method</Label><Select value={accountCreditMethod} onValueChange={setAccountCreditMethod}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="check">Check</SelectItem><SelectItem value="wire">Wire</SelectItem><SelectItem value="ach">ACH</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent></Select></div> : <div><Label>Reason</Label><Input value={accountCreditReason} onChange={(event) => setAccountCreditReason(event.target.value)} placeholder="Discount / courtesy" /></div>}<div><Label>Notes</Label><Input value={accountCreditNotes} onChange={(event) => setAccountCreditNotes(event.target.value)} placeholder="Optional reference or explanation" /></div></div><DialogFooter><Button variant="outline" onClick={() => setAccountCreditMode(null)}>Cancel</Button><Button onClick={() => accountCreditMutation.mutate()} disabled={accountCreditMutation.isPending}>{accountCreditMutation.isPending ? "Saving…" : accountCreditMode === "advance" ? "Record Funds" : "Issue Credit"}</Button></DialogFooter></DialogContent>
+      </Dialog>
       
       {/* Activity badges — only when meaningful data exists */}
       {activitySummary && (activitySummary.openOrderCount > 0 || activitySummary.overdueInvoiceCount > 0 || activitySummary.lastOrderDate || activitySummary.lastPaymentDate || activitySummary.recentPortalProfileUpdate) && (

@@ -32,6 +32,7 @@ import {
   Users,
   Receipt,
   BarChart3,
+  WalletCards,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,6 +53,8 @@ export interface CustomerActionsMenuProps {
   onLocalStorage?: () => void;
   /** Called when tab-targeting items are clicked (e.g. "Transactions") */
   onSwitchTab?: (tab: string) => void;
+  onRecordCustomerFunds?: () => void;
+  onIssueCustomerCredit?: () => void;
 }
 
 export function CustomerActionsMenu({
@@ -60,6 +63,8 @@ export function CustomerActionsMenu({
   onEditCustomer,
   onLocalStorage,
   onSwitchTab,
+  onRecordCustomerFunds,
+  onIssueCustomerCredit,
 }: CustomerActionsMenuProps) {
   const navigate = useNavigate();
 
@@ -105,6 +110,10 @@ export function CustomerActionsMenu({
         </DropdownMenuItem>
 
         <DropdownMenuSeparator className="bg-titan-border-subtle" />
+
+        {onRecordCustomerFunds && <DropdownMenuItem onClick={onRecordCustomerFunds} className="text-titan-text-primary hover:bg-titan-bg-card-elevated cursor-pointer gap-2"><WalletCards className="w-3.5 h-3.5 text-titan-text-secondary" />Record Customer Funds</DropdownMenuItem>}
+        {onIssueCustomerCredit && <DropdownMenuItem onClick={onIssueCustomerCredit} className="text-titan-text-primary hover:bg-titan-bg-card-elevated cursor-pointer gap-2"><CreditCard className="w-3.5 h-3.5 text-titan-text-secondary" />Issue Customer Credit</DropdownMenuItem>}
+        {(onRecordCustomerFunds || onIssueCustomerCredit) && <DropdownMenuSeparator className="bg-titan-border-subtle" />}
 
         <DropdownMenuItem
           onClick={() => onSwitchTab?.("transactions")}

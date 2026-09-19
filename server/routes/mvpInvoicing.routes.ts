@@ -35,6 +35,7 @@ import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, g
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 import { listPayments, normalizePaymentListSort, type PaymentDatePreset } from "../services/paymentListService";
 import { customerPaymentAllocationModes } from "../../shared/customerPaymentAllocation";
+import { applyCustomerCredit, previewCustomerCreditApplication } from "../services/billing/customerAccountCreditOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, normalizeExplicitInvoiceRecipientEmails, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 import { captureAndApply as captureAndApplyStripeObservation, retryByEvent as retryStripeObservationByEvent } from "../services/stripePaymentReconciliationService";
 import { resolveStripeReadiness } from "../services/stripeReadiness.service";
@@ -3170,6 +3171,18 @@ export async function registerMvpInvoicingRoutes(
         error: error.message || "Failed to resolve invoice email recipients",
       });
     }
+  });
+
+  // Existing customer-held value settlement. This intentionally creates only
+  // internal customer_credit payment rows—not a second cash/check receipt.
+  const customerCreditApplicationSchema = z.object({ customerId: z.string().min(1), invoiceIds: z.array(z.string().min(1)).min(1).max(100), amountCents: z.coerce.number().int().positive(), allocationMode: z.enum(customerPaymentAllocationModes), customAllocations: z.array(z.object({ invoiceId: z.string().min(1), amountCents: z.coerce.number().int().nonnegative() })).optional(), expectedRemainingCents: z.record(z.string(), z.coerce.number().int().nonnegative()).optional(), expectedAvailableCents: z.coerce.number().int().nonnegative().optional(), appliedAt: z.string().optional() });
+  app.post('/api/invoices/customer-account-credit/preview', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); const body = customerCreditApplicationSchema.omit({ expectedRemainingCents: true, expectedAvailableCents: true, appliedAt: true }).parse(req.body || {}); return res.json({ success: true, data: await previewCustomerCreditApplication({ organizationId, ...body }) }); }
+    catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer credit application.', code: error.code }); }
+  });
+  app.post('/api/invoices/customer-account-credit', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId || !actorUserId) return res.status(401).json({ error: 'Missing organization or user context' }); const body = customerCreditApplicationSchema.parse(req.body || {}); const appliedAt = body.appliedAt ? new Date(body.appliedAt) : new Date(); if (Number.isNaN(appliedAt.getTime())) return res.status(400).json({ error: 'Invalid appliedAt' }); const key = String(req.headers['idempotency-key'] || '').trim(); if (!key) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' }); return res.json({ success: true, data: await applyCustomerCredit({ organizationId, actorUserId, ...body, appliedAt, idempotencyKey: `ui:${key}` }) }); }
+    catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to apply customer credit.', code: error.code }); }
   });
 
   // Compose is read-only. It deliberately shares the server's canonical

@@ -5375,11 +5375,29 @@ export const customerPaymentBatches = pgTable("customer_payment_batches", {
   createdAt: timestamp("created_at").defaultNow().notNull(), updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [uniqueIndex("customer_payment_batches_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey), index("customer_payment_batches_customer_idx").on(table.organizationId, table.customerId)]);
 
+// Customer-held funds and courtesy value are a durable ledger. They are not
+// credit-limit usage and are never derived from the legacy currentBalance.
+export const customerAccountCredits = pgTable("customer_account_credits", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'restrict' }), customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  sourceType: varchar("source_type", { length: 40 }).notNull(), originalAmountCents: integer("original_amount_cents").notNull(), currency: varchar("currency", { length: 8 }).notNull().default('USD'),
+  receivedMethod: varchar("received_method", { length: 50 }), receivedAt: timestamp("received_at", { withTimezone: true }), sourceInvoiceId: varchar("source_invoice_id").references(() => invoices.id, { onDelete: 'restrict' }), reference: text("reference"), reason: varchar("reason", { length: 100 }), notes: text("notes"),
+  status: varchar("status", { length: 32 }).notNull().default('active'), accountingStatus: varchar("accounting_status", { length: 50 }).notNull().default('accounting_review_required'), idempotencyKey: text("idempotency_key").notNull(), createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'restrict' }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), reversedAt: timestamp("reversed_at", { withTimezone: true }), reversedByUserId: varchar("reversed_by_user_id").references(() => users.id, { onDelete: 'restrict' }), reversalReason: text("reversal_reason"),
+}, (table) => [uniqueIndex("customer_account_credits_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey), index("customer_account_credits_customer_idx").on(table.organizationId, table.customerId, table.createdAt), index("customer_account_credits_invoice_idx").on(table.organizationId, table.sourceInvoiceId)]);
+
+export const customerAccountCreditApplicationBatches = pgTable("customer_account_credit_application_batches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'restrict' }), customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }), allocationMode: varchar("allocation_mode", { length: 32 }).notNull(), idempotencyKey: text("idempotency_key").notNull(), appliedAt: timestamp("applied_at", { withTimezone: true }).notNull(), createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'restrict' }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex("customer_account_credit_application_batches_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey), index("customer_account_credit_application_batches_customer_idx").on(table.organizationId, table.customerId)]);
+
+export const customerAccountCreditApplications = pgTable("customer_account_credit_applications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'restrict' }), customerAccountCreditId: varchar("customer_account_credit_id").notNull().references(() => customerAccountCredits.id, { onDelete: 'restrict' }), applicationBatchId: varchar("application_batch_id").notNull().references(() => customerAccountCreditApplicationBatches.id, { onDelete: 'restrict' }), customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }), invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'restrict' }), amountCents: integer("amount_cents").notNull(), appliedAt: timestamp("applied_at", { withTimezone: true }).notNull(), appliedByUserId: varchar("applied_by_user_id").references(() => users.id, { onDelete: 'restrict' }), status: varchar("status", { length: 32 }).notNull().default('active'), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), reversedAt: timestamp("reversed_at", { withTimezone: true }), reversedByUserId: varchar("reversed_by_user_id").references(() => users.id, { onDelete: 'restrict' }), reversalReason: text("reversal_reason"),
+}, (table) => [index("customer_account_credit_applications_credit_idx").on(table.organizationId, table.customerAccountCreditId), index("customer_account_credit_applications_invoice_idx").on(table.organizationId, table.invoiceId)]);
+
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
   customerPaymentBatchId: varchar("customer_payment_batch_id").references(() => customerPaymentBatches.id, { onDelete: 'restrict' }),
+  customerAccountCreditApplicationId: varchar("customer_account_credit_application_id").references(() => customerAccountCreditApplications.id, { onDelete: 'restrict' }),
   provider: varchar("provider", { length: 20 }).notNull().default('manual'), // manual | stripe | eps
   status: varchar("status", { length: 20 }).notNull().default('succeeded'), // pending | succeeded | failed | canceled | refunded
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
@@ -5424,6 +5442,7 @@ export const payments = pgTable("payments", {
   index("payments_organization_id_idx").on(table.organizationId),
   index("payments_invoice_id_idx").on(table.invoiceId),
   index("payments_customer_payment_batch_id_idx").on(table.customerPaymentBatchId),
+  uniqueIndex("payments_customer_account_credit_application_uidx").on(table.customerAccountCreditApplicationId),
   index("payments_provider_idx").on(table.provider),
   index("payments_status_idx").on(table.status),
   uniqueIndex("payments_org_stripe_payment_intent_id_uidx").on(table.organizationId, table.stripePaymentIntentId),

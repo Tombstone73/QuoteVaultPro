@@ -34,7 +34,7 @@ import { fromZodError } from "zod-validation-error";
 import { eq, desc, and, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, orders, quotes, invoices, payments, customerCreditTransactions, customers, customerContacts } from "@shared/schema";
+import { auditLogs, orders, quotes, invoices, payments, customerCreditTransactions, customerAccountCredits, customerAccountCreditApplications, customers, customerContacts } from "@shared/schema";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import {
   insertCustomerContactSchema,
@@ -64,6 +64,7 @@ import {
   filterQuoteBySearch,
   buildStatementSummary,
 } from "../lib/customerStatementHelpers";
+import { getCustomerAccountCreditSummary, issueCustomerCredit, recordCustomerAdvance, reverseCustomerCredit, reverseCustomerCreditApplication } from "../services/billing/customerAccountCreditOperations";
 
 const linkExistingContactSchema = z.object({
   setPrimary: z.boolean().optional().default(false),
@@ -108,6 +109,28 @@ export function registerCustomerRelationsRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdmin } = middleware;
+  const accountCreditInput = z.object({ amountCents: z.coerce.number().int().positive(), receivedMethod: z.string().max(50).optional(), receivedAt: z.string().optional(), reference: z.string().max(255).optional(), reason: z.string().max(100).optional(), notes: z.string().max(5000).optional(), sourceInvoiceId: z.string().optional().nullable() });
+
+  app.get("/api/customers/:customerId/account-credit", isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return jsonError(res, 500, "Missing organization context"); return res.json(await getCustomerAccountCreditSummary({ organizationId, customerId: req.params.customerId })); }
+    catch (error: any) { return res.status(error?.statusCode || 500).json({ message: error?.message || "Unable to load customer account credit.", code: error?.code }); }
+  });
+  app.post("/api/customers/:customerId/account-credit/advance", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId || !actorUserId) return jsonError(res, 401, "Missing organization or user context"); const body = accountCreditInput.parse(req.body || {}); const receivedAt = body.receivedAt ? new Date(body.receivedAt) : new Date(); if (Number.isNaN(receivedAt.getTime())) return jsonError(res, 400, "Invalid received date"); const key = String(req.headers['idempotency-key'] || '').trim(); if (!key) return res.status(400).json({ message: "Idempotency-Key header is required", code: "IDEMPOTENCY_KEY_REQUIRED" }); return res.json(await recordCustomerAdvance({ organizationId, customerId: req.params.customerId, actorUserId, amountCents: body.amountCents, receivedMethod: body.receivedMethod, receivedAt, reference: body.reference, notes: body.notes, idempotencyKey: `ui:${key}` })); }
+    catch (error: any) { return res.status(error?.statusCode || (error instanceof z.ZodError ? 400 : 500)).json({ message: error?.message || "Unable to record customer funds.", code: error?.code }); }
+  });
+  app.post("/api/customers/:customerId/account-credit/issue", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId || !actorUserId) return jsonError(res, 401, "Missing organization or user context"); const body = accountCreditInput.extend({ reason: z.string().min(1).max(100) }).parse(req.body || {}); const key = String(req.headers['idempotency-key'] || '').trim(); if (!key) return res.status(400).json({ message: "Idempotency-Key header is required", code: "IDEMPOTENCY_KEY_REQUIRED" }); return res.json(await issueCustomerCredit({ organizationId, customerId: req.params.customerId, actorUserId, amountCents: body.amountCents, sourceInvoiceId: body.sourceInvoiceId, reason: body.reason, notes: body.notes, reference: body.reference, idempotencyKey: `ui:${key}` })); }
+    catch (error: any) { return res.status(error?.statusCode || (error instanceof z.ZodError ? 400 : 500)).json({ message: error?.message || "Unable to issue customer credit.", code: error?.code }); }
+  });
+  app.post("/api/customers/:customerId/account-credit/:creditId/reverse", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId || !actorUserId) return jsonError(res, 401, "Missing organization or user context"); const body = z.object({ reason: z.string().min(1).max(5000) }).parse(req.body || {}); return res.json(await reverseCustomerCredit({ organizationId, customerId: req.params.customerId, creditId: req.params.creditId, actorUserId, reason: body.reason })); }
+    catch (error: any) { return res.status(error?.statusCode || (error instanceof z.ZodError ? 400 : 500)).json({ message: error?.message || "Unable to reverse customer credit.", code: error?.code }); }
+  });
+  app.post("/api/customers/:customerId/account-credit-applications/:applicationId/reverse", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId || !actorUserId) return jsonError(res, 401, "Missing organization or user context"); const body = z.object({ reason: z.string().min(1).max(5000) }).parse(req.body || {}); return res.json(await reverseCustomerCreditApplication({ organizationId, customerId: req.params.customerId, applicationId: req.params.applicationId, actorUserId, reason: body.reason })); }
+    catch (error: any) { return res.status(error?.statusCode || (error instanceof z.ZodError ? 400 : 500)).json({ message: error?.message || "Unable to reverse credit application.", code: error?.code }); }
+  });
 
   // ============================================================
   // CUSTOMER CONTACTS
@@ -990,6 +1013,14 @@ export function registerCustomerRelationsRoutes(
       );
 
       if (creditTypeWanted) {
+        const accountCredits = await db.select().from(customerAccountCredits).where(and(eq(customerAccountCredits.organizationId, organizationId), eq(customerAccountCredits.customerId, customerId)));
+        for (const credit of accountCredits) {
+          const date = safeIso(credit.receivedAt ?? credit.createdAt); const description = credit.sourceType === "customer_advance" ? `Customer Advance${credit.reference ? ` — ${credit.reference}` : ""}` : `Issued Credit${credit.reason ? ` — ${credit.reason}` : ""}`;
+          if (search && !description.toLowerCase().includes(search)) continue;
+          rows.push({ id: `account-credit-${credit.id}`, date, type: "credit", referenceNumber: credit.reference || "Account Credit", description, status: credit.status, amount: (Number(credit.originalAmountCents) / 100).toFixed(2), balanceImpact: `+${(Number(credit.originalAmountCents) / 100).toFixed(2)}`, method: credit.receivedMethod || null, linkType: credit.sourceInvoiceId ? "invoice" : null, linkId: credit.sourceInvoiceId || null });
+        }
+        const accountApplications = await db.select({ application: customerAccountCreditApplications, invoiceNumber: invoices.invoiceNumber, invoiceDisplayNumber: invoices.displayNumber, invoiceNumberCore: invoices.numberCore }).from(customerAccountCreditApplications).innerJoin(invoices, eq(customerAccountCreditApplications.invoiceId, invoices.id)).where(and(eq(customerAccountCreditApplications.organizationId, organizationId), eq(customerAccountCreditApplications.customerId, customerId)));
+        for (const row of accountApplications) { const invoiceNumber = resolveDocumentDisplayNumber({ displayNumber: row.invoiceDisplayNumber, numberCore: row.invoiceNumberCore, legacyNumber: row.invoiceNumber }); const description = `Credit Applied${invoiceNumber ? ` — Invoice #${invoiceNumber}` : ""}`; if (search && !description.toLowerCase().includes(search)) continue; rows.push({ id: `account-credit-application-${row.application.id}`, date: safeIso(row.application.appliedAt), type: "credit", referenceNumber: invoiceNumber ? `CR-${invoiceNumber}` : "Credit Applied", description, status: row.application.status, amount: (Number(row.application.amountCents) / 100).toFixed(2), balanceImpact: `-${(Number(row.application.amountCents) / 100).toFixed(2)}`, method: "customer_account_credit", linkType: "invoice", linkId: row.application.invoiceId }); }
         for (const ct of allCreditTx) {
           // Remap type to canonical enum
           const rawType = ct.transactionType || "adjustment";
