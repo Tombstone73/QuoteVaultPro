@@ -19,4 +19,12 @@ describe("Order Detail rejected-save recovery", () => {
     expect(section).toContain('Failed to restore authoritative Order after a rejected line save');
     expect(section).toContain('Failed to restore authoritative Order after rejected removal');
   });
+
+  test("projects legacy fulfillment methods canonically and never stages a visually unchanged method", () => {
+    const page = read("client/src/pages/order-detail.tsx");
+
+    expect(page).toContain('effectiveOrderFulfillmentMethod(order?.shippingMethod)');
+    expect(page).toContain('!fulfillmentMethodSemanticallyChanged(persistedShippingMethod, value)');
+    expect(page).toContain('const { shippingMethod: _ignored, ...withoutMethod } = previous;');
+  });
 });

@@ -18,28 +18,17 @@ export function orderChangesRequireOrderBackedInvoiceSynchronization(changes: Re
 
 export type CanonicalFulfillmentMethod = "pickup" | "ship" | "deliver";
 
-/**
- * Older Orders can contain display-oriented fulfillment values such as
- * `shipping` or `delivery`.  Header PATCHes must compare their operational
- * meaning, not their legacy spelling: resubmitting Ship for Shipping is not a
- * fulfillment reversal.
- */
-export function canonicalizeOrderFulfillmentMethod(value: unknown): CanonicalFulfillmentMethod | null {
-  const normalized = String(value ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "_");
-  if (["pickup", "pick_up"].includes(normalized)) return "pickup";
-  if (["ship", "shipping"].includes(normalized)) return "ship";
-  if (["deliver", "delivery"].includes(normalized)) return "deliver";
-  return null;
-}
+export {
+  canonicalizeOrderFulfillmentMethod,
+  effectiveOrderFulfillmentMethod,
+  fulfillmentMethodSemanticallyChanged,
+} from "@shared/orderFulfillmentMethod";
 
-/** A missing legacy fulfillment method has always displayed and behaved as Ship. */
-export function effectiveOrderFulfillmentMethod(value: unknown): CanonicalFulfillmentMethod {
-  return canonicalizeOrderFulfillmentMethod(value) ?? "ship";
-}
-
-export function fulfillmentMethodSemanticallyChanged(current: unknown, submitted: unknown): boolean {
-  return effectiveOrderFulfillmentMethod(current) !== effectiveOrderFulfillmentMethod(submitted);
-}
+import {
+  canonicalizeOrderFulfillmentMethod,
+  effectiveOrderFulfillmentMethod,
+  fulfillmentMethodSemanticallyChanged,
+} from "@shared/orderFulfillmentMethod";
 
 /**
  * Canonicalizes an explicitly submitted method and removes an equivalent

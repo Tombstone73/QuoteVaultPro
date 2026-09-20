@@ -1,5 +1,6 @@
 import { updateOrderSchema } from "@shared/schema";
 import {
+  effectiveOrderFulfillmentMethod,
   fulfillmentMethodSemanticallyChanged,
   normalizeOrderPatchFulfillmentMethod,
   normalizeOrderPatchShipping,
@@ -40,9 +41,20 @@ describe("V1 Order header PATCH contract", () => {
 
   test("treats legacy fulfillment aliases as an unchanged method, not a terminal fulfillment transition", () => {
     expect(fulfillmentMethodSemanticallyChanged("shipping", "ship")).toBe(false);
+    expect(fulfillmentMethodSemanticallyChanged("delivery", "deliver")).toBe(false);
     expect(fulfillmentMethodSemanticallyChanged(null, "ship")).toBe(false);
     expect(normalizeOrderPatchFulfillmentMethod({ shippingMethod: "ship" }, "shipping")).toEqual({ unchanged: true });
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingMethod: "deliver" }, "delivery")).toEqual({ unchanged: true });
     expect(normalizeOrderPatchFulfillmentMethod({ shippingCents: 2_500 }, "shipping")).toEqual({ unchanged: true });
+  });
+
+  test("uses the same legacy method projection as Order Detail before the route decides whether to invoke the terminal guard", () => {
+    // Close Job Override deliberately permits Delivered without a Shipment.
+    // The Order header route must see this as an unchanged fulfillment intent
+    // when staff saves a commercial shipping-price correction.
+    expect(effectiveOrderFulfillmentMethod("delivery")).toBe("deliver");
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingCents: 1_725 }, "delivery")).toEqual({ unchanged: true });
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingMethod: "deliver", shippingCents: 1_725 }, "delivery")).toEqual({ unchanged: true });
   });
 
   test("keeps actual Ship, Pickup, and Delivery transitions distinct", () => {

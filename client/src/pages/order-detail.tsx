@@ -107,6 +107,10 @@ import {
   orderCancellationReasonValues,
   type OrderCancellationReason,
 } from "@shared/orderCancellation";
+import {
+  effectiveOrderFulfillmentMethod,
+  fulfillmentMethodSemanticallyChanged,
+} from "@shared/orderFulfillmentMethod";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -221,10 +225,9 @@ const DESIGN_PRICING_MODE_LABELS: Record<string, string> = {
   manual_quote: "Manual quote",
 };
 
-const fulfillmentMethods = ["pickup", "ship", "deliver"] as const;
-type FulfillmentMethod = (typeof fulfillmentMethods)[number];
+type FulfillmentMethod = "pickup" | "ship" | "deliver";
 const isFulfillmentMethod = (value: string): value is FulfillmentMethod =>
-  fulfillmentMethods.some((method) => method === value);
+  ["pickup", "ship", "deliver"].includes(value);
 
 // Date display style for Due Date and Promised Date in the order details card
 // Future: This will be configurable via organization preferences
@@ -988,6 +991,19 @@ export default function OrderDetail() {
   const handleFulfillmentMethodChange = (value: string) => {
     if (!canEditOrder) return;
     if (!isFulfillmentMethod(value)) return;
+    // A controlled Select can receive a legacy persisted spelling.  Compare
+    // against the persisted operational meaning, not the raw string, so
+    // selecting the value already shown to staff never creates a phantom
+    // terminal-fulfillment transition.
+    const persistedShippingMethod = (orderRaw as OrderDetailOrder | undefined)?.shippingMethod;
+    if (!fulfillmentMethodSemanticallyChanged(persistedShippingMethod, value)) {
+      setPendingOrderPatch((previous) => {
+        if (previous.shippingMethod === undefined) return previous;
+        const { shippingMethod: _ignored, ...withoutMethod } = previous;
+        return withoutMethod;
+      });
+      return;
+    }
     if (value === "pickup") {
       setShippingDraft("");
       void applyOrderPatch({ shippingMethod: value, shippingCents: 0 });
@@ -1020,10 +1036,7 @@ export default function OrderDetail() {
     });
   };
 
-  const currentFulfillmentMethod: FulfillmentMethod =
-    order?.shippingMethod && typeof order.shippingMethod === "string" && isFulfillmentMethod(order.shippingMethod)
-      ? order.shippingMethod
-      : "ship";
+  const currentFulfillmentMethod: FulfillmentMethod = effectiveOrderFulfillmentMethod(order?.shippingMethod);
 
   // Keep shipping input in sync when order hydrates/changes
   useEffect(() => {

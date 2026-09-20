@@ -9,7 +9,7 @@ import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
 import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
-import { effectiveOrderFulfillmentMethod } from '../orders/orderHeaderUpdatePolicy';
+import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
